@@ -1,0 +1,74 @@
+# Ril
+
+**Ril** is an expression-oriented, strongly typed programming language featuring algebraic effect handlers, capability-tracked state, and deterministic dual compilation to Native machine code and ECMAScript/TypeScript (`.d.ts`).
+
+---
+
+### 1. Algebraic Effects (`@Effect`)
+
+```ril
+pub effect Ask {
+    prompt: fn(str) -> str
+}
+
+fn greet() -> str @Ask {
+    "Hello, " + Ask::prompt("Name:")
+}
+
+-- Handled via one-shot delimited resumption
+let message = {
+    with Ask::prompt(_) -> resume("World")
+    greet() -- "Hello, World"
+}
+```
+
+### 2. Local Mutation Purity (`&mut`)
+
+```ril
+-- In-place mutation via mutating pipeline (!>)
+fn append(mut list: []str, item: str) &mut {
+    list !> push(item)
+}
+
+-- Frame-confined mutation is pure: &mut discharged locally
+fn extract_valid(tags: []{ name: str, is_valid: bool }) -> []str {
+    let mut result: []str = []
+    for tags |> filter(\.is_valid) as t {
+        append(mut result, t.name)
+    }
+    result -- pure signature: fn([]{ name: str, is_valid: bool }) -> []str
+}
+```
+
+### 3. State Capabilities & Read-Only Handles (`&^mut`, `&capture`)
+
+```ril
+-- Retained mutable sharing: escaping aliased mutation requires &^mut
+fn register(mut hub: Hub, mut listener: Listener) &^mut {
+    hub.listeners !> push(listener)
+}
+
+-- External state access requires explicit capability annotation
+let mut counter = 0
+fn tick() -> int &{mut counter} {
+    counter += 1
+    counter
+}
+
+-- Escaping stateful closures require &capture
+pub fn make_step() -> (fn() -> int &capture) &capture {
+    let mut n = 0
+    \-> { n += 1; n }
+}
+
+-- `let` is a read-only handle; mutation requires a mutable handle `let mut`
+let read_only = make_step()
+-- read_only() -- STATIC ERROR: cannot invoke &capture through read-only handle
+
+let mut active = make_step()
+active()       -- OK: 1
+```
+
+---
+
+See [SPECIFICATION.md](SPECIFICATION.md) for the formal language specification.
