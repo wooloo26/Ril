@@ -1,0 +1,1 @@
+- **Consult [`SYNTAX.md`](./SYNTAX.md) instead**: A complete, concise, code-first syntax reference is available in [`SYNTAX.md`](./SYNTAX.md) at the root. It contains all grammar constructs, operator precedence, type syntax, algebraic effects, state capabilities, and anti-examples needed for development.
