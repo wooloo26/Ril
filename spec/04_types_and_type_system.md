@@ -110,6 +110,22 @@ Variance of data parameters across generic types follows positive and negative p
 1. **Read-Only Collections**: Immutable array views (`[]T`) are covariant: if $T <: U$, then `[]T <: []U`. Consequently, an empty array of bottom types `[]never` can initialize any `[]T`.
 2. **Writable Collections**: Writable locations and mutable arrays are strictly invariant. A read-only collection view CANNOT be cast, coerced, or upgraded to a writable collection.
 
+### 3.6 Deep Immutability Normalizing Type Family (`Immut<T>`)
+
+The built-in generic type constructor `Immut<T>` denotes the recursively normalized, deeply immutable modality of type `T`. `Immut<T>` is a **normalizing type family** evaluated at compile time with zero runtime representation overhead:
+
+1. **Inductive Normalization Rules**:
+   - For primitive scalar types and immutable slices ($B \in \{\text{bool}, \text{int}, \text{float}, \text{str}, \text{bytes}, ()\}$, $\text{never}$): $\text{Immut}\langle B \rangle \equiv B$.
+   - For record schemas: $\text{Immut}\langle \{ \dots, [\text{mut}] \ x: U, \dots \} \rangle \equiv \{ \dots, x: \text{Immut}\langle U \rangle, \dots \}$ (all field `mut` modifiers are stripped).
+   - For tuples and variants: all element and payload types are recursively normalized under $\text{Immut}\langle \dots \rangle$.
+   - For collections: $\text{Immut}\langle []T \rangle \equiv [](\text{Immut}\langle T \rangle)$.
+2. **Algebraic Laws**:
+   - Idempotence: $\text{Immut}\langle \text{Immut}\langle T \rangle \rangle \equiv \text{Immut}\langle T \rangle$.
+   - Covariance: If $A <: B$, then $\text{Immut}\langle A \rangle <: \text{Immut}\langle B \rangle$.
+   - Universal Shareability: For all well-formed types $T$, $\text{Immut}\langle T \rangle \in \text{Shareable}$.
+3. **Read-Only View Privilege**:
+   An unannotated parameter position expecting a shared read-only view (`param: T`) admits an argument of type `Immut<T>`, because `param: T` strips write permissions across the parameter handle.
+
 ---
 
 ## 4. Type Inference and Generalization

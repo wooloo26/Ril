@@ -45,7 +45,7 @@ A central invariant of Ril's mutability model is the **Handle-Level Read-Only In
 > **Normative Rule**: Binding a reference object to an immutable identifier (`let x = expr`) or passing it as an unannotated parameter (`x: T`) establishes a **Read-Only Handle** (`Read-Only Alias`), which **strictly strips write capabilities across all reachable paths through that identifier**.
 
 1. **Permission Stripping Through Read-Only Handles**:
-   - An immutable binding (`let`) not only prevents reassigning the variable name `x`, but also statically strips all in-place mutation rights across fields, array elements, or map entries through `x` (e.g., `x.field = val`, `x[0] = val`, `x !> push(val)` are compile-time static errors).
+   - An immutable binding (`let`) not only prevents reassigning the variable name `x`, but also statically strips all in-place mutation rights across fields, array elements, or map entries through `x` (e.g., `x.field = val`, `x[0] = val`, `x !> Array::push(val)` are compile-time static errors).
    - This restriction governs the *handle's access permissions*, not the physical immutability of the underlying heap allocation. If the underlying heap object is concurrently referenced by a live mutable handle (`let mut`), modifications made through the mutable handle may be observed through the read-only handle (see [§5.1 Live Views](#51-live-views)). To obtain permanent, isolated immutability, an explicit detached snapshot MUST be created via `snapshot` (see [§5.2](#52-isolated-snapshots-snapshot)).
    - This stripping holds even if the underlying record schema declared mutable fields (`type Point = { mut x: int }`). A field's `mut` modifier grants the *capability* of being mutated, but that capability is active **only when accessed through a mutable handle (`let mut`) or a mutable parameter (`mut`)**.
 2. **Prerequisite for In-Place Mutation**:
@@ -64,7 +64,7 @@ To ensure that mutability annotations reflect genuine operational intent and pre
    A write operation is recognized if the identifier or any of its nested access paths undergoes:
    - Direct reassignment (`x = expr`);
    - In-place compound or field assignment (`x.field = expr`, `x[i] += 1`);
-   - Mutating pipeline operations (`x !> push(item)`);
+   - Mutating pipeline operations (`x !> Array::push(item)`);
    - Invocation of a state-capturing callable (`&capture`, `&{mut ...}`) bound to that handle;
    - Being retained or stored into an escaping or mutable data structure where the retained reference preserves active write capabilities under `&^mut`; or
    - Being passed as an argument with `mut` prefix to a `mut` parameter of a callee carrying `&mut` or `&^mut`.
@@ -160,7 +160,7 @@ Any chain of static field accessors (`.field`), positional tuple indexers (`.0`)
 Assignments (`=`, `+=`, etc.) and mutating pipelines (`!>`) to nested targets:
 - `array[i].score += 10`
 - `grid[row][col] = 9`
-- `record.nested_list !> push(item)`
+- `record.nested_list !> Array::push(item)`
 - `lookup["key"].status = "active"`
 
 MUST modify the targeted storage location directly in place without duplicating containing records or allocating fresh outer parent arrays.
@@ -191,4 +191,68 @@ let u2 = u1 |> produce \mut draft -> {
 2. **Copy-on-Write (CoW)**:
    - Only nodes along the path that are actually modified during the execution of `recipe` are shallow-copied on write.
    - Unmodified sibling subtrees and nested fields retain their exact reference identities (`u2.name == u1.name`).
-3. **Freezing on Return**: When `recipe` completes, the modified root is frozen and returned as a fresh immutable value. The original `base` graph remains completely unmodified.
+3. **Immutable Output on Return**: When `recipe` completes, the modified root is finalized and returned as a fresh immutable value. The original `base` graph remains completely unmodified.
+
+---
+
+## 8. Multithreaded Memory Model and Data-Race Freedom (DRF)
+
+### 8.1 Data-Race-Free Invariant (DRF-SC)
+
+Ril guarantees **Data-Race Freedom (DRF)** by static construction. A well-typed Ril program is statically proven to contain no data races. Observable multithreaded and multicore execution adheres strictly to **Sequential Consistency (SC)**:
+
+> **Normative Rule**: In the absence of data races, execution of a Ril program across concurrent threads, parallel workers, and asynchronous fibers appears as some global interleaving of sequential thread evaluations.
+
+### 8.2 Concurrency Classification: `Shareable` and `Isolated`
+
+All types in Ril adhere to compile-time concurrency classifications governing thread boundaries:
+
+$$
+\text{Transferable} = \text{Shareable} \uplus \text{Isolated}
+$$
+
+1. **`Shareable` (Concurrent Shared Read / Arbitrary Aliasing)**:
+   A type is `Shareable` if concurrent access from multiple threads is safe without runtime data races:
+   - All scalar value types (`bool`, integers, floats, `unit`, `never`), `str`, and `bytes` are natively `Shareable`.
+   - Records, tuples, and variants composed entirely of non-`mut` fields whose element types are `Shareable` are transitively `Shareable`.
+   - Interior synchronization primitives (`Atom<T: Shareable>`, `Mutex<T>`, `RwLock<T>`) are `Shareable`.
+   - Any type deeply normalized via `snapshot` (`Immut<T>`) is `Shareable`.
+   - Pure functions (`fn(A) -> B`) whose closures capture only `Shareable` bindings are `Shareable`.
+   - Any type containing a `mut` field, dynamic array `[]T`, or mutable map MUST NOT be classified as `Shareable` unless explicitly converted via `snapshot` to `Immut<T>`.
+   - `Shareable` values MAY be freely aliased across threads without invalidating sender aliases.
+
+2. **`Isolated` (Detached Unique Ownership)**:
+   A value is `Isolated` if it represents an unaliased object graph with strictly zero external live aliases in the sending thread:
+   - Fresh allocations created in pure functions or unshared local scopes without external live borrows satisfy unaliased isolation.
+   - Transferring an `Isolated` value across a thread boundary or channel MUST use affine transfer `move(x)`, which statically invalidates the sender's identifier.
+
+3. **Concurrency Container Invariants**:
+   - `Atom<T>` strictly requires `T: Shareable`. Constructing an `Atom` over a mutable or non-`Shareable` type is a compile-time static error (`E0601`).
+   - `Channel<T>` strictly requires `T: Transferable` (i.e. `T: Shareable` or `T: Isolated`).
+
+### 8.3 Live Views vs. Cross-Thread Escapes
+
+A live read-only view (`let view = mutable_obj`) strips write permissions locally within its lexical frame, but does NOT transform the underlying heap graph into an immutable structure.
+- Passing a live view whose underlying type contains `mut` fields to another thread or capturing it in a concurrent closure MUST yield a compile-time static error (`E0601: CrossThreadDataRaceHazardError`).
+- Passing data referenced by a live view across a thread boundary SHALL require explicitly detaching the view via `snapshot(view)` (producing a deeply immutable `Immut<T>`), transferring unique ownership via `move(x)`, or synchronizing access via `Atom` or `Mutex`.
+
+### 8.4 Safe Ownership Transfer and Affine Invalidation (`move(x)`)
+
+An unaliased mutable object graph MAY be transferred across thread boundaries without copying via the `move(x)` intrinsic:
+- **Affine Invalidation**: Evaluating `move(x)` statically transitions $x$ to the `Moved` state. Any subsequent read or write of $x$ along any reachable path MUST produce compile-time static error `E0606: UseAfterMoveError`.
+- **Branch and Loop Invariants**: Moving a variable inside a conditional branch leaves it in a partially moved state at the join point, prohibiting subsequent access without re-initialization. Moving inside a loop body without re-initialization MUST be statically rejected with `E0606`.
+- **Deep Uniqueness Invariant**: Transferring $x$ requires that no live borrows or active live views overlap with $x$'s reachable heap footprint ($\operatorname{ActiveHandles}(\Gamma) \cap \mathcal{F}(x) = \emptyset$). Violation MUST be statically rejected (`E0604: AliasedIsolationTransferError`).
+
+### 8.5 State Capabilities at Concurrency Boundaries
+
+Concurrent task spawns (`spawn`, `fork`) SHALL require tasks to be free of caller-bound mutable state capabilities:
+- A callable passed to a concurrent task MUST NOT declare `&mut`, `&^mut`, `&capture`, or `&{mut ...}`. Violation MUST yield compile-time static error `E0602: IllegalStateCapabilityCrossThreadError`.
+- Tasks passed to parallel combinators (`par_map`, `par_fold`) or parallel nurseries MUST require zero external mutable capabilities; violations MUST yield `E0605: InvalidParallelCapabilityError`.
+- Reading external immutable state via `&{var}` across concurrent boundaries is permitted if and only if `typeof(var)` satisfies `Shareable`. Capturing a non-`Shareable` variable MUST yield `E0603: NonShareableLexicalCaptureError`.
+
+### 8.6 Safe Publication and Memory Ordering
+
+A conforming runtime MUST guarantee safe publication for all heap allocations:
+1. All initialization writes to an object graph MUST occur before the reference pointer becomes observable across a thread boundary or channel.
+2. Channels, atomics, mutexes, and thread spawns MUST enforce release-acquire semantics across hardware architectures (x86-64, ARM64, RISC-V).
+3. Pure immutable graphs and `Immut<T>` MUST NOT incur garbage-collection write barriers during concurrent traversal.

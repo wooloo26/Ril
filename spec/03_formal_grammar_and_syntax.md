@@ -147,3 +147,4 @@ The literal form `.{ ... }` is context-dependent:
 ### 4.6 Disambiguation of Contextual Keyword `scoped`
 
 In `let` declarations, `scoped` is recognized as the resource scope modifier if and only if it is immediately followed by a pattern binder (such as `mut`, an identifier, `_`, `(`, `[`, or `.{`). When immediately followed by `=` or `:`, `scoped` is parsed as an ordinary variable identifier (e.g., `let scoped = 1`).
+

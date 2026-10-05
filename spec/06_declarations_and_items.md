@@ -172,9 +172,9 @@ type Seconds(f64)
 ```
 
 1. **Operator Encapsulation**: Nominal wrappers do NOT inherit arithmetic operators (`+`, `-`) or relational comparisons (`<`, `>`). Applying arithmetic operators directly to nominal wrappers is a compile-time static error.
-2. **Unwrapping via `raw`**: The prelude function `raw(wrapper)` extracts the underlying primitive value with its original type and access permissions.
+2. **Unwrapping via `inner`**: The prelude function `inner(wrapper)` extracts the underlying primitive or compound value with its original type and access permissions.
 3. **Equality**: Homogeneous equality (`==`, `!=`) is supported and compares inner values.
-4. **Prohibition of Implicit String Interpolation**: Single-payload nominal wrappers do NOT implicitly unpack in string templates. Formatted string interpolation requires explicit unwrapping via `raw(wrapper)` (e.g., `"{raw(uid)}"`). Directly embedding a nominal wrapper in string interpolation without `raw()` is a compile-time static error (`NominalInterpolationRequiresRawError`).
+4. **Prohibition of Implicit String Interpolation**: Single-payload nominal wrappers do NOT implicitly unpack in string templates. Formatted string interpolation requires explicit unwrapping via `inner(wrapper)` (e.g., `"{inner(uid)}"`). Directly embedding a nominal wrapper in string interpolation without `inner()` is a compile-time static error (`NominalInterpolationRequiresInnerError`).
 
 ### 6.2 Opaque Types
 
@@ -183,5 +183,5 @@ OpaqueDecl ::= [ "pub" ] "opaque" "type" Identifier [ GenericParameters ] [ Wher
 ```
 
 1. **Module Privacy**: An opaque type introduces a nominal type whose underlying representation is visible ONLY within its defining module.
-2. **Encapsulation Guarantees**: Outside the defining module, clients CANNOT construct, destructure, or access fields of an opaque type, nor invoke `raw()` on it. All operations MUST be mediated through functions exported by the defining module.
+2. **Encapsulation Guarantees**: Outside the defining module, clients CANNOT construct, destructure, or access fields of an opaque type, nor invoke `inner()` on it. All operations MUST be mediated through functions exported by the defining module.
 

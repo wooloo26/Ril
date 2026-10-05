@@ -123,7 +123,7 @@ The built-in `&^mut` capability statically tracks and audits **retained mutable 
 ```ril
 -- Stashing a mutable argument into an outer structure introduces retained mutable sharing:
 fn register_listener(mut hub: EventHub, mut listener: Listener) &^mut {
-    hub.listeners !> push(listener)
+    hub.listeners !> Array::push(listener)
 }
 ```
 

@@ -32,6 +32,7 @@ The following types and constructors are defined in the prelude and reside in th
 │                  │ `  Refl<A, x: A>`         │ equality                │
 │                  │ `}`                       │                         │
 │ Collections      │ `Map<K, V>`, `Set<T>`     │ First-class hash maps   │
+│ Modality Types   │ `Immut<T>`                │ Deep immutability family│
 │ Kinds and Bounds │ `Type<u>`, `Level`,       │ Universe classification │
 │                  │ `Record`, `Row`           │ and row bounds          │
 └──────────────────┴───────────────────────────┴─────────────────────────┘
@@ -41,7 +42,11 @@ The following types and constructors are defined in the prelude and reside in th
 
 ## 2. Primitive Prelude Functions
 
-The prelude provides the following core operational functions:
+The standard prelude root namespace exposes ONLY universally applicable, meta-language operational primitives.
+
+Container-specific mutation and collection manipulation functions (such as `push`, `pop`, `extend`, and `clear` for arrays `[]T`) MUST NOT reside in the standard prelude root namespace. Instead, they are defined within their respective standard library modules (e.g., `ril/array`) and invoked via type-qualified pipeline calls (e.g., `arr !> Array::push(item)`) or block-scoped local imports (`use ril/array::{push, pop}`).
+
+The standard prelude provides exactly eight core operational functions:
 
 ### 2.1 Collection Inspection
 
@@ -52,38 +57,26 @@ fn len(value: T) -> int
 - Returns the count of Unicode scalars for `str`, bytes for `bytes`, elements for arrays, and key-value entries for maps and sets.
 - Maximum capacity is $2^{31} - 1$ ($2147483647$); operations exceeding this limit MUST trigger a runtime panic.
 
-### 2.2 In-Place Array Mutation
+### 2.2 Memory Views and Functional Updates
 
 ```ril
-fn push<T>(mut array: []T, element: T) &mut
-fn extend<T>(mut array: []T, elements: []T) &mut
-fn pop<T>(mut array: []T) -> ?T &mut
-fn clear<T>(mut array: []T) &mut
-```
-
-1. `push(mut array, element)`: Appends an element to the end of the array in-place, evaluating to `()`.
-2. `extend(mut array, elements)`: Appends all elements from `elements` in-place. If `T` is `u8`, `elements` MAY also be `bytes`.
-3. `pop(mut array)`: Removes and returns the last element as `Some(v)`, or returns `None` if the array is empty.
-4. `clear(mut array)`: Empties the array in-place, resetting length to zero while retaining allocated backing capacity.
-
-### 2.3 Memory Views and Functional Updates
-
-```ril
-fn snapshot<T>(value: T) -> T
+fn snapshot<T>(value: T) -> Immut<T>
+fn move<T>(value: T) -> T
 fn produce<T>(base: T, recipe: fn(mut T) -> () &mut) -> T
 ```
 
-1. `snapshot(value)`: Constructs an isolated, permanently read-only deep clone of the object graph. Types carrying `&mut`, `&capture`, or `&{mut ...}` callables are statically prohibited.
-2. `produce(base, recipe)`: Generates an updated immutable value using copy-on-write structural sharing via a mutating draft recipe closure.
+1. `snapshot(value)`: Constructs an isolated, permanently read-only deep clone of the object graph, returning a deeply normalized `Immut<T>`. Types carrying `&mut`, `&capture`, or `&{mut ...}` callables are statically prohibited.
+2. `move(value)`: Compiler intrinsic performing affine ownership transfer. Invalidation occurs at the caller's binding, with zero memory copying.
+3. `produce(base, recipe)`: Generates an updated immutable value using copy-on-write structural sharing via a mutating draft recipe closure.
 
-### 2.4 Nominal Unwrapping
+### 2.3 Nominal Unwrapping
 
 ```ril
-fn raw<T, U>(wrapper: T) -> U
+fn inner<T, U>(wrapper: T) -> U
 ```
 - Extracts the underlying primitive or compound payload from a single-payload nominal wrapper `T` while preserving original value permissions.
 
-### 2.5 Panic and Assertion Primitives
+### 2.4 Panic and Assertion Primitives
 
 ```ril
 fn panic(message: str) -> never
@@ -95,7 +88,7 @@ fn assert(cond: bool, message: str | fn() -> str = "assertion failed") -> ()
 ```
 - Evaluates a boolean condition. If `cond` evaluates to `true`, yields the unit value `()`. If `cond` evaluates to `false`, halts execution and triggers a runtime panic with the provided message string or lazily evaluated supplier closure.
 
-### 2.6 Error Conversion Helpers
+### 2.5 Error Conversion Helpers
 
 ```ril
 fn ok_or<T, E>(opt: ?T, err: E) -> Result<T, E> {

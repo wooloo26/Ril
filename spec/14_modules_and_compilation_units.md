@@ -34,6 +34,25 @@ UseDecl     ::= [ "pub" ] "use" ModulePath [ "::" ( "*" | "{" UseItemList "}" | 
 
 Cyclic module dependencies (e.g., module `A` imports module `B` while module `B` directly or transitively imports module `A`) are **strictly PROHIBITED** and MUST be rejected at compile time.
 
+### 2.3 Scoped Imports (Block-Scoped `use`)
+
+A `use` declaration MAY appear within any statement block (`Block`), including function bodies, conditional branches, or loop bodies.
+
+1. **Lexical Confinement**: Symbols introduced by a block-scoped `use` declaration are visible ONLY from the point of declaration to the closing delimiter `}` of that enclosing block. They MUST NOT leak into enclosing or sibling scopes.
+2. **Shadowing**: A block-scoped `use` declaration shadows any identical symbol previously visible from outer module scopes or the standard prelude within that block.
+3. **Export Prohibition (`InvalidPublicScopeError`)**: A `use` declaration situated inside a block MUST NOT include the `pub` modifier. Marking a block-scoped import as `pub` is a compile-time static error (`InvalidPublicScopeError`).
+4. **Ergonomic Pipeline Imports**: Block-scoped imports enable localized access to domain-specific or container mutation functions (such as `push` or `pop`) without polluting the outer or global namespace:
+   ```ril
+   fn build_records(items: []int) -> []int {
+       use ril/array::{push} -- Localized import: visible only within build_records
+       let mut result = []
+       for items as item {
+           result !> push(item * 2)
+       }
+       result
+   }
+   ```
+
 ---
 
 ## 3. Top-Level Zero Side-Effect Initialization

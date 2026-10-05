@@ -95,13 +95,31 @@ let greeting = {
 
 ## 4. Built-in Effects: `@Async`, `@Div`, and `Fuel`
 
-### 4.1 Asynchronous Execution (`@Async`)
+### 4.1 Asynchronous Execution and Structured Concurrency (`@Fiber`, `@Concurrent`, `@Async`)
 
-The built-in `@Async` effect designates operations that may suspend execution:
-1. **Ordinary Call Syntax**: Async calls use standard function call syntax without separate keywords.
-2. **Preservation of Invariants**: Mutable borrows (`mut`), active effect handlers, and active `scoped` resource bindings remain live and valid across suspension points. Asynchronous suspension (fiber yielding) does NOT exit the enclosing lexical scope and MUST NOT trigger resource cleanup; cleanup is strictly bound to lexical scope termination or unwinding.
-3. **Execution Mapping**:
-   `@Async` maps to lightweight fiber/coroutine suspension managed by the runtime scheduler.
+Ril models asynchronous computation and concurrency through first-class algebraic effects without dedicated invocation keywords or monadic wrapper types:
+
+1. **Layered Effect Hierarchy**:
+   - **`@Fiber` (Low-Level Primitives)**: Declares fiber-level execution control (`yield: fn() -> ()`, `park: fn() -> ()`, `unpark: fn(FiberId) -> ()`, `checkpoint: fn() -> ()`). Handled by runtime schedulers.
+   - **`@Concurrent` (High-Level Structured Concurrency)**: Declares structured concurrency operators (`fork`, `join`, `race`, `both`, `sleep`). Handled by nurseries and concurrent blocks.
+   - **`@Async`**: A standard effect alias representing `{Fiber, Concurrent}` or general suspendable asynchronous computation.
+2. **Ordinary Call Syntax**:
+   - Calling an asynchronous function uses standard invocation syntax (`let data = fetch(url)`).
+   - Return types are uncolored (e.g., `str` rather than `Promise<str>`).
+   - Higher-order functions (e.g., `map`, `filter`) forward asynchronous effects automatically without specialized variants.
+3. **Structured Concurrency and the Nursery Invariant**:
+   - All concurrent child tasks MUST be spawned within a lexical nursery or structured scope:
+     $$\forall c \in \text{Children}(N), \quad \operatorname{Lifetime}(c) \subseteq \operatorname{Lifetime}(N) \subset \operatorname{Lifetime}(\text{Frame}_{\text{parent}})$$
+   - The enclosing nursery block MUST NOT exit until all child tasks have resolved (completed, cancelled, or failed).
+   - **Lifetime Safety**: Because child task lifetimes are strictly bounded by the nursery, child tasks MAY borrow parent frame variables and observe parent `let scoped` resources provided that borrowed bindings satisfy `Shareable` and carry zero active mutable handles in sibling tasks.
+4. **Delimited Early Abort and Cascading Cancellation**:
+   - Cancellation is driven by the algebraic effect handler's Early Abort semantics (returning without invoking `resume`).
+   - In competitive constructs (`race`, `timeout`), winning branches resume execution while losing branches have their continuations discarded.
+   - Discarding a suspended continuation MUST trigger deterministic LIFO cleanup of all `let scoped` bindings in the aborted fiber stack.
+5. **Pluggable Schedulers as Handlers**:
+   - Runtime schedulers (such as multi-core work-stealing schedulers) and test harnesses (such as deterministic virtual-time mock schedulers) are implemented as ordinary effect handlers intercepting `@Fiber`.
+6. **Affine One-Shot Resumption**:
+   - Delimited resumptions (`resume`) in Ril are strictly one-shot (affine). Re-invoking an active `resume` or allowing a `resume` continuation to escape its handler arm MUST be rejected at compile time.
 
 ### 4.2 Divergence Tracking (`@Div`) and Fuel Masking
 

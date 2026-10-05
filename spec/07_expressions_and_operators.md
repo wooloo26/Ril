@@ -166,14 +166,15 @@ x |> f(y)   -- desugars to: f(x, y)
 ### 5.2 Mutating Pipeline Operator (`!>`)
 
 ```ril
-mut_target !> push(item)       -- desugars to: push(mut mut_target, item)
-mut_target !> extend([1, 2])   -- desugars to: extend(mut mut_target, [1, 2])
+mut_target !> Array::push(item)       -- desugars to: Array::push(mut mut_target, item)
+mut_target !> Array::extend([1, 2])   -- desugars to: Array::extend(mut mut_target, [1, 2])
 ```
 
 1. **LValue Requirement**: The left-hand side of `!>` MUST resolve to a valid mutable storage location (`AssignTarget`).
 2. **Mut Forwarding**: `!>` passes the LHS as the first argument with an implicit `mut` borrow.
 3. **Return Value**: The expression evaluates directly to the return value of the invoked function.
 4. **Strict Single-Use Rule**: `!>` is strictly **non-associative and single-use**. Chaining `!>` with `!>` (e.g., `a !> f() !> g()`) or chaining `!>` with `|>` is a compile-time static error.
+5. **Namespace Qualification and Scoped Imports**: Container-specific mutation functions belong to standard library modules (e.g., `ril/array`). Calls via `!>` MAY use type-qualified identifiers (`mut_target !> Array::push(item)`) or unqualified identifiers when locally imported into the enclosing block (`use ril/array::{push}`).
 
 ### 5.3 Pipeline and Closure Delimiter Boundaries
 
@@ -226,3 +227,5 @@ let token = header ?? return Err("unauthorized")
 1. **Right-Associative**: `a ?? b ?? c` evaluates as `a ?? (b ?? c)`.
 2. **Option Fallback**: Applied to `Option<T>`, the right-hand operand MAY be a raw fallback value of type `T` or a supplier.
 3. **Result Fallback Closure Requirement**: Applied to `Result<T, E>`, the right-hand operand **MUST be an error-consuming closure `\err -> ...`** or a diverging control transfer (`return`, `panic`, `break`, `continue`). Supplying a raw value fallback on a `Result` is statically prohibited to prevent silent error masking.
+
+

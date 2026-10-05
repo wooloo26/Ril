@@ -29,7 +29,7 @@ A compiler or implementation is classified under the following formal criteria:
 
 ## 2. Specification Architecture and Table of Contents
 
-The specification is organized into sixteen modular normative chapters and a formal grammar appendix:
+The specification is organized into seventeen modular normative chapters and a formal grammar appendix:
 
 | Chapter | Specification Document | Description |
 | :--- | :--- | :--- |
@@ -49,6 +49,7 @@ The specification is organized into sixteen modular normative chapters and a for
 | **14** | [Modules and Compilation Units](spec/14_modules_and_compilation_units.md) | Acyclic module DAG, `pub` visibility, zero side-effect top-level initialization, entry point `main`. |
 | **15** | [Host Interoperability and ABI (Reserved)](spec/15_host_interoperability_and_abi.md) | Reserved for future host interop, foreign function interface (FFI), and external ABI specifications. |
 | **16** | [Standard Prelude](spec/16_standard_prelude.md) | Built-in primitive types, constructors, collection types (`Map`, `Set`), and prelude functions. |
+| **17** | [Multicore Parallelism and Data Parallelism](spec/17_multicore_parallelism.md) | Work-stealing scheduling, local mutation purity dividend, data parallel pipelines (`par_map`, `par_fold`), structured task parallelism via multi-core nursery, and deterministic reduction. |
 | **App** | [Appendix: Consolidated Formal EBNF Grammar](spec/appendix_ebnf_grammar.md) | Machine-readable, full Context-Free EBNF Grammar Specification for parser generation. |
 
 ---
