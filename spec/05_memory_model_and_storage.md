@@ -1,6 +1,6 @@
 # 05. Memory Model and Storage
 
-This chapter defines Ril's memory model, value versus reference passing semantics, the handle-level read-only invariant, the definite mutation invariant, parameter permissions, aliasing rules, live views versus detached snapshots, nested in-place mutation paths, and copy-on-write deep updates.
+This chapter defines Ril's memory model, value versus reference passing semantics, the handle-level read-only invariant, the definite mutation invariant, parameter permissions, aliasing rules, live views versus detached deep copies, nested in-place mutation paths, and copy-on-write deep updates.
 
 ---
 
@@ -47,7 +47,7 @@ A central invariant of Ril's mutability model is the **Handle-Level Read-Only In
 
 1. **Permission Stripping Through Read-Only Handles**:
    - An immutable binding (`let`) not only prevents reassigning the variable name `x`, but also statically strips all in-place mutation rights across fields, array elements, or map entries through `x` (e.g., `x.field = val`, `x[0] = val`, `x !> Array::push(val)` are compile-time static errors).
-   - This restriction governs the *handle's access permissions*, not the physical immutability of the underlying heap allocation. If the underlying heap object is concurrently referenced by a live mutable handle (`let mut`), modifications made through the mutable handle may be observed through the read-only handle (see [§5.1 Live Views](#51-live-views)). To obtain permanent, isolated immutability, an explicit detached snapshot MUST be created via `snapshot` (see [§5.2](#52-isolated-snapshots-snapshot)).
+   - This restriction governs the *handle's access permissions*, not the physical immutability of the underlying heap allocation. If the underlying heap object is concurrently referenced by a live mutable handle (`let mut`), modifications made through the mutable handle may be observed through the read-only handle (see [§5.1 Live Views](#51-live-views)). To obtain permanent, isolated immutability, an explicit detached immutable copy MUST be created via `clone_immut` (see [§5.2](#52-detached-deep-copies-clone-and-clone_immut)). For an independent mutable copy, `clone` is used.
    - This stripping holds even if the underlying record schema declared mutable fields (`type Point = { mut x: int }`). A field's `mut` modifier grants the *capability* of being mutated, but that capability is active **only when accessed through a mutable handle (`let mut`) or a mutable parameter (`mut`)**.
 2. **Prerequisite for In-Place Mutation**:
    In-place modification of any field, array element, or collection entry strictly requires:
@@ -83,7 +83,7 @@ $$\text{Mut} \succ \text{ReadOnly} \succ \text{None}$$
 2. **Compile-Time Anti-Laundering Rejections**:
    - **Direct Assignment / Binding Laundering (`E0520: MutabilityLaunderingError`)**: Binding a read-only parameter, `let` binding, or read-only projection to `let mut`, or assigning it to an existing mutable lvalue (`uninit_mut = ro`), is a compile-time static error.
    - **Destructuring Laundering (`E0521: DestructuringLaunderingError`)**: When pattern-matching or destructuring a read-only reference, declaring nested reference fields as `mut` is a compile-time static error.
-   - **Container Injection Laundering (`E0522: ContainerLaunderingError`)**: Storing a read-only reference containing mutable fields into a mutable container (`mut_arr !> push(ro)`) or mutable record field is a compile-time static error. The reference must first be detached into `Immut<T>` via `snapshot()`.
+   - **Container Injection Laundering (`E0522: ContainerLaunderingError`)**: Storing a read-only reference containing mutable fields into a mutable container (`mut_arr !> push(ro)`) or mutable record field is a compile-time static error. The reference must first be detached into `Immut<T>` via `clone_immut()`.
    - **Shallow Spread Laundering (`E0525: SpreadLaunderingError`)**: Shallow-spreading a read-only record with nested reference fields into a `let mut` root binding is a compile-time static error.
    - **Collection Mutation During Active Iteration (`E0526: CollectionMutationDuringIterationError`)**: In-place mutation of a collection (via `!>` or passing to a `mut` parameter) while that collection is being actively iterated in an enclosing `for` loop is a compile-time static error.
    - **Closure Capture and Invocation Laundering (`E0527: ClosureCaptureLaunderingError`)**: Capturing a read-only reference into a closure declaring mutable environment access (`&{mut ro}`), invoking a state-capturing callable (`&capture`, `&{mut ...}`) through a read-only handle, or passing a read-only reference as a mutable argument (`f(mut ro)` or `ro !> f()`) is a compile-time static error.
@@ -132,9 +132,9 @@ To guarantee algorithmic predictability and prevent hidden aliasing corruption, 
 
 ---
 
-## 5. Live Views vs. Detached Snapshots
+## 5. Live Views vs. Detached Deep Copies
 
-Ril distinguishes between live reference observation and isolated immutable copies:
+Ril distinguishes between live reference observation and isolated deep copies:
 
 ### 5.1 Live Views
 
@@ -143,24 +143,36 @@ Binding a mutable object to an immutable binding (`let x = mutable_obj` or expli
 2. **Deep Field Projection Contagion**: Any nested field access through a live view handle (`view.child.score`) is strictly read-only. Write permissions are stripped across all reachable paths through that handle.
 3. **Zero Type-Level Contagion**: Live views do NOT introduce a distinct `view T` type. The static type remains `T`. Functions and signatures are not colored by view qualifiers.
 4. **Permitted Live Observation**: A read-only live view observes subsequent mutations performed on the underlying heap object through any coexisting mutable handle. The managed garbage-collected runtime guarantees safety against memory corruption and dangling references.
-5. **Anti-Laundering Enforcement**: The view cannot be upgraded to write access (`let mut bad = view` is statically rejected with `E0520`). If a permanently isolated, frozen copy is required that does not observe subsequent root modifications, an explicit snapshot MUST be created via `snapshot`.
+5. **Anti-Laundering Enforcement**: The view cannot be upgraded to write access (`let mut bad = view` is statically rejected with `E0520`). If a detached, independent copy is required that does not observe subsequent root modifications, an explicit copy must be created via `clone` (for an independent mutable copy) or `clone_immut` (for a permanent, isolated `Immut<T>`).
 
-### 5.2 Isolated Snapshots (`snapshot`)
+### 5.2 Detached Deep Copies (`clone` and `clone_immut`)
 
-The prelude function `snapshot<T>(value: T) -> Immut<T>` constructs a detached, read-only deep copy of a data graph:
+Ril provides two prelude primitives to construct detached deep copies of an object graph:
 
-```ebnf
-SnapshotExpr ::= Expression "|>" "snapshot" | "snapshot" "(" Expression ")"
+```ril
+fn clone<T>(value: T) -> T
+fn clone_immut<T>(value: T) -> Immut<T>
 ```
 
-1. **Deep Cloning**: `snapshot` recursively traverses all reachable heap objects, constructing a topologically congruent, detached isolated object graph while preserving internal sharing and cycles within that graph.
-2. **Permanent Immobility**: Objects created via `snapshot` are permanently read-only and CANNOT regain write access under any circumstances.
-3. **Prohibition on Capabilities**:
-   - Types containing resource capabilities, retained mutable sharing, or mutable closure captures (`&mut`, `&^mut`, `&capture`, or `&{mut ...}`) MUST NOT be snapshotted. Passing such types to `snapshot` is a compile-time static error.
-4. **Non-Establishment of Halting or Stability**:
-   - Creating a `snapshot` does NOT prove termination (`halt`) and does NOT turn an arbitrary data structure into an admissible stable index. Cyclic data remains inadmissible for stable indices even after snapshotting.
-5. **Shallow Spreads vs. Deep Snapshots**:
-   Record spread syntax (`.{ ...record, field: val }`) creates only a shallow copy of the outer record; nested references remain shared. To isolate the entire graph, an explicit `snapshot` is required.
+```ebnf
+CloneExpr ::= Expression "|>" ( "clone" | "clone_immut" ) | ( "clone" | "clone_immut" ) "(" Expression ")"
+```
+
+1. **Mutable Deep Copy (`clone`)**:
+   - `clone` recursively traverses all reachable heap objects, constructing a topologically congruent, detached isolated object graph of type `T` while preserving internal sharing and cycles within that graph.
+   - Preserves mutable capabilities of mutable fields. The resulting root object MAY be bound to `let mut` or passed to `mut` parameters, and subsequent mutations affect only the cloned subgraph without mutating the original source.
+   - Types containing scoped resource handles (`let scoped`) MUST NOT be passed to `clone` (`E0723: ScopedHandleCloneViolation`).
+
+2. **Immutable Deep Copy (`clone_immut`)**:
+   - `clone_immut` recursively traverses all reachable heap objects, constructing a topologically congruent, detached isolated object graph deeply normalized to `Immut<T>`.
+   - **Permanent Immobility**: Objects created via `clone_immut` are permanently read-only and CANNOT regain write access under any circumstances. They unconditionally satisfy `Shareable` and are safe for cross-thread sharing.
+   - **Prohibition on Capabilities**: Types containing resource capabilities, retained mutable sharing, mutable closure captures (`&mut`, `&^mut`, `&capture`, or `&{mut ...}`), or scoped resource handles MUST NOT be passed to `clone_immut`. Passing such types is a compile-time static error (`E0530: IllegalCapabilityCloneImmutError`).
+
+3. **Non-Establishment of Halting or Stability**:
+   - Creating a clone does NOT prove termination (`halt`) and does NOT turn an arbitrary data structure into an admissible stable index. Cyclic data remains inadmissible for stable indices even after cloning.
+
+4. **Shallow Spreads vs. Deep Clones**:
+   - Record spread syntax (`.{ ...record, field: val }`) creates only a shallow copy of the outer record; nested references remain shared. To isolate the entire graph, an explicit `clone` or `clone_immut` is required.
 
 ---
 
@@ -237,9 +249,9 @@ $$
    - All scalar value types (`bool`, integers, floats, `unit`, `never`), `str`, and `bytes` are natively `Shareable`.
    - Records, tuples, and variants composed entirely of non-`mut` fields whose element types are `Shareable` are transitively `Shareable`.
    - Interior synchronization primitives (`Atom<T: Shareable>`, `Mutex<T>`, `RwLock<T>`) are `Shareable`.
-   - Any type deeply normalized via `snapshot` (`Immut<T>`) is `Shareable`.
+   - Any type deeply normalized via `clone_immut` (`Immut<T>`) is `Shareable`.
    - Pure functions (`fn(A) -> B`) whose closures capture only `Shareable` bindings are `Shareable`.
-   - Any type containing a `mut` field, dynamic array `[]T`, or mutable map MUST NOT be classified as `Shareable` unless explicitly converted via `snapshot` to `Immut<T>`.
+   - Any type containing a `mut` field, dynamic array `[]T`, or mutable map MUST NOT be classified as `Shareable` unless explicitly converted via `clone_immut` to `Immut<T>`.
    - `Shareable` values MAY be freely aliased across threads without invalidating sender aliases.
 
 2. **`Isolated` (Detached Unique Ownership)**:
@@ -255,7 +267,7 @@ $$
 
 A live read-only view (`let view = mutable_obj`) strips write permissions locally within its lexical frame, but does NOT transform the underlying heap graph into an immutable structure.
 - Passing a live view whose underlying type contains `mut` fields to another thread or capturing it in a concurrent closure MUST yield a compile-time static error (`E0601: CrossThreadDataRaceHazardError`).
-- Passing data referenced by a live view across a thread boundary SHALL require explicitly detaching the view via `snapshot(view)` (producing a deeply immutable `Immut<T>`), transferring unique ownership via `move(x)`, or synchronizing access via `Atom` or `Mutex`.
+- Passing data referenced by a live view across a thread boundary SHALL require explicitly detaching the view via `clone_immut(view)` (producing a deeply immutable `Immut<T>`), transferring unique ownership via `move(x)`, or synchronizing access via `Atom` or `Mutex`.
 
 ### 8.4 Safe Ownership Transfer and Affine Invalidation (`move(x)`)
 

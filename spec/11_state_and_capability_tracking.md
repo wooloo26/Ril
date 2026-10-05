@@ -182,7 +182,7 @@ let general: fn() -> int &capture = ticker -- VALID: &{mut saved} abstracts to &
 
 ---
 
-## 7. Invocation Permissions and Snapshot Prohibition
+## 7. Invocation Permissions and Clone Prohibition
 
 ### 7.1 Invocation Permission Invariant
 
@@ -203,13 +203,13 @@ let mut data = Counter.{ val: 10 }
 increment(mut data) -- valid: 'data' is mutable reference handle; 'increment' is a top-level item
 ```
 
-### 7.2 Snapshot Prohibition Theorem
+### 7.2 Clone and Immutability Prohibition Theorem
 
-Any type containing `&mut`, `&^mut`, `&capture`, `&{mut ...}` callables, or scoped resource handles CANNOT be snapshotted. Passing such a type to `snapshot` is a compile-time static error:
+Any type containing `&mut`, `&^mut`, `&capture`, `&{mut ...}` callables, or scoped resource handles CANNOT be converted into an immutable representation via `clone_immut` (nor can scoped resource handles be cloned via `clone`). Passing such a type to `clone_immut` is a compile-time static error:
 
 ```ril
 let mut job = make_counter(0)
-let bad = job |> snapshot -- STATIC ERROR: type contains '&capture' callables and cannot be snapshotted
+let bad = job |> clone_immut -- STATIC ERROR: type contains '&capture' callables and cannot be converted to Immut
 ```
 
 ### 7.3 Capture and Capability Erasure Invariant

@@ -95,7 +95,7 @@ for row as key, value {
 }
 ```
 
-1. **Shallow Snapshot**: Iteration reads one shallow snapshot before iteration begins and visits labels in **lexicographic Unicode scalar order**.
+1. **Shallow Copy of Keys**: Iteration reads a shallow copy of keys before iteration begins and visits labels in **lexicographic Unicode scalar order**.
 2. **Typing Invariants**: In each iteration, `key: keyof T` is stable and `value: T[key]`. The loop body MUST typecheck for every admitted label.
 3. **Single Binder**: With one binder `for record as entry`, the item is a dependent entry record `{ key: keyof T, value: T[key] }`.
 4. **Prohibition of Dependent Records**: Dependent records and erased fields are NOT runtime record iteration sources and MUST be rejected at compile time.

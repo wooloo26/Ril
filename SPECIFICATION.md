@@ -37,7 +37,7 @@ The specification is organized into seventeen modular normative chapters and a f
 | **02** | [Lexical Structure](spec/02_lexical_structure.md) | Unicode source text, comments, whitespace, identifiers, keywords, and literal tokens. |
 | **03** | [Formal Grammar and Syntax](spec/03_formal_grammar_and_syntax.md) | EBNF grammar notation, operator precedence table (Levels 1–17), and expression boundaries. |
 | **04** | [Types and Type System](spec/04_types_and_type_system.md) | Universes, definitional equality, subtyping, variance, row polymorphism, and generalization. |
-| **05** | [Memory Model and Storage](spec/05_memory_model_and_storage.md) | Value vs. reference types, handle-level read-only invariant, definite mutation, aliasing, live views, `snapshot`, and `produce`. |
+| **05** | [Memory Model and Storage](spec/05_memory_model_and_storage.md) | Value vs. reference types, handle-level read-only invariant, definite mutation, aliasing, live views, `clone`, `clone_immut`, and `produce`. |
 | **06** | [Declarations and Items](spec/06_declarations_and_items.md) | Module-level items, record schemas, sum types, indexed GADTs, nominal wrappers, and opaque types. |
 | **07** | [Expressions and Operators](spec/07_expressions_and_operators.md) | Arithmetic, wrapping math, bitwise, relational, logical, range, indexing, pipelines (`\|>`, `!>`), `??`, `?`. |
 | **08** | [Control Flow and Pattern Matching](spec/08_control_flow_and_patterns.md) | Blocks, `where` clauses, `if`, loops (`loop`, `while`, `for`), patterns, exhaustiveness, `is`. |

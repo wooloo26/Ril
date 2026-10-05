@@ -106,7 +106,7 @@ If creating a view changed the type of `x: User` into `View<User>` or `&User`, t
 2. Standard collection types (`[]User`) could not store views without wrapper allocation.
 3. Ergonomics would degrade severely.
 
-In Ril, a view's static type remains $T$. The immutability constraint is enforced strictly at the **binding and handle level**. If an application requires a permanently frozen, mathematically immutable object that is completely immune to concurrent or future mutations, it calls `snapshot(x)`, which returns a deeply normalized `Immut<T>`.
+In Ril, a view's static type remains $T$. The immutability constraint is enforced strictly at the **binding and handle level**. If an application requires a permanently frozen, mathematically immutable object that is completely immune to concurrent or future mutations, it calls `clone_immut(x)`, which returns a deeply normalized `Immut<T>`. Conversely, if it requires an independent, mutable duplicate to modify without mutating the original, it calls `clone(x)`.
 
 ---
 

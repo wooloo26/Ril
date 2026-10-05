@@ -47,7 +47,7 @@ The standard prelude root namespace exposes ONLY universally applicable, meta-la
 
 Container-specific mutation and collection manipulation functions (such as `push`, `pop`, `extend`, and `clear` for arrays `[]T`) MUST NOT reside in the standard prelude root namespace. Instead, they are defined within their respective standard library modules (e.g., `ril/array`) and invoked via type-qualified pipeline calls (e.g., `arr !> Array::push(item)`) or block-scoped local imports (`use ril/array::{push, pop}`).
 
-The standard prelude provides exactly eight core operational functions:
+The standard prelude provides exactly nine core operational functions:
 
 ### 2.1 Collection Inspection
 
@@ -61,14 +61,16 @@ fn len(value: T) -> int
 ### 2.2 Memory Views and Functional Updates
 
 ```ril
-fn snapshot<T>(value: T) -> Immut<T>
+fn clone<T>(value: T) -> T
+fn clone_immut<T>(value: T) -> Immut<T>
 fn move<T>(value: T) -> T
 fn produce<T>(base: T, recipe: fn(mut T) -> () &mut) -> T
 ```
 
-1. `snapshot(value)`: Constructs an isolated, permanently read-only deep clone of the object graph, returning a deeply normalized `Immut<T>`. Types carrying `&mut`, `&capture`, `&{mut ...}` callables, or scoped resource handles are statically prohibited.
-2. `move(value)`: Compiler intrinsic performing affine ownership transfer. Invalidation occurs at the caller's binding, with zero memory copying.
-3. `produce(base, recipe)`: Generates an updated immutable value using copy-on-write structural sharing via a mutating draft recipe closure.
+1. `clone(value)`: Constructs a detached, independent deep copy of the object graph, returning a duplicate of type `T` that retains mutability permissions on mutable fields. Scoped resource handles are statically prohibited.
+2. `clone_immut(value)`: Constructs an isolated, permanently read-only deep clone of the object graph, returning a deeply normalized `Immut<T>`. Types carrying `&mut`, `&capture`, `&{mut ...}` callables, or scoped resource handles are statically prohibited.
+3. `move(value)`: Compiler intrinsic performing affine ownership transfer. Invalidation occurs at the caller's binding, with zero memory copying.
+4. `produce(base, recipe)`: Generates an updated immutable value using copy-on-write structural sharing via a mutating draft recipe closure.
 
 ### 2.3 Nominal Unwrapping
 
