@@ -93,7 +93,7 @@ Ril defines a reflexive, transitive subtyping relation $A \lt : B$ governed by t
 For function types:
 
 $$
-f_1 = \text{fn}(A) \to B \ @\mathcal{E}_1 \ \mathbin{\char38}\mathcal{S}_1, \quad f_2 = \text{fn}(C) \to D \ @\mathcal{E}_2 \ \mathbin{\char38}\mathcal{S}_2
+f_1 = \text{fn}(A) \to B \ @\mathcal{E}_1 \ \mathbin{\And}\mathcal{S}_1, \quad f_2 = \text{fn}(C) \to D \ @\mathcal{E}_2 \ \mathbin{\And}\mathcal{S}_2
 $$
 
 The formal subtyping relation satisfies:

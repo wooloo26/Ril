@@ -96,7 +96,7 @@ Rust achieves memory safety through affine types and lifetime annotations (`'a`,
 Ril targets high-level and mid-level application software. It eliminates the cognitive overhead of lifetime annotations while retaining mathematical aliasing safety by enforcing **Cross-Argument Disjointness at Call Sites**:
 
 $$
-\forall i \in \operatorname{MutArgs},\quad \forall j \ne i,\quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset
+\forall i \in \mathop{\mathrm{MutArgs}},\quad \forall j \ne i,\quad \mathop{\mathrm{Path}}(a_i) \cap \mathop{\mathrm{Path}}(a_j) = \emptyset
 $$
 
 If a function call passes `mut a` and `mut b`, or `mut a` and read-only `b`, the compiler statically inspects the origin root paths. If they alias the same memory location, compilation fails immediately with `E0523` (Mut-Mut Conflict) or `E0524` (Read-Mut Hazard). This delivers aliasing safety without requiring developers to write complex lifetime bounds.
@@ -146,7 +146,7 @@ Unstructured concurrency (`go func()`, background thread detached spawning, dang
 Ril unifies all concurrent execution under **Structured Concurrency**:
 
 $$
-\forall c \in \text{Children}(N), \quad \operatorname{Lifetime}(c) \subseteq \operatorname{Lifetime}(N) \subset \operatorname{Lifetime}(\text{Frame}_{\text{parent}})
+\forall c \in \text{Children}(N), \quad \mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(N) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})
 $$
 
 A parent nursery cannot exit until all child tasks finish. If a child task panics, the nursery guarantees that:

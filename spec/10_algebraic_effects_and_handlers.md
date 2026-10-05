@@ -89,7 +89,7 @@ let greeting = {
 5. **Effect Discharge Theorem (Full Coverage Invariant)**:
    A nominal algebraic effect `Eff` is discharged (eliminated) from the enclosing function's effect signature `@Eff` if and only if **all operations declared by `Eff` are intercepted by the handler**:
 
-   $$\operatorname{Ops}(\text{Eff}) \subseteq \operatorname{HandledOps}(H) \iff \Gamma \vdash \text{with } H \ e : T \ @(\mathcal{E} \setminus \lbrace \text{Eff}\rbrace )$$
+   $$\mathop{\mathrm{Ops}}(\text{Eff}) \subseteq \mathop{\mathrm{HandledOps}}(H) \iff \Gamma \vdash \text{with } H \ e : T \ @(\mathcal{E} \setminus \lbrace \text{Eff}\rbrace )$$
 
    Partial coverage of operations does NOT discharge the nominal effect from the signature; unintercepted operations remain required.
 6. **Control Transfers Within Handler Arms**:
@@ -120,7 +120,7 @@ Ril models asynchronous computation and concurrency through first-class algebrai
 3. **Structured Concurrency and the Nursery Invariant**:
    - All concurrent child tasks MUST be spawned within a lexical nursery or structured scope:
 
-     $$\forall c \in \text{Children}(N), \quad \operatorname{Lifetime}(c) \subseteq \operatorname{Lifetime}(N) \subset \operatorname{Lifetime}(\text{Frame}_{\text{parent}})$$
+     $$\forall c \in \text{Children}(N), \quad \mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(N) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})$$
 
    - **Lifetime Safety**: Child tasks MAY borrow parent frame variables and observe parent `let scoped` resources provided that borrowed bindings satisfy `Shareable` and carry zero active mutable handles in sibling tasks.
    - The enclosing nursery block MUST NOT exit until all child tasks have resolved (completed, cancelled, or failed).

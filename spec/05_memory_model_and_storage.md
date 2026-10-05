@@ -116,7 +116,7 @@ To guarantee algorithmic predictability and prevent hidden aliasing corruption, 
 > **Normative Rule**: Any mutable borrow via `mut` establishes an exclusive write access window. For every argument $a_i$ passed to a `mut` parameter, its storage path MUST be pairwise disjoint from every other argument $a_j$ ($j \ne i$) supplied in that function call (including both other `mut` arguments and shared read-only arguments):
 >
 > $$
-> \forall i \in \operatorname{MutArgs}, \ \forall j \in \operatorname{AllArgs} \setminus \lbrace i\rbrace , \quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset
+> \forall i \in \mathop{\mathrm{MutArgs}}, \ \forall j \in \mathop{\mathrm{AllArgs}} \setminus \lbrace i\rbrace , \quad \mathop{\mathrm{Path}}(a_i) \cap \mathop{\mathrm{Path}}(a_j) = \emptyset
 > $$
 >
 > Two paths $p_1, p_2$ overlap ($p_1 \cap p_2 \ne \emptyset$) if and only if one is an access prefix of the other ($p_1 \sqsubseteq p_2 \lor p_2 \sqsubseteq p_1$). Distinct field projections ($x.a$ and $x.b$ where $a \ne b$) satisfy $x.a \cap x.b = \emptyset$. Dynamic collection indices ($arr[i]$ and $arr[j]$) are conservatively treated as overlapping unless provably distinct compile-time constants.
@@ -282,7 +282,7 @@ A live read-only view (`let view = mutable_obj`) strips write permissions locall
 An unaliased mutable object graph MAY be transferred across thread boundaries without copying via the `move(x)` intrinsic:
 - **Affine Invalidation**: Evaluating `move(x)` statically transitions $x$ to the `Moved` state. Any subsequent read or write of $x$ along any reachable path MUST produce compile-time static error `E0606: UseAfterMoveError`.
 - **Branch and Loop Invariants**: Moving a variable inside a conditional branch leaves it in a partially moved state at the join point, prohibiting subsequent access without re-initialization. Moving inside a loop body without re-initialization MUST be statically rejected with `E0606`.
-- **Deep Uniqueness Invariant**: Transferring $x$ requires that no live borrows or active live views overlap with $x$'s reachable heap footprint ($\operatorname{ActiveHandles}(\Gamma) \cap \mathcal{F}(x) = \emptyset$). Violation MUST be statically rejected (`E0604: AliasedIsolationTransferError`).
+- **Deep Uniqueness Invariant**: Transferring $x$ requires that no live borrows or active live views overlap with $x$'s reachable heap footprint ($\mathop{\mathrm{ActiveHandles}}(\Gamma) \cap \mathcal{F}(x) = \emptyset$). Violation MUST be statically rejected (`E0604: AliasedIsolationTransferError`).
 
 ### 8.5 State Capabilities at Concurrency Boundaries
 

@@ -59,7 +59,7 @@ let fallback = (10 /? 0) ?? 0 -- 0
 2. **Operational Evaluation**:
    - **Integer Types (`i8`..`i64`, `u8`..`u64`, `bigint`)**:
      - `a /? b` evaluates to `None` if divisor $b == 0$ or if signed overflow occurs ($a == \text{MIN} \land b == -1$); otherwise evaluates to `Some(a / b)`.
-     - `a %? b` evaluates to `None` if divisor $b == 0$; otherwise evaluates to `Some(a % b)` (for signed integers, $\text{MIN} \mathbin{\char37}? -1$ evaluates to `Some(0)`).
+     - `a %? b` evaluates to `None` if divisor $b == 0$; otherwise evaluates to `Some(a % b)` (for signed integers, `MIN %? -1` evaluates to `Some(0)`).
    - **Floating-Point Types (`f32`, `f64`)**:
      - `a /? b` evaluates to `None` if divisor $b \in \lbrace +0.0, -0.0\rbrace$ or if the IEEE 754 division result is non-finite (`NaN` or $\pm\infty$); otherwise evaluates to `Some(a / b)`.
      - `a %? b` evaluates to `None` if divisor $b \in \lbrace +0.0, -0.0\rbrace$ or if either operand is non-finite (`NaN` or $\pm\infty$); otherwise evaluates to `Some(a % b)`.

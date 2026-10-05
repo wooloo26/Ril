@@ -8,7 +8,7 @@ This chapter formalizes the static capability and state tracking system in Ril, 
 
 ### 1.1 Invariant (Local Mutation Purity Invariant)
 
-For any evaluation frame with local allocations $\mathcal{L} \subset \text{Store}$ such that $\mathcal{L} \cap \operatorname{Escaped}(\text{Frame}) = \emptyset$, mutating transitions on locations in $\mathcal{L}$ do not introduce capability annotations on the callable's signature:
+For any evaluation frame with local allocations $\mathcal{L} \subset \text{Store}$ such that $\mathcal{L} \cap \mathop{\mathrm{Escaped}}(\text{Frame}) = \emptyset$, mutating transitions on locations in $\mathcal{L}$ do not introduce capability annotations on the callable's signature:
 
 $$
 \forall l \in \mathcal{L}, \quad \text{Write}(l) \implies \Gamma \vdash f : \text{fn}(P) \to R
@@ -295,14 +295,12 @@ Permissions SHALL degrade monotonically along dataflow paths ($\text{Mut} \to \t
 
 State capabilities form a bounded preorder lattice $(\Sigma, \sqsubseteq)$:
 
-$$
-\emptyset \sqsubset \char38\text{mut} \sqsubset \char38\char94\text{mut}
-$$
+$\emptyset \sqsubset$ `&mut` $\sqsubset$ `&^mut`
 
-For each external binding identity `x`, the corresponding chain is `&{x}` $\sqsubset$ `&{mut x}` $\sqsubset$ `&{^mut x}`, with $\char38\text{capture}$ spanning an orthogonal dimension. Named obligations from distinct identities remain separate even when alias analysis finds overlapping storage. Subsumption allows narrower capability contracts to satisfy broader capability contexts:
+For each external binding identity `x`, the corresponding chain is `&{x}` $\sqsubset$ `&{mut x}` $\sqsubset$ `&{^mut x}`, with $\And\text{capture}$ spanning an orthogonal dimension. Named obligations from distinct identities remain separate even when alias analysis finds overlapping storage. Subsumption allows narrower capability contracts to satisfy broader capability contexts:
 
 $$
-\mathcal{S}_1 \sqsubseteq \mathcal{S}_2 \implies \text{fn}(P) \to R \ \mathbin{\char38}\mathcal{S}_1 \lt : \text{fn}(P) \to R \ \mathbin{\char38}\mathcal{S}_2
+\mathcal{S}_1 \sqsubseteq \mathcal{S}_2 \implies \text{fn}(P) \to R \ \mathbin{\And}\mathcal{S}_1 \lt : \text{fn}(P) \to R \ \mathbin{\And}\mathcal{S}_2
 $$
 
 ### 8.3 Anti-Laundering Static Diagnostic Closure Matrix

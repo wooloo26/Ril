@@ -149,9 +149,9 @@ $$
 In `par_reduce` and `par_fold`, reduction operations MUST strictly evaluate along a **predetermined canonical binary tree topology** indexed by input slice bounds and fixed leaf grain $G_{\text{canonical}} = 64$:
 
 $$
-\operatorname{Reduce}(s, e) = \begin{cases} 
-\operatorname{Reduce}_{\mathrm{seq}}(s, e), & \text{if } (e - s) \le G_{\text{canonical}} \cr
-\operatorname{combine}(\operatorname{Reduce}(s, m), \operatorname{Reduce}(m, e)), & \text{where } m = s + \lfloor (e - s) / 2 \rfloor
+\mathop{\mathrm{Reduce}}(s, e) = \begin{cases}
+\mathop{\mathrm{Reduce}}_{\mathrm{seq}}(s, e), & \text{if } (e - s) \le G_{\text{canonical}} \cr
+\mathop{\mathrm{combine}}(\mathop{\mathrm{Reduce}}(s, m), \mathop{\mathrm{Reduce}}(m, e)), & \text{where } m = s + \lfloor (e - s) / 2 \rfloor
 \end{cases}
 $$
 
