@@ -66,8 +66,8 @@ To ensure that mutability annotations reflect genuine operational intent and pre
    - Direct reassignment (`x = expr`);
    - In-place compound or field assignment (`x.field = expr`, `x[i] += 1`);
    - Mutating pipeline operations (`x !> Array::push(item)`);
-   - Invocation of a state-capturing callable (`&capture`, `&{mut ...}`) bound to that handle;
-   - Being retained or stored into an escaping or mutable data structure where the retained reference preserves active write capabilities under `&^mut`; or
+   - Invocation of a state-capturing callable (`&capture`, `&{mut ...}`, `&{^mut ...}`) bound to that handle;
+   - Being retained or stored into an escaping or mutable data structure where the retained reference preserves active write capabilities under anonymous `&^mut` or named `&{^mut ...}`; or
    - Being passed as an argument with `mut` prefix to a `mut` parameter of a callee carrying `&mut` or `&^mut`.
 2. **Rejection of Unused Mutability (`UnusedMutError`)**:
    Declaring a binding (`let mut`) or parameter (`mut param: T`) that is never written to along any reachable control-flow path is a compile-time static error (`UnusedMutError`). Redundant mutability annotations are strictly prohibited.
@@ -86,7 +86,7 @@ $$\text{Mut} \succ \text{ReadOnly} \succ \text{None}$$
    - **Container Injection Laundering (`E0522: ContainerLaunderingError`)**: Storing a read-only reference containing mutable fields into a mutable container (`mut_arr !> push(ro)`) or mutable record field is a compile-time static error. The reference must first be detached into `Immut<T>` via `clone_immut()`.
    - **Shallow Spread Laundering (`E0525: SpreadLaunderingError`)**: Shallow-spreading a read-only record with nested reference fields into a `let mut` root binding is a compile-time static error.
    - **Collection Mutation During Active Iteration (`E0526: CollectionMutationDuringIterationError`)**: In-place mutation of a collection (via `!>` or passing to a `mut` parameter) while that collection is being actively iterated in an enclosing `for` loop is a compile-time static error.
-   - **Closure Capture and Invocation Laundering (`E0527: ClosureCaptureLaunderingError`)**: Capturing a read-only reference into a closure declaring mutable environment access (`&{mut ro}`), invoking a state-capturing callable (`&capture`, `&{mut ...}`) through a read-only handle, or passing a read-only reference as a mutable argument (`f(mut ro)` or `ro !> f()`) is a compile-time static error.
+   - **Closure Capture and Invocation Laundering (`E0527: ClosureCaptureLaunderingError`)**: Capturing a read-only reference into a closure declaring mutable environment access or sharing (`&{mut ro}`, `&{^mut ro}`), invoking a state-capturing callable (`&capture`, `&{mut ...}`, `&{^mut ...}`) through a read-only handle, or passing a read-only reference as a mutable argument (`f(mut ro)` or `ro !> f()`) is a compile-time static error.
    - **Pass-Through Return Laundering (`E0528: ReturnLaunderingError`)**: Binding the return value of a function to `let mut` when that return value originates from a read-only parameter is a compile-time static error.
    - *(Note: Cross-argument borrow conflicts `E0523` and `E0524` are governed by the Law of Exclusivity in §4.2).*
 
@@ -129,6 +129,7 @@ To guarantee algorithmic predictability and prevent hidden aliasing corruption, 
    -- merge_into(buf, mut buf) -- STATIC ERROR [E0524]: Read-mut access hazard: 'buf' overlaps with 'mut buf'
    ```
 3. **Suspension Invariance**: Active `mut` borrows remain exclusively reserved across asynchronous suspension points (`@Async`).
+4. **External Capture Conflicts**: Exclusivity analysis MUST include the originating storage accessed through external captures (`&{var}`, `&{mut var}`, `&{^mut var}`) of the callee and callbacks, including hidden origins preserved through interface abstraction. An explicit mutable argument overlapping a separately accessed external read path is rejected with `E0524`; overlapping write paths are rejected with `E0523`. Forwarding the same exclusive borrow to a callee is not a second independent access. Named sharing annotations permit later retention but do not waive active-call exclusivity. Unknown overlap MUST NOT be assumed disjoint.
 
 ---
 
@@ -166,7 +167,7 @@ CloneExpr ::= Expression "|>" ( "clone" | "clone_immut" ) | ( "clone" | "clone_i
 2. **Immutable Deep Copy (`clone_immut`)**:
    - `clone_immut` recursively traverses all reachable heap objects, constructing a topologically congruent, detached isolated object graph deeply normalized to `Immut<T>`.
    - **Permanent Immobility**: Objects created via `clone_immut` are permanently read-only and CANNOT regain write access under any circumstances. They unconditionally satisfy `Shareable` and are safe for cross-thread sharing.
-   - **Prohibition on Capabilities**: Types containing resource capabilities, retained mutable sharing, mutable closure captures (`&mut`, `&^mut`, `&capture`, or `&{mut ...}`), or scoped resource handles MUST NOT be passed to `clone_immut`. Passing such types is a compile-time static error (`E0530: IllegalCapabilityCloneImmutError`).
+   - **Prohibition on Capabilities**: Types containing resource capabilities, retained mutable sharing, mutable closure captures (`&mut`, `&^mut`, `&capture`, `&{mut ...}`, or `&{^mut ...}`), or scoped resource handles MUST NOT be passed to `clone_immut`. Passing such types is a compile-time static error (`E0530: IllegalCapabilityCloneImmutError`).
 
 3. **Non-Establishment of Halting or Stability**:
    - Creating a clone does NOT prove termination (`halt`) and does NOT turn an arbitrary data structure into an admissible stable index. Cyclic data remains inadmissible for stable indices even after cloning.
@@ -279,7 +280,7 @@ An unaliased mutable object graph MAY be transferred across thread boundaries wi
 ### 8.5 State Capabilities at Concurrency Boundaries
 
 Concurrent task spawns (`spawn`, `fork`) SHALL require tasks to be free of caller-bound mutable state capabilities:
-- A callable passed to a concurrent task MUST NOT declare `&mut`, `&^mut`, `&capture`, or `&{mut ...}`. Violation MUST yield compile-time static error `E0602: IllegalStateCapabilityCrossThreadError`.
+- A callable passed to a concurrent task MUST NOT declare `&mut`, `&^mut`, `&capture`, `&{mut ...}`, or `&{^mut ...}`. Violation MUST yield compile-time static error `E0602: IllegalStateCapabilityCrossThreadError`. Hiding an external origin via interface abstraction does not remove this restriction.
 - Tasks passed to parallel combinators (`par_map`, `par_fold`) or parallel nurseries MUST require zero external mutable capabilities; violations MUST yield `E0605: InvalidParallelCapabilityError`.
 - Reading external immutable state via `&{var}` across concurrent boundaries is permitted if and only if `typeof(var)` satisfies `Shareable`. Capturing a non-`Shareable` variable MUST yield `E0603: NonShareableLexicalCaptureError`.
 

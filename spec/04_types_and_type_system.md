@@ -100,6 +100,7 @@ $$f_1 <: f_2 \iff C <: A \land B <: D \land \mathcal{E}_1 \subseteq \mathcal{E}_
 - Algebraic effects are **covariant by set inclusion** ($\mathcal{E}_1 \subseteq \mathcal{E}_2$).
 - Mutable parameter locations (`mut x: T`) are strictly **invariant**.
 - State capabilities are **covariant under capability subsumption** across the capability preorder lattice ($\mathcal{S}_1 \sqsubseteq \mathcal{S}_2$, where `mut` $\sqsubset$ `^mut`): a function guaranteeing localized parameter mutation is a valid subtype of a function permitted retained mutable sharing (`fn(P) -> R &mut <: fn(P) -> R &^mut`, where `P` contains identical mutable parameters). Retained mutable sharing `&^mut` and closure capture `&capture` represent orthogonal lattice dimensions and SHALL NOT subsume or abstract into each other (`&^mut` does not subtype `&capture`, nor `&capture` subtype `&^mut`).
+- For the same external binding identity `x`, read access is subsumed by mutation, which is subsumed by named retained sharing: `&{x}` $\sqsubset$ `&{mut x}` $\sqsubset$ `&{^mut x}`. A callable carrying `&{^mut x}` MAY hide `x` only behind an interface retaining both `&capture` and anonymous `&^mut`; hiding the name MUST NOT erase the sharing hazard or origin summary (Chapter 11, §6). Distinct binding identities cannot be substituted merely because their value types agree.
 
 ### 3.4 Data-Parameter Variance
 

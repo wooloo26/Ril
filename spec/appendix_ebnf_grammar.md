@@ -161,7 +161,7 @@ EffectOperations    ::= EffectOpDecl { "," EffectOpDecl } [ "," ]
 EffectDecl          ::= [ "pub" ] "effect" Identifier [ GenericParameters ] "{" EffectOperations "}"
 EffectAliasDecl     ::= [ "pub" ] "effect" Identifier "=" "{" [ EffectItems ] "}"
 
-StateItem           ::= "^" "mut" | "capture" | "mut" [ Identifier ] | Identifier
+StateItem           ::= "^" "mut" [ Identifier ] | "capture" | "mut" [ Identifier ] | Identifier
 StateItems          ::= StateItem { "," StateItem } [ "," ]
 StateArgument       ::= "&" ( "mut" | "^" "mut" | "capture" | "{" [ StateItems ] "}" )
 ContractArgument    ::= EffectArgument | StateArgument

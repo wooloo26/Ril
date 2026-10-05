@@ -94,6 +94,8 @@ $$\forall i \in \operatorname{MutArgs},\; \forall j \ne i,\quad \operatorname{Pa
 
 If a function call passes `mut a` and `mut b`, or `mut a` and read-only `b`, the compiler statically inspects the origin root paths. If they alias the same memory location, compilation fails immediately with `E0523` (Mut-Mut Conflict) or `E0524` (Read-Mut Hazard). This delivers aliasing safety without requiring developers to write complex lifetime bounds.
 
+The same checks include external captures of callees and callbacks. A variable's absence from the explicit argument list does not make its storage disjoint from a mutable argument.
+
 ### 2.3 Live Views: Heap Observability Without Type-Level Contagion
 
 When developers write `let view = handle` or `let ro = handle`:
@@ -107,6 +109,12 @@ If creating a view changed the type of `x: User` into `View<User>` or `&User`, t
 3. Ergonomics would degrade severely.
 
 In Ril, a view's static type remains $T$. The immutability constraint is enforced strictly at the **binding and handle level**. If an application requires a permanently frozen, mathematically immutable object that is completely immune to concurrent or future mutations, it calls `clone_immut(x)`, which returns a deeply normalized `Immut<T>`. Conversely, if it requires an independent, mutable duplicate to modify without mutating the original, it calls `clone(x)`.
+
+### 2.4 Named External Retained Sharing
+
+External state and retained sharing are separate dimensions: `&{mut counter}` permits mutation of an external origin, while `&{^mut counter}` additionally discloses establishing another writable access path that survives a call or closure publication boundary. Copying an integer value does not share its variable cell; publishing a closure that mutates that cell can. Merely mutating already-shared state does not introduce a new sharing obligation.
+
+The name identifies shared source storage, not the container receiving it. Origin identities survive aliases and indirect calls. Hiding a private origin behind a callable interface retains both `&capture` and anonymous `&^mut`; the hazard cannot disappear through abstraction. Local discharge checks captured origins and retention destinations as well as explicit arguments, so local arguments cannot disguise retention of global state.
 
 ---
 

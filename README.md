@@ -55,6 +55,13 @@ fn tick() -> int &{mut counter} {
     counter
 }
 
+-- Publishing a writable capture of external state requires named sharing
+fn share_counter() -> (fn() -> int &{mut counter}) &{^mut counter} {
+    \-> { counter += 1; counter }
+}
+-- The returned closure mutates existing shared state; creating it retains
+-- another writable path. ^mut counter includes mut counter.
+
 -- Escaping stateful closures require &capture
 pub fn make_step() -> (fn() -> int &capture) &capture {
     let mut n = 0

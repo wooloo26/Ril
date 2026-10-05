@@ -215,7 +215,7 @@ Once a resource handle is bound via `let scoped` (or `let scoped mut`), the hand
 ### 5.4 Anti-Retention Sharing Law
 > **Normative Rule**: A locked scoped handle CANNOT be retained in memory beyond its defining lexical scope:
 1. **Outer Structures**: A locked handle CANNOT be stored into outer-scope records, arrays, maps, or module-level variables.
-2. **Retained Mutable Sharing Prohibition (`&^mut` Conflict)**: Passing a locked handle to any parameter or function that introduces retained mutable sharing (`&^mut`) is a **compile-time static error** (`ScopedHandleRetainedSharingViolation` [`E0721`]).
+2. **Retained Mutable Sharing Prohibition (`&^mut` / `&{^mut var}` Conflict)**: Passing a locked handle to any parameter or function that introduces retained mutable sharing (`&^mut`), or retaining a writable alias to a locked external handle through `&{^mut var}`, is a **compile-time static error** (`ScopedHandleRetainedSharingViolation` [`E0721`]). Naming or abstracting the origin does not relax its scope lock.
 3. **Clone and Immutability Prohibition**: Passing a scoped handle or any type enclosing a scoped handle to `clone` or `clone_immut` is a **compile-time static error** (`ScopedHandleCloneViolation` [`E0723`]).
 4. **Local Views**: Read-only aliases (`let view = scoped_h`) inherit the locked origin identity and expire when the scope exits.
 

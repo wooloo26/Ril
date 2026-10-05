@@ -116,7 +116,7 @@ AccessorExpr      ::= "\" "." Identifier { "." Identifier }
 
 1. **Lexical Scope (No Hoisting)**: Closures are strictly lexical values and MUST be defined before use.
 2. **Automatic Signature Inference**:
-   Closures automatically infer parameter types, return types, algebraic effects, and environment capture capabilities (`&mut`, `&capture`, `&{var}`, `&{mut var}`) from their body expressions.
+   Closures automatically infer parameter types, return types, algebraic effects, and environment capture capabilities (`&mut`, `&^mut`, `&capture`, `&{var}`, `&{mut var}`, `&{^mut var}`) from their body expressions. Publishing a writable capture is separately checked on the creating callable (Chapter 11, §3.1).
 3. **Delimited Inline Body Boundary Invariant**:
    At the outermost nesting depth of an unparenthesized `InlineLambdaBody`, pipeline operators (`|>`, `!>`) and fallback operators (`??`) immediately delimit and terminate the closure body.
 4. **Field Accessor Expressions (`\.field`)**:
@@ -147,3 +147,4 @@ Let $f$ be a higher-order function receiving a callable parameter $g: \text{fn}(
    $$\mathcal{E}_{\text{call}} = \mathcal{E}_f \cup \mathcal{E}_c$$
    where $\mathcal{E}_f$ denotes $f$'s intrinsically declared effects, and $\mathcal{E}_c$ denotes the concrete effects inferred for argument $c$.
 3. **Purity Conservation**: If a concrete callable argument $c$ is purely functional ($\mathcal{E}_c = \emptyset$), the call site incurs strictly zero additional effect obligations.
+4. **State Capability Forwarding**: Callback state obligations are forwarded with their binding identities and origin summaries intact. When a callback or callee retains writable aliases to external state `x`, the enclosing call retains `&{^mut x}`; it MUST NOT weaken that requirement to `&{mut x}` or `&capture` alone. Parameter-origin obligations are substituted with actual argument origins. Local discharge and explicit interface abstraction follow Chapter 11; merely forwarding a mutation-only callback does not introduce retained sharing.

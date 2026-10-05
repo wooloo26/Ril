@@ -26,13 +26,13 @@ Parallel execution is governed by Ril's state capability tracking system (Chapte
 Let $T$ be an evaluation task executing on a worker thread. Any local mutable binding `let mut local = expr` allocated inside $T$'s execution frame that does NOT escape $T$'s lexical lifetime satisfies:
 1. **Thread-Confinement**: The storage location of `local` is strictly private to the hardware thread executing $T$, residing entirely within the thread's stack or thread-local heap allocation frame.
 2. **Zero Cross-Core Coherence Traffic**: In-place mutations (`local !> op()`, `local[i] = v`) do NOT broadcast cache-invalidation signals to other processor cores, as the referenced storage is provably unshared.
-3. **Local Capability Discharge**: When $T$ terminates and produces a value $V$ whose type carries no retained capabilities (`&mut`, `&^mut`, `&capture`), all mutation capabilities $\sigma$ are **discharged locally**.
+3. **Local Capability Discharge**: When $T$ terminates and produces a value $V$ whose type carries no retained capabilities (`&mut`, `&^mut`, `&capture`, `&{mut ...}`, `&{^mut ...}`), all confined mutation capabilities $\sigma$ are **discharged locally** under Chapter 11's origin and escape checks.
 4. **Referential Transparency**: To any external or parent task, $T$ evaluates as a pure, side-effect-free mathematical function.
 
 ### 2.2 Static Data-Race Freedom Theorem
 
 **Theorem 17.2 (Static Absence of Data Races)**:
-An expression is admissible for parallel evaluation if and only if all sub-computations require zero external mutable capabilities ($\sigma \cap \Sigma_{\text{mut}} = \emptyset$, prohibiting active `&mut`, `&^mut`, `&capture`, and lexical `&{mut ...}`) and zero unhandled algebraic effects.
+An expression is admissible for parallel evaluation if and only if all sub-computations require zero external mutable capabilities ($\sigma \cap \Sigma_{\text{mut}} = \emptyset$, prohibiting active `&mut`, `&^mut`, `&capture`, and lexical `&{mut ...}` or `&{^mut ...}`) and zero unhandled algebraic effects.
 Any parallel closure capturing an external variable `v` MUST satisfy $\text{typeof}(v) \in \text{Shareable}$.
 Consequently:
 
@@ -128,7 +128,7 @@ let (metrics, index, warnings) = nursery(\mut scope -> {
 2. **Arbitrary Arity and Types**:
    A `nursery` block naturally accommodates any number of concurrent tasks ($N \ge 1$) with completely heterogeneous return types, avoiding arity limits or tuple chaining.
 3. **Purity and Capability Confinement**:
-   Parallel child tasks spawned within a multi-core nursery MUST require zero external mutable capabilities ($\sigma \cap \Sigma_{\text{mut}} = \emptyset$, prohibiting active `&mut`, `&^mut`, `&capture`, and lexical `&{mut ...}`). Passing a mutating closure across work-stealing worker threads MUST yield compile-time static error `E0605: InvalidParallelCapabilityError`.
+   Parallel child tasks spawned within a multi-core nursery MUST require zero external mutable capabilities ($\sigma \cap \Sigma_{\text{mut}} = \emptyset$, prohibiting active `&mut`, `&^mut`, `&capture`, and lexical `&{mut ...}` or `&{^mut ...}`). Passing a mutating or retained-sharing closure across work-stealing worker threads MUST yield compile-time static error `E0605: InvalidParallelCapabilityError`.
 4. **Deterministic Cancellation and Scoped Cleanup**:
    If any spawned task panics or aborts early, the nursery immediately initiates cascading cancellation of all remaining sibling tasks and deterministically executes LIFO cleanup of all parent and child `let scoped` resources.
 
@@ -183,7 +183,7 @@ If multiple concurrent tasks spawned within a parallel nursery or multiple chunk
 A conforming Ril compiler and runtime implementation supporting multicore parallelism MUST satisfy:
 
 1. **Static Capability Rejection (`E0605`)**:
-   Attempting to pass a callable carrying active `&mut`, `&^mut`, `&capture`, or external `&{mut var}` to `par_map`, `par_reduce`, `par_fold`, or any parallel worker task MUST result in compile-time static error `E0605: InvalidParallelCapabilityError`.
+   Attempting to pass a callable carrying active `&mut`, `&^mut`, `&capture`, or external `&{mut var}` or `&{^mut var}` to `par_map`, `par_reduce`, `par_fold`, or any parallel worker task MUST result in compile-time static error `E0605: InvalidParallelCapabilityError`. Abstracting a named sharing capability does not make the callable admissible.
 2. **Bit-Level Floating-Point Determinism**:
    Conforming parallel reductions MUST evaluate floating-point expressions according to the canonical binary tree topology defined in §6.1, producing bit-for-bit identical results regardless of worker thread count $P$.
 3. **Structured Lifetime Confinement**:

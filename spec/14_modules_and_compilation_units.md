@@ -106,6 +106,8 @@ Declaring an inline `module` inside a function body, closure, or local statement
 
 Exporting a mutable module-level binding (`pub let mut`) across module boundaries is **strictly PROHIBITED** and MUST be rejected at compile time (`ExportedMutableStateError` [`E0804`]). Cross-module mutable state MUST be mediated via algebraic effects, parameter passing, or encapsulated capability closures (`&capture`).
 
+Hiding a private external binding named in `&{^mut var}` behind a public callable interface MUST retain both `&capture` and anonymous `&^mut` (Chapter 11, §6). The binding itself remains private; its sharing hazard and compiler origin summary cannot be erased by module encapsulation.
+
 ---
 
 ## 5. Program Entry Point (`pub fn main`)
