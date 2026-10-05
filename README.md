@@ -1,6 +1,6 @@
 # Ril
 
-**Ril** is an expression-oriented, strongly typed programming language featuring algebraic effect handlers, capability-tracked state, and deterministic dual compilation to Native machine code and ECMAScript/TypeScript (`.d.ts`).
+**Ril** is an expression-oriented, strongly typed programming language featuring algebraic effect handlers, capability-tracked state, and deterministic compilation to native machine code.
 
 ---
 

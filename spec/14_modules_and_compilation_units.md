@@ -40,7 +40,7 @@ Cyclic module dependencies (e.g., module `A` imports module `B` while module `B`
 
 > **Normative Rule**: Top-level module item initializers (`let` and `pub let` bindings) **MUST be strictly pure expressions**.
 
-1. Invoking algebraic effects (`@Effect`), mutating external variables, performing input/output (I/O), or invoking foreign host calls inside a top-level initializer is a compile-time static error.
+1. Invoking algebraic effects (`@Effect`), mutating external variables, or performing input/output (I/O) inside a top-level initializer is a compile-time static error.
 2. All runtime side effects, initialization routines, and setup procedures MUST execute within functions (such as `pub fn main`) or inside `test` blocks.
 
 ---

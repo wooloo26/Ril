@@ -72,8 +72,6 @@ To ensure that mutability annotations reflect genuine operational intent and pre
    Declaring a binding (`let mut`) or parameter (`mut param: T`) that is never written to along any reachable control-flow path is a compile-time static error (`UnusedMutError`). Redundant mutability annotations are strictly prohibited.
 3. **Dead Code Rule**:
    Write operations located exclusively within statically unreachable basic blocks (e.g., following an unconditional `return`, `panic`, or within provably dead branches) do NOT satisfy the Definite Mutation Invariant.
-4. **Host Contract Exemption**:
-   Declarations under foreign host interfaces (`decl "C"`, `decl "host"`) lacking function bodies are exempt from the Definite Mutation Invariant at their declaration sites; call sites passing to their `mut` parameters MUST still treat arguments as actively written to.
 
 ---
 

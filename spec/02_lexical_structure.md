@@ -60,13 +60,13 @@ Conforming Ril programs SHOULD adhere to the following normative conventions:
 The following tokens are strictly reserved, MUST NOT be used as user-defined identifiers in any context, and possess active syntactic roles in the current grammar:
 
 ```
-as       assert   break    continue decl
-defer    effect   else     erased   false
-fn       for      if       in       infer
-is       keyof    let      loop     match
-module   mut      never    opaque   pub
-return   rewrite  test     true     type
-typeof   use      where    while    with
+as       assert   break    continue defer
+effect   else     erased   false    fn
+for      if       in       infer    is
+keyof    let      loop     match    module
+mut      never    opaque   pub      return
+rewrite  test     true     type     typeof
+use      where    while    with
 ```
 
 ### 4.2 Future Reserved Keywords
@@ -74,8 +74,8 @@ typeof   use      where    while    with
 The following tokens are strictly reserved for forward compatibility and future language extensions. They MUST NOT be used as user-defined identifiers in any context, but currently carry no active grammatical productions:
 
 ```
-auto     const    derive   macro    static
-unsafe   yield
+auto     const    decl     derive   macro
+static   unsafe   yield
 ```
 
 ### 4.3 Contextual Keywords

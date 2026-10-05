@@ -100,9 +100,8 @@ let greeting = {
 The built-in `@Async` effect designates operations that may suspend execution:
 1. **Ordinary Call Syntax**: Async calls use standard function call syntax without separate keywords.
 2. **Preservation of Invariants**: Mutable borrows (`mut`), active effect handlers, and registered `defer` cleanups remain valid across suspension points.
-3. **Target Mapping**:
-   - On **Native targets**, `@Async` maps to lightweight fiber/coroutine suspension.
-   - On **JavaScript targets**, an exported function with `@Async` returns a native JavaScript `Promise<T>`.
+3. **Execution Mapping**:
+   `@Async` maps to lightweight fiber/coroutine suspension managed by the runtime scheduler.
 
 ### 4.2 Divergence Tracking (`@Div`) and Fuel Masking
 

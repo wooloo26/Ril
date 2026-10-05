@@ -36,7 +36,6 @@ halt fn add(left: Nat, right: Nat) -> Nat {
    - Unbounded loops (`loop`, `while`).
    - Mutable bindings (`let mut`) and parameter mutations (`mut`).
    - Algebraic effect invocations (`@Effect`) and effect handlers (`with`).
-   - Foreign host declarations (`decl`).
    - Live mutable state reads, resource handle operations, and object identity comparisons.
 3. **Capture Rules in `halt fn`**:
    - Capturing external immutable values requires `&{name}` and is permitted only if the captured value is admissible in halting computation.

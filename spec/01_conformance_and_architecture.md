@@ -6,16 +6,15 @@ This chapter defines the scope, foundational execution model, target platform re
 
 ## 1. Scope and Target Platforms
 
-A conforming Ril implementation compiles source text into executable code targeting at least one of the two standard targets:
+A conforming Ril implementation compiles source text into executable machine code targeting native platforms:
 
-1. **Native Binaries**: Executable machine instructions (or object files linked into native executables) interacting directly with native operating system environments.
-2. **ECMAScript / JavaScript Modules**: Standard ECMAScript 2020+ modules (`.js` / `.mjs`) accompanied by authoritative TypeScript declaration interfaces (`.d.ts`).
+- **Native Binaries**: Executable machine instructions (or object files linked into native executables via LLVM, Cranelift, C, or native machine code generation) interacting directly with native operating system environments.
 
-### 1.1 Dual-Target Uniformity Invariant
+### 1.1 Semantic Determinism Invariant
 
-A fundamental design invariant of Ril is **semantic target equivalence**:
-- Any valid Ril program that does not invoke target-specific host declarations (`decl`) MUST produce the exact same observable output, bit-level numeric calculations, floating-point IEEE 754 representations, and control flows on both Native and JavaScript targets.
-- A compiler MUST NOT introduce target-dependent conditional divergence in language primitives, integer widths, wrapping behavior, string indexing, or error propagation.
+A fundamental design invariant of Ril is **strict semantic determinism**:
+- Any valid Ril program MUST produce strictly deterministic observable output, bit-level numeric calculations, floating-point IEEE 754 representations, and control flows.
+- A compiler MUST NOT introduce target-dependent or environment-dependent conditional divergence in language primitives, integer widths, wrapping behavior, string indexing, or error propagation.
 
 ---
 
@@ -76,9 +75,8 @@ When a runtime operation encounters an irrecoverable invariant violation, the ab
 1. **Panic Mechanics**: A panic immediately halts normal sequential execution in the current evaluation frame and initiates stack unwinding.
 2. **Deterministic Unwinding**: During unwinding, all registered `defer` cleanup handlers active in scopes being exited MUST execute in strict Last-In, First-Out (LIFO) order.
 3. **Panic Aggregation**: If a panic is raised while executing a `defer` handler during an ongoing unwinding process, the new panic MUST be captured and attached as a suppressed cause to the primary panic.
-4. **Host Boundary Behavior**:
-   - On **Native targets**, an uncaught panic terminates the process with a non-zero exit code and diagnostic crash report detailing the panic message and unwinding trace.
-   - On **JavaScript targets**, an uncaught panic raises a native `Error` exception containing the formatted panic message and stack trace.
+4. **Uncaught Panic Behavior**:
+   An uncaught panic terminates the process with a non-zero exit code and diagnostic crash report detailing the panic message and unwinding trace.
 
 ---
 

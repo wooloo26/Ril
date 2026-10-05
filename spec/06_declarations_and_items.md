@@ -1,6 +1,6 @@
 # 06. Declarations and Items
 
-This chapter specifies the syntax and semantics of declarations in Ril, including variables, record schemas, mapped types, algebraic data types (ADTs), indexed constructors (GADTs), nominal wrappers, opaque types, and external host declarations.
+This chapter specifies the syntax and semantics of declarations in Ril, including variables, record schemas, mapped types, algebraic data types (ADTs), indexed constructors (GADTs), nominal wrappers, and opaque types.
 
 ---
 
@@ -11,7 +11,7 @@ A Ril module consists of a sequence of top-level item declarations:
 ```ebnf
 Item ::= LetDecl | FunctionDecl | SumTypeDecl | NominalDecl
        | OpaqueDecl | TypeAliasDecl | EffectDecl | EffectAliasDecl
-       | ModuleDecl | UseDecl | TestDecl | HostDecl
+       | ModuleDecl | UseDecl | TestDecl
 ```
 
 ---
@@ -180,16 +180,3 @@ OpaqueDecl ::= [ "pub" ] "opaque" "type" Identifier [ GenericParameters ] [ Wher
 1. **Module Privacy**: An opaque type introduces a nominal type whose underlying representation is visible ONLY within its defining module.
 2. **Encapsulation Guarantees**: Outside the defining module, clients CANNOT construct, destructure, or access fields of an opaque type, nor invoke `raw()` on it. All operations MUST be mediated through functions exported by the defining module.
 
----
-
-## 7. External Host Declarations (`decl`)
-
-The `decl` item declares external foreign contracts provided by the host environment:
-
-```ebnf
-HostDecl ::= "decl" PlainStringLiteral ( HostItem | "{" { Separator } [ HostItem { Separators HostItem } [ Separators ] ] "}" )
-HostItem ::= HostFunctionDecl | HostTypeDecl | HostValueDecl
-```
-
-1. Functions declared under `decl` omit bodies; types omit definitions.
-2. Host declarations define the interface contracts used by the compiler to derive `.ril.ts` bridge modules for JavaScript targets (see [§15 (Host Interoperability and ABI)](15_host_interoperability_and_abi.md)).

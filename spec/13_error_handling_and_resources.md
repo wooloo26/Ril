@@ -148,7 +148,7 @@ If a panic is raised inside a `defer` expression while unwinding a previous pani
 
 Ril distinguishes between ordinary GC-managed records and low-level **system resource handles** (e.g., file descriptors, OS sockets):
 
-1. **Origin Identity**: Resource handles declared via host contracts carry static origin identities.
+1. **Origin Identity**: System resource handles carry static origin identities.
 2. **Locking on Defer Registration**:
    Once a resource handle is passed to a cleanup function inside a `defer` statement (e.g., `defer close_file(h)`), all aliases of that handle's origin become **locked to the enclosing scope**.
 3. **Prohibition of Escape**:

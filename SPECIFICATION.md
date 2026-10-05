@@ -10,7 +10,7 @@
 
 This document constitutes the formal, canonical reference specification for the **Ril** programming language. It serves as the authoritative **Single Source of Truth (SSOT)** for all conforming Ril compiler implementations, interpreters, static analyzers, and runtime systems.
 
-Ril is an expression-oriented, strongly typed, statically analyzed programming language featuring garbage collection, algebraic effect handlers, fine-grained state capability tracking, predicative universe polymorphism, dependent records, and zero-cost compile-time type computation. Ril is designed to compile deterministically to both native machine binaries and ECMAScript/JavaScript modules with first-class TypeScript declaration bindings (`.d.ts`), maintaining strictly identical numeric, semantic, and operational behaviors across all targets.
+Ril is an expression-oriented, strongly typed, statically analyzed programming language featuring garbage collection, algebraic effect handlers, fine-grained state capability tracking, predicative universe polymorphism, dependent records, and zero-cost compile-time type computation. Ril compiles deterministically to native machine binaries, maintaining strictly deterministic numeric, semantic, and operational behaviors.
 
 ---
 
@@ -24,7 +24,6 @@ A compiler or implementation is classified under the following formal criteria:
 
 1. **Conforming Ril Compiler**: An implementation that accepts all syntactically and semantically valid Ril programs, rejects all invalid programs at compile time with normative static errors, and emits code that adheres strictly to the evaluation, memory, effect, and panic semantics defined herein.
 2. **Conforming Native Backend**: A code-generation backend producing native machine code (via LLVM, Cranelift, C, or native assembly) matching the exact integer, floating-point, memory model, and cleanup semantics specified.
-3. **Conforming JavaScript Backend**: A code-generation backend producing ECMAScript modules and accompanying TypeScript definitions adhering to the exact boundary conversion, integer range check, and Promise-mapping semantics specified in [§15 (Host Interoperability and ABI)](spec/15_host_interoperability_and_abi.md).
 
 ---
 
@@ -34,7 +33,7 @@ The specification is organized into sixteen modular normative chapters and a for
 
 | Chapter | Specification Document | Description |
 | :--- | :--- | :--- |
-| **01** | [Conformance and System Architecture](spec/01_conformance_and_architecture.md) | Scope, execution model, dual-target requirements, abstract machine, and panic semantics. |
+| **01** | [Conformance and System Architecture](spec/01_conformance_and_architecture.md) | Scope, execution model, native target requirements, abstract machine, and panic semantics. |
 | **02** | [Lexical Structure](spec/02_lexical_structure.md) | Unicode source text, comments, whitespace, identifiers, keywords, and literal tokens. |
 | **03** | [Formal Grammar and Syntax](spec/03_formal_grammar_and_syntax.md) | EBNF grammar notation, operator precedence table (Levels 1–17), and expression boundaries. |
 | **04** | [Types and Type System](spec/04_types_and_type_system.md) | Universes, definitional equality, subtyping, variance, row polymorphism, and generalization. |
@@ -48,7 +47,7 @@ The specification is organized into sixteen modular normative chapters and a for
 | **12** | [Type Computation and Proofs](spec/12_type_computation_and_proofs.md) | Halting functions (`halt fn`), structural induction, `match type`, `Eq`, `Refl`, rewriting, protocols. |
 | **13** | [Error Handling and Resources](spec/13_error_handling_and_resources.md) | `Option<T>`, `Result<T, E>`, postfix `?`, `??` fallback rules, unused Result enforcement, `defer`, handles. |
 | **14** | [Modules and Compilation Units](spec/14_modules_and_compilation_units.md) | Acyclic module DAG, `pub` visibility, zero side-effect top-level initialization, entry point `main`. |
-| **15** | [Host Interoperability and ABI](spec/15_host_interoperability_and_abi.md) | `decl` contracts, `.d.ril` / `.ril.ts` boundaries, numeric/byte translations, and JS Promise mapping. |
+| **15** | [Host Interoperability and ABI (Reserved)](spec/15_host_interoperability_and_abi.md) | Reserved for future host interop, foreign function interface (FFI), and external ABI specifications. |
 | **16** | [Standard Prelude](spec/16_standard_prelude.md) | Built-in primitive types, constructors, collection types (`Map`, `Set`), and prelude functions. |
 | **App** | [Appendix: Consolidated Formal EBNF Grammar](spec/appendix_ebnf_grammar.md) | Machine-readable, full Context-Free EBNF Grammar Specification for parser generation. |
 
@@ -59,6 +58,6 @@ The specification is organized into sixteen modular normative chapters and a for
 Compiler implementors MUST evaluate design and implementation decisions against the following core tenets:
 
 1. **Occam's Principle of Surface Semantics**: The language specification defines observable program behavior, type safety contracts, and reject/panic criteria. Compilers are free to perform optimizations (e.g., inlining, escape analysis, devirtualization, monomorphization) provided observable behavior is invariant.
-2. **Determinism Across Targets**: No implementation-defined or undefined behavior (UB) exists in Ril. Numeric arithmetic, wrapping, floating-point rounding, overflow detection, and exception unwinding MUST produce identical outcomes on native CPUs and JavaScript runtimes.
+2. **Determinism**: No implementation-defined or undefined behavior (UB) exists in Ril. Numeric arithmetic, wrapping, floating-point rounding, overflow detection, and exception unwinding MUST produce identical, strictly deterministic outcomes.
 3. **Zero Hidden State**: Mutable side effects are never invisible. In-place modification requires an explicit `let mut` root or `mut` parameter; external state captures require static capability annotations (`&{mut name}`); side-effecting operations require explicit algebraic effects (`@Effect`).
 4. **Safety Against Fault Masking**: Fallible operations yielding `Result` cannot be silently discarded, ignored via wildcard patterns, or bypassed using uninspected fallback values without explicit closures.

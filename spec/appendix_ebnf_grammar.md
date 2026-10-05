@@ -129,7 +129,7 @@ FunctionType        ::= [ "halt" ] "fn" [ GenericParameters ] "("
 
 Item                ::= LetDecl | FunctionDecl | SumTypeDecl | NominalDecl
                       | OpaqueDecl | TypeAliasDecl | EffectDecl | EffectAliasDecl
-                      | ModuleDecl | UseDecl | TestDecl | HostDecl
+                      | ModuleDecl | UseDecl | TestDecl
 
 LetDecl             ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
 Parameter           ::= [ "mut" | "erased" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
@@ -169,13 +169,6 @@ UseItemList         ::= UseItem { "," UseItem } [ "," ]
 UseItem             ::= Identifier [ "as" Identifier ]
 UseDecl             ::= [ "pub" ] "use" ModulePath [ "::" ( "*" | "{" UseItemList "}" | Identifier ) ] [ "as" Identifier ]
 TestDecl            ::= "test" StringLiteral Block
-
-HostFunctionDecl    ::= [ "pub" ] "fn" Identifier [ GenericParameters ] "(" [ ParameterList ] ")"
-                        [ "->" TypeExpression ] { ContractArgument } [ WhereClause ]
-HostTypeDecl        ::= [ "pub" ] "type" Identifier [ GenericParameters ]
-HostValueDecl       ::= [ "pub" ] "let" [ "mut" ] Identifier ":" TypeExpression
-HostItem            ::= HostFunctionDecl | HostTypeDecl | HostValueDecl
-HostDecl            ::= "decl" PlainStringLiteral ( HostItem | "{" { Separator } [ HostItem { Separators HostItem } [ Separators ] ] "}" )
 
 (* ========================================================================= *)
 (* 4. Statements, Blocks, and Handlers                                       *)
