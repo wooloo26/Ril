@@ -174,7 +174,7 @@ type Seconds(f64)
 1. **Operator Encapsulation**: Nominal wrappers do NOT inherit arithmetic operators (`+`, `-`) or relational comparisons (`<`, `>`). Applying arithmetic operators directly to nominal wrappers is a compile-time static error.
 2. **Unwrapping via `raw`**: The prelude function `raw(wrapper)` extracts the underlying primitive value with its original type and access permissions.
 3. **Equality**: Homogeneous equality (`==`, `!=`) is supported and compares inner values.
-4. **Transparent String Interpolation**: Single-payload wrappers over primitives automatically format as their inner value in string templates without calling `raw()`.
+4. **Prohibition of Implicit String Interpolation**: Single-payload nominal wrappers do NOT implicitly unpack in string templates. Formatted string interpolation requires explicit unwrapping via `raw(wrapper)` (e.g., `"{raw(uid)}"`). Directly embedding a nominal wrapper in string interpolation without `raw()` is a compile-time static error (`NominalInterpolationRequiresRawError`).
 
 ### 6.2 Opaque Types
 

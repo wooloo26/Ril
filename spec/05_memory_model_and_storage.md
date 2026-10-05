@@ -86,23 +86,25 @@ Parameters declare their write and sharing permissions explicitly in their signa
    - The reference is safely shared by default. It MAY be stored into longer-lived heap structures, returned from functions, or captured by closures without annotation, provided the target container does not grant write access to mutable fields of the stored reference (preventing read-only handle laundering).
 2. **Borrowed Mutable Location (`mut param: T`)**:
    - Grants in-place write access to the caller's storage location for the duration of the call.
-   - Binds both scalar locations (integers, booleans) and compound heap references.
+   - **Strict Reference Type Requirement**: The parameter type `T` MUST be a heap-allocated reference type (records, schemas, arrays, maps, tuples, sum type variants). Value types (`bool`, `int`, `i8`..`i64`, `u8`..`u64`, `bigint`, `f32`, `f64`, `str`, `bytes`, `()`, `never`) possess copy-by-value semantics and CANNOT be declared or borrowed as `mut` parameters. Attempting to declare `mut param: ValueType` or passing a value type to a `mut` parameter is a compile-time static error (`ValueTypeMutableBorrowError`).
    - Callers MUST explicitly mark arguments passed to `mut` parameters using `mut` prefix notation (e.g., `f(mut x)`) or the mutating pipeline operator (`x !> f()`).
-   - **Prohibition of RValues and Temporaries**: Passing temporary expressions, literals, or rvalues to a `mut` parameter (e.g., `increment(mut 1)`) is a **compile-time static error**. Writable arguments MUST be addressable lvalue locations.
+   - **Prohibition of RValues and Temporaries**: Passing temporary expressions, literals, or rvalues to a `mut` parameter is a **compile-time static error**. Writable arguments MUST be addressable lvalue locations holding mutable reference handles.
 
 ### 4.2 Aliasing Rules
 
 Ril permits multiple mutable parameters to alias the same underlying memory location:
 
 ```ril
-fn increment_both(mut left: int, mut right: int) &mut {
-    left += 1
-    right += 1
+type Counter = { mut val: int }
+
+fn increment_both(mut left: Counter, mut right: Counter) &mut {
+    left.val += 1
+    right.val += 1
 }
 
-let mut count = 0
+let mut count = Counter.{ val: 0 }
 increment_both(mut count, mut count)
--- count evaluates to 2
+-- count.val evaluates to 2
 ```
 
 1. **Order of Evaluation**: Writes to aliased parameters occur strictly in the source execution order of expressions within the callee function.

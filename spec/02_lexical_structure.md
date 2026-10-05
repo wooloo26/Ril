@@ -169,7 +169,7 @@ RawCharacter       ::= (* Any Unicode scalar except '`' *)
    - `b`: Binary base formatting.
    - `o`: Octal base formatting.
    - `0N`: Zero-padding to minimum width $N$.
-3. **Transparent Nominal Wrapper Interpolation**: A single-payload nominal wrapper over a primitive type (e.g., `type UserId(str)`) MUST automatically interpolate using its inner primitive value without requiring explicit unwrapping via `raw()`.
+3. **Prohibition of Implicit Nominal Unpacking**: A single-payload nominal wrapper (e.g., `type UserId(str)`) does NOT implicitly unpack in string interpolation. Accessing and formatting a nominal wrapper's underlying value within string interpolation MUST be performed explicitly using `raw(wrapper)` (e.g., `"{raw(uid)}"`). Directly embedding a nominal wrapper in string interpolation without `raw()` is a compile-time static error (`NominalInterpolationRequiresRawError`).
 
 #### Raw Strings
 Enclosed in backticks (`` `...` ``), raw strings treat backslashes and braces as literal characters. No escape sequences or interpolation expressions are recognized.

@@ -59,7 +59,7 @@ ParameterList ::= Parameter { "," Parameter } [ "," ]
 ### 2.1 Parameter Modes
 
 1. **Shared Read-Only (Default)**: `x: T` passes a value or safely shared managed reference.
-2. **Borrowed Mutable Location**: `mut x: T` grants in-place write access to caller storage.
+2. **Borrowed Mutable Location**: `mut x: T` grants in-place write access to caller storage. The parameter type `T` MUST be a heap-allocated reference type (record, array, map, tuple, or sum type). Declaring `mut` on value types (integers, floats, booleans, unit, never, str, bytes) is a compile-time static error (`ValueTypeMutableBorrowError`).
 3. **Erased Parameter**: `erased x: T` marks parameters used purely for compile-time indexing or proofs. Erased parameters are eliminated at runtime and possess zero runtime representation.
 
 ### 2.2 Default Expressions and Evaluation Order

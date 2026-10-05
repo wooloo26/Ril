@@ -30,8 +30,10 @@ fn sum_to(n: int) -> int {
 When a function mutates a borrowed caller location via a `mut` parameter, it declares the anonymous `&mut` state annotation:
 
 ```ril
-fn increment(mut counter: int) &mut {
-    counter += 1
+type Counter = { mut val: int }
+
+fn increment(mut counter: Counter) &mut {
+    counter.val += 1
 }
 ```
 
@@ -41,9 +43,9 @@ When a function invoking an `&mut` operation supplies local storage allocated wi
 
 ```ril
 fn compute() -> int {
-    let mut local = 10
+    let mut local = Counter.{ val: 10 }
     increment(mut local) -- &mut discharged locally: local is frame-confined
-    local
+    local.val
 }
 ```
 
@@ -81,8 +83,10 @@ StateArgument ::= "&" ( "mut" | "^" "mut" | "capture" | "{" [ StateItems ] "}" )
 4. **Forwarding External State**:
    Forwarding an external state variable to a function accepting a `mut` parameter retains the external state mutation effect:
    ```ril
-   fn forward_global() &{mut counter} {
-       increment(mut counter) -- retains &{mut counter}
+   let mut shared_hub = Counter.{ val: 0 }
+
+   fn forward_global() &{mut shared_hub} {
+       increment(mut shared_hub) -- retains &{mut shared_hub}
    }
    ```
 
@@ -191,9 +195,9 @@ active() -- valid: invoked through mutable binding
 let fixed = make_counter(0)
 -- fixed() -- STATIC ERROR: cannot invoke '&capture' callable through read-only handle
 
--- Parameter mutating function: callable itself can be read-only; arguments must be mutable
-let mut data = 10
-increment(mut data) -- valid: 'data' is mutable lvalue; 'increment' is a top-level item
+-- Parameter mutating function: callable itself can be read-only; arguments must be mutable reference handles
+let mut data = Counter.{ val: 10 }
+increment(mut data) -- valid: 'data' is mutable reference handle; 'increment' is a top-level item
 ```
 
 ### 7.2 Snapshot Prohibition
