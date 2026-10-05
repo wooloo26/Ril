@@ -6,19 +6,27 @@ This chapter specifies control flow expressions, loop constructs, pattern matchi
 
 ## 1. Block Expressions and Sequencing
 
-A block expression groups statements and evaluates to a final result:
+A block expression groups declarations (items) and expressions, executing them sequentially and evaluating to a final result:
 
 ```ebnf
-Block      ::= "{" { Separator } [ Statement { Separators Statement } [ Separators ] ] [ WhereBlock ] "}"
+BlockItem  ::= Item | Expression
+Block      ::= "{" { Separator } [ BlockItem { Separators BlockItem } [ Separators ] ] [ WhereBlock ] "}"
 WhereBlock ::= "where" { Separator } FunctionDecl { Separators FunctionDecl } [ Separators ]
 ```
 
-1. **Sequencing**: Expressions within a block execute sequentially from first to last.
-2. **Block Value**:
-   - The value of a block is the value of its final expression, unless terminated with a semicolon `;`, which discards the value to `()`.
-   - Trailing newlines following the final expression preserve its value.
-3. **Trailing `where` Hoisting**:
-   A block MAY append a trailing `where` section declaring subordinate functions. Declarations under `where` are hoisted into the enclosing block scope, allowing primary logic to precede helper definitions without affecting type inference or scope resolution.
+### 1.1 Block Evaluation Rules
+
+1. **Empty Block**: An empty block `{}` statically evaluates to the unit value `()` of type `()`.
+2. **Sequential Discarding**: Non-tail expressions in a sequence evaluate for side effects. Their values are discarded:
+   - Discarding an expression evaluating to `Result<T, E>` without handling is a compile-time static error (`UnusedResultError`).
+   - Discarding an affine scope-locked resource handle (`LockedToScope`) without binding is a compile-time static error (`MustBindAffineObligationError`).
+3. **Tail Value Resolution**:
+   - The value of a block is the value of its final expression if and only if it is NOT followed by a semicolon `;`. Its static type is the type of that tail expression.
+   - If the final expression is followed by a semicolon (`;`), its value is discarded, and the block evaluates to the unit value `()`.
+   - If the block terminates in an `Item` (such as a `let` binding or a local type declaration), the block evaluates to `()`.
+   - Trailing newlines following the final expression preserve its value and do NOT discard it.
+4. **Trailing `where` Hoisting**:
+   A block MAY append a trailing `where` section declaring subordinate functions. Declarations under `where` are hoisted into the enclosing block scope, allowing primary logic to precede helper definitions without affecting type inference or scope resolution. The tail expression of the block is determined immediately preceding the `where` keyword.
 
 ---
 
@@ -33,7 +41,7 @@ IfExpr ::= "if" ( "let" Pattern "=" Expression [ "if" Expression ] | Expression 
    `if let pat = expr` attempts to match `expr` against `pat`. If the match succeeds, bound identifiers enter the scope of the `if` block.
 3. **Pattern Guards**: `if let pat = expr if guard` evaluates the boolean `guard` expression only if the pattern match succeeds. If the guard evaluates to `false`, control falls through to the `else` branch.
 4. **Branch Type Agreement**: Both the `if` branch and `else` branch MUST produce expressions belonging to a common unified type. If an `else` branch is omitted, the `if` expression MUST evaluate to `()`.
-5. **Dangling `else` Association Across Newlines**: Across newlines, `else` attaches to the innermost preceding conditional or loop construct at the same delimiter depth that lacks an `else` branch.
+5. **`else` Line Continuation Across Newlines**: Across newlines, when an `else` keyword immediately follows the closing brace `}` of an `if` expression or `let` declaration, it continues the preceding construct rather than separating items or expressions (see [§03 (Formal Grammar and Syntax)](03_formal_grammar_and_syntax.md)).
 
 ---
 
@@ -52,19 +60,17 @@ LoopExpr ::= "loop" Block
 ### 3.2 Conditional Loops (`while` and `while let`)
 
 ```ebnf
-WhileExpr ::= "while" ( "let" Pattern "=" Expression [ "if" Expression ] | Expression ) Block [ "else" Expression ]
+WhileExpr ::= "while" ( "let" Pattern "=" Expression [ "if" Expression ] | Expression ) Block
 ```
 
 1. Evaluates its condition before each iteration, executing the block while the condition evaluates to `true` or pattern matching succeeds.
-2. **Optional `else` Fallback**:
-   - The `else` clause evaluates if and only if the loop condition terminates normally without executing a `break`.
-   - The static type of all `break` values and the `else` expression MUST unify to a common type. If `else` is omitted, the loop evaluates to `()`.
+2. **Evaluates to Unit**: When the condition terminates or becomes false, the `while` expression evaluates to the unit value `()`.
 
 ### 3.3 Iteration Loops (`for`)
 
 ```ebnf
 ForBindings ::= "as" Pattern [ "," Pattern ]
-ForExpr     ::= "for" Expression ForBindings Block [ "else" Expression ]
+ForExpr     ::= "for" Expression ForBindings Block
 ```
 
 1. **Single Evaluation of Source**: The iterated collection expression evaluates exactly once before iteration begins.
@@ -75,8 +81,7 @@ ForExpr     ::= "for" Expression ForBindings Block [ "else" Expression ]
    - **Integer Ranges (`start..end`)**: Yields ascending integers of the range's integer type.
 3. **Pattern Destructuring in Loop Headers**:
    The element binding accepts full pattern destructuring, including tuple patterns `(a, b)` and record patterns `.{ x, y }`.
-4. **Optional `else` Fallback on `for`**:
-   The `else` clause evaluates if the loop exhausts all elements without executing a `break`. The static types of all `break` values and the `else` expression MUST unify to a common type.
+4. **Evaluates to Unit**: Upon exhaustion of the iterated collection, the `for` expression evaluates to the unit value `()`.
 
 ### 3.4 Record Iteration (`for record as key, value`)
 
@@ -163,11 +168,7 @@ opt is Some             -- evaluates to true
 
 ## 7. Diverging Destructuring (`let ... else`)
 
-```ebnf
-LetElseStmt ::= "let" Pattern "=" Expression "else" Block
-```
-
-When a pattern is refutable (may fail to match), it MUST use `let ... else`:
+Diverging destructuring is a form of variable binding declaration (`LetDecl`, see [06. Declarations and Items](06_declarations_and_items.md)) applicable when a pattern is refutable:
 
 ```ril
 fn get_user(id: int) -> Result<str, str> {
@@ -178,5 +179,6 @@ fn get_user(id: int) -> Result<str, str> {
 }
 ```
 
-1. **Mandatory Divergence**: The `else` block of a `let ... else` statement **MUST diverge**: it MUST exit the current control scope via `return`, `break`, `continue`, or `panic()`. Falling through the `else` block is a compile-time static error.
-2. **Scope of Bindings**: Variables bound in `Pattern` are in scope for all statements following the `let ... else` construct in the enclosing block.
+1. **Mandatory Divergence**: The `else` block of a `let ... else` declaration **MUST diverge**: it MUST have static type `never` and exit the current control scope via `return`, `break`, `continue`, or `panic()`. Falling through the `else` block is a compile-time static error.
+2. **Scope of Bindings**: Variables bound in `Pattern` enter the lexical scope for all subsequent items and expressions in the enclosing block.
+3. **Item Status**: As an `Item`, `let ... else` yields no runtime value. If placed as the final element of a block, the block evaluates to `()`.

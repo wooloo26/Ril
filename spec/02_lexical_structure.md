@@ -27,7 +27,7 @@ A comment begins with `--` and extends to the end of the current physical line. 
 
 ### 2.2 Whitespace
 
-Whitespace characters include the space character (`U+0020`), horizontal tab (`U+0009`), and line terminators (LF `U+000A`, CR `U+000D`, and CRLF `U+000D U+000A`). Whitespace separates tokens but is otherwise insignificant, except where line terminators act as statement separators (see [§03 (Formal Grammar and Syntax)](03_formal_grammar_and_syntax.md)).
+Whitespace characters include the space character (`U+0020`), horizontal tab (`U+0009`), and line terminators (LF `U+000A`, CR `U+000D`, and CRLF `U+000D U+000A`). Whitespace separates tokens but is otherwise insignificant, except where line terminators act as item and expression separators (see [§03 (Formal Grammar and Syntax)](03_formal_grammar_and_syntax.md)).
 
 ---
 
@@ -60,13 +60,13 @@ Conforming Ril programs SHOULD adhere to the following normative conventions:
 The following tokens are strictly reserved, MUST NOT be used as user-defined identifiers in any context, and possess active syntactic roles in the current grammar:
 
 ```
-as       assert   break    continue defer
-effect   else     erased   false    fn
-for      if       in       infer    is
-keyof    let      loop     match    module
-mut      never    opaque   pub      return
-rewrite  test     true     type     typeof
-use      where    while    with
+as       break    continue effect   else
+erased   false    fn       for      if
+in       infer    is       keyof    let
+loop     match    module   mut      never
+opaque   pub      return   rewrite  test
+true     type     typeof   use      where
+while    with
 ```
 
 ### 4.2 Future Reserved Keywords
@@ -81,11 +81,12 @@ static   unsafe   yield
 ### 4.3 Contextual Keywords
 
 Contextual keywords carry special syntactic meaning only within specific grammatical productions; in all other positions, they are parsed as ordinary identifiers:
-- `resume`: Delimited continuation resumption statement within effect handlers.
+- `resume`: Delimited continuation resumption expression within effect handlers.
 - `super`: Relative module path navigation prefix.
 - `halt`: Modifier immediately preceding the `fn` keyword denoting total halting functions.
 - `lacks`: Row absence constraint operator within `where` clauses (`R lacks "label"`).
 - `capture`: Environment capture state capability annotation (`&capture`).
+- `scoped`: Lexical resource lifetime and cleanup modifier on `let` declarations (`let scoped`, `let scoped mut`).
 
 ---
 

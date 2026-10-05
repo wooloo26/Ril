@@ -68,7 +68,7 @@ LiteralType         ::= [ "-" ] ( IntegerLiteral | FloatLiteral )
 (* 2. Types, Kinds, and Universes                                            *)
 (* ========================================================================= *)
 
-SourceFile          ::= { Separator } [ Statement { Separators Statement } [ Separators ] ]
+SourceFile          ::= { Separator } [ Item { Separators Item } [ Separators ] ]
 TypeReference       ::= QualifiedName [ GenericApplication ] { "." Identifier [ GenericApplication ] }
 InstantiatedMember  ::= QualifiedName GenericApplication "::" Identifier
 GenericApplication  ::= "<" GenericArgs ">"
@@ -131,7 +131,7 @@ Item                ::= LetDecl | FunctionDecl | SumTypeDecl | NominalDecl
                       | OpaqueDecl | TypeAliasDecl | EffectDecl | EffectAliasDecl
                       | ModuleDecl | UseDecl | TestDecl
 
-LetDecl             ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
+LetDecl             ::= [ "pub" ] "let" [ "scoped" ] Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
 Parameter           ::= [ "mut" | "erased" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
 ParameterList       ::= Parameter { "," Parameter } [ "," ]
 
@@ -171,20 +171,18 @@ UseDecl             ::= [ "pub" ] "use" ModulePath [ "::" ( "*" | "{" UseItemLis
 TestDecl            ::= "test" StringLiteral Block
 
 (* ========================================================================= *)
-(* 4. Statements, Blocks, and Handlers                                       *)
+(* 4. Blocks, Block Items, and Handlers                                      *)
 (* ========================================================================= *)
 
 Separator           ::= ";" | Newline
 Separators          ::= Separator { Separator }
-Block               ::= "{" { Separator } [ Statement { Separators Statement } [ Separators ] ] [ WhereBlock ] "}"
+BlockItem           ::= Item | Expression
+Block               ::= "{" { Separator } [ BlockItem { Separators BlockItem } [ Separators ] ] [ WhereBlock ] "}"
 WhereBlock          ::= "where" { Separator } FunctionDecl { Separators FunctionDecl } [ Separators ]
 
-Statement           ::= Item | AssertStmt | DeferStmt | WithStmt | Expression
-AssertStmt          ::= "assert" Expression [ "else" Expression ]
-DeferStmt           ::= "defer" Expression
 HandlerArm          ::= QualifiedName "(" [ PatternList ] ")" "->" Expression
 HandlerSpec         ::= "{" HandlerArm { "," HandlerArm } [ "," ] "}" | HandlerArm
-WithStmt            ::= "with" HandlerSpec
+WithExpr            ::= "with" HandlerSpec
 
 AssignTarget        ::= QualifiedName { MemberAccess | TupleIndex | IndexExpr }
 CompoundAssignOp    ::= "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
@@ -259,7 +257,7 @@ PrimaryExpr         ::= Literal | InstantiatedMember | QualifiedName | UniverseV
                       | ArrayLiteral | RecordLiteral | TupleLiteral
                       | LambdaExpr | AccessorExpr | IfExpr | MatchExpr | TypeMatch | RewriteExpr
                       | LoopExpr | WhileExpr | ForExpr | ReturnExpr | BreakExpr | ContinueExpr
-                      | ResumeExpr | Block | "(" Expression ")"
+                      | ResumeExpr | WithExpr | Block | "(" Expression ")"
 
 UniverseValue       ::= "Type" [ GenericApplication ]
 Literal             ::= IntegerLiteral | FloatLiteral | ByteLiteral | ByteStringLiteral
@@ -281,9 +279,9 @@ AccessorExpr        ::= "\" "." Identifier { "." Identifier }
 
 RewriteExpr         ::= "rewrite" ( QualifiedName | "(" Expression ")" ) "in" Expression
 IfExpr              ::= "if" ( "let" Pattern "=" Expression [ "if" Expression ] | Expression ) Block [ "else" ( IfExpr | Block ) ]
-WhileExpr           ::= "while" ( "let" Pattern "=" Expression [ "if" Expression ] | Expression ) Block [ "else" Expression ]
+WhileExpr           ::= "while" ( "let" Pattern "=" Expression [ "if" Expression ] | Expression ) Block
 ForBindings         ::= "as" Pattern [ "," Pattern ]
-ForExpr             ::= "for" Expression ForBindings Block [ "else" Expression ]
+ForExpr             ::= "for" Expression ForBindings Block
 LoopExpr            ::= "loop" Block
 ReturnExpr          ::= "return" [ Expression ]
 BreakExpr           ::= "break" [ Expression ]

@@ -58,9 +58,9 @@ The specification strictly segregates program faults into two mutually exclusive
 │ • Type and universe mismatch      │ • Integer division or modulo by 0  │
 │ • Mutability & handle violations  │ • Numeric downcast out-of-range    │
 │ • Unused mut / Redundant mut      │ • Array / string index out of bounds│
-│ • Missing capability (&^mut, @E)  │ • Assertion failure (`assert`)     │
+│ • Missing capability (&^mut, @E)  │ • Assertion failure (`assert(...)`)│
 │ • Unused fallible Result          │ • Explicit `panic(message)`        │
-│ • Escaping defer control flow     │ • Map compound assign on missing key│
+│ • Scoped handle escape violation  │ • Map compound assign on missing key│
 └───────────────────────────────────┴────────────────────────────────────┘
 ```
 
@@ -73,8 +73,8 @@ A conforming compiler MUST reject any translation unit containing static errors 
 When a runtime operation encounters an irrecoverable invariant violation, the abstract machine raises a **runtime panic**:
 
 1. **Panic Mechanics**: A panic immediately halts normal sequential execution in the current evaluation frame and initiates stack unwinding.
-2. **Deterministic Unwinding**: During unwinding, all registered `defer` cleanup handlers active in scopes being exited MUST execute in strict Last-In, First-Out (LIFO) order.
-3. **Panic Aggregation**: If a panic is raised while executing a `defer` handler during an ongoing unwinding process, the new panic MUST be captured and attached as a suppressed cause to the primary panic.
+2. **Deterministic Unwinding**: During unwinding, all active scoped resource cleanup handlers (`let scoped` / `let scoped mut`) in scopes being exited MUST execute in strict Last-In, First-Out (LIFO) order (reverse declaration order).
+3. **Panic Aggregation**: If a panic is raised while executing the cleanup handler of an active scoped resource binding during an ongoing unwinding process, the new panic MUST be captured and attached as a suppressed cause to the primary panic.
 4. **Uncaught Panic Behavior**:
    An uncaught panic terminates the process with a non-zero exit code and diagnostic crash report detailing the panic message and unwinding trace.
 

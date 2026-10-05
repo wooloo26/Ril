@@ -104,10 +104,10 @@ TestDecl ::= "test" StringLiteral Block
 fn add(a: int, b: int) -> int { a + b }
 
 test "addition correctness" {
-    assert (2 |> add(3)) == 5
+    assert((2 |> add(3)) == 5)
 }
 ```
 
 1. A `test` declaration associates an arbitrary descriptive string literal with an executable test block.
-2. Test blocks possess permission to perform assertions (`assert`) and execute setup side effects.
+2. Test blocks possess permission to perform assertions (`assert(...)`) and execute setup side effects.
 3. In production compilation modes, `test` blocks are completely eliminated from binary generation and carry zero runtime overhead.

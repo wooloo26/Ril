@@ -1,6 +1,6 @@
 # 13. Error Handling and Resources
 
-This chapter specifies error handling constructs, typed propagation, fault masking prevention, LIFO resource cleanups (`defer`), and scoped handle escape analysis.
+This chapter specifies error handling constructs, typed propagation, fault masking prevention, LIFO scoped resource cleanups (`let scoped`), and scoped handle escape analysis.
 
 ---
 
@@ -68,7 +68,7 @@ let lazy = find_user(id) ? \-> DbError.{ code: 404 } -- lazy evaluation
 
 ### 2.4 Unused Result Enforcement (Anti-Fault Masking)
 
-> **Normative Rule**: Any expression yielding `Result<T, E>` MUST NOT be discarded as an uninspected statement expression. Discarding a fallible `Result` via a wildcard pattern (`let _ = fallible()`) is a **compile-time static error**.
+> **Normative Rule**: Any expression yielding `Result<T, E>` MUST NOT be discarded as an uninspected non-tail expression or via a semicolon. Discarding a fallible `Result` via a wildcard pattern (`let _ = fallible()`) is a **compile-time static error**.
 
 Callers MUST explicitly handle errors via `?` propagation, `match` decomposition, or recovery closures.
 
@@ -91,7 +91,7 @@ let port = config["port"] ?? 8080
 
 ### 3.2 Result Fallback: Error-Consuming Closure Requirement
 
-> **Normative Rule**: When applied to `res: Result<T, E>`, the right-hand operand **MUST be an error-consuming closure `\err -> ...`** or a diverging control transfer statement (`return`, `panic`, `break`, `continue`).
+> **Normative Rule**: When applied to `res: Result<T, E>`, the right-hand operand **MUST be an error-consuming closure `\err -> ...`** or a diverging control transfer expression (`return`, `panic`, `break`, `continue`).
 
 ```ril
 let res: Result<str, str> = Err("offline")
@@ -103,55 +103,83 @@ Raw value fallbacks on `Result` types are statically rejected to guarantee that 
 
 ---
 
-## 4. Resource Cleanup (`defer`)
+## 4. Scoped Resource Cleanups (`let scoped`)
 
-The `defer` statement schedules a cleanup expression to execute when the enclosing lexical block scope exits:
+The `let scoped` declaration binds a managed system resource to a lexical variable while associating its lifetime directly with the enclosing block:
 
 ```ebnf
-DeferStmt ::= "defer" Expression
+ScopedLetDecl ::= "let" "scoped" [ "mut" ] Pattern [ ":" TypeExpression ] "=" Expression
 ```
 
 ```ril
-let handle = open_file("data.txt")?
-defer close_file(handle)
--- handle is guaranteed to be closed when scope exits
+fn process_file(path: str) -> Result<(), AppError> {
+    let scoped handle = open_file(path)?
+    let scoped mut buffer = allocate_buffer(1024)
+    
+    -- Both resources are deterministically released when the scope exits
+    write_data(mut buffer, handle)?
+    Ok(())
+}
 ```
 
-### 4.1 LIFO Execution Order
+### 4.1 LIFO Cleanup Order
 
-Multiple `defer` statements in the same scope execute in strict **Last-In, First-Out (LIFO)** reverse registration order.
+Multiple `let scoped` bindings declared in the same lexical block execute their associated cleanup handlers in strict **Last-In, First-Out (LIFO)** reverse order of declaration (in the example above, `buffer` is released before `handle`).
 
 ### 4.2 Trigger Conditions
 
-A deferred cleanup MUST execute upon any exit from the enclosing lexical block:
+The cleanup handler of an active `let scoped` binding MUST execute upon any exit from its defining lexical block:
 - Normal sequential completion of the block;
-- Early function `return`;
+- Early function return (`return`);
 - Early error propagation via `?`;
 - Loop control transfers (`break`, `continue`);
-- Effect handler aborts without resumption;
-- Runtime panic unwinding.
+- Effect handler early abort without resumption;
+- Deterministic runtime panic unwinding.
 
-### 4.3 Prohibition of Escaping Control Transfers
+### 4.3 Syntactic and Lexical Constraints
 
-To preserve transactional cleanup integrity:
-- Statements within a `defer` block MUST NOT transfer control outside that `defer` block.
-- Using `return`, `?`, or `break`/`continue` targeting an outer loop enclosing the `defer` is a **compile-time static error**.
-- Internal loops nested entirely within a `defer` block MAY use `break` and `continue` to manage their internal iterations.
+1. **Mandatory Initializer**: A `let scoped` declaration MUST provide an immediate initializer expression (`= Expression`). Omitting the initializer is a compile-time static error.
+2. **Lexical Confinement**: `let scoped` declarations are confined to local blocks, function bodies, and loop iterations. Declaring a scoped binding at the module top level (`pub let scoped` or top-level `let scoped`) is a **compile-time static error**.
+3. **Loop Iteration Scoping**: When declared inside a loop body (`while`, `for`, `loop`), the resource binding is scoped to the individual iteration. The cleanup handler executes at the end of each iteration, preventing resource exhaustion across long-running loops.
+4. **Mut-Modifier Compatibility**: `let scoped mut` introduces a mutable scoped handle. It adheres strictly to the Definite Mutation Invariant (must undergo at least one reachable write operation).
 
 ### 4.4 Panic Aggregation
 
-If a panic is raised inside a `defer` expression while unwinding a previous panic, the runtime system captures the secondary panic and attaches it as a suppressed error to the primary panic.
+If a panic is raised inside a resource's cleanup routine during panic unwinding, the runtime captures the secondary panic and attaches it as a suppressed error to the primary panic.
 
 ---
 
 ## 5. Scoped Handle Checking and Escape Analysis
 
-Ril distinguishes between ordinary GC-managed records and low-level **system resource handles** (e.g., file descriptors, OS sockets):
+Ril strictly segregates ordinary GC-managed records from low-level **system resource handles** (e.g., file descriptors, OS sockets, native device handles):
 
-1. **Origin Identity**: System resource handles carry static origin identities.
-2. **Locking on Defer Registration**:
-   Once a resource handle is passed to a cleanup function inside a `defer` statement (e.g., `defer close_file(h)`), all aliases of that handle's origin become **locked to the enclosing scope**.
-3. **Prohibition of Escape**:
-   A locked handle CANNOT be returned from the function, stored into outer records, captured into escaping closures, or passed to `snapshot`. Attempting to escape a locked handle is a compile-time static error.
-4. **Ordinary Records**:
-   Records that do not contain resource handles follow standard GC rules and MAY escape without restriction.
+### 5.1 Static Origin Identity
+System resource handles carry static origin identities traced from their instantiating primitives.
+
+### 5.2 Locking on Scoped Binding
+Once a resource handle is bound via `let scoped` (or `let scoped mut`), the handle and **all aliases/views sharing its origin identity** become **permanently locked to that lexical scope** (`LockedToScope(L)`).
+
+### 5.3 Must-Bind Affine Obligation
+> **Normative Rule**: Any expression yielding a system resource handle introduces an **affine obligation**. The consuming code MUST satisfy one of two mutually exclusive obligations:
+> 1. **Immediate Scoped Binding**: Bound via `let scoped` in the local lexical frame, transferring lifetime management to the block's deterministic cleanup stack; OR
+> 2. **Immediate Caller Transfer**: Evaluated as the function's return expression (e.g., `return expr` or tail expression), transferring the affine obligation to the caller frame.
+
+**Static Rejections**:
+- Discarding a resource handle expression as an uninspected non-tail expression (`open_file(p)?` on its own line or followed by a semicolon) is a **compile-time static error**.
+- Discarding a resource handle via wildcard pattern (`let _ = open_file(p)?`) is a **compile-time static error**.
+- Binding a resource handle to an ordinary unscoped binding (`let h = open_file(p)?`) without returning it is a **compile-time static error** (`UnscopedResourceHandleError`).
+
+### 5.4 Anti-Retention Sharing Law
+> **Normative Rule**: A locked scoped handle CANNOT be retained in memory beyond its defining lexical scope:
+1. **Outer Structures**: A locked handle CANNOT be stored into outer-scope records, arrays, maps, or module-level variables.
+2. **Retained Mutable Sharing Prohibition (`&^mut` Conflict)**: Passing a locked handle to any parameter or function that introduces retained mutable sharing (`&^mut`) is a **compile-time static error** (`ScopedHandleRetainedSharingViolation`). Because `&^mut` indicates that a mutable alias escapes the frame, it is fundamentally incompatible with scoped lexical lifetimes.
+3. **Snapshot Prohibition**: Passing a scoped handle or any type enclosing a scoped handle to `snapshot` is a **compile-time static error**.
+4. **Local Views**: Read-only aliases (`let view = scoped_h`) inherit the locked origin identity and expire when the scope exits.
+
+### 5.5 Closure Isolation Law
+> **Normative Rule**: Any closure that captures a locked scoped handle (or any projection of it) is strictly confined to that handle's scope:
+1. **Prohibition in Escaping Closures (`&capture`)**: A closure capturing a locked scoped handle CANNOT be returned from the function, CANNOT be stored into outer heap data structures, and CANNOT satisfy an escaping closure type (`&capture`). Violations are statically rejected (`EscapingScopedClosureError`).
+2. **Permitted Downward Funargs**: Passing a closure capturing a scoped handle downward as an argument to a synchronous higher-order function that executes within the same lexical scope is fully permitted.
+
+### 5.6 Ordinary Records
+Records and structures that do not contain system resource handles follow standard GC rules and MAY escape without restriction.

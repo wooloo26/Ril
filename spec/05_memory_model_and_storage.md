@@ -105,7 +105,7 @@ increment_both(mut count, mut count)
 -- count evaluates to 2
 ```
 
-1. **Order of Evaluation**: Writes to aliased parameters occur strictly in the source execution order of statements within the callee function.
+1. **Order of Evaluation**: Writes to aliased parameters occur strictly in the source execution order of expressions within the callee function.
 2. **Absence of Undefined Behavior**: Because evaluation is strictly sequenced and memory is GC-managed, aliasing between mutable parameters does not produce undefined memory states or race conditions in single-threaded contexts.
 3. **Suspension Invariance**: Active `mut` borrows remain valid across asynchronous suspension points (`@Async`).
 

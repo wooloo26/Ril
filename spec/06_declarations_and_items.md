@@ -16,12 +16,12 @@ Item ::= LetDecl | FunctionDecl | SumTypeDecl | NominalDecl
 
 ---
 
-## 2. Variable Bindings (`let` and `let mut`)
+## 2. Variable Bindings (`let`, `let mut`, and `let scoped`)
 
 Variable bindings introduce identifiers associated with values or mutable storage locations:
 
 ```ebnf
-LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
+LetDecl ::= [ "pub" ] "let" [ "scoped" ] Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
 ```
 
 ### 2.1 Initialization Rules
@@ -35,6 +35,11 @@ LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] [ "=" Expression ] [ 
 3. **Module-Level Mutable Export Prohibition**:
    - Exporting a mutable module-level binding (`pub let mut`) is **strictly PROHIBITED** and MUST be rejected at compile time. Shared mutable state across module boundaries MUST be encapsulated using algebraic effects, parameter passing, or capability instances (`&capture`).
    - Private module-level mutable variables (`let mut`) are permitted but MUST be initialized with pure constant expressions without side effects.
+4. **Scoped Bindings (`let scoped` and `let scoped mut`)**:
+   A `scoped` binding associates a system resource handle or dynamic resource with the enclosing lexical block scope. Upon exiting the block (via sequential termination, early `return`, error propagation `?`, `break`/`continue`, effect abort, or runtime panic unwinding), the resource's deterministic cleanup handler is automatically executed in strict Last-In, First-Out (LIFO) order.
+5. **Scoped Initialization and Scope Restrictions**:
+   - A `scoped` binding MUST be initialized at declaration time (`let scoped x = expr` or `let scoped mut x = expr`). Omitting the initializer is a compile-time static error.
+   - A `scoped` binding MUST NOT appear at module scope (`pub let scoped` or top-level `let scoped`). Scoped bindings are strictly restricted to local block scopes; module-level declaration is a compile-time static error.
 
 ---
 

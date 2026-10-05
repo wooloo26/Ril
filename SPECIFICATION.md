@@ -40,12 +40,12 @@ The specification is organized into sixteen modular normative chapters and a for
 | **05** | [Memory Model and Storage](spec/05_memory_model_and_storage.md) | Value vs. reference types, handle-level read-only invariant, definite mutation, aliasing, live views, `snapshot`, and `produce`. |
 | **06** | [Declarations and Items](spec/06_declarations_and_items.md) | Module-level items, record schemas, sum types, indexed GADTs, nominal wrappers, and opaque types. |
 | **07** | [Expressions and Operators](spec/07_expressions_and_operators.md) | Arithmetic, wrapping math, bitwise, relational, logical, range, indexing, pipelines (`\|>`, `!>`), `??`, `?`. |
-| **08** | [Control Flow and Pattern Matching](spec/08_control_flow_and_patterns.md) | Blocks, `where` clauses, `if`, loops (`loop`, `while/else`, `for/else`), patterns, exhaustiveness, `is`. |
+| **08** | [Control Flow and Pattern Matching](spec/08_control_flow_and_patterns.md) | Blocks, `where` clauses, `if`, loops (`loop`, `while`, `for`), patterns, exhaustiveness, `is`. |
 | **09** | [Functions and Callables](spec/09_functions_and_callables.md) | Signatures, parameters (`mut`, `erased`), defaults, named args, closures, higher-order functions, hoisting. |
 | **10** | [Algebraic Effects and Handlers](spec/10_algebraic_effects_and_handlers.md) | Effect declarations, aliases, `with` handlers, `resume`, built-in `@Async`, `@Div`, `Fuel`, isolation. |
 | **11** | [State and Capability Tracking](spec/11_state_and_capability_tracking.md) | Annotations `&mut`, `&^mut`, `&capture`, `&{var}`, `&{mut var}`, local mutation purity, and retained sharing. |
 | **12** | [Type Computation and Proofs](spec/12_type_computation_and_proofs.md) | Halting functions (`halt fn`), structural induction, `match type`, `Eq`, `Refl`, rewriting, protocols. |
-| **13** | [Error Handling and Resources](spec/13_error_handling_and_resources.md) | `Option<T>`, `Result<T, E>`, postfix `?`, `??` fallback rules, unused Result enforcement, `defer`, handles. |
+| **13** | [Error Handling and Resources](spec/13_error_handling_and_resources.md) | `Option<T>`, `Result<T, E>`, postfix `?`, `??` fallback rules, unused Result enforcement, scoped resources (`let scoped`), handles. |
 | **14** | [Modules and Compilation Units](spec/14_modules_and_compilation_units.md) | Acyclic module DAG, `pub` visibility, zero side-effect top-level initialization, entry point `main`. |
 | **15** | [Host Interoperability and ABI (Reserved)](spec/15_host_interoperability_and_abi.md) | Reserved for future host interop, foreign function interface (FFI), and external ABI specifications. |
 | **16** | [Standard Prelude](spec/16_standard_prelude.md) | Built-in primitive types, constructors, collection types (`Map`, `Set`), and prelude functions. |

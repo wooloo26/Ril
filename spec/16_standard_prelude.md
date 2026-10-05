@@ -90,10 +90,10 @@ fn panic(message: str) -> never
 ```
 - Raises an immediate, deterministic runtime panic, halting normal execution and initiating stack unwinding.
 
-```ebnf
-AssertStmt ::= "assert" Expression [ "else" Expression ]
+```ril
+fn assert(cond: bool, message: str | fn() -> str = "assertion failed") -> ()
 ```
-- Evaluates a boolean condition. If the condition evaluates to `false`, it triggers a runtime panic with the default message `"assertion failed"` or the evaluated `else` message.
+- Evaluates a boolean condition. If `cond` evaluates to `true`, yields the unit value `()`. If `cond` evaluates to `false`, halts execution and triggers a runtime panic with the provided message string or lazily evaluated supplier closure.
 
 ### 2.6 Error Conversion Helpers
 

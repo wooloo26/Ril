@@ -1,6 +1,6 @@
 # 03. Formal Grammar and Syntax
 
-This chapter defines the syntactic conventions, formal operator precedence hierarchy, statement separation rules, and structural disambiguation boundaries of Ril.
+This chapter defines the syntactic conventions, formal operator precedence hierarchy, item and expression sequencing rules, and structural disambiguation boundaries of Ril.
 
 For the complete, machine-readable formal grammar of all declarations, types, and expressions, see [Appendix: Consolidated Formal EBNF Grammar](appendix_ebnf_grammar.md).
 
@@ -21,9 +21,9 @@ The formal grammar of Ril is specified using Extended Backus-Naur Form (EBNF) wi
 
 ---
 
-## 2. Statement Separation and Layout Rules
+## 2. Item and Expression Sequencing and Layout Rules
 
-Ril uses a combination of explicit semicolons (`;`) and semantic newlines to sequence expressions and statements within blocks and module scopes.
+Ril uses a combination of explicit semicolons (`;`) and semantic newlines to sequence declarations (items) and expressions within blocks and module scopes.
 
 ```ebnf
 Separator  ::= ";" | Newline
@@ -32,14 +32,14 @@ Separators ::= Separator { Separator }
 
 ### 2.1 Semicolon and Newline Rules
 
-1. **Statement Separation**: Expressions and item declarations in a block are separated by semicolons or newlines.
+1. **Item and Expression Separation**: Expressions and item declarations in a block or module scope are separated by semicolons or newlines.
 2. **Block Tail Expression**:
    - The value of a block expression `{ ... }` is the value of its final expression if not followed by a semicolon.
    - If the final expression is followed by a semicolon (`;`), its evaluated value is discarded, and the block evaluates to the unit value `()`.
    - Trailing newlines following a block's final expression preserve its value and do NOT discard it to `()`.
    - An empty block `{}` or a block terminating in an item declaration evaluates to `()`.
 3. **Line Continuation**:
-   A newline character is treated as whitespace (continuation) rather than a statement separator under any of the following conditions:
+   A newline character is treated as whitespace (continuation) rather than a separator under any of the following conditions:
    - When the newline immediately follows a binary operator, assignment operator (`=`), arrow (`->`), or comma (`,`).
    - When the newline immediately precedes a leading pipeline operator (`|>`), mutating pipeline (`!>`), or fallback operator (`??`).
    - Within balanced enclosing delimiters: parentheses `(...)`, brackets `[...]`, or generic angle brackets `<...>`.
@@ -51,9 +51,9 @@ Separators ::= Separator { Separator }
 2. **Postfix Error Operator (`?`) Line Rule**:
    In postfix error mapping `expr ? mapper`, the `mapper` expression MUST begin on the same physical line as the `?` token without an intervening newline. A newline immediately following `?` terminates the operator as a standalone postfix unwrap.
 3. **Control Transfer Terminations**:
-   A newline immediately following `return` or `break` concludes a bare statement yielding `()`. Any optional return or break payload expression MUST begin on the same physical line.
-4. **Dangling `else` Association Across Newlines**:
-   Across newlines, an `else` keyword belongs to the nearest preceding `if`, `while`, `for`, `let`, or `assert` construct at the same delimiter depth that does not already have an `else` branch.
+   A newline immediately following `return` or `break` concludes a bare control transfer expression yielding `()`. Any optional return or break payload expression MUST begin on the same physical line.
+4. **`else` Line Continuation Rule**:
+   When a newline immediately follows the closing brace `}` of an `if` expression or `let` declaration, and the first non-whitespace token on the subsequent physical line is `else`, the newline is treated as a continuation rather than an expression separator, binding the `else` branch directly to that preceding construct.
 
 ---
 
@@ -83,6 +83,8 @@ The table below establishes the strict precedence hierarchy of all operators and
 
 *Note on relational `in`*: Key membership `in` (as in `k in keyof T`) has relational precedence (Level 10) and is available exclusively within erased compile-time computations.
 
+*Note on Primary and Control Expressions*: Literals, identifiers, blocks, parenthesized expressions, control flow expressions (`if`, `match`, `loop`, `while`, `for`), control transfer expressions (`return`, `break`, `continue`), effect handling expressions (`with`), and delimited resumptions (`resume`) are Primary Expressions (`PrimaryExpr`). They participate in binary and postfix operations through explicit grouping or their syntactic delimiter boundaries.
+
 ---
 
 ## 4. Syntactic Disambiguation and Boundary Invariants
@@ -110,7 +112,8 @@ When a closure expression `\x -> body` appears as an unparenthesized sub-express
 A block expression `{ ... }` MAY append a trailing `where` clause following its final expression:
 
 ```ebnf
-Block      ::= "{" { Separator } [ Statement { Separators Statement } [ Separators ] ] [ WhereBlock ] "}"
+BlockItem  ::= Item | Expression
+Block      ::= "{" { Separator } [ BlockItem { Separators BlockItem } [ Separators ] ] [ WhereBlock ] "}"
 WhereBlock ::= "where" { Separator } FunctionDecl { Separators FunctionDecl } [ Separators ]
 ```
 
@@ -140,3 +143,7 @@ The literal form `.{ ... }` is context-dependent:
    fn() -> (fn() -> int @Log) &capture
    ```
    Effects and capability annotations outside the closing parenthesis belong to the enclosing outer callable signature.
+
+### 4.6 Disambiguation of Contextual Keyword `scoped`
+
+In `let` declarations, `scoped` is recognized as the resource scope modifier if and only if it is immediately followed by a pattern binder (such as `mut`, an identifier, `_`, `(`, `[`, or `.{`). When immediately followed by `=` or `:`, `scoped` is parsed as an ordinary variable identifier (e.g., `let scoped = 1`).

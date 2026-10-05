@@ -36,6 +36,7 @@ halt fn add(left: Nat, right: Nat) -> Nat {
    - Unbounded loops (`loop`, `while`).
    - Mutable bindings (`let mut`) and parameter mutations (`mut`).
    - Algebraic effect invocations (`@Effect`) and effect handlers (`with`).
+   - Dynamic assertion calls (`assert(...)`) and runtime panics (`panic(...)`). Total functions MUST rely on constructive propositional equality (`Eq<A, a, b>`, `Refl`) rather than dynamic runtime panic conditions.
    - Live mutable state reads, resource handle operations, and object identity comparisons.
 3. **Capture Rules in `halt fn`**:
    - Capturing external immutable values requires `&{name}` and is permitted only if the captured value is admissible in halting computation.
@@ -103,7 +104,7 @@ type Eq<A, a: A, b: A> {
 1. The constructor `Refl` constructs equality evidence if and only if its index arguments are **definitionally equal** ($a \equiv b$).
 2. Cumulative universe typing does not identify distinct types for `Refl`.
 3. Incompatible indices (e.g., `Eq<int, 1, 2>`) CANNOT construct `Refl` and produce a compile-time static error.
-4. Runtime equality checks (`assert a == b`) do NOT construct `Eq` evidence.
+4. Runtime equality checks (`assert(a == b)`) do NOT construct `Eq` evidence.
 
 ### 3.2 Proof Rewriting (`rewrite ... in`)
 

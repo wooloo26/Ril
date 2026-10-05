@@ -6,7 +6,13 @@ This chapter specifies the evaluation semantics, typing rules, desugaring equati
 
 ## 1. Expression-Oriented Evaluation
 
-Ril is strictly expression-oriented. Blocks, conditionals, match constructs, and loops produce values. Statements are simply expressions evaluated for side effects or declarations.
+Ril is a 100% pure expression-oriented programming language. Every executable construct evaluates to a value (or diverges) and possesses a static type `τ`, a state capability set `σ`, and an algebraic effect set `ε`.
+
+The language enforces a strict binary orthogonal architecture between declarations (**Items**) and executable terms (**Expressions**):
+1. **Items**: Pure syntactic declarations (`let`, `fn`, `type`, `effect`, `module`, `use`, `test`) that extend the static typing environment `Γ`. Items produce no runtime values.
+2. **Expressions**: All executable computational units. Blocks, conditionals, pattern matching, loops, pipeline stages, effect handlers (`with`), delimited resumptions (`resume`), and assignments are expressions.
+
+There is NO concept of a "statement" in Ril.
 
 ---
 
@@ -207,7 +213,7 @@ let mapped = fallible_op() ? AppError::FromIo
 2. **Early Return**: If the value represents failure (`None` or `Err(e)`), it early-returns from the enclosing function or closure.
 3. **Error Mapping**: When followed by a mapper expression on the same line, the failure payload is transformed by the mapper before returning.
 4. **Option-to-Result Bridge**: In a function returning `Result<T, E>`, applying `?` to `opt: ?T` accepts an error value expression or lazy supplier `opt ? error_expr`, converting `None` to `Err(error_expr)`.
-5. **Unused Result Enforcement**: Statement expressions evaluating to `Result<T, E>` MUST NOT be discarded. Discarding via `let _ = fallible()` is statically rejected.
+5. **Unused Result Enforcement**: Expressions evaluating to `Result<T, E>` MUST NOT be discarded in non-tail positions or via semicolons. Discarding via `let _ = fallible()` is statically rejected.
 
 ### 7.2 Fallback and Recovery Operator (`??`)
 
