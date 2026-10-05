@@ -42,13 +42,22 @@ halt fn add(left: Nat, right: Nat) -> Nat {
    - Capturing external immutable values requires `&{name}` and is permitted only if the captured value is admissible in halting computation.
    - Observing live mutable variables—even through read-only views—is strictly forbidden.
    - Captured capabilities cannot be erased.
-4. **Strictly Positive Structural Induction**:
-   - Every recursive call in a `halt fn` MUST decrease an immutable, strictly positive inductive argument.
-   - Traversed inductive links MUST be immutable. Arbitrary cyclic graphs or negative recursive occurrences CANNOT justify halting recursion.
-5. **Prohibition of Negative Recursive Elimination**:
-   - Negative recursive types (e.g., `type Negative { Wrap(halt fn(Negative) -> never) }`) CANNOT be eliminated in halting or erased type computation, even by a syntactically non-recursive function. This rule prevents Girard's / Curry's paradox in compile-time reduction.
-6. **Subtyping and Callable Decay**:
+4. **Halting Contract Restriction**:
+   Contracts (`requires`, `ensures`) declared on `halt fn` MUST be purely halting expressions. They SHALL NOT invoke algebraic effects or declare mutable capability bounds.
+5. **Lemma 1.1 (Strictly Positive Structural Decrement)**:
+   Every recursive call in a `halt fn` MUST decrease an immutable, strictly positive inductive argument along a well-founded subterm relation. Traversed inductive links MUST be immutable. Arbitrary cyclic graphs or negative recursive occurrences CANNOT justify halting recursion.
+6. **Negative Occurrence Ban**:
+   Negative recursive types (e.g., `type Negative { Wrap(halt fn(Negative) -> never) }`) CANNOT be eliminated in halting or erased type computation, even by a syntactically non-recursive function.
+7. **Subtyping and Callable Decay**:
    A `halt fn` MAY be used where an ordinary `fn` with matching parameter permissions is expected (losing the termination guarantee), but an ordinary `fn` CANNOT be supplied where a `halt fn` is required.
+
+### 1.2 Halting Metatheory
+
+**Theorem 1.1 (Strong Normalization)**:
+Every well-typed expression $e$ composed exclusively of constructs admissible in `halt fn` terminates in a finite number of operational reduction steps to a canonical value. Divergence ($\bot$) is statically impossible.
+
+**Theorem 1.2 (Confluence / Church-Rosser)**:
+If a compile-time type expression reduces along distinct reduction paths $e \to^* e_1$ and $e \to^* e_2$, there exists an expression $e_3$ such that $e_1 \to^* e_3$ and $e_2 \to^* e_3$. Normal forms in halting evaluation are unique.
 
 ---
 
@@ -85,7 +94,16 @@ type Cell<C> = match type C {
    - There is NO implicit distribution over literal unions.
    - Higher-rank and dependent callable binders are NOT decomposed by type patterns.
    - All match arms MUST produce compatible sorts.
-5. **Opaque Boundary Invariant**: An opaque type's underlying representation is NEVER exposed to `match type` outside its defining module.
+### 2.3 Operational Reduction of `match type`
+
+Given a target type expression $T$ normalized to canonical form $\tau$:
+$$\operatorname{eval}(\text{match type } T \{ P_1 \to E_1, \dots, P_n \to E_n \})$$
+
+1. **Sequential Pattern Matching**: For each arm $i \in \{1, \dots, n\}$ in linear declaration order:
+   - Compute structural unification $\operatorname{unify}(P_i, \tau) \Rightarrow \theta$, where $\theta$ binds each `infer U` variable to its corresponding extracted sub-component in $\tau$.
+   - If unification succeeds, the match expression immediately reduces to $\theta(E_i)$.
+2. **Exhaustiveness and Fallthrough**: If no pattern matches and no fallback arm (`_`) is defined, type computation fails at compile time with a static type error.
+3. **Dead Pattern Detection**: If arm $P_k$ is statically subsumed by preceding patterns $\bigcup_{j < k} P_j$, the compiler SHALL emit a static dead code error.
 
 ---
 
@@ -123,6 +141,11 @@ halt fn right_zero(n: Nat) -> Eq<Nat, {n |> add(Nat::Zero)}, n> {
 
 1. Given evidence `proof: Eq<A, a, b>`, the expression `rewrite proof in expr` replaces occurrences of `a` with `b` in the expected type of `expr` and transports the term across the equality.
 2. `rewrite` is purely static: it produces zero runtime instructions or casts.
+
+**Theorem 3.1 (Zero-Cost Proof Transport)**:
+Let $p : \operatorname{Eq}\langle A, a, b\rangle$ be proof evidence and let $e : T[a]$. The expression `rewrite p in e` is statically typed with $T[b]$. The operational evaluation satisfies:
+$$\operatorname{eval}(\operatorname{rewrite}\ p\ \operatorname{in}\ e) \equiv \operatorname{eval}(e)$$
+In bytecode compilation and machine code emission, proof rewriting generates zero executable instructions and incurs zero runtime memory overhead.
 
 ### 3.3 Erased Evidence Parameters
 
@@ -163,7 +186,7 @@ halt fn well_founded<A, R: fn(A, A) -> Type, P: fn(A) -> Type>(
 }
 ```
 
-*Note*: `Acc`, `WellFounded`, and `well_founded` are standard pattern models; they are user-defined type computation patterns rather than prelude exports.
+The definitions `Acc`, `WellFounded`, and `well_founded` specify user-defined accessibility patterns and are not prelude exports.
 
 ---
 
@@ -189,7 +212,7 @@ type Patch<T: Record> = {
 
 ### 5.2 Explicit Operation Protocols
 
-Ril deliberately omits ad-hoc type classes and implicit instance resolution. Polymorphic operations requiring custom behaviors rely on **explicit operation records**:
+Polymorphic operations requiring parameterized behaviors SHALL be represented using **explicit operation records**:
 
 ```ril
 type Ordering { Less, Equal, Greater }
@@ -204,5 +227,5 @@ fn compare_int(a: int, b: int) -> Ordering {
 let int_order: Order<int> = .{ compare: compare_int }
 ```
 
-1. **Zero Magic**: Protocols are ordinary first-class record schemas containing function fields.
-2. **Explicit Passing**: Callers pass protocol instances explicitly, eliminating ambiguous resolution, coherence conflicts, or orphan rules.
+1. **First-Class Value Representation**: Protocols SHALL be represented as ordinary first-class record schemas containing function fields.
+2. **Explicit Parameter Passing**: Implementations and callers SHALL pass protocol instances explicitly as arguments or record fields, eliminating ambiguous resolution cascades, coherence conflicts, and orphan instance restrictions.

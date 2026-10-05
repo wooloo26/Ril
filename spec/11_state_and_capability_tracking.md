@@ -6,7 +6,10 @@ This chapter formalizes the static capability and state tracking system in Ril, 
 
 ## 1. Local Mutation Purity Invariant
 
-A central principle of Ril's effect and state system is that **non-escaping local mutation is strictly pure**:
+### 1.1 Invariant (Local Mutation Purity Invariant)
+
+For any evaluation frame with local allocations $\mathcal{L} \subset \text{Store}$ such that $\mathcal{L} \cap \operatorname{Escaped}(\text{Frame}) = \emptyset$, mutating transitions on locations in $\mathcal{L}$ do not introduce capability annotations on the callable's signature:
+$$\forall l \in \mathcal{L}, \quad \text{Write}(l) \implies \Gamma \vdash f : \text{fn}(P) \to R$$
 
 ```ril
 fn sum_to(n: int) -> int {
@@ -184,7 +187,7 @@ let general: fn() -> int &capture = ticker -- VALID: &{mut saved} abstracts to &
 ### 7.1 Invocation Permission Invariant
 
 > **Normative Rule**:
-> 1. **Internal State Mutation (`&capture`, `&{mut ...}`)**: Invoking any callable carrying internal captured state mutation strictly requires the callable identifier itself to be bound as a mutable handle (`let mut`) or a mutable parameter (`mut`). Calling such a closure through a read-only (`let`) handle is statically rejected to prevent covert mutations through read-only views.
+> 1. **Internal State Mutation (`&capture`, `&{mut ...}`)**: Invoking any callable carrying internal captured state mutation strictly requires the callable identifier itself to be bound as a mutable handle (`let mut`) or a mutable parameter (`mut`). Calling such a closure through a read-only (`let`) handle is statically rejected (`E0520: MutabilityLaunderingError`) to prevent covert mutations through read-only views.
 > 2. **Parameter Mutation (`&mut`, `&^mut`)**: Invoking a callable carrying parameter mutation requires arguments supplied to `mut` parameters to be writable lvalue locations. It does NOT require the callable handle itself (or named function item) to be bound as `let mut`.
 
 ```ril
@@ -193,16 +196,16 @@ let mut active = make_counter(0)
 active() -- valid: invoked through mutable binding
 
 let fixed = make_counter(0)
--- fixed() -- STATIC ERROR: cannot invoke '&capture' callable through read-only handle
+-- fixed() -- STATIC ERROR [E0520]: cannot invoke '&capture' callable through read-only handle
 
 -- Parameter mutating function: callable itself can be read-only; arguments must be mutable reference handles
 let mut data = Counter.{ val: 10 }
 increment(mut data) -- valid: 'data' is mutable reference handle; 'increment' is a top-level item
 ```
 
-### 7.2 Snapshot Prohibition
+### 7.2 Snapshot Prohibition Theorem
 
-Any type containing `&mut`, `&^mut`, `&capture`, or `&{mut ...}` callables CANNOT be snapshotted. Passing such a type to `snapshot` is a compile-time static error:
+Any type containing `&mut`, `&^mut`, `&capture`, `&{mut ...}` callables, or scoped resource handles CANNOT be snapshotted. Passing such a type to `snapshot` is a compile-time static error:
 
 ```ril
 let mut job = make_counter(0)
@@ -212,3 +215,39 @@ let bad = job |> snapshot -- STATIC ERROR: type contains '&capture' callables an
 ### 7.3 Capture and Capability Erasure Invariant
 
 Callables capturing external state (`&{var}` or `&{mut var}`) or carrying `&mut`, `&^mut`, or `&capture` capabilities CANNOT be cast, coerced, or erased to unannotated pure function types (`fn(...) -> ...`) or plain `&mut`.
+
+---
+
+## 8. Capability Anti-Laundering Formal System
+
+Ril defines an axiomatic formal system governing permission preservation, preventing covert mutation laundering through handles, closures, containers, or return values.
+
+### 8.1 Monotonic Permission Degradation Axiom
+
+Permissions across reference access paths satisfy the strict partial order:
+$$\text{Mut} \succ \text{ReadOnly} \succ \text{None}$$
+Permissions SHALL degrade monotonically along dataflow paths ($\text{Mut} \to \text{ReadOnly}$). Any operation attempting to upgrade, coerce, or cast a read-only reference or handle back into a mutable capability is statically rejected.
+
+### 8.2 Capability Preorder Lattice
+
+State capabilities form a bounded preorder lattice $(\Sigma, \sqsubseteq)$:
+$$\emptyset \sqsubset \text{\&mut} \sqsubset \text{\&^mut}$$
+with $\text{\&capture}$ spanning an orthogonal dimension. Subsumption allows narrower capability contracts to satisfy broader capability contexts:
+$$\mathcal{S}_1 \sqsubseteq \mathcal{S}_2 \implies \text{fn}(P) \to R \ \&\mathcal{S}_1 <: \text{fn}(P) \to R \ \&\mathcal{S}_2$$
+
+### 8.3 Anti-Laundering Static Diagnostic Closure Matrix
+
+A conforming compiler MUST reject mutability laundering attempts under the following normative static error taxonomy:
+
+| Error Code | Diagnostic Identifier | Violation Criterion |
+| :--- | :--- | :--- |
+| **`E0510`** | `MissingRetainedSharingCapabilityError` | Function creates escaping shared mutable aliases without declaring `&^mut`. |
+| **`E0520`** | `MutabilityLaunderingError` | Binding a read-only reference to `let mut`, mutating through a read-only live view, or invoking `&capture` via a read-only handle. |
+| **`E0521`** | `DestructuringLaunderingError` | Destructuring a read-only reference with `mut` modifiers on nested reference fields. |
+| **`E0522`** | `ContainerLaunderingError` | Storing a read-only reference into a mutable container or mutable record field. |
+| **`E0523`** | `MutMutAliasingConflictError` | Supplying overlapping storage paths to multiple `mut` parameters in a single call. |
+| **`E0524`** | `ReadMutAliasingHazardError` | Supplying overlapping storage paths to a `mut` parameter and a read-only parameter in a single call. |
+| **`E0525`** | `SpreadLaunderingError` | Shallow-spreading a read-only record with reference fields into a `let mut` root binding. |
+| **`E0526`** | `CollectionMutationDuringIterationError`| Mutating a collection in place while actively iterating over it in a `for` loop. |
+| **`E0527`** | `ClosureCaptureLaunderingError` | Capturing read-only references into `&{mut ro}` or passing read-only handles to `mut` parameters. |
+| **`E0528`** | `ReturnLaunderingError` | Binding a function return value to `let mut` when that value originates from a read-only parameter. |

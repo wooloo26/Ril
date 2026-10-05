@@ -8,9 +8,9 @@
 
 ## Abstract
 
-This document constitutes the formal, canonical reference specification for the **Ril** programming language. It serves as the authoritative **Single Source of Truth (SSOT)** for all conforming Ril compiler implementations, interpreters, static analyzers, and runtime systems.
+This document constitutes the formal, canonical reference specification for the **Ril** programming language. It serves as the authoritative, canonical specification for all conforming Ril compiler implementations, interpreters, static analyzers, and runtime systems.
 
-Ril is an expression-oriented, strongly typed, statically analyzed programming language featuring garbage collection, algebraic effect handlers, fine-grained state capability tracking, predicative universe polymorphism, dependent records, and zero-cost compile-time type computation. Ril compiles deterministically to native machine binaries, maintaining strictly deterministic numeric, semantic, and operational behaviors.
+Ril is an expression-oriented, strongly typed, statically analyzed programming language featuring garbage collection, algebraic effect handlers, fine-grained state capability tracking, predicative universe polymorphism, dependent records, and compile-time type computation with zero runtime representation overhead. Ril compiles deterministically to native machine binaries, maintaining strictly deterministic numeric, semantic, and operational behaviors.
 
 ---
 
@@ -20,10 +20,10 @@ The key words **"MUST"**, **"MUST NOT"**, **"REQUIRED"**, **"SHALL"**, **"SHALL 
 
 ### 1.1 Conformance Classes
 
-A compiler or implementation is classified under the following formal criteria:
+A software system SHALL be classified under the following formal conformance criteria:
 
-1. **Conforming Ril Compiler**: An implementation that accepts all syntactically and semantically valid Ril programs, rejects all invalid programs at compile time with normative static errors, and emits code that adheres strictly to the evaluation, memory, effect, and panic semantics defined herein.
-2. **Conforming Native Backend**: A code-generation backend producing native machine code (via LLVM, Cranelift, C, or native assembly) matching the exact integer, floating-point, memory model, and cleanup semantics specified.
+1. **Conforming Ril Compiler**: An implementation that MUST accept all syntactically and semantically valid Ril programs, MUST reject all invalid programs at compile time with normative static errors, and MUST emit artifacts adhering strictly to the operational, memory, effect, and panic semantics defined herein.
+2. **Conforming Native Backend**: A code-generation backend that MUST produce native machine code (via LLVM, Cranelift, C, or native machine instructions) adhering to the exact integer, floating-point, memory model, and cleanup semantics specified herein.
 
 ---
 
@@ -51,14 +51,15 @@ The specification is organized into seventeen modular normative chapters and a f
 | **16** | [Standard Prelude](spec/16_standard_prelude.md) | Built-in primitive types, constructors, collection types (`Map`, `Set`), and prelude functions. |
 | **17** | [Multicore Parallelism and Data Parallelism](spec/17_multicore_parallelism.md) | Work-stealing scheduling, local mutation purity dividend, data parallel pipelines (`par_map`, `par_fold`), structured task parallelism via multi-core nursery, and deterministic reduction. |
 | **App** | [Appendix: Consolidated Formal EBNF Grammar](spec/appendix_ebnf_grammar.md) | Machine-readable, full Context-Free EBNF Grammar Specification for parser generation. |
+| **Rat** | [Design Rationale and Defensive Principles](spec/DESIGN_RATIONALE.md) | Non-normative companion documenting architectural rationale, safety philosophy, and comparative language analysis. |
 
 ---
 
 ## 3. Guiding Architectural Principles
-
+ 
 Compiler implementors MUST evaluate design and implementation decisions against the following core tenets:
 
-1. **Occam's Principle of Surface Semantics**: The language specification defines observable program behavior, type safety contracts, and reject/panic criteria. Compilers are free to perform optimizations (e.g., inlining, escape analysis, devirtualization, monomorphization) provided observable behavior is invariant.
-2. **Determinism**: No implementation-defined or undefined behavior (UB) exists in Ril. Numeric arithmetic, wrapping, floating-point rounding, overflow detection, and exception unwinding MUST produce identical, strictly deterministic outcomes.
-3. **Zero Hidden State**: Mutable side effects are never invisible. In-place modification requires an explicit `let mut` root or `mut` parameter; external state captures require static capability annotations (`&{mut name}`); side-effecting operations require explicit algebraic effects (`@Effect`).
-4. **Safety Against Fault Masking**: Fallible operations yielding `Result` cannot be silently discarded, ignored via wildcard patterns, or bypassed using uninspected fallback values without explicit closures.
+1. **Occam's Principle of Surface Semantics**: The language specification defines observable program behavior, type safety contracts, and reject/panic criteria. A conforming compiler MAY perform optimizations (such as inlining, escape analysis, devirtualization, and monomorphization), provided that observable program behavior remains strictly invariant.
+2. **Determinism**: A conforming Ril implementation SHALL NOT exhibit implementation-defined behavior or undefined behavior (UB). Numeric arithmetic, wrapping, floating-point rounding, overflow detection, and exception unwinding MUST produce identical, strictly deterministic outcomes.
+3. **Zero Hidden State**: Mutable side effects are never invisible. In-place modification strictly requires an explicit `let mut` root or `mut` parameter; external state captures strictly require static capability annotations (`&{mut name}`); side-effecting operations strictly require explicit algebraic effects (`@Effect`).
+4. **Safety Against Fault Masking**: Fallible operations yielding `Result` MUST NOT be silently discarded, MUST NOT be ignored via wildcard patterns, and MUST NOT be bypassed using uninspected fallback values without explicit closures.

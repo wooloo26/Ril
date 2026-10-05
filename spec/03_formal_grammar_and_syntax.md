@@ -33,11 +33,11 @@ Separators ::= Separator { Separator }
 ### 2.1 Semicolon and Newline Rules
 
 1. **Item and Expression Separation**: Expressions and item declarations in a block or module scope are separated by semicolons or newlines.
-2. **Block Tail Expression**:
-   - The value of a block expression `{ ... }` is the value of its final expression if not followed by a semicolon.
-   - If the final expression is followed by a semicolon (`;`), its evaluated value is discarded, and the block evaluates to the unit value `()`.
-   - Trailing newlines following a block's final expression preserve its value and do NOT discard it to `()`.
-   - An empty block `{}` or a block terminating in an item declaration evaluates to `()`.
+2. **Block Tail Expression Evaluation**:
+   - The evaluated value of a block expression `{ ... }` SHALL be the value of its final expression if and only if that expression is not followed by a semicolon (`;`).
+   - If the final expression is followed by a semicolon (`;`), its evaluated value SHALL be discarded, and the block expression SHALL evaluate to the unit value `()`.
+   - Trailing newlines following a block's final expression MUST NOT cause its value to be discarded.
+   - An empty block `{}` or a block terminating in an item declaration SHALL evaluate to `()`.
 3. **Line Continuation**:
    A newline character is treated as whitespace (continuation) rather than a separator under any of the following conditions:
    - When the newline immediately follows a binary operator, assignment operator (`=`), arrow (`->`), or comma (`,`).
@@ -65,7 +65,7 @@ The table below establishes the strict precedence hierarchy of all operators and
 | :---: | :--- | :---: | :--- |
 | **1** | `.` `?.` `?[]` `[]` `()` `::` postfix `?` | **Left** | Member access, safe navigation, indexing, invocation, namespace path, postfix error propagation/mapping |
 | **2** | `-` `!` `~` `typeof` | **Unary Prefix** | Arithmetic negation, logical NOT, bitwise NOT, static type introspection |
-| **3** | `*` `/` `%` `*%` | **Left** | Multiplication, division, remainder, wrapping multiplication |
+| **3** | `*` `/` `%` `/?` `%?` `*%` | **Left** | Multiplication, division, remainder, safe division & remainder, wrapping multiplication |
 | **4** | `+` `-` `+%` `-%` | **Left** | Addition, subtraction, wrapping addition & subtraction |
 | **5** | `<<` `>>` | **Left** | Bitwise shift left, bitwise shift right |
 | **6** | `&` | **Left** | Bitwise AND |
@@ -81,9 +81,13 @@ The table below establishes the strict precedence hierarchy of all operators and
 | **16** | `??` | **Right** | Lazy fallback and unwrapping operator |
 | **17** | `=` `+=` `-=` `*=` `/=` `%=` `+%=` `-%=` `*%=` `&=` `^=` `\|=` `<<=` `>>=` | **Non-associative** | Value and compound assignment (**evaluates to `()`**) |
 
-*Note on relational `in`*: Key membership `in` (as in `k in keyof T`) has relational precedence (Level 10) and is available exclusively within erased compile-time computations.
+### 3.1 Relational Operator Scope
 
-*Note on Primary and Control Expressions*: Literals, identifiers, blocks, parenthesized expressions, control flow expressions (`if`, `match`, `loop`, `while`, `for`), control transfer expressions (`return`, `break`, `continue`), effect handling expressions (`with`), and delimited resumptions (`resume`) are Primary Expressions (`PrimaryExpr`). They participate in binary and postfix operations through explicit grouping or their syntactic delimiter boundaries.
+Key membership `in` (`k in keyof T`) shares relational operator precedence (Level 10) and is restricted to erased compile-time type computation.
+
+### 3.2 Primary and Control Expression Delimitation
+
+Literals, identifiers, blocks, parenthesized expressions, control flow expressions (`if`, `match`, `loop`, `while`, `for`), control transfer expressions (`return`, `break`, `continue`), effect handling expressions (`with`), and delimited resumptions (`resume`) are Primary Expressions (`PrimaryExpr`). They participate in binary and postfix operations through explicit parenthesization or syntactic delimiter boundaries.
 
 ---
 
@@ -147,4 +151,19 @@ The literal form `.{ ... }` is context-dependent:
 ### 4.6 Disambiguation of Contextual Keyword `scoped`
 
 In `let` declarations, `scoped` is recognized as the resource scope modifier if and only if it is immediately followed by a pattern binder (such as `mut`, an identifier, `_`, `(`, `[`, or `.{`). When immediately followed by `=` or `:`, `scoped` is parsed as an ordinary variable identifier (e.g., `let scoped = 1`).
+
+### 4.7 Disambiguation of Contextual Keyword `view`
+
+In `let` declarations, `view` is recognized as the live read-only view handle modifier if and only if it is immediately followed by a pattern binder (such as an identifier, `_`, `(`, `[`, or `.{`). When immediately followed by `=` or `:`, `view` is parsed as an ordinary variable identifier (e.g., `let view = 1`).
+
+### 4.8 Mutual Exclusivity and Write Prohibition of `view` and `scoped`
+
+1. **Mutual Exclusivity**: The modifiers `scoped` and `view` are mutually exclusive. A `let` declaration containing both `scoped` and `view` (e.g., `let scoped view`) SHALL be rejected at compile time as a static error.
+2. **Prohibition of Mutable Views**: The modifier `view` explicitly designates a read-only live view handle. It MUST NOT qualify a mutable binding. A declaration of the form `let view mut` SHALL be rejected at compile time as a static error (`E0520: ReadOnlyViewCannotBeMutableError`).
+
+### 4.9 Disambiguation of Bracketed Indexing and Slicing
+
+Within bracketed access expressions `target[...]`:
+1. If the bracketed contents contain a range operator (`..` or `..=`), the construct SHALL unambiguously parse as `SliceExpr`.
+2. Otherwise, the construct SHALL parse as `IndexExpr`.
 

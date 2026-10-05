@@ -21,7 +21,8 @@ Item ::= LetDecl | FunctionDecl | SumTypeDecl | NominalDecl
 Variable bindings introduce identifiers associated with values or mutable storage locations:
 
 ```ebnf
-LetDecl ::= [ "pub" ] "let" [ "scoped" ] Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
+LetModifier ::= "scoped" | "view"
+LetDecl     ::= [ "pub" ] "let" [ LetModifier ] Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
 ```
 
 ### 2.1 Initialization Rules
@@ -40,6 +41,8 @@ LetDecl ::= [ "pub" ] "let" [ "scoped" ] Pattern [ ":" TypeExpression ] [ "=" Ex
 5. **Scoped Initialization and Scope Restrictions**:
    - A `scoped` binding MUST be initialized at declaration time (`let scoped x = expr` or `let scoped mut x = expr`). Omitting the initializer is a compile-time static error.
    - A `scoped` binding MUST NOT appear at module scope (`pub let scoped` or top-level `let scoped`). Scoped bindings are strictly restricted to local block scopes; module-level declaration is a compile-time static error.
+6. **Live View Bindings (`let view`)**:
+   An explicit `let view` binding establishes a read-only live view over an existing reference object handle (see [§05 (Memory Model and Storage)](05_memory_model_and_storage.md#51-live-views)). It strips all write capabilities from the handle while observing subsequent mutations to the underlying heap object. A `let view` binding MUST be initialized at declaration time and CANNOT be combined with `mut` or `scoped`.
 
 ---
 
@@ -184,4 +187,18 @@ OpaqueDecl ::= [ "pub" ] "opaque" "type" Identifier [ GenericParameters ] [ Wher
 
 1. **Module Privacy**: An opaque type introduces a nominal type whose underlying representation is visible ONLY within its defining module.
 2. **Encapsulation Guarantees**: Outside the defining module, clients CANNOT construct, destructure, or access fields of an opaque type, nor invoke `inner()` on it. All operations MUST be mediated through functions exported by the defining module.
+
+---
+
+## 7. Type Aliases (`type Name = T`)
+
+Type aliases introduce transparent synonyms for existing type expressions:
+
+```ebnf
+TypeAliasDecl ::= [ "pub" ] "type" Identifier [ GenericParameters ] [ WhereClause ] "=" TypeExpression
+```
+
+1. **Structural Equivalence**: A type alias does not introduce a distinct nominal type. The alias and its expansion are completely interchangeable in all type-checking contexts.
+2. **Compile-Time Expansion**: Type aliases are fully normalized during compilation and incur zero runtime representation overhead.
+3. **Contrast with Nominal Wrappers**: Unlike nominal wrappers (`type Meters(f64)`), type aliases preserve all operators, methods, and structural properties of the target type.
 

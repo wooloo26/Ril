@@ -4,9 +4,13 @@ This chapter specifies source files, the compilation unit model, module namespac
 
 ---
 
-## 1. Compilation Units and Source Mapping
+## 1. Compilation Units and File-as-Module Architecture
 
-A Ril compilation unit corresponds either to a single physical source file (`.ril`) or a directory containing a titular source file (`foo/foo.ril` or `foo/mod.ril`).
+Ril operates under a **File-as-Module by Default** architecture:
+
+1. **Implicit File Modules**: Every physical source file (`.ril`) automatically constitutes an independent top-level module named after its filename stem (e.g., `src/math_utils.ril` implicitly defines the module `math_utils`).
+2. **Zero Boilerplate**: Source files do NOT require an outer `module { ... }` wrapper. Top-level declarations marked with `pub` in a file are automatically exported as that module's public API.
+3. **Directory Modules**: A directory containing an index source file (`dir/mod.ril` or `dir/dir.ril`) represents a composite directory module named after the directory.
 
 ---
 
@@ -32,7 +36,7 @@ UseDecl     ::= [ "pub" ] "use" ModulePath [ "::" ( "*" | "{" UseItemList "}" | 
 
 > **Normative Rule**: The module dependency graph of a Ril program **MUST form a Directed Acyclic Graph (DAG)**.
 
-Cyclic module dependencies (e.g., module `A` imports module `B` while module `B` directly or transitively imports module `A`) are **strictly PROHIBITED** and MUST be rejected at compile time.
+Cyclic module dependencies (e.g., module `A` imports module `B` while module `B` directly or transitively imports module `A`) are **strictly PROHIBITED** and MUST be rejected at compile time (`CyclicModuleDependencyError` [`E0801`]).
 
 ### 2.3 Scoped Imports (Block-Scoped `use`)
 
@@ -40,7 +44,7 @@ A `use` declaration MAY appear within any statement block (`Block`), including f
 
 1. **Lexical Confinement**: Symbols introduced by a block-scoped `use` declaration are visible ONLY from the point of declaration to the closing delimiter `}` of that enclosing block. They MUST NOT leak into enclosing or sibling scopes.
 2. **Shadowing**: A block-scoped `use` declaration shadows any identical symbol previously visible from outer module scopes or the standard prelude within that block.
-3. **Export Prohibition (`InvalidPublicScopeError`)**: A `use` declaration situated inside a block MUST NOT include the `pub` modifier. Marking a block-scoped import as `pub` is a compile-time static error (`InvalidPublicScopeError`).
+3. **Export Prohibition (`InvalidPublicScopeError`)**: A `use` declaration situated inside a block MUST NOT include the `pub` modifier. Marking a block-scoped import as `pub` is a compile-time static error (`InvalidPublicScopeError` [`E0802`]).
 4. **Ergonomic Pipeline Imports**: Block-scoped imports enable localized access to domain-specific or container mutation functions (such as `push` or `pop`) without polluting the outer or global namespace:
    ```ril
    fn build_records(items: []int) -> []int {
@@ -59,18 +63,21 @@ A `use` declaration MAY appear within any statement block (`Block`), including f
 
 > **Normative Rule**: Top-level module item initializers (`let` and `pub let` bindings) **MUST be strictly pure expressions**.
 
-1. Invoking algebraic effects (`@Effect`), mutating external variables, or performing input/output (I/O) inside a top-level initializer is a compile-time static error.
+1. Invoking algebraic effects (`@Effect`), mutating external variables, or performing input/output (I/O) inside a top-level initializer is a compile-time static error (`TopLevelSideEffectError` [`E0803`]).
 2. All runtime side effects, initialization routines, and setup procedures MUST execute within functions (such as `pub fn main`) or inside `test` blocks.
 
 ---
 
-## 4. Block-Scoped Modules
+## 4. Inline Submodules (`module`)
 
-Modules MAY also be declared directly within source files using block syntax:
+While source files naturally define modules, the `module` keyword MAY be used to declare **inline submodules (nested namespaces)** within an existing file:
 
 ```ebnf
 ModuleDecl ::= [ "pub" ] "module" Identifier "{" { Separator } [ Item { Separators Item } [ Separators ] ] "}"
 ```
+
+1. **Secondary/Namespace Role**: Analogous to TypeScript namespaces or Rust inline modules, inline `module` declarations are optional and secondary. Idiomatic Ril organizes code into separate physical source files by default.
+2. **Encapsulation Scope**: Inline submodules are primarily used for grouping private helpers, isolating test mocks, or scoping domain entities within a single large file without creating new files on disk.
 
 ```ril
 module state {
@@ -83,15 +90,21 @@ module state {
 }
 ```
 
-### 4.1 Visibility Rules (`pub` vs. Private)
+### 4.1 Submodule Scope Restriction
+
+> **Normative Rule**: An inline `module` declaration SHALL appear ONLY at the file or enclosing module top-level scope.
+
+Declaring an inline `module` inside a function body, closure, or local statement block is a **compile-time static error** (`InvalidSubmoduleScopeError` [`E0805`]).
+
+### 4.2 Visibility Rules (`pub` vs. Private)
 
 1. Items are private to their declaring module by default.
 2. Marking an item with `pub` exports it to parent and importing modules.
 3. Accessing a parent module scope from an inner block module uses the contextual prefix `super` (e.g., `use super::config_val`).
 
-### 4.2 Module-Level Mutable Export Prohibition
+### 4.3 Module-Level Mutable Export Prohibition
 
-Exporting a mutable module-level binding (`pub let mut`) across module boundaries is **strictly PROHIBITED** and MUST be rejected at compile time. Cross-module mutable state MUST be mediated via algebraic effects, parameter passing, or encapsulated capability closures (`&capture`).
+Exporting a mutable module-level binding (`pub let mut`) across module boundaries is **strictly PROHIBITED** and MUST be rejected at compile time (`ExportedMutableStateError` [`E0804`]). Cross-module mutable state MUST be mediated via algebraic effects, parameter passing, or encapsulated capability closures (`&capture`).
 
 ---
 

@@ -28,6 +28,7 @@ There is NO concept of a "statement" in Ril.
    - Integer `%` computes the remainder such that `(a / b) * b + (a % b) == a`. The sign of the remainder matches the sign of the dividend.
    - Integer division or remainder where the divisor is zero MUST trigger a runtime panic (`panic: integer division by zero`).
    - Signed minimum divided by `-1` (e.g., `i32(-2147483648) / -1`) overflows and MUST trigger a runtime panic. Its remainder `i32(-2147483648) % -1` evaluates to `0`.
+   - Floating-point division and remainder (`f32`, `f64`) conform to IEEE 754 without raising panics on zero divisors (see [§2.5](#25-floating-point-semantics-ieee-754)).
 5. **Arbitrary-Precision Integers (`bigint`)**: Arithmetic on `bigint` values never overflows a fixed bit-width and automatically expands to accommodate any finite integer result.
 
 ### 2.2 Explicit Wrapping Arithmetic (`+%`, `-%`, `*%`)
@@ -43,7 +44,28 @@ let y: u8 = 0u8 -% 1u8   -- evaluates to 255u8
 2. **Two's Complement Wrapping**: Operations compute mathematical results modulo $2^N$ under two's-complement representation.
 3. **Panic Immunity**: Wrapping operators NEVER trigger overflow panics.
 
-### 2.3 Bitwise Operators (`&`, `^`, `|`, `~`, `<<`, `>>`)
+### 2.3 Safe Division and Remainder Operators (`/?`, `%?`)
+
+The safe division and remainder operators `/?` and `%?` define total, non-panicking arithmetic operations returning `Option<T>` (`?T`):
+
+```ril
+let q: ?int = 10 /? 2  -- Some(5)
+let z: ?int = 10 /? 0  -- None (zero divisor returns None, NEVER panics)
+let r: ?int = 10 %? 0  -- None (zero divisor returns None, NEVER panics)
+let fallback = (10 /? 0) ?? 0 -- 0
+```
+
+1. **Typing**: When applied to numeric operands of type `T`, `a /? b` and `a %? b` yield `Option<T>` (`?T`).
+2. **Operational Evaluation**:
+   - **Integer Types (`i8`..`i64`, `u8`..`u64`, `bigint`)**:
+     - `a /? b` evaluates to `None` if divisor $b == 0$ or if signed overflow occurs ($a == \text{MIN} \land b == -1$); otherwise evaluates to `Some(a / b)`.
+     - `a %? b` evaluates to `None` if divisor $b == 0$; otherwise evaluates to `Some(a % b)` (for signed integers, $\text{MIN} \%? -1$ evaluates to `Some(0)`).
+   - **Floating-Point Types (`f32`, `f64`)**:
+     - `a /? b` evaluates to `None` if divisor $b \in \{+0.0, -0.0\}$ or if the IEEE 754 division result is non-finite (`NaN` or $\pm\infty$); otherwise evaluates to `Some(a / b)`.
+     - `a %? b` evaluates to `None` if divisor $b \in \{+0.0, -0.0\}$ or if either operand is non-finite (`NaN` or $\pm\infty$); otherwise evaluates to `Some(a % b)`.
+3. **Precedence**: `/?` and `%?` share identical multiplicative precedence (Level 3) with `/` and `%`.
+
+### 2.4 Bitwise Operators (`&`, `^`, `|`, `~`, `<<`, `>>`)
 
 1. **Bitwise Logic**: `&` (AND), `^` (XOR), `|` (OR), and unary `~` (NOT) operate on bitwise patterns of fixed-width integers and `bigint`.
 2. **Shift Operators (`<<`, `>>`)**:
@@ -53,7 +75,7 @@ let y: u8 = 0u8 -% 1u8   -- evaluates to 255u8
    - `<<` is checked multiplication by $2^{\text{count}}$: for fixed-width integers, if any high bits are shifted out or the sign bit changes unexpectedly, it MUST trigger an overflow panic.
    - `>>` performs arithmetic right shift (sign extension) on signed integers and logical right shift (zero fill) on unsigned integers.
 
-### 2.4 Floating-Point Semantics (IEEE 754)
+### 2.5 Floating-Point Semantics (IEEE 754)
 
 1. **Standard Conformance**: Operations on `f32` and `f64` conform to IEEE 754 round-to-nearest, ties-to-even.
 2. **Special Values**: Signed zeros (`+0.0`, `-0.0`), signed infinities (`+inf`, `-inf`), and NaN values propagate according to IEEE 754 without panicking. Division by zero yields signed infinity or NaN.
@@ -65,7 +87,7 @@ let y: u8 = 0u8 -% 1u8   -- evaluates to 255u8
    - `NaN != NaN` evaluates to `true`.
    - All relational comparisons (`<`, `<=`, `>`, `>=`) involving NaN evaluate to `false`.
 
-### 2.5 Explicit Primitive Conversions (`T(value)`)
+### 2.6 Explicit Primitive Conversions (`T(value)`)
 
 Explicit conversion syntax `T(value)` converts a primitive or numeric expression to type `T`:
 
@@ -150,7 +172,7 @@ let inclusive = 0..=3 -- yields 0, 1, 2, 3
 
 ## 5. Pipeline Operators (`|>` and `!>`)
 
-Ril replaces method-call syntax (UFCS) with two dedicated pipeline operators:
+Sequential invocation and in-place transformations are specified via two pipeline operators: linear data pipeline `|>` and mutating pipeline `!>`.
 
 ### 5.1 Linear Pipeline Operator (`|>`)
 
@@ -221,11 +243,25 @@ let mapped = fallible_op() ? AppError::FromIo
 ```ril
 let port = config["port"] ?? 8080
 let name = result ?? \err -> "default"
-let token = header ?? return Err("unauthorized")
+-- let token = header ?? return Err("unauthorized") -- STATIC ERROR [E0710]
 ```
 
 1. **Right-Associative**: `a ?? b ?? c` evaluates as `a ?? (b ?? c)`.
 2. **Option Fallback**: Applied to `Option<T>`, the right-hand operand MAY be a raw fallback value of type `T` or a supplier.
-3. **Result Fallback Closure Requirement**: Applied to `Result<T, E>`, the right-hand operand **MUST be an error-consuming closure `\err -> ...`** or a diverging control transfer (`return`, `panic`, `break`, `continue`). Supplying a raw value fallback on a `Result` is statically prohibited to prevent silent error masking.
+3. **Result Fallback Closure Requirement**: Applied to `Result<T, E>`, the right-hand operand **MUST be an error-consuming closure `\err -> ...`**. Embedding control flow transfers (`return`, `break`, `continue`) is a compile-time static error (`E0710: IllegalControlTransferInFallbackError`). Supplying a raw value fallback on a `Result` is statically prohibited to prevent silent error masking.
+
+---
+
+## 8. Assignment Expressions
+
+```ebnf
+AssignmentExpr ::= AssignTarget AssignmentOp Expression
+```
+
+1. **LValue Target Invariant**: The left-hand side of an assignment MUST be a valid `AssignTarget` rooted at a mutable local binding (`let mut`) or a mutable parameter (`mut`).
+2. **Evaluation Value**: Assignment expressions evaluate strictly to the unit value `()` of type `()`.
+3. **Evaluation Order**: The target location is evaluated first, followed by the right-hand side expression. Mutation occurs in-place upon completion of right-hand evaluation.
+4. **Compound Assignment Semantics**: `target op= expr` desugars to `target = target op expr`, evaluating `target`'s addressable location exactly once.
+5. **Non-Associativity**: Assignment operators are strictly non-associative. Chaining assignments (`a = b = c`) is a compile-time static error.
 
 

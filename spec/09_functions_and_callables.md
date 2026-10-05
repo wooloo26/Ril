@@ -49,18 +49,30 @@ pub fn process_data(
 
 ---
 
-## 2. Parameter Modes, Defaults, and Named Arguments
+## 2. Parameter Modes, Defaults, and Call Arguments
 
 ```ebnf
 Parameter     ::= [ "mut" | "erased" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
 ParameterList ::= Parameter { "," Parameter } [ "," ]
+
+Argument      ::= [ Identifier ":" ] ( "mut" AssignTarget | Expression )
+Arguments     ::= Argument { "," Argument } [ "," ]
+ArgumentsCall ::= "(" [ Arguments ] ")"
 ```
 
-### 2.1 Parameter Modes
+### 2.1 Parameter Modes and Caller Obligations
 
-1. **Shared Read-Only (Default)**: `x: T` passes a value or safely shared managed reference.
-2. **Borrowed Mutable Location**: `mut x: T` grants in-place write access to caller storage. The parameter type `T` MUST be a heap-allocated reference type (record, array, map, tuple, or sum type). Declaring `mut` on value types (integers, floats, booleans, unit, never, str, bytes) is a compile-time static error (`ValueTypeMutableBorrowError`).
-3. **Erased Parameter**: `erased x: T` marks parameters used purely for compile-time indexing or proofs. Erased parameters are eliminated at runtime and possess zero runtime representation.
+1. **Shared Read-Only (Default)**: `x: T` passes a value or safely shared managed reference. It is contravariant in callable subtyping.
+2. **Borrowed Mutable Location**: `mut x: T` grants in-place write access to caller storage.
+   - **Reference Type Precondition**: The parameter type `T` MUST be a heap-allocated reference type (record, array, map, tuple, or sum type). Declaring `mut` on value types (integers, floats, booleans, unit, never, str, bytes) is a compile-time static error (`ValueTypeMutableBorrowError`).
+   - **Caller LValue Contract**: Callers supplying arguments to `mut` parameters MUST explicitly prefix the argument with `mut` (e.g., `f(mut x)`) or employ the mutating pipeline operator (`x !> f()`). Passing rvalues, temporaries, or expressions without addressable storage is a compile-time static error.
+   - **Definite Mutation Invariant (`UnusedMutError`)**: Any parameter declared with `mut` MUST undergo at least one reachable write operation along an executable control-flow path. An unmutated `mut` parameter is a compile-time static error.
+3. **Erased Parameter**: `erased x: T` marks parameters used purely for compile-time indexing or proofs. Erased parameters are eliminated during compilation and have zero runtime footprint.
+4. **Cross-Argument Disjointness Invariant (Law of Exclusivity)**:
+   > **Normative Invariant**: For every argument $a_i$ bound to a `mut` parameter, its storage path MUST be pairwise disjoint from every other argument $a_j$ ($j \ne i$) supplied in the identical call frame:
+   > $$\forall i \in \operatorname{MutArgs}, \ \forall j \in \operatorname{AllArgs} \setminus \{i\}, \quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset$$
+   - Passing overlapping paths to two or more `mut` parameters is rejected with `E0523: MutMutAliasingConflictError`.
+   - Passing overlapping paths to a `mut` parameter and a read-only parameter is rejected with `E0524: ReadMutAliasingHazardError`.
 
 ### 2.2 Default Expressions and Evaluation Order
 
@@ -93,16 +105,22 @@ draw_point(...coords)
 
 ---
 
-## 3. Closures (Lambdas)
+## 3. Closures (Lambdas) and Field Accessors
 
 ```ebnf
-LambdaHead ::= "\" [ ParameterList ] "->"
-LambdaExpr ::= LambdaHead InlineLambdaBody
+LambdaHead        ::= "\" [ ParameterList ] "->"
+LambdaExpr        ::= LambdaHead InlineLambdaBody
+InlineLambdaBody  ::= LogicalOrExpr | AssignTarget AssignmentOp LogicalOrExpr
+AccessorExpr      ::= "\" "." Identifier { "." Identifier }
 ```
 
 1. **Lexical Scope (No Hoisting)**: Closures are strictly lexical values and MUST be defined before use.
 2. **Automatic Signature Inference**:
    Closures automatically infer parameter types, return types, algebraic effects, and environment capture capabilities (`&mut`, `&capture`, `&{var}`, `&{mut var}`) from their body expressions.
+3. **Delimited Inline Body Boundary Invariant**:
+   At the outermost nesting depth of an unparenthesized `InlineLambdaBody`, pipeline operators (`|>`, `!>`) and fallback operators (`??`) immediately delimit and terminate the closure body.
+4. **Field Accessor Expressions (`\.field`)**:
+   `\.field` desugars operationally to an anonymous pure projection closure `\obj -> obj.field`.
 
 ---
 
@@ -121,16 +139,11 @@ If the call passes no other preceding arguments, the empty parentheses `()` MAY 
 
 ## 5. Higher-Order Functions and Automatic Effect Forwarding
 
-A central feature of Ril's effect system is **Automatic Effect Forwarding**:
+### 5.1 Theorem (Automatic Effect and Capability Forwarding)
 
-```ril
-fn apply<T, U>(value: T, f: fn(T) -> U) -> U {
-    f(value) -- automatically infers and forwards effects of f
-}
-```
-
-1. **Zero Function-Coloring Friction**:
-   Higher-order named functions (`fn`) do NOT require explicit effect type parameters or return effect annotations to forward callback effects. Invoking a callable parameter automatically infers that callback's effects and propagates them to the caller.
-2. **Explicit vs. Forwarded Effects**:
-   - If a higher-order function performs its own explicit effect operations (e.g., `Log::write(...)`), those operations MUST be declared in its signature (`@Log`).
-   - The effects of invoked callback parameters are added transparently to the resulting effect set at the call site.
+Let $f$ be a higher-order function receiving a callable parameter $g: \text{fn}(P) \to R \ @\mathcal{E}_g \ \&\mathcal{S}_g$. If $f$ invokes $g$ within its evaluation body:
+1. **Implicit Polymorphic Forwarding**: The function signature of $f$ requires no explicit effect type variables or effect annotations to forward $g$'s effects.
+2. **Call-Site Set Union**: At every call site $f(v, c)$, the effective effect requirement of the call expression is:
+   $$\mathcal{E}_{\text{call}} = \mathcal{E}_f \cup \mathcal{E}_c$$
+   where $\mathcal{E}_f$ denotes $f$'s intrinsically declared effects, and $\mathcal{E}_c$ denotes the concrete effects inferred for argument $c$.
+3. **Purity Conservation**: If a concrete callable argument $c$ is purely functional ($\mathcal{E}_c = \emptyset$), the call site incurs strictly zero additional effect obligations.

@@ -29,7 +29,8 @@ The following types and constructors are defined in the prelude and reside in th
 │                  │ `  Zero, Succ(Nat)`       │                         │
 │                  │ `}`                       │                         │
 │ Propositional Eq │ `type Eq<A, a: A, b: A> {`│ Proof of definitional   │
-│                  │ `  Refl<A, x: A>`         │ equality                │
+│                  │ `  Refl<A, x: A> ->`      │ equality                │
+│                  │ `    Eq<A, x, x>`         │                         │
 │                  │ `}`                       │                         │
 │ Collections      │ `Map<K, V>`, `Set<T>`     │ First-class hash maps   │
 │ Modality Types   │ `Immut<T>`                │ Deep immutability family│
@@ -65,7 +66,7 @@ fn move<T>(value: T) -> T
 fn produce<T>(base: T, recipe: fn(mut T) -> () &mut) -> T
 ```
 
-1. `snapshot(value)`: Constructs an isolated, permanently read-only deep clone of the object graph, returning a deeply normalized `Immut<T>`. Types carrying `&mut`, `&capture`, or `&{mut ...}` callables are statically prohibited.
+1. `snapshot(value)`: Constructs an isolated, permanently read-only deep clone of the object graph, returning a deeply normalized `Immut<T>`. Types carrying `&mut`, `&capture`, `&{mut ...}` callables, or scoped resource handles are statically prohibited.
 2. `move(value)`: Compiler intrinsic performing affine ownership transfer. Invalidation occurs at the caller's binding, with zero memory copying.
 3. `produce(base, recipe)`: Generates an updated immutable value using copy-on-write structural sharing via a mutating draft recipe closure.
 
@@ -84,9 +85,9 @@ fn panic(message: str) -> never
 - Raises an immediate, deterministic runtime panic, halting normal execution and initiating stack unwinding.
 
 ```ril
-fn assert(cond: bool, message: str | fn() -> str = "assertion failed") -> ()
+fn assert(cond: bool, message: str = "assertion failed") -> ()
 ```
-- Evaluates a boolean condition. If `cond` evaluates to `true`, yields the unit value `()`. If `cond` evaluates to `false`, halts execution and triggers a runtime panic with the provided message string or lazily evaluated supplier closure.
+- Compiler intrinsic evaluating a boolean invariant condition. If `cond` evaluates to `true`, yields unit `()`. If `cond` evaluates to `false`, halts execution and triggers a runtime panic with `message`. The compiler MAY accept a compile-time thunk for lazy message formatting.
 
 ### 2.5 Error Conversion Helpers
 

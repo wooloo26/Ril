@@ -105,7 +105,8 @@ for row as key, value {
 ## 4. Pattern Syntax and Destructuring
 
 ```ebnf
-Pattern            ::= SinglePattern { "|" SinglePattern }
+Pattern            ::= SinglePattern { "|" SinglePattern } [ "as" [ "mut" ] Identifier ]
+PatternList        ::= Pattern { "," Pattern } [ "," ]
 SinglePattern      ::= [ "mut" ] ( LiteralPattern | RangePattern | NamePattern | RecordPattern | TuplePattern | ArrayPattern | WildcardPattern )
 LiteralPattern     ::= LiteralType
 NamePattern        ::= QualifiedName [ "(" [ PatternList ] ")" ]
@@ -113,7 +114,7 @@ WildcardPattern    ::= "_"
 RangePattern       ::= LiteralPattern ( ".." | "..=" ) LiteralPattern
 ArrayRestPattern   ::= "..." [ "mut" ] [ Identifier ]
 ArrayPattern       ::= "[" [ ( Pattern | ArrayRestPattern ) { "," ( Pattern | ArrayRestPattern ) } [ "," ] ] "]"
-RecordPatternField ::= Identifier [ ":" Pattern ]
+RecordPatternField ::= [ "mut" ] Identifier [ ":" Pattern ]
 RecordPattern      ::= [ TypeReference ] ".{" [ ( RecordPatternField | ".." ) { "," ( RecordPatternField | ".." ) } [ "," ] ] "}"
 TuplePattern       ::= "(" Pattern "," [ Pattern { "," Pattern } [ "," ] ] ")" | "(" ")"
 ```
@@ -132,6 +133,10 @@ Patterns MAY be joined with vertical bars to form disjunctive patterns.
 - A bare unqualified identifier in a pattern resolves to a sum type variant constructor if it names a visible variant tag of the matched type; otherwise, it binds a fresh local variable.
 - Qualified names (`Type::Variant`) always resolve to variant constructors. The wildcard `_` always matches without binding.
 
+### 4.4 Alias Patterns (`P as name`)
+
+An alias pattern binds the entire matched value of the pattern disjunction or sub-pattern to the identifier `name`. The static type of `name` is the unified type of the matched pattern.
+
 ---
 
 ## 5. Match Expressions and Exhaustiveness
@@ -148,6 +153,8 @@ MatchExpr ::= "match" Expression "{" [ MatchArm { "," MatchArm } [ "," ] ] "}"
    When matching an indexed sum type (GADT), matching on a specific constructor refines type indices, allowing constructors with impossible index equations to be omitted from exhaustiveness requirements.
 4. **Guards and Exhaustiveness**:
    An arm with an `if` guard is treated as potentially non-matching by the exhaustiveness checker and does NOT contribute to proving full type coverage.
+5. **Unreachable Arm Static Rejection (`UnreachablePatternError`)**:
+   A match arm that is provably unreachable due to being shadowed by preceding exhaustive or identical patterns MUST be rejected at compile time as a static error.
 
 ---
 
@@ -180,5 +187,17 @@ fn get_user(id: int) -> Result<str, str> {
 ```
 
 1. **Mandatory Divergence**: The `else` block of a `let ... else` declaration **MUST diverge**: it MUST have static type `never` and exit the current control scope via `return`, `break`, `continue`, or `panic()`. Falling through the `else` block is a compile-time static error.
-2. **Scope of Bindings**: Variables bound in `Pattern` enter the lexical scope for all subsequent items and expressions in the enclosing block.
-3. **Item Status**: As an `Item`, `let ... else` yields no runtime value. If placed as the final element of a block, the block evaluates to `()`.
+2. **Refutability Requirement (`IrrefutablePatternElseError`)**: The pattern in a `let ... else` construct MUST be refutable. Applying `let ... else` to a statically irrefutable pattern is a compile-time static error.
+3. **Scope and Visibility Invariant**:
+   - Variables bound in `Pattern` enter scope strictly for subsequent items and expressions in the enclosing block upon successful matching.
+   - Variables bound in `Pattern` are strictly **NOT in scope** within the `else` block.
+4. **Desugaring Equivalence**:
+   `let p = expr else { block }` is operationally equivalent to:
+   ```ril
+   match expr {
+       p -> (),
+       _ -> block,
+   }
+   ```
+   with the successful bindings introduced into the succeeding frame.
+5. **Item Status**: As an `Item`, `let ... else` produces no runtime value. If positioned as the terminal element of a block, the block evaluates to `()`.

@@ -25,6 +25,22 @@ type Result<T, E> { Ok(T), Err(E) }
 2. **Safe Index Navigation (`arr?[index]`)**:
    Safe element lookup returning `Option<T>`, evaluating to `None` on out-of-bounds indices.
 
+### 1.3 Operational Failure Categories and Evaluation Tracks
+
+Failure evaluation is governed by three operational categories:
+
+1. **Deterministic Runtime Panics**:
+   - Raised by fixed-width integer overflow, integer division/modulo by zero, out-of-bounds indexing `arr[i]`, assertion failure `assert`, out-of-range downcasts `u8(256)`, or explicit `panic`.
+   - **Signature Purity**: Runtime panics SHALL NOT be declared in function signatures. An effect annotation named `Panic` is a compile-time static error (`InvalidEffectAnnotationError`).
+   - **Synchronous Frame Isolation**: Runtime panics SHALL NOT be intercepted or caught within synchronous evaluation frames.
+   - **Unwinding and Boundary Containment**: Panics initiate stack unwinding with deterministic LIFO execution of active `let scoped` cleanups, and are contained at structured concurrency boundaries (`nursery`), evaluating to `TaskResult::Panicked`.
+2. **Domain Recoverable Errors (`Result<T, E>` and `?T`)**:
+   - Represented as ordinary sum type values. Discarding or ignoring fallible `Result` expressions is prohibited by compile-time Anti-Fault Masking (§2.4).
+3. **Dual-Track Evaluation Rules**:
+   - **Assertive Track**: Direct operations (`arr[i]`, `a / b`, `u8(n)`) evaluate directly or raise a runtime panic upon precondition violation.
+   - **Safe Total Track**: Total operations (`arr?[i]`, `a /? b`, `ril/conv::try_u8(n)`) evaluate safely to `?T` or `Result<T, E>`.
+   - **Inherent Total Primitives**: Map key lookup `map[k]` evaluates to `?V`; collection slicing `c[start..end]` clamps index bounds to `[0, len(c)]` and evaluates to a sub-slice (or `[]` when $start \ge end$ or indices fall outside collection bounds); floating-point division evaluates to `inf` or `NaN` per IEEE 754 without panicking.
+
 ---
 
 ## 2. Postfix Error Propagation (`?`)
@@ -40,9 +56,14 @@ fn load_config(path: str) -> Result<Config, AppError> {
 
 ### 2.1 Unwrapping and Early Return
 
-1. When applied to `expr: Result<T, E>`, if `expr` is `Ok(v)`, it unwraps to `v`.
-2. If `expr` is `Err(e)`, the operator early-returns from the enclosing function or closure with `Err(mapped_e)`.
-3. The enclosing callable's error type MUST be capable of representing the returned error.
+1. **Result Propagation**:
+   - When applied to `expr: Result<T, E>`, if `expr` evaluates to `Ok(v)`, it unwraps to `v`.
+   - If `expr` evaluates to `Err(e)`, the operator early-returns from the enclosing function or closure with `Err(mapped_e)`.
+   - The enclosing callable's declared return type MUST be a `Result` whose error type can represent `mapped_e`.
+2. **Option Propagation**:
+   - When applied to `expr: ?T` (or `Option<T>`), if `expr` evaluates to `Some(v)`, it unwraps to `v`.
+   - In an enclosing callable returning `?U` (or `Option<U>`), if `expr` evaluates to `None`, the operator immediately early-returns `None`.
+   - In an enclosing callable returning `Result<U, E>`, unmapped `?` is statically rejected; callers MUST provide an error mapper or constructor via the Option-to-Result bridge (§2.3).
 
 ### 2.2 Same-Line Error Mapping
 
@@ -91,15 +112,37 @@ let port = config["port"] ?? 8080
 
 ### 3.2 Result Fallback: Error-Consuming Closure Requirement
 
-> **Normative Rule**: When applied to `res: Result<T, E>`, the right-hand operand **MUST be an error-consuming closure `\err -> ...`** or a diverging control transfer expression (`return`, `panic`, `break`, `continue`).
+> **Normative Rule**: When applied to `res: Result<T, E>`, the right-hand operand **MUST be an error-consuming closure `\err -> ...`** that evaluates to a recovery value of type `T`.
 
 ```ril
 let res: Result<str, str> = Err("offline")
-let bad = res ?? "default"        -- STATIC ERROR: raw value fallback masks error
-let ok  = res ?? \_err -> "default" -- VALID: explicit error acknowledgment
+let bad = res ?? "default"          -- STATIC ERROR: raw value fallback on Result
+let ok  = res ?? \_err -> "default" -- VALID: explicit error-consuming closure
 ```
 
-Raw value fallbacks on `Result` types are statically rejected to guarantee that error payloads cannot be silently ignored without explicit syntactic acknowledgment.
+Supplying a non-closure right-hand operand to a `Result` fallback is a compile-time static error (`InvalidResultFallbackError`).
+
+### 3.3 Prohibition of Control Flow Transfer in `??` (Strict Value Semantics)
+
+> **Normative Rule**: The `??` operator is strictly a value-coalescing expression operator. Embedding control flow transfer expressions (`return`, `break`, `continue`) as the right-hand operand of `??` is a **compile-time static error** (`IllegalControlTransferInFallbackError` [`E0710`]).
+
+```ril
+-- Ill-formed (compile-time static error [E0710]):
+-- let user = find_user(id) ?? return Err("not found")
+-- let count = parse_num(s) ?? return 0
+
+-- Well-formed alternatives:
+-- 1. Postfix error propagation:
+let user = find_user(id) ? "not found"
+
+-- 2. Structured divergence:
+let Some(user) = find_user(id) else {
+    Logger::warn("User {id} not found")
+    return Err("not found")
+}
+```
+
+Control flow transfer expressions SHALL NOT appear as operands of `??`.
 
 ---
 
@@ -108,7 +151,7 @@ Raw value fallbacks on `Result` types are statically rejected to guarantee that 
 The `let scoped` declaration binds a managed system resource to a lexical variable while associating its lifetime directly with the enclosing block:
 
 ```ebnf
-ScopedLetDecl ::= "let" "scoped" [ "mut" ] Pattern [ ":" TypeExpression ] "=" Expression
+ScopedLetDecl ::= "let" "scoped" Pattern [ ":" TypeExpression ] "=" Expression
 ```
 
 ```ril
@@ -167,18 +210,18 @@ Once a resource handle is bound via `let scoped` (or `let scoped mut`), the hand
 **Static Rejections**:
 - Discarding a resource handle expression as an uninspected non-tail expression (`open_file(p)?` on its own line or followed by a semicolon) is a **compile-time static error**.
 - Discarding a resource handle via wildcard pattern (`let _ = open_file(p)?`) is a **compile-time static error**.
-- Binding a resource handle to an ordinary unscoped binding (`let h = open_file(p)?`) without returning it is a **compile-time static error** (`UnscopedResourceHandleError`).
+- Binding a resource handle to an ordinary unscoped binding (`let h = open_file(p)?`) without returning it is a **compile-time static error** (`UnscopedResourceHandleError` [`E0720`]).
 
 ### 5.4 Anti-Retention Sharing Law
 > **Normative Rule**: A locked scoped handle CANNOT be retained in memory beyond its defining lexical scope:
 1. **Outer Structures**: A locked handle CANNOT be stored into outer-scope records, arrays, maps, or module-level variables.
-2. **Retained Mutable Sharing Prohibition (`&^mut` Conflict)**: Passing a locked handle to any parameter or function that introduces retained mutable sharing (`&^mut`) is a **compile-time static error** (`ScopedHandleRetainedSharingViolation`). Because `&^mut` indicates that a mutable alias escapes the frame, it is fundamentally incompatible with scoped lexical lifetimes.
+2. **Retained Mutable Sharing Prohibition (`&^mut` Conflict)**: Passing a locked handle to any parameter or function that introduces retained mutable sharing (`&^mut`) is a **compile-time static error** (`ScopedHandleRetainedSharingViolation` [`E0721`]).
 3. **Snapshot Prohibition**: Passing a scoped handle or any type enclosing a scoped handle to `snapshot` is a **compile-time static error**.
 4. **Local Views**: Read-only aliases (`let view = scoped_h`) inherit the locked origin identity and expire when the scope exits.
 
 ### 5.5 Closure Isolation Law
 > **Normative Rule**: Any closure that captures a locked scoped handle (or any projection of it) is strictly confined to that handle's scope:
-1. **Prohibition in Escaping Closures (`&capture`)**: A closure capturing a locked scoped handle CANNOT be returned from the function, CANNOT be stored into outer heap data structures, and CANNOT satisfy an escaping closure type (`&capture`). Violations are statically rejected (`EscapingScopedClosureError`).
+1. **Prohibition in Escaping Closures (`&capture`)**: A closure capturing a locked scoped handle CANNOT be returned from the function, CANNOT be stored into outer heap data structures, and CANNOT satisfy an escaping closure type (`&capture`). Violations are statically rejected (`EscapingScopedClosureError` [`E0722`]).
 2. **Permitted Downward Funargs**: Passing a closure capturing a scoped handle downward as an argument to a synchronous higher-order function that executes within the same lexical scope is fully permitted.
 
 ### 5.6 Ordinary Records

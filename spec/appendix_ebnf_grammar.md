@@ -11,9 +11,10 @@ This appendix provides the complete, consolidated, machine-readable context-free
 (* 1. Lexical Grammar                                                        *)
 (* ========================================================================= *)
 
-Identifier          ::= IdentifierStart { IdentifierContinue }
+Identifier          ::= ( UnicodeLetter { IdentifierContinue } )
+                      | ( "_" IdentifierContinue { IdentifierContinue } )
 IdentifierStart     ::= "_" | UnicodeLetter
-IdentifierContinue  ::= IdentifierStart | Digit
+IdentifierContinue  ::= UnicodeLetter | Digit | "_"
 UnicodeLetter       ::= (* Any Unicode character in Category Lu, Ll, Lt, Lm, Lo *)
 UnicodeScalar       ::= (* Any Unicode scalar value U+0000..U+D7FF or U+E000..U+10FFFF *)
 Digit               ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
@@ -131,7 +132,8 @@ Item                ::= LetDecl | FunctionDecl | SumTypeDecl | NominalDecl
                       | OpaqueDecl | TypeAliasDecl | EffectDecl | EffectAliasDecl
                       | ModuleDecl | UseDecl | TestDecl
 
-LetDecl             ::= [ "pub" ] "let" [ "scoped" ] Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
+LetModifier         ::= "scoped" | "view"
+LetDecl             ::= [ "pub" ] "let" [ LetModifier ] Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
 Parameter           ::= [ "mut" | "erased" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
 ParameterList       ::= Parameter { "," Parameter } [ "," ]
 
@@ -193,7 +195,7 @@ AssignmentOp        ::= "=" | CompoundAssignOp
 (* 5. Patterns                                                               *)
 (* ========================================================================= *)
 
-Pattern             ::= SinglePattern { "|" SinglePattern }
+Pattern             ::= SinglePattern { "|" SinglePattern } [ "as" [ "mut" ] Identifier ]
 SinglePattern       ::= [ "mut" ] ( LiteralPattern | RangePattern | NamePattern | RecordPattern | TuplePattern | ArrayPattern | WildcardPattern )
 LiteralPattern      ::= LiteralType
 NamePattern         ::= QualifiedName [ "(" [ PatternList ] ")" ]
@@ -202,7 +204,7 @@ PatternList         ::= Pattern { "," Pattern } [ "," ]
 RangePattern        ::= LiteralPattern ( ".." | "..=" ) LiteralPattern
 ArrayRestPattern    ::= "..." [ "mut" ] [ Identifier ]
 ArrayPattern        ::= "[" [ ( Pattern | ArrayRestPattern ) { "," ( Pattern | ArrayRestPattern ) } [ "," ] ] "]"
-RecordPatternField  ::= Identifier [ ":" Pattern ]
+RecordPatternField  ::= [ "mut" ] Identifier [ ":" Pattern ]
 RecordPattern       ::= [ TypeReference ] ".{" [ ( RecordPatternField | ".." ) { "," ( RecordPatternField | ".." ) } [ "," ] ] "}"
 TuplePattern        ::= "(" Pattern "," [ Pattern { "," Pattern } [ "," ] ] ")" | "(" ")"
 MatchArm            ::= Pattern [ "if" Expression ] "->" Expression
@@ -230,7 +232,7 @@ BitXorExpr          ::= BitAndExpr { "^" BitAndExpr }
 BitAndExpr          ::= ShiftExpr { "&" ShiftExpr }
 ShiftExpr           ::= AdditiveExpr { ( "<<" | ">>" ) AdditiveExpr }
 AdditiveExpr        ::= MultiplicativeExpr { ( "+" | "-" | "+%" | "-%" ) MultiplicativeExpr }
-MultiplicativeExpr  ::= UnaryExpr { ( "*" | "/" | "%" | "*%" ) UnaryExpr }
+MultiplicativeExpr  ::= UnaryExpr { ( "*" | "/" | "%" | "/?" | "%?" | "*%" ) UnaryExpr }
 UnaryExpr           ::= ( "-" | "!" | "~" | "typeof" ) UnaryExpr | PostfixExpr
 
 PostfixExpr         ::= PrimaryExpr { MemberAccess | TupleIndex | SafeNav | SafeIndex | GenericInvoke | CallExpr | IndexExpr | SliceExpr | PostfixTry }

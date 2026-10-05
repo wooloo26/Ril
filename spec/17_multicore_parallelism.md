@@ -114,13 +114,13 @@ Heterogeneous task parallelism in Ril does NOT require specialized language keyw
 ```ril
 use ril/concurrent::{nursery, Scope, Task}
 
-let (metrics, index, warnings) = nursery \mut scope -> {
+let (metrics, index, warnings) = nursery(\mut scope -> {
     let t1 = scope !> Scope::spawn \-> compute_metrics(data_1)
     let t2 = scope !> Scope::spawn \-> compute_index(data_2)
     let t3 = scope !> Scope::spawn \-> check_warnings(data_3)
 
-    (t1 |> Task::join()?, t2 |> Task::join()?, t3 |> Task::join()?)
-}
+    Ok((t1 |> Task::join()?, t2 |> Task::join()?, t3 |> Task::join()?))
+})?
 ```
 
 1. **Unification with Structured Concurrency**:

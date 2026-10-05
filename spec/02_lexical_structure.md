@@ -29,6 +29,10 @@ A comment begins with `--` and extends to the end of the current physical line. 
 
 Whitespace characters include the space character (`U+0020`), horizontal tab (`U+0009`), and line terminators (LF `U+000A`, CR `U+000D`, and CRLF `U+000D U+000A`). Whitespace separates tokens but is otherwise insignificant, except where line terminators act as item and expression separators (see [§03 (Formal Grammar and Syntax)](03_formal_grammar_and_syntax.md)).
 
+```ebnf
+Newline ::= (* Line feed LF (U+000A) or carriage return CR (U+000D) *)
+```
+
 ---
 
 ## 3. Identifiers and Naming Conventions
@@ -36,14 +40,18 @@ Whitespace characters include the space character (`U+0020`), horizontal tab (`U
 ### 3.1 Identifier Syntax
 
 ```ebnf
-Identifier         ::= IdentifierStart { IdentifierContinue }
+Identifier         ::= ( UnicodeLetter { IdentifierContinue } )
+                     | ( "_" IdentifierContinue { IdentifierContinue } )
 IdentifierStart    ::= "_" | UnicodeLetter
-IdentifierContinue ::= IdentifierStart | Digit
+IdentifierContinue ::= UnicodeLetter | Digit | "_"
 UnicodeLetter      ::= (* Any Unicode character in General Category 'Lu', 'Ll', 'Lt', 'Lm', or 'Lo' *)
 Digit              ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+HexDigit           ::= Digit | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C" | "D" | "E" | "F"
+OctalDigit         ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7"
+BinaryDigit        ::= "0" | "1"
 ```
 
-An identifier begins with an underscore `_` or a Unicode letter, followed by zero or more letters, digits, or underscores. A solitary underscore `_` is not an identifier; it is the reserved wildcard token.
+An identifier begins with an underscore `_` or a Unicode letter, followed by zero or more letters, digits, or underscores. A solitary underscore `_` SHALL NOT be scanned as an `Identifier`; it is reserved as the `WildcardPattern` token.
 
 ### 3.2 Canonical Naming Conventions
 
@@ -87,6 +95,15 @@ Contextual keywords carry special syntactic meaning only within specific grammat
 - `lacks`: Row absence constraint operator within `where` clauses (`R lacks "label"`).
 - `capture`: Environment capture state capability annotation (`&capture`).
 - `scoped`: Lexical resource lifetime and cleanup modifier on `let` declarations (`let scoped`, `let scoped mut`).
+- `view`: Read-only live view handle modifier on `let` declarations (`let view`) denoting an aliased observer of mutable heap data.
+
+### 4.4 Standard Prelude Built-ins (Not Keywords)
+
+Foundational control, diagnostic, and assertion operations are **standard prelude built-in functions / compiler intrinsics**, NOT reserved keywords:
+- `panic(message: str) -> never`: Initiates deterministic stack unwinding.
+- `assert(condition: bool, message: str = "") -> ()`: Compiler intrinsic for invariant verification with conditional message evaluation and source coordinate injection. The second argument MAY be passed as a lazily evaluated string expression or closure `\-> str`.
+
+These tokens parse as standard identifiers and do not occupy reserved keyword space.
 
 ---
 
@@ -180,10 +197,11 @@ Enclosed in backticks (`` `...` ``), raw strings treat backslashes and braces as
 2. **Immutable Byte Buffer Literal**: `b"..."` denotes an immutable byte sequence inhabiting `bytes`.
 
 ```ebnf
-ByteLiteral       ::= "b'" ( ByteCharacter | ByteEscape ) "'"
-ByteCharacter     ::= (* Any ASCII character except ''', '\', LF, or CR *)
-ByteEscape        ::= "\" ( "n" | "r" | "t" | "\" | "'" | '"' | "0" | "x" HexDigit HexDigit )
-ByteStringLiteral ::= 'b"' { ByteStringCharacter | ByteEscape } '"'
+ByteLiteral          ::= "b'" ( ByteCharacter | ByteEscape ) "'"
+ByteCharacter        ::= (* Any ASCII character except ''', '\', LF, or CR *)
+ByteEscape           ::= "\" ( "n" | "r" | "t" | "\" | "'" | '"' | "0" | "x" HexDigit HexDigit )
+ByteStringCharacter  ::= (* Any ASCII character except '"', '\', LF, or CR *)
+ByteStringLiteral    ::= 'b"' { ByteStringCharacter | ByteEscape } '"'
 ```
 
 ### 5.5 Regular Expression Literals
@@ -191,6 +209,7 @@ ByteStringLiteral ::= 'b"' { ByteStringCharacter | ByteEscape } '"'
 Regular expression literals are prefixed with `reg"` and inhabit the standard library regular expression matcher type:
 
 ```ebnf
+UnicodeScalar  ::= (* Any Unicode scalar value U+0000..U+D7FF or U+E000..U+10FFFF *)
 RegexLiteral   ::= 'reg"' { RegexCharacter } '"'
 RegexCharacter ::= "\" UnicodeScalar | (* Any Unicode scalar except '"' or '\' *)
 ```
@@ -199,3 +218,29 @@ RegexCharacter ::= "\" UnicodeScalar | (* Any Unicode scalar except '"' or '\' *
 
 - The empty tuple `()` denotes the sole value of the unit type `()`.
 - The bottom type `never` represents uninhibited computations that diverge or panic, and possesses no runtime value literal.
+
+---
+
+## 6. Operators and Punctuators
+
+Conforming lexical scanners SHALL recognize the following character sequences as distinct terminal tokens:
+
+```
++      -      *      /      %      +%     -%     *%     /?     %?
+=      +=     -=     *=     /=     %=     +%=    -%=    *%=
+&      |      ^      ~      <<     >>     &=     |=     ^=     <<=    >>=
+==     !=     <      <=     >      >=     is     in
+&&     ||     !
+|>     !>     ??     ?      ?.     ?[
+..     ..=    ...    ->     =>     ::     \
+(      )      [      ]      {      }      .{     :      ;      ,      .
+```
+
+### 6.1 Maximal Munch Rule
+
+A conforming lexical scanner SHALL segment source text into tokens using the maximal munch (longest match) principle. Specifically:
+1. `/?` SHALL be recognized as a single safe-division operator, not `/` followed by `?`.
+2. `%?` SHALL be recognized as a single safe-remainder operator, not `%` followed by `?`.
+3. `!>` SHALL be recognized as the mutating pipeline operator, not `!` followed by `>`.
+4. `|>` SHALL be recognized as the linear pipeline operator, not `|` followed by `>`.
+5. `?.` and `?[` SHALL be recognized as safe navigation tokens, not `?` followed by `.` or `[`.

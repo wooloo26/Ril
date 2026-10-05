@@ -26,11 +26,17 @@ pub effect AppFx = {Config, Clock}
 1. **Fully Qualified Identity**: An effect is identified globally by its fully qualified canonical module path (e.g., `app::services::Config`).
 2. **Visibility Scoping**:
    - Effects adhere to module visibility rules (`pub` vs. private).
-   - An unexported private effect CANNOT be named, intercepted, or handled outside its defining module or lexical scope. This prevents accidental or malicious effect hijacking by external libraries.
+   - An unexported private effect SHALL NOT be named, intercepted, or handled outside its defining module or lexical scope.
 
 ### 1.2 Effect Set Aliases
 
 `effect SetName = { Effect1, Effect2, ... }` defines a named alias for an unordered set of effects. In effect annotations, `@SetName` expands to all constituent effects. Effect aliases MAY reference other effect aliases, but circular definitions are statically prohibited.
+
+### 1.3 Bug Panic Exclusion & Signature Purity Invariant
+
+1. **Effect System Exclusion**: Runtime panics (fixed-width integer overflow, division by zero, out-of-bounds indexing, failed assertions, or explicit `panic()`) are not algebraic effects.
+2. **Signature Purity**: Declaring `@Panic` in any effect annotation, signature, or alias is a compile-time static error (`InvalidEffectAnnotationError`).
+3. **Handler Bypass**: An algebraic effect handler (`with`) SHALL NOT intercept, suppress, or resume runtime panics. Panics bypass effect handlers and initiate deterministic stack unwinding.
 
 ---
 
@@ -81,7 +87,9 @@ let greeting = {
 4. **Early Abort Without Resumption**:
    If a handler arm evaluates to a value without invoking `resume`, the handled block immediately aborts and evaluates directly to that arm's value. Scopes exited by the abort MUST execute the cleanup handlers of all active `scoped` resource bindings in strict LIFO order (reverse order of declaration). Bindings declared syntactically after the aborted operation point were never evaluated and are not executed.
 5. **Effect Discharge Theorem (Full Coverage Invariant)**:
-   A nominal algebraic effect `Eff` is discharged (eliminated) from the enclosing function's effect signature `@Eff` if and only if **all operations declared by `Eff` are intercepted by the handler**. Partial coverage of operations does NOT discharge the nominal effect from the signature; unintercepted operations remain required.
+   A nominal algebraic effect `Eff` is discharged (eliminated) from the enclosing function's effect signature `@Eff` if and only if **all operations declared by `Eff` are intercepted by the handler**:
+   $$\operatorname{Ops}(\text{Eff}) \subseteq \operatorname{HandledOps}(H) \iff \Gamma \vdash \text{with } H \ e : T \ @(\mathcal{E} \setminus \{\text{Eff}\})$$
+   Partial coverage of operations does NOT discharge the nominal effect from the signature; unintercepted operations remain required.
 6. **Control Transfers Within Handler Arms**:
    - `return` and `?` expressions within a handler arm retain their enclosing function or closure targets.
    - `break` and `continue` retain their enclosing lexical loop targets.
@@ -110,8 +118,8 @@ Ril models asynchronous computation and concurrency through first-class algebrai
 3. **Structured Concurrency and the Nursery Invariant**:
    - All concurrent child tasks MUST be spawned within a lexical nursery or structured scope:
      $$\forall c \in \text{Children}(N), \quad \operatorname{Lifetime}(c) \subseteq \operatorname{Lifetime}(N) \subset \operatorname{Lifetime}(\text{Frame}_{\text{parent}})$$
+   - **Lifetime Safety**: Child tasks MAY borrow parent frame variables and observe parent `let scoped` resources provided that borrowed bindings satisfy `Shareable` and carry zero active mutable handles in sibling tasks.
    - The enclosing nursery block MUST NOT exit until all child tasks have resolved (completed, cancelled, or failed).
-   - **Lifetime Safety**: Because child task lifetimes are strictly bounded by the nursery, child tasks MAY borrow parent frame variables and observe parent `let scoped` resources provided that borrowed bindings satisfy `Shareable` and carry zero active mutable handles in sibling tasks.
 4. **Delimited Early Abort and Cascading Cancellation**:
    - Cancellation is driven by the algebraic effect handler's Early Abort semantics (returning without invoking `resume`).
    - In competitive constructs (`race`, `timeout`), winning branches resume execution while losing branches have their continuations discarded.
@@ -120,6 +128,8 @@ Ril models asynchronous computation and concurrency through first-class algebrai
    - Runtime schedulers (such as multi-core work-stealing schedulers) and test harnesses (such as deterministic virtual-time mock schedulers) are implemented as ordinary effect handlers intercepting `@Fiber`.
 6. **Affine One-Shot Resumption**:
    - Delimited resumptions (`resume`) in Ril are strictly one-shot (affine). Re-invoking an active `resume` or allowing a `resume` continuation to escape its handler arm MUST be rejected at compile time.
+7. **Function Colorlessness Theorem**:
+   An asynchronous function returning type $T$ has static return type $T$ (not `Promise<T>` or `Future<T>`). The algebraic effect `@Async` tracks execution suspension orthogonally to data types. Callers invoke asynchronous functions using ordinary function call syntax.
 
 ### 4.2 Divergence Tracking (`@Div`) and Fuel Masking
 

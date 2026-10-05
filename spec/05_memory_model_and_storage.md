@@ -33,6 +33,7 @@ Ril strictly categorizes data into two operational categories:
 
 1. **Value Semantics**: Reassigning or passing a value type copies its bits. An implementation MAY optimize `str` and `bytes` via shared immutable byte buffers, provided observable immutability is preserved.
 2. **Reference Semantics**: Assigning or passing a compound object copies the reference to the heap object. Both bindings refer to the same underlying heap storage.
+3. **Nominal Single-Payload Wrappers (`type W(T)`)**: Inherit the storage category of the underlying type `T`: primitive payloads are copied by value; compound payloads reside in managed heap storage.
 
 ---
 
@@ -73,6 +74,22 @@ To ensure that mutability annotations reflect genuine operational intent and pre
 3. **Dead Code Rule**:
    Write operations located exclusively within statically unreachable basic blocks (e.g., following an unconditional `return`, `panic`, or within provably dead branches) do NOT satisfy the Definite Mutation Invariant.
 
+### 3.3 Monotonic Permission Degradation and Anti-Laundering Invariant
+
+Ril enforces the **Monotonic Permission Degradation Axiom**:
+$$\text{Mut} \succ \text{ReadOnly} \succ \text{None}$$
+
+1. **Unidirectional Degradation**: Permissions can only degrade monotonically ($\text{Mut} \to \text{ReadOnly}$). Any attempt to upgrade, cast, or coerce a read-only reference back into a mutable location is strictly prohibited.
+2. **Compile-Time Anti-Laundering Rejections**:
+   - **Direct Assignment / Binding Laundering (`E0520: MutabilityLaunderingError`)**: Binding a read-only parameter, `let` binding, or read-only projection to `let mut`, or assigning it to an existing mutable lvalue (`uninit_mut = ro`), is a compile-time static error.
+   - **Destructuring Laundering (`E0521: DestructuringLaunderingError`)**: When pattern-matching or destructuring a read-only reference, declaring nested reference fields as `mut` is a compile-time static error.
+   - **Container Injection Laundering (`E0522: ContainerLaunderingError`)**: Storing a read-only reference containing mutable fields into a mutable container (`mut_arr !> push(ro)`) or mutable record field is a compile-time static error. The reference must first be detached into `Immut<T>` via `snapshot()`.
+   - **Shallow Spread Laundering (`E0525: SpreadLaunderingError`)**: Shallow-spreading a read-only record with nested reference fields into a `let mut` root binding is a compile-time static error.
+   - **Collection Mutation During Active Iteration (`E0526: CollectionMutationDuringIterationError`)**: In-place mutation of a collection (via `!>` or passing to a `mut` parameter) while that collection is being actively iterated in an enclosing `for` loop is a compile-time static error.
+   - **Closure Capture and Invocation Laundering (`E0527: ClosureCaptureLaunderingError`)**: Capturing a read-only reference into a closure declaring mutable environment access (`&{mut ro}`), invoking a state-capturing callable (`&capture`, `&{mut ...}`) through a read-only handle, or passing a read-only reference as a mutable argument (`f(mut ro)` or `ro !> f()`) is a compile-time static error.
+   - **Pass-Through Return Laundering (`E0528: ReturnLaunderingError`)**: Binding the return value of a function to `let mut` when that return value originates from a read-only parameter is a compile-time static error.
+   - *(Note: Cross-argument borrow conflicts `E0523` and `E0524` are governed by the Law of Exclusivity in §4.2).*
+
 ---
 
 ## 4. Parameter Permissions and Aliasing
@@ -90,26 +107,28 @@ Parameters declare their write and sharing permissions explicitly in their signa
    - Callers MUST explicitly mark arguments passed to `mut` parameters using `mut` prefix notation (e.g., `f(mut x)`) or the mutating pipeline operator (`x !> f()`).
    - **Prohibition of RValues and Temporaries**: Passing temporary expressions, literals, or rvalues to a `mut` parameter is a **compile-time static error**. Writable arguments MUST be addressable lvalue locations holding mutable reference handles.
 
-### 4.2 Aliasing Rules
+### 4.2 Law of Exclusivity and Cross-Argument Disjointness
 
-Ril permits multiple mutable parameters to alias the same underlying memory location:
+To guarantee algorithmic predictability and prevent hidden aliasing corruption, Ril enforces the **Law of Exclusivity**:
+> **Normative Rule**: Any mutable borrow via `mut` establishes an exclusive write access window. For every argument $a_i$ passed to a `mut` parameter, its storage path MUST be pairwise disjoint from every other argument $a_j$ ($j \ne i$) supplied in that function call (including both other `mut` arguments and shared read-only arguments):
+> $$\forall i \in \operatorname{MutArgs}, \ \forall j \in \operatorname{AllArgs} \setminus \{i\}, \quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset$$
+> Two paths $p_1, p_2$ overlap ($p_1 \cap p_2 \ne \emptyset$) if and only if one is an access prefix of the other ($p_1 \sqsubseteq p_2 \lor p_2 \sqsubseteq p_1$). Distinct field projections ($x.a$ and $x.b$ where $a \ne b$) satisfy $x.a \cap x.b = \emptyset$. Dynamic collection indices ($arr[i]$ and $arr[j]$) are conservatively treated as overlapping unless provably distinct compile-time constants.
 
-```ril
-type Counter = { mut val: int }
-
-fn increment_both(mut left: Counter, mut right: Counter) &mut {
-    left.val += 1
-    right.val += 1
-}
-
-let mut count = Counter.{ val: 0 }
-increment_both(mut count, mut count)
--- count.val evaluates to 2
-```
-
-1. **Order of Evaluation**: Writes to aliased parameters occur strictly in the source execution order of expressions within the callee function.
-2. **Absence of Undefined Behavior**: Because evaluation is strictly sequenced and memory is GC-managed, aliasing between mutable parameters does not produce undefined memory states or race conditions in single-threaded contexts.
-3. **Suspension Invariance**: Active `mut` borrows remain valid across asynchronous suspension points (`@Async`).
+1. **Rejection of Mut-Mut Aliasing (`E0523: MutMutAliasingConflictError`)**:
+   Passing identical or overlapping writable lvalue locations to two or more `mut` parameters in the same call expression is a **compile-time static error**:
+   ```ril
+   fn swap(mut a: Counter, mut b: Counter) &mut { ... }
+   let mut c = Counter.{ val: 10 }
+   -- swap(mut c, mut c) -- STATIC ERROR [E0523]: Simultaneous mutable borrow conflict on 'c'
+   ```
+2. **Rejection of Read-Mut Aliasing (`E0524: ReadMutAliasingHazardError`)**:
+   Passing overlapping memory locations to both a `mut` parameter and a read-only parameter in the same call is a **compile-time static error**:
+   ```ril
+   fn merge_into(source: []int, mut target: []int) &mut { ... }
+   let mut buf = [1, 2]
+   -- merge_into(buf, mut buf) -- STATIC ERROR [E0524]: Read-mut access hazard: 'buf' overlaps with 'mut buf'
+   ```
+3. **Suspension Invariance**: Active `mut` borrows remain exclusively reserved across asynchronous suspension points (`@Async`).
 
 ---
 
@@ -119,20 +138,22 @@ Ril distinguishes between live reference observation and isolated immutable copi
 
 ### 5.1 Live Views
 
-Assigning a mutable object to an immutable binding (`let view = mutable_obj`) creates a **live read-only view**:
-- The view cannot perform mutations (`view.field = 1` is statically rejected).
-- The view cannot be upgraded to write access (`let mut bad = view` is statically rejected).
-- The view observes all subsequent mutations performed through the original mutable root (`mutable_obj.field = 2`).
+Binding a mutable object to an immutable binding (`let x = mutable_obj` or explicit `let view x = mutable_obj`) creates a **live read-only view**:
+1. **Handle-Level Mutation Stripping**: The view handle cannot perform mutations (`view.field = 1` is statically rejected).
+2. **Deep Field Projection Contagion**: Any nested field access through a live view handle (`view.child.score`) is strictly read-only. Write permissions are stripped across all reachable paths through that handle.
+3. **Zero Type-Level Contagion**: Live views do NOT introduce a distinct `view T` type. The static type remains `T`. Functions and signatures are not colored by view qualifiers.
+4. **Permitted Live Observation**: A read-only live view observes subsequent mutations performed on the underlying heap object through any coexisting mutable handle. The managed garbage-collected runtime guarantees safety against memory corruption and dangling references.
+5. **Anti-Laundering Enforcement**: The view cannot be upgraded to write access (`let mut bad = view` is statically rejected with `E0520`). If a permanently isolated, frozen copy is required that does not observe subsequent root modifications, an explicit snapshot MUST be created via `snapshot`.
 
 ### 5.2 Isolated Snapshots (`snapshot`)
 
-The prelude function `snapshot(value: T) -> T` constructs a detached, read-only deep copy of a data graph:
+The prelude function `snapshot<T>(value: T) -> Immut<T>` constructs a detached, read-only deep copy of a data graph:
 
 ```ebnf
 SnapshotExpr ::= Expression "|>" "snapshot" | "snapshot" "(" Expression ")"
 ```
 
-1. **Deep Cloning**: `snapshot` recursively traverses all reachable heap objects, creating a brand new isolated object graph while preserving internal sharing and cycles within that graph.
+1. **Deep Cloning**: `snapshot` recursively traverses all reachable heap objects, constructing a topologically congruent, detached isolated object graph while preserving internal sharing and cycles within that graph.
 2. **Permanent Immobility**: Objects created via `snapshot` are permanently read-only and CANNOT regain write access under any circumstances.
 3. **Prohibition on Capabilities**:
    - Types containing resource capabilities, retained mutable sharing, or mutable closure captures (`&mut`, `&^mut`, `&capture`, or `&{mut ...}`) MUST NOT be snapshotted. Passing such types to `snapshot` is a compile-time static error.
@@ -169,7 +190,7 @@ MUST modify the targeted storage location directly in place without duplicating 
 
 ## 7. Copy-on-Write Deep Updates (`produce`)
 
-To facilitate efficient functional updates over deeply nested immutable records without full-graph cloning, the prelude provides `produce`:
+`produce` executes functional updates over reference data graphs via copy-on-write proxy mechanics:
 
 ```ebnf
 ProduceCall ::= Expression "|>" "produce" LambdaExpr | "produce" "(" Expression "," LambdaExpr ")"
@@ -191,7 +212,7 @@ let u2 = u1 |> produce \mut draft -> {
 2. **Copy-on-Write (CoW)**:
    - Only nodes along the path that are actually modified during the execution of `recipe` are shallow-copied on write.
    - Unmodified sibling subtrees and nested fields retain their exact reference identities (`u2.name == u1.name`).
-3. **Immutable Output on Return**: When `recipe` completes, the modified root is finalized and returned as a fresh immutable value. The original `base` graph remains completely unmodified.
+3. **Immutable Output on Return**: When `recipe` completes, the modified root is finalized and returned as a fresh immutable value. The `base` object graph is invariant under the execution of `produce` and retains full structural integrity.
 
 ---
 

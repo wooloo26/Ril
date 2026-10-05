@@ -75,7 +75,7 @@ Ril defines a reflexive, transitive subtyping relation $A <: B$ governed by the 
    - `true <: bool`
 3. **Homogeneous Literal Unions**: A union of literal types is ordered by set inclusion:
    - `"a" | "b" <: "a" | "b" | "c" <: str`
-4. **Prohibition of Arbitrary Untagged Unions**: Arbitrary untagged unions between distinct non-literal types (e.g., `int | str`, `User | Admin`) are strictly PROHIBITED and MUST be rejected. Heterogeneous data requires tagged sum types.
+4. **Prohibition of Arbitrary Untagged Unions**: Untagged union types `A | B` between distinct non-literal types (including but not limited to `int | str`, `User | Admin`, or `str | fn() -> str`) MUST be rejected as compile-time static errors. A union type expression `T_1 | T_2 | ... | T_n` SHALL be valid if and only if all constituents $T_i$ are literal types inhabiting the identical underlying primitive type (e.g., `"a" | "b"` or `1 | 2 | 3`). Heterogeneous data SHALL be represented exclusively via tagged sum types.
 5. **No Implicit Numeric Coercion**: Primitive numeric types (`i8`..`i64`, `u8`..`u64`, `f32`, `f64`) are mutually distinct. There is NO implicit widening or subtyping between different numeric types. `int` and `i32` are identical aliases.
 6. **Prohibition of Intersection Types and Nominal Unwrapping**: Ril provides no intersection types and no implicit nominal unwrapping.
 
@@ -90,13 +90,16 @@ Ril defines a reflexive, transitive subtyping relation $A <: B$ governed by the 
 
 ### 3.3 Function and Callable Variance
 
-For function types $f_1 = \text{fn}(A) \to B$ and $f_2 = \text{fn}(C) \to D$:
-$$f_1 <: f_2 \iff C <: A \land B <: D$$
+For function types:
+$$f_1 = \text{fn}(A) \to B \ @\mathcal{E}_1 \ \&\mathcal{S}_1, \quad f_2 = \text{fn}(C) \to D \ @\mathcal{E}_2 \ \&\mathcal{S}_2$$
+The formal subtyping relation satisfies:
+$$f_1 <: f_2 \iff C <: A \land B <: D \land \mathcal{E}_1 \subseteq \mathcal{E}_2 \land \mathcal{S}_1 \sqsubseteq \mathcal{S}_2$$
+
 - Parameters are **contravariant**. Shared read-only parameter views (`x: T`) are contravariant in input positions.
 - Return types are **covariant**.
 - Algebraic effects are **covariant by set inclusion** ($\mathcal{E}_1 \subseteq \mathcal{E}_2$).
 - Mutable parameter locations (`mut x: T`) are strictly **invariant**.
-- State hazard capabilities are **covariant under capability subsumption** across the capability preorder lattice (`mut` $\sqsubset$ `^mut`): a function guaranteeing localized parameter mutation is a valid subtype of a function permitted retained mutable sharing (`fn(P) -> R &mut <: fn(P) -> R &^mut`, where `P` contains identical mutable parameters). Retained mutable sharing `&^mut` and closure capture `&capture` form orthogonal lattice dimensions and do NOT subsume or abstract into each other (`&^mut` does not subtype `&capture`, nor `&capture` subtype `&^mut`).
+- State capabilities are **covariant under capability subsumption** across the capability preorder lattice ($\mathcal{S}_1 \sqsubseteq \mathcal{S}_2$, where `mut` $\sqsubset$ `^mut`): a function guaranteeing localized parameter mutation is a valid subtype of a function permitted retained mutable sharing (`fn(P) -> R &mut <: fn(P) -> R &^mut`, where `P` contains identical mutable parameters). Retained mutable sharing `&^mut` and closure capture `&capture` represent orthogonal lattice dimensions and SHALL NOT subsume or abstract into each other (`&^mut` does not subtype `&capture`, nor `&capture` subtype `&^mut`).
 
 ### 3.4 Data-Parameter Variance
 

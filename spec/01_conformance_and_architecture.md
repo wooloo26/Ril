@@ -6,9 +6,9 @@ This chapter defines the scope, foundational execution model, target platform re
 
 ## 1. Scope and Target Platforms
 
-A conforming Ril implementation compiles source text into executable machine code targeting native platforms:
+A conforming Ril implementation SHALL compile source text into executable machine code targeting native platforms:
 
-- **Native Binaries**: Executable machine instructions (or object files linked into native executables via LLVM, Cranelift, C, or native machine code generation) interacting directly with native operating system environments.
+- **Native Binaries**: Executable machine instructions (or object files linked into native executables via LLVM, Cranelift, C, or native machine instructions) interacting directly with native operating system environments.
 
 ### 1.1 Semantic Determinism Invariant
 
@@ -24,21 +24,21 @@ The Ril abstract machine operates as an expression-oriented reduction system ove
 
 ### 2.1 Value vs. Store Locations
 
-1. **Value Types**: Primitive booleans (`bool`), fixed-width integers (`i8`..`i64`, `u8`..`u64`), arbitrary-precision integers (`bigint`), IEEE 754 floating-point numbers (`f32`, `f64`), unit (`()`), and immutable UTF-8 strings (`str`) and byte buffers (`bytes`) are passed and copied by value. An immutable copy of `str` or `bytes` MAY share backing memory internally via copy-on-write or slice descriptors, provided no mutation can be observed.
-2. **Reference Types**: Compound data structures—tuples, records, arrays (`[]T`), maps (`Map<K, V>`), sets (`Set<T>`), sum type variants, and closures—are allocated within the managed heap. Variables storing compound structures hold managed references.
-3. **Garbage Collection**: Reclaiming unreferenced heap objects is automatic and managed by garbage collection (GC). Programs do not contain explicit memory deallocation or lifetime annotations.
+1. **Value Types**: Primitive booleans (`bool`), fixed-width integers (`i8`..`i64`, `u8`..`u64`), arbitrary-precision integers (`bigint`), IEEE 754 floating-point numbers (`f32`, `f64`), unit (`()`), and immutable UTF-8 strings (`str`) and byte buffers (`bytes`) SHALL be passed and copied by value. An implementation MAY share backing memory internally for immutable `str` or `bytes` via copy-on-write or slice descriptors, provided that no mutation is observable.
+2. **Reference Types**: Compound data structures—tuples, records, arrays (`[]T`), maps (`Map<K, V>`), sets (`Set<T>`), sum type variants, and closures—SHALL be allocated within the managed heap. Variables storing compound structures SHALL hold managed references.
+3. **Garbage Collection**: Reclamation of unreferenced heap objects SHALL be automatic and managed by garbage collection (GC). Conforming Ril programs SHALL NOT contain explicit memory deallocation primitives or manual lifetime annotations.
 
 ### 2.2 Program Entry Point
 
 A standalone Ril executable program begins execution at the root function `pub fn main`:
 
 ```ebnf
-EntryPoint ::= "pub" "fn" "main" "(" [ "args" ":" "[]" "str" [ "=" "[" "]" ] ] ")" [ "->" TypeExpression ] { ContractArgument } Block
+EntryPoint ::= "pub" "fn" "main" "(" [ Identifier ":" "[]" "str" [ "=" "[" "]" ] ] ")" [ "->" TypeExpression ] { ContractArgument } Block
 ```
 
 1. The entry point MUST be declared as `pub fn main`.
-2. It MAY accept an optional command-line argument vector `args: []str = []`.
-3. If a return type is specified, it MUST be `()` or `Result<(), str>` (or a compatible error type).
+2. It MAY accept an optional command-line argument parameter of type `[]str` (conventionally named `args`).
+3. If a return type is specified, it MUST be `()` or `Result<(), str>`.
 4. If `main` declares algebraic effects (such as `@Io`), those effects MUST be handled by the default host runtime harness provided by the platform launcher.
 
 ---
@@ -56,11 +56,12 @@ The specification strictly segregates program faults into two mutually exclusive
 ├───────────────────────────────────┼────────────────────────────────────┤
 │ • Syntax / Grammar invalidity     │ • Fixed-width integer overflow     │
 │ • Type and universe mismatch      │ • Integer division or modulo by 0  │
-│ • Mutability & handle violations  │ • Numeric downcast out-of-range    │
-│ • Unused mut / Redundant mut      │ • Array / string index out of bounds│
-│ • Missing capability (&^mut, @E)  │ • Assertion failure (`assert(...)`)│
-│ • Unused fallible Result          │ • Explicit `panic(message)`        │
-│ • Scoped handle escape violation  │ • Map compound assign on missing key│
+│ • Mutability laundering (E0520)   │ • Numeric downcast out-of-range    │
+│ • Mut-mut / read-mut (E0523/E0524)│ • Array / string index out of bounds│
+│ • Unused mut / Redundant mut      │ • Assertion failure (`assert(...)`)│
+│ • Missing capability (E0510, @E)  │ • Explicit `panic(message)`        │
+│ • Unused fallible Result          │ • Map compound assign on missing key│
+│ • Scoped handle escape (E0720-722)│                                    │
 └───────────────────────────────────┴────────────────────────────────────┘
 ```
 
@@ -72,11 +73,14 @@ A conforming compiler MUST reject any translation unit containing static errors 
 
 When a runtime operation encounters an irrecoverable invariant violation, the abstract machine raises a **runtime panic**:
 
-1. **Panic Mechanics**: A panic immediately halts normal sequential execution in the current evaluation frame and initiates stack unwinding.
-2. **Deterministic Unwinding**: During unwinding, all active scoped resource cleanup handlers (`let scoped` / `let scoped mut`) in scopes being exited MUST execute in strict Last-In, First-Out (LIFO) order (reverse declaration order).
-3. **Panic Aggregation**: If a panic is raised while executing the cleanup handler of an active scoped resource binding during an ongoing unwinding process, the new panic MUST be captured and attached as a suppressed cause to the primary panic.
-4. **Uncaught Panic Behavior**:
-   An uncaught panic terminates the process with a non-zero exit code and diagnostic crash report detailing the panic message and unwinding trace.
+1. **Panic Mechanics**: A panic SHALL immediately halt normal sequential execution in the current evaluation frame and SHALL initiate deterministic stack unwinding.
+2. **Signature Purity (No `@Panic` Effect)**: Runtime panics are not algebraic effects and SHALL be strictly excluded from function signatures. A conforming compiler MUST NOT require or accept `@Panic` effect annotations on callable items (`InvalidEffectAnnotationError`).
+3. **Absence of Synchronous Catching**: A conforming runtime SHALL NOT provide any mechanism to intercept, catch, or suppress panics within a synchronous evaluation frame.
+4. **Deterministic Unwinding**: During unwinding, all active scoped resource cleanup handlers (`let scoped` / `let scoped mut`) in scopes being exited MUST execute in strict Last-In, First-Out (LIFO) order (reverse declaration order).
+5. **Panic Aggregation**: If a panic is raised while executing the cleanup handler of an active scoped resource binding during an ongoing unwinding process, the new panic MUST be captured and attached as a suppressed cause to the primary panic.
+6. **Structured Concurrency Isolation**: In concurrent execution, a panic occurring in a child task SHALL be contained at the enclosing structured `nursery` boundary, yielding a `TaskResult::Panicked` resolution on task joins without terminating the supervising process.
+7. **Uncaught Panic Behavior**:
+   An uncaught panic SHALL terminate the process with a non-zero exit code and MUST emit a diagnostic crash report detailing the panic message and unwinding trace.
 
 ---
 
