@@ -49,13 +49,13 @@ The only safe boundary for containing a defect panic is an **isolated concurrent
 Many elementary operations are mathematically *partial functions*—functions that are undefined for certain inputs. For example:
 - Indexing: $f(\text{array}, i)$ is undefined when $i \ge \text{len}(\text{array})$.
 - Division: $f(a, b)$ is undefined when $b = 0$.
-- Numeric downcasting: $f(n)$ is undefined when $n > 255$ for `u8`.
+- Numeric downcasting: $f(n)$ is undefined when $n \gt 255$ for `u8`.
 
 Instead of forcing a single awkward compromise across the language, Ril establishes a **Dual-Track Operational Architecture**:
 
 | Track | Syntactic Form | Semantic Assumption | Failure Mode | Use Case |
 | :--- | :--- | :--- | :--- | :--- |
-| **Assertive Track** | `arr[i]`, `a / b`, `u8(n)` | Caller guarantees preconditions hold ($b \ne 0, i < \text{len}$). | Raises immediate Bug Panic upon breach. | Performance-critical inner loops, mathematically proven algorithms. |
+| **Assertive Track** | `arr[i]`, `a / b`, `u8(n)` | Caller guarantees preconditions hold ($b \ne 0, i \lt \text{len}$). | Raises immediate Bug Panic upon breach. | Performance-critical inner loops, mathematically proven algorithms. |
 | **Safe Total Track** | `arr?[i]`, `a /? b`, `ril/conv::try_u8(n)` | Input validity is uncertain; environmental input. | Evaluates total result into `?T` or `Result<T, E>`. | Boundary input validation, configuration parsing, untrusted payloads. |
 
 This dual-track model satisfies both ergonomics and safety: developers are never forced to unwrap safe optionals when an invariant has already been proven, yet they have first-class syntax (`/?`, `?[]`) to safely inspect uncertain domain values.
@@ -75,7 +75,11 @@ This dual-track model satisfies both ergonomics and safety: developers are never
 In languages with reference semantics and mutable state, a notorious class of bugs stems from **mutability laundering**: taking a reference that was passed as read-only, and by means of reassignment, pattern matching, closure capture, or container injection, recovering write permissions to the underlying data.
 
 Ril's philosophy for professional developers mandates that **non-mut parameters and read-only handles can never be upgraded to mutable handles under any circumstances**. Rather than relying on dynamic runtime checks, the Ril compiler enforces **Monotonic Degradation**:
-$$\text{Mut} \succ \text{ReadOnly} \succ \text{None}$$
+
+$$
+\text{Mut} \succ \text{ReadOnly} \succ \text{None}
+$$
+
 Permissions can degrade, but never upgrade. The compiler provides a closed static diagnostic closure (`E0520` through `E0528`) covering:
 - Assigning read-only to `let mut` (`E0520`).
 - Destructuring read-only records into `mut` fields (`E0521`).
@@ -90,7 +94,10 @@ Permissions can degrade, but never upgrade. The compiler provides a closed stati
 Rust achieves memory safety through affine types and lifetime annotations (`'a`, `'b`), demanding significant cognitive overhead from application developers. Swift enforces safety through the dynamic and static **Law of Exclusivity**.
 
 Ril targets high-level and mid-level application software. It eliminates the cognitive overhead of lifetime annotations while retaining mathematical aliasing safety by enforcing **Cross-Argument Disjointness at Call Sites**:
-$$\forall i \in \operatorname{MutArgs},\; \forall j \ne i,\quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset$$
+
+$$
+\forall i \in \operatorname{MutArgs},\quad \forall j \ne i,\quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset
+$$
 
 If a function call passes `mut a` and `mut b`, or `mut a` and read-only `b`, the compiler statically inspects the origin root paths. If they alias the same memory location, compilation fails immediately with `E0523` (Mut-Mut Conflict) or `E0524` (Read-Mut Hazard). This delivers aliasing safety without requiring developers to write complex lifetime bounds.
 
@@ -137,7 +144,10 @@ Ril eliminates function coloring through **Algebraic Effects**:
 Unstructured concurrency (`go func()`, background thread detached spawning, dangling Promises) is the leading source of resource leaks, orphan goroutines, and race conditions.
 
 Ril unifies all concurrent execution under **Structured Concurrency**:
-$$\forall c \in \text{Children}(N), \quad \operatorname{Lifetime}(c) \subseteq \operatorname{Lifetime}(N) \subset \operatorname{Lifetime}(\text{Frame}_{\text{parent}})$$
+
+$$
+\forall c \in \text{Children}(N), \quad \operatorname{Lifetime}(c) \subseteq \operatorname{Lifetime}(N) \subset \operatorname{Lifetime}(\text{Frame}_{\text{parent}})
+$$
 
 A parent nursery cannot exit until all child tasks finish. If a child task panics, the nursery guarantees that:
 1. Sibling tasks are immediately cancelled via delimited Early Abort.
@@ -147,7 +157,10 @@ A parent nursery cannot exit until all child tasks finish. If a child task panic
 ### 3.3 Floating-Point Determinism in Multi-Core Reductions
 
 In multi-threaded parallel reductions (`par_reduce`, `par_fold`), worker threads process chunks of data concurrently. However, floating-point addition is non-associative:
-$$(a + b) + c \ne a + (b + c)$$
+
+$$
+(a + b) + c \ne a + (b + c)
+$$
 
 If the tree of reduction depended on dynamic thread scheduling, OS preemption, or core count $P$, running the same parallel computation twice on the same machine could yield slightly different floating-point results. This non-determinism breaks financial simulations, scientific models, and regression test suites.
 
@@ -226,7 +239,11 @@ By Theorem 1.1 (**Strong Normalization**) and Theorem 1.2 (**Confluence**), all 
 ### 5.2 Prevention of Girard's and Curry's Paradoxes
 
 In dependently typed languages and type-level programming, admitting unrestricted recursive types or negative recursive constructors allows encoding logical contradictions:
-$$\text{Type } T = T \to \bot$$
+
+$$
+\text{Type } T = T \to \bot
+$$
+
 If evaluated at compile time, such types introduce Girard's or Curry's paradoxes, causing type checking to become undecidable.
 
 Ril's **Negative Occurrence Ban** statically rejects any attempt to eliminate or recurse over negative recursive types during halting computation, guaranteeing the logical consistency of the type computation system.
@@ -234,5 +251,9 @@ Ril's **Negative Occurrence Ban** statically rejects any attempt to eliminate or
 ### 5.3 Zero-Cost Propositional Equality Rewriting
 
 When developers prove that two types or expressions are propositionally equal using `Eq<A, a, b>` and constructor `Refl`:
-$$\text{rewrite } p \text{ in } expr$$
+
+$$
+\text{rewrite } p \text{ in } expr
+$$
+
 The type checker transports the term $expr$ across the equivalence. Because definitional equality is verified statically at compile time, the compiler strips the proof and emits **zero runtime instructions**. Proofs in Ril guarantee correctness without paying any runtime penalty.

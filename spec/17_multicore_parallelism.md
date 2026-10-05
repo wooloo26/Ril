@@ -97,13 +97,12 @@ A conforming parallel runtime SHALL evaluate parallel tasks using a work-stealin
 2. **Dynamic Work-Stealing Grain ($G_{\text{steal}}$)**:
    To amortize task deque scheduling overhead, runtime workers steal canonical sub-trees grouped according to:
 
-   $$
-   G_{\text{steal}}(P) = \max\left(G_{\text{canonical}}, \; \frac{N}{8 \times P}\right)
-   $$
+   $$G_{\text{steal}}(P) = \max\left(G_{\text{canonical}}, \quad \frac{N}{8 \times P}\right)$$
+
 3. **Sequential Vectorization Fallback**:
    When a sub-slice length satisfies $N \le G_{\text{canonical}}$, the worker thread executes a sequential loop over contiguous elements. An implementation MAY vectorize such loops using native SIMD instructions.
 4. **Cache-Oblivious Bisection**:
-   For $N > G_{\text{canonical}}$, the range is recursively bisected at $\lfloor (start + end) / 2 \rfloor$. The left sub-range and right sub-range form the canonical child nodes in the evaluation tree.
+   For $N \gt G_{\text{canonical}}$, the range is recursively bisected at $\lfloor (start + end) / 2 \rfloor$. The left sub-range and right sub-range form the canonical child nodes in the evaluation tree.
 
 ---
 
@@ -151,7 +150,7 @@ In `par_reduce` and `par_fold`, reduction operations MUST strictly evaluate alon
 
 $$
 \operatorname{Reduce}(s, e) = \begin{cases} 
-\operatorname{Reduce}_{\mathrm{seq}}(s, e), & \text{if } (e - s) \le G_{\text{canonical}} \\
+\operatorname{Reduce}_{\mathrm{seq}}(s, e), & \text{if } (e - s) \le G_{\text{canonical}} \cr
 \operatorname{combine}(\operatorname{Reduce}(s, m), \operatorname{Reduce}(m, e)), & \text{where } m = s + \lfloor (e - s) / 2 \rfloor
 \end{cases}
 $$
@@ -163,9 +162,8 @@ Dynamic work-stealing schedules sub-trees across available cores, but partial re
 1. **Topology-Keyed RNG State**:
    Parallel PRNG streams derive internal state from a counter-based hash keyed on the task's unique node path within the reduction DAG:
 
-   $$
-   \text{Seed}_{\text{child}} = \text{hash}(\text{Seed}_{\text{parent}}, \text{ChildIndex})
-   $$
+   $$\text{Seed}_ {\text{child}} = \text{hash}(\text{Seed}_ {\text{parent}}, \text{ChildIndex})$$
+
 2. **Reproducibility Invariant**:
    A parallel randomized computation MUST produce the identical sequence of pseudo-random numbers and identical numerical results regardless of the number of worker threads $P$.
 

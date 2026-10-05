@@ -77,7 +77,10 @@ To ensure that mutability annotations reflect genuine operational intent and pre
 ### 3.3 Monotonic Permission Degradation and Anti-Laundering Invariant
 
 Ril enforces the **Monotonic Permission Degradation Axiom**:
-$$\text{Mut} \succ \text{ReadOnly} \succ \text{None}$$
+
+$$
+\text{Mut} \succ \text{ReadOnly} \succ \text{None}
+$$
 
 1. **Unidirectional Degradation**: Permissions can only degrade monotonically ($\text{Mut} \to \text{ReadOnly}$). Any attempt to upgrade, cast, or coerce a read-only reference back into a mutable location is strictly prohibited.
 2. **Compile-Time Anti-Laundering Rejections**:
@@ -111,7 +114,11 @@ Parameters declare their write and sharing permissions explicitly in their signa
 
 To guarantee algorithmic predictability and prevent hidden aliasing corruption, Ril enforces the **Law of Exclusivity**:
 > **Normative Rule**: Any mutable borrow via `mut` establishes an exclusive write access window. For every argument $a_i$ passed to a `mut` parameter, its storage path MUST be pairwise disjoint from every other argument $a_j$ ($j \ne i$) supplied in that function call (including both other `mut` arguments and shared read-only arguments):
-> $$\forall i \in \operatorname{MutArgs}, \ \forall j \in \operatorname{AllArgs} \setminus \{i\}, \quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset$$
+>
+> $$
+> \forall i \in \operatorname{MutArgs}, \ \forall j \in \operatorname{AllArgs} \setminus \lbrace i\rbrace , \quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset
+> $$
+>
 > Two paths $p_1, p_2$ overlap ($p_1 \cap p_2 \ne \emptyset$) if and only if one is an access prefix of the other ($p_1 \sqsubseteq p_2 \lor p_2 \sqsubseteq p_1$). Distinct field projections ($x.a$ and $x.b$ where $a \ne b$) satisfy $x.a \cap x.b = \emptyset$. Dynamic collection indices ($arr[i]$ and $arr[j]$) are conservatively treated as overlapping unless provably distinct compile-time constants.
 
 1. **Rejection of Mut-Mut Aliasing (`E0523: MutMutAliasingConflictError`)**:

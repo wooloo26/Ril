@@ -97,13 +97,16 @@ type Cell<C> = match type C {
 ### 2.3 Operational Reduction of `match type`
 
 Given a target type expression $T$ normalized to canonical form $\tau$:
-$$\operatorname{eval}(\text{match type } T \{ P_1 \to E_1, \dots, P_n \to E_n \})$$
 
-1. **Sequential Pattern Matching**: For each arm $i \in \{1, \dots, n\}$ in linear declaration order:
+$$
+\operatorname{eval}(\text{match type } T \lbrace P_1 \to E_1, \dots, P_n \to E_n \rbrace )
+$$
+
+1. **Sequential Pattern Matching**: For each arm $i \in \lbrace 1, \dots, n\rbrace$ in linear declaration order:
    - Compute structural unification $\operatorname{unify}(P_i, \tau) \Rightarrow \theta$, where $\theta$ binds each `infer U` variable to its corresponding extracted sub-component in $\tau$.
    - If unification succeeds, the match expression immediately reduces to $\theta(E_i)$.
 2. **Exhaustiveness and Fallthrough**: If no pattern matches and no fallback arm (`_`) is defined, type computation fails at compile time with a static type error.
-3. **Dead Pattern Detection**: If arm $P_k$ is statically subsumed by preceding patterns $\bigcup_{j < k} P_j$, the compiler SHALL emit a static dead code error.
+3. **Dead Pattern Detection**: If arm $P_k$ is statically subsumed by preceding patterns $\bigcup_{j \lt k} P_j$, the compiler SHALL emit a static dead code error.
 
 ---
 
@@ -144,7 +147,11 @@ halt fn right_zero(n: Nat) -> Eq<Nat, {n |> add(Nat::Zero)}, n> {
 
 **Theorem 3.1 (Zero-Cost Proof Transport)**:
 Let $p : \operatorname{Eq}\langle A, a, b\rangle$ be proof evidence and let $e : T[a]$. The expression `rewrite p in e` is statically typed with $T[b]$. The operational evaluation satisfies:
-$$\operatorname{eval}(\operatorname{rewrite}\ p\ \operatorname{in}\ e) \equiv \operatorname{eval}(e)$$
+
+$$
+\operatorname{eval}(\operatorname{rewrite}\ p\ \operatorname{in}\ e) \equiv \operatorname{eval}(e)
+$$
+
 In bytecode compilation and machine code emission, proof rewriting generates zero executable instructions and incurs zero runtime memory overhead.
 
 ### 3.3 Erased Evidence Parameters

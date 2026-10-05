@@ -59,10 +59,10 @@ let fallback = (10 /? 0) ?? 0 -- 0
 2. **Operational Evaluation**:
    - **Integer Types (`i8`..`i64`, `u8`..`u64`, `bigint`)**:
      - `a /? b` evaluates to `None` if divisor $b == 0$ or if signed overflow occurs ($a == \text{MIN} \land b == -1$); otherwise evaluates to `Some(a / b)`.
-     - `a %? b` evaluates to `None` if divisor $b == 0$; otherwise evaluates to `Some(a % b)` (for signed integers, $\text{MIN} \%? -1$ evaluates to `Some(0)`).
+     - `a %? b` evaluates to `None` if divisor $b == 0$; otherwise evaluates to `Some(a % b)` (for signed integers, $\text{MIN} \mathbin{\char37}? -1$ evaluates to `Some(0)`).
    - **Floating-Point Types (`f32`, `f64`)**:
-     - `a /? b` evaluates to `None` if divisor $b \in \{+0.0, -0.0\}$ or if the IEEE 754 division result is non-finite (`NaN` or $\pm\infty$); otherwise evaluates to `Some(a / b)`.
-     - `a %? b` evaluates to `None` if divisor $b \in \{+0.0, -0.0\}$ or if either operand is non-finite (`NaN` or $\pm\infty$); otherwise evaluates to `Some(a % b)`.
+     - `a /? b` evaluates to `None` if divisor $b \in \lbrace +0.0, -0.0\rbrace$ or if the IEEE 754 division result is non-finite (`NaN` or $\pm\infty$); otherwise evaluates to `Some(a / b)`.
+     - `a %? b` evaluates to `None` if divisor $b \in \lbrace +0.0, -0.0\rbrace$ or if either operand is non-finite (`NaN` or $\pm\infty$); otherwise evaluates to `Some(a % b)`.
 3. **Precedence**: `/?` and `%?` share identical multiplicative precedence (Level 3) with `/` and `%`.
 
 ### 2.4 Bitwise Operators (`&`, `^`, `|`, `~`, `<<`, `>>`)
@@ -70,7 +70,7 @@ let fallback = (10 /? 0) ?? 0 -- 0
 1. **Bitwise Logic**: `&` (AND), `^` (XOR), `|` (OR), and unary `~` (NOT) operate on bitwise patterns of fixed-width integers and `bigint`.
 2. **Shift Operators (`<<`, `>>`)**:
    - The left operand is any integer type; the right operand (shift count) MUST have type `int`.
-   - The shift count MUST be non-negative and strictly less than the bit width $N$ of the left operand ($0 \le \text{count} < N$).
+   - The shift count MUST be non-negative and strictly less than the bit width $N$ of the left operand ($0 \le \text{count} \lt N$).
    - A negative shift count or a count $\ge N$ MUST trigger a runtime panic without silent bitmasking.
    - `<<` is checked multiplication by $2^{\text{count}}$: for fixed-width integers, if any high bits are shifted out or the sign bit changes unexpectedly, it MUST trigger an overflow panic.
    - `>>` performs arithmetic right shift (sign extension) on signed integers and logical right shift (zero fill) on unsigned integers.
@@ -144,13 +144,13 @@ let inclusive = 0..=3 -- yields 0, 1, 2, 3
 ```
 
 1. Ranges are non-associative expressions constructing range descriptors. Both bounds MUST have the identical integer type.
-2. An integer range where $\text{start} > \text{end}$ is valid and denotes an empty range.
+2. An integer range where $\text{start} \gt \text{end}$ is valid and denotes an empty range.
 
 ### 4.2 Sequence Indexing and Slicing (Arrays and Bytes)
 
 1. **Direct Array Indexing (`arr[index]`)**:
    - Evaluates index as `int`.
-   - An out-of-bounds index ($index < 0$ or $index \ge \text{len}$) MUST trigger a runtime panic (`panic: index out of bounds`).
+   - An out-of-bounds index ($index \lt 0$ or $index \ge \text{len}$) MUST trigger a runtime panic (`panic: index out of bounds`).
 2. **Safe Array Indexing (`arr?[index]`)**:
    - Returns `Option<T>` (`?T`). An out-of-bounds index evaluates to `None` without panicking.
 3. **Slicing (`collection[start..end]`)**:

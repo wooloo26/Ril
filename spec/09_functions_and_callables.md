@@ -70,7 +70,9 @@ ArgumentsCall ::= "(" [ Arguments ] ")"
 3. **Erased Parameter**: `erased x: T` marks parameters used purely for compile-time indexing or proofs. Erased parameters are eliminated during compilation and have zero runtime footprint.
 4. **Cross-Argument Disjointness Invariant (Law of Exclusivity)**:
    > **Normative Invariant**: For every argument $a_i$ bound to a `mut` parameter, its storage path MUST be pairwise disjoint from every other argument $a_j$ ($j \ne i$) supplied in the identical call frame:
-   > $$\forall i \in \operatorname{MutArgs}, \ \forall j \in \operatorname{AllArgs} \setminus \{i\}, \quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset$$
+   >
+   > $$\forall i \in \operatorname{MutArgs}, \ \forall j \in \operatorname{AllArgs} \setminus \lbrace i\rbrace , \quad \operatorname{Path}(a_i) \cap \operatorname{Path}(a_j) = \emptyset$$
+   >
    - Passing overlapping paths to two or more `mut` parameters is rejected with `E0523: MutMutAliasingConflictError`.
    - Passing overlapping paths to a `mut` parameter and a read-only parameter is rejected with `E0524: ReadMutAliasingHazardError`.
 
@@ -141,10 +143,12 @@ If the call passes no other preceding arguments, the empty parentheses `()` MAY 
 
 ### 5.1 Theorem (Automatic Effect and Capability Forwarding)
 
-Let $f$ be a higher-order function receiving a callable parameter $g: \text{fn}(P) \to R \ @\mathcal{E}_g \ \&\mathcal{S}_g$. If $f$ invokes $g$ within its evaluation body:
+Let $f$ be a higher-order function receiving a callable parameter $g: \text{fn}(P) \to R \ @\mathcal{E}_g \ \mathbin{\char38}\mathcal{S}_g$. If $f$ invokes $g$ within its evaluation body:
 1. **Implicit Polymorphic Forwarding**: The function signature of $f$ requires no explicit effect type variables or effect annotations to forward $g$'s effects.
 2. **Call-Site Set Union**: At every call site $f(v, c)$, the effective effect requirement of the call expression is:
+
    $$\mathcal{E}_{\text{call}} = \mathcal{E}_f \cup \mathcal{E}_c$$
+
    where $\mathcal{E}_f$ denotes $f$'s intrinsically declared effects, and $\mathcal{E}_c$ denotes the concrete effects inferred for argument $c$.
 3. **Purity Conservation**: If a concrete callable argument $c$ is purely functional ($\mathcal{E}_c = \emptyset$), the call site incurs strictly zero additional effect obligations.
 4. **State Capability Forwarding**: Callback state obligations are forwarded with their binding identities and origin summaries intact. When a callback or callee retains writable aliases to external state `x`, the enclosing call retains `&{^mut x}`; it MUST NOT weaken that requirement to `&{mut x}` or `&capture` alone. Parameter-origin obligations are substituted with actual argument origins. Local discharge and explicit interface abstraction follow Chapter 11; merely forwarding a mutation-only callback does not introduce retained sharing.

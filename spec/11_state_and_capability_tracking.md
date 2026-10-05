@@ -9,7 +9,10 @@ This chapter formalizes the static capability and state tracking system in Ril, 
 ### 1.1 Invariant (Local Mutation Purity Invariant)
 
 For any evaluation frame with local allocations $\mathcal{L} \subset \text{Store}$ such that $\mathcal{L} \cap \operatorname{Escaped}(\text{Frame}) = \emptyset$, mutating transitions on locations in $\mathcal{L}$ do not introduce capability annotations on the callable's signature:
-$$\forall l \in \mathcal{L}, \quad \text{Write}(l) \implies \Gamma \vdash f : \text{fn}(P) \to R$$
+
+$$
+\forall l \in \mathcal{L}, \quad \text{Write}(l) \implies \Gamma \vdash f : \text{fn}(P) \to R
+$$
 
 ```ril
 fn sum_to(n: int) -> int {
@@ -281,15 +284,26 @@ Ril defines an axiomatic formal system governing permission preservation, preven
 ### 8.1 Monotonic Permission Degradation Axiom
 
 Permissions across reference access paths satisfy the strict partial order:
-$$\text{Mut} \succ \text{ReadOnly} \succ \text{None}$$
+
+$$
+\text{Mut} \succ \text{ReadOnly} \succ \text{None}
+$$
+
 Permissions SHALL degrade monotonically along dataflow paths ($\text{Mut} \to \text{ReadOnly}$). Any operation attempting to upgrade, coerce, or cast a read-only reference or handle back into a mutable capability is statically rejected.
 
 ### 8.2 Capability Preorder Lattice
 
 State capabilities form a bounded preorder lattice $(\Sigma, \sqsubseteq)$:
-$$\emptyset \sqsubset \text{\&mut} \sqsubset \text{\&^mut}$$
-For each external binding identity `x`, the corresponding chain is `&{x}` $\sqsubset$ `&{mut x}` $\sqsubset$ `&{^mut x}`, with $\text{\&capture}$ spanning an orthogonal dimension. Named obligations from distinct identities remain separate even when alias analysis finds overlapping storage. Subsumption allows narrower capability contracts to satisfy broader capability contexts:
-$$\mathcal{S}_1 \sqsubseteq \mathcal{S}_2 \implies \text{fn}(P) \to R \ \&\mathcal{S}_1 <: \text{fn}(P) \to R \ \&\mathcal{S}_2$$
+
+$$
+\emptyset \sqsubset \char38\text{mut} \sqsubset \char38\char94\text{mut}
+$$
+
+For each external binding identity `x`, the corresponding chain is `&{x}` $\sqsubset$ `&{mut x}` $\sqsubset$ `&{^mut x}`, with $\char38\text{capture}$ spanning an orthogonal dimension. Named obligations from distinct identities remain separate even when alias analysis finds overlapping storage. Subsumption allows narrower capability contracts to satisfy broader capability contexts:
+
+$$
+\mathcal{S}_1 \sqsubseteq \mathcal{S}_2 \implies \text{fn}(P) \to R \ \mathbin{\char38}\mathcal{S}_1 \lt : \text{fn}(P) \to R \ \mathbin{\char38}\mathcal{S}_2
+$$
 
 ### 8.3 Anti-Laundering Static Diagnostic Closure Matrix
 
