@@ -88,17 +88,17 @@ ForExpr     ::= "for" Expression ForBindings Block
 For a non-dependent record `record: T`:
 
 ```ril
-type Row = { name: str, count: int }
-let row = Row.{ name: "Lin", count: 2 }
+type Entry = { name: str, count: int }
+let row = Entry.{ name: "Lin", count: 2 }
 for row as key, value {
-    -- key: keyof Row (stable), value: Row[key]
+    -- key: keyof Entry (correlated), value: Entry[key]
 }
 ```
 
 1. **Shallow Copy of Keys**: Iteration reads a shallow copy of keys before iteration begins and visits labels in **lexicographic Unicode scalar order**.
 2. **Typing Invariants**: In each iteration, `key: keyof T` is stable and `value: T[key]`. The loop body MUST typecheck for every admitted label.
-3. **Single Binder**: With one binder `for record as entry`, the item is a dependent entry record `{ key: keyof T, value: T[key] }`.
-4. **Prohibition of Dependent Records**: Dependent records and erased fields are NOT runtime record iteration sources and MUST be rejected at compile time.
+3. **Single Binder**: With one binder `for record as entry`, the item is a compiler-checked correlated entry package: its key determines the projected value type. This special record eliminator is not a general runtime dependent-record feature.
+4. **Prohibition of Dependent Records**: Existential/binder-dependent packages and records with opaque type members are NOT runtime record iteration sources and MUST be rejected at compile time.
 
 ---
 
@@ -201,3 +201,9 @@ fn get_user(id: int) -> Result<str, str> {
    ```
    with the successful bindings introduced into the succeeding frame.
 5. **Item Status**: As an `Item`, `let ... else` produces no runtime value. If positioned as the terminal element of a block, the block evaluates to `()`.
+
+## 7. Static Closure Control Flow
+
+Static type closures reuse ordinary block, let, if, match, return, closure and finite traversal rules. Ordinary type closures may use general recursion/loops under compile-time purity, stage checks and resource budgets. Halt type closures use Chapter 12's normal-return and termination rules; stable finite for traversal is permitted only with certified primitives/iterators. They cannot invoke runtime functions.
+
+TypeMatch arms return ordinary static expressions with a consistent sort. Unknown type inputs block reduction rather than selecting a fallback. Type tuple rest patterns bind a tuple Type, distinct from runtime array/tuple destructuring.

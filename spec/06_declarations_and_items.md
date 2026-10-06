@@ -10,7 +10,7 @@ A Ril module consists of a sequence of top-level item declarations:
 
 ```ebnf
 Item ::= LetDecl | FunctionDecl | SumTypeDecl | NominalDecl
-       | OpaqueDecl | TypeAliasDecl | EffectDecl | EffectAliasDecl
+       | OpaqueDecl | TypeBindingDecl | EffectDecl | EffectAliasDecl
        | ModuleDecl | UseDecl | TestDecl
 ```
 
@@ -52,8 +52,9 @@ Record schemas declare structural definitions for structured, field-addressed da
 
 ```ebnf
 RecordType      ::= "{" [ RecordTypeEntry { "," RecordTypeEntry } [ "," ] ] "}"
-RecordTypeEntry ::= RecordTypeField | MappedTypeField | RecordTypeSpread | RowTail
-RecordTypeField ::= [ "mut" | "erased" ] Identifier ":" TypeExpression [ "=" Expression ]
+RecordTypeEntry ::= RecordTypeField | OpaqueTypeMember | MappedTypeField | RecordTypeSpread | RowTail
+RecordTypeField ::= [ "mut" ] Identifier ":" TypeExpression [ "=" Expression ]
+OpaqueTypeMember ::= "opaque" "type" Identifier
 RecordTypeSpread::= "..." TypeExpression
 RowTail         ::= ".." [ Identifier | "_" ]
 ```
@@ -70,19 +71,20 @@ RowTail         ::= ".." [ Identifier | "_" ]
 4. **Target-Typing of Record Literals**:
    When the target record schema is uniquely known from context (e.g., variable annotation, return type, or parameter type), the schema prefix MAY be omitted (`let u: User = .{ id: 1, name: "Alice" }`).
 
-### 3.2 Dependent Records and Existential Packages
+### 3.2 Associated Type Members and Recursive Records
 
-1. **Dependent Fields**: Later field types in a record schema MAY reference preceding immutable stable fields:
-   ```ril
-   type Event<P: Record> = { kind: keyof P, payload: P[kind] }
-   ```
-2. **Existential Packages**:
-   Erased type fields allow bundling abstract types with implementations:
-   ```ril
-   type Package = { erased Item: Type, value: Item }
-   let p: Package = .{ Item: int, value: 42 }
-   ```
-   Opening an existential package introduces an abstract type identity distinct from all other instances.
+```ril
+type EncoderBox = {
+    opaque type Item,
+    value: Item,
+    encode: fn(Item) -> bytes,
+}
+type Tree<T> = { value: T, children: []Tree<T> }
+```
+
+OpaqueTypeMember binds the chosen type for subsequent fields without a runtime Type slot. Construction supplies `Item: type[ConcreteType]`; opening the package keeps value and operation types correlated under an abstract lexical witness (Chapter 04). It is allowed in record schemas and struct variants only, without mut, defaults, local representation or generic header. Constructor-local generic parameters remain an alternative for hidden payload types in positional variants.
+
+Recursive structural records obey constructor guarding and regularity checks. They use managed references without explicit boxing; possible runtime cycles do not certify halt recursion.
 
 ---
 
@@ -113,8 +115,8 @@ type Prefixed<T: Record> = { [k in keyof T as "field_" + k]: T[k] }
 
 1. **Default Immutability**: Mapped fields are immutable by default, regardless of whether the source field was `mut`. An explicit `mut` modifier on the mapped field declaration is required to produce writable fields.
 2. **Removal of Inherited Defaults**: Mapped schemas strip away all inherited default field values from the source schema.
-3. **Halting Filtering and Renaming**:
-   The optional `if` condition and `as` name expressions are pure halting expressions over the erased key variable. If the `as` expression causes two distinct source keys to map to the identical string label, compilation MUST fail with a duplicate label collision error.
+3. **Static Filtering and Renaming**:
+   The optional `if` condition and `as` name expressions are pure static expressions over the implicitly erased key variable. In halt declarations, every dependency must be halt-admissible; ordinary static contexts permit ordinary type computation under compiler budgets. If renaming produces duplicate labels, declaration elaboration fails. A halt builder with uncertain label uniqueness must instead return a checked Result; a compilation error is not a halt callable's normal return.
 
 ---
 
@@ -128,8 +130,9 @@ SumTypeDecl   ::= [ "pub" ] "type" Identifier [ GenericParameters ] [ WhereClaus
 VariantDecl   ::= Identifier [ GenericParameters ]
                   [ "(" VariantFields ")" | "{" StructFields "}" ] [ "->" TypeExpression ]
 VariantFields ::= VariantField { "," VariantField } [ "," ]
-VariantField  ::= [ "erased" ] Identifier ":" TypeExpression | TypeExpression
-StructFields  ::= RecordTypeField { "," RecordTypeField } [ "," ]
+VariantField  ::= Identifier ":" TypeExpression | TypeExpression
+StructFields  ::= StructFieldEntry { "," StructFieldEntry } [ "," ]
+StructFieldEntry ::= RecordTypeField | OpaqueTypeMember
 ```
 
 ### 5.1 Variant Construction and Target-Typing
@@ -142,20 +145,27 @@ StructFields  ::= RecordTypeField { "," RecordTypeField } [ "," ]
 3. **First-Class Constructors**: Single-payload positional variants act as first-class constructor functions (`Message::Write` has type `fn(str) -> Message`).
 4. **Recursive Data Without Boxing**: Recursive sum types use GC-managed references; no manual indirection types are required.
 
-### 5.2 Indexed Constructors (GADTs)
+### 5.2 Typed Payload Constructors
 
-A variant MAY declare constructor-specific erased parameters, named dependent payload binders, and an explicit return type:
+Constructor-local generics are implicitly compile-time-only, and explicit result equations can constrain the application's type parameter:
 
 ```ril
-type Vec<T, n: Nat> {
-    Nil<T> -> Vec<T, Nat::Zero>,
-    Cons<T, n: Nat>(head: T, tail: Vec<T, n>) -> Vec<T, {Nat::Succ(n)}>,
+type ConfigValue<T> {
+    Text(str) -> ConfigValue<str>,
+    Count(int) -> ConfigValue<int>,
+    Enabled(bool) -> ConfigValue<bool>,
+}
+
+fn read_text(value: ConfigValue<str>) -> str {
+    match value { Text(text) -> text }
 }
 ```
 
-1. **Named Payload Binders**: Named payload binders in constructors are in scope for subsequent payload types and the return type index equations.
-2. **Existential Parameter Scoping**: Constructor-local generic parameters remain local to match arms unless repackaged into existential wrappers.
-3. **Pattern Refinement**: Pattern matching on indexed constructors refines static type indices, eliminating impossible variant branches from exhaustiveness requirements.
+The result type excludes Count/Enabled here, so matching Text is exhaustive. This is constructor/type refinement, not user-supplied mathematical proof.
+
+1. Type/static-index parameters scope later payload types and result equations; ordinary runtime payload values do not enter arbitrary type computation.
+2. Constructor-local hidden types remain local to match arms unless repacked. For example `type Encodable { Pack<T>(T, fn(T) -> bytes) }` pairs an unknown payload with its operation without an explicit erasure modifier.
+3. Finite constructor equations refine indices and eliminate impossible cases. A recognized strict subindex may vary on a recursive payload only when index erasure leaves one finite representation and does not drive layout/reflection; no automatic theorem search is implied.
 
 ---
 
@@ -170,8 +180,8 @@ NominalDecl ::= [ "pub" ] "type" Identifier [ GenericParameters ] "(" VariantFie
 ```
 
 ```ril
-type Meters(f64)
-type Seconds(f64)
+type UserId(str)
+type RequestId(str)
 ```
 
 1. **Operator Encapsulation**: Nominal wrappers do NOT inherit arithmetic operators (`+`, `-`) or relational comparisons (`<`, `>`). Applying arithmetic operators directly to nominal wrappers is a compile-time static error.
@@ -195,10 +205,60 @@ OpaqueDecl ::= [ "pub" ] "opaque" "type" Identifier [ GenericParameters ] [ Wher
 Type aliases introduce transparent synonyms for existing type expressions:
 
 ```ebnf
-TypeAliasDecl ::= [ "pub" ] "type" Identifier [ GenericParameters ] [ WhereClause ] "=" TypeExpression
+TypeBindingDecl ::= [ "pub" ] [ "halt" ] "type" Identifier
+                    [ GenericParameters ] [ WhereClause ] "=" TypeBindingInitializer
+TypeBindingInitializer ::= TypeExpression | Expression
 ```
 
-1. **Structural Equivalence**: A type alias does not introduce a distinct nominal type. The alias and its expansion are completely interchangeable in all type-checking contexts.
-2. **Compile-Time Expansion**: Type aliases are fully normalized during compilation and incur zero runtime representation overhead.
-3. **Contrast with Nominal Wrappers**: Unlike nominal wrappers (`type Meters(f64)`), type aliases preserve all operators, methods, and structural properties of the target type.
+1. **Structural Equivalence**: A type alias does not introduce a distinct nominal type. Its valid normalized description is interchangeable with the target; this does not erase the halt admissibility of dependencies used to elaborate it.
+2. **Compile-Time Representation**: Aliases normalize on demand to finite regular graphs or neutral computations. Recursive aliases are not infinitely unfolded. They incur no extra runtime representation overhead.
+3. **Contrast with Nominal Wrappers**: Unlike nominal wrappers (`type UserId(str)`), type aliases preserve all operators, methods, and structural properties of the target type.
 
+
+## 8. Static Callable Bindings
+
+```ebnf
+TypeBindingDecl ::= [ "pub" ] [ "halt" ] "type" Identifier
+                    [ GenericParameters ] [ WhereClause ] "=" TypeBindingInitializer
+TypeBindingInitializer ::= TypeExpression | Expression
+```
+
+Direct type/sort descriptions create aliases. An expression producing a static callable creates a type-function binding, with ordinary inferred parameter/result sorts. A callable binding MUST NOT have a left-hand generic header: its parameters belong to the closure. Generic headers remain available for ordinary data schemas, aliases, ADTs and constructor-kinded erased parameters, not for static callable bindings.
+
+```ril
+halt type Box = \T: Type -> type[{ value: T }]
+type IntBox = Box(type[int])
+
+halt type SameBox = Box
+type Mapper = type(Type) -> Type
+type Normalize = \T: Type, simplify: Mapper -> {
+    let next = simplify(T)
+    if Types::same(T, next) { T } else { Normalize(next, simplify) }
+}
+```
+
+A callable initializer need not be a syntactic lambda: aliases and composition results are allowed if they are statically available callable values of the static family. `halt` requires a certified halt value and halt-admissible initializer dependencies; an unmarked binding forgets the halt guarantee and cannot regain it merely because initialization succeeded. Runtime fn values are not static initializers.
+
+Static functions use ordinary parenthesized calls everywhere, including annotation expressions, callbacks and intermediate callable values. `Box<...>` and `Box::<...>(...)` are not callable-binding invocation forms. `type BoxSchema<T> = { value: T }` retains the distinct data/schema constructor application `BoxSchema<int>`.
+
+Erased constructor-kinded parameters such as F<_> retain their constructor application F<T>. A static callable can be exposed through a constructor-kinded parameter only with matching arity/sorts and preserved admissibility; this is an erased constructor interface, not a second direct-call spelling for a callable binding. Static callable-sort parameters use normal calls F(T).
+
+### 8.1 Recursive Binding and Initialization
+
+Direct lambda initializers (possibly parenthesized) introduce prebound recursive static items. Their bodies can refer to themselves and other direct-lambda items in scope; signatures, result sorts and halt progress are jointly checked by SCC. Only item names receive recursive visibility. Let captures remain lexical, immutable and statically available; later/uninitialized captures cannot be read.
+
+Non-lambda callable initializers are evaluated in lexical initialization order. They cannot eagerly refer to themselves or cyclic/forward-uninitialized callable values. Composition and aliasing do not invent a new recursion mechanism. Unresolved sorts are rejected rather than fixed by a convenient later call.
+
+```ril
+halt type Pair = \U: Type, T: Type -> type[(T, U)]
+type P = Pair(type[str], type[int])
+-- halt type Bad<U> = \T: Type -> type[(T,U)] -- reject double parameter groups
+```
+
+The closure grammar, delimiters and result inference remain ordinary. Static callable annotations always include their result arrow, just as runtime fn annotations do; no optional-return-arrow rule needs special lambda parentheses.
+
+### 8.2 Implicit Compile-Time Positions
+
+Generic parameters and constructor-local type/index parameters have implicit erasure. Static type-function values and opaque member witnesses have no ordinary runtime value representation. Ordinary parameters/fields remain runtime data and cannot be marked for erasure. Move a static index to a generic parameter, e.g. `type WirePacket<version: int>(bytes)` or `fn process<version: int>(packet: WirePacket<{version}>)`.
+
+Erasure never deletes required evaluation of an ordinary runtime argument. A runtime value cannot become a static index merely because an implementation could optimize it away. No explicit erasure marker participates in equality, variance or callable reflection.

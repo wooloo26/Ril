@@ -52,7 +52,7 @@ pub fn process_data(
 ## 2. Parameter Modes, Defaults, and Call Arguments
 
 ```ebnf
-Parameter     ::= [ "mut" | "erased" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
+Parameter     ::= [ "mut" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
 ParameterList ::= Parameter { "," Parameter } [ "," ]
 
 Argument      ::= [ Identifier ":" ] ( "mut" AssignTarget | Expression )
@@ -67,7 +67,7 @@ ArgumentsCall ::= "(" [ Arguments ] ")"
    - **Reference Type Precondition**: The parameter type `T` MUST be a heap-allocated reference type (record, array, map, tuple, or sum type). Declaring `mut` on value types (integers, floats, booleans, unit, never, str, bytes) is a compile-time static error (`ValueTypeMutableBorrowError`).
    - **Caller LValue Contract**: Callers supplying arguments to `mut` parameters MUST explicitly prefix the argument with `mut` (e.g., `f(mut x)`) or employ the mutating pipeline operator (`x !> f()`). Passing rvalues, temporaries, or expressions without addressable storage is a compile-time static error.
    - **Definite Mutation Invariant (`UnusedMutError`)**: Any parameter declared with `mut` MUST undergo at least one reachable write operation along an executable control-flow path. An unmutated `mut` parameter is a compile-time static error.
-3. **Erased Parameter**: `erased x: T` marks parameters used purely for compile-time indexing or proofs. Erased parameters are eliminated during compilation and have zero runtime footprint.
+3. **Implicit Static Parameters**: Generic type/value parameters belong in the angle-bracket header and are implicitly compile-time-only. Ordinary parameters have runtime semantics; there is no erasure modifier on them. Static indices must be statically available, not arbitrary runtime values. Opaque associated-type witnesses belong to package schemas (Chapter 04).
 4. **Cross-Argument Disjointness Invariant (Law of Exclusivity)**:
    > **Normative Invariant**: For every argument $a_i$ bound to a `mut` parameter, its storage path MUST be pairwise disjoint from every other argument $a_j$ ($j \ne i$) supplied in the identical call frame:
    >
@@ -152,3 +152,20 @@ Let $f$ be a higher-order function receiving a callable parameter $g: \text{fn}(
    where $\mathcal{E}_f$ denotes $f$'s intrinsically declared effects, and $\mathcal{E}_c$ denotes the concrete effects inferred for argument $c$.
 3. **Purity Conservation**: If a concrete callable argument $c$ is purely functional ($\mathcal{E}_c = \emptyset$), the call site incurs strictly zero additional effect obligations.
 4. **State Capability Forwarding**: Callback state obligations are forwarded with their binding identities and origin summaries intact. When a callback or callee retains writable aliases to external state `x`, the enclosing call retains `&{^mut x}`; it MUST NOT weaken that requirement to `&{mut x}` or `&capture` alone. Parameter-origin obligations are substituted with actual argument origins. Local discharge and explicit interface abstraction follow Chapter 11; merely forwarding a mutation-only callback does not introduce retained sharing.
+
+## 6. Runtime Functions, Static Closures, and Halt Admission
+
+fn declarations and fn callable types describe runtime operations only. Static-sort parameters or results (Type, Row, static descriptor containers, or static callable sorts) are forbidden on fn/ halt fn. Static callable values instead use `[halt] type` bindings with ordinary closure, alias, or composition initializers (Chapter 12). Their parameters belong to closures and their calls use ordinary parentheses.
+
+```ril
+halt type Box = \T -> type[{ value: T }]
+halt fn read_box(value: Box(type[int])) -> int { value.value }
+```
+
+read_box's annotation is evaluated by the static checker using halt type; its runtime body does not execute Box. A halt fn may invoke only certified halt runtime callables. A halt type may invoke only certified halt static callables. There is no cross-family callable conversion, and a runtime halt fn is not a valid static callback.
+
+The strict halt restriction also covers the declaration's signature, bounds, local annotations/type declarations, defaults and implicit operations, transitively through aliases/imports/caches. An unmarked ordinary type closure remains ineligible even if a previous evaluation completed successfully. Primitive/data-constructor admission uses checked stage-specific operations rather than a loophole through an ordinary declaration.
+
+Anonymous runtime closures can be checked against `halt fn(...) -> ...` when expected by a parameter or explicit annotation. Their bodies require independent certification; ordinary named fn declarations cannot be promoted merely by expected type. Recursive higher-order closures are verified jointly with their call graph. Halt callable interfaces carry stable/inductive input-domain requirements and validated size/source summaries; forgetting halt never grants mutable permissions or removes existing effect/capability contracts.
+
+The existing function-effect/capability forwarding, handle permission, binder identity, and callable variance rules remain in force. Callable metadata transformations preserve these rules and recheck binder scope and parameter dependencies.

@@ -6,38 +6,17 @@ This chapter defines all built-in types, constructors, and primitive functions p
 
 ## 1. Prelude Types and Constructors
 
-The following types and constructors are defined in the prelude and reside in the root namespace:
+The prelude provides these runtime types and checked static categories:
 
-```
-┌──────────────────┬───────────────────────────┬─────────────────────────┐
-│ Category         │ Type Names / Signatures   │ Description             │
-├──────────────────┼───────────────────────────┼─────────────────────────┤
-│ Primitives       │ `bool`, `unit ()`, `never`│ Foundational types      │
-│ Signed Integers  │ `i8`, `i16`, `i32`, `i64` │ Two's-complement signed │
-│                  │ `int` (alias for `i32`)   │ Default integer type    │
-│                  │ `bigint`                  │ Arbitrary-precision     │
-│ Unsigned Integers│ `u8`, `u16`, `u32`, `u64` │ Unsigned integers       │
-│ Floating-Point   │ `f32`, `f64`              │ IEEE 754 binary32 / 64  │
-│ Text and Bytes   │ `str`, `bytes`            │ UTF-8 text, byte buffer │
-│ Option Family    │ `type Option<T> {`        │ Optional presence       │
-│                  │ `  Some(T), None`         │ Shorthand syntax: `?T`  │
-│                  │ `}`                       │                         │
-│ Result Family    │ `type Result<T, E> {`     │ Fallible computations   │
-│                  │ `  Ok(T), Err(E)`         │                         │
-│                  │ `}`                       │                         │
-│ Inductive Nat    │ `type Nat {`              │ Inductive Peano naturals│
-│                  │ `  Zero, Succ(Nat)`       │                         │
-│                  │ `}`                       │                         │
-│ Propositional Eq │ `type Eq<A, a: A, b: A> {`│ Proof of definitional   │
-│                  │ `  Refl<A, x: A> ->`      │ equality                │
-│                  │ `    Eq<A, x, x>`         │                         │
-│                  │ `}`                       │                         │
-│ Collections      │ `Map<K, V>`, `Set<T>`     │ First-class hash maps   │
-│ Modality Types   │ `Immut<T>`                │ Deep immutability family│
-│ Kinds and Bounds │ `Type<u>`, `Level`,       │ Universe classification │
-│                  │ `Record`, `Row`           │ and row bounds          │
-└──────────────────┴───────────────────────────┴─────────────────────────┘
-```
+| Category | Names | Rule |
+| --- | --- | --- |
+| Scalars | bool, (), never, i8..i64, u8..u64, int=i32, bigint, f32, f64, str, bytes | Existing numeric and storage semantics |
+| Tagged families | Option<T> (Some/None), Result<T,E> (Ok/Err) | Finite runtime constructor values; static container/term lifting is checked separately |
+| Collections | []T, Map<K,V>, Set<T> | Existing GC and handle permissions |
+| Frozen modality | Immut<T> | Legal-domain deep freezing; reference container marker retained |
+| Static categories | Type, Record, Row, [halt] type(...) -> R | No runtime layout or Type:Type |
+
+Eq, Refl, Level, Type<u>, rewrite, and accessibility proofs are not core prelude facilities. Erased static index constructor equations and lexical existential witnesses remain available.
 
 ---
 
@@ -47,7 +26,7 @@ The standard prelude root namespace exposes ONLY universally applicable, meta-la
 
 Container-specific mutation and collection manipulation functions (such as `push`, `pop`, `extend`, and `clear` for arrays `[]T`) MUST NOT reside in the standard prelude root namespace. Instead, they are defined within their respective standard library modules (e.g., `ril/array`) and invoked via type-qualified pipeline calls (e.g., `arr !> Array::push(item)`) or block-scoped local imports (`use ril/array::{push, pop}`).
 
-The standard prelude provides exactly nine core operational functions:
+The root runtime prelude provides the following core operational primitives. The fn signatures describe runtime interfaces; sealed primitives have checked halt-admissible operations only on their validated stable domains. This is not an implicit promotion of an ordinary user fn. Static operations have separate Types/Meta interfaces and do not call these runtime functions.
 
 ### 2.1 Collection Inspection
 
@@ -56,7 +35,7 @@ fn len(value: T) -> int
 ```
 - Accepts `str`, `bytes`, arrays (`[]T`), `Map<K, V>`, and `Set<T>`.
 - Returns the count of Unicode scalars for `str`, bytes for `bytes`, elements for arrays, and key-value entries for maps and sets.
-- Maximum capacity is $2^{31} - 1$ ($2147483647$); operations exceeding this limit MUST trigger a runtime panic.
+- Maximum runtime collection capacity is $2^{31} - 1$ ($2147483647$); ordinary operations exceeding this limit trigger runtime panic. Halt operations must establish capacity or use a safe Result interface. len is halt-admissible on immutable scalar snapshots or certified stable collection inputs; a live mutable alias is not a stable input merely because its handle is read-only.
 
 ### 2.2 Memory Views and Functional Updates
 
@@ -102,3 +81,58 @@ fn ok_or<T, E>(opt: ?T, err: E) -> Result<T, E> {
 }
 ```
 - Converts an `Option<T>` into a `Result<T, E>` without early return.
+
+## 3. Static Standard Modules
+
+`ril/types` (Types::) and `ril/meta` (Meta::) expose static closure values or sealed static primitives, never fn declarations. Their interfaces use static callable sorts. Bodies use ordinary closures; `[halt] type Name = Expr` may also bind a statically available closure alias or composition result, with inferred results and no left generic header. Interface signatures below are descriptions, not named-fn source syntax.
+
+| Static interface | Callable sort / behavior |
+| --- | --- |
+| Types::same | halt type(Type,Type) -> bool; canonical graph equality or a neutral result while inputs are abstract |
+| Types::literal | halt type(scalar) -> Result<Type,BuildError>; finite admissible literal category |
+| Types::fields/elements | halt static descriptor inspection; visibility, known shape and capacity checks, Result for unsupported cases |
+| Types::record/tuple | halt type(descriptor sequence) -> Result<Type,BuildError>; validate shape/sort/labels |
+| Types::callable_info/rebuild_callable | halt static Result interfaces; preserve modes, binder scope, effects/capabilities and origin identity |
+| Types::rewrite_graph | halt type(Type, halt type(Layer) -> Result<Fragment,BuildError>) -> Result<Type,BuildError> |
+| Types::edge | halt type(Edge) -> Child; Edge is not a Type or a root Fragment |
+| Types::option | halt type(Child,bool) -> Fragment; bool is the inherited frozen context |
+| Types::field_fragment | halt type(Field,Fragment) -> FieldFragment; preserve source label and write modifier |
+| Types::record fragment overload | halt type([]FieldFragment,bool) -> Result<Fragment,BuildError> |
+| Types::keep | halt type(Layer) -> Result<Fragment,BuildError>; retain layer plus transformed child edges |
+| Types::optional_fields/readonly_fields | halt type() -> SafePlan; finite certified templates |
+| Types::compose | halt type(SafePlan,SafePlan) -> SafePlan; finite first-then-second composition |
+| Types::apply_graph | halt type(Type,SafePlan) -> Type; guaranteed well-formed Type output, neutral when unknown |
+| Types::require | closed-declaration diagnostic only; not a halt callable, forbidden in all halt contexts |
+
+Descriptor types Layer, Edge, Child, Fragment, Field, FieldFragment, SafePlan and BuildError are static sorts, not runtime data types. Generic symbol placeholders in interface descriptions denote sealed operation schemas over known sorts, not a new universe or permission for runtime generics to take Type. Fields/elements APIs must expose precise Result or known-shape interfaces; unknown input is blocked, never guessed as an atom.
+
+Meta:: supplies certified finite map/filter/fold, split_first, remove_all, tuple operations and safe string parsing/concatenation. Static container schemas provide built-in lifting for known element sorts; arbitrary user sort-polymorphism is not assumed. Exported summaries include relevant output length/source relations and input stability. A halt callback alone supplies no shrinking relation.
+
+BuildError includes duplicate/invalid labels, unsupported shape, sort/kind mismatch, constructor constraints, illegal references, frozen/nominal/binder violations, and CapacityExceeded. Failure returns Err normally; no result is silently discarded. Graph internals use safe compiler storage/counting and cannot introduce hidden language-level panic through worklist overflow.
+
+All static operations obey Chapter 12 callable families and strict provenance. Ordinary static closures can compose these primitives, but their own unmarked status is not inferred away. Resource budgeting is always enforced independently of project lint.
+
+## 4. Validated Graph Inputs
+
+`ril/graph` provides an opaque runtime `Acyclic<T>` package and controlled validating/constructing operations. Validation isolates/freezes the relevant region and returns Result<Acyclic<T>,ValidationError>; it detects cycles in the traversal footprint and preserves a checked stable positive structure. This is ordinary runtime work, not a static type function.
+
+Only controlled constructors/validators produce certificates. Unwrapping/projection interfaces carry the stable-subterm certificate; new function results are not automatically certified subterms. Certificates do not permit negative-recursive callable elimination or unverified callbacks. Scoped resources and stateful payload restrictions follow existing state/freeze rules. A generic halt traversal exposes its admitted domain via this package or an intrinsic positive-inductive classification, not merely Immut<T>.
+
+## 5. Application-Oriented Type Examples
+
+Core examples SHOULD use application records, IDs, tagged configuration/protocol values, serializers, collections, and versioned APIs. There is no built-in Peano Nat family or proof prelude. Users may define ordinary recursive enums when useful, but no such enum is required to use generics, associated members or integer/static-index type functions.
+
+```ril
+type UserId(str)
+type User = { id: UserId, name: str }
+type Page<T> = { items: []T, total: int }
+type WirePacket<version: int>(bytes)
+let packet: WirePacket<{1}> = WirePacket(b"payload")
+
+type PickFields<T: Record, Keys> where Keys <: keyof T = {
+    [key in keyof T if key in Keys]: T[key],
+}
+type UserSummary = PickFields<User, "id" | "name">
+```
+
+This illustrates implicitly erased schema parameters, a nominal protocol-version identity and a constrained mapped schema. The version tag alone does not validate encoding; a runtime parser/constructor performs any domain checks.

@@ -55,7 +55,7 @@ The specification strictly segregates program faults into two mutually exclusive
 │ (Static Error)                    │ (Runtime Panic)                    │
 ├───────────────────────────────────┼────────────────────────────────────┤
 │ • Syntax / Grammar invalidity     │ • Fixed-width integer overflow     │
-│ • Type and universe mismatch      │ • Integer division or modulo by 0  │
+│ • Type, sort, or stage mismatch      │ • Integer division or modulo by 0  │
 │ • Mutability laundering (E0520)   │ • Numeric downcast out-of-range    │
 │ • Mut-mut / read-mut (E0523/E0524)│ • Array / string index out of bounds│
 │ • Unused mut / Redundant mut      │ • Assertion failure (`assert(...)`)│
@@ -90,3 +90,7 @@ A conforming compiler SHOULD provide high-fidelity diagnostic reports for all co
 - Exact source coordinate (file path, 1-indexed line number, 1-indexed column number).
 - Relevant span markers indicating the erroneous expression or declaration.
 - An explanatory diagnostic message identifying the rule violation (e.g., `"cannot assign to immutable binding"`, `"unused fallible Result must be handled or propagated"`).
+
+### 3.3 Compile-Time Resource Diagnostics
+
+Ordinary static type computations may fail or exceed a finite compiler evaluation budget. Such a limit reports an incomplete static computation and produces no executable artifact or type result; it does not classify a valid algorithm as diverging or relax a halt boundary. Semantic rejection remains deterministic under the specified rules; resource exhaustion is an implementation/resource outcome distinct from a semantic type error.

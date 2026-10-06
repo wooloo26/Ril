@@ -228,32 +228,32 @@ Passing protocols explicitly provides total predictability, eliminates coherence
 
 ---
 
-## 5. Proof Theory and Halting Computation
+## 5. Application Types and Two Static Computation Modes
 
-### 5.1 Soundness and Strong Normalization in `halt fn`
+### 5.1 Library Expressiveness with an Explicit Total Mode
 
-To allow compile-time type computation and propositional verification without risking compiler hangs or infinite loops, Ril introduces total halting functions (`halt fn`).
+Ril uses structural records, nominal ADTs/wrappers, regular recursive data graphs, higher-kinded generics, finite static indices and existential packages for application modeling and library development. It avoids making universe levels and Eq/Refl/rewrite proof programs prerequisites for this work.
 
-By Theorem 1.1 (**Strong Normalization**) and Theorem 1.2 (**Confluence**), all computations admitted in `halt fn` terminate in finite steps to a unique normal form. Divergence ($\bot$) is unreachable.
+Type algorithms are static closures, not runtime fn declarations. The declaration `halt type Box = \T -> type[{ value: T }]` infers its result; type construction shares ordinary closure, match, binding and composition structures.
 
-### 5.2 Prevention of Girard's and Curry's Paradoxes
+An ordinary type closure supports pure algorithms whose termination the compiler cannot certify. It can fail or exhaust a compiler budget, and project lint can allow, warn or deny its use. `halt type` instead requires normal termination and certified dependencies; lint cannot relax that promise. No claim is made that all terminating algorithms can be automatically recognized.
 
-In dependently typed languages and type-level programming, admitting unrestricted recursive types or negative recursive constructors allows encoding logical contradictions:
+### 5.2 Strict Family and Dependency Boundaries
 
-$$
-\text{Type } T = T \to \bot
-$$
+Halt type calls only certified static closures; halt fn calls only certified runtime callables. Their composition happens through separate type elaboration: a halt fn signature can use a halt type result, but its body cannot execute the type closure or pass a runtime halt fn as a static callback. Ordinary computations cannot enter any halt declaration through aliases, caches, reflection, defaults or annotations.
 
-If evaluated at compile time, such types introduce Girard's or Curry's paradoxes, causing type checking to become undecidable.
+Compiler evaluation budgets remain essential even for terminating algorithms because termination does not imply tractable cost. Budget exhaustion is a resource diagnostic, not a fabricated type or a theorem of divergence.
 
-Ril's **Negative Occurrence Ban** statically rejects any attempt to eliminate or recurse over negative recursive types during halting computation, guaranteeing the logical consistency of the type computation system.
+### 5.3 Finite Type Graphs Are Not Inductive Runtime Values
 
-### 5.3 Zero-Cost Propositional Equality Rewriting
+Recursive record declarations have finite guarded metadata graphs. Their runtime objects may still contain cycles. Read-only views and clone_immut do not certify a well-founded recursive argument; clone_immut freezes and preserves topology. Inductive validation and static positivity are separate from freezing.
 
-When developers prove that two types or expressions are propositionally equal using `Eq<A, a, b>` and constructor `Refl`:
+Negative recursive executable values can hide an indirect loop without a source-level self call, so halt elimination remains restricted. Finite inspection of a negative position in Type metadata does not invoke the represented function and uses a different certification mechanism.
 
-$$
-\text{rewrite } p \text{ in } expr
-$$
+### 5.4 Checked Builders and Safe Deep Transformations
 
-The type checker transports the term $expr$ across the equivalence. Because definitional equality is verified statically at compile time, the compiler strips the proof and emits **zero runtime instructions**. Proofs in Ril guarantee correctness without paying any runtime penalty.
+Arbitrary field renaming or descriptor building may fail even when its algorithm terminates. Such APIs return Result instead of pretending static rejection is a normal Type return. Generic safe graph plans preserve labels, constructor guards, frozen layers and nominal/binder boundaries; custom graph rewriting uses finite layer/fragment callbacks and normally returned BuildError.
+
+Frozen markers remain present on reference containers: Immut<[]int> is not []int. Removing mut from a schema does not freeze existing objects or grant Shareable. This corrects type normalization while retaining the existing state, effect and concurrent access rules.
+
+Totality, equality, source summaries and trusted graph primitives remain verification obligations. Specification wording alone is not a completed proof of strong normalization or implementation correctness.

@@ -172,12 +172,12 @@ CloneExpr ::= Expression "|>" ( "clone" | "clone_immut" ) | ( "clone" | "clone_i
    - Types containing scoped resource handles (`let scoped`) MUST NOT be passed to `clone` (`E0723: ScopedHandleCloneViolation`).
 
 2. **Immutable Deep Copy (`clone_immut`)**:
-   - `clone_immut` recursively traverses all reachable heap objects, constructing a topologically congruent, detached isolated object graph deeply normalized to `Immut<T>`.
+   - `clone_immut` recursively traverses all reachable heap objects, constructing a topologically congruent, detached isolated object graph deeply normalized to `Immut<T>` while retaining frozen markers on reference containers (Chapter 04).
    - **Permanent Immobility**: Objects created via `clone_immut` are permanently read-only and CANNOT regain write access under any circumstances. They unconditionally satisfy `Shareable` and are safe for cross-thread sharing.
    - **Prohibition on Capabilities**: Types containing resource capabilities, retained mutable sharing, mutable closure captures (`&mut`, `&^mut`, `&capture`, `&{mut ...}`, or `&{^mut ...}`), or scoped resource handles MUST NOT be passed to `clone_immut`. Passing such types is a compile-time static error (`E0530: IllegalCapabilityCloneImmutError`).
 
 3. **Non-Establishment of Halting or Stability**:
-   - Creating a clone does NOT prove termination (`halt`) and does NOT turn an arbitrary data structure into an admissible stable index. Cyclic data remains inadmissible for stable indices even after cloning.
+   - Creating a clone does NOT prove termination (`halt`) and does NOT turn runtime data into a static type index or certify a finite inductive recursion domain. Cyclic data remains cyclic after cloning; read-only and frozen facts do not establish acyclicity.
 
 4. **Shallow Spreads vs. Deep Clones**:
    - Record spread syntax (`.{ ...record, field: val }`) creates only a shallow copy of the outer record; nested references remain shared. To isolate the entire graph, an explicit `clone` or `clone_immut` is required.

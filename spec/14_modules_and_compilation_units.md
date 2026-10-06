@@ -145,3 +145,9 @@ test "addition correctness" {
 1. A `test` declaration associates an arbitrary descriptive string literal with an executable test block.
 2. Test blocks possess permission to perform assertions (`assert(...)`) and execute setup side effects.
 3. In production compilation modes, `test` blocks are completely eliminated from binary generation and carry zero runtime overhead.
+
+## 5. Static Type Computation Exports
+
+Modules can export structural schemas and closure-defined type computations. Static exports have no runtime layout. Interfaces MUST preserve the static callable family, explicit halt marking, input/result sorts, constraints, validated size/source summaries, and transitive elaboration dependency provenance. Opaque representations remain private.
+
+Top-level ordinary type computation remains pure and deterministic but may fail or exhaust its compiler budget. Project lint policy may deny or warn about ordinary type closures independently of runtime effects; it cannot weaken a halt boundary. Cached module results retain admission provenance, so imported aliases cannot launder ordinary type computations into halt signatures or bodies. Closure captures must be statically available immutable values, never live runtime/module mutable state.

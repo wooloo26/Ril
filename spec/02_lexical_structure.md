@@ -69,12 +69,11 @@ The following tokens are strictly reserved, MUST NOT be used as user-defined ide
 
 ```
 as       break    continue effect   else
-erased   false    fn       for      if
-in       infer    is       keyof    let
-loop     match    module   mut      never
-opaque   pub      return   rewrite  test
-true     type     typeof   use      where
-while    with
+false    fn       for      if       in
+infer    is       keyof    let      loop
+match    module   mut      never    opaque
+pub      return   test     true     type
+typeof   use      where    while    with
 ```
 
 ### 4.2 Future Reserved Keywords
@@ -83,7 +82,7 @@ The following tokens are strictly reserved for forward compatibility and future 
 
 ```
 auto     const    decl     derive   macro
-static   unsafe   yield
+static   unsafe   yield    rewrite
 ```
 
 ### 4.3 Contextual Keywords
@@ -91,7 +90,7 @@ static   unsafe   yield
 Contextual keywords carry special syntactic meaning only within specific grammatical productions; in all other positions, they are parsed as ordinary identifiers:
 - `resume`: Delimited continuation resumption expression within effect handlers.
 - `super`: Relative module path navigation prefix.
-- `halt`: Modifier immediately preceding the `fn` keyword denoting total halting functions.
+- `halt`: Modifier immediately preceding `fn` or `type`, requiring total runtime functions or total static closure computations, respectively.
 - `lacks`: Row absence constraint operator within `where` clauses (`R lacks "label"`).
 - `capture`: Environment capture state capability annotation (`&capture`).
 - `scoped`: Lexical resource lifetime and cleanup modifier on `let` declarations (`let scoped`, `let scoped mut`).
@@ -244,3 +243,5 @@ A conforming lexical scanner SHALL segment source text into tokens using the max
 3. `!>` SHALL be recognized as the mutating pipeline operator, not `!` followed by `>`.
 4. `|>` SHALL be recognized as the linear pipeline operator, not `|` followed by `>`.
 5. `?.` and `?[` SHALL be recognized as safe navigation tokens, not `?` followed by `.` or `[`.
+
+The former explicit erasure modifier is not core syntax or a reserved keyword. Generic parameters, static values, and opaque type-member witnesses are implicitly compile-time-only at their defined positions; ordinary parameters and value fields are not silently erased.

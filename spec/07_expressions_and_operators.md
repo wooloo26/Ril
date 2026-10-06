@@ -265,3 +265,9 @@ AssignmentExpr ::= AssignTarget AssignmentOp Expression
 5. **Non-Associativity**: Assignment operators are strictly non-associative. Chaining assignments (`a = b = c`) is a compile-time static error.
 
 
+
+## 12. Static Type Values and Callable Family Boundaries
+
+`type[T]` is a bracket-delimited expression that constructs a compile-time Type description. Bare `type T`, `type { ... }`, and `type (...)` are not quotation expressions. Quotation does not cast or freeze a runtime value. `typeof e` reads the static type of a runtime expression without executing e; it cannot lift runtime data or reify static sorts. Static closures reuse ordinary arithmetic and control operators, subject to their stage-specific checked semantics.
+
+Static type-function invocation is not runtime fn invocation. For all halt contexts, implicit arithmetic, comparison, indexing, string/array growth, conversion, defaults and formatting require certified normal return; safe operators return Option/Result. Existing runtime panic, effect, and state rules are unchanged. Ordinary type computation failure is a compilation diagnostic, not an added runtime effect or catchable panic.

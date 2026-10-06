@@ -79,3 +79,32 @@ active()       -- OK: 1
 ---
 
 See [SPECIFICATION.md](SPECIFICATION.md) for the formal language specification.
+
+
+### 4. Recursive Data and Closure-Based Type Programming
+
+```ril
+type Tree<T> = { value: T, children: []Tree<T> }
+
+halt type Box = \T -> type[{ value: T }]
+type IntBox = Box(type[int])
+
+halt fn read_box(value: Box(type[int])) -> int { value.value }
+```
+
+Type computations use static closures, with inferred results and ordinary closure syntax. `halt type` guarantees normal termination; an unmarked type closure permits broader pure static algorithms under compiler budgets and optional project lint restrictions. Static closures and runtime fn values cannot invoke or coerce into each other. Halt declarations reject ordinary computation dependencies, including in signatures and annotations.
+
+The repository specifies a language design; these examples are specification examples, not verified compiler output. See [SYNTAX.md](SYNTAX.md) for syntax, [Chapter 12](spec/12_type_computation_and_proofs.md) for totality, static computation and boundary acceptance cases, and [the design rationale](spec/DESIGN_RATIONALE.md) for the design choices and limits.
+
+
+### 5. Hidden Associated Types
+
+```ril
+type EncoderBox = {
+    opaque type Item,
+    value: Item,
+    encode: fn(Item) -> bytes,
+}
+```
+
+Generic parameters and hidden type witnesses are implicitly compile-time-only. The record carries runtime data and operations tied to one abstract Item; it does not store a runtime Type field. Examples focus on application/library patterns rather than proof-assistant programming.

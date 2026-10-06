@@ -66,7 +66,7 @@ LiteralType         ::= [ "-" ] ( IntegerLiteral | FloatLiteral )
                       | "true" | "false"
 
 (* ========================================================================= *)
-(* 2. Types, Kinds, and Universes                                            *)
+(* 2. Types, Static Sorts, and Type Computation                              *)
 (* ========================================================================= *)
 
 SourceFile          ::= { Separator } [ Item { Separators Item } [ Separators ] ]
@@ -84,42 +84,47 @@ WhereClause         ::= "where" Constraint { "," Constraint }
 Constraint          ::= TypeExpression ( "=" | "<:" ) TypeExpression
                       | Identifier "lacks" PlainStringLiteral
 
-TypeExpression      ::= FunctionType | TypeIf | TypeMatch | TypeBlock | UnionType
+TypeExpression      ::= FunctionType | TypeClosureSort | UnionType
 UnionType           ::= PrefixType { "|" PrefixType }
 PrefixType          ::= "?" PrefixType | "[" "]" PrefixType | "keyof" PrefixType | PostfixType
 PostfixType         ::= PrimaryType { "[" Expression "]" }
-PrimaryType         ::= PrimitiveType | TypeReference | RecordType | TupleType | LiteralType
-                      | "_" | "(" TypeExpression ")" | "typeof" Expression | TypeCall
+PrimaryType         ::= PrimitiveType | StaticSortReference | TypeReference | RecordType | TupleType | LiteralType
+                      | "_" | "(" TypeExpression ")" | "typeof" Expression | StaticCall
 
 PrimitiveType       ::= "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
                       | "int" | "bigint" | "f32" | "f64" | "bool" | "str" | "bytes" | "never"
 
-TypeCall            ::= QualifiedName [ "::" GenericApplication ] ArgumentsCall
-TypeBlock           ::= "{" { LetDecl Separators } TypeExpression [ Separators ] "}"
-TypeIf              ::= "if" Expression "{" TypeExpression "}" "else" "{" TypeExpression "}"
 TypeMatch           ::= "match" "type" TypeExpression "{" TypeMatchArm { "," TypeMatchArm } [ "," ] "}"
-TypeMatchArm        ::= TypePattern "->" TypeExpression
+TypeMatchArm        ::= TypePattern "->" Expression
 TypePattern         ::= "infer" Identifier | "_" | "never" | LiteralType | TypePatternRef
                       | "?" TypePattern | "[" "]" TypePattern
-                      | "(" TypePattern "," [ TypePattern { "," TypePattern } [ "," ] ] ")"
+                      | TupleTypePattern
                       | "(" ")" | RecordTypePattern | FunctionTypePattern
 TypePatternRef      ::= QualifiedName [ "<" TypePattern { "," TypePattern } [ "," ] ">" ]
 RecordTypePattern   ::= "{" [ PatternTypeField { "," PatternTypeField } [ "," ] ] "}"
-PatternTypeField    ::= [ "mut" | "erased" ] Identifier ":" TypePattern
-PatternCallableParam::= [ "mut" | "erased" ] TypePattern
+PatternTypeField    ::= [ "mut" ] Identifier ":" TypePattern
+PatternCallableParam::= [ "mut" ] TypePattern
 FunctionTypePattern ::= [ "halt" ] "fn" "(" [ PatternCallableParam { "," PatternCallableParam } [ "," ] ] ")"
                         "->" TypePattern { ContractArgument }
 
-TupleType           ::= "(" TypeExpression "," [ TypeExpression { "," TypeExpression } [ "," ] ] ")" | "(" ")"
+TupleType           ::= "(" ")" | "(" TupleTypeEntry "," [ TupleTypeEntries ] ")"
+TupleTypeEntries    ::= TupleTypeEntry { "," TupleTypeEntry } [ "," ]
+TupleTypeEntry      ::= [ "..." ] TypeExpression
+TupleTypePattern    ::= "(" ")" | "(" TupleTypeRest [ "," ] ")"
+                      | "(" TypePattern "," [ TuplePatternTail ] ")"
+TuplePatternTail    ::= TypePattern { "," TypePattern } [ "," TupleTypeRest ] [ "," ]
+                      | TupleTypeRest [ "," ]
+TupleTypeRest       ::= "..." "infer" Identifier
 RecordType          ::= "{" [ RecordTypeEntry { "," RecordTypeEntry } [ "," ] ] "}"
-RecordTypeEntry     ::= RecordTypeField | MappedTypeField | RecordTypeSpread | RowTail
+RecordTypeEntry     ::= RecordTypeField | OpaqueTypeMember | MappedTypeField | RecordTypeSpread | RowTail
 RecordTypeSpread    ::= "..." TypeExpression
 RowTail             ::= ".." [ Identifier | "_" ]
-RecordTypeField     ::= [ "mut" | "erased" ] Identifier ":" TypeExpression [ "=" Expression ]
+RecordTypeField     ::= [ "mut" ] Identifier ":" TypeExpression [ "=" Expression ]
+OpaqueTypeMember    ::= "opaque" "type" Identifier
 MappedTypeField     ::= [ "mut" ] "[" Identifier "in" "keyof" TypeExpression
                         [ "if" Expression ] [ "as" Expression ] "]" ":" TypeExpression [ "=" Expression ]
 
-CallableParamType   ::= [ "mut" | "erased" ] ( Identifier ":" TypeExpression | TypeExpression )
+CallableParamType   ::= [ "mut" ] ( Identifier ":" TypeExpression | TypeExpression )
 FunctionType        ::= [ "halt" ] "fn" [ GenericParameters ] "("
                         [ CallableParamType { "," CallableParamType } [ "," ] ] ")"
                         "->" TypeExpression { ContractArgument } [ WhereClause ]
@@ -128,13 +133,13 @@ FunctionType        ::= [ "halt" ] "fn" [ GenericParameters ] "("
 (* 3. Declarations and Items                                                 *)
 (* ========================================================================= *)
 
-Item                ::= LetDecl | FunctionDecl | SumTypeDecl | NominalDecl
-                      | OpaqueDecl | TypeAliasDecl | EffectDecl | EffectAliasDecl
+Item                ::= LetDecl | FunctionDecl | TypeBindingDecl | SumTypeDecl | NominalDecl
+                      | OpaqueDecl | EffectDecl | EffectAliasDecl
                       | ModuleDecl | UseDecl | TestDecl
 
 LetModifier         ::= "scoped" | "view"
 LetDecl             ::= [ "pub" ] "let" [ LetModifier ] Pattern [ ":" TypeExpression ] [ "=" Expression ] [ "else" Block ]
-Parameter           ::= [ "mut" | "erased" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
+Parameter           ::= [ "mut" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
 ParameterList       ::= Parameter { "," Parameter } [ "," ]
 
 FunctionSignature   ::= [ "halt" ] "fn" Identifier [ GenericParameters ] "(" [ ParameterList ] ")"
@@ -146,12 +151,22 @@ SumTypeDecl         ::= [ "pub" ] "type" Identifier [ GenericParameters ] [ Wher
 VariantDecl         ::= Identifier [ GenericParameters ]
                         [ "(" VariantFields ")" | "{" StructFields "}" ] [ "->" TypeExpression ]
 VariantFields       ::= VariantField { "," VariantField } [ "," ]
-VariantField        ::= [ "erased" ] Identifier ":" TypeExpression | TypeExpression
-StructFields        ::= RecordTypeField { "," RecordTypeField } [ "," ]
+VariantField        ::= Identifier ":" TypeExpression | TypeExpression
+StructFields        ::= StructFieldEntry { "," StructFieldEntry } [ "," ]
+StructFieldEntry    ::= RecordTypeField | OpaqueTypeMember
 
 NominalDecl         ::= [ "pub" ] "type" Identifier [ GenericParameters ] "(" VariantFields ")" [ WhereClause ]
 OpaqueDecl          ::= [ "pub" ] "opaque" "type" Identifier [ GenericParameters ] [ WhereClause ] "=" TypeExpression
-TypeAliasDecl       ::= [ "pub" ] "type" Identifier [ GenericParameters ] [ WhereClause ] "=" TypeExpression
+TypeBindingDecl     ::= [ "pub" ] [ "halt" ] "type" Identifier
+                       [ GenericParameters ] [ WhereClause ] "=" TypeBindingInitializer
+TypeBindingInitializer ::= TypeExpression | Expression
+TypeClosureSort     ::= [ "halt" ] "type" "("
+                       [ CallableParamType { "," CallableParamType } [ "," ] ] ")"
+                       "->" TypeExpression
+StaticSortReference ::= "Type" | "Record" | "Row"
+TypeValueExpr       ::= "type" "[" TypeExpression "]"
+StaticCall          ::= StaticCallee ArgumentsCall { ArgumentsCall }
+StaticCallee        ::= QualifiedName | "(" Expression ")"
 
 EffectItem          ::= QualifiedName
 EffectItems         ::= EffectItem { "," EffectItem } [ "," ]
@@ -255,13 +270,12 @@ MapperExpr          ::= MapperPrimary { MemberAccess | TupleIndex | IndexExpr | 
 ErrorMapper         ::= LambdaExpr | MapperExpr
 PostfixTry          ::= "?" [ ErrorMapper ] (* ErrorMapper must appear on the same line as '?' without an intervening newline *)
 
-PrimaryExpr         ::= Literal | InstantiatedMember | QualifiedName | UniverseValue
+PrimaryExpr         ::= Literal | InstantiatedMember | QualifiedName | TypeValueExpr
                       | ArrayLiteral | RecordLiteral | TupleLiteral
-                      | LambdaExpr | AccessorExpr | IfExpr | MatchExpr | TypeMatch | RewriteExpr
+                      | LambdaExpr | AccessorExpr | IfExpr | MatchExpr | TypeMatch
                       | LoopExpr | WhileExpr | ForExpr | ReturnExpr | BreakExpr | ContinueExpr
                       | ResumeExpr | WithExpr | Block | "(" Expression ")"
 
-UniverseValue       ::= "Type" [ GenericApplication ]
 Literal             ::= IntegerLiteral | FloatLiteral | ByteLiteral | ByteStringLiteral
                       | StringLiteral | RawStringLiteral | RegexLiteral | "true" | "false"
 
@@ -279,7 +293,6 @@ LambdaExpr          ::= LambdaHead InlineLambdaBody
 InlineLambdaBody    ::= LogicalOrExpr | AssignTarget AssignmentOp LogicalOrExpr
 AccessorExpr        ::= "\" "." Identifier { "." Identifier }
 
-RewriteExpr         ::= "rewrite" ( QualifiedName | "(" Expression ")" ) "in" Expression
 IfExpr              ::= "if" ( "let" Pattern "=" Expression [ "if" Expression ] | Expression ) Block [ "else" ( IfExpr | Block ) ]
 WhileExpr           ::= "while" ( "let" Pattern "=" Expression [ "if" Expression ] | Expression ) Block
 ForBindings         ::= "as" Pattern [ "," Pattern ]
@@ -290,3 +303,15 @@ BreakExpr           ::= "break" [ Expression ]
 ContinueExpr        ::= "continue"
 ResumeExpr          ::= "resume" "(" Expression ")"
 ```
+
+## Static Computation Parsing and Sort Checks
+
+TypeBindingDecl is a common surface binding. Direct type/sort descriptions create aliases; a normal expression yielding Type creates a computed alias; a normal expression yielding a static callable creates a callable binding. Classification follows direct schema syntax and checked initializer sort; it never reinterprets an ordinary lambda body block or tuple based on a desired return type. Runtime callable/scalar-only initializers are not valid type bindings. A callable binding cannot have GenericParameters, and halt is permitted only for callable bindings.
+
+TypeValueExpr is bracketed quotation. Static callable sorts always have a result arrow. Runtime FunctionType/FunctionDecl cannot use static sorts. Normal static calls work for names, parenthesized callable expressions and returned callable values, so chaining does not need a separate application dialect. Angle application belongs to data/schema constructors and erased constructor-kinded parameters, not direct callable bindings.
+
+TypeMatch arms are normal static expressions; new Type values use type[...]. Its target retains type-description syntax for known schema names/static Type bindings. Ordinary if/block/let grammar handles computation; TypeIf and TypeBlock have no productions. One trailing tuple rest, whole-tuple rest and trailing rest commas are supported.
+
+Direct lambda static bindings have item prebinding/SCC checking; other callable initializers are lexical and cannot eagerly use uninitialized/self-recursive values. Named patterns only decompose observable injective constructors, not arbitrary computed families or Immut. Stage, sort, provenance, visibility, regularity, totality and resource checks are semantic obligations, not new lambda syntax.
+
+OpaqueTypeMember declares a compile-time abstract runtime-type witness in a record/struct variant. It has no initializer, mut modifier, generic header or runtime Type field; construction supplies a statically checked Type choice, and lexical opening preserves correlated value/operation types. This is distinct from module-level OpaqueDecl with a fixed representation. Implicit generic erasure does not permit erasing ordinary call arguments or their evaluation.

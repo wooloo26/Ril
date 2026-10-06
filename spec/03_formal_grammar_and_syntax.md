@@ -167,3 +167,20 @@ Within bracketed access expressions `target[...]`:
 1. If the bracketed contents contain a range operator (`..` or `..=`), the construct SHALL unambiguously parse as `SliceExpr`.
 2. Otherwise, the construct SHALL parse as `IndexExpr`.
 
+
+### 4.10 Explicit Type Quotation and Static Callables
+
+`type[TypeExpression]` is a primary expression yielding a static Type value. Square brackets delimit the reused type grammar; whitespace does not change interpretation. Bare blocks/unit/tuples in closure bodies retain ordinary value semantics.
+
+```ril
+halt type Box = \T: Type -> type[{ value: T }]
+type IntBox = Box(type[int])
+let UnitDescription = type[()]
+let EmptyRecordDescription = type[{}]
+```
+
+`type T`, `type { ... }` and `type (...)` are not quotation forms. Static callable annotations are `[halt] type(S1,...,Sn) -> R`, with a mandatory result sort; they cannot be mistaken for bracketed quotation. Named callable declarations infer results and do not repeat a declaration return arrow.
+
+All type functions use ordinary calls and closure parameter lists. Left-side generic headers and angle application remain for data/schema aliases and constructor-kinded erased parameters, not direct callable bindings. Callable aliases/combination results are allowed with the initialization rules in Chapter 06.
+
+Static control flow uses ordinary if/match/block/let grammar; no separate TypeIf or TypeBlock dialect exists. Direct type/sort schema syntax remains available at alias declarations. Computed alias results use normal expressions that produce Type values, with explicit quotations for new structures.
