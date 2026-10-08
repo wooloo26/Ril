@@ -1,1 +1,3 @@
 - **Consult [`SPECIFICATION.md`](./SPECIFICATION.md)**: The authoritative, code-first language specification is available in [`SPECIFICATION.md`](./SPECIFICATION.md) at the root. It contains all grammar constructs, operator precedence, type syntax, memory model invariants, algebraic effects, state capabilities, and compiler test examples needed for development.
+- **Specification Omits Design Rationale**: The specification directly states syntactic and semantic rules without explaining design motivations or rationales (design rationale belongs in `DESIGN_RATIONALE.md`).
+- **Code-First Principle**: Abstract textual descriptions must be prioritized around code snippets, using concrete and normative code examples to express rules and invariants.

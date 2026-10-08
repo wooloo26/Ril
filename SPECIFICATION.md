@@ -1846,37 +1846,67 @@ let mut external_counter = 0
 
 ## 10. Compile-Time Computation & Totality
 
-### 10.1 Static Type Values (`type[T]`, `typeof`)
+### 10.1 Static Type Values & Type Quotation (`type<T>`, `typeof`)
 
-`type[T]` constructs a compile-time Type value. `typeof expr` inspects the static type of an expression without executing it.
+1. **Declarative Contexts**: Top-level type declarations and type annotations use direct type syntax without `type<...>`:
 
 ```ril
-let t_int = type[int]                  -- Compile-time Type value
-let inferred_t = typeof (1 + 2)        -- Compile-time Type value: type[int]
+type User = { id: int }
+let a: int = 10
+let b: typeof a = 20                   -- OK: direct 'typeof' in type annotation
+```
 
-type Nullable = \T: Type -> type[?T]
-type PairOf = \T: Type, U: Type -> type[{ first: T, second: U }]
+2. **Expression Contexts**: In static type closures and expression positions, ALL types without exception MUST be enclosed in `type<...>`:
 
--- Applying static type closures as concrete type annotations:
-type IntNullable = Nullable(type[int]) -- Resolves to ?int
-type StringIntPair = PairOf(type[str], type[int]) -- Resolves to { first: str, second: int }
+```ril
+let t_int = type<int>                  -- OK: all types enclosed in type<...>
+let t_inferred = type<typeof (1 + 2)>  -- OK: 'typeof' enclosed in type<...> in expression position
+-- let bad_t = int                     -- Error [E0301]: bare type in expression context
+-- let bad_inferred = typeof (1 + 2)   -- Error [E0301]: bare 'typeof' in expression context
+```
 
-let value: IntNullable = Some(42)      -- OK: used as concrete type annotation
+3. **Static Closures & Invocation**: Unannotated static closure parameters default to sort `Type` (`\T -> ...`). Static closure application uses generic angle brackets `<...>`:
+
+```ril
+type Nullable = \T -> type<?T>
+type PairOf = \T, U -> type<{ first: T, second: U }>
+
+-- Applying static type closures via '<...>':
+type IntNullable = Nullable<int>          -- Resolves to ?int
+type StringIntPair = PairOf<str, int>     -- Resolves to { first: str, second: int }
+
+let value: IntNullable = Some(42)         -- OK: used as concrete type annotation
 let pair: StringIntPair = .{ first: "id", second: 101 }
 ```
 
-### 10.2 Static Type Closures & Totality (`halt type`, `halt fn`)
+### 10.2 Static Type Closures & Computation Model (`halt type`, `halt fn`)
 
-1. **`halt type`**: Declares a total static type closure certified to terminate normally.
-2. **`halt fn`**: Declares a total runtime function certified to terminate normally.
-3. Unmarked static closures operate under configurable compiler evaluation budgets.
+1. **Return Invariant**: A static type closure is a compile-time function whose return expression MUST evaluate to a `type<T>`. Returning a non-type value raises `E0301`.
+2. **Computation Semantics**: Closure bodies support standard local bindings (`let`), control flow (`if`, `match`), and invocations of `meta fn` callables.
+3. **Totality Certification**: `halt type` certifies normal termination. Unmarked static closures operate under configurable compiler evaluation budgets (`E0811`).
 
 ```ril
--- 1. Total Static Computation:
-halt type Box = \T: Type -> type[{ value: T }]
-type MyBox = Box(type[str])            -- Resolves to { value: str }
+-- 1. Meta helper function (compile-time pure calculation):
+meta fn pad_align(size: int, align: int) -> int {
+    (size + align - 1) & !(align - 1)
+}
 
--- 2. Total Runtime Computation (halt fn):
+-- 2. Static type closure with control flow, meta computation, and type output:
+halt type PaddedBuffer = \raw_size: int, T -> {
+    let actual_size = pad_align(raw_size, 8)     -- OK: consumes meta fn and const value
+    if actual_size > 1024 {
+        type<{ heap_ptr: int, cap: int }>        -- Branch evaluates to type<T>
+    } else {
+        type<{ inline_data: []T, len: int }>     -- Branch evaluates to type<T>
+    }
+}
+
+type FastBuf = PaddedBuffer<64, u8>              -- Resolves to { inline_data: []u8, len: int }
+
+-- Static closure returning non-type is rejected:
+-- type BadReturn = \T -> 42                     -- Error [E0301]: type closure must evaluate to type<T>, found int
+
+-- 3. Total Runtime Computation (halt fn):
 halt fn total_clamp(val: int, min_val: int, max_val: int) -> int {
     if val < min_val { min_val }
     else if val > max_val { max_val }
@@ -1888,32 +1918,34 @@ halt fn total_clamp(val: int, min_val: int, max_val: int) -> int {
 -- }
 ```
 
-### 10.3 Two Strict Call Families & Evaluation Budgets
+### 10.3 Disjoint Call Families & Evaluation Budgets
 
-Runtime `fn` callables and static `type` closures belong to two disjoint call families. Static closures cannot execute runtime functions, and runtime functions cannot execute static type closures. Exceeding compiler evaluation limits halts compilation with a resource diagnostic.
+1. **Family Isolation**: Static closures can invoke `meta fn` callables and static closures, but cannot invoke runtime `fn` callables (`E0810`).
+2. **Runtime Isolation**: Runtime functions cannot invoke static type closures (`E0810`).
+3. **Budget Exhaustion**: Exceeding compiler evaluation limits halts compilation with `E0811`.
 
 ```ril
 fn runtime_helper() -> int { 42 }
 
 -- Static closure cannot execute runtime function:
--- type BadStatic = \T: Type -> {
+-- type BadStatic = \T -> {
 --     let x = runtime_helper()        -- Error [E0810]: cannot invoke runtime function from compile-time static type closure
---     type[int]
+--     type<int>
 -- }
 
 -- Runtime function cannot invoke static type closure:
 fn bad_runtime_fn() {
-    -- let t = Box(type[int])          -- Error [E0810]: cannot invoke static type closure from runtime function
+    -- let t = FastBuf<64, u8>         -- Error [E0810]: cannot invoke static type closure from runtime function
 }
 
 -- Compiler Evaluation Budget Exhaustion:
-type RecursiveLoop = \T: Type -> RecursiveLoop(T)
--- type Overflow = RecursiveLoop(type[int]) -- Error [E0811]: compile-time evaluation budget exceeded (max 100,000 steps)
+type RecursiveLoop = \T -> RecursiveLoop<T>
+-- type Overflow = RecursiveLoop<int>  -- Error [E0811]: compile-time evaluation budget exceeded (max 100,000 steps)
 ```
 
 ### 10.4 Mapped Schemas (`keyof`, Field Indexing `T[K]`)
 
-Static type closures can inspect and transform record schemas using the `keyof` operator and indexed field lookup `T[K]`:
+Static type closures inspect and transform record schemas using `keyof` and indexed field lookup `T[K]`:
 
 ```ril
 type User = { id: int, name: str, active: bool }
@@ -1925,37 +1957,54 @@ type UserKeys = keyof User             -- Resolves to "id" | "name" | "active"
 type IdType = User["id"]               -- Resolves to int
 
 -- 3. Mapped Schema Construction:
-type OptionalSchema = \T: Type -> type[{
+type OptionalSchema = \T -> type<{
     [K in keyof T]: ?T[K]
-}]
+}>
 
-type UserPatch = OptionalSchema(type[User])
+type UserPatch = OptionalSchema<User>
 -- Resolves to: { id: ?int, name: ?str, active: ?bool }
 
 let patch: UserPatch = .{ id: Some(1), name: None, active: Some(true) }
 ```
 
-### 10.5 Bounded Static Index Type Parameters (`<param: int>`)
+### 10.5 Static Parameter Sorts & Adaptation Rules (`\param: Sort`)
 
-Ril supports bounded static integer index parameters for versioned protocols and fixed dimensions:
+Static type closures accept four parameter sorts:
+
+1. **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
+2. **Const Values (`\param: ValueType`)**: Accepts compile-time known constants (literals, `meta let`, statically foldable expressions). Passing runtime variables raises `E0810`.
+3. **Bounded & Structural Types (`\T: { id: int, .. }`, `\K: keyof T`)**: Enforces structural row subtyping and key inclusion.
+4. **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
+
+**Call-Site Interpretation**: In `TypeFunc<Arg1, Arg2>`, type parameter positions parse as `TypeExpression`; const value positions parse as compile-time expressions.
 
 ```ril
 type WirePacket<version: int>(bytes)
 
-let v1_packet: WirePacket<{1}> = WirePacket(b"\x01payload")
-let v2_packet: WirePacket<{2}> = WirePacket(b"\x02payload_extended")
+let v1_packet: WirePacket<1> = WirePacket(b"\x01payload")
+let v2_packet: WirePacket<2> = WirePacket(b"\x02payload_extended")
 
 type SchemaV1 = { id: int, name: str }
 type SchemaV2 = { id: int, name: str, email: str }
 
 type VersionedSchema = \version: int -> match version {
-    1 -> type[SchemaV1],
-    2 -> type[SchemaV2],
-    _ -> type[never],
+    1 -> type<SchemaV1>,
+    2 -> type<SchemaV2>,
+    _ -> type<never>,
 }
 
-type ActivePayload = VersionedSchema(2) -- Resolves to SchemaV2
+type ActivePayload = VersionedSchema<2> -- Resolves to SchemaV2
 let user_v2: ActivePayload = .{ id: 10, name: "Alice", email: "alice@test.com" }
+
+-- Structural constraint & keyof bound adaptation:
+type PickField = \T: { .. }, K: keyof T -> T[K]
+type UserName = PickField<SchemaV1, "name"> -- Resolves to str
+-- type BadField = PickField<SchemaV1, "missing"> -- Error [E0301]: "missing" not in keyof SchemaV1
+
+-- Higher-kinded constructor adaptation:
+type Wrapper = \M: Type -> Type, T -> M<T>
+type OptInt = Wrapper<Option, int>      -- Resolves to Option<int>
+-- type BadKind = Wrapper<int, int>     -- Error [E0306]: KindMismatchError, expected Type -> Type, found int
 ```
 
 ### 10.6 Compile-Time Execution (`meta let`, `meta fn`) & Callable Introspection
@@ -2000,7 +2049,7 @@ meta let _ = assert(has_capability(mutating_sort, &mut), "requires &mut")       
 
 -- 3. Zero-Dialect Static Specialization via Standard 'if':
 fn dispatch_computation<F, T, R>(f: F, arg: T) -> R {
-    meta let pure = is_pure(type[F])
+    meta let pure = is_pure(type<F>)
     if pure {
         f(arg)                         -- Compiler specializes: thread-safe, pure fast path
     } else {
@@ -2184,6 +2233,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0301`** | `TypeMismatchError` | Expression type incompatible with expected type |
 | **`E0302`** | `UnexpectedFieldError` | Closed record supplied with undeclared fields |
 | **`E0305`** | `NominalTypeMismatchError` | Mismatched nominal type wrapper identities |
+| **`E0306`** | `KindMismatchError` | Mismatched higher-kinded type constructor or sort constraint |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0501`** | `ImmutableReassignmentError` | Reassigning an immutable `let` binding |
 | **`E0510`** | `MissingCapabilityAnnotationError` | Calling mutating operation without declaring `&mut` or `&^mut` |
