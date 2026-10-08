@@ -81,12 +81,12 @@ $$
 $$
 
 Permissions can degrade, but never upgrade. The compiler provides a closed static diagnostic closure (`E0520` through `E0530`) covering:
-- Assigning read-only to `let mut` (`E0520`).
+- Assigning read-only to `let mut` or mutating through view (`E0520`).
 - Destructuring read-only records into `mut` fields (`E0521`).
 - Injecting read-only objects into mutable arrays or records (`E0522`).
 - Spreading read-only records into mutable variables (`E0525`).
 - Mutating a collection while iterating over it in `for` (`E0526`).
-- Capturing read-only references into mutable closure scopes (`E0527`).
+- Declaring unused mutable bindings or passing read-only handles to `mut` parameters (`E0527`).
 - Returning read-only parameter references into caller `let mut` bindings (`E0528`).
 - Over-annotating declarations beyond minimal required capabilities (`E0529`).
 - Passing types with active capabilities or scoped handles to `clone_immut` (`E0530`).
@@ -107,9 +107,12 @@ The same checks include external captures of callees and callbacks. A variable's
 
 ### 2.3 Live Views: Heap Observability Without Type-Level Contagion
 
-When developers write `let view = handle` or `let ro = handle`:
-- The handle itself loses write permission. The developer cannot write `view.field = value`.
-- However, `view` remains a **Live View** into the underlying GC-managed heap object. If the holder of `mut handle` modifies the object, subsequent reads through `view` observe the updated values.
+Ril explicitly distinguishes between immutable bindings (`let`) and live read-only views (`let view`):
+- **Immutable Bindings (`let x = expr`)**: Bind an immutable value or standalone object handle. For scalar value types, `let` performs an independent copy; for fresh records or frozen structures, it establishes a detached, read-only binding.
+- **Live Views (`let view v = handle`)**: When a developer writes `let view v = handle` against an existing mutable heap reference:
+  - The handle `v` itself loses write permission. The developer cannot write `v.field = value` (`E0520`).
+  - However, `v` remains an active **Live View** into the underlying GC-managed heap object. If the holder of `mut handle` modifies the object, subsequent reads through `v` dynamically observe the updated values.
+  - **Concurrency Isolation**: Because a live view aliases an underlying mutable heap record, passing a live mutable view across a concurrent task boundary is strictly prohibited (`E0601: CrossThreadDataRaceHazardError`).
 
 **Why Ril rejects "View Contagion" (Type-Level Contagion)**:
 If creating a view changed the type of `x: User` into `View<User>` or `&User`, then:
@@ -117,7 +120,7 @@ If creating a view changed the type of `x: User` into `View<User>` or `&User`, t
 2. Standard collection types (`[]User`) could not store views without wrapper allocation.
 3. Ergonomics would degrade severely.
 
-In Ril, a view's static type remains $T$. The immutability constraint is enforced strictly at the **binding and handle level**. If an application requires a permanently frozen, mathematically immutable object that is completely immune to concurrent or future mutations, it calls `clone_immut(x)`, which returns a deeply normalized `Immut<T>`. Conversely, if it requires an independent, mutable duplicate to modify without mutating the original, it calls `clone(x)`.
+In Ril, a view's static type remains $T$. The immutability constraint is enforced strictly at the **binding and handle level** via the contextual keyword modifier `view`. If an application requires a permanently frozen, mathematically immutable object that is completely immune to concurrent or future mutations and safe to transfer across concurrency boundaries, it calls `clone_immut(x)`, which returns a deeply normalized `Immut<T>`. Conversely, if it requires an independent, mutable duplicate to modify without mutating the original, it calls `clone(x)`.
 
 ### 2.4 Named External Retained Sharing
 
@@ -156,18 +159,32 @@ A parent nursery cannot exit until all child tasks finish. If a child task panic
 2. All `let scoped` resource handles inside cancelled fibers execute their cleanup handlers in strict LIFO order.
 3. No orphan tasks remain executing in the background.
 
+### 3.3 The Redundancy of 'Shareable': Concurrency Safety via Capability Tracking
+
+In mainstream languages such as Rust (`Send`/`Sync`) and Swift (`Sendable`), the compiler relies on nominal marker traits to distinguish types safe to transfer across concurrent boundaries. This necessity arises because their type systems lack first-class capability tracking on individual callables and values.
+
+In Ril, this distinction is already fully governed by the **Capability Tracking System**:
+- Pure values, immutable records, and frozen `Immut<T>` values carry zero mutable capabilities.
+- Live mutable references, borrowed views, and captured mutable states carry explicit capability tags (`&mut`, `&^mut`, `&{mut var}`).
+- Algebraic effect operations are ordinary callable signatures (`fn(Args) -> Ret @Effects &Capabilities`), capable of declaring in-place mutation (`&mut`) directly when required.
+
+Consequently, introducing an ad-hoc trait like `Shareable` is redundant:
+1. **Direct DRF-SC Enforcement**: Concurrency boundaries (`nursery.spawn`, `par_map`) directly inspect capability requirements. Any closure or payload carrying active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) is rejected at compile time under `E0601: CrossThreadDataRaceHazardError`.
+2. **Unified Effect Operations**: Effect operations are treated as first-class callable signatures without artificial restrictions prohibiting `mut` parameters or requiring ad-hoc marker traits.
+3. **Conceptual Minimality**: Eliminating `Shareable` keeps the language lean, mathematically unified, and free of trait proliferation.
+
 ---
 
 ## 4. Syntax Ergonomics and Deliberate Omissions
 
-### 4.1 File-as-Module by Default and The Role of Inline Submodules
+### 4.1 File-as-Module by Default and Predictable Namespaces
 
 Modern developers spend significant time maintaining redundant boilerplate when languages require explicit module wrappers around every file.
 
 Ril establishes **File-as-Module by Default**:
-- Every `.ril` file is automatically an independent compilation unit.
-- Items marked `pub` at the file root are the module's public interface.
-- The `module { ... }` construct exists strictly as a secondary namespace tool for grouping private helpers or mocks within a single large file, avoiding module proliferation. Inline submodules are prohibited inside functions to maintain a clean compilation model.
+- Every `.ril` file is automatically an independent compilation unit named after its path stem (or explicitly designated via `module Name;`).
+- Items marked `pub` at the file root constitute the module's public interface; unmarked declarations remain strictly private to the file (`E0201`).
+- Source files require zero wrapping boilerplate. Local, block-scoped helper imports (`use module::{item}`) allow localized scoping inside functions without global namespace pollution.
 
 ### 4.2 First-Class Operation Records vs. Ad-Hoc Typeclasses and Coherence
 
@@ -191,7 +208,7 @@ Programming languages diverge significantly in how they organize namespaces:
 
 Ril rejects dual-namespace complexity in favor of a **Unified Lexical Identifier Namespace**:
 - In any lexical scope (module, block, or pattern), an identifier refers unambiguously to exactly one entity: a value, a type, a module, or an effect.
-- Declaring a type `type User = ...` and a function `fn User() ...` in the same scope triggers an immediate duplicate declaration error (`E0601`).
+- Declaring a type `type User = ...` and a function `fn User() ...` in the same scope triggers an immediate duplicate declaration error (`E0203: DuplicateDeclarationError`).
 - This design provides profound advantages:
   1. **Trivial Tooling and Refactoring**: Renaming an identifier never leaves a "shadow" type or function behind.
   2. **Predictable Import/Export**: `use module::Item` imports the symbol directly without needing `type` modifiers or disambiguators.

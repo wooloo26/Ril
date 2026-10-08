@@ -159,15 +159,16 @@ let _ = user_count                     -- OK: wildcard discard
 
 ### 2.5 Keywords
 
-The following 30 tokens are strictly reserved keywords:
+The following 31 tokens are strictly reserved keywords:
 
 ```
 as       break    continue effect   else
 false    fn       for      if       in
 infer    is       keyof    let      loop
-match    module   mut      never    opaque
-pub      return   test     true     type
-typeof   use      where    while    with
+match    meta     module   mut      never
+opaque   pub      return   test     true
+type     typeof   use      where    while
+with
 ```
 
 Contextual keywords (`scoped`, `view`, `lacks`, `halt`, `resume`) have syntactic roles only in specific grammar positions:
@@ -175,6 +176,7 @@ Contextual keywords (`scoped`, `view`, `lacks`, `halt`, `resume`) have syntactic
 ```ril
 -- Reserved keywords in action:
 pub opaque type Token = int            -- 'pub', 'opaque', 'type'
+meta let COMPILE_ID = 101              -- 'meta', 'let'
 effect Logger = { log: fn(str) -> () } -- 'effect', 'fn'
 use ril/array::{push}                  -- 'use'
 
@@ -190,8 +192,8 @@ fn calculate(val: ?int) -> int {       -- 'fn'
         else { continue }              -- 'else', 'continue'
     }
     while false { loop {} }            -- 'while', 'false', 'loop'
-    return bound                       -- 'return'
-} where {                              -- 'where'
+    bound                              -- tail expression
+where                                  -- 'where' inside block
     type Dummy = never                 -- 'never'
 }
 
@@ -199,9 +201,7 @@ fn calculate(val: ?int) -> int {       -- 'fn'
 let scoped res = File::open("a.txt")?  -- 'scoped' in let binding
 let view v = res                       -- 'view' in handle binding
 halt fn total_step() -> bool { true }  -- 'halt', 'true'
-with Logger::log(msg) -> resume(()) in { -- 'with', 'resume'
-    -- handler body
-}
+with Logger::log(msg) -> resume(())    -- 'with', 'resume' (statement-level handler)
 ```
 
 ### 2.6 Numeric Literals
@@ -589,7 +589,35 @@ for item in ["A", "B"] {
 assert(iter_log == ["closed_A", "closed_B"])
 ```
 
-### 4.4 Type Declarations & Opaque Types
+### 4.4 Live View Bindings (`let view`)
+
+An explicit `let view` binding creates a live read-only observation handle into an existing reference object located on the managed GC heap. It strips write permissions locally while dynamically observing mutations performed through the underlying mutable root.
+
+```ebnf
+LetViewDecl ::= "let" "view" Identifier [ ":" TypeExpression ] "=" Expression
+```
+
+```ril
+type Node = { mut val: int }
+let mut original = Node.{ val: 10 }
+
+-- Live view aliases 'original' without write permissions:
+let view observer = original
+assert(observer.val == 10)
+
+-- Writing through a view is statically prohibited:
+-- observer.val = 20                   -- Error [E0520]: cannot mutate through read-only view 'observer'
+
+-- Mutations to the underlying object are dynamically observed through the view:
+original.val = 42
+assert(observer.val == 42)             -- OK: live view reflects mutation
+
+-- Concurrency Invariant:
+-- A live mutable view cannot escape across a concurrent task boundary:
+-- nursery.spawn(\-> observer.val)     -- Error [E0601]: cannot pass live mutable view across task boundary
+```
+
+### 4.5 Type Declarations & Opaque Types
 
 ```ebnf
 TypeDecl       ::= [ "pub" ] [ "halt" ] "type" Identifier [ GenericParams ] [ WhereClause ] "=" TypeExpression
@@ -623,7 +651,7 @@ let int_serializer: Serializer<int> = .{
 }
 ```
 
-### 4.5 Effect Declarations
+### 4.6 Effect Declarations
 
 ```ebnf
 EffectDecl   ::= [ "pub" ] "effect" Identifier [ GenericParams ] "=" "{" EffectOpDecl { "," EffectOpDecl } [ "," ] "}"
@@ -669,7 +697,7 @@ effect AppEffects = { Console, State<int> } -- Combined effect set
 | **14** | `\|>` `!>` | Left | Linear pipeline `\|>`, mutating pipeline `!>` |
 | **15** | `let ... else` | Non-associative | Guarded destructuring binding |
 | **16** | `=` `+=` `-=` `*=` `/=` `%=` `+%=` `-%=` `*%=` `&=` `\|=` `^=` `<<=` `>>=` | Non-associative | Assignment and compound assignment |
-| **17** | `where` | Non-associative | Trailing subordinate declaration block |
+| **17** | `where` | Non-associative | Block-level trailing hoisted declaration clause |
 
 ### 5.2 Arithmetic & Safe/Wrapping Operators
 
@@ -839,24 +867,43 @@ flags >>= 2                            -- 0b00100
 
 ## 6. Control Flow & Pattern Matching
 
-### 6.1 Block Expressions & Local Functions
+### 6.1 Block Expressions, Tail Values & Hoisted `where` Declarations
 
-A block `{ ... }` evaluates to its tail expression. Blocks may append a `where` clause declaring hoisted subordinate helper functions.
+A block `{ ... }` evaluates to its tail expression. A block may conclude with a trailing `where` clause declaring mutually recursive helper functions (`fn`) and local types (`type`). Because functions and types are purely declarative with no sequential initialization side effects, they are hoisted across the entire block scope. Variable bindings (`let`, `let mut`) carry sequential side effects and are strictly prohibited in `where` (`E0702`).
+
+```ebnf
+Block       ::= "{" [ StatementList ] [ Expression ] [ WhereClause ] "}"
+WhereClause ::= "where" WhereItem { Separator WhereItem }
+WhereItem   ::= FunctionDecl | TypeDecl
+```
 
 ```ril
 let total = {
     let base = compute_base()
     let parity = is_even(base)
-    base + offset
-} where {
-    -- Functions and constants are hoisted across the subordinate block:
+    base
+where
     fn compute_base() -> int { 100 }
-    let offset = 25
-
-    -- Mutually recursive subordinate helper functions:
     fn is_even(n: int) -> bool { if n == 0 { true } else { is_odd(n - 1) } }
     fn is_odd(n: int) -> bool { if n == 0 { false } else { is_even(n - 1) } }
 }
+
+-- Types and functions can be mutually declared in 'where':
+let user_summary = {
+    let u: LocalUser = .{ id: 1, name: "Alice" }
+    format_user(u)
+where
+    type LocalUser = { id: int, name: str }
+    fn format_user(u: LocalUser) -> str { u.name ++ "#" ++ Int::to_str(u.id) }
+}
+
+-- Prohibited: variable bindings cannot be declared in 'where' (only 'fn' and 'type' permitted):
+-- let bad = {
+--     base + offset
+-- where
+--     fn compute() -> int { 10 }
+--     let offset = 25                  -- Error [E0702]: InvalidWhereItemError: variable bindings cannot be declared in 'where' clause
+-- }
 ```
 
 ### 6.2 Conditional Expressions (`if`)
@@ -1515,12 +1562,24 @@ let abstract_stashing: StashingWorker = concrete_stashing -- OK: preserves &^mut
 
 ### 9.1 Effect Declarations & Operation Signatures
 
-Effects define abstract operations that callers invoke and enclosing handlers intercept.
+Effects define abstract operation tags that callers invoke and enclosing handlers intercept. An effect operation signature is an ordinary callable signature: it declares argument types, return types, and optional capabilities (`&mut`, `&^mut`).
+
+When an effect operation requires in-place mutation (e.g., writing into a caller-supplied buffer), it explicitly declares `&mut` on its operation signature. Callers invoking the operation and handlers servicing it must track, forward, or discharge this capability under standard capability tracking rules (§8). Concurrency boundaries (`nursery.spawn`, `par_map`) enforce Data-Race Freedom (DRF-SC) directly through capability checking: any value or closure crossing a concurrency boundary must not carry live mutable capabilities (`&mut`, `&^mut`, `&{mut var}`), rejected statically under `E0601: CrossThreadDataRaceHazardError`. No separate nominal `Shareable` trait is required.
 
 ```ril
+-- 1. Pure Effect Operations & Ambient Context:
 effect Console = {
     print: fn(str) -> (),
     read_line: fn() -> str,
+}
+
+effect Context<T> = {
+    ask: fn() -> T,                    -- OK: Ambient context value
+}
+
+-- 2. Effect Operations Declaring Mutation Capabilities:
+effect BufferIO = {
+    read_into: fn(mut buf: []u8) -> int &mut, -- OK: Operation declares in-place buffer mutation
 }
 
 -- Effectful computation: invokes print twice and read_line once
@@ -1529,37 +1588,92 @@ fn hello() -> () @Console {
     let name = Console::read_line()     -- Second intercepted operation
     Console::print("Hello, " ++ name)  -- Third intercepted operation (deep handler re-entered)
 }
+
+-- Effectful computation invoking capability-bearing BufferIO:
+fn fill_header(mut target: []u8) -> int @BufferIO &mut {
+    BufferIO::read_into(mut target)    -- OK: &mut capability flows through caller to operation
+}
+
+-- 3. Concurrent Task Boundary: DRF-SC Capability Enforcement (No Ad-Hoc Shareable Trait):
+fn concurrent_boundary_check() {
+    let immut_data = "immutable configuration"
+    let mut local_buf = [0u8, 0u8, 0u8]
+
+    nursery(\mut scope -> {
+        -- OK: Immutable value has zero mutable capabilities, safely crosses task boundary:
+        scope.spawn(\-> {
+            immut_data
+        })
+
+        -- Error [E0601]: CrossThreadDataRaceHazardError: live mutable capability cannot cross task boundary
+        -- scope.spawn(\-> {
+        --     local_buf[0] = 1u8
+        -- })
+        Ok(())
+    })
+}
 ```
 
 ### 9.2 Effect Handlers (`with`)
 
-`with` intercepts operations within its lexical scope, discharging the effect from the enclosing function's signature. Handlers in Ril are **deep handlers**: invoking `resume(v)` does not discard the handler; the enclosing handler remains active for all subsequent effect invocations until the handled block terminates.
+`with` intercepts operations within its lexical scope, discharging the effect from the enclosing function's signature. When placed within a block, `with HandlerSpec` establishes the active deep handler for all subsequent expressions and statements in the remainder of that enclosing block. Handlers in Ril are **deep handlers**: invoking `resume(v)` does not discard the handler; it remains active for all subsequent effect invocations until the block terminates.
+
+Closures constructed in a scope with an active `with` handler **automatically capture the handler** into their heap environment (`&closure`), safely discharging the effect from the closure's public signature. Closures carrying unhandled effects that escape to heap records without an in-scope handler are statically rejected (`E0614`).
 
 ```ebnf
-WithExpr   ::= "with" HandlerArm { "," HandlerArm } [ "in" ] Expression
-HandlerArm ::= Identifier "::" Identifier "(" [ ParameterList ] ")" "->" Expression
+WithExpr    ::= "with" HandlerSpec
+HandlerSpec ::= "{" HandlerArm { "," HandlerArm } [ "," ] "}" | HandlerArm
+HandlerArm  ::= QualifiedName "(" [ PatternList ] ")" "->" Expression
 ```
 
 ```ril
+-- 1. Multi-Arm Statement Handler (like match block):
 fn run_console() -> () {
     let mut log_entries: []str = []
 
-    with Console::print(msg) -> {
-             log_entries !> Array::push(msg)
-             resume(())                 -- Resumes computation; handler remains active
-         },
-         Console::read_line() -> {
-             resume("Alice")            -- Resumes computation with supplied string
-         } in {
-        hello()                         -- All 3 Console operations intercepted deeply
+    with {
+        Console::print(msg) -> {
+            log_entries !> Array::push(msg)
+            resume(())                 -- Resumes computation; handler remains active
+        },
+        Console::read_line() -> resume("Alice"),
     }
+
+    hello()                            -- All 3 Console operations intercepted deeply
     -- @Console is fully discharged; run_console is purely functional externally
 }
+
+-- 2. Single-Arm Statement Handler:
+fn run_config() -> str {
+    with Context::ask() -> resume("Production")
+    Context::ask()                     -- Intercepted by single-arm handler
+}
+
+-- 3. Automatic Handler Capture in Escaping Closures:
+type Button = { label: str, on_click: fn() -> () }
+
+fn make_button() -> Button {
+    with Console::print(msg) -> resume(())
+
+    -- Closure invokes Console::print. Because 'with Console' is active in scope,
+    -- compiler automatically captures the handler into closure environment:
+    let cb = \-> Console::print("Button clicked!")
+    -- 'cb' has type fn() -> () &closure (@Console discharged!)
+
+    Button.{ label: "Save", on_click: cb } -- OK: safely stored in heap record!
+}
+
+-- 4. Escaping Effect Closure Error (E0614):
+-- fn bad_escape() -> Button {
+--     let unhandled_cb = \-> Console::print("Dangling")
+--     -- Error [E0614]: EscapingEffectClosureError: closure with unhandled effect '@Console' escapes to heap record without in-scope handler
+--     Button.{ label: "Bad", on_click: unhandled_cb }
+-- }
 ```
 
 ### 9.3 Affine Resumption (`resume`) and Delimited Early Abort
 
-`resume` is strictly one-shot (affine). Invoking `resume` more than once or escaping the handler arm is a compile-time static error. Returning from a handler arm without calling `resume` triggers delimited early abort, unwinding active `let scoped` resources in LIFO order.
+`resume` is strictly one-shot (affine). Invoking `resume` more than once or escaping the handler arm is a compile-time static error. Returning from a handler arm without calling `resume` triggers delimited early abort, unwinding active `let scoped` resources in LIFO order. Physical memory mutations performed prior to the abort remain permanently committed (Commit-on-Write invariant; physical mutations are never rolled back).
 
 ```ril
 -- 1. Affine Resumption Violation: invoking resume more than once
@@ -1568,9 +1682,8 @@ fn bad_double_resume() -> int {
         let first = resume(1)
         -- let second = resume(2)       -- Error [E0610]: affine resumption 'resume' invoked more than once
         first
-    } in {
-        Op::query()
     }
+    Op::query()
 }
 
 -- 2. Escaping Resumption Violation: resume escaping the handler arm
@@ -1578,35 +1691,39 @@ fn bad_escaping_resume() -> fn() -> int {
     with Op::query() -> {
         let esc = \-> resume(42)        -- Error [E0611]: affine resumption 'resume' cannot escape handler arm
         esc
-    } in {
-        Op::query()
     }
+    Op::query()
 }
 
--- 3. Delimited Early Abort with Proven LIFO Cleanup:
+-- 3. Delimited Early Abort with Proven LIFO Cleanup & Commit-on-Write Memory:
 effect Auth = {
     authenticate: fn() -> bool,
 }
 
-fn guarded_workflow() -> str @Auth {
-    let scoped file = Resource.{ name: "vault.dat", on_close: \-> () }   -- Opened 1st
-    let scoped session = Resource.{ name: "admin_token", on_close: \-> () } -- Opened 2nd
+type AuditLog = { mut entries: []str }
+
+fn guarded_workflow(mut audit: AuditLog) -> str @Auth &mut {
+    audit.entries !> Array::push("STEP_1")                               -- Physical mutation committed
+    let scoped file = Resource.{ name: "vault.dat", on_close: \-> audit.entries !> Array::push("CLEANUP_FILE") }
+    let scoped session = Resource.{ name: "admin_token", on_close: \-> audit.entries !> Array::push("CLEANUP_SESSION") }
 
     if !Auth::authenticate() {
         "Unauthorized"
     } else {
+        audit.entries !> Array::push("SUCCESS")
         "Authorized Access"
     }
-    -- Normal scope exit: session closed 1st, file closed 2nd (LIFO)
 }
 
-fn early_abort_handler() -> str {
-    -- Intercepts Auth::authenticate and aborts without invoking resume:
-    with Auth::authenticate() -> "Denied by Policy" in {
-        guarded_workflow()
-        -- Handled block aborts immediately at Auth::authenticate().
-        -- Active resources are unwound deterministically: session closed 1st, file closed 2nd.
-    }                                   -- Evaluates directly to "Denied by Policy"
+fn test_early_abort() {
+    let mut audit = AuditLog.{ entries: [] }
+    let res = {
+        with Auth::authenticate() -> "Aborted"  -- Early abort without resume()
+        guarded_workflow(mut audit)
+    }
+    assert(res == "Aborted")
+    -- Invariant: LIFO cleanups executed (session 1st, file 2nd); prior mutation "STEP_1" remains committed:
+    assert(audit.entries == ["STEP_1", "CLEANUP_SESSION", "CLEANUP_FILE"]) -- OK
 }
 ```
 
@@ -1841,6 +1958,57 @@ type ActivePayload = VersionedSchema(2) -- Resolves to SchemaV2
 let user_v2: ActivePayload = .{ id: 10, name: "Alice", email: "alice@test.com" }
 ```
 
+### 10.6 Compile-Time Execution (`meta let`, `meta fn`) & Callable Introspection
+
+`meta let` and `meta fn` execute strictly during compilation under deterministic totality budgets. Built-in reflection predicates (`is_pure`, `has_effect`, `has_capability`) inspect callables for purity, effects, and capabilities. Compile-time assertions reuse the standard prelude intrinsic `assert`, failing compilation with `E0830` (`MetaAssertionFailedError`) when breached. Conditional specialization reuses standard `if` branching over meta conditions without dedicated dialects.
+
+**Phase Distinction & Cross-Stage Relaxation**:
+Evaluation is divided into compile-time (meta stage) and runtime:
+1. **Strict Compile-Time Closedness**: A `meta` context (`meta let`, `meta fn`) can only depend on and consume entities known at compile time (`meta` bindings, pure `meta fn` invocations, compile-time type values, and literals). Attempting to pass dynamic runtime values into a `meta` context or calling runtime functions from `meta` code is statically rejected (`E0810: CallFamilyViolationError`).
+2. **Unidirectional Cross-Stage Relaxation**: Conversely, non-meta runtime contexts (`let`, `fn`) can freely consume `meta` bindings without restriction. Values produced by `meta` evaluation degrade monotonically into immutable constants and inlined immediates, representing a safe information-flow relaxation ($\text{Meta} \succ \text{Runtime}$).
+
+```ril
+-- 1. Meta Bindings & Compile-Time Functions:
+meta let MAX_BUFFER_SIZE = 1024 * 64
+meta fn compute_hash_mask(bits: int) -> int {
+    (1 << bits) - 1
+}
+meta let CACHE_MASK = compute_hash_mask(8) -- Evaluated at compile-time: 255
+
+-- Non-meta runtime function freely consumes meta binding (relaxation):
+fn get_cache_slot(key: int) -> int {
+    key & CACHE_MASK                       -- OK: CACHE_MASK is an inlined compile-time constant
+}
+
+-- 2. Callable Reflection Predicates:
+fn pure_add(a: int, b: int) -> int { a + b }
+fn effectful_log(s: str) -> () @Console { Console::print(s) }
+fn mutating_sort(mut arr: []int) &mut { arr !> Array::sort() }
+
+-- 'is_pure' asserts zero effects and zero parameter/external mutation:
+meta let _ = assert(is_pure(pure_add), "pure_add must be mathematically pure")     -- OK
+meta let _ = assert(!is_pure(effectful_log), "effectful_log is not pure")         -- OK
+meta let _ = assert(!is_pure(mutating_sort), "mutating_sort is not pure")         -- OK
+
+-- 'has_effect' and 'has_capability' inspect specific effects and capabilities:
+meta let _ = assert(has_effect(effectful_log, @Console), "has @Console effect")   -- OK
+meta let _ = assert(has_capability(mutating_sort, &mut), "requires &mut")        -- OK
+
+-- Failed compile-time assertion halts compilation:
+-- meta let _ = assert(is_pure(effectful_log), "audit check")
+-- Error [E0830]: MetaAssertionFailedError: audit check (carries unhandled effect @Console)
+
+-- 3. Zero-Dialect Static Specialization via Standard 'if':
+fn dispatch_computation<F, T, R>(f: F, arg: T) -> R {
+    meta let pure = is_pure(type[F])
+    if pure {
+        f(arg)                         -- Compiler specializes: thread-safe, pure fast path
+    } else {
+        f(arg)                         -- Sequential, side-effect-aware path
+    }
+}
+```
+
 ---
 
 ## 11. Modules, Program Execution & Prelude
@@ -2012,6 +2180,7 @@ fn process_request(id: int) -> Result<(), str> {
 | :---: | :--- | :--- |
 | **`E0201`** | `PrivateItemAccessError` | Accessing or importing unexported private module symbol |
 | **`E0202`** | `TopLevelSideEffectError` | Top-level declaration contains non-constant runtime side effects |
+| **`E0203`** | `DuplicateDeclarationError` | Redeclaring an existing identifier in the same scope |
 | **`E0301`** | `TypeMismatchError` | Expression type incompatible with expected type |
 | **`E0302`** | `UnexpectedFieldError` | Closed record supplied with undeclared fields |
 | **`E0305`** | `NominalTypeMismatchError` | Mismatched nominal type wrapper identities |
@@ -2035,10 +2204,13 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0607`** | `DraftProxyEscapeError` | Attempting to return draft proxy out of `produce` recipe |
 | **`E0610`** | `DuplicateResumeInvocationError` | Invoking affine one-shot resumption `resume` more than once |
 | **`E0611`** | `EscapingResumeError` | Escaping resumption handle beyond handler arm lexical scope |
+| **`E0614`** | `EscapingEffectClosureError` | Closure with unhandled effect escaping to heap record without in-scope handler |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
+| **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
 | **`E0710`** | `IllegalControlTransferInFallbackError` | Embedding `return`/`break` in fallback operator `??` |
 | **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
 | **`E0720`** | `UnusedFallibleResultError` | Discarding fallible `Result` without inspection |
-| **`E0810`** | `CallFamilyViolationError` | Crossing disjoint runtime `fn` and static `type` call families |
-| **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting compiler evaluation step budget in static closures |
+| **`E0810`** | `CallFamilyViolationError` | Crossing disjoint runtime `fn` and compile-time `meta`/`type` call families |
+| **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting compiler evaluation step budget in meta/type closures |
 | **`E0820`** | `TotalityViolationError` | Totality certification failed in `halt fn` (unbounded recursion/loop) |
+| **`E0830`** | `MetaAssertionFailedError` | Compile-time `assert` condition evaluated to `false` in `meta` context |
