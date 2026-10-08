@@ -426,23 +426,26 @@ fn eval<T>(e: Expr<T>) -> T {
 Nominal wrappers encapsulate an underlying type into an isolated nominal identity with zero runtime overhead.
 
 ```ebnf
-NominalDecl   ::= [ "pub" ] "type" Identifier [ GenericParams ] "(" NominalFields ")" [ WhereClause ]
-NominalFields ::= VariantField { "," VariantField } [ "," ]
+NominalDecl ::= [ "pub" ] "type" Identifier [ GenericParams ] "(" TypeExpression ")" [ WhereClause ]
 ```
 
 ```ril
 type UserId(int)
 type AccountId(int)
-type Point2D(x: f64, y: f64)           -- Multi-field nominal wrapper
+type Coord((int, int))
+type Point2D({ x: f64, y: f64 })           -- Nominal wrapper over structural record
 
 let uid = UserId(1001)
 let aid = AccountId(1001)
-let pt = Point2D(10.0, 20.0)
+let c = Coord((10, 20))
+let pt = Point2D(.{ x: 10.0, y: 20.0 })
 
 -- uid == aid                          -- Error [E0305]: mismatched nominal types 'UserId' and 'AccountId'
-let raw_id: int = inner(uid)           -- OK: unwrap single-element nominal wrapper via prelude 'inner()'
+let raw_id: int = inner(uid)           -- OK: unwrap nominal wrapper via prelude 'inner()' (1001)
+let raw_pt: { x: f64, y: f64 } = inner(pt) -- OK: unwrap underlying record via 'inner()'
 let UserId(unwrapped_id) = uid         -- OK: pattern-matching unwrap
-let Point2D(x, y) = pt                 -- OK: multi-field pattern unwrap
+let Point2D(.{ x, y }) = pt            -- OK: structural record pattern unwrap
+let Coord((cx, cy)) = c                -- OK: tuple pattern unwrap
 ```
 
 ### 3.7 Deep Immutability (`Immut<T>`)

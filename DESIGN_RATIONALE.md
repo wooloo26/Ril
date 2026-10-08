@@ -228,3 +228,17 @@ Ril establishes strict syntactic and conceptual segregation between compile-time
 2. **Elimination of Anonymous Open Rows**:
    - Anonymous open rows (`{ id: int, .. }`) created the false illusion of a runtime "rest" dictionary capture while disallowing field access.
    - Ril replaces them with **Named Row Tail Polymorphism (`..R`)** strictly for generic pipeline type preservation (`fn with_ts<R>(r: { ..R }) -> { ts: int, ..R }`), and **Type-Precise Pattern Destructuring (`let .{ id, ..rest } = u`)** where `rest` is a fully typed, accessible static sub-record.
+
+### 4.5 The Necessity of Nominal Wrappers & Universal Single-Type Packaging
+
+Structural typing provides maximum ergonomics for data-transfer objects (DTOs) and ad-hoc records, but pure structural typing introduces severe vulnerabilities in domain modeling:
+1. **Primitive Obsession & ID Conflation**: Without nominal typing, distinct domain identifiers (`UserId`, `OrderId`, `ProductId`) share the same scalar type `int`, allowing disastrous call-site argument swaps that compile silently.
+2. **Coincidental Shape Collision**: A 2D point (`Point2D { x, y }`), a direction vector (`Vector2D { x, y }`), and a complex number (`Complex { x, y }`) share identical field definitions. In pure structural systems, an operation expecting a spatial location can erroneously accept a displacement vector or complex number without static diagnostics.
+
+Ril introduces **Nominal Type Wrappers** as zero-cost compile-time domain boundaries:
+- **Zero Runtime Overhead**: In native machine code, a nominal wrapper is completely transparent—it occupies the exact same memory layout and registers as its underlying type without wrapper allocation or pointer indirection.
+- **Universal Single-Type Packaging (`type Name(TypeExpr)`)**: Rather than inventing pseudo-parameter lists for multi-field wrappers, Ril strictly defines nominal wrappers as packaging a single underlying `TypeExpression`. A multi-field nominal wrapper is simply a wrapper over a structural record: `type Point2D({ x: f64, y: f64 })`.
+- **Absolute Syntactic Symmetry**:
+  - Declaration: `type Name(Type)`
+  - Construction: `Name(Value)` (e.g. `UserId(1001)`, `Point2D(.{ x: 1.0, y: 2.0 })`)
+  - Unwrapping: `Name(Pattern)` (e.g. `let UserId(raw) = uid`, `let Point2D(.{ x, y }) = pt`) or uniform prelude `inner(wrapper)`.
