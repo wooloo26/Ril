@@ -159,19 +159,17 @@ let _ = user_count                     -- OK: wildcard discard
 
 ### 2.5 Keywords
 
-The following 31 tokens are strictly reserved keywords:
+The following 35 tokens are strictly reserved keywords:
 
 ```
 as       break    continue effect   else
-false    fn       for      if       in
-infer    is       keyof    let      loop
-match    meta     module   mut      never
-opaque   pub      return   test     true
-type     typeof   use      where    while
-with
+false    fn       for      halt     if
+in       infer    is       keyof    let
+loop     match    meta     module   mut
+never    opaque   pub      resume   return
+scoped   test     true     type     typeof
+use      view     where    while    with
 ```
-
-Contextual keywords (`scoped`, `view`, `lacks`, `halt`, `resume`) have syntactic roles only in specific grammar positions:
 
 ```ril
 -- Reserved keywords in action:
@@ -179,6 +177,10 @@ pub opaque type Token = int            -- 'pub', 'opaque', 'type'
 meta let COMPILE_ID = 101              -- 'meta', 'let'
 effect Logger = { log: fn(str) -> () } -- 'effect', 'fn'
 use ril/array::{push}                  -- 'use'
+halt fn total_step() -> bool { true }  -- 'halt', 'true'
+let scoped res = File::open("a.txt")?  -- 'scoped' in let binding
+let view v = res                       -- 'view' in handle binding
+with Logger::log(msg) -> resume ()     -- 'with', 'resume' (statement-level handler)
 
 fn calculate(val: ?int) -> int {       -- 'fn'
     let bound = match val {            -- 'let', 'match'
@@ -196,12 +198,6 @@ fn calculate(val: ?int) -> int {       -- 'fn'
 where                                  -- 'where' inside block
     type Dummy = never                 -- 'never'
 }
-
--- Contextual keywords in action:
-let scoped res = File::open("a.txt")?  -- 'scoped' in let binding
-let view v = res                       -- 'view' in handle binding
-halt fn total_step() -> bool { true }  -- 'halt', 'true'
-with Logger::log(msg) -> resume(())    -- 'with', 'resume' (statement-level handler)
 ```
 
 ### 2.6 Numeric Literals
@@ -311,12 +307,14 @@ assert(n2.val == 99)                   -- OK: 'n2' observes mutation due to refe
 -- n2.val = 100                        -- Error [E0520]: cannot mutate through read-only view 'n2'
 ```
 
-### 3.3 Record Types & Open Rows
+### 3.3 Record Types & Row Polymorphism
 
-Records are structural collections of named fields. Closed records do not support width subtyping. Open rows (`..`) allow accepting records with additional fields.
+Records are structural collections of named fields. Closed records do not support width subtyping. Field access on records is strictly compile-time identifier dot-access (`r.field`); dynamic string indexing (e.g. `r["key"]` or `r.("key")`) is prohibited.
+
+Named row tail polymorphism (`..R`) allows generic functions to accept and preserve additional caller fields across pipelines. Pattern destructuring with `..rest` extracts a concrete, statically typed sub-record containing the remaining known fields.
 
 ```ebnf
-RecordType  ::= "{" [ RecordField { "," RecordField } [ "," ] [ ".." [ Identifier ] ] ] "}"
+RecordType  ::= "{" [ RecordField { "," RecordField } [ "," ] [ ".." Identifier ] ] "}"
 RecordField ::= [ "mut" ] Identifier ":" TypeExpression
 ```
 
@@ -324,39 +322,58 @@ RecordField ::= [ "mut" ] Identifier ":" TypeExpression
 type User = { id: int, name: str }
 let u: User = .{ id: 1, name: "Alice" } -- OK: exact closed record match
 
--- Closed record rejects extra fields (E0302):
+-- 1. Closed record rejects unexpected fields (E0302):
 -- let bad_u: User = .{ id: 1, name: "Alice", age: 30 } -- Error [E0302]: unexpected field 'age' in closed record 'User'
 
--- Open row acceptance and rejection:
-fn get_id(r: { id: int, .. }) -> int {
-    r.id
-}
-let id1 = get_id(u)                    -- OK: User satisfies { id: int, .. }
-let id2 = get_id(.{ id: 2, age: 25 })  -- OK: extra field 'age' accepted by '..'
--- let bad_id = get_id(.{ age: 25 })   -- Error [E0301]: missing required field 'id' in open row
+-- 2. Field access is strictly compile-time identifier dot-access:
+let user_id = u.id                     -- OK: direct static offset lookup
+-- let bad_index = u["name"]           -- Error [E0301]: records do not support dynamic index lookup
+-- let bad_accessor = u.("name")       -- Error [E0301]: dynamic string accessor prohibited
 
--- Named row tail polymorphism:
+-- 3. Named row tail polymorphism (generic type preservation):
 fn with_timestamp<R>(r: { ..R }) -> { timestamp: int, ..R } {
     .{ timestamp: 1600000000, ..r }
 }
 let stamped = with_timestamp(.{ id: 1, tag: "audit" })
 assert(stamped.tag == "audit" && stamped.timestamp == 1600000000)
+
+-- 4. Type-precise rest destructuring:
+type Account = { id: int, username: str, email: str, role: str }
+let acc: Account = .{ id: 42, username: "admin", email: "adm@ril.org", role: "root" }
+
+let .{ id, ..rest } = acc
+-- 'rest' has static inferred type: { username: str, email: str, role: str }
+assert(rest.username == "admin")
+assert(rest.email == "adm@ril.org")
+assert(rest.role == "root")
 ```
 
 ### 3.4 Array, Map & Set Types
 
+Bracket syntax (`[...]`) unifies all runtime dynamic collections: linear sequences (`[]T`), associative maps (`[K: V]`), and sets (`Set<T>`).
+
 ```ebnf
-ArrayType ::= "[]" TypeExpression
-MapType   ::= "Map" "<" TypeExpression "," TypeExpression ">"
-SetType   ::= "Set" "<" TypeExpression ">"
-TupleType ::= "(" TypeExpression "," { TypeExpression "," } [ TypeExpression ] ")"
+ArrayType   ::= "[]" TypeExpression
+MapType     ::= "[" TypeExpression ":" TypeExpression "]"
+SetType     ::= "Set" "<" TypeExpression ">"
+TupleType   ::= "(" TypeExpression "," { TypeExpression "," } [ TypeExpression ] ")"
 ```
 
 ```ril
+-- 1. Linear Array ([]T):
 let numbers: []int = [1, 2, 3]         -- Type: []int
+
+-- 2. Associative Map ([K: V]):
+let config: [str: str] = ["env": "prod", "host": "127.0.0.1"]
+let empty_map: [str: int] = [:]        -- Empty map literal
+let host = config["host"]              -- Evaluates to ?str (Some("127.0.0.1"))
+
+-- 3. Unique Set (Set<T>):
+let visited: Set<int> = [10, 20, 30]    -- Contextual initialization from collection literal
+let roles = Set.["admin", "guest"]     -- Explicit Set.[...] constructor literal
+
+-- 4. Tuple ((T1, T2)):
 let coords: (int, int) = (10, 20)      -- Type: (int, int)
-let config: Map<str, str> = Map::new() -- Type: Map<str, str>
-let visited: Set<int> = Set::new()     -- Type: Set<int>
 ```
 
 ### 3.5 Sum Types & GADTs
@@ -593,6 +610,8 @@ assert(iter_log == ["closed_A", "closed_B"])
 
 An explicit `let view` binding creates a live read-only observation handle into an existing reference object located on the managed GC heap. It strips write permissions locally while dynamically observing mutations performed through the underlying mutable root.
 
+**Mutable Root Invariant**: The source expression of a `let view` binding MUST be an active mutable root (`let mut` handle or `mut` parameter). Creating a live view over an immutable `let` binding is statically rejected (`E0531`). Conversely, immutable bindings safely share read-only access with other ordinary `let` bindings (`let b = a`).
+
 ```ebnf
 LetViewDecl ::= "let" "view" Identifier [ ":" TypeExpression ] "=" Expression
 ```
@@ -601,7 +620,7 @@ LetViewDecl ::= "let" "view" Identifier [ ":" TypeExpression ] "=" Expression
 type Node = { mut val: int }
 let mut original = Node.{ val: 10 }
 
--- Live view aliases 'original' without write permissions:
+-- 1. Live view aliases 'original' without write permissions:
 let view observer = original
 assert(observer.val == 10)
 
@@ -612,7 +631,15 @@ assert(observer.val == 10)
 original.val = 42
 assert(observer.val == 42)             -- OK: live view reflects mutation
 
--- Concurrency Invariant:
+-- 2. Target Constraint: source must be a mutable root
+let immutable_node = Node.{ val: 100 }
+-- let view bad_view = immutable_node   -- Error [E0531]: cannot create live view over immutable binding 'immutable_node' (source must be mutable root)
+
+-- Safe read-only sharing via ordinary let:
+let safe_alias = immutable_node        -- OK: immutable bindings safely share read-only access
+assert(safe_alias.val == 100)
+
+-- 3. Concurrency Invariant:
 -- A live mutable view cannot escape across a concurrent task boundary:
 -- nursery.spawn(\-> observer.val)     -- Error [E0601]: cannot pass live mutable view across task boundary
 ```
@@ -964,7 +991,7 @@ fn search(matrix: [][]int, target: int) -> bool {
 `let Pattern = expr else { Block }` matches a pattern or diverges. The `else` block MUST diverge (evaluate to `never`).
 
 ```ril
-fn process_account(data: Map<str, str>) -> Result<str, str> {
+fn process_account(data: [str: str]) -> Result<str, str> {
     -- The 'else' block MUST diverge (evaluate to 'never'):
     let Some(id) = data["account_id"] else {
         return Err("missing account_id") -- OK: diverges via 'return'
@@ -1482,10 +1509,12 @@ Permissions degrade monotonically ($\text{Mut} \succ \text{ReadOnly} \succ \text
 ```ril
 type UserDoc = { mut title: str, mut score: int }
 
--- E0520: MutabilityLaunderingError (binding read-only to let mut or mutating through view)
+-- E0520: MutabilityLaunderingError (binding/assigning read-only to let mut, or mutating through view)
 let doc = UserDoc.{ title: "Draft", score: 0 }
 -- doc.score = 10                      -- Error [E0520]: cannot mutate field through read-only handle 'doc'
 -- let mut laundered = doc             -- Error [E0520]: cannot bind read-only handle to 'let mut'
+let mut other_doc = UserDoc.{ title: "Active", score: 5 }
+-- other_doc = doc                    -- Error [E0520]: cannot reassign read-only handle 'doc' to mutable binding 'other_doc'
 
 -- E0521: DestructureMutabilityLaunderingError (destructuring read-only into mut fields)
 -- let { mut score } = doc             -- Error [E0521]: cannot bind read-only field to 'mut' pattern
@@ -1524,6 +1553,11 @@ let inspected = inspect_user(user_in)
 -- E0530: IllegalCapabilityCloneImmutError (passing active capabilities or closures to clone_immut)
 let mut counter_handle = create_counter(0)
 -- let bad_immut = clone_immut(counter_handle) -- Error [E0530]: cannot freeze callable carrying mutable capabilities
+
+-- E0531: ImmutableTargetViewError (creating a live view over an immutable binding)
+let immutable_doc = UserDoc.{ title: "Frozen", score: 100 }
+-- let view bad_v = immutable_doc       -- Error [E0531]: cannot create live view over immutable binding 'immutable_doc' (source must be mutable root)
+let safe_alias = immutable_doc        -- OK: immutable binding safely shared across read-only handles
 ```
 
 ### 8.8 Callable Signature Abstraction
@@ -1564,7 +1598,7 @@ let abstract_stashing: StashingWorker = concrete_stashing -- OK: preserves &^mut
 
 Effects define abstract operation tags that callers invoke and enclosing handlers intercept. An effect operation signature is an ordinary callable signature: it declares argument types, return types, and optional capabilities (`&mut`, `&^mut`).
 
-When an effect operation requires in-place mutation (e.g., writing into a caller-supplied buffer), it explicitly declares `&mut` on its operation signature. Callers invoking the operation and handlers servicing it must track, forward, or discharge this capability under standard capability tracking rules (§8). Concurrency boundaries (`nursery.spawn`, `par_map`) enforce Data-Race Freedom (DRF-SC) directly through capability checking: any value or closure crossing a concurrency boundary must not carry live mutable capabilities (`&mut`, `&^mut`, `&{mut var}`), rejected statically under `E0601: CrossThreadDataRaceHazardError`. No separate nominal `Shareable` trait is required.
+When an effect operation requires in-place mutation (e.g., writing into a caller-supplied buffer), it explicitly declares `&mut` on its operation signature. Callers invoking the operation and handlers servicing it must track, forward, or discharge this capability under standard capability tracking rules (§8). Concurrency boundaries (`nursery.spawn`, `Parallel::map`) enforce Data-Race Freedom (DRF-SC) directly through capability checking: any value or closure crossing a concurrency boundary must not carry live mutable capabilities (`&mut`, `&^mut`, `&{mut var}`), rejected statically under `E0601: CrossThreadDataRaceHazardError`. No separate nominal `Shareable` trait is required.
 
 ```ril
 -- 1. Pure Effect Operations & Ambient Context:
@@ -1616,7 +1650,7 @@ fn concurrent_boundary_check() {
 
 ### 9.2 Effect Handlers (`with`)
 
-`with` intercepts operations within its lexical scope, discharging the effect from the enclosing function's signature. When placed within a block, `with HandlerSpec` establishes the active deep handler for all subsequent expressions and statements in the remainder of that enclosing block. Handlers in Ril are **deep handlers**: invoking `resume(v)` does not discard the handler; it remains active for all subsequent effect invocations until the block terminates.
+`with` intercepts operations within its lexical scope, discharging the effect from the enclosing function's signature. When placed within a block, `with HandlerSpec` establishes the active deep handler for all subsequent expressions and statements in the remainder of that enclosing block. Handlers in Ril are **deep handlers**: evaluating `resume v` does not discard the handler; it remains active for all subsequent effect invocations until the block terminates.
 
 Closures constructed in a scope with an active `with` handler **automatically capture the handler** into their heap environment (`&closure`), safely discharging the effect from the closure's public signature. Closures carrying unhandled effects that escape to heap records without an in-scope handler are statically rejected (`E0614`).
 
@@ -1624,6 +1658,7 @@ Closures constructed in a scope with an active `with` handler **automatically ca
 WithExpr    ::= "with" HandlerSpec
 HandlerSpec ::= "{" HandlerArm { "," HandlerArm } [ "," ] "}" | HandlerArm
 HandlerArm  ::= QualifiedName "(" [ PatternList ] ")" "->" Expression
+ResumeExpr  ::= "resume" Expression
 ```
 
 ```ril
@@ -1634,9 +1669,9 @@ fn run_console() -> () {
     with {
         Console::print(msg) -> {
             log_entries !> Array::push(msg)
-            resume(())                 -- Resumes computation; handler remains active
+            resume ()                  -- Resumes computation; handler remains active
         },
-        Console::read_line() -> resume("Alice"),
+        Console::read_line() -> resume "Alice",
     }
 
     hello()                            -- All 3 Console operations intercepted deeply
@@ -1645,7 +1680,7 @@ fn run_console() -> () {
 
 -- 2. Single-Arm Statement Handler:
 fn run_config() -> str {
-    with Context::ask() -> resume("Production")
+    with Context::ask() -> resume "Production"
     Context::ask()                     -- Intercepted by single-arm handler
 }
 
@@ -1653,7 +1688,7 @@ fn run_config() -> str {
 type Button = { label: str, on_click: fn() -> () }
 
 fn make_button() -> Button {
-    with Console::print(msg) -> resume(())
+    with Console::print(msg) -> resume ()
 
     -- Closure invokes Console::print. Because 'with Console' is active in scope,
     -- compiler automatically captures the handler into closure environment:
@@ -1679,8 +1714,8 @@ fn make_button() -> Button {
 -- 1. Affine Resumption Violation: invoking resume more than once
 fn bad_double_resume() -> int {
     with Op::query() -> {
-        let first = resume(1)
-        -- let second = resume(2)       -- Error [E0610]: affine resumption 'resume' invoked more than once
+        let first = resume 1
+        -- let second = resume 2        -- Error [E0610]: affine resumption 'resume' invoked more than once
         first
     }
     Op::query()
@@ -1689,7 +1724,7 @@ fn bad_double_resume() -> int {
 -- 2. Escaping Resumption Violation: resume escaping the handler arm
 fn bad_escaping_resume() -> fn() -> int {
     with Op::query() -> {
-        let esc = \-> resume(42)        -- Error [E0611]: affine resumption 'resume' cannot escape handler arm
+        let esc = \-> resume 42         -- Error [E0611]: affine resumption 'resume' cannot escape handler arm
         esc
     }
     Op::query()
@@ -1718,7 +1753,7 @@ fn guarded_workflow(mut audit: AuditLog) -> str @Auth &mut {
 fn test_early_abort() {
     let mut audit = AuditLog.{ entries: [] }
     let res = {
-        with Auth::authenticate() -> "Aborted"  -- Early abort without resume()
+        with Auth::authenticate() -> "Aborted"  -- Early abort without resume
         guarded_workflow(mut audit)
     }
     assert(res == "Aborted")
@@ -1814,20 +1849,20 @@ fn bad_concurrent_data_race() {
 }
 ```
 
-### 9.6 Data Parallelism (`par_map`, `par_fold`) & Deterministic Reductions
+### 9.6 Data Parallelism (`Parallel::map`, `Parallel::fold`) & Deterministic Reductions
 
-`ril/parallel` evaluates data-parallel combinators across slice partitions. `par_fold` requires chunk-local accumulators with local `&mut`, avoiding cross-core cache invalidation. Reductions merge intermediate results via a canonical binary tree ($G_{\text{canonical}} = 64$) guaranteeing bit-for-bit floating-point determinism.
+`ril/parallel` exports the `Parallel` namespace for evaluating data-parallel combinators across slice partitions. `Parallel::fold` requires chunk-local accumulators with local `&mut`, avoiding cross-core cache invalidation. Reductions merge intermediate results via a canonical binary tree ($G_{\text{canonical}} = 64$) guaranteeing bit-for-bit floating-point determinism.
 
 ```ril
-use ril/parallel::{par_map, par_fold}
+use ril/parallel::Parallel
 
 let numbers: []f64 = [1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7, 8.8]
 
 -- 1. Pure Data-Parallel Mapping:
-let scaled = numbers |> par_map(\x -> x * 2.0)
+let scaled = numbers |> Parallel::map(\x -> x * 2.0)
 
 -- 2. Floating-Point Deterministic Fold via Canonical Binary Reduction Tree (G_canonical = 64):
-let total_sum = par_fold(
+let total_sum = Parallel::fold(
     numbers,
     init_acc: \-> 0.0f64,
     fold_local: \mut acc, x -> { acc += x }, -- OK: thread-local &mut accumulator
@@ -1836,7 +1871,7 @@ let total_sum = par_fold(
 
 -- 3. Capability Confinement: Rejecting external mutable captures in parallel combinator
 let mut external_counter = 0
--- let bad = numbers |> par_map(\x -> {
+-- let bad = numbers |> Parallel::map(\x -> {
 --     external_counter += 1            -- Error [E0605]: cannot capture external mutable handle 'external_counter' in parallel combinator
 --     x * 2.0
 -- })
@@ -1973,7 +2008,7 @@ Static type closures accept four parameter sorts:
 
 1. **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
 2. **Const Values (`\param: ValueType`)**: Accepts compile-time known constants (literals, `meta let`, statically foldable expressions). Passing runtime variables raises `E0810`.
-3. **Bounded & Structural Types (`\T: { id: int, .. }`, `\K: keyof T`)**: Enforces structural row subtyping and key inclusion.
+3. **Bounded & Structural Types (`\T: { id: int, ..R }`, `\K: keyof T`)**: Enforces structural row subtyping and key inclusion.
 4. **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
 
 **Call-Site Interpretation**: In `TypeFunc<Arg1, Arg2>`, type parameter positions parse as `TypeExpression`; const value positions parse as compile-time expressions.
@@ -1997,7 +2032,7 @@ type ActivePayload = VersionedSchema<2> -- Resolves to SchemaV2
 let user_v2: ActivePayload = .{ id: 10, name: "Alice", email: "alice@test.com" }
 
 -- Structural constraint & keyof bound adaptation:
-type PickField = \T: { .. }, K: keyof T -> T[K]
+type PickField = \T: { ..R }, K: keyof T -> T[K]
 type UserName = PickField<SchemaV1, "name"> -- Resolves to str
 -- type BadField = PickField<SchemaV1, "missing"> -- Error [E0301]: "missing" not in keyof SchemaV1
 
@@ -2151,7 +2186,7 @@ The following types and functions are implicitly available in every compilation 
 | :--- | :--- | :--- |
 | `Option<T>`, `?T` | Sum Type | Optional value: `Some(T)` or `None` |
 | `Result<T, E>` | Sum Type | Fallible operation outcome: `Ok(T)` or `Err(E)` |
-| `Map<K, V>`, `Set<T>` | Types | Built-in associative map and unique set |
+| `[K: V]`, `Set<T>` | Types | Built-in associative map and unique set |
 | `inner(wrapper)` | Function | Extracts underlying value from nominal wrapper `type W(T)` |
 | `clone(x)` | Function | Allocates deep independent mutable duplicate of heap reference |
 | `clone_immut(x)` | Function | Freezes heap object into permanently immutable `Immut<T>` |
@@ -2237,7 +2272,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0501`** | `ImmutableReassignmentError` | Reassigning an immutable `let` binding |
 | **`E0510`** | `MissingCapabilityAnnotationError` | Calling mutating operation without declaring `&mut` or `&^mut` |
-| **`E0520`** | `MutabilityLaunderingError` | Binding read-only handle to `let mut` or mutating through view |
+| **`E0520`** | `MutabilityLaunderingError` | Binding or assigning read-only handle to `let mut` or mutating through view |
 | **`E0521`** | `DestructureMutabilityLaunderingError` | Destructuring read-only handle into `mut` pattern fields |
 | **`E0522`** | `ContainerMutabilityLaunderingError` | Injecting read-only reference into mutable collection |
 | **`E0523`** | `MutMutAliasingConflictError` | Overlapping mutable arguments passed to `mut` parameters |
@@ -2248,6 +2283,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0528`** | `ReturnMutabilityLaunderingError` | Returning read-only parameter into caller `let mut` handle |
 | **`E0529`** | `ExcessiveCapabilityAnnotationError` | Over-annotating signature beyond minimal required capabilities |
 | **`E0530`** | `IllegalCapabilityCloneImmutError` | Passing active capabilities or closures to `clone_immut` |
+| **`E0531`** | `ImmutableTargetViewError` | Attempting to create a live view (`let view`) over an immutable binding |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Passing live mutable view across concurrent task boundary |
 | **`E0605`** | `InvalidParallelCapabilityError` | Capturing external mutable capabilities in parallel combinator |
 | **`E0606`** | `UseAfterMoveError` | Attempting to access an affinely moved handle |

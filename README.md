@@ -17,7 +17,7 @@ fn greet() -> str @Ask {
 
 -- Handled via one-shot delimited resumption
 let message = {
-    with Ask::prompt(_) -> resume("World")
+    with Ask::prompt(_) -> resume "World"
     greet() -- "Hello, World"
 }
 ```

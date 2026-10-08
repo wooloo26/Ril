@@ -80,7 +80,7 @@ $$
 \text{Mut} \succ \text{ReadOnly} \succ \text{None}
 $$
 
-Permissions can degrade, but never upgrade. The compiler provides a closed static diagnostic closure (`E0520` through `E0530`) covering:
+Permissions can degrade, but never upgrade. The compiler provides a closed static diagnostic closure (`E0520` through `E0531`) covering:
 - Assigning read-only to `let mut` or mutating through view (`E0520`).
 - Destructuring read-only records into `mut` fields (`E0521`).
 - Injecting read-only objects into mutable arrays or records (`E0522`).
@@ -90,6 +90,7 @@ Permissions can degrade, but never upgrade. The compiler provides a closed stati
 - Returning read-only parameter references into caller `let mut` bindings (`E0528`).
 - Over-annotating declarations beyond minimal required capabilities (`E0529`).
 - Passing types with active capabilities or scoped handles to `clone_immut` (`E0530`).
+- Creating a live view over an immutable binding (`E0531`).
 
 ### 2.2 Cross-Argument Disjointness vs. Borrow Checker Complexity
 
@@ -112,6 +113,7 @@ Ril explicitly distinguishes between immutable bindings (`let`) and live read-on
 - **Live Views (`let view v = handle`)**: When a developer writes `let view v = handle` against an existing mutable heap reference:
   - The handle `v` itself loses write permission. The developer cannot write `v.field = value` (`E0520`).
   - However, `v` remains an active **Live View** into the underlying GC-managed heap object. If the holder of `mut handle` modifies the object, subsequent reads through `v` dynamically observe the updated values.
+  - **Mutable Root Invariant**: A live view can ONLY observe an active mutable root (`let mut` handle or `mut` parameter). Creating a `let view` over an immutable `let` binding is rejected under `E0531: ImmutableTargetViewError`. Because an immutable `let` has no mutations to observe, converting it into a `view` would counterproductively downgrade an unrestricted pure value into a concurrency-confined handle.
   - **Concurrency Isolation**: Because a live view aliases an underlying mutable heap record, passing a live mutable view across a concurrent task boundary is strictly prohibited (`E0601: CrossThreadDataRaceHazardError`).
 
 **Why Ril rejects "View Contagion" (Type-Level Contagion)**:
@@ -120,7 +122,7 @@ If creating a view changed the type of `x: User` into `View<User>` or `&User`, t
 2. Standard collection types (`[]User`) could not store views without wrapper allocation.
 3. Ergonomics would degrade severely.
 
-In Ril, a view's static type remains $T$. The immutability constraint is enforced strictly at the **binding and handle level** via the contextual keyword modifier `view`. If an application requires a permanently frozen, mathematically immutable object that is completely immune to concurrent or future mutations and safe to transfer across concurrency boundaries, it calls `clone_immut(x)`, which returns a deeply normalized `Immut<T>`. Conversely, if it requires an independent, mutable duplicate to modify without mutating the original, it calls `clone(x)`.
+In Ril, a view's static type remains $T$. The immutability constraint is enforced strictly at the **binding and handle level** via the keyword modifier `view`. If an application requires a permanently frozen, mathematically immutable object that is completely immune to concurrent or future mutations and safe to transfer across concurrency boundaries, it calls `clone_immut(x)`, which returns a deeply normalized `Immut<T>`. Conversely, if it requires an independent, mutable duplicate to modify without mutating the original, it calls `clone(x)`.
 
 ### 2.4 Named External Retained Sharing
 
@@ -169,7 +171,7 @@ In Ril, this distinction is already fully governed by the **Capability Tracking 
 - Algebraic effect operations are ordinary callable signatures (`fn(Args) -> Ret @Effects &Capabilities`), capable of declaring in-place mutation (`&mut`) directly when required.
 
 Consequently, introducing an ad-hoc trait like `Shareable` is redundant:
-1. **Direct DRF-SC Enforcement**: Concurrency boundaries (`nursery.spawn`, `par_map`) directly inspect capability requirements. Any closure or payload carrying active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) is rejected at compile time under `E0601: CrossThreadDataRaceHazardError`.
+1. **Direct DRF-SC Enforcement**: Concurrency boundaries (`nursery.spawn`, `Parallel::map`) directly inspect capability requirements. Any closure or payload carrying active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) is rejected at compile time under `E0601: CrossThreadDataRaceHazardError`.
 2. **Unified Effect Operations**: Effect operations are treated as first-class callable signatures without artificial restrictions prohibiting `mut` parameters or requiring ad-hoc marker traits.
 3. **Conceptual Minimality**: Eliminating `Shareable` keeps the language lean, mathematically unified, and free of trait proliferation.
 
@@ -213,3 +215,16 @@ Ril rejects dual-namespace complexity in favor of a **Unified Lexical Identifier
   1. **Trivial Tooling and Refactoring**: Renaming an identifier never leaves a "shadow" type or function behind.
   2. **Predictable Import/Export**: `use module::Item` imports the symbol directly without needing `type` modifiers or disambiguators.
   3. **Zero Ambiguity in First-Class Types**: Because types are first-class values in static type computation, treating types and values under a single unified scope is mathematically necessary and syntactically consistent.
+
+### 4.4 Segregation of Static Records `{}` and Dynamic Collections `[...]`
+
+Dynamic script languages (JavaScript, Lua, Python) historically conflated structural records with associative hash maps (`{}` serving as both struct and dictionary). This resulted in well-documented design failures: prototype pollution, lack of arbitrary key types, performance degradation requiring complex engine inline caches, and the eventual re-introduction of separate `Map` types.
+
+Ril establishes strict syntactic and conceptual segregation between compile-time static records and runtime dynamic collections:
+1. **Bracket Delimiters Enforce Absolute Clarity**:
+   - Curly braces `{}` denote **Compile-Time Structural Records**: fields are identifiers, memory is contiguous with zero-overhead offset lookup, and field access is strictly identifier dot-access `r.field`. Dynamic string indexing (`r["key"]` or `r.("key")`) is strictly prohibited.
+   - Brackets `[...]` denote **Runtime Dynamic Collections**: linear arrays `[]T` / `[1, 2, 3]` and associative maps `[K: V]` / `["k": v]` / `[:]`. Keys can be arbitrary hashable types, and map lookup `m[k]` evaluates to `?V` under the totality principle.
+   - `Set<T>` integrates seamlessly via `Set.[1, 2, 3]` and contextual `[1, 2, 3]`.
+2. **Elimination of Anonymous Open Rows**:
+   - Anonymous open rows (`{ id: int, .. }`) created the false illusion of a runtime "rest" dictionary capture while disallowing field access.
+   - Ril replaces them with **Named Row Tail Polymorphism (`..R`)** strictly for generic pipeline type preservation (`fn with_ts<R>(r: { ..R }) -> { ts: int, ..R }`), and **Type-Precise Pattern Destructuring (`let .{ id, ..rest } = u`)** where `rest` is a fully typed, accessible static sub-record.
