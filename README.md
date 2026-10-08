@@ -62,15 +62,15 @@ fn share_counter() -> (fn() -> int &{mut counter}) &{^mut counter} {
 -- The returned closure mutates existing shared state; creating it retains
 -- another writable path. ^mut counter includes mut counter.
 
--- Escaping stateful closures require &capture
-pub fn make_step() -> (fn() -> int &capture) &capture {
+-- Escaping stateful closures require &capture; returned callable carries &closure
+pub fn make_step() -> (fn() -> int &closure) &capture {
     let mut n = 0
     \-> { n += 1; n }
 }
 
 -- `let` is a read-only handle; mutation requires a mutable handle `let mut`
 let read_only = make_step()
--- read_only() -- STATIC ERROR: cannot invoke &capture through read-only handle
+-- read_only() -- STATIC ERROR [E0520]: cannot invoke mutable-capturing closure through read-only handle
 
 let mut active = make_step()
 active()       -- OK: 1
@@ -78,33 +78,4 @@ active()       -- OK: 1
 
 ---
 
-See [SPECIFICATION.md](SPECIFICATION.md) for the formal language specification.
-
-
-### 4. Recursive Data and Closure-Based Type Programming
-
-```ril
-type Tree<T> = { value: T, children: []Tree<T> }
-
-halt type Box = \T -> type[{ value: T }]
-type IntBox = Box(type[int])
-
-halt fn read_box(value: Box(type[int])) -> int { value.value }
-```
-
-Type computations use static closures, with inferred results and ordinary closure syntax. `halt type` guarantees normal termination; an unmarked type closure permits broader pure static algorithms under compiler budgets and optional project lint restrictions. Static closures and runtime fn values cannot invoke or coerce into each other. Halt declarations reject ordinary computation dependencies, including in signatures and annotations.
-
-The repository specifies a language design; these examples are specification examples, not verified compiler output. See [SYNTAX.md](SYNTAX.md) for syntax, [Chapter 12](spec/12_type_computation_and_proofs.md) for totality, static computation and boundary acceptance cases, and [the design rationale](spec/DESIGN_RATIONALE.md) for the design choices and limits.
-
-
-### 5. Hidden Associated Types
-
-```ril
-type EncoderBox = {
-    opaque type Item,
-    value: Item,
-    encode: fn(Item) -> bytes,
-}
-```
-
-Generic parameters and hidden type witnesses are implicitly compile-time-only. The record carries runtime data and operations tied to one abstract Item; it does not store a runtime Type field. Examples focus on application/library patterns rather than proof-assistant programming.
+See [SPECIFICATION.md](SPECIFICATION.md) for the authoritative, code-first language specification, and [DESIGN_RATIONALE.md](DESIGN_RATIONALE.md) for architectural design rationale.

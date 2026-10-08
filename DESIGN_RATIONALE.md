@@ -2,7 +2,7 @@
 
 > **Status**: Informative / Non-Normative Companion to the Ril Language Specification.  
 > **Target Audience**: Language implementors, compiler engineers, runtime architects, and advanced language researchers.  
-> **Normative Companion**: For the authoritative, compiler-facing normative rules, consult [`SPECIFICATION.md`](../SPECIFICATION.md) and [`spec/`](./).
+> **Normative Companion**: For the authoritative, compiler-facing normative rules, consult [`SPECIFICATION.md`](SPECIFICATION.md).
 
 ---
 
@@ -80,7 +80,7 @@ $$
 \text{Mut} \succ \text{ReadOnly} \succ \text{None}
 $$
 
-Permissions can degrade, but never upgrade. The compiler provides a closed static diagnostic closure (`E0520` through `E0528`) covering:
+Permissions can degrade, but never upgrade. The compiler provides a closed static diagnostic closure (`E0520` through `E0530`) covering:
 - Assigning read-only to `let mut` (`E0520`).
 - Destructuring read-only records into `mut` fields (`E0521`).
 - Injecting read-only objects into mutable arrays or records (`E0522`).
@@ -88,6 +88,8 @@ Permissions can degrade, but never upgrade. The compiler provides a closed stati
 - Mutating a collection while iterating over it in `for` (`E0526`).
 - Capturing read-only references into mutable closure scopes (`E0527`).
 - Returning read-only parameter references into caller `let mut` bindings (`E0528`).
+- Over-annotating declarations beyond minimal required capabilities (`E0529`).
+- Passing types with active capabilities or scoped handles to `clone_immut` (`E0530`).
 
 ### 2.2 Cross-Argument Disjointness vs. Borrow Checker Complexity
 
@@ -121,7 +123,7 @@ In Ril, a view's static type remains $T$. The immutability constraint is enforce
 
 External state and retained sharing are separate dimensions: `&{mut counter}` permits mutation of an external origin, while `&{^mut counter}` additionally discloses establishing another writable access path that survives a call or closure publication boundary. Copying an integer value does not share its variable cell; publishing a closure that mutates that cell can. Merely mutating already-shared state does not introduce a new sharing obligation.
 
-The name identifies shared source storage, not the container receiving it. Origin identities survive aliases and indirect calls. Hiding a private origin behind a callable interface retains both `&capture` and anonymous `&^mut`; the hazard cannot disappear through abstraction. Local discharge checks captured origins and retention destinations as well as explicit arguments, so local arguments cannot disguise retention of global state.
+The name identifies shared source storage, not the container receiving it. Origin identities survive aliases and indirect calls. Hiding a private origin behind a callable interface retains both `&closure` and anonymous `&^mut`; the hazard cannot disappear through abstraction. Local discharge checks captured origins and retention destinations as well as explicit arguments, so local arguments cannot disguise retention of global state.
 
 ---
 
@@ -154,56 +156,11 @@ A parent nursery cannot exit until all child tasks finish. If a child task panic
 2. All `let scoped` resource handles inside cancelled fibers execute their cleanup handlers in strict LIFO order.
 3. No orphan tasks remain executing in the background.
 
-### 3.3 Floating-Point Determinism in Multi-Core Reductions
-
-In multi-threaded parallel reductions (`par_reduce`, `par_fold`), worker threads process chunks of data concurrently. However, floating-point addition is non-associative:
-
-$$
-(a + b) + c \ne a + (b + c)
-$$
-
-If the tree of reduction depended on dynamic thread scheduling, OS preemption, or core count $P$, running the same parallel computation twice on the same machine could yield slightly different floating-point results. This non-determinism breaks financial simulations, scientific models, and regression test suites.
-
-Ril resolves this by establishing the **Canonical Binary Reduction Tree**:
-- Regardless of how many hardware cores $P$ are executing tasks via work-stealing, sub-results are merged strictly according to a canonical binary tree indexed by input slice indices with a fixed leaf grain $G_{\text{canonical}} = 64$.
-- The resulting floating-point computation is **bit-for-bit identical** whether executed on 1 core, 64 cores, or sequentially.
-
 ---
 
 ## 4. Syntax Ergonomics and Deliberate Omissions
 
-### 4.1 Built-in Intrinsics (`assert`, `panic`) vs. Language Keywords
-
-Many languages designate `assert` and `panic` as dedicated language keywords. Ril deliberately treats them as **Prelude Built-in Intrinsics**:
-1. **First-Class Syntactic Regularity**: `assert(cond, msg)` and `panic(msg)` follow standard function call syntax, fitting naturally into pipelines (`cond |> assert("failed")`).
-2. **Grammar Parsimony**: Keeping keywords to a minimum avoids unnecessary grammar rules in parsers and allows identifiers like `assert` to be used as field names or API endpoints in external record schemas where necessary.
-
-### 4.2 Pure Value Coalescing (`??`) vs. Embedded Control Transfers (`return`)
-
-In early discussions, some suggested allowing control flow transfer expressions inside `??`, such as:
-```ril
--- Disallowed in Ril:
-let user = find_user(id) ?? return Err("not found")
-```
-Ril statically prohibits this syntax (`E0710: IllegalControlTransferInFallbackError`).
-
-**Rationale**:
-- **Purity of Expression Evaluation**: Binary operators in expressions should compute values. Allowing a binary operand to silently hijack control flow and unwind the function stack creates hidden exit points that degrade code auditability.
-- **Redundancy with Dedicated Idioms**: Ril already provides two superior, explicit alternatives:
-  1. *Inline early-return error propagation*:
-     ```ril
-     let user = find_user(id) ? "not found"
-     ```
-  2. *Structured multi-line block divergence*:
-     ```ril
-     let Some(user) = find_user(id) else {
-         Logger::warn("User not found")
-         return Err("not found")
-     }
-     ```
-Restricting `??` to value fallback guarantees that whenever a developer reads `a ?? b`, they are guaranteed that control flow continues to the next statement.
-
-### 4.3 File-as-Module by Default and The Role of Inline Submodules
+### 4.1 File-as-Module by Default and The Role of Inline Submodules
 
 Modern developers spend significant time maintaining redundant boilerplate when languages require explicit module wrappers around every file.
 
@@ -212,7 +169,7 @@ Ril establishes **File-as-Module by Default**:
 - Items marked `pub` at the file root are the module's public interface.
 - The `module { ... }` construct exists strictly as a secondary namespace tool for grouping private helpers or mocks within a single large file, avoiding module proliferation. Inline submodules are prohibited inside functions to maintain a clean compilation model.
 
-### 4.4 First-Class Operation Records vs. Ad-Hoc Typeclasses and Coherence
+### 4.2 First-Class Operation Records vs. Ad-Hoc Typeclasses and Coherence
 
 Languages with implicit typeclass or trait instance resolution (Haskell, Scala, Rust) suffer from:
 - **Orphan Rule Restrictions**: Strict limits on where trait implementations may be declared.
@@ -226,34 +183,16 @@ let int_order: Order<int> = .{ compare: compare_int }
 ```
 Passing protocols explicitly provides total predictability, eliminates coherence bugs, and keeps the language's semantics completely transparent to developers.
 
----
+### 4.3 Unified Lexical Scope vs. Dual-Namespace Complexity
 
-## 5. Application Types and Two Static Computation Modes
+Programming languages diverge significantly in how they organize namespaces:
+- **TypeScript**: Values and types share names but inhabit dual namespaces (e.g., `class Foo` declares both a value constructor and an instance type; `import type` was introduced specifically to resolve ambiguous compiler emissions).
+- **Rust**: Types, values, and macros inhabit distinct namespaces (`struct Foo; fn Foo() {}` can legally coexist in the same module scope), requiring complex path disambiguation rules (`::Foo` as a type vs `Foo()` as a function) and complicated macro expansion hygiene.
 
-### 5.1 Library Expressiveness with an Explicit Total Mode
-
-Ril uses structural records, nominal ADTs/wrappers, regular recursive data graphs, higher-kinded generics, finite static indices and existential packages for application modeling and library development. It avoids making universe levels and Eq/Refl/rewrite proof programs prerequisites for this work.
-
-Type algorithms are static closures, not runtime fn declarations. The declaration `halt type Box = \T -> type[{ value: T }]` infers its result; type construction shares ordinary closure, match, binding and composition structures.
-
-An ordinary type closure supports pure algorithms whose termination the compiler cannot certify. It can fail or exhaust a compiler budget, and project lint can allow, warn or deny its use. `halt type` instead requires normal termination and certified dependencies; lint cannot relax that promise. No claim is made that all terminating algorithms can be automatically recognized.
-
-### 5.2 Strict Family and Dependency Boundaries
-
-Halt type calls only certified static closures; halt fn calls only certified runtime callables. Their composition happens through separate type elaboration: a halt fn signature can use a halt type result, but its body cannot execute the type closure or pass a runtime halt fn as a static callback. Ordinary computations cannot enter any halt declaration through aliases, caches, reflection, defaults or annotations.
-
-Compiler evaluation budgets remain essential even for terminating algorithms because termination does not imply tractable cost. Budget exhaustion is a resource diagnostic, not a fabricated type or a theorem of divergence.
-
-### 5.3 Finite Type Graphs Are Not Inductive Runtime Values
-
-Recursive record declarations have finite guarded metadata graphs. Their runtime objects may still contain cycles. Read-only views and clone_immut do not certify a well-founded recursive argument; clone_immut freezes and preserves topology. Inductive validation and static positivity are separate from freezing.
-
-Negative recursive executable values can hide an indirect loop without a source-level self call, so halt elimination remains restricted. Finite inspection of a negative position in Type metadata does not invoke the represented function and uses a different certification mechanism.
-
-### 5.4 Checked Builders and Safe Deep Transformations
-
-Arbitrary field renaming or descriptor building may fail even when its algorithm terminates. Such APIs return Result instead of pretending static rejection is a normal Type return. Generic safe graph plans preserve labels, constructor guards, frozen layers and nominal/binder boundaries; custom graph rewriting uses finite layer/fragment callbacks and normally returned BuildError.
-
-Frozen markers remain present on reference containers: Immut<[]int> is not []int. Removing mut from a schema does not freeze existing objects or grant Shareable. This corrects type normalization while retaining the existing state, effect and concurrent access rules.
-
-Totality, equality, source summaries and trusted graph primitives remain verification obligations. Specification wording alone is not a completed proof of strong normalization or implementation correctness.
+Ril rejects dual-namespace complexity in favor of a **Unified Lexical Identifier Namespace**:
+- In any lexical scope (module, block, or pattern), an identifier refers unambiguously to exactly one entity: a value, a type, a module, or an effect.
+- Declaring a type `type User = ...` and a function `fn User() ...` in the same scope triggers an immediate duplicate declaration error (`E0601`).
+- This design provides profound advantages:
+  1. **Trivial Tooling and Refactoring**: Renaming an identifier never leaves a "shadow" type or function behind.
+  2. **Predictable Import/Export**: `use module::Item` imports the symbol directly without needing `type` modifiers or disambiguators.
+  3. **Zero Ambiguity in First-Class Types**: Because types are first-class values in static type computation, treating types and values under a single unified scope is mathematically necessary and syntactically consistent.
