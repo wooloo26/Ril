@@ -153,7 +153,7 @@ Identifiers use `PascalCase` for types, constructors, and effects; `snake_case` 
 ```ril
 let user_count = 10                    -- OK: variable identifier
 type UserAccount = { id: int }         -- OK: type identifier
-effect FileIo = { read: fn() -> str }  -- OK: effect identifier
+effect FileIo { read() -> str }        -- OK: effect identifier
 let _ = user_count                     -- OK: wildcard discard
 ```
 
@@ -175,9 +175,9 @@ use      view     where    while    with
 -- Reserved keywords in action:
 pub opaque type Token = int            -- 'pub', 'opaque', 'type'
 meta let COMPILE_ID = 101              -- 'meta', 'let'
-effect Logger = { log: fn(str) -> () } -- 'effect', 'fn'
+effect Logger { log(str) -> () }       -- 'effect'
 use ril/array::{push}                  -- 'use'
-halt fn total_step() -> bool { true }  -- 'halt', 'true'
+halt fn total_step() -> bool { true }  -- 'halt', 'true', 'fn'
 let scoped res = File::open("a.txt")?  -- 'scoped' in let binding
 let view v = res                       -- 'view' in handle binding
 with Logger::log(msg) -> resume ()     -- 'with', 'resume' (statement-level handler)
@@ -421,19 +421,44 @@ fn eval<T>(e: Expr<T>) -> T {
 }
 ```
 
+#### Nullary Variant Constructor Elision Invariant
+
+When an algebraic sum type variant's instantiated payload type is structurally equivalent to `()`, its constructor may omit argument parentheses in both expression construction and pattern matching under context-directed typing:
+1. **Expression Check Mode ($\Gamma \vdash C \Leftarrow S\langle \bar{A} \rangle$)**: When the expected context type is known and the variant's payload is `()`, the bare identifier $C$ elaborates to $C(())$ (e.g., `Ok` evaluates to `Ok(())` when targeting `Result<(), E>`).
+2. **Pattern Check Mode**: In pattern matching, the bare identifier $C$ matches $C(())$ (e.g., `match res { Ok -> ..., Err(e) -> ... }`).
+3. **Synthesis Mode Rejection (`E0301`)**: In unconstrained expression contexts without an expected type (e.g., `let x = Ok`), unannotated bare constructor identifiers are statically rejected (`E0301: TypeMismatchError`).
+4. **Higher-Order Constructor Invariant**: When passed to higher-order functions expecting a callable (`fn(T) -> S<T>`), constructor names refer to their first-class constructor function (e.g., `[1, 2] |> Array::map(Ok)`).
+
 ### 3.6 Nominal Type Wrappers
 
 Nominal wrappers encapsulate an underlying type into an isolated nominal identity with zero runtime overhead.
 
 ```ebnf
-NominalDecl ::= [ "pub" ] "type" Identifier [ GenericParams ] "(" TypeExpression ")" [ WhereClause ]
+NominalDecl ::= [ "pub" ] "type" Identifier [ GenericParams ] [ "(" TypeExpression ")" ] [ WhereClause ]
 ```
 
+When `(TypeExpression)` is omitted, `NominalDecl` defines a **Unit Nominal Type** (e.g. `type Marker`).
+- **Memory Layout**: Unit nominal types have a 0-byte memory layout (zero-sized type / ZST) and compile to zero runtime overhead.
+- **Value Construction**: The bare identifier `Marker` denotes its canonical singleton value (`let m = Marker`).
+- **Pattern Matching**: `Marker` acts as a nullary constructor pattern in multi-variant `match` expressions (`match event { Marker -> ... }`). In `let` statements, patterns introducing zero variable bindings (such as `let Marker = m`) are strictly prohibited under the **Non-Vacuous Binding Invariant (`E0309: VacuousBindingError`)**.
+- **Prelude Unwrapping**: Unwrapping via `inner(Marker)` evaluates to `()`.
+- **Nominal Isolation**: A unit nominal type is an isolated nominal identity, strictly distinct from structural `()`. For example, `Result<Marker, E>` strictly requires `Ok(Marker)` and does NOT permit bare `Ok`.
+
 ```ril
+-- 1. Unit Nominal Types (zero-sized domain markers):
+type Marker
+type AdminToken
+
+let m: Marker = Marker                 -- OK: bare identifier value construction
+let raw_unit: () = inner(m)            -- OK: unwrap unit nominal wrapper evaluates to ()
+let _ = m                              -- OK: explicit wildcard discard
+-- let Marker = m                      -- Error [E0309]: 'let' pattern must bind at least one variable; 'Marker' introduces zero bindings
+
+-- 2. Value-Wrapped Nominal Types:
 type UserId(int)
 type AccountId(int)
 type Coord((int, int))
-type Point2D({ x: f64, y: f64 })           -- Nominal wrapper over structural record
+type Point2D({ x: f64, y: f64 })       -- Nominal wrapper over structural record
 
 let uid = UserId(1001)
 let aid = AccountId(1001)
@@ -446,6 +471,7 @@ let raw_pt: { x: f64, y: f64 } = inner(pt) -- OK: unwrap underlying record via '
 let UserId(unwrapped_id) = uid         -- OK: pattern-matching unwrap
 let Point2D(.{ x, y }) = pt            -- OK: structural record pattern unwrap
 let Coord((cx, cy)) = c                -- OK: tuple pattern unwrap
+-- let bad = UserId                    -- Error [E0308]: nominal wrapper 'UserId' requires 1 argument, found 0
 ```
 
 ### 3.7 Deep Immutability (`Immut<T>`)
@@ -503,30 +529,24 @@ let observed = v.count                 -- observed is 1 (live view reflects muta
 let mut unused_mut = 42                -- Error [E0527]: variable 'unused_mut' declared 'let mut' but never modified
 ```
 
-### 3.10 Copy-on-Write Deep Updates (`produce`) & Ownership Transfer (`move`)
+### 3.10 Path-Wise Copy-on-Write Functional Updates (`derive`)
 
-1. **`produce(base, recipe)`**: Executes deep functional updates over reference data graphs via copy-on-write proxy mechanics. The mutating closure `recipe` mutates a draft proxy in place, returning a fresh, unaliased immutable object without modifying `base`. Draft proxies cannot escape the recipe closure (`E0607`).
-2. **`move(x)`**: Transfers unaliased ownership across concurrency or lexical boundaries, affinely invalidating the local handle `x`.
+**`derive(base, recipe)`**: Executes deep functional updates over reference data graphs via path-wise copy-on-write (structural sharing) mechanics. The mutating closure `recipe` mutates a derived proxy `next` in place, returning a fresh, unaliased immutable object without modifying `base`. Unmodified subtrees preserve pointer identity with `base`. Derived proxies cannot escape the recipe closure (`E0607`).
 
 ```ril
 type UserProfile = { mut name: str, mut settings: { mut theme: str } }
 
 let u1 = UserProfile.{ name: "Alice", settings: .{ theme: "dark" } }
 
--- Functional update via produce:
-let u2 = u1 |> produce \mut draft -> {
-    draft.settings.theme = "light"     -- In-place mutation on draft proxy
+-- Functional update via derive:
+let u2 = u1 |> derive \mut next -> {
+    next.settings.theme = "light"     -- In-place mutation on derived proxy
 }
 assert(u1.settings.theme == "dark")    -- u1 remains unchanged
 assert(u2.settings.theme == "light")   -- u2 is a fresh updated copy
 
--- Draft proxy escape is strictly prohibited:
--- let escaped = u1 |> produce \mut draft -> draft -- Error [E0607]: draft proxy cannot escape 'produce' closure
-
--- Affine ownership transfer:
-let u3 = move(u2)                      -- 'u2' is moved to 'u3'
--- let bad = u2.name                   -- Error [E0606]: use of moved value 'u2'
--- let double_move = move(u2)          -- Error [E0606]: use of moved value 'u2'
+-- Derived proxy escape is strictly prohibited:
+-- let escaped = u1 |> derive \mut next -> next -- Error [E0607]: derived proxy cannot escape 'derive' closure
 ```
 
 ---
@@ -655,52 +675,72 @@ OpaqueTypeDecl ::= [ "pub" ] "opaque" "type" Identifier [ GenericParams ] [ Wher
 ```
 
 ```ril
-module App;
-pub opaque type SessionToken = str     -- Opaque type representation is hidden across module boundaries
+-- In file: auth/session.ril
 
--- Inside module 'App': SessionToken can be constructed from str:
-pub fn create_token(raw: str) -> SessionToken {
-    raw                                -- OK: internal module code can access underlying type
+-- Declares a zero-cost opaque type representation over 'str':
+pub opaque type SessionToken = str
+
+-- Inside defining file 'auth/session.ril': SessionToken and 'str' are bidirectionally equivalent:
+pub fn create_token(raw: str) -> ?SessionToken {
+    if len(raw) >= 16 {
+        Some(raw)                      -- OK: internal code constructs SessionToken from str directly
+    } else {
+        None
+    }
 }
 
--- In external client module:
--- use App::{SessionToken, create_token};
--- let token: SessionToken = "raw"     -- Error [E0301]: expected opaque 'SessionToken', found 'str'
--- let s: str = token                  -- Error [E0301]: cannot implicitly convert opaque 'SessionToken' to 'str'
+pub fn reveal_token(token: SessionToken) -> str {
+    token                              -- OK: internal code unwraps SessionToken to str directly
+}
 
--- Existential opaque type witness in record:
-type Serializer<T> = {
-    opaque type WireFormat,
-    encode: fn(T) -> WireFormat,
-    decode: fn(WireFormat) -> T,
+-- Inside defining file, underlying operations work natively:
+fn validate_token(token: SessionToken) -> bool {
+    token == "admin_override"          -- OK: underlying string operations available inside file
 }
-let int_serializer: Serializer<int> = .{
-    type WireFormat = str,
-    encode: \n -> "{n}",
-    decode: \s -> Int::parse(s).unwrap(),
-}
+
+-- In file: app/main.ril
+use auth/session::{SessionToken, create_token, reveal_token}
+
+let token = create_token("secret_token_1234")?
+
+-- External boundary invariants:
+-- let bad_assign: SessionToken = "raw" -- Error [E0301]: expected opaque 'SessionToken', found 'str'
+-- let bad_unfold: str = token         -- Error [E0301]: cannot implicitly convert opaque 'SessionToken' to 'str'
+-- let bad_inner = inner(token)        -- Error [E0308]: 'inner()' cannot penetrate opaque type 'SessionToken' (requires type W(T))
+-- let SessionToken(s) = token         -- Error [E0308]: opaque type 'SessionToken' does not expose a pattern deconstructor
+
+-- Valid external operations:
+let same_eq = (token == token)         -- OK: same-type equality permitted when underlying type supports '=='
+-- let cross_eq = (token == "raw")     -- Error [E0301]: cannot compare distinct types 'SessionToken' and 'str'
+
+-- Operations via explicit exports & pipeline:
+let raw_str = token |> reveal_token()  -- OK: explicit deconstruction via exported function
+
+-- Zero runtime boxing: storage in collections carries zero wrapper allocation:
+let active_tokens: []SessionToken = [token]
+let token_map: [SessionToken: int] = [token: 42]
 ```
 
 ### 4.6 Effect Declarations
 
 ```ebnf
-EffectDecl   ::= [ "pub" ] "effect" Identifier [ GenericParams ] "=" "{" EffectOpDecl { "," EffectOpDecl } [ "," ] "}"
-               | [ "pub" ] "effect" Identifier [ GenericParams ] "=" "{" Identifier { "," Identifier } [ "," ] "}"
-EffectOpDecl ::= Identifier ":" FunctionType
+EffectDecl   ::= [ "pub" ] "effect" Identifier [ GenericParams ] "{" EffectOpDecl { "," EffectOpDecl } [ "," ] "}"
+               | [ "pub" ] "effect" Identifier [ GenericParams ] "{" TypeExpression { "," TypeExpression } [ "," ] "}"
+EffectOpDecl ::= Identifier "(" [ ParameterList ] ")" [ "->" TypeExpression ] [ StateAnnot ]
 ```
 
 ```ril
-effect Console = {
-    print: fn(str) -> (),
-    read_line: fn() -> str,
+effect Console {
+    print(str) -> (),
+    read_line() -> str,
 }
 
-effect State<S> = {
-    get: fn() -> S,
-    put: fn(S) -> (),
+effect State<S> {
+    get() -> S,
+    put(val: S) -> (),
 }
 
-effect AppEffects = { Console, State<int> } -- Combined effect set
+effect AppEffects { Console, State<int> } -- Combined effect set
 ```
 
 ---
@@ -989,15 +1029,18 @@ fn search(matrix: [][]int, target: int) -> bool {
 }
 ```
 
-### 6.5 Guarded Bindings (`let ... else`)
+### 6.5 Guarded Bindings (`let ... else`) & The Non-Vacuous Binding Invariant (`E0309`)
 
-`let Pattern = expr else { Block }` matches a pattern or diverges. The `else` block MUST diverge (evaluate to `never`).
+`let Pattern = expr else { Block }` matches a refutable pattern or diverges.
+
+1. **Divergence Invariant**: The `else` block MUST diverge (evaluate to `never`).
+2. **Universal Non-Vacuous Binding Invariant (`E0309`)**: All `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`. Patterns that introduce zero variable bindings (such as `let Marker = m`, `let () = expr`, `let Ok = expr else { ... }`, `let None = expr else { ... }`, or `let _ = expr else { ... }`) are statically rejected (`E0309: VacuousBindingError`). To conditionally guard or test without binding variables, developers must use postfix `?`, boolean pattern tests (`if expr is Pattern`), or explicit `match` expressions.
 
 ```ril
 fn process_account(data: [str: str]) -> Result<str, str> {
-    -- The 'else' block MUST diverge (evaluate to 'never'):
+    -- The 'else' block MUST diverge (evaluate to 'never') and MUST bind >= 1 variable:
     let Some(id) = data["account_id"] else {
-        return Err("missing account_id") -- OK: diverges via 'return'
+        return Err("missing account_id") -- OK: diverges via 'return', binds variable 'id'
     }
 
     -- Non-diverging 'else' is statically rejected:
@@ -1005,13 +1048,24 @@ fn process_account(data: [str: str]) -> Result<str, str> {
     --     println("name missing")     -- Error [E0301]: 'else' branch of 'let ... else' must diverge
     -- }
 
+    -- Prohibited: Vacuous guarded binding without variable bindings:
+    -- let Ok = save_profile(id) else {
+    --     return Err("save failed")   -- Error [E0309]: 'let ... else' pattern must bind at least one variable; use postfix '?' or 'if expr is ...' instead
+    -- }
+
+    -- Compliant Alternative 1: Postfix '?'
+    save_profile(id)?
+
+    -- Compliant Alternative 2: Boolean pattern test 'is'
+    -- if !(save_profile(id) is Ok) { return Err("save failed") }
+
     Ok(id)
 }
 
 -- Divergence via 'continue' and 'break' inside loops:
 for entry in records {
     let Ok(val) = parse_entry(entry) else {
-        continue                       -- OK: diverges out of this iteration
+        continue                       -- OK: diverges out of this iteration, binds variable 'val'
     }
     process(val)
 }
@@ -1274,7 +1328,7 @@ fn apply<T, R>(x: T, f: fn(T) -> R) -> R {
 let r_pure = apply(10, \x -> x * 2)   -- Pure call: zero effect, zero capability
 
 -- 2. Algebraic Effect Forwarding:
-effect Logger = { log: fn(str) -> () }
+effect Logger { log(str) -> () }
 fn logged_square(n: int) -> int @Logger {
     Logger::log("calculating")
     n * n
@@ -1605,18 +1659,18 @@ When an effect operation requires in-place mutation (e.g., writing into a caller
 
 ```ril
 -- 1. Pure Effect Operations & Ambient Context:
-effect Console = {
-    print: fn(str) -> (),
-    read_line: fn() -> str,
+effect Console {
+    print(str) -> (),
+    read_line() -> str,
 }
 
-effect Context<T> = {
-    ask: fn() -> T,                    -- OK: Ambient context value
+effect Context<T> {
+    ask() -> T,                        -- OK: Ambient context value
 }
 
 -- 2. Effect Operations Declaring Mutation Capabilities:
-effect BufferIO = {
-    read_into: fn(mut buf: []u8) -> int &mut, -- OK: Operation declares in-place buffer mutation
+effect BufferIO {
+    read_into(mut buf: []u8) -> int &mut, -- OK: Operation declares in-place buffer mutation
 }
 
 -- Effectful computation: invokes print twice and read_line once
@@ -1646,7 +1700,7 @@ fn concurrent_boundary_check() {
         -- scope.spawn(\-> {
         --     local_buf[0] = 1u8
         -- })
-        Ok(())
+        Ok
     })
 }
 ```
@@ -1734,8 +1788,8 @@ fn bad_escaping_resume() -> fn() -> int {
 }
 
 -- 3. Delimited Early Abort with Proven LIFO Cleanup & Commit-on-Write Memory:
-effect Auth = {
-    authenticate: fn() -> bool,
+effect Auth {
+    authenticate() -> bool,
 }
 
 type AuditLog = { mut entries: []str }
@@ -1847,7 +1901,7 @@ fn bad_concurrent_data_race() {
         -- scope.spawn(\-> {            -- Error [E0601]: cannot capture mutable handle 'shared_data' across concurrent task boundary
         --     shared_data !> Array::push(4)
         -- })
-        Ok(())
+        Ok
     })
 }
 ```
@@ -2176,7 +2230,7 @@ pub fn main() -> Result<(), str> {
     if config == "" {
         Err("empty configuration")     -- Runtime halts with non-zero exit code (1)
     } else {
-        Ok(())                          -- Exits cleanly with status code (0)
+        Ok                              -- Exits cleanly with status code (0)
     }
 }
 ```
@@ -2193,7 +2247,7 @@ The following types and functions are implicitly available in every compilation 
 | `inner(wrapper)` | Function | Extracts underlying value from nominal wrapper `type W(T)` |
 | `clone(x)` | Function | Allocates deep independent mutable duplicate of heap reference |
 | `clone_immut(x)` | Function | Freezes heap object into permanently immutable `Immut<T>` |
-| `move(x)` | Function | Affinely invalidates local handle, transferring unaliased ownership |
+| `derive(base, recipe)` | Function | Path-wise copy-on-write functional update over reference graph |
 | `len(coll)` | Function | Returns element count of string, bytes, array, map, or set |
 | `panic(msg)` | Function | Initiates deterministic runtime panic unwinding |
 | `assert(cond, msg)` | Function | Verifies invariant; panics on breach |
@@ -2214,10 +2268,12 @@ detached !> Array::push(4)             -- Mutates 'detached'; 'original' remains
 let frozen: Immut<[]int> = clone_immut(original)
 -- frozen !> Array::push(5)            -- Error [E0520]: cannot mutate permanently immutable Immut<T>
 
--- 4. Affine Ownership Transfer via move():
-let resource = "unaliased buffer"
-let owned = move(resource)             -- 'resource' handle invalidated
--- print(resource)                     -- Error [E0606]: use of moved value 'resource'
+-- 4. Functional Derivation via derive():
+let base_cfg = .{ theme: "dark", retries: 3 }
+let updated_cfg = base_cfg |> derive \mut next -> {
+    next.theme = "light"
+}
+assert(base_cfg.theme == "dark" && updated_cfg.theme == "light")
 
 -- 5. Length Inspection via len():
 let count = len("hello")               -- 5 (Unicode scalar count)
@@ -2236,7 +2292,7 @@ To prevent silent bug propagation, Ril enforces the **Anti-Fault Masking Invaria
 
 ```ril
 fn save_profile(user_id: int) -> Result<(), str> {
-    if user_id <= 0 { Err("invalid id") } else { Ok(()) }
+    if user_id <= 0 { Err("invalid id") } else { Ok }
 }
 
 fn process_request(id: int) -> Result<(), str> {
@@ -2248,14 +2304,14 @@ fn process_request(id: int) -> Result<(), str> {
 
     -- Compliant Alternative 2: Explicit pattern matching
     match save_profile(id) {
-        Ok(()) -> Logger::info("Profile saved"),
+        Ok -> Logger::info("Profile saved"),
         Err(e) -> Logger::error("Save failed: " ++ e),
     }
 
     -- Compliant Alternative 3: Fallback error closure
     save_profile(id) ?? \err -> Logger::warn("Handled fallback: " ++ err)
 
-    Ok(())
+    Ok
 }
 ```
 
@@ -2272,6 +2328,8 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0302`** | `UnexpectedFieldError` | Closed record supplied with undeclared fields |
 | **`E0305`** | `NominalTypeMismatchError` | Mismatched nominal type wrapper identities |
 | **`E0306`** | `KindMismatchError` | Mismatched higher-kinded type constructor or sort constraint |
+| **`E0308`** | `OpaqueBoundaryViolationError` | Attempting to unpack, penetrate with `inner()`, or pattern deconstruct an opaque type externally |
+| **`E0309`** | `VacuousBindingError` | 'let' pattern binds zero variables (excluding explicit wildcard discard 'let _ = expr') |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0501`** | `ImmutableReassignmentError` | Reassigning an immutable `let` binding |
 | **`E0510`** | `MissingCapabilityAnnotationError` | Calling mutating operation without declaring `&mut` or `&^mut` |
@@ -2289,8 +2347,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0531`** | `ImmutableTargetViewError` | Attempting to create a live view (`let view`) over an immutable binding |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Passing live mutable view across concurrent task boundary |
 | **`E0605`** | `InvalidParallelCapabilityError` | Capturing external mutable capabilities in parallel combinator |
-| **`E0606`** | `UseAfterMoveError` | Attempting to access an affinely moved handle |
-| **`E0607`** | `DraftProxyEscapeError` | Attempting to return draft proxy out of `produce` recipe |
+| **`E0607`** | `DerivedProxyEscapeError` | Attempting to return derived proxy out of `derive` recipe |
 | **`E0610`** | `DuplicateResumeInvocationError` | Invoking affine one-shot resumption `resume` more than once |
 | **`E0611`** | `EscapingResumeError` | Escaping resumption handle beyond handler arm lexical scope |
 | **`E0614`** | `EscapingEffectClosureError` | Closure with unhandled effect escaping to heap record without in-scope handler |

@@ -8,7 +8,7 @@
 
 ```ril
 pub effect Ask {
-    prompt: fn(str) -> str
+    prompt(str) -> str,
 }
 
 fn greet() -> str @Ask {

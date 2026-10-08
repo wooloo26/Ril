@@ -66,6 +66,21 @@ This dual-track model satisfies both ergonomics and safety: developers are never
 2. **Collection Slicing (`c[start..end]`)**: Unlike single-element indexing `arr[i]` (which expects a specific element to exist and panics if absent), sub-slice extraction represents a sub-window. Clamping slicing bounds to $[0, \text{len}(c)]$ and yielding an empty slice `[]` when $\text{start} \ge \text{end}$ eliminates off-by-one fencepost panics in string parsing and stream buffer processing without masking single-element logic bugs.
 3. **Map Key Lookup (`map[k]`)**: A map is conceptually an associative dictionary where absence of a key is a routine domain condition rather than a program bug. Hence, `map[k]` evaluates directly to `?V` (Option), requiring explicit unwrapping via `??` or `?`.
 
+### 1.6 Ergonomics of Zero-Payload Success: Context-Directed `Ok` Elision vs. `Ok(())` Noise
+
+In algebraic error systems (`Result<T, E>`), fallible operations performing pure side effects (flushing a stream, committing a transaction, updating a cache) return no domain payload on success, naturally inhabiting `Result<(), E>`.
+
+Historically, languages like Rust treated `Ok` strictly as a unary constructor function (`fn(T) -> Result<T, E>`), forcing developers to construct values via `Ok(())` (the "smiley face" idiom) and match them via `match res { Ok(()) -> ... }`. This syntax introduced severe ergonomic friction:
+- **Visual Noise & Ceremony**: Repetitive `Ok(())` tails in thousands of functions, early returns, and match arms.
+- **The Semicolon Statement Hazard**: Omitting or appending a trailing semicolon after `Ok(());` in block-expression languages inadvertently discards the value into `()`, triggering confusing type mismatch diagnostics.
+- **The Failed Rust RFC 2107 ("Ok-wrapping") Roadblock**: Proposals to implicitly wrap block return values into `Ok(expr)` were rejected because they destroyed explicit, local control flow reasoning (reviewers could not determine if a return statement constructed a fallible `Result` without inspecting the function signature) and created insurmountable ambiguities with nested `Result<Result<T, E>, E>`.
+
+Ril resolves this tension through **Context-Directed Nullary Constructor Elision**:
+1. **Explicit Tag Retention**: The developer continues to write the explicit `Ok` tag, preserving total transparency in local control flow.
+2. **Context-Directed Elision**: In bidirectional *Check Mode* ($\Gamma \vdash C \Leftarrow \text{Result}\langle (), E \rangle$), where the target type is statically known to carry a unit payload `()`, bare `Ok` elaborates directly to `Ok(())`.
+3. **No Bottom-Up Guessing**: In unconstrained *Synthesis Mode* (`let x = Ok`), bare constructor identifiers are statically rejected (`E0301`). The compiler never speculatively guesses that an unconstrained type variable $\alpha$ is `()`, completely preventing accidental type defaulting bugs.
+4. **Pattern Matching Symmetry**: In pattern matching, `match res { Ok -> ... }` matches `Ok(())` seamlessly, with exhaustiveness verification guaranteeing that changes to payload types immediately trigger static diagnostics rather than silent payload truncation.
+
 ---
 
 ## 2. Aliasing, Mutability, and The Law of Exclusivity
@@ -184,7 +199,7 @@ Consequently, introducing an ad-hoc trait like `Shareable` is redundant:
 Modern developers spend significant time maintaining redundant boilerplate when languages require explicit module wrappers around every file.
 
 Ril establishes **File-as-Module by Default**:
-- Every `.ril` file is automatically an independent compilation unit named after its path stem (or explicitly designated via `module Name;`).
+- Every `.ril` file is automatically an independent compilation unit named after its path stem.
 - Items marked `pub` at the file root constitute the module's public interface; unmarked declarations remain strictly private to the file (`E0201`).
 - Source files require zero wrapping boilerplate. Local, block-scoped helper imports (`use module::{item}`) allow localized scoping inside functions without global namespace pollution.
 
@@ -242,3 +257,46 @@ Ril introduces **Nominal Type Wrappers** as zero-cost compile-time domain bounda
   - Declaration: `type Name(Type)`
   - Construction: `Name(Value)` (e.g. `UserId(1001)`, `Point2D(.{ x: 1.0, y: 2.0 })`)
   - Unwrapping: `Name(Pattern)` (e.g. `let UserId(raw) = uid`, `let Point2D(.{ x, y }) = pt`) or uniform prelude `inner(wrapper)`.
+
+### 4.6 Opaque Types: Module-Bound Zero-Cost Abstraction
+
+While Nominal Type Wrappers (`type W(T)`) require explicit wrapping (`W(v)`) and unwrapping (`inner(w)`) everywhere, certain domain invariants (such as cryptographically validated session tokens, authenticated IDs, or parser state handles) require a different ergonomics profile:
+
+1. **Internal Transparency vs. External Opacity**:
+   - Inside the defining module, implementing algorithms need direct, zero-ceremony access to the underlying representation (`str`, `int`, `[]u8`) without writing boilerplate unwrapping at every intermediate arithmetic or indexing step.
+   - Outside the module, client code must be strictly prohibited from forging instances or bypassing validation constructors.
+
+2. **Explicit Operation Exposure via Functions and Pipelines**:
+   - In alignment with modern pragmatic languages (OCaml, Hack, Go), capabilities and transformations are exposed explicitly via ordinary functions (`pub fn reveal(t: Token) -> str`) and fluent pipeline operators (`token |> reveal()`). This maintains total predictability, eliminates implicit operator leaking, and leaves library authors in complete control of their public API surface.
+
+3. **Zero Runtime Boxing and Preserved Invariant Security**:
+   - Unlike structural records that live on the managed GC heap, an `opaque type` over a scalar value type (`int`, `str`, `bool`) remains a zero-overhead scalar in memory. When stored in collections (`[]Token`, `[Token: User]`), it incurs zero heap wrapper allocations.
+   - External callers are strictly prohibited from penetrating the boundary via `inner()` or pattern deconstruction (`E0308`), ensuring invariants cannot be breached from client code.
+
+### 4.7 Unit Nominal Types (`type Marker`) as Zero-Sized Domain Witnesses
+
+In type-driven domain modeling, developers frequently require unforgeable compile-time witnesses (typestate markers, capability tokens, authorization witnesses) that carry zero runtime data:
+- Prior designs required awkward packaging over unit tuples: `type Marker(())` or single-case enums `type Marker { Marker }`.
+- Ril establishes **Unit Nominal Types (`type Marker`)** as first-class citizens. Omitting the parenthesized underlying type expression defines an isolated nominal identity with a 0-byte memory layout (zero-sized type / ZST).
+- In accordance with Ril's **Unified Lexical Identifier Namespace** (§4.3), `Marker` serves simultaneously as the type name in type contexts and the canonical zero-sized value in expressions (`let m = Marker`). In pattern matching, `Marker` serves as a nullary variant selector within multi-variant `match` expressions (`match event { Marker -> ... }`).
+- **Nominal Isolation**: Nominal markers are strictly distinct from structural `()`. A function returning `Result<Marker, E>` requires `Ok(Marker)` and rejects bare `Ok`, preserving complete domain encapsulation and preventing accidental representation leakage.
+
+### 4.8 Prohibition of Vacuous Bindings (`E0309`): Preventing Zero-Variable Destructuring Anti-Patterns
+
+A `let` statement universally signals the introduction of local variable bindings into the enclosing lexical scope. Applying `let` to patterns that introduce **zero variable bindings** represents a severe syntactic and cognitive anti-pattern:
+1. **The Variable Naming Cognitive Trap**: In Ril, variables are strictly `snake_case`, while types and constructors are `PascalCase`. If `let Marker = m` were permitted, developers migrating from Python, JavaScript, or Go would naturally misread it as declaring a new local variable named `Marker`. Silently accepting the statement without binding any variable creates immediate downstream confusion when the developer attempts to reference `Marker` as a variable on subsequent lines.
+2. **Semantic Nullity of Zero-Field Destructuring**: `type UserId(int)` destructures into `id`, extracting payload data. But `type Marker` has 0 fields and occupies 0 bytes; it carries zero data to extract. Furthermore, matching an irrefutable type performs no runtime check. Thus, `let Marker = m` extracts nothing, checks nothing, and binds nothing—it is pure dead ceremony.
+3. **Abuse of Guarded Bindings for Jump Assertions**: Writing `let Ok = flush_cache() else { return Err("aborted") }` or `let None = opt else { ... }` abuses the destructuring binding mechanism solely as a conditional jump without binding variables.
+4. **Universal Static Rejection (`E0309: VacuousBindingError`)**:
+   Ril establishes the **Universal Non-Vacuous Binding Invariant**: all `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`.
+   
+   Developers are steered directly toward intention-revealing, idiomatic alternatives:
+   - To discard a value explicitly: Wildcard discard `let _ = m`.
+   - For error propagation: Postfix `?` (`flush_cache()?`).
+   - For error fallback and recovery: The fallback operator `??` (`flush_cache() ?? \err -> ...`).
+   - For boolean assertions / branching: The pattern test operator `is` (`if !(flush_cache() is Ok) { ... }`).
+   - For multi-way branching: Explicit `match` expressions.
+
+
+
+
