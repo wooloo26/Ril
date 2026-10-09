@@ -316,7 +316,7 @@ Named row tail polymorphism (`..R`) allows generic functions to accept and prese
 ```ebnf
 RecordType     ::= "{" [ RecordField { "," RecordField } [ "," ] [ ".." Identifier ] ] "}"
 RecordField    ::= [ "mut" ] Identifier ":" TypeExpression
-TypeProjection ::= PrimaryType "." ( Identifier | "(" TypeExpression ")" )
+TypeProjection ::= PrimaryType "." ( Identifier | IntLiteral | "(" TypeExpression ")" )
 ```
 
 ```ril
@@ -378,7 +378,24 @@ let visited: Set<int> = [10, 20, 30]    -- Contextual initialization from collec
 let roles = Set.["admin", "guest"]     -- Explicit Set.[...] constructor literal
 
 -- 4. Tuple ((T1, T2)):
-let coords: (int, int) = (10, 20)      -- Type: (int, int)
+let coords: (int, str) = (10, "Alice") -- Type: (int, str)
+let x = coords.0                       -- Value positional access: 10
+let name = coords.1                    -- Value positional access: "Alice"
+type CoordX = (typeof coords).0        -- Inferred tuple positional projection: int
+type First = (int, str).0              -- Static tuple positional projection: int
+-- type OutOfBounds = (int, str).2      -- Error [E0301]: tuple index 2 out of bounds for (int, str)
+
+-- 5. Collection Type Parameter Extraction (modular, non-prelude):
+use ril/array::{Elem}
+use ril/map::{Key, Value}
+
+type IntElem = Elem<[]int>             -- Resolves to int
+type HostKey = Key<[str: int]>         -- Resolves to str
+type PortVal = Value<[str: int]>       -- Resolves to int
+
+-- Collections are not product types; dot projection on collections is rejected:
+-- type BadArrElem = ([]int).elem      -- Error [E0301]: collections do not have named fields; use ril/array::{Elem}
+-- type BadMapKey = ([str: int]).key   -- Error [E0301]: collections do not have named fields; use ril/map::{Key}
 ```
 
 ### 3.5 Sum Types & GADTs
@@ -426,13 +443,71 @@ fn eval<T>(e: Expr<T>) -> T {
 }
 ```
 
-#### Nullary Variant Constructor Elision Invariant
+#### Constructor-Tuple Equivalence Invariant
 
-When an algebraic sum type variant's instantiated payload type is structurally equivalent to `()`, its constructor may omit argument parentheses in both expression construction and pattern matching under context-directed typing:
-1. **Expression Check Mode ($\Gamma \vdash C \Leftarrow S\langle \bar{A} \rangle$)**: When the expected context type is known and the variant's payload is `()`, the bare identifier $C$ elaborates to $C(())$ (e.g., `Ok` evaluates to `Ok(())` when targeting `Result<(), E>`).
-2. **Pattern Check Mode**: In pattern matching, the bare identifier $C$ matches $C(())$ (e.g., `match res { Ok -> ..., Err(e) -> ... }`).
-3. **Synthesis Mode Rejection (`E0301`)**: In unconstrained expression contexts without an expected type (e.g., `let x = Ok`), unannotated bare constructor identifiers are statically rejected (`E0301: TypeMismatchError`).
-4. **Higher-Order Constructor Invariant**: When passed to higher-order functions expecting a callable (`fn(T) -> S<T>`), constructor names refer to their first-class constructor function (e.g., `[1, 2] |> Array::map(Ok)`).
+Data constructors (algebraic sum type variants and nominal type wrappers) establish a definitional equivalence between comma-separated multi-field declarations and single-tuple payloads:
+$$\text{Variant}(T_1, T_2, \dots, T_n) \equiv \text{Variant}((T_1, T_2, \dots, T_n)) \quad (n \ge 0)$$
+
+Because Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenthesized grouping; tuples require $\ge 2$ elements; `()` denotes unit), constructor arity $n$ in expressions and patterns is strictly deterministic:
+1. **Scope Restriction (Strict Constructor Boundary)**: Equivalence is confined strictly to Data Constructors. Ordinary functions (`fn`), closures, and methods maintain strictly separate parameter lists and register ABIs (`E0301`).
+2. **Positional Tuple Expansion ($n \ge 2$)**: In expression construction and pattern matching, $C(e_1, \dots, e_n)$ constructs or matches the tuple payload elements directly. Outer constructor parentheses absorb inner tuple parentheses.
+3. **Whole-Tuple Binding or Single Argument ($n = 1$)**: $C(val)$ constructs or matches the scalar payload or whole-tuple object.
+4. **Unit Payload Constructor ($n = 0$)**: When a variant's payload type is `()`, $C()$ constructs or matches the unit payload directly ($C() \equiv C(())$). Bare constructor identifiers without parentheses (e.g. bare `Ok`) are strictly first-class constructor functions (`fn(T) -> Result<T, E>`), and cannot be evaluated as values without `()` (`E0301`).
+5. **Nullary Variant Tag Invariant**: Variants declared without a payload (e.g. `None` in `type Option<T> { Some(T), None }`) are pure zero-field tags: they MUST be written without parentheses (`None`). Supplying argument parentheses to a nullary variant (`None()`) is statically rejected (`E0301`).
+6. **Explicit Tuple Literal Compatibility**: Explicit tuple literals $C((e_1, \dots, e_n))$ and patterns $C((p_1, \dots, p_n))$ remain valid as supplying a 1-argument tuple payload directly.
+7. **Non-Transitivity (Single-Layer Invariant)**: Equivalence applies strictly to the outermost constructor argument boundary. Nested tuples (e.g. `Variant((A, B), C)`) require explicit grouping and do NOT flatten recursively (`Variant(a, b, c)` is rejected with `E0301`).
+8. **Rigid Type Variable Invariant**: Deconstructing $C(p_1, \dots, p_n)$ ($n \ge 2$) against an unconstrained generic type parameter $T$ is statically rejected with `E0301`.
+9. **First-Class Constructor Canonical Type**: A constructor $C$ carrying a tuple payload $(T_1, \dots, T_n)$ possesses the canonical unary first-class callable type $\text{fn}((T_1, \dots, T_n)) \to S$. In Check Mode expecting a multi-parameter callable ($\Gamma \vdash C \Leftarrow \text{fn}(T_1, \dots, T_n) \to S$), the compiler applies context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$).
+
+```ril
+-- 1. Result construction and matching with unit payload (n = 0):
+let unit_res: Result<(), str> = Ok()             -- OK: n = 0 constructs () payload directly
+let auto_unit = Ok()                             -- OK: synthesizes Result<(), _> (payload is ())
+-- let bad_bare = Ok                             -- Error [E0301]: 'Ok' is a constructor function; write 'Ok()' to construct Result<(), _>
+
+match unit_res {
+    Ok() -> println("success"),                  -- OK: n = 0 matches () unit payload
+    Err(e) -> println(e),
+}
+
+-- 2. Nullary variant tags vs. Data constructors:
+let opt: Option<int> = None                      -- OK: nullary tag without parentheses
+-- let bad_none = None()                         -- Error [E0301]: variant 'None' has no payload; remove parentheses
+
+-- 3. Result construction and matching with tuple payload:
+let res: Result<(int, str), str> = Ok(200, "OK") -- OK: n = 2 constructs (int, str) directly
+let pair = (200, "OK")
+let res_from_pair = Ok(pair)                     -- OK: n = 1 passes existing tuple
+let res_compat = Ok((200, "OK"))                 -- OK: n = 1 explicit tuple literal
+
+match res {
+    Ok(code, msg) -> println(msg),               -- OK: n = 2 directly unpacks tuple elements
+    Ok(p) -> println(p.1),                       -- OK: n = 1 binds entire tuple to 'p'
+    Err(e) -> println(e),
+}
+
+-- 4. Multi-field variant declaration and tuple equivalence:
+type Geometry {
+    TwoPoints(int, int),                         -- Equivalent to TwoPoints((int, int))
+}
+
+let p1 = TwoPoints(10, 20)                       -- OK: positional elements
+let p2 = TwoPoints(pair)                         -- OK: passing existing tuple variable
+let TwoPoints(x, y) = p1                         -- OK: positional destructuring
+let TwoPoints(raw_tuple) = p1                    -- OK: whole-tuple destructuring
+
+-- 5. Functions do NOT auto-tuple (Strict Scope Boundary):
+fn add(a: int, b: int) -> int { a + b }
+let sum1 = add(1, 2)                             -- OK: 2 arguments
+-- let sum2 = add(pair)                          -- Error [E0301]: expected 2 arguments, found 1 tuple
+
+-- 6. Nested tuples: non-transitive boundary:
+type Node {
+    Branch((int, int), str),                     -- Payload is 2-tuple: ((int, int), str)
+}
+let node = Branch((1, 2), "left")                -- OK: n = 2 arguments
+-- let bad_node = Branch(1, 2, "left")           -- Error [E0301]: arity mismatch: expected 2 arguments, found 3
+```
 
 ### 3.6 Nominal Type Wrappers
 
@@ -447,7 +522,7 @@ When `(TypeExpression)` is omitted, `NominalDecl` defines a **Unit Nominal Type*
 - **Value Construction**: The bare identifier `Marker` denotes its canonical singleton value (`let m = Marker`).
 - **Pattern Matching**: `Marker` acts as a nullary constructor pattern in multi-variant `match` expressions (`match event { Marker -> ... }`). In `let` statements, patterns introducing zero variable bindings (such as `let Marker = m`) are strictly prohibited under the **Non-Vacuous Binding Invariant (`E0309: VacuousBindingError`)**.
 - **Prelude Unwrapping**: Unwrapping via `inner(Marker)` evaluates to `()`.
-- **Nominal Isolation**: A unit nominal type is an isolated nominal identity, strictly distinct from structural `()`. For example, `Result<Marker, E>` strictly requires `Ok(Marker)` and does NOT permit bare `Ok`.
+- **Nominal Isolation**: A unit nominal type is an isolated nominal identity, strictly distinct from structural `()`. For example, `Result<Marker, E>` strictly requires `Ok(Marker)` and does NOT permit `Ok()`.
 
 ```ril
 -- 1. Unit Nominal Types (zero-sized domain markers):
@@ -462,21 +537,24 @@ let _ = m                              -- OK: explicit wildcard discard
 -- 2. Value-Wrapped Nominal Types:
 type UserId(int)
 type AccountId(int)
-type Coord((int, int))
+type Coord(int, int)                   -- Equivalent to Coord((int, int))
 type Point2D({ x: f64, y: f64 })       -- Nominal wrapper over structural record
 
 let uid = UserId(1001)
 let aid = AccountId(1001)
-let c = Coord((10, 20))
+let c = Coord(10, 20)                  -- OK: positional tuple expansion (n = 2)
+let c_compat = Coord((10, 20))         -- OK: explicit tuple literal (n = 1)
 let pt = Point2D(.{ x: 10.0, y: 20.0 })
 
 -- uid == aid                          -- Error [E0305]: mismatched nominal types 'UserId' and 'AccountId'
 let raw_id: int = inner(uid)           -- OK: unwrap nominal wrapper via prelude 'inner()' (1001)
+let raw_coord: (int, int) = inner(c)   -- OK: unwrap nominal wrapper to underlying tuple (10, 20)
 let raw_pt: { x: f64, y: f64 } = inner(pt) -- OK: unwrap underlying record via 'inner()'
 let UserId(unwrapped_id) = uid         -- OK: pattern-matching unwrap
 let Point2D(.{ x, y }) = pt            -- OK: structural record pattern unwrap
-let Coord((cx, cy)) = c                -- OK: tuple pattern unwrap
--- let bad = UserId                    -- Error [E0308]: nominal wrapper 'UserId' requires 1 argument, found 0
+let Coord(cx, cy) = c                  -- OK: positional tuple pattern unwrap
+let Coord(pair) = c                    -- OK: whole-tuple pattern unwrap
+-- let bad = UserId                    -- Error [E0301]: nominal wrapper 'UserId' requires 1 argument, found 0
 ```
 
 ### 3.7 Deep Immutability (`Immut<T>`)
@@ -826,7 +904,7 @@ effect AppEffects { Console, State<int> } -- Combined effect set
 
 | Level | Operators | Associativity | Description |
 | :---: | :--- | :---: | :--- |
-| **1** | `.` `?.` `?[` `[]` `()` `::` postfix `?` | Left | Member access, safe navigation, indexing, invocation, postfix `?` |
+| **1** | `.` `?.` `?[` `[]` `()` `::` postfix `?` | Left | Member access (field or tuple index), safe navigation, indexing, invocation, postfix `?` |
 | **2** | `-` `!` `~` `typeof` | Unary Prefix | Arithmetic negation, logical NOT, bitwise NOT, static type introspection |
 | **3** | `*` `/` `%` `/?` `%?` `*%` | Left | Multiplication, division, remainder, safe division/remainder, wrapping mul |
 | **4** | `+` `-` `+%` `-%` | Left | Addition, subtraction, wrapping add/sub |
@@ -1109,7 +1187,7 @@ fn search(matrix: [][]int, target: int) -> bool {
 `let Pattern = expr else { Block }` matches a refutable pattern or diverges.
 
 1. **Divergence Invariant**: The `else` block MUST diverge (evaluate to `never`).
-2. **Universal Non-Vacuous Binding Invariant (`E0309`)**: All `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`. Patterns that introduce zero variable bindings (such as `let Marker = m`, `let () = expr`, `let Ok = expr else { ... }`, `let None = expr else { ... }`, or `let _ = expr else { ... }`) are statically rejected (`E0309: VacuousBindingError`). To conditionally guard or test without binding variables, developers must use postfix `?`, boolean pattern tests (`if expr is Pattern`), or explicit `match` expressions.
+2. **Universal Non-Vacuous Binding Invariant (`E0309`)**: All `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`. Patterns that introduce zero variable bindings (such as `let Marker = m`, `let () = expr`, `let Ok() = expr else { ... }`, `let None = expr else { ... }`, or `let _ = expr else { ... }`) are statically rejected (`E0309: VacuousBindingError`). To conditionally guard or test without binding variables, developers must use postfix `?`, boolean pattern tests (`if expr is Pattern`), or explicit `match` expressions.
 
 ```ril
 fn process_account(data: [str: str]) -> Result<str, str> {
@@ -1124,7 +1202,7 @@ fn process_account(data: [str: str]) -> Result<str, str> {
     -- }
 
     -- Prohibited: Vacuous guarded binding without variable bindings:
-    -- let Ok = save_profile(id) else {
+    -- let Ok() = save_profile(id) else {
     --     return Err("save failed")   -- Error [E0309]: 'let ... else' pattern must bind at least one variable; use postfix '?' or 'if expr is ...' instead
     -- }
 
@@ -1132,7 +1210,7 @@ fn process_account(data: [str: str]) -> Result<str, str> {
     save_profile(id)?
 
     -- Compliant Alternative 2: Boolean pattern test 'is'
-    -- if !(save_profile(id) is Ok) { return Err("save failed") }
+    -- if !(save_profile(id) is Ok()) { return Err("save failed") }
 
     Ok(id)
 }
@@ -1144,6 +1222,14 @@ for entry in records {
     }
     process(val)
 }
+
+-- Guarded binding with tuple destructuring (Constructor-Tuple Equivalence):
+fn verify_session(cookie: str) -> Result<str, str> {
+    let Ok(user_id, token) = authenticate(cookie) else {
+        return Err("unauthorized")     -- OK: positional tuple unwrap (n = 2), binds 'user_id' and 'token'
+    }
+    Ok(user_id)
+}
 ```
 
 ### 6.6 Pattern Matching (`match`)
@@ -1154,8 +1240,13 @@ MatchArm      ::= Pattern [ "if" Expression ] "->" Expression
 Pattern       ::= OrPattern
 OrPattern     ::= GuardPattern { "|" GuardPattern }
 GuardPattern  ::= SinglePattern [ "if" Expression ]
-SinglePattern ::= LiteralPattern | VariablePattern | WildcardPattern
-                | TuplePattern | RecordPattern | ConstructorPattern | RangePattern
+SinglePattern      ::= LiteralPattern | VariablePattern | WildcardPattern
+                     | TuplePattern | RecordPattern | ConstructorPattern | RangePattern
+ConstructorPattern ::= QualifiedName [ "(" [ PatternList ] ")" ]
+PatternList        ::= Pattern { "," Pattern } [ "," ]
+TuplePattern       ::= "(" Pattern "," { Pattern "," } [ Pattern ] ")" | "(" ")"
+RecordPattern      ::= [ TypeReference ] ".{" [ RecordPatternField { "," RecordPatternField } [ "," ] ] "}"
+RecordPatternField ::= [ "mut" ] Identifier [ ":" Pattern ] | Identifier
 ```
 
 Matches are evaluated top-to-bottom. The compiler enforces exhaustiveness.
@@ -1214,6 +1305,23 @@ fn get_dimension(s: Shape) -> f64 {
 -- Boolean pattern test via 'is':
 let is_origin = s is Shape::Point
 let is_large_circle = s is Shape::Circle(r) if r > 100.0
+
+-- Constructor and tuple pattern destructuring (Constructor-Tuple Equivalence):
+let result_pair: Result<(int, str), str> = Ok(200, "OK")
+match result_pair {
+    Ok(code, msg) -> println(msg),       -- OK: positional tuple unpack (n = 2)
+    Ok(p) -> println(p.1),               -- OK: whole-tuple binding (n = 1)
+    Ok((code, msg)) -> println(msg),     -- OK: explicit tuple pattern unwrap
+    -- Ok(a, b, c) -> println(a),        -- Error [E0301]: arity mismatch: variant 'Ok' payload expects 2 elements of type (int, str), found 3
+    Err(err) -> println(err),
+}
+
+-- Unit payload constructor pattern (Result<(), str>):
+let unit_res: Result<(), str> = Ok()
+match unit_res {
+    Ok() -> println("success"),          -- OK: matches () unit payload
+    Err(e) -> println(e),
+}
 ```
 
 ---
@@ -1775,7 +1883,7 @@ fn concurrent_boundary_check() {
         -- s.fork(\-> {
         --     local_buf[0] = 1u8
         -- })
-        Ok
+        Ok()
     })
 }
 ```
@@ -2055,7 +2163,7 @@ fn run_isolated_workers() -> Result<(str, int), TaskFault> {
             },
         }
 
-        Ok((ok_val, err_val))
+        Ok(ok_val, err_val)
     })
 }
 
@@ -2066,7 +2174,7 @@ fn bad_concurrent_data_race() {
         -- s.fork(\-> {                -- Error [E0601]: cannot capture mutable handle 'shared_data' across concurrent task boundary
         --     shared_data !> Array::push(4)
         -- })
-        Ok
+        Ok()
     })
 }
 
@@ -2108,7 +2216,7 @@ fn test_task_effect_confinement() {
             42
         })
         let _ = t.join()
-        Ok
+        Ok()
     })
 }
 ```
@@ -2452,7 +2560,7 @@ pub fn main() -> Result<(), str> {
     if config == "" {
         Err("empty configuration")     -- Runtime halts with non-zero exit code (1)
     } else {
-        Ok                              -- Exits cleanly with status code (0)
+        Ok()                            -- Exits cleanly with status code (0)
     }
 }
 ```
@@ -2514,7 +2622,7 @@ To prevent silent bug propagation, Ril enforces the **Anti-Fault Masking Invaria
 
 ```ril
 fn save_profile(user_id: int) -> Result<(), str> {
-    if user_id <= 0 { Err("invalid id") } else { Ok }
+    if user_id <= 0 { Err("invalid id") } else { Ok() }
 }
 
 fn process_request(id: int) -> Result<(), str> {
@@ -2526,14 +2634,14 @@ fn process_request(id: int) -> Result<(), str> {
 
     -- Compliant Alternative 2: Explicit pattern matching
     match save_profile(id) {
-        Ok -> Logger::info("Profile saved"),
+        Ok() -> Logger::info("Profile saved"),
         Err(e) -> Logger::error("Save failed: " ++ e),
     }
 
     -- Compliant Alternative 3: Fallback error closure
     save_profile(id) ?? \err -> Logger::warn("Handled fallback: " ++ err)
 
-    Ok
+    Ok()
 }
 ```
 

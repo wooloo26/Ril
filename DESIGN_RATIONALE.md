@@ -66,7 +66,7 @@ This dual-track model satisfies both ergonomics and safety: developers are never
 2. **Collection Slicing (`c[start..end]`)**: Unlike single-element indexing `arr[i]` (which expects a specific element to exist and panics if absent), sub-slice extraction represents a sub-window. Clamping slicing bounds to $[0, \text{len}(c)]$ and yielding an empty slice `[]` when $\text{start} \ge \text{end}$ eliminates off-by-one fencepost panics in string parsing and stream buffer processing without masking single-element logic bugs.
 3. **Map Key Lookup (`map[k]`)**: A map is conceptually an associative dictionary where absence of a key is a routine domain condition rather than a program bug. Hence, `map[k]` evaluates directly to `?V` (Option), requiring explicit unwrapping via `??` or `?`.
 
-### 1.6 Ergonomics of Zero-Payload Success: Context-Directed `Ok` Elision vs. `Ok(())` Noise
+### 1.6 Ergonomics of Zero-Payload Success: Unit Constructor `Ok()` vs. `Ok(())` Noise and Nullary Tag Confusion
 
 In algebraic error systems (`Result<T, E>`), fallible operations performing pure side effects (flushing a stream, committing a transaction, updating a cache) return no domain payload on success, naturally inhabiting `Result<(), E>`.
 
@@ -75,11 +75,19 @@ Historically, languages like Rust treated `Ok` strictly as a unary constructor f
 - **The Semicolon Statement Hazard**: Omitting or appending a trailing semicolon after `Ok(());` in block-expression languages inadvertently discards the value into `()`, triggering confusing type mismatch diagnostics.
 - **The Failed Rust RFC 2107 ("Ok-wrapping") Roadblock**: Proposals to implicitly wrap block return values into `Ok(expr)` were rejected because they destroyed explicit, local control flow reasoning (reviewers could not determine if a return statement constructed a fallible `Result` without inspecting the function signature) and created insurmountable ambiguities with nested `Result<Result<T, E>, E>`.
 
-Ril resolves this tension through **Context-Directed Nullary Constructor Elision**:
-1. **Explicit Tag Retention**: The developer continues to write the explicit `Ok` tag, preserving total transparency in local control flow.
-2. **Context-Directed Elision**: In bidirectional *Check Mode* ($\Gamma \vdash C \Leftarrow \text{Result}\langle (), E \rangle$), where the target type is statically known to carry a unit payload `()`, bare `Ok` elaborates directly to `Ok(())`.
-3. **No Bottom-Up Guessing**: In unconstrained *Synthesis Mode* (`let x = Ok`), bare constructor identifiers are statically rejected (`E0301`). The compiler never speculatively guesses that an unconstrained type variable $\alpha$ is `()`, completely preventing accidental type defaulting bugs.
-4. **Pattern Matching Symmetry**: In pattern matching, `match res { Ok -> ... }` matches `Ok(())` seamlessly, with exhaustiveness verification guaranteeing that changes to payload types immediately trigger static diagnostics rather than silent payload truncation.
+However, attempting to eliminate parentheses entirely by permitting bare `Ok` introduces cognitive and semantic hazards:
+1. **Confusion with Pure Nullary Tags (`None`)**: A nullary variant like `None` in `type Option<T> { Some(T), None }` is a pure zero-field tag that never accepts payloads; writing `None()` is a syntax error. Conversely, `Ok` in `Result<T, E>` is a parameterized data constructor. Allowing bare `Ok` masks whether a payload was accidentally omitted and makes parameterized constructors look deceptively like zero-field tags.
+2. **First-Class Function Ambiguity in Synthesis Mode**: When `Ok` is passed to higher-order functions (`[1, 2] |> Array::map(Ok)`), bare `Ok` denotes the unapplied constructor function `fn(T) -> Result<T, E>`. Allowing bare `Ok` to also evaluate to a `Result<(), E>` value created expression ambiguity, forcing the compiler to reject `let x = Ok` in unconstrained Synthesis Mode (`E0301`).
+
+Ril resolves this tension through **Constructor-Tuple Equivalence at $n = 0$ (`Ok()`)**:
+1. **Outer Parentheses Absorb the Unit Tuple**: Under the equivalence $\text{Variant}(T_1, \dots, T_n) \equiv \text{Variant}((T_1, \dots, T_n))$, supplying zero arguments inside constructor parentheses $C()$ corresponds directly to the 0-element unit product `()`. Outer constructor parentheses absorb the inner unit tuple, producing clean `Ok()` with zero double-parentheses noise.
+2. **Strict Boundary between Tags and Constructors**:
+   - **Pure Nullary Tags**: Zero-field variants declared without payloads (`None`, `Active`, `Red`) NEVER take parentheses (`None`).
+   - **Data Constructors**: Constructors carrying payloads ALWAYS take parentheses: `Some(x)`, `Ok()`, `Ok(x)`, `Ok(a, b)`.
+3. **Deterministic Synthesis & First-Class Clarity**:
+   - `let x = Ok()` unambiguously synthesizes `Result<(), _>`, requiring no speculative guessing or type annotations.
+   - Bare `Ok` is cleanly preserved as the first-class constructor function (`fn(T) -> Result<T, E>`).
+4. **Pattern Matching Symmetry**: In pattern matching, `match res { Ok() -> ..., Err(e) -> ... }` mirrors value construction with perfect symmetry. *(See §4.10 for the general treatment across all arities $n \ge 0$).*
 
 ### 1.7 Hermetic Scoped Cleanups and Double-Fault Containment
 
@@ -318,6 +326,10 @@ Ril establishes strict syntactic and conceptual segregation between compile-time
    - Field types of static records are extracted symmetrically via dot projection (`User.id`).
    - For inferred anonymous record instances, direct value access `typeof expr.field` or parenthesized type projection `(typeof expr).field` maintains complete orthogonality.
    - In mapped schema computations (`[K in keyof T]`), computed key projections use `T.(K)` to unambiguously distinguish evaluated type parameters from literal field names, preserving complete consistency across value and type spaces.
+4. **Product Types vs. Generic Container Parameter Extraction**:
+   - **Product Types (Records & Tuples)**: Possess statically fixed shapes and physical memory offsets. Member extraction in both value and type space uniformly employs dot syntax (`u.id` / `User.id` for records; `coords.0` / `Coords.0` for tuples).
+   - **Generic Containers (Arrays & Maps)**: Are parameterized collections without named internal fields. Inventing magical pseudo-properties (`Arr.elem`, `Map.key`) would erroneously conflate product field offsets with generic type arguments.
+   - **Modular Extraction without Prelude Pollution**: Instead of magical dot properties or global prelude bloat, type extraction for collections is cleanly modularized: `ril/array` exports `type Elem<[]T> = T`, while `ril/map` exports `type Key<[K: V]> = K` and `type Value<[K: V]> = V`. Static type closures can also directly deconstruct collection shapes via compile-time pattern matching (`match M { [K: V] -> type<V> }`).
 
 ### 4.5 The Necessity of Nominal Wrappers & Universal Single-Type Packaging
 
@@ -327,11 +339,11 @@ Structural typing provides maximum ergonomics for data-transfer objects (DTOs) a
 
 Ril introduces **Nominal Type Wrappers** as zero-cost compile-time domain boundaries:
 - **Zero Runtime Overhead**: In native machine code, a nominal wrapper is completely transparent—it occupies the exact same memory layout and registers as its underlying type without wrapper allocation or pointer indirection.
-- **Universal Single-Type Packaging (`type Name(TypeExpr)`)**: Rather than inventing pseudo-parameter lists for multi-field wrappers, Ril strictly defines nominal wrappers as packaging a single underlying `TypeExpression`. A multi-field nominal wrapper is simply a wrapper over a structural record: `type Point2D({ x: f64, y: f64 })`.
+- **Universal Single-Type Packaging (`type Name(TypeExpr)`)**: Rather than inventing pseudo-parameter lists for multi-field wrappers, Ril strictly defines nominal wrappers as packaging a single underlying `TypeExpression`. A multi-field nominal wrapper is simply a wrapper over a structural record: `type Point2D({ x: f64, y: f64 })`, or an anonymous tuple: `type Coord(int, int)` (definitionally equivalent to `type Coord((int, int))` under Constructor-Tuple Equivalence §4.10).
 - **Absolute Syntactic Symmetry**:
   - Declaration: `type Name(Type)`
-  - Construction: `Name(Value)` (e.g. `UserId(1001)`, `Point2D(.{ x: 1.0, y: 2.0 })`)
-  - Unwrapping: `Name(Pattern)` (e.g. `let UserId(raw) = uid`, `let Point2D(.{ x, y }) = pt`) or uniform prelude `inner(wrapper)`.
+  - Construction: `Name(Value)` (e.g. `UserId(1001)`, `Point2D(.{ x: 1.0, y: 2.0 })`, `Coord(10, 20)`)
+  - Unwrapping: `Name(Pattern)` (e.g. `let UserId(raw) = uid`, `let Point2D(.{ x, y }) = pt`, `let Coord(x, y) = c`) or uniform prelude `inner(wrapper)`.
 
 ### 4.6 Opaque Types: Module-Bound Zero-Cost Abstraction
 
@@ -354,14 +366,14 @@ In type-driven domain modeling, developers frequently require unforgeable compil
 - Prior designs required awkward packaging over unit tuples: `type Marker(())` or single-case enums `type Marker { Marker }`.
 - Ril establishes **Unit Nominal Types (`type Marker`)** as first-class citizens. Omitting the parenthesized underlying type expression defines an isolated nominal identity with a 0-byte memory layout (zero-sized type / ZST).
 - In accordance with Ril's **Unified Lexical Identifier Namespace** (§4.3), `Marker` serves simultaneously as the type name in type contexts and the canonical zero-sized value in expressions (`let m = Marker`). In pattern matching, `Marker` serves as a nullary variant selector within multi-variant `match` expressions (`match event { Marker -> ... }`).
-- **Nominal Isolation**: Nominal markers are strictly distinct from structural `()`. A function returning `Result<Marker, E>` requires `Ok(Marker)` and rejects bare `Ok`, preserving complete domain encapsulation and preventing accidental representation leakage.
+- **Nominal Isolation**: Nominal markers are strictly distinct from structural `()`. A function returning `Result<Marker, E>` requires `Ok(Marker)` and rejects `Ok()`, preserving complete domain encapsulation and preventing accidental representation leakage.
 
 ### 4.8 Prohibition of Vacuous Bindings (`E0309`): Preventing Zero-Variable Destructuring Anti-Patterns
 
 A `let` statement universally signals the introduction of local variable bindings into the enclosing lexical scope. Applying `let` to patterns that introduce **zero variable bindings** represents a severe syntactic and cognitive anti-pattern:
 1. **The Variable Naming Cognitive Trap**: In Ril, variables are strictly `snake_case`, while types and constructors are `PascalCase`. If `let Marker = m` were permitted, developers migrating from Python, JavaScript, or Go would naturally misread it as declaring a new local variable named `Marker`. Silently accepting the statement without binding any variable creates immediate downstream confusion when the developer attempts to reference `Marker` as a variable on subsequent lines.
 2. **Semantic Nullity of Zero-Field Destructuring**: `type UserId(int)` destructures into `id`, extracting payload data. But `type Marker` has 0 fields and occupies 0 bytes; it carries zero data to extract. Furthermore, matching an irrefutable type performs no runtime check. Thus, `let Marker = m` extracts nothing, checks nothing, and binds nothing—it is pure dead ceremony.
-3. **Abuse of Guarded Bindings for Jump Assertions**: Writing `let Ok = flush_cache() else { return Err("aborted") }` or `let None = opt else { ... }` abuses the destructuring binding mechanism solely as a conditional jump without binding variables.
+3. **Abuse of Guarded Bindings for Jump Assertions**: Writing `let Ok() = flush_cache() else { return Err("aborted") }` or `let None = opt else { ... }` abuses the destructuring binding mechanism solely as a conditional jump without binding variables.
 4. **Universal Static Rejection (`E0309: VacuousBindingError`)**:
    Ril establishes the **Universal Non-Vacuous Binding Invariant**: all `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`.
    
@@ -369,7 +381,7 @@ A `let` statement universally signals the introduction of local variable binding
    - To discard a value explicitly: Wildcard discard `let _ = m`.
    - For error propagation: Postfix `?` (`flush_cache()?`).
    - For error fallback and recovery: The fallback operator `??` (`flush_cache() ?? \err -> ...`).
-   - For boolean assertions / branching: The pattern test operator `is` (`if !(flush_cache() is Ok) { ... }`).
+   - For boolean assertions / branching: The pattern test operator `is` (`if !(flush_cache() is Ok()) { ... }`).
    - For multi-way branching: Explicit `match` expressions.
 
 ### 4.9 Compile-Time HKT Metaprogramming vs. Reified Runtime Generics
@@ -381,6 +393,32 @@ Ril reconciles expressive abstraction with systems-grade performance through the
 2. **Deterministic Runtime Lowering**: At runtime, all generic parameters and static type closures are either statically monomorphized into specialized machine representations or represented via explicit operation records (dictionary passing).
 3. **Rejection of Runtime Reified HKTs**: The Ril abstract machine maintains zero dynamic higher-kinded type descriptors or runtime unification engines. This preserves deterministic object layouts, eliminates JIT latency, and ensures that GC headers remain compact and predictable.
 
+### 4.10 Constructor-Tuple Equivalence vs. Function Parameter Isolation
 
+In algebraic languages, developers routinely suffer from visual friction when returning composite values: operations returning fallible pairs or coordinates require repetitive "parenthesis stuttering" `Ok((val, msg))` and `let Ok((val, msg)) = res`. Ril resolves this tension by formalizing **Constructor-Tuple Equivalence**:
+$$\text{Variant}(T_1, T_2, \dots, T_n) \equiv \text{Variant}((T_1, T_2, \dots, T_n)) \quad (n \ge 0)$$
 
+#### 1. Why Confining Equivalence to Data Constructors is Sound
+Historical attempts to unify tuples with parameter lists suffered severe defects in general-purpose languages:
+- **The Swift 2 to 3 Disaster (SE-0029, SE-0110)**: Swift originally unified function parameter lists with tuples (`f(a, b)` $\equiv$ `f((a, b))`). Because this applied across arbitrary overloaded functions, closures, and methods, it caused combinatorial explosions in type checker constraint solving and rampant overload ambiguities. Swift 3 strictly repealed tuple splatting.
+- **The Scala 2 Auto-Tupling Trap**: Scala 2 allowed auto-tupling on methods, silently coercing `println(1, 2)` into `println((1, 2))` because `println` accepted `Any`, while `fn wrap[T](x: T)` mistakenly called with 2 arguments silently inferred `T = (A, B)`.
 
+Ril avoids these pitfalls through a fundamental distinction:
+- **Ordinary Functions (`fn`) maintain Strict Parameter Isolation**: Named and anonymous functions, methods, and mutating pipelines possess dedicated parameter lists with names, defaults, `mut` roots, and capability annotations. Ordinary functions NEVER auto-tuple. Calling `add(1, 2)` with a tuple `add(pair)` is statically rejected (`E0301`).
+- **Data Constructors represent Pure Algebraic Product Packaging**: Sum type variants and nominal wrappers possess unique lexical identities. They are not overloaded methods; they are pure injection functions into tagged sum spaces. Conflating constructor arguments with product tuples introduces zero constraint solving explosion.
+
+#### 2. Deterministic Arity Partitioning across $n \ge 0$
+Because Ril strictly possesses **no 1-element tuples `(T,)`** (`(x)` is parenthesized expression grouping, while tuples strictly require $k \ge 2$ elements; `()` represents the unit product), constructor arity partitioning is strictly deterministic:
+- **$n = 0$**: Unit payload constructor absorption (`Ok()` for unit `()`). Outer constructor parentheses absorb the 0-element unit tuple `()`. Contrast with pure nullary tags (like `None`), which possess zero payload parameters and strictly prohibit parentheses.
+- **$n = 1$**: Single scalar payload, OR whole-tuple binding when passed/matched with a single variable identifier (`Ok(pair)`).
+- **$n \ge 2$**: Positional multi-element tuple payload (`Ok(code, msg)`), where outer constructor parentheses absorb inner tuple parentheses.
+
+#### 3. Single-Layer Non-Transitivity & Rigid Type Safety
+Equivalence is strictly single-layer at the outermost constructor boundary:
+- **Nested Tuples**: `Variant((1, 2), 3)` requires $n = 2$ arguments; recursive auto-flattening (`Variant(1, 2, 3)`) is statically rejected (`E0301`).
+- **Rigid Type Variables**: Deconstructing `Ok(a, b)` against an unconstrained generic type parameter $T$ (not statically proven or refined by a GADT equation to be a tuple) is statically rejected (`E0301`). The compiler never speculatively guesses that an unknown type is a tuple.
+
+#### 4. Zero-Cost Memory Inlining Invariant
+In Ril's abstract machine and native code generation, Constructor-Tuple Equivalence incurs zero runtime overhead:
+- **Payload Inlining in Variants**: A variant `Ok(10, "ready")` does not allocate an independent heap tuple; its tuple elements are inlined directly into contiguous slots in the variant's allocation header (`[GC Header | Tag | Slot 0 | Slot 1]`), guaranteeing single-allocation footprint (32 bytes).
+- **Nominal Wrappers**: `type Coord(int, int)` has zero wrapper bytes, compiling to pure compile-time type branding with the exact machine layout and register conventions of `(int, int)`.
