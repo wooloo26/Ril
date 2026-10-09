@@ -56,7 +56,7 @@ Ril enforces a strict separation between domain recoverable errors and program d
 1. **Recoverable Errors**: Represented as ordinary sum type values (`Result<T, E>` and `Option<T>` / `?T`). Unused `Result` values are statically rejected.
 2. **Defects (Panics)**: Invariant violations (division by zero, out-of-bounds indexing, failed `assert`, integer overflow) raise **Deterministic Runtime Panics**.
 3. **Synchronous Isolation**: Panics cannot be caught within synchronous evaluation frames.
-4. **Boundary Containment**: In concurrent execution, child task panics are isolated at structured concurrency boundaries (`nursery`), resolving to `Result<T, TaskFault>` (`TaskFault::Panicked`).
+4. **Boundary Containment**: In concurrent execution, child task panics are isolated at structured concurrency boundaries (`scope`), resolving to `Result<T, TaskFault>` (`TaskFault::Panicked`).
 
 ```ril
 -- 1. Recoverable error handling via Result and '?':
@@ -77,14 +77,14 @@ fn faulty_frame() -> int {
     100                                -- Unreachable
 }
 
--- 4. Boundary Containment: child panics isolated at structured nursery boundary
-use ril/concurrent::{nursery, TaskFault}
+-- 4. Boundary Containment: child panics isolated at structured scope boundary
+use ril/concurrent::{scope, TaskFault}
 
-let nursery_outcome: Result<int, TaskFault> = nursery(\mut scope -> {
-    scope.spawn(\-> { panic("worker failure") })
+let scope_outcome: Result<int, TaskFault> = scope(\mut s -> {
+    s.fork(\-> { panic("worker failure") })
     Ok(42)
 })
--- nursery_outcome evaluates to Err(TaskFault::Panicked(...))
+-- scope_outcome evaluates to Err(TaskFault::Panicked(...))
 ```
 
 ---
@@ -664,7 +664,7 @@ assert(safe_alias.val == 100)
 
 -- 3. Concurrency Invariant:
 -- A live mutable view cannot escape across a concurrent task boundary:
--- nursery.spawn(\-> observer.val)     -- Error [E0601]: cannot pass live mutable view across task boundary
+-- scope.fork(\-> observer.val)        -- Error [E0601]: cannot pass live mutable view across task boundary
 ```
 
 ### 4.5 Type Declarations & Opaque Types
@@ -1655,7 +1655,7 @@ let abstract_stashing: StashingWorker = concrete_stashing -- OK: preserves &^mut
 
 Effects define abstract operation tags that callers invoke and enclosing handlers intercept. An effect operation signature is an ordinary callable signature: it declares argument types, return types, and optional capabilities (`&mut`, `&^mut`).
 
-When an effect operation requires in-place mutation (e.g., writing into a caller-supplied buffer), it explicitly declares `&mut` on its operation signature. Callers invoking the operation and handlers servicing it must track, forward, or discharge this capability under standard capability tracking rules (§8). Concurrency boundaries (`nursery.spawn`, `Parallel::map`) enforce Data-Race Freedom (DRF-SC) directly through capability checking: any value or closure crossing a concurrency boundary must not carry live mutable capabilities (`&mut`, `&^mut`, `&{mut var}`), rejected statically under `E0601: CrossThreadDataRaceHazardError`. No separate nominal `Shareable` trait is required.
+When an effect operation requires in-place mutation (e.g., writing into a caller-supplied buffer), it explicitly declares `&mut` on its operation signature. Callers invoking the operation and handlers servicing it must track, forward, or discharge this capability under standard capability tracking rules (§8). Concurrency boundaries (`scope.fork`, `Parallel::map`) enforce Data-Race Freedom (DRF-SC) directly through capability checking: any value or closure crossing a concurrency boundary must not carry live mutable capabilities (`&mut`, `&^mut`, `&{mut var}`), rejected statically under `E0601: CrossThreadDataRaceHazardError`.
 
 ```ril
 -- 1. Pure Effect Operations & Ambient Context:
@@ -1685,19 +1685,19 @@ fn fill_header(mut target: []u8) -> int @BufferIO &mut {
     BufferIO::read_into(mut target)    -- OK: &mut capability flows through caller to operation
 }
 
--- 3. Concurrent Task Boundary: DRF-SC Capability Enforcement (No Ad-Hoc Shareable Trait):
+-- 3. Concurrent Task Boundary: DRF-SC Capability Enforcement:
 fn concurrent_boundary_check() {
     let immut_data = "immutable configuration"
     let mut local_buf = [0u8, 0u8, 0u8]
 
-    nursery(\mut scope -> {
+    scope(\mut s -> {
         -- OK: Immutable value has zero mutable capabilities, safely crosses task boundary:
-        scope.spawn(\-> {
+        s.fork(\-> {
             immut_data
         })
 
         -- Error [E0601]: CrossThreadDataRaceHazardError: live mutable capability cannot cross task boundary
-        -- scope.spawn(\-> {
+        -- s.fork(\-> {
         --     local_buf[0] = 1u8
         -- })
         Ok
@@ -1823,19 +1823,51 @@ fn test_early_abort() {
 
 Ril provides four foundational built-in algebraic effects tracking execution capabilities:
 
-1. **`@Fiber` (Cooperative Fiber Control)**: Low-level cooperative scheduling primitives (`yield`, `park`, `unpark`).
-2. **`@Concurrent` (Structured Concurrency)**: High-level concurrent spawning, joining, racing, and timeout mechanics.
+1. **`@Fiber` (Cooperative Fiber Control)**: Low-level cooperative scheduling primitives (`yield`, `park`, `unpark`). Purely cooperative execution-quantum transfer without concurrent task branching authority.
+2. **`@Concurrent` (Structured Concurrency)**: High-level concurrent task forking, joining, racing, and timeout mechanics.
 3. **`@Async` (Suspendable I/O)**: An effect alias `{Fiber, Concurrent}` tracking uncolored asynchronous computations.
 4. **`@Div` (Divergence Tracking)**: Tracks potential non-termination in unbounded loops and general recursive functions. Total functions (`halt fn`) strictly prohibit `@Div`.
 
+The sub-effect lattice satisfies $\emptyset \subset \{\text{Fiber}\} \subset \{\text{Fiber}, \text{Concurrent}\} = \text{Async}$.
+
+#### Normative Rules for Built-in Effects:
+1. **Least-Privilege Leaf I/O Principle (`@Fiber`)**: Leaf I/O operations requiring cooperative suspension without forking child tasks MUST declare only `@Fiber`. Holding `@Fiber` does not grant authority to fork concurrent tasks (`@Concurrent`), preserving frame containment and single-fiber DRF-SC invariants.
+2. **Compound Asynchronous Workflows (`@Async`)**: Functions that both suspend on I/O and manage concurrent child tasks declare `@Async`.
+3. **Decoupling Quantum Scheduling from Value Generators**: Cooperative scheduling operations declared within `effect Fiber` (`yield() -> ()` and `park() -> ()`) are strictly untyped quantum transfer primitives. Value-emitting streams MUST be modeled via user-defined algebraic effects (e.g., `effect Yield<T> { emit(T) -> () }`), evaluated as internal push streams under one-shot delimited resumption (`resume ()`). External pull iterators cannot escape `resume` past handler arm boundaries (`E0611`) and are constructed via compiler-lowered state machines or fiber channels.
+
 ```ril
--- 1. Uncolored Asynchronous I/O (@Async):
-fn fetch_user_data(url: str) -> str @Async {
-    let response = Http::get(url)       -- Evaluates asynchronously with standard call syntax
-    response.body                       -- Uncolored return type: str (not Promise<str>)
+-- 0. Built-in Fiber Effect Declaration:
+effect Fiber {
+    yield() -> (),                     -- Relinquishes quantum to runtime scheduler
+    park() -> (),                      -- Suspends execution until external event/wakeup
+    unpark() -> (),                    -- Awakens a parked fiber context
 }
 
--- 2. Cooperative Fiber Yielding (@Fiber):
+-- 1. Leaf I/O Suspension Principle (@Fiber):
+fn read_socket_chunk(fd: int) -> []u8 @Fiber {
+    Fiber::park()                      -- Suspends execution until runtime I/O notification
+    Socket::drain(fd)                  -- OK: leaf I/O without concurrent task forking authority
+}
+
+-- Functions declared @Fiber cannot invoke structured concurrency primitives:
+fn bad_leaf_fork(fd: int) -> []u8 @Fiber {
+    -- scope(\mut s -> {               -- Error [E0612]: UnhandledEffectError: function declares '@Fiber' but invokes unhandled '@Concurrent' primitive 'scope'
+    --     s.fork(\-> Socket::drain(fd))
+    -- })
+    read_socket_chunk(fd)
+}
+
+-- 2. Compound Asynchronous Workflow (@Async = {Fiber, Concurrent}):
+fn fetch_pipeline(url: str) -> Result<str, TaskFault> @Async {
+    let raw = read_socket_chunk(80)    -- Inherits @Fiber
+    scope(\mut s -> {                  -- Requires @Concurrent (present in @Async)
+        let worker = s.fork(\-> parse(raw))
+        let parsed = worker.join()?
+        Ok(parsed)
+    })
+}
+
+-- 3. Cooperative Fiber Yielding (@Fiber):
 fn cooperative_worker(mut count: int) -> () @Fiber {
     while count > 0 {
         count -= 1
@@ -1843,7 +1875,45 @@ fn cooperative_worker(mut count: int) -> () @Fiber {
     }
 }
 
--- 3. Divergence vs. Total Functions (@Div):
+-- 4. Value-Streaming Generator Orthogonality:
+effect Yield<T> {
+    emit(value: T) -> ()
+}
+
+fn range_stream(mut cur: int, max: int) @Yield<int> {
+    while cur < max {
+        Yield::emit(cur)
+        cur += 1
+    }
+}
+
+-- (a) Synchronous Consumer with Delimited Early Abort:
+fn collect_first_evens() -> []int {
+    let mut collected: []int = []
+    with Yield::emit(v) -> {
+        if v % 2 == 0 {
+            collected !> Array::push(v)
+        }
+        if len(collected) >= 3 {
+            -- Delimited early abort: returning without 'resume' cleanly terminates generator
+            return collected
+        }
+        resume ()                      -- Resumes generator execution within lexical handler
+    }
+    range_stream(0, 100)
+    collected
+}
+
+-- (b) Orthogonal Composition: Suspendable Async Generator:
+fn stream_remote_chunks(fd: int) -> () @Yield<[]u8> @Fiber {
+    while true {
+        let chunk = read_socket_chunk(fd)
+        if len(chunk) == 0 { break }
+        Yield::emit(chunk)             -- Orthogonally composes @Yield<[]u8> and @Fiber
+    }
+}
+
+-- 5. Divergence vs. Total Functions (@Div):
 fn collatz(n: int) -> int @Div {
     if n <= 1 { 1 }
     else if n % 2 == 0 { collatz(n / 2) }
@@ -1859,23 +1929,35 @@ halt fn factorial(n: int) -> int {
 -- }
 ```
 
-### 9.5 Structured Concurrency (`nursery`) & Isolated Panic Containment
+### 9.5 Structured Concurrency (`scope`) & Isolated Panic Containment
 
-All concurrent child tasks must be spawned within a structured `nursery`. A parent nursery cannot exit until all child tasks finish. Panics in child tasks are isolated at the nursery boundary and resolve to `Result<T, TaskFault>` (`TaskFault::Panicked`).
+All concurrent child tasks must be forked within a structured `scope`. A parent scope cannot exit until all child tasks finish. Panics in child tasks are isolated at the scope boundary and resolve to `Result<T, TaskFault>` (`TaskFault::Panicked`).
+
+#### Normative Rules for Structured Concurrency:
+1. **Lifetime Containment Invariant**:
+   For any scope $S$ and any child task $c \in \text{Children}(S)$:
+   $$\mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(S) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})$$
+2. **Stack-Allocated Scope Invariant (Zero-Heap Fast Path)**:
+   When a `scope` block is lexically enclosed within the calling activation frame:
+   - **Intrusive Child-Stack Descriptors**: The parent `Scope` descriptor is allocated contiguously on the caller stack frame with $O(1)$ footprint (intrusive list head). Task tracking nodes (`TaskNode`) are allocated inline on each child fiber's own stack frame. Dynamic or static task fan-out requires zero dynamic heap allocation.
+   - **Synchronous Scope Unwind-Barrier**: When an unwind occurs (due to parent frame panic or sibling task cancellation), the unwinder MUST NOT pop the stack frame hosting an active scope until all active child tasks reach terminal state (`Completed`, `Panicked`, or `Cancelled`), execute their `let scoped` LIFO cleanup handlers, and unlink from the scope descriptor (`active_count == 0`), strictly preventing stack-use-after-free hazards.
+   - **Result Rendezvous Ownership**: Child return values $T$ reside within the quiescent child stack frame until moved out via `task.join()` or dropped during scope LIFO exit.
+3. **Boundary Capability Confinement**: Passing active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) or live views across concurrent task boundaries is statically rejected (`E0601: CrossThreadDataRaceHazardError`).
 
 ```ril
-use ril/concurrent::{nursery, Scope, Task, TaskFault}
+use ril/concurrent::{scope, Scope, Task, TaskFault}
 
 -- 1. Structured Concurrency and Task Panic Containment:
 fn run_isolated_workers() -> Result<(str, int), TaskFault> {
-    nursery(\mut scope -> {
-        let task_ok = scope.spawn(\-> {
+    scope(\mut s -> {
+        let task_ok = s.fork(\-> {
             "computation result"
         })
 
-        let task_crash = scope.spawn(\-> {
+        let task_crash = s.fork(\-> {
+            let scoped _buf = Resource.{ name: "worker_buf", on_close: \-> () }
             let divisor = 0
-            100 / divisor              -- Child task panics: division by zero
+            100 / divisor              -- Child task panics: division by zero; _buf unwound in LIFO order
         })
 
         let ok_val = task_ok.join()?    -- Resolves to "computation result"
@@ -1897,11 +1979,30 @@ fn run_isolated_workers() -> Result<(str, int), TaskFault> {
 -- 2. Concurrency Safety: Rejecting live mutable view across task boundary
 fn bad_concurrent_data_race() {
     let mut shared_data = [1, 2, 3]
-    nursery(\mut scope -> {
-        -- scope.spawn(\-> {            -- Error [E0601]: cannot capture mutable handle 'shared_data' across concurrent task boundary
+    scope(\mut s -> {
+        -- s.fork(\-> {                -- Error [E0601]: cannot capture mutable handle 'shared_data' across concurrent task boundary
         --     shared_data !> Array::push(4)
         -- })
         Ok
+    })
+}
+
+-- 3. Stack-Allocated Dynamic Fan-Out Invariant (Zero-Heap Fast Path):
+fn batch_transform(items: []int) -> Result<[]int, TaskFault> @Concurrent {
+    -- Invariant: parent Scope descriptor is allocated on caller stack (O(1)).
+    -- Intrusive TaskNode tracking descriptors are allocated on respective child stacks.
+    scope(\mut s -> {
+        let mut tasks: []Task<int> = []
+        for items as item {
+            let t = s.fork(\-> item * 10)
+            tasks !> Array::push(t)
+        }
+
+        let mut results: []int = []
+        for tasks as t {
+            results !> Array::push(t.join()?)
+        }
+        Ok(results)
     })
 }
 ```
@@ -2350,6 +2451,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0607`** | `DerivedProxyEscapeError` | Attempting to return derived proxy out of `derive` recipe |
 | **`E0610`** | `DuplicateResumeInvocationError` | Invoking affine one-shot resumption `resume` more than once |
 | **`E0611`** | `EscapingResumeError` | Escaping resumption handle beyond handler arm lexical scope |
+| **`E0612`** | `UnhandledEffectError` | Invoking effect operation without in-scope handler or declaring effect in callable signature |
 | **`E0614`** | `EscapingEffectClosureError` | Closure with unhandled effect escaping to heap record without in-scope handler |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
 | **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |

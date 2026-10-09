@@ -42,7 +42,7 @@ When a bug occurs in synchronous code (for instance, an array index out of bound
 1. **Incoherent State**: Structs or records that were halfway through mutation remain in broken intermediate states.
 2. **Security Vulnerabilities**: Undetected memory corruptions, infinite loops, and logic bypasses.
 
-The only safe boundary for containing a defect panic is an **isolated concurrent execution domain**. In Ril, this boundary is the structured concurrency `nursery`. A worker task spawned inside a nursery evaluates in isolation; if it panics, the nursery catches the panic, unwinds the failed task's `let scoped` resources, cooperative-cancels sibling tasks, and reports `TaskResult::Panicked` to the supervising frame. The supervisor can then restart the subsystem, fail over, or reject the external request with an HTTP 500 status code, without corrupting the supervisor's own memory.
+The only safe boundary for containing a defect panic is an **isolated concurrent execution domain**. In Ril, this boundary is the structured concurrency `scope`. A worker task forked inside a scope evaluates in isolation; if it panics, the scope catches the panic, unwinds the failed task's `let scoped` resources, cooperative-cancels sibling tasks, and reports `TaskResult::Panicked` to the supervising frame. The supervisor can then restart the subsystem, fail over, or reject the external request with an HTTP 500 status code, without corrupting the supervisor's own memory.
 
 ### 1.4 Dual-Track Partial Operations: Assertive vs. Safe Total
 
@@ -161,34 +161,60 @@ Ril eliminates function coloring through **Algebraic Effects**:
 - Callers invoke the function with standard call syntax: `let data = fetch(url)`.
 - Standard combinators (`map`, `filter`) require no specialized async duplicates. By the **Automatic Effect Forwarding Theorem**, higher-order functions transparently forward whatever effects their closure arguments invoke.
 
-### 3.2 Structured Concurrency Nurseries as Defect Containment Domains
+#### 3.1.1 Least-Privilege Effect Annotation: Leaf `@Fiber` vs. Compound `@Async`
+
+`@Async` is formally defined as an effect alias:
+$$\text{@Async} \equiv \{\text{Fiber}, \text{Concurrent}\}$$
+
+This bundling provides seamless ergonomics for high-level application workflows that simultaneously perform suspendable I/O and coordinate concurrent child tasks (such as racing, timeouts, and structured fan-out).
+
+However, granting `@Async` to leaf I/O routines (such as low-level socket readers or timer waits) constitutes an authority escalation: a leaf utility function could covertly fork detached background tasks without caller consent. By separating `@Fiber` from `@Concurrent`:
+1. **Principle of Least Privilege**: Leaf I/O functions declare strictly `@Fiber`. Holding `@Fiber` allows cooperative suspension (`Fiber::park()`, `Fiber::yield()`) but strictly lacks task-forking authority (`@Concurrent`).
+2. **Preservation of Single-Fiber Invariants**: Because a `@Fiber`-only function cannot branch into concurrent tasks, local mutation handles (`&mut`) and live views remain strictly thread-confined and immune to cross-thread data race hazards (`E0601`).
+
+#### 3.1.2 Decoupling Scheduling Quantum from Data Generation (Separation of Fiber and Yield)
+
+In languages such as Python and JavaScript, the `yield` keyword is overloaded to serve two conflicting roles: producing values in generator streams (`yield item`) and yielding execution control to the runtime scheduler.
+
+Ril rejects this conflation:
+1. **Eliminating Handler Hijacking**: If scheduling and data emission shared the same effect, an ambient stream consumer `with Yield::emit(...)` could inadvertently capture runtime scheduler time-slicing yields, causing scheduler starvation.
+2. **Untyped Scheduler vs. Typed Payload**: `@Fiber` operates at the untyped machine-state level (declared as `yield() -> ()` within `effect Fiber`), merely swapping instruction pointers and CPU register frames. Conversely, value streaming carries domain data of type $T$.
+3. **Freestanding Purity**: Streaming functions annotated with `effect Yield<T>` are ordinary algebraic effects. They can be compiled, linked, and executed in freestanding embedded targets without dragging in a fiber runtime or thread scheduler.
+4. **Push vs. Pull Semantics**: Under Ril's affine resumption and no-escape invariant (`E0611`), `effect Yield<T>` evaluates as a zero-cost in-situ **push stream**. External pull iterators (`Iterator<T>`) are cleanly constructed via compiler state-machine lowering or dedicated fiber channels without compromising handler encapsulation.
+
+### 3.2 Structured Concurrency Scopes as Defect Containment Domains
 
 Unstructured concurrency (`go func()`, background thread detached spawning, dangling Promises) is the leading source of resource leaks, orphan goroutines, and race conditions.
 
 Ril unifies all concurrent execution under **Structured Concurrency**:
 
 $$
-\forall c \in \text{Children}(N), \quad \mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(N) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})
+\forall c \in \text{Children}(S), \quad \mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(S) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})
 $$
 
-A parent nursery cannot exit until all child tasks finish. If a child task panics, the nursery guarantees that:
+A parent scope cannot exit until all child tasks finish. If a child task panics, the scope guarantees that:
 1. Sibling tasks are immediately cancelled via delimited Early Abort.
 2. All `let scoped` resource handles inside cancelled fibers execute their cleanup handlers in strict LIFO order.
 3. No orphan tasks remain executing in the background.
 
-### 3.3 The Redundancy of 'Shareable': Concurrency Safety via Capability Tracking
+#### 3.2.1 Zero-Cost Structured Concurrency: Intrusive Child-Stack Scopes and the Synchronous Unwind-Barrier
 
-In mainstream languages such as Rust (`Send`/`Sync`) and Swift (`Sendable`), the compiler relies on nominal marker traits to distinguish types safe to transfer across concurrent boundaries. This necessity arises because their type systems lack first-class capability tracking on individual callables and values.
+In unstructured runtimes (e.g. Go goroutines or Node.js Promises), task control blocks, synchronization semaphores, and closures must be allocated on the heap because child task lifetimes may arbitrarily outlive the parent call frame.
 
-In Ril, this distinction is already fully governed by the **Capability Tracking System**:
-- Pure values, immutable records, and frozen `Immut<T>` values carry zero mutable capabilities.
-- Live mutable references, borrowed views, and captured mutable states carry explicit capability tags (`&mut`, `&^mut`, `&{mut var}`).
-- Algebraic effect operations are ordinary callable signatures (`fn(Args) -> Ret @Effects &Capabilities`), capable of declaring in-place mutation (`&mut`) directly when required.
+Under Ril's structured lifetime invariant $\mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(S) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})$, metadata never escapes the lexical scope. Ril translates this mathematical guarantee into a **Zero-Heap Fast Path**:
+1. **Intrusive Child-Stack Descriptors**: The parent activation record hosts an $O(1)$ `Scope` descriptor containing only an intrusive doubly-linked list head (16–24 bytes). When `s.fork` is invoked, the `TaskNode` tracking block is allocated directly within the child fiber's own stack frame. Dynamic fan-out loops (`for item in items { s.fork(...) }`) scale arbitrarily without requiring dynamic heap allocation.
+2. **Synchronous Scope Unwind-Barrier**: If a panic occurs in the parent frame while child fibers are executing concurrently, releasing the parent stack frame immediately would lead to catastrophic stack-use-after-free corruption when child tasks access the parent `Scope` descriptor. Ril enforces a Synchronous Unwind-Barrier: on panic or early abort, the unwinder marks the scope cancelled and pauses at the frame boundary until all children reach a terminal state (`active_count == 0`) and complete their `let scoped` LIFO cleanups. Only then is the parent stack memory reclaimed.
+3. **Quiescent Result Rendezvous**: Child return values $T$ are stored in an inline slot within the child's stack frame, remaining valid in a quiescent state until transferred to the parent via `task.join()` or discarded during scope unwinding. Structured concurrency thus achieves zero-cost abstraction without GC overhead.
 
-Consequently, introducing an ad-hoc trait like `Shareable` is redundant:
-1. **Direct DRF-SC Enforcement**: Concurrency boundaries (`nursery.spawn`, `Parallel::map`) directly inspect capability requirements. Any closure or payload carrying active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) is rejected at compile time under `E0601: CrossThreadDataRaceHazardError`.
-2. **Unified Effect Operations**: Effect operations are treated as first-class callable signatures without artificial restrictions prohibiting `mut` parameters or requiring ad-hoc marker traits.
-3. **Conceptual Minimality**: Eliminating `Shareable` keeps the language lean, mathematically unified, and free of trait proliferation.
+### 3.3 Concurrency Boundary Safety via Capability Tracking: Direct DRF-SC Without Marker Traits
+
+In mainstream languages such as Rust (`Send`/`Sync`) and Swift (`Sendable`), compilers rely on nominal marker traits or protocols to classify types that can safely cross concurrent boundaries. This necessity arises because their type systems lack first-class capability tracking on individual callables and values, requiring nominal markers to constrain generic parameters and type declarations.
+
+Ril introduces no nominal marker traits, tags, or ad-hoc concurrency classifications. Concurrency safety—specifically Data-Race Freedom under Sequential Consistency (DRF-SC)—is governed directly by structural value semantics and the **Capability Tracking System**:
+- **Zero-Capability Invariant for Cross-Boundary Transfer**: Pure values, immutable records, and frozen `Immut<T>` values carry zero mutable capabilities. They are inherently data-race free and can safely cross concurrent task boundaries (`scope.fork`, `Parallel::map`) without wrapper types or marker trait implementations.
+- **Direct Static DRF-SC Enforcement**: Concurrency boundaries directly inspect capability requirements. Any closure or captured payload carrying active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) or live views over mutable roots is rejected at compile time under `E0601: CrossThreadDataRaceHazardError`.
+- **First-Class Effect Signatures**: Algebraic effect operations are ordinary callable signatures (`fn(Args) -> Ret @Effects &Capabilities`), tracking in-place mutation (`&mut`) directly where required without imposing artificial restrictions or marker trait requirements.
+- **Conceptual Minimality and Orthogonality**: Concurrency safety is an inherent static property derived from capability tracking and value immutability, rather than a nominal trait bolted onto type definitions. Type definitions remain lean, APIs avoid marker trait clutter, and developers reason about thread safety through familiar capability rules.
 
 ---
 
