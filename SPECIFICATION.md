@@ -154,8 +154,8 @@ Identifiers are strictly partitioned at the lexer and parser levels across gramm
 
 1. **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`effect`), and generic type parameters (`T`, `ItemType`).
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
-2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, and top-level mutable variables `let mut`), named functions (`fn`, `meta fn`), record fields, and module path segments.
-3. **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`let mut`) MUST use `snake_case`.
+2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), named functions (`fn`, `meta fn`), record fields, and module path segments.
+3. **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`) MUST use `snake_case`.
 4. **Wildcard & Suppression**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0301`). An identifier with a leading underscore `_snake_case` declares an intentionally unused variable or parameter, suppressing unused binding diagnostics (`E0527`).
 
 ```ril
@@ -165,10 +165,10 @@ type Result<T, E> = Ok(T) | Err(E)     -- OK: generic parameters and constructor
 effect FileIo { read() -> str }        -- OK: effect identifier
 type HttpServerConfig = { port: int }  -- OK: title-cased acronym
 
--- 2. snake_case: Variables (local, param, top-level mut), Functions, and Fields
+-- 2. snake_case: Variables (local, param, top-level var / let mut), Functions, and Fields
 let user_count = 10                    -- OK: local variable identifier
-let mut total_score = 0                -- OK: local mutable variable
-let mut active_workers = 0             -- OK: top-level mutable variable
+var total_score = 0                    -- OK: local reassignable variable
+var active_workers = 0                 -- OK: top-level reassignable mutable variable
 fn compute_area(width: f64) -> f64 { width * 2.0 } -- OK: function identifier
 meta fn pad_align(size: int) -> int { size }       -- OK: compile-time function
 
@@ -185,7 +185,7 @@ fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' suppresses un
 -- fn Calculate() -> () {}             -- Error [E0101]: function identifier must be snake_case, found 'Calculate'
 -- let UserCount = 10                  -- Error [E0101]: variable identifier must be snake_case, found 'UserCount'
 -- meta let max_size = 100             -- Error [E0101]: compile-time constant must be SCREAMING_SNAKE_CASE, found 'max_size'
--- let mut ACTIVE_FLAG = true          -- Error [E0101]: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
+-- var ACTIVE_FLAG = true              -- Error [E0101]: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
 -- type HTTPServer = { port: int }     -- Error [E0102]: acronym in PascalCase must be title-cased, expected 'HttpServer'
 -- let user__name = "Alice"            -- Error [E0102]: consecutive underscores are prohibited, found 'user__name'
 -- let Some(USER_ID) = opt             -- Error [E0103]: pattern binding position cannot use uppercase identifier
@@ -194,7 +194,7 @@ fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' suppresses un
 
 ### 2.5 Keywords
 
-The following 35 tokens are strictly reserved keywords:
+The following 36 tokens are strictly reserved keywords:
 
 ```
 as       effect   else     false    fn
@@ -203,7 +203,8 @@ is       keyof    last     let      loop
 match    meta     module   mut      never
 next     opaque   pub      resume   return
 scoped   test     true     type     typeof
-use      view     where    while    with
+use      var      view     where    while
+with
 ```
 
 ```ril
@@ -223,7 +224,7 @@ fn calculate(val: ?int) -> int {       -- 'fn'
         _ -> 0,
     }
     let is_positive = bound is 1..=10  -- 'is'
-    let mut sum = 0                    -- 'mut'
+    var sum = 0                        -- 'var'
     for n in [1, 2, 3] {               -- 'for', 'in'
         if sum > 10 { last }           -- 'last'
         else { next }                  -- 'else', 'next'
@@ -319,10 +320,11 @@ Value types have copy-by-value semantics. They cannot be borrowed as `mut` param
 ```ril
 -- Value types: independent copy-by-value semantics:
 let a: int = 42
-let mut b = a                          -- Independent copy
+var b = a                              -- Independent copy; value types use 'var' for mutation
 b += 1                                 -- Modifies 'b'; 'a' remains 42
 assert(a == 42 && b == 43)
 
+-- let mut bad_scalar = a              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
 -- fn bad_borrow(mut x: int) {}        -- Error [E0401]: value types cannot be borrowed as 'mut' parameters
 ```
 
@@ -630,21 +632,31 @@ type Getter<T> = fn() -> T
 
 ### 3.9 Memory Model & Handle Invariants
 
-1. **Handle-Level Read-Only Invariant**: Immutability is enforced at the variable binding and handle level. A binding declared with `let` grants read-only access.
-2. **Live Views (`let view x = obj`)**: A live view strips write permissions locally but observes concurrent or subsequent mutations on the underlying heap object.
-3. **Definite Mutation Invariant**: Any binding declared with `let mut` or parameter declared with `mut` MUST undergo at least one reachable write operation along an executable path.
+1. **Handle-Level Immutability Invariant**: A binding declared with `let` establishes a completely immutable handle (neither reassignment nor in-place interior mutation is permitted).
+2. **Pinned Mutable Handles (`let mut`)**: A binding declared with `let mut` establishes a pinned mutable handle over reference types. It permits in-place mutation of fields and elements, but statically rejects handle reassignment (`E0502`). Binding value types to `let mut` is statically rejected (`E0402`).
+3. **Reassignable Mutable Variables (`var`)**: A binding declared with `var` establishes a reassignable mutable variable cell, permitting both slot reassignment and interior field mutation.
+4. **Live Views (`let view x = obj`)**: A live view strips write permissions locally but dynamically observes concurrent or subsequent mutations on the underlying heap object. The target MUST be a pinned mutable root (`let mut` handle or `mut` parameter).
+5. **Definite Mutation Invariant (`E0527`)**: Any binding declared with `let mut` or `var`, or parameter declared with `mut`, MUST undergo at least one reachable write operation along an executable path (`let mut` requires in-place mutation; `var` requires reassignment or mutation).
 
 ```ril
 type Counter = { mut count: int }
 let mut original = Counter.{ count: 0 }
 
-let view v = original                  -- Live view into 'original'
+let view v = original                  -- Live view into pinned root 'original'
 -- v.count = 5                         -- Error [E0520]: cannot mutate through read-only view 'v'
 
 original.count += 1
 let observed = v.count                 -- observed is 1 (live view reflects mutation)
 
--- let mut unused_mut = 42             -- Error [E0527]: variable 'unused_mut' declared 'let mut' but never modified
+-- Pinned handle reassignment rejected:
+-- original = Counter.{ count: 10 }    -- Error [E0502]: cannot reassign pinned mutable handle 'original'; use 'var'
+
+-- Value type declared let mut rejected:
+-- let mut bad_scalar = 42             -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
+
+-- Definite Mutation Invariant:
+-- let mut unused_mut = Counter.{ count: 0 } -- Error [E0527]: variable 'unused_mut' declared 'let mut' but never modified
+-- var unused_var = 10                 -- Error [E0527]: variable 'unused_var' declared 'var' but never modified
 ```
 
 ### 3.10 Path-Wise Copy-on-Write Functional Updates (`derive`)
@@ -738,25 +750,90 @@ let cfg = Config.{ capacity: 64 }
 -- let .{ mut capacity } = cfg         -- Error [E0521]: cannot destructure read-only record into 'mut' binding
 ```
 
-### 4.2 Mutable Bindings (`let mut`)
+### 4.2 Pinned Mutable Handles (`let mut`)
+
+A binding declared with `let mut` binds a reference-type heap object as a **pinned mutable handle**. It permits in-place mutation of fields and elements, but statically forbids handle reassignment (`E0502`).
+
+#### Normative Rules for Pinned Handles:
+1. **Pinned Handle Invariant (`E0502`)**: A `let mut` handle is permanently pinned to its initial heap allocation. Reassigning the identifier (`handle = new_obj`) is statically rejected under `E0502: PinnedHandleReassignmentError`.
+2. **Value Type Prohibition (`E0402`)**: Primitive value types (`int`, `bool`, `f64`, etc.) have no interior mutable fields. Declaring a value type as `let mut` is statically rejected under `E0402: ValueTypePinnedMutError`; mutable value types MUST be declared with `var`.
+3. **Live View Stability**: Because a pinned mutable handle cannot be rebound, it provides guaranteed pointer stability as a mutable root for live views (`let view`).
 
 ```ebnf
-LetMutDecl ::= "let" "mut" Identifier [ ":" TypeExpression ] "=" Expression
+LetMutDecl ::= "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression
 ```
 
 ```ril
-let mut counter = 0
-counter += 1                           -- OK: mutable binding reassignment
+type Buffer = { mut items: []int }
+let mut buf = Buffer.{ items: [1, 2] }
 
--- Pattern-level mutable destructuring:
-let (mut start, mut end) = (0, 10)
-start += 1; end -= 1                   -- OK: individual fields mutated
+-- 1. In-place interior mutation is permitted:
+buf.items !> Array::push(3)            -- OK: in-place write to pinned buffer
 
--- Definite Mutation Invariant:
--- let mut unused = 100                -- Error [E0527]: variable 'unused' declared 'let mut' but never modified
+-- 2. Handle reassignment is statically rejected:
+-- buf = Buffer.{ items: [] }          -- Error [E0502]: cannot reassign pinned mutable handle 'buf'; use 'var' if reassignment is intended
+
+-- 3. Value types under let mut are rejected:
+-- let mut count: int = 0              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
+
+-- 4. Pattern-level pinned mutable destructuring:
+type NodePair = { mut left: Buffer, mut right: Buffer }
+let mut pair = NodePair.{ left: Buffer.{ items: [] }, right: Buffer.{ items: [] } }
+let .{ mut left, mut right } = pair
+left.items !> Array::push(10)          -- OK: 'left' is a pinned mutable handle
+-- left = Buffer.{ items: [] }        -- Error [E0502]: cannot reassign pinned handle 'left'
+
+-- 5. Definite Mutation Invariant:
+-- let mut unused = Buffer.{ items: [] } -- Error [E0527]: variable 'unused' declared 'let mut' but never modified in-place
 ```
 
-### 4.3 Scoped Resource Bindings (`let scoped`, `let scoped mut`)
+### 4.3 Reassignable Mutable Variables (`var`)
+
+A binding declared with `var` establishes a **reassignable mutable variable cell**. It permits both variable slot reassignment (`x = ...`) and, when referencing a mutable object, interior in-place mutation (`x.field = ...`).
+
+#### Normative Rules for `var`:
+1. **Dual Permission**: A `var` binding allows both in-place field/element mutation and complete slot reassignment.
+2. **Monotonic Anti-Laundering Degradation (`E0520`)**:
+   - Reassigning a read-only reference into a `var` handle carrying mutable permissions is rejected under `E0520: MutabilityLaunderingError`.
+   - When initialized from a read-only root (`var cursor = ro_list`), `var` inherits `ReadOnly` handle capability: slot reassignment is permitted (`cursor = cursor.next`), but interior mutation is statically rejected (`E0520`).
+3. **Definite Mutation Invariant (`E0527`)**: A variable declared `var` MUST undergo at least one reachable write operation (reassignment or in-place mutation) along an executable path.
+
+```ebnf
+VarDecl ::= [ "pub" ] "var" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+```
+
+```ril
+-- 1. Reassignable primitive scalar:
+var counter = 0
+counter += 1                           -- OK: reassignable scalar
+counter = 10                           -- OK: direct reassignment
+assert(counter == 10)
+
+-- 2. Fully mutable reference variable:
+var active_buf = Buffer.{ items: [1] }
+active_buf.items !> Array::push(2)     -- OK: in-place mutation
+active_buf = Buffer.{ items: [10, 20] } -- OK: handle reassignment permitted on 'var'
+assert(len(active_buf.items) == 2)
+
+-- 3. Read-only cursor over immutable structures:
+type Node = { val: int, next: ?Node }
+let ro_node2 = Node.{ val: 2, next: None }
+let ro_node1 = Node.{ val: 1, next: Some(ro_node2) }
+
+var cursor = ro_node1                  -- OK: 'cursor' is a reassignable ReadOnly handle
+assert(cursor.val == 1)
+cursor = ro_node2                      -- OK: reassignment permitted to matching ReadOnly type
+-- cursor.val = 99                     -- Error [E0520]: cannot mutate field through read-only handle 'cursor'
+
+-- 4. Pattern-level var destructuring:
+var (start_idx, end_idx) = (0, 10)
+start_idx += 1; end_idx -= 1           -- OK: both variables reassignable
+
+-- 5. Definite Mutation Invariant:
+-- var unused_var = 100                -- Error [E0527]: variable 'unused_var' declared 'var' but never modified
+```
+
+### 4.4 Scoped Resource Bindings (`let scoped`, `let scoped mut`)
 
 Scoped bindings associate resources with lexical scopes. When exiting the enclosing scope (by normal completion, return, or unwinding), the cleanup handler executes in strict Last-In, First-Out (LIFO) order.
 
@@ -765,6 +842,7 @@ Scoped bindings associate resources with lexical scopes. When exiting the enclos
 2. **Hermetic Cleanup Invariant (`E0616`, `E0617`)**: The `on_close` cleanup handler associated with `let scoped` MUST be effect-closed ($\mathop{\mathrm{Effects}} = \emptyset$, rejected under `E0616: ScopedCleanupEffectError`) and non-divergent (`@Div` prohibited, rejected under `E0617: ScopedCleanupDivergenceError`).
 3. **Permitted In-Place Mutation**: In-place mutations on local and external mutable state (`&mut`, `&^mut`) within `on_close` are permitted under Commit-on-Write semantics (§9.3).
 4. **Double-Fault Escalation**: If an unhandled panic occurs while executing an `on_close` handler during active stack unwinding (due to prior panic or delimited early abort), the runtime MUST NOT attempt secondary unwinding. In structured concurrency scopes, the task transitions immediately to `TaskFault::DoubleFaultFatal` (§9.5); in unsupervised execution frames, the process terminates immediately with an unrecoverable fatal abort.
+5. **Prohibition of `var scoped` (`E0532`)**: Scoped resource bindings register cleanups to the enclosing lexical block in strict LIFO order. Reassigning a scoped variable would corrupt runtime block-exit unwinding. Therefore, `var scoped` and `scoped var` are statically prohibited (`E0532: ReassignableScopedResourceError`).
 
 ```ebnf
 ScopedDecl ::= "let" "scoped" [ "mut" ] Identifier [ ":" TypeExpression ] "=" Expression
@@ -780,12 +858,13 @@ let mut event_log: []str = []
         name: "R1",
         on_close: \-> event_log !> Array::push("closed_R1")
     }
-    -- 'let scoped mut' permits in-place mutation of the scoped handle:
+    -- 'let scoped mut' permits in-place mutation of the pinned scoped handle:
     let scoped mut second = Resource.{
         name: "R2",
         on_close: \-> event_log !> Array::push("closed_R2")
     }
     second.name = "R2_modified"        -- OK: 'second' is declared 'let scoped mut'
+    -- second = Resource.{ name: "R3", on_close: \-> () } -- Error [E0502]: cannot reassign pinned scoped handle 'second'
 
     -- Scope exit triggers cleanup in strict LIFO order:
     -- 'second' closes FIRST, 'first' closes SECOND
@@ -803,25 +882,15 @@ for item in ["A", "B"] {
 }
 assert(iter_log == ["closed_A", "closed_B"])
 
--- 3. Hermetic Cleanup Invariant: algebraic effects and divergence are strictly rejected:
-effect RemoteAudit { log(str) -> () }
-
--- let scoped bad_eff = Resource.{
---     name: "R_bad",
---     on_close: \-> RemoteAudit::log("closing") -- Error [E0616]: ScopedCleanupEffectError: cleanup handler 'on_close' cannot invoke unhandled algebraic effect '@RemoteAudit'
--- }
-
--- let scoped bad_div = Resource.{
---     name: "R_div",
---     on_close: \-> while true {}               -- Error [E0617]: ScopedCleanupDivergenceError: cleanup handler 'on_close' cannot carry divergent loop '@Div'
--- }
+-- 3. Static violations:
+-- var scoped bad_reassign = Resource.{ name: "Bad", on_close: \-> () } -- Error [E0532]: scoped bindings cannot be declared 'var'
 ```
 
-### 4.4 Live View Bindings (`let view`)
+### 4.5 Live View Bindings (`let view`)
 
 An explicit `let view` binding creates a live read-only observation handle into an existing reference object located on the managed GC heap. It strips write permissions locally while dynamically observing mutations performed through the underlying mutable root.
 
-**Mutable Root Invariant**: The source expression of a `let view` binding MUST be an active mutable root (`let mut` handle or `mut` parameter). Creating a live view over an immutable `let` binding is statically rejected (`E0531`). Conversely, immutable bindings safely share read-only access with other ordinary `let` bindings (`let b = a`).
+**Mutable Root Invariant**: The source expression of a `let view` binding MUST be an active pinned mutable root (`let mut` handle or `mut` parameter). Creating a live view over an immutable `let` binding is statically rejected (`E0531`). Creating a live view over a reassignable `var` variable is statically rejected (`E0531`) to guarantee pointer stability. Conversely, immutable bindings safely share read-only access with other ordinary `let` bindings (`let b = a`).
 
 ```ebnf
 LetViewDecl ::= "let" "view" Identifier [ ":" TypeExpression ] "=" Expression
@@ -842,9 +911,12 @@ assert(observer.val == 10)
 original.val = 42
 assert(observer.val == 42)             -- OK: live view reflects mutation
 
--- 2. Target Constraint: source must be a mutable root
+-- 2. Target Constraint: source must be a pinned mutable root
 let immutable_node = Node.{ val: 100 }
--- let view bad_view = immutable_node   -- Error [E0531]: cannot create live view over immutable binding 'immutable_node' (source must be mutable root)
+-- let view bad_view = immutable_node   -- Error [E0531]: cannot create live view over immutable binding 'immutable_node' (source must be pinned mutable root)
+
+var reassignable_node = Node.{ val: 200 }
+-- let view bad_var_view = reassignable_node -- Error [E0531]: cannot create live view over reassignable variable 'reassignable_node' (source must be pinned mutable root)
 
 -- Safe read-only sharing via ordinary let:
 let safe_alias = immutable_node        -- OK: immutable bindings safely share read-only access
@@ -855,7 +927,7 @@ assert(safe_alias.val == 100)
 -- scope.fork(\-> observer.val)        -- Error [E0601]: cannot pass live mutable view across task boundary
 ```
 
-### 4.5 Type Declarations & Opaque Types
+### 4.6 Type Declarations & Opaque Types
 
 ```ebnf
 TypeDecl       ::= [ "pub" ] [ "halt" ] "type" Identifier [ GenericParams ] [ WhereClause ] "=" TypeExpression
@@ -914,7 +986,7 @@ let active_tokens: []SessionToken = [token]
 let token_map: [SessionToken: int] = [token: 42]
 ```
 
-### 4.6 Effect Declarations
+### 4.7 Effect Declarations
 
 ```ebnf
 EffectDecl   ::= [ "pub" ] "effect" Identifier [ GenericParams ] "{" EffectOpDecl { "," EffectOpDecl } [ "," ] "}"
@@ -1100,7 +1172,7 @@ let p2 = Point.{ z: 10, ..p1 }         -- Functional record update: { x: 1, y: 2
 Assignments require an addressable mutable lvalue target. Assignments are expressions evaluating to `()`.
 
 ```ril
-let mut x = 10
+var x = 10
 x = 20                                 -- Simple assignment
 x += 5                                 -- Compound addition (25)
 x -= 2                                 -- Compound subtraction (23)
@@ -1109,18 +1181,24 @@ x /= 2                                 -- Compound division (23)
 x %= 5                                 -- Compound remainder (3)
 
 -- Compound wrapping arithmetic:
-let mut byte_val: u8 = 250u8
+var byte_val: u8 = 250u8
 byte_val +%= 10u8                      -- 4u8 (compound wrapping addition)
 byte_val -%= 10u8                      -- 250u8 (compound wrapping subtraction)
 byte_val *%= 2u8                       -- 244u8 (compound wrapping multiplication)
 
 -- Compound bitwise assignments:
-let mut flags = 0b0011
+var flags = 0b0011
 flags |= 0b1100                        -- 0b1111
 flags &= 0b1010                        -- 0b1010
 flags ^= 0b0011                        -- 0b1001
 flags <<= 1                            -- 0b10010
 flags >>= 2                            -- 0b00100
+
+-- Pinned handles (let mut) permit field assignment but reject handle reassignment:
+type Buffer = { mut capacity: int }
+let mut pinned_buf = Buffer.{ capacity: 16 }
+pinned_buf.capacity = 32               -- OK: field assignment through pinned handle
+-- pinned_buf = Buffer.{ capacity: 64 } -- Error [E0502]: cannot reassign pinned mutable handle 'pinned_buf'; use 'var'
 
 -- Chained assignment is prohibited:
 -- x = y = 10                          -- Error [E0701]: assignment chaining is prohibited
@@ -1132,7 +1210,7 @@ flags >>= 2                            -- 0b00100
 
 ### 6.1 Block Expressions, Tail Values & Hoisted `where` Declarations
 
-A block `{ ... }` evaluates to its tail expression. A block may conclude with a trailing `where` clause declaring mutually recursive helper functions (`fn`) and local types (`type`). Because functions and types are purely declarative with no sequential initialization side effects, they are hoisted across the entire block scope. Variable bindings (`let`, `let mut`) carry sequential side effects and are strictly prohibited in `where` (`E0702`).
+A block `{ ... }` evaluates to its tail expression. A block may conclude with a trailing `where` clause declaring mutually recursive helper functions (`fn`) and local types (`type`). Because functions and types are purely declarative with no sequential initialization side effects, they are hoisted across the entire block scope. Variable bindings (`let`, `let mut`, `var`) carry sequential side effects and are strictly prohibited in `where` (`E0702`).
 
 ```ebnf
 Block       ::= "{" [ StatementList ] [ Expression ] [ WhereClause ] "}"
@@ -1188,7 +1266,7 @@ if logging_enabled {
 
 ```ril
 -- 1. 'loop' with 'last' yielding a value:
-let mut i = 0
+var i = 0
 let found = loop {
     i += 1
     if i == 5 { next }                 -- OK: skips to next iteration via 'next'
@@ -1201,7 +1279,7 @@ while i > 0 {
 }
 
 -- 3. 'for' loop over ranges and collections:
-let mut sum = 0
+var sum = 0
 for x in 1..=5 {
     if x % 2 == 0 { next }             -- 'next' skips even numbers
     sum += x
@@ -1221,14 +1299,14 @@ ControlTransfer ::= ( "last" [ Expression ] )
 
 ```ril
 -- 1. 'last' terminates innermost loop (bare 'last' or 'last expr'):
-let mut total = 0
+var total = 0
 for n in 1..=100 {
     if n > 10 { last }                 -- Bare 'last': terminates loop without value
     total += n
 }
 assert(total == 55)
 
-let mut counter = 0
+var counter = 0
 let reached = loop {
     counter += 1
     if counter == 5 { last counter * 10 } -- 'last expr': loop evaluates to 50
@@ -1236,7 +1314,7 @@ let reached = loop {
 assert(reached == 50)
 
 -- 2. 'next' advances innermost loop to next iteration:
-let mut odd_sum = 0
+var odd_sum = 0
 for n in 1..=6 {
     if n % 2 == 0 { next }             -- Skips even iterations
     odd_sum += n
@@ -1319,11 +1397,13 @@ OrPattern     ::= GuardPattern { "|" GuardPattern }
 GuardPattern  ::= SinglePattern [ "if" Expression ]
 SinglePattern      ::= LiteralPattern | VariablePattern | WildcardPattern
                      | TuplePattern | RecordPattern | ConstructorPattern | RangePattern
+BindingModifier    ::= "mut" | "var"
+VariablePattern    ::= [ BindingModifier ] Identifier
 ConstructorPattern ::= QualifiedName [ "(" [ PatternList ] ")" ]
 PatternList        ::= Pattern { "," Pattern } [ "," ]
 TuplePattern       ::= "(" Pattern "," { Pattern "," } [ Pattern ] ")" | "(" ")"
 RecordPattern      ::= [ TypeReference ] ".{" [ RecordPatternField { "," RecordPatternField } [ "," ] ] "}"
-RecordPatternField ::= [ "mut" ] Identifier [ ":" Pattern ] | Identifier
+RecordPatternField ::= [ BindingModifier ] Identifier [ ":" Pattern ] | Identifier
 ```
 
 Matches are evaluated top-to-bottom. The compiler enforces exhaustiveness.
@@ -1446,7 +1526,7 @@ let r3 = tax_closure(100)              -- OK: 20
 | **Hoisting** | Module-wide newspaper ordering | Strictly lexical (definition before use) | Strictly lexical (definition before use) |
 | **Environment Allocation** | Zero | Zero (bare machine code pointer) | Fat pointer (code pointer + environment struct) |
 | **Type Representation** | Item identity / `fn(P) -> R` | `fn(P) -> R` | `fn(P) -> R &closure` |
-| **Handle Requirement** | Direct call / `let` handle | Callable via `let` handle | `let` (read-only capture) or `let mut` (mut capture) |
+| **Handle Requirement** | Direct call / `let` handle | Callable via `let` handle | `let` (read-only capture) or `let mut` / `var` (mut capture) |
 
 ### 7.2 Parameter Modes, Caller-Site Obligations & Defaults
 
@@ -1471,6 +1551,8 @@ player !> add_score(5)                 -- OK: mutating pipeline desugars to add_
 -- add_score(mut frozen_player, 5)     -- Error [E0520]: cannot borrow read-only handle 'frozen_player' as 'mut'
 -- fn bad_inc(mut count: int) &mut {}  -- Error [E0401]: value types (int) cannot be declared as 'mut' parameters
 -- fn noop_mut(mut u: User) &mut {}    -- Error [E0527]: 'mut' parameter 'u' declared but never modified
+-- fn bad_rebind(mut u: User) &mut { u = User.{ name: "B", score: 0 } } -- Error [E0502]: cannot reassign pinned parameter 'u'
+-- fn bad_var(var x: int) {}           -- Error [E0403]: 'var' parameters are prohibited in function signatures
 ```
 
 #### Default Parameters and Named Arguments
@@ -1552,14 +1634,14 @@ let res1 = add5(10)                    -- 15: valid invocation through 'let' han
 
 -- Factory returning a mutable capture closure:
 fn make_accumulator(start: int) -> (fn(int) -> int &closure) &capture {
-    let mut total = start
+    var total = start
     \step -> {
         total += step
         total
-    }                                  -- Captures mutable local 'total'
+    }                                  -- Captures reassignable local 'total'
 }
 
-let mut acc = make_accumulator(100)    -- Requires 'let mut acc'
+let mut acc = make_accumulator(100)    -- Requires 'let mut acc' (pinned mutable handle)
 let a1 = acc(20)                       -- 120: valid invocation through 'let mut' handle
 
 let frozen_acc = make_accumulator(10)
@@ -1567,9 +1649,9 @@ let frozen_acc = make_accumulator(10)
 
 -- Nested Closures and Flat Chain Elaboration:
 fn make_nested_multiplier(factor: int) -> (fn(int) -> (fn(int) -> int &closure) &closure) &capture {
-    let mut base_multiplier = factor
+    let base_multiplier = factor
     \multiplier_step -> {
-        let mut intermediate = base_multiplier * multiplier_step
+        let intermediate = base_multiplier * multiplier_step
         \x -> x * intermediate         -- Elaborates flat capture set: &{closure make_nested_multiplier, base_multiplier, intermediate}
     }
 }
@@ -1606,8 +1688,8 @@ fn mutate_caller(mut c: Counter) &mut {
     apply(mut c, \mut target -> bump(mut target)) -- Transparently forwards &mut capability
 }
 
--- 4. External State Capability Forwarding (&{mut var}):
-let mut global_total = 0
+-- 4. External State Capability Forwarding (&{mut ident}):
+var global_total = 0
 fn add_to_global(n: int) -> int &{mut global_total} {
     global_total += n
     global_total
@@ -1632,8 +1714,8 @@ fn append_val(mut b: Buffer, v: int) &mut { b.items !> Array::push(v) }
 
 -- 1. Pure function with internal primitive mutation:
 fn compute_sum(n: int) -> int {
-    let mut total = 0
-    let mut i = 1
+    var total = 0
+    var i = 1
     while i <= n {
         total += i
         i += 1
@@ -1644,7 +1726,7 @@ fn compute_sum(n: int) -> int {
 -- 2. Local Capability Discharge with reference types and &mut callees:
 fn generate_sequence(count: int) -> []int {
     let mut local_buf = Buffer.{ items: [] }
-    let mut i = 0
+    var i = 0
     while i < count {
         append_val(mut local_buf, i)   -- &mut discharged locally: local_buf does not escape
         i += 1
@@ -1654,12 +1736,12 @@ fn generate_sequence(count: int) -> []int {
 
 -- 3. Local Discharge of Retained Sharing (&^mut):
 type NodeHub = { mut nodes: []int }
-fn link(mut hub: NodeHub, mut node: int) &^mut { hub.nodes !> Array::push(node) }
+fn link(mut hub: NodeHub, node: int) &^mut { hub.nodes !> Array::push(node) }
 
 fn test_internal_hub() -> int {
     let mut local_hub = NodeHub.{ nodes: [] }
-    let mut local_node = 42
-    link(mut local_hub, mut local_node) -- &^mut discharged locally: all origins frame-confined
+    var local_node = 42
+    link(mut local_hub, local_node)    -- &^mut discharged locally: all origins frame-confined
     len(local_hub.nodes)               -- Pure: signature carries NO &^mut!
 }
 ```
@@ -1679,7 +1761,7 @@ fn clear_items(mut list: []int) &mut {
 -- }
 ```
 
-### 8.3 Retained Mutable Sharing (`&^mut`, `&{^mut var}`)
+### 8.3 Retained Mutable Sharing (`&^mut`, `&{^mut ident}`)
 
 Retained mutable sharing occurs when execution creates a persistent writable access path that survives the call or closure publication boundary ($\ge 2$ independent surviving write paths). Origin identities survive intermediate local bindings: forwarding an external or borrowed reference through a local `let mut` handle does not alter its storage origin or discharge capability obligations. Conversely, allocating a fresh mutable reference that escapes solely through a single closure creates exactly 1 surviving write path and requires only `&capture`, while exposing multiple surviving handles creates $\ge 2$ write paths and requires `&^mut`.
 
@@ -1699,7 +1781,7 @@ fn register_entry(mut h: Hub, mut e: Entry) &^mut {
     h.entries !> Array::push(e)        -- Survives call: 'e' is now aliased through 'h'
 }
 
--- 3. External Named Retained Mutable Sharing (&{^mut var}):
+-- 3. External Named Retained Mutable Sharing (&{^mut ident}):
 -- Stashes a mutable parameter into an external global container
 let mut global_hub = Hub.{ entries: [] }
 
@@ -1708,7 +1790,7 @@ fn publish_entry(mut e: Entry) &{^mut global_hub} {
 }
 
 -- 4. Returning a closure that captures and shares external mutable state:
-let mut active_connections = 0
+var active_connections = 0
 
 fn make_connection_ticker() -> (fn() -> int &{mut active_connections}) &{^mut active_connections} {
     \-> {
@@ -1766,13 +1848,13 @@ let f_retain: Retainer = register_entry -- Exact match
 let f_touch: Retainer = \mut h, mut e -> { e.id += 1 } -- OK: &mut subsumed by &^mut
 ```
 
-### 8.4 External State Tracking (`&{var}`, `&{mut var}`)
+### 8.4 External State Tracking (`&{ident}`, `&{mut ident}`)
 
 Accessing module-level or outer lexical bindings without passing them as parameters requires explicit named capability annotations:
 
 ```ril
 let APP_CONFIG_NAME = "Production"
-let mut transaction_count = 0
+var transaction_count = 0
 
 -- 1. Read-only external access:
 fn get_config_name() -> str &{APP_CONFIG_NAME} {
@@ -1794,12 +1876,12 @@ fn record_transaction() -> () &{mut transaction_count} {
 
 ### 8.5 Closure Capabilities & Handle Invocation Permissions
 
-Invoking a closure that captured **mutable state** strictly requires the handle to be bound as `let mut` or passed as a `mut` parameter. Calling through a read-only `let` handle triggers `Error [E0520]`. Invoking a closure with **read-only** captures requires only `let`.
+Invoking a closure that captured **mutable state** strictly requires the handle to be bound as `let mut`, `var`, or passed as a `mut` parameter. Calling through a read-only `let` handle triggers `Error [E0520]`. Invoking a closure with **read-only** captures requires only `let`.
 
 ```ril
 -- Mutable-capturing closure:
 fn create_counter(start: int) -> (fn() -> int &closure) &capture {
-    let mut count = start
+    var count = start
     \-> { count += 1; count }          -- Elaborates to: &{closure create_counter, mut count}
 }
 
@@ -1869,13 +1951,15 @@ Permissions degrade monotonically ($\text{Mut} \succ \text{ReadOnly} \succ \text
 ```ril
 type UserDoc = { mut title: str, mut score: int }
 
--- E0520: MutabilityLaunderingError (binding/assigning read-only to let mut, or mutating through view)
+-- E0520: MutabilityLaunderingError (binding/assigning read-only to let mut or mutable var, or mutating through view)
 let doc = UserDoc.{ title: "Draft", score: 0 }
 -- doc.score = 10                      -- Error [E0520]: cannot mutate field through read-only handle 'doc'
 -- let mut laundered = doc             -- Error [E0520]: cannot bind read-only handle to 'let mut'
 let mut other_doc = UserDoc.{ title: "Active", score: 5 }
 other_doc.score = 10                  -- OK: mutable handle mutated
--- other_doc = doc                    -- Error [E0520]: cannot reassign read-only handle 'doc' to mutable binding 'other_doc'
+-- other_doc = doc                    -- Error [E0502]: cannot reassign pinned mutable handle 'other_doc'; use 'var'
+var reassignable_doc = UserDoc.{ title: "Active", score: 5 }
+-- reassignable_doc = doc             -- Error [E0520]: cannot reassign read-only handle 'doc' to mutable handle 'reassignable_doc'
 fn pass_to_mut(mut u: UserDoc) &mut { u.score += 1 }
 -- pass_to_mut(mut doc)                -- Error [E0520]: cannot borrow read-only handle 'doc' as 'mut'
 
@@ -1899,8 +1983,9 @@ for item in nums {
     -- nums !> Array::push(item)       -- Error [E0526]: cannot mutate 'nums' in place while iterating in 'for' loop
 }
 
--- E0527: UnusedMutBindingError (declared 'let mut' or 'mut' parameter but never modified)
--- let mut never_written = 42          -- Error [E0527]: variable 'never_written' declared 'let mut' but never modified
+-- E0527: UnusedMutableBindingError (declared 'var', 'let mut', or 'mut' parameter but never modified)
+-- var never_written = 42              -- Error [E0527]: variable 'never_written' declared 'var' but never modified
+-- let mut unused_doc = UserDoc.{ title: "X", score: 0 } -- Error [E0527]: variable 'unused_doc' declared 'let mut' but never modified in place
 -- fn noop_mut(mut u: UserDoc) &mut {} -- Error [E0527]: 'mut' parameter 'u' declared but never modified
 
 -- E0528: ReturnMutabilityLaunderingError (returning read-only parameter into caller let mut)
@@ -1925,10 +2010,10 @@ let safe_alias = immutable_doc        -- OK: immutable binding safely shared acr
 
 ### 8.8 Callable Signature Abstraction
 
-Concrete captured variable names abstract behind `&closure`. Retained mutable sharing `&{^mut var}` cannot be erased: it MUST abstract to both `&closure` and anonymous `&^mut`. Casting stateful callables to unannotated pure functions is strictly rejected.
+Concrete captured variable names abstract behind `&closure`. Retained mutable sharing `&{^mut ident}` cannot be erased: it MUST abstract to both `&closure` and anonymous `&^mut`. Casting stateful callables to unannotated pure functions is strictly rejected.
 
 ```ril
-let mut session_data = 0
+var session_data = 0
 let concrete_worker: fn(int) -> int &{mut session_data} = \delta -> {
     session_data += delta
     session_data
@@ -2365,9 +2450,9 @@ let total_sum = Parallel::fold(
 )
 
 -- 3. Capability Confinement: Rejecting external mutable captures in parallel combinator
-let mut external_counter = 0
+var external_counter = 0
 -- let bad = numbers |> Parallel::map(\x -> {
---     external_counter += 1            -- Error [E0605]: cannot capture external mutable handle 'external_counter' in parallel combinator
+--     external_counter += 1            -- Error [E0605]: cannot capture external mutable variable 'external_counter' in parallel combinator
 --     x * 2.0
 -- })
 ```
@@ -2649,7 +2734,7 @@ Top-level declarations MUST be free of observable runtime side effects. Top-leve
 ```ril
 let MAX_CONNECTIONS: int = 100
 let DEFAULT_TITLE: str = "Ril Application"
-let mut active_workers: int = 0        -- OK: initialized with constant expression
+var active_workers: int = 0            -- OK: initialized with constant expression
 
 -- Prohibited top-level runtime side effects:
 -- let current_time = Clock::now()      -- Error [E0202]: top-level declaration must be a pure constant expression
@@ -2787,20 +2872,24 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0308`** | `OpaqueBoundaryViolationError` | Attempting to unpack, penetrate with `inner()`, or pattern deconstruct an opaque type externally |
 | **`E0309`** | `VacuousBindingError` | 'let' pattern binds zero variables (excluding explicit wildcard discard 'let _ = expr') |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
+| **`E0402`** | `ValueTypePinnedMutError` | Attempting to declare a value type as pinned mutable handle `let mut` |
+| **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
 | **`E0501`** | `ImmutableReassignmentError` | Reassigning an immutable `let` binding |
+| **`E0502`** | `PinnedHandleReassignmentError` | Reassigning a pinned mutable handle `let mut` or borrowed `mut` parameter |
 | **`E0510`** | `MissingCapabilityAnnotationError` | Calling mutating operation without declaring `&mut` or `&^mut` |
-| **`E0520`** | `MutabilityLaunderingError` | Binding or assigning read-only handle to `let mut` or mutating through view |
-| **`E0521`** | `DestructureMutabilityLaunderingError` | Destructuring read-only handle into `mut` pattern fields |
+| **`E0520`** | `MutabilityLaunderingError` | Binding or assigning read-only handle to `let mut` or mutable `var`, or mutating through view |
+| **`E0521`** | `DestructureMutabilityLaunderingError` | Destructuring read-only reference record into `mut` or `var` pattern fields |
 | **`E0522`** | `ContainerMutabilityLaunderingError` | Injecting read-only reference into mutable collection |
 | **`E0523`** | `MutMutAliasingConflictError` | Overlapping mutable arguments passed to `mut` parameters |
 | **`E0524`** | `ReadMutAliasingHazardError` | Mutable argument aliases simultaneous read-only argument |
-| **`E0525`** | `SpreadLaunderingError` | Shallow-spreading read-only record into `let mut` root |
+| **`E0525`** | `SpreadLaunderingError` | Shallow-spreading read-only record into `let mut` or `var` root |
 | **`E0526`** | `CollectionMutationDuringIterationError` | Mutating collection in place while iterating in `for` loop |
-| **`E0527`** | `UnusedMutBindingError` | `let mut` binding or `mut` parameter never modified |
-| **`E0528`** | `ReturnMutabilityLaunderingError` | Returning read-only parameter into caller `let mut` handle |
+| **`E0527`** | `UnusedMutableBindingError` | `var`, `let mut`, or `mut` parameter never modified or reassigned along any path |
+| **`E0528`** | `ReturnMutabilityLaunderingError` | Returning read-only parameter into caller `let mut` or `var` handle |
 | **`E0529`** | `ExcessiveCapabilityAnnotationError` | Over-annotating signature beyond minimal required capabilities |
 | **`E0530`** | `IllegalCapabilityCloneImmutError` | Target carrying active capabilities or scoped handles is neither clonable nor freezable into `Immut<T>` |
-| **`E0531`** | `ImmutableTargetViewError` | Attempting to create a live view (`let view`) over an immutable binding |
+| **`E0531`** | `ImmutableTargetViewError` | Attempting to create a live view (`let view`) over an immutable binding or non-pinned handle |
+| **`E0532`** | `ReassignableScopedResourceError` | Attempting to declare a scoped resource binding with `var scoped` |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Passing live mutable view across concurrent task boundary |
 | **`E0605`** | `InvalidParallelCapabilityError` | Capturing external mutable capabilities in parallel combinator |
 | **`E0607`** | `DerivedProxyEscapeError` | Derived proxy escapes 'derive' recipe via return, assignment, or closure publication |
