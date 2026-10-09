@@ -113,15 +113,15 @@ $$
 $$
 
 Permissions can degrade, but never upgrade. The compiler provides a closed static diagnostic closure (`E0520` through `E0531`) covering:
-- Assigning read-only to `let mut` or mutating through view (`E0520`).
+- Assigning read-only to `let mut`, passing read-only handles to `mut` parameters, or mutating through view (`E0520`).
 - Destructuring read-only records into `mut` fields (`E0521`).
 - Injecting read-only objects into mutable arrays or records (`E0522`).
 - Spreading read-only records into mutable variables (`E0525`).
 - Mutating a collection while iterating over it in `for` (`E0526`).
-- Declaring unused mutable bindings or passing read-only handles to `mut` parameters (`E0527`).
+- Declaring unused `let mut` bindings or unused `mut` parameters (`E0527`).
 - Returning read-only parameter references into caller `let mut` bindings (`E0528`).
 - Over-annotating declarations beyond minimal required capabilities (`E0529`).
-- Passing types with active capabilities or scoped handles to `clone_immut` (`E0530`).
+- Passing types with active capabilities or scoped handles to `clone` or `clone_immut` (`E0530`: neither clonable nor freezable).
 - Creating a live view over an immutable binding (`E0531`).
 
 ### 2.2 Cross-Argument Disjointness vs. Borrow Checker Complexity
@@ -161,6 +161,13 @@ In Ril, a view's static type remains $T$. The immutability constraint is enforce
 External state and retained sharing are separate dimensions: `&{mut counter}` permits mutation of an external origin, while `&{^mut counter}` additionally discloses establishing another writable access path that survives a call or closure publication boundary. Copying an integer value does not share its variable cell; publishing a closure that mutates that cell can. Merely mutating already-shared state does not introduce a new sharing obligation.
 
 The name identifies shared source storage, not the container receiving it. Origin identities survive aliases and indirect calls. Hiding a private origin behind a callable interface retains both `&closure` and anonymous `&^mut`; the hazard cannot disappear through abstraction. Local discharge checks captured origins and retention destinations as well as explicit arguments, so local arguments cannot disguise retention of global state.
+
+#### 2.4.1 Surviving Write Path Counting vs. Encapsulated Factory Closures
+
+The definition of retained mutable sharing is strictly rooted in the count of persistent, independent surviving write paths ($\ge 2$):
+1. **Encapsulated Private Allocation ($1$ Write Path)**: When a factory function constructs a fresh mutable record and exports it solely within an escaping closure, the factory stack frame terminates upon return. No other handle to that storage cell survives anywhere in the program. Because surviving write paths $= 1 < 2$, there is no aliasing conflict. The callable retains `&closure` and the factory declares `&capture` (§7.4), but annotating `&^mut` is statically rejected as excessive (`E0529`).
+2. **Dual Escape ($\ge 2$ Write Paths)**: If the factory simultaneously returns both the closure and the object handle, the caller receives multiple independent write paths to the same underlying record. This constitutes retained mutable sharing and mandates `&^mut`.
+3. **Storage Origin Invariance under Intermediate Forwarding**: Aliasing an external global or borrowed parameter inside an intermediate local binding (`let mut forwarded = external_origin`) before capturing it does not launder the capability obligation. Ril's escape analysis tracks transitive storage origins rather than local lexical variable names: the identity of `forwarded` resolves directly to `external_origin`. Because `external_origin` survives outside the frame, publishing the closure establishes $\ge 2$ surviving write paths. Omitting `&^mut` or `&{^mut var}` triggers `E0510`.
 
 ### 2.5 Transactional Derivation and Path-Wise Copy-on-Write (`derive`)
 
@@ -422,3 +429,37 @@ Equivalence is strictly single-layer at the outermost constructor boundary:
 In Ril's abstract machine and native code generation, Constructor-Tuple Equivalence incurs zero runtime overhead:
 - **Payload Inlining in Variants**: A variant `Ok(10, "ready")` does not allocate an independent heap tuple; its tuple elements are inlined directly into contiguous slots in the variant's allocation header (`[GC Header | Tag | Slot 0 | Slot 1]`), guaranteeing single-allocation footprint (32 bytes).
 - **Nominal Wrappers**: `type Coord(int, int)` has zero wrapper bytes, compiling to pure compile-time type branding with the exact machine layout and register conventions of `(int, int)`.
+
+### 4.11 Compiler-Enforced Identifier Casing (`E0101`–`E0103`) & Dual Compound Freezing (`E0530`)
+
+#### 1. Why Identifier Casing is Enforced by the Compiler Rather than Deferred to a Linter
+In many languages, naming conventions are relegated to optional style linters. In Ril, identifier casing is elevated to a **first-class grammar and AST invariant** (`E0101`–`E0103`) for fundamental semantic reasons:
+
+1. **Deterministic Pattern-Matching Disambiguation**:
+   In algebraic pattern matching, a bare identifier in pattern position creates a classic semantic hazard if casing is unconstrained:
+   ```ril
+   match response {
+       Timeout -> handle_timeout(), -- In Ril: 'Timeout' is PascalCase, statically proven a Constructor Pattern
+       retry_count -> retry(retry_count), -- In Ril: 'retry_count' is snake_case, statically proven a Variable Binding Pattern
+   }
+   ```
+   In languages that only warn on casing (e.g. Rust), writing `match x { None => ... }` when `none` or a unit struct is out of scope can silently introduce an all-shadowing variable binding pattern. By enforcing `PascalCase` for constructors and `snake_case` for variable bindings at the parser level, Ril eliminates constructor-vs-variable pattern ambiguity with zero backtracking and zero scope speculation.
+2. **Strict Scope of `SCREAMING_SNAKE_CASE`**:
+   Ril strictly confines `SCREAMING_SNAKE_CASE` to **compile-time constants (`meta let`)** and **top-level immutable constants (`let`)**.
+   - Top-level mutable variables (`let mut`) MUST use `snake_case` (e.g., `let mut active_workers = 0`, `let mut session_data = 0`).
+   - *Rationale*: All-caps signifies a permanent, compile-time or freeze-time invariant value. Allowing mutable variables to be all-caps would create a misleading visual signal of immutability. Requiring `snake_case` for all mutable variables (`let mut`) unifies local and global mutable state under the exact same semantic and visual rules.
+3. **Acronym Title-Casing Regularization (`E0102`)**:
+   Acronyms embedded in `PascalCase` must be title-cased (`HttpServer`, `UserId`, `JsonParser`, rejecting `HTTPServer`, `UserID`, `JSONParser`). This guarantees unambiguous CamelHump word boundary segmentation (e.g., distinguishing `HttpServer` from `HttpsServer` without arbitrary lookahead).
+4. **Cross-Platform Path Invariance**:
+   Module paths in `use` statements are strictly `snake_case` / lowercase (`use ril/concurrent::{Scope}`). This prevents silent file-resolution discrepancies between case-insensitive file systems (Windows, macOS APFS default) and case-sensitive file systems (Linux ext4).
+
+#### 2. The Dual Compound Nature of `clone_immut` (`E0530`)
+The standard prelude operation `clone_immut(x)` is a compound semantic primitive performing two simultaneous transitions:
+1. **`clone` (Deep Duplication)**: Traverses the object graph and allocates an independent memory duplicate.
+2. **`immut` (Deep Freezing)**: Recursively seals all mutable fields and handles into permanently immutable `Immut<T>`.
+
+When an entity carries active capabilities (`&mut`, `&^mut`), stateful closures, or scoped cleanup handles (e.g., `counter_handle`), passing it to `clone_immut` violates **both** dimensions simultaneously:
+- **Unclonable**: An active capability represents an exclusive or linear modification permit. Duplicating it would forge unauthorized concurrent access routes.
+- **Unfreezable**: Active capabilities and closures are executable effect vectors, not passive data values. They cannot be stripped of their mutating essence into static inert data.
+
+Therefore, `E0530: IllegalCapabilityCloneImmutError` reflects this dual impossibility: the target entity is **neither clonable nor freezable into `Immut<T>`**. Calling either `clone()` or `clone_immut()` on active capabilities is statically rejected.

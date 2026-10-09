@@ -139,22 +139,57 @@ let d = {
 }                                      -- Block evaluates to ()
 ```
 
-### 2.4 Identifiers
+### 2.4 Identifiers & Casing Invariants
 
 ```ebnf
-Identifier         ::= ( UnicodeLetter { IdentifierContinue } )
-                     | ( "_" IdentifierContinue { IdentifierContinue } )
-IdentifierStart    ::= "_" | UnicodeLetter
-IdentifierContinue ::= UnicodeLetter | Digit | "_"
+Identifier         ::= PascalCase | SnakeCase | ScreamingSnakeCase | SuppressedVar
+PascalCase         ::= [A-Z] { [a-zA-Z0-9] }
+SnakeCase          ::= [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
+ScreamingSnakeCase ::= [A-Z] [A-Z0-9]* { "_" [A-Z0-9]+ }
+SuppressedVar      ::= "_" [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
+Wildcard           ::= "_"
 ```
 
-Identifiers use `PascalCase` for types, constructors, and effects; `snake_case` for variables, functions, and fields. A single underscore `_` is the wildcard pattern, not an identifier.
+Identifiers are strictly partitioned at the lexer and parser levels across grammatical roles under the **Closed Casing Invariant**:
+
+1. **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`effect`), and generic type parameters (`T`, `ItemType`).
+   - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
+2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, and top-level mutable variables `let mut`), named functions (`fn`, `meta fn`), record fields, and module path segments.
+3. **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`let mut`) MUST use `snake_case`.
+4. **Wildcard & Suppression**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0301`). An identifier with a leading underscore `_snake_case` declares an intentionally unused variable or parameter, suppressing unused binding diagnostics (`E0527`).
 
 ```ril
-let user_count = 10                    -- OK: variable identifier
+-- 1. PascalCase: Types, Constructors, Effects, and Generic Parameters
 type UserAccount = { id: int }         -- OK: type identifier
+type Result<T, E> = Ok(T) | Err(E)     -- OK: generic parameters and constructors
 effect FileIo { read() -> str }        -- OK: effect identifier
+type HttpServerConfig = { port: int }  -- OK: title-cased acronym
+
+-- 2. snake_case: Variables (local, param, top-level mut), Functions, and Fields
+let user_count = 10                    -- OK: local variable identifier
+let mut total_score = 0                -- OK: local mutable variable
+let mut active_workers = 0             -- OK: top-level mutable variable
+fn compute_area(width: f64) -> f64 { width * 2.0 } -- OK: function identifier
+meta fn pad_align(size: int) -> int { size }       -- OK: compile-time function
+
+-- 3. SCREAMING_SNAKE_CASE: meta let and Top-Level Immutable Variables ONLY
+meta let MAX_BUFFER_SIZE = 1024 * 64   -- OK: compile-time constant
+let DEFAULT_TIMEOUT_MS = 5000          -- OK: top-level immutable constant
+
+-- 4. Wildcard and Unused Suppression
 let _ = user_count                     -- OK: wildcard discard
+fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' suppresses unused warning
+
+-- Static Lexical Violations:
+-- type user_doc = { id: int }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
+-- fn Calculate() -> () {}             -- Error [E0101]: function identifier must be snake_case, found 'Calculate'
+-- let UserCount = 10                  -- Error [E0101]: variable identifier must be snake_case, found 'UserCount'
+-- meta let max_size = 100             -- Error [E0101]: compile-time constant must be SCREAMING_SNAKE_CASE, found 'max_size'
+-- let mut ACTIVE_FLAG = true          -- Error [E0101]: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
+-- type HTTPServer = { port: int }     -- Error [E0102]: acronym in PascalCase must be title-cased, expected 'HttpServer'
+-- let user__name = "Alice"            -- Error [E0102]: consecutive underscores are prohibited, found 'user__name'
+-- let Some(USER_ID) = opt             -- Error [E0103]: pattern binding position cannot use uppercase identifier
+-- let _ = 10; println(_)              -- Error [E0301]: wildcard '_' cannot be evaluated as an expression
 ```
 
 ### 2.5 Keywords
@@ -162,11 +197,11 @@ let _ = user_count                     -- OK: wildcard discard
 The following 35 tokens are strictly reserved keywords:
 
 ```
-as       break    continue effect   else
-false    fn       for      halt     if
-in       infer    is       keyof    let
-loop     match    meta     module   mut
-never    opaque   pub      resume   return
+as       effect   else     false    fn
+for      halt     if       in       infer
+is       keyof    last     let      loop
+match    meta     module   mut      never
+next     opaque   pub      resume   return
 scoped   test     true     type     typeof
 use      view     where    while    with
 ```
@@ -190,8 +225,8 @@ fn calculate(val: ?int) -> int {       -- 'fn'
     let is_positive = bound is 1..=10  -- 'is'
     let mut sum = 0                    -- 'mut'
     for n in [1, 2, 3] {               -- 'for', 'in'
-        if sum > 10 { break }          -- 'break'
-        else { continue }              -- 'else', 'continue'
+        if sum > 10 { last }           -- 'last'
+        else { next }                  -- 'else', 'next'
     }
     while false { loop {} }            -- 'while', 'false', 'loop'
     bound                              -- tail expression
@@ -353,9 +388,9 @@ assert(rest.email == "adm@ril.org")
 assert(rest.role == "root")
 ```
 
-### 3.4 Array, Map & Set Types
+### 3.4 Array, Map, Set & Tuple Types
 
-Bracket syntax (`[...]`) unifies all runtime dynamic collections: linear sequences (`[]T`), associative maps (`[K: V]`), and sets (`Set<T>`).
+Bracket syntax (`[...]`) unifies all runtime dynamic collections: linear sequences (`[]T`), associative maps (`[K: V]`), and sets (`Set<T>`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`).
 
 ```ebnf
 ArrayType   ::= "[]" TypeExpression
@@ -609,7 +644,7 @@ let view v = original                  -- Live view into 'original'
 original.count += 1
 let observed = v.count                 -- observed is 1 (live view reflects mutation)
 
-let mut unused_mut = 42                -- Error [E0527]: variable 'unused_mut' declared 'let mut' but never modified
+-- let mut unused_mut = 42             -- Error [E0527]: variable 'unused_mut' declared 'let mut' but never modified
 ```
 
 ### 3.10 Path-Wise Copy-on-Write Functional Updates (`derive`)
@@ -828,6 +863,11 @@ OpaqueTypeDecl ::= [ "pub" ] "opaque" "type" Identifier [ GenericParams ] [ Wher
 ```
 
 ```ril
+-- 1. Transparent Type Declarations:
+pub type UserId = int                  -- Direct type alias, transparent across module boundaries
+type Point = { x: int, y: int }        -- Local record type alias
+
+-- 2. Opaque Type Declarations:
 -- In file: auth/session.ril
 
 -- Declares a zero-cost opaque type representation over 'str':
@@ -1147,12 +1187,12 @@ if logging_enabled {
 ### 6.3 Loop Expressions (`loop`, `while`, `for`)
 
 ```ril
--- 1. 'loop' with 'break' yielding a value:
+-- 1. 'loop' with 'last' yielding a value:
 let mut i = 0
 let found = loop {
     i += 1
-    if i == 5 { continue }             -- OK: skips to next iteration
-    if i == 10 { break i * 2 }         -- Loop evaluates to 20
+    if i == 5 { next }                 -- OK: skips to next iteration via 'next'
+    if i == 10 { last i * 2 }          -- Loop evaluates to 20 via 'last'
 }
 
 -- 2. 'while' loop:
@@ -1163,19 +1203,56 @@ while i > 0 {
 -- 3. 'for' loop over ranges and collections:
 let mut sum = 0
 for x in 1..=5 {
-    if x % 2 == 0 { continue }         -- 'continue' skips even numbers
+    if x % 2 == 0 { next }             -- 'next' skips even numbers
     sum += x
 }
 assert(sum == 9)                       -- 1 + 3 + 5
 ```
 
-### 6.4 Control Transfers (`break`, `continue`, `return`)
+### 6.4 Control Transfers (`last`, `next`, `return`)
+
+Control transfers alter sequential evaluation order. Ril supports lexical control transfers (`last`, `next`, `return`) strictly scoped to the innermost enclosing loop or function. Ril deliberately omits loop labels to preserve syntactic clarity and guide multi-level escapes toward structured decomposition.
+
+```ebnf
+ControlTransfer ::= ( "last" [ Expression ] )
+                  | "next"
+                  | ( "return" [ Expression ] )
+```
 
 ```ril
+-- 1. 'last' terminates innermost loop (bare 'last' or 'last expr'):
+let mut total = 0
+for n in 1..=100 {
+    if n > 10 { last }                 -- Bare 'last': terminates loop without value
+    total += n
+}
+assert(total == 55)
+
+let mut counter = 0
+let reached = loop {
+    counter += 1
+    if counter == 5 { last counter * 10 } -- 'last expr': loop evaluates to 50
+}
+assert(reached == 50)
+
+-- 2. 'next' advances innermost loop to next iteration:
+let mut odd_sum = 0
+for n in 1..=6 {
+    if n % 2 == 0 { next }             -- Skips even iterations
+    odd_sum += n
+}
+assert(odd_sum == 9)
+
+-- 3. Function early return (bare 'return' or 'return expr'):
+fn log_positive(val: int) {
+    if val <= 0 { return }             -- Bare 'return': early exit from unit function
+    println("positive: {val}")
+}
+
 fn search(matrix: [][]int, target: int) -> bool {
     for row in matrix {
         for cell in row {
-            if cell == target { return true }
+            if cell == target { return true } -- 'return expr': early return with value
         }
     }
     false
@@ -1215,10 +1292,10 @@ fn process_account(data: [str: str]) -> Result<str, str> {
     Ok(id)
 }
 
--- Divergence via 'continue' and 'break' inside loops:
+-- Divergence via 'next' and 'last' inside loops:
 for entry in records {
     let Ok(val) = parse_entry(entry) else {
-        continue                       -- OK: diverges out of this iteration, binds variable 'val'
+        next                           -- OK: diverges out of this iteration, binds variable 'val'
     }
     process(val)
 }
@@ -1391,7 +1468,7 @@ player !> add_score(5)                 -- OK: mutating pipeline desugars to add_
 -- Static caller violations:
 -- add_score(player, 5)                -- Error [E0520]: argument to 'mut' parameter must be passed with 'mut'
 -- let frozen_player = player
--- add_score(mut frozen_player, 5)     -- Error [E0527]: cannot borrow read-only handle 'frozen_player' as 'mut'
+-- add_score(mut frozen_player, 5)     -- Error [E0520]: cannot borrow read-only handle 'frozen_player' as 'mut'
 -- fn bad_inc(mut count: int) &mut {}  -- Error [E0401]: value types (int) cannot be declared as 'mut' parameters
 -- fn noop_mut(mut u: User) &mut {}    -- Error [E0527]: 'mut' parameter 'u' declared but never modified
 ```
@@ -1530,14 +1607,14 @@ fn mutate_caller(mut c: Counter) &mut {
 }
 
 -- 4. External State Capability Forwarding (&{mut var}):
-let mut GLOBAL_TOTAL = 0
-fn add_to_global(n: int) -> int &{mut GLOBAL_TOTAL} {
-    GLOBAL_TOTAL += n
-    GLOBAL_TOTAL
+let mut global_total = 0
+fn add_to_global(n: int) -> int &{mut global_total} {
+    global_total += n
+    global_total
 }
 
-fn execute_global_step() -> int &{mut GLOBAL_TOTAL} {
-    apply(10, add_to_global)           -- Call site transparently inherits &{mut GLOBAL_TOTAL}
+fn execute_global_step() -> int &{mut global_total} {
+    apply(10, add_to_global)           -- Call site transparently inherits &{mut global_total}
 }
 ```
 
@@ -1604,7 +1681,7 @@ fn clear_items(mut list: []int) &mut {
 
 ### 8.3 Retained Mutable Sharing (`&^mut`, `&{^mut var}`)
 
-Retained mutable sharing occurs when execution creates a persistent writable access path that survives the call or closure publication boundary ($\ge 2$ independent surviving write paths).
+Retained mutable sharing occurs when execution creates a persistent writable access path that survives the call or closure publication boundary ($\ge 2$ independent surviving write paths). Origin identities survive intermediate local bindings: forwarding an external or borrowed reference through a local `let mut` handle does not alter its storage origin or discharge capability obligations. Conversely, allocating a fresh mutable reference that escapes solely through a single closure creates exactly 1 surviving write path and requires only `&capture`, while exposing multiple surviving handles creates $\ge 2$ write paths and requires `&^mut`.
 
 ```ril
 type Hub = { mut entries: []Entry }
@@ -1624,20 +1701,63 @@ fn register_entry(mut h: Hub, mut e: Entry) &^mut {
 
 -- 3. External Named Retained Mutable Sharing (&{^mut var}):
 -- Stashes a mutable parameter into an external global container
-let mut GLOBAL_HUB = Hub.{ entries: [] }
+let mut global_hub = Hub.{ entries: [] }
 
-fn publish_entry(mut e: Entry) &{^mut GLOBAL_HUB} {
-    GLOBAL_HUB.entries !> Array::push(e) -- Survives call: 'e' is retained in GLOBAL_HUB
+fn publish_entry(mut e: Entry) &{^mut global_hub} {
+    global_hub.entries !> Array::push(e) -- Survives call: 'e' is retained in global_hub
 }
 
 -- 4. Returning a closure that captures and shares external mutable state:
-let mut ACTIVE_CONNECTIONS = 0
+let mut active_connections = 0
 
-fn make_connection_ticker() -> (fn() -> int &{mut ACTIVE_CONNECTIONS}) &{^mut ACTIVE_CONNECTIONS} {
+fn make_connection_ticker() -> (fn() -> int &{mut active_connections}) &{^mut active_connections} {
     \-> {
-        ACTIVE_CONNECTIONS += 1
-        ACTIVE_CONNECTIONS
+        active_connections += 1
+        active_connections
     }
+}
+
+-- 5. Intermediate Forwarding & Origin Tracking:
+-- Forwarding an external or borrowed reference via a local 'let mut' handle retains '&^mut'
+type Session = { mut count: int }
+let mut global_session = Session.{ count: 0 }
+
+fn make_forwarded_ticker() -> (fn() -> int &{mut global_session}) &{^mut global_session} {
+    let mut forwarded = global_session -- Intermediate local handle
+    \-> {
+        forwarded.count += 1
+        forwarded.count
+    }                                  -- Tracks 'global_session' origin: MUST declare &{^mut global_session}
+}
+-- fn bad_forwarded_ticker() -> (fn() -> int &{mut global_session}) { ... }
+-- Error [E0510]: missing capability '&{^mut global_session}'
+
+fn make_param_ticker(mut s: Session) -> (fn() -> int &closure) &^mut {
+    let mut forwarded = s              -- Intermediate local handle
+    \-> {
+        forwarded.count += 1
+        forwarded.count
+    }                                  -- Survives call: caller and closure both retain write paths to 's'
+}
+
+-- 6. Write Path Counting (Encapsulated Allocation vs. Retained Sharing):
+-- Single surviving write path: encapsulated frame-confined allocation (requires &capture, NOT &^mut)
+fn make_private_ticker() -> (fn() -> int &closure) &capture {
+    let mut fresh_session = Session.{ count: 0 }
+    let mut forwarded = fresh_session
+    \-> {
+        forwarded.count += 1
+        forwarded.count
+    }                                  -- OK: frame-confined origin; exactly 1 surviving write path
+}
+-- fn bad_over_annotated() -> (fn() -> int &closure) &^mut { ... }
+-- Error [E0529]: excessive capability '&^mut', private allocation has no surviving aliases
+
+-- Dual surviving write paths: both closure and reference escape (MUST declare &^mut)
+fn make_dual_ticker() -> ((fn() -> int &closure), Session) &^mut {
+    let mut fresh_session = Session.{ count: 0 }
+    let runner = \-> { fresh_session.count += 1; fresh_session.count }
+    (runner, fresh_session)            -- Both escape: caller receives 2 independent write paths to same origin
 }
 
 -- Covariant subsumption across capability lattice:
@@ -1646,13 +1766,13 @@ let f_retain: Retainer = register_entry -- Exact match
 let f_touch: Retainer = \mut h, mut e -> { e.id += 1 } -- OK: &mut subsumed by &^mut
 ```
 
-### 8.4 External State Tracking (`&{var}`, `&{mut var}`, `&{^mut var}`)
+### 8.4 External State Tracking (`&{var}`, `&{mut var}`)
 
 Accessing module-level or outer lexical bindings without passing them as parameters requires explicit named capability annotations:
 
 ```ril
 let APP_CONFIG_NAME = "Production"
-let mut TRANSACTION_COUNT = 0
+let mut transaction_count = 0
 
 -- 1. Read-only external access:
 fn get_config_name() -> str &{APP_CONFIG_NAME} {
@@ -1660,16 +1780,16 @@ fn get_config_name() -> str &{APP_CONFIG_NAME} {
 }
 
 -- 2. Mutable external access:
-fn record_transaction() -> () &{mut TRANSACTION_COUNT} {
-    TRANSACTION_COUNT += 1             -- OK: declared &{mut TRANSACTION_COUNT}
+fn record_transaction() -> () &{mut transaction_count} {
+    transaction_count += 1             -- OK: declared &{mut transaction_count}
 }
 
 -- 3. Static errors on missing annotations:
 -- fn bad_read() -> str { APP_CONFIG_NAME }          -- Error [E0510]: missing capability '&{APP_CONFIG_NAME}'
--- fn bad_write() { TRANSACTION_COUNT += 1 }        -- Error [E0510]: missing capability '&{mut TRANSACTION_COUNT}'
+-- fn bad_write() { transaction_count += 1 }        -- Error [E0510]: missing capability '&{mut transaction_count}'
 
 -- 4. Prohibition of Anonymous Concealment:
--- fn conceal_write() &mut { TRANSACTION_COUNT += 1 } -- Error [E0510]: cannot use anonymous '&mut' to conceal external 'TRANSACTION_COUNT'
+-- fn conceal_write() &mut { transaction_count += 1 } -- Error [E0510]: cannot use anonymous '&mut' to conceal external 'transaction_count'
 ```
 
 ### 8.5 Closure Capabilities & Handle Invocation Permissions
@@ -1754,16 +1874,19 @@ let doc = UserDoc.{ title: "Draft", score: 0 }
 -- doc.score = 10                      -- Error [E0520]: cannot mutate field through read-only handle 'doc'
 -- let mut laundered = doc             -- Error [E0520]: cannot bind read-only handle to 'let mut'
 let mut other_doc = UserDoc.{ title: "Active", score: 5 }
+other_doc.score = 10                  -- OK: mutable handle mutated
 -- other_doc = doc                    -- Error [E0520]: cannot reassign read-only handle 'doc' to mutable binding 'other_doc'
+fn pass_to_mut(mut u: UserDoc) &mut { u.score += 1 }
+-- pass_to_mut(mut doc)                -- Error [E0520]: cannot borrow read-only handle 'doc' as 'mut'
 
 -- E0521: DestructureMutabilityLaunderingError (destructuring read-only into mut fields)
--- let { mut score } = doc             -- Error [E0521]: cannot bind read-only field to 'mut' pattern
+-- let .{ mut score } = doc            -- Error [E0521]: cannot bind read-only field to 'mut' pattern
 
 -- E0522: ContainerMutabilityLaunderingError (injecting read-only reference into mutable container)
 let mut doc_list: []UserDoc = []
 -- doc_list !> Array::push(doc)        -- Error [E0522]: cannot store read-only reference 'doc' into mutable array
-let detached = doc |> clone            -- OK: clone() produces independent detached mutable duplicate
-doc_list !> Array::push(detached)      -- OK
+let mut detached = doc |> clone        -- OK: clone() produces independent detached mutable duplicate
+doc_list !> Array::push(detached)      -- OK: detached mutable root stored into mutable container
 
 -- E0523 & E0524: Mut-Mut and Read-Mut aliasing hazards (see §8.6)
 
@@ -1776,23 +1899,23 @@ for item in nums {
     -- nums !> Array::push(item)       -- Error [E0526]: cannot mutate 'nums' in place while iterating in 'for' loop
 }
 
--- E0527: ClosureCaptureLaunderingError / UnusedMutBindingError
-let mut never_written = 42             -- Error [E0527]: variable 'never_written' declared 'let mut' but never modified
-fn pass_to_mut(mut u: UserDoc) &mut { u.score += 1 }
--- pass_to_mut(mut doc)                -- Error [E0527]: cannot pass read-only handle 'doc' as 'mut' argument
+-- E0527: UnusedMutBindingError (declared 'let mut' or 'mut' parameter but never modified)
+-- let mut never_written = 42          -- Error [E0527]: variable 'never_written' declared 'let mut' but never modified
+-- fn noop_mut(mut u: UserDoc) &mut {} -- Error [E0527]: 'mut' parameter 'u' declared but never modified
 
 -- E0528: ReturnMutabilityLaunderingError (returning read-only parameter into caller let mut)
 fn inspect_user(u: UserDoc) -> UserDoc { u }
 let user_in = UserDoc.{ title: "Alice", score: 10 }
-let inspected = inspect_user(user_in)
--- let mut stolen = inspected          -- Error [E0528]: returned value originates from read-only parameter
+-- let mut stolen = inspect_user(user_in) -- Error [E0528]: cannot bind return value originating from read-only parameter to 'let mut'
+let inspected = inspect_user(user_in)     -- OK: caller receives as read-only handle
 
 -- E0529: ExcessiveCapabilityAnnotationError (over-annotating beyond minimal required capabilities)
 -- fn pure_add(a: int, b: int) -> int &mut { a + b } -- Error [E0529]: function does not mutate parameters or state
 
--- E0530: IllegalCapabilityCloneImmutError (passing active capabilities or closures to clone_immut)
+-- E0530: IllegalCapabilityCloneImmutError (target carries active capabilities: neither clonable nor freezable)
 let mut counter_handle = create_counter(0)
--- let bad_immut = clone_immut(counter_handle) -- Error [E0530]: cannot freeze callable carrying mutable capabilities
+-- let bad_clone = clone(counter_handle)       -- Error [E0530]: cannot clone active capability or closure
+-- let bad_immut = clone_immut(counter_handle) -- Error [E0530]: target carrying active capabilities is neither clonable nor freezable into Immut<T>
 
 -- E0531: ImmutableTargetViewError (creating a live view over an immutable binding)
 let immutable_doc = UserDoc.{ title: "Frozen", score: 100 }
@@ -1805,20 +1928,20 @@ let safe_alias = immutable_doc        -- OK: immutable binding safely shared acr
 Concrete captured variable names abstract behind `&closure`. Retained mutable sharing `&{^mut var}` cannot be erased: it MUST abstract to both `&closure` and anonymous `&^mut`. Casting stateful callables to unannotated pure functions is strictly rejected.
 
 ```ril
-let mut SESSION_DATA = 0
-let concrete_worker: fn(int) -> int &{mut SESSION_DATA} = \delta -> {
-    SESSION_DATA += delta
-    SESSION_DATA
+let mut session_data = 0
+let concrete_worker: fn(int) -> int &{mut session_data} = \delta -> {
+    session_data += delta
+    session_data
 }
 
 -- 1. Valid Abstraction: Hiding variable name behind &closure
 type Worker = fn(int) -> int &closure
-let abstract_worker: Worker = concrete_worker -- OK: concrete &{mut SESSION_DATA} satisfies &closure
+let abstract_worker: Worker = concrete_worker -- OK: concrete &{mut session_data} satisfies &closure
 
 -- 2. Retained Sharing Abstraction: MUST retain &^mut
-let mut HUB = Hub.{ entries: [] }
-let concrete_stashing: fn(Entry) -> () &{^mut HUB} = \mut e -> {
-    HUB.entries !> Array::push(e)
+let mut hub = Hub.{ entries: [] }
+let concrete_stashing: fn(Entry) -> () &{^mut hub} = \mut e -> {
+    hub.entries !> Array::push(e)
 }
 
 type StashingWorker = fn(Entry) -> () &closure &^mut
@@ -2091,7 +2214,7 @@ fn collect_first_evens() -> []int {
 fn stream_remote_chunks(fd: int) -> () @Yield<[]u8> @Fiber {
     while true {
         let chunk = read_socket_chunk(fd)
-        if len(chunk) == 0 { break }
+        if len(chunk) == 0 { last }
         Yield::emit(chunk)             -- Orthogonally composes @Yield<[]u8> and @Fiber
     }
 }
@@ -2526,7 +2649,7 @@ Top-level declarations MUST be free of observable runtime side effects. Top-leve
 ```ril
 let MAX_CONNECTIONS: int = 100
 let DEFAULT_TITLE: str = "Ril Application"
-let mut ACTIVE_WORKERS: int = 0        -- OK: initialized with constant expression
+let mut active_workers: int = 0        -- OK: initialized with constant expression
 
 -- Prohibited top-level runtime side effects:
 -- let current_time = Clock::now()      -- Error [E0202]: top-level declaration must be a pure constant expression
@@ -2651,6 +2774,9 @@ fn process_request(id: int) -> Result<(), str> {
 
 | Code | Diagnostic Name | Normative Condition |
 | :---: | :--- | :--- |
+| **`E0101`** | `InvalidIdentifierCasingError` | Identifier casing style violates grammatical role requirement |
+| **`E0102`** | `MalformedIdentifierSyntaxError` | Identifier contains illegal consecutive/trailing underscores or unnormalized acronym casing |
+| **`E0103`** | `PatternCasingCollisionError` | Pattern binding position contains illegal casing causing semantic collision |
 | **`E0201`** | `PrivateItemAccessError` | Accessing or importing unexported private module symbol |
 | **`E0202`** | `TopLevelSideEffectError` | Top-level declaration contains non-constant runtime side effects |
 | **`E0203`** | `DuplicateDeclarationError` | Redeclaring an existing identifier in the same scope |
@@ -2673,7 +2799,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0527`** | `UnusedMutBindingError` | `let mut` binding or `mut` parameter never modified |
 | **`E0528`** | `ReturnMutabilityLaunderingError` | Returning read-only parameter into caller `let mut` handle |
 | **`E0529`** | `ExcessiveCapabilityAnnotationError` | Over-annotating signature beyond minimal required capabilities |
-| **`E0530`** | `IllegalCapabilityCloneImmutError` | Passing active capabilities or closures to `clone_immut` |
+| **`E0530`** | `IllegalCapabilityCloneImmutError` | Target carrying active capabilities or scoped handles is neither clonable nor freezable into `Immut<T>` |
 | **`E0531`** | `ImmutableTargetViewError` | Attempting to create a live view (`let view`) over an immutable binding |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Passing live mutable view across concurrent task boundary |
 | **`E0605`** | `InvalidParallelCapabilityError` | Capturing external mutable capabilities in parallel combinator |
@@ -2687,7 +2813,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0617`** | `ScopedCleanupDivergenceError` | Resource cleanup handler (`on_close`) declares or invokes divergent operations (`@Div`) |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
 | **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
-| **`E0710`** | `IllegalControlTransferInFallbackError` | Embedding `return`/`break` in fallback operator `??` |
+| **`E0710`** | `IllegalControlTransferInFallbackError` | Embedding `return`/`last` in fallback operator `??` |
 | **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
 | **`E0720`** | `UnusedFallibleResultError` | Discarding fallible `Result` without inspection |
 | **`E0810`** | `CallFamilyViolationError` | Crossing disjoint runtime `fn` and compile-time `meta`/`type` call families |
