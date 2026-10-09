@@ -42,7 +42,7 @@ When a bug occurs in synchronous code (for instance, an array index out of bound
 1. **Incoherent State**: Structs or records that were halfway through mutation remain in broken intermediate states.
 2. **Security Vulnerabilities**: Undetected memory corruptions, infinite loops, and logic bypasses.
 
-The only safe boundary for containing a defect panic is an **isolated concurrent execution domain**. In Ril, this boundary is the structured concurrency `scope`. A worker task forked inside a scope evaluates in isolation; if it panics, the scope catches the panic, unwinds the failed task's `let scoped` resources, cooperative-cancels sibling tasks, and reports `TaskResult::Panicked` to the supervising frame. The supervisor can then restart the subsystem, fail over, or reject the external request with an HTTP 500 status code, without corrupting the supervisor's own memory.
+The only safe boundary for containing a defect panic is an **isolated concurrent execution domain**. In Ril, this boundary is the structured concurrency `scope`. A worker task forked inside a scope evaluates in isolation; if it panics, the scope catches the panic, unwinds the failed task's `let scoped` resources, cooperative-cancels sibling tasks, and reports `TaskFault::Panicked` to the supervising frame. The supervisor can then restart the subsystem, fail over, or reject the external request with an HTTP 500 status code, without corrupting the supervisor's own memory.
 
 ### 1.4 Dual-Track Partial Operations: Assertive vs. Safe Total
 
@@ -80,6 +80,15 @@ Ril resolves this tension through **Context-Directed Nullary Constructor Elision
 2. **Context-Directed Elision**: In bidirectional *Check Mode* ($\Gamma \vdash C \Leftarrow \text{Result}\langle (), E \rangle$), where the target type is statically known to carry a unit payload `()`, bare `Ok` elaborates directly to `Ok(())`.
 3. **No Bottom-Up Guessing**: In unconstrained *Synthesis Mode* (`let x = Ok`), bare constructor identifiers are statically rejected (`E0301`). The compiler never speculatively guesses that an unconstrained type variable $\alpha$ is `()`, completely preventing accidental type defaulting bugs.
 4. **Pattern Matching Symmetry**: In pattern matching, `match res { Ok -> ... }` matches `Ok(())` seamlessly, with exhaustiveness verification guaranteeing that changes to payload types immediately trigger static diagnostics rather than silent payload truncation.
+
+### 1.7 Hermetic Scoped Cleanups and Double-Fault Containment
+
+Resource management in modern systems programming faces a classic dilemma: how to guarantee reliable cleanup during unwinding without risking cascade failures.
+
+Ril addresses this through **Hermetic Scoped Cleanups and Double-Fault Escalation**:
+1. **The Fallacy of "Pure" Destructors**: In languages with strict purity tracking, requiring cleanup handlers to be mathematically pure (`is_pure`) is unworkable: closing operating system handles, returning database connections to pools, and recording audit entries inherently require side effects and state mutations (`&mut`). Under Ril's Commit-on-Write memory model (§9.3), physical mutations performed by `on_close` remain permanently committed.
+2. **Prohibition of Control Transfers and Divergence (`E0616`, `E0617`)**: While state mutations are permitted, algebraic effects (`@Effect`) and infinite loops (`@Div`) are strictly forbidden inside cleanup closures. Permitting unhandled algebraic effects during unwinding would require finding handlers on stack frames that are actively being destroyed or attempting resumption into dismantled activation records. Prohibiting `@Effect` and `@Div` guarantees that unwinding always proceeds deterministically to completion.
+3. **Double-Fault Escalation**: If an unhandled panic occurs inside an `on_close` handler while the stack is already unwinding from a prior panic, attempting secondary unwinding would risk infinite recursion and deadlock. Ril enforces strict **Double-Fault Escalation**: inside structured scopes, the child task resolves immediately to `TaskFault::DoubleFaultFatal(DoubleFaultInfo)` carrying dual diagnostic payloads; in unsupervised frames, the process halts immediately to prevent data corruption.
 
 ---
 
@@ -144,6 +153,33 @@ In Ril, a view's static type remains $T$. The immutability constraint is enforce
 External state and retained sharing are separate dimensions: `&{mut counter}` permits mutation of an external origin, while `&{^mut counter}` additionally discloses establishing another writable access path that survives a call or closure publication boundary. Copying an integer value does not share its variable cell; publishing a closure that mutates that cell can. Merely mutating already-shared state does not introduce a new sharing obligation.
 
 The name identifies shared source storage, not the container receiving it. Origin identities survive aliases and indirect calls. Hiding a private origin behind a callable interface retains both `&closure` and anonymous `&^mut`; the hazard cannot disappear through abstraction. Local discharge checks captured origins and retention destinations as well as explicit arguments, so local arguments cannot disguise retention of global state.
+
+### 2.5 Transactional Derivation and Path-Wise Copy-on-Write (`derive`)
+
+#### 2.5.1 The Cost of Manual Functional Updates
+In purely functional languages or languages with reference semantics, updating deeply nested records poses a severe ergonomics and performance dilemma:
+1. **Full Deep Copying (`clone(x)`)**: Copying an entire object graph to modify one leaf field incurs $O(N)$ allocation overhead, defeating cache locality and overwhelming the memory subsystem.
+2. **Manual Field Spreading / Lenses**: Manually reconstructing parent records (`.{ ...base, field: ... }`) is verbose, error-prone, and clutters domain code with boilerplate lenses.
+3. **Mutability Laundering Hazard**: Directly handing out mutable references into an immutable data graph violates Monotonic Degradation (§2.1).
+
+Ril resolves this via `derive(base, recipe)`. By synthesizing a local copy-on-write proxy `next`, developers write imperative in-place mutation syntax (`next.path.field = value`), while the compiler and runtime translate path access into path-wise copy-on-write with maximum structural sharing: unmodified subtrees preserve identical pointer addresses with `base`.
+
+#### 2.5.2 Transactional Abort-Safety vs. Software Transactional Memory (STM)
+Software Transactional Memory (STM) achieves transaction isolation by maintaining optimistic read/write sets, collision detection, and multi-version undo logs. This incurs severe runtime overhead and requires rollback logic for mutated memory locations.
+
+`derive` delivers zero-cost **Transactional Abort-Safety** without STM or undo logs:
+- **Base Invariant**: `base` is permanently immutable; no write instruction ever touches `base`.
+- **Ephemeral Draft Proxy**: Mutations inside `recipe` operate on newly allocated path-copied nodes accessible only through `next`.
+- **All-or-Nothing Commit Point**: The derived object graph is only committed and frozen into an immutable value upon normal return of `derive`.
+- If execution unwinds early—whether via delimited algebraic effect abort (§9.3) or runtime panic (§1.4)—the activation frame of `recipe` is popped. The proxy `next` loses its root, and the partially allocated path nodes are reclaimed by the tracing GC.
+
+#### 2.5.3 Reconciliation with the Commit-on-Write Invariant (§9.3)
+Section 9.3 establishes that Ril memory is Commit-on-Write: *physical memory mutations are never rolled back*.
+
+Discarding in-flight proxy nodes does not contradict Commit-on-Write:
+1. The physical writes to newly allocated nodes on `next` *did* physically commit to heap memory; they are not reversed or zeroed out by an undo journal. They simply become unrooted and dead when `next` is dropped upon unwinding.
+2. Any physical mutations executed on external reachable state (such as appending to an audit log or updating an external mutable variable cell via `&mut`) remain permanently committed.
+3. Because `E0607` (`DerivedProxyEscapeError`) statically forbids `next` from escaping or being stored in external containers, partial derivations cannot leak into surviving scopes.
 
 ---
 
@@ -216,6 +252,14 @@ Ril introduces no nominal marker traits, tags, or ad-hoc concurrency classificat
 - **First-Class Effect Signatures**: Algebraic effect operations are ordinary callable signatures (`fn(Args) -> Ret @Effects &Capabilities`), tracking in-place mutation (`&mut`) directly where required without imposing artificial restrictions or marker trait requirements.
 - **Conceptual Minimality and Orthogonality**: Concurrency safety is an inherent static property derived from capability tracking and value immutability, rather than a nominal trait bolted onto type definitions. Type definitions remain lean, APIs avoid marker trait clutter, and developers reason about thread safety through familiar capability rules.
 
+### 3.4 Effect Confinement at Concurrent Boundaries: Why Algebraic Effects Cannot Cross Tasks
+
+Mainstream effect systems in single-threaded research languages (e.g., Koka, Eff) assume a single continuous execution stack. In a multi-core, systems-level language with structured concurrency like Ril, permitting algebraic effects to cross concurrent task boundaries introduces fundamental hazards:
+
+1. **Destruction of Zero-Cost Stack Scopes**: Ril child fibers execute with stack-allocated `TaskNode` tracking blocks on independent fiber stacks (§9.5.2). If a child fiber could invoke an effect intercepted by a handler on the parent stack, the runtime would require cross-fiber delimited continuations, allocating frame descriptors on the heap and destroying the Zero-Heap Fast Path.
+2. **Delimited Early Abort Across Threads**: If an ambient parent handler intercepts an effect from a child task and executes an early abort (returning without `resume`), unwinding the parent stack while the child continues executing would violate the Synchronous Scope Unwind-Barrier. Conversely, attempting to asynchronously cancel the child from the parent handler introduces non-deterministic thread coordination.
+3. **Orthogonal Symmetry with DRF-SC**: Just as Boundary Capability Confinement (`E0601`) guarantees that mutable memory handles cannot cross task boundaries to eliminate data races, Concurrent Task Effect Confinement (`E0615`) guarantees that control transfers cannot cross task boundaries to eliminate cross-thread continuation hazards. Child tasks communicate exclusively through structured value channels (`task.join()`, channels), never via synchronous ambient effect invocations.
+
 ---
 
 ## 4. Syntax Ergonomics and Deliberate Omissions
@@ -269,6 +313,11 @@ Ril establishes strict syntactic and conceptual segregation between compile-time
 2. **Elimination of Anonymous Open Rows**:
    - Anonymous open rows (`{ id: int, .. }`) created the false illusion of a runtime "rest" dictionary capture while disallowing field access.
    - Ril replaces them with **Named Row Tail Polymorphism (`..R`)** strictly for generic pipeline type preservation (`fn with_ts<R>(r: { ..R }) -> { ts: int, ..R }`), and **Type-Precise Pattern Destructuring (`let .{ id, ..rest } = u`)** where `rest` is a fully typed, accessible static sub-record.
+3. **Type-Level Symmetry via Dot Projection (`T.field`, `T.(K)`)**:
+   - In conformity with the strict segregation between compile-time records and dynamic collections, Ril prohibits bracket string indexing on record types (`User["id"]`). Record fields are identifiers, not strings.
+   - Field types of static records are extracted symmetrically via dot projection (`User.id`).
+   - For inferred anonymous record instances, direct value access `typeof expr.field` or parenthesized type projection `(typeof expr).field` maintains complete orthogonality.
+   - In mapped schema computations (`[K in keyof T]`), computed key projections use `T.(K)` to unambiguously distinguish evaluated type parameters from literal field names, preserving complete consistency across value and type spaces.
 
 ### 4.5 The Necessity of Nominal Wrappers & Universal Single-Type Packaging
 
@@ -322,6 +371,15 @@ A `let` statement universally signals the introduction of local variable binding
    - For error fallback and recovery: The fallback operator `??` (`flush_cache() ?? \err -> ...`).
    - For boolean assertions / branching: The pattern test operator `is` (`if !(flush_cache() is Ok) { ... }`).
    - For multi-way branching: Explicit `match` expressions.
+
+### 4.9 Compile-Time HKT Metaprogramming vs. Reified Runtime Generics
+
+While languages such as C# opted for runtime reified generics, they deliberately rejected Higher-Kinded Types (HKTs) due to insurmountable runtime complexity: dynamic higher-order unification, unbounded JIT specialization cascades, and GC object layout unpredictability. Conversely, functional systems like Haskell and Scala support HKTs by completely erasing them prior to execution (lowering to dictionary passing or erased pointer references).
+
+Ril reconciles expressive abstraction with systems-grade performance through the **Phase Distinction Invariant** ($\text{Meta} \succ \text{Runtime}$):
+1. **First-Class Static HKT Closures**: Higher-kinded constructors are fully supported as compile-time static type closures (`\M: Type -> Type, T -> M<T>`). Kind arity checking (`E0306: KindMismatchError`) is performed entirely by the static type checker, providing complete mathematical abstraction for schema mapping and type transformations.
+2. **Deterministic Runtime Lowering**: At runtime, all generic parameters and static type closures are either statically monomorphized into specialized machine representations or represented via explicit operation records (dictionary passing).
+3. **Rejection of Runtime Reified HKTs**: The Ril abstract machine maintains zero dynamic higher-kinded type descriptors or runtime unification engines. This preserves deterministic object layouts, eliminates JIT latency, and ensures that GC headers remain compact and predictable.
 
 
 

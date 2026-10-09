@@ -309,13 +309,14 @@ assert(n2.val == 99)                   -- OK: 'n2' observes mutation due to refe
 
 ### 3.3 Record Types & Row Polymorphism
 
-Records are structural collections of named fields. Closed records do not support width subtyping. Field access on records is strictly compile-time identifier dot-access (`r.field`); dynamic string indexing (e.g. `r["key"]` or `r.("key")`) is prohibited.
+Records are structural collections of named fields. Closed records do not support width subtyping. Field access on records is strictly compile-time identifier dot-access (`r.field`); dynamic string indexing (e.g. `r["key"]` or `r.("key")`) is prohibited. In symmetry, type-level field extraction uses dot projection (`User.id` or computed projection `T.(K)`); bracket indexing on record types (e.g. `User["id"]`) is prohibited (`E0301`).
 
 Named row tail polymorphism (`..R`) allows generic functions to accept and preserve additional caller fields across pipelines. Pattern destructuring with `..rest` extracts a concrete, statically typed sub-record containing the remaining known fields.
 
 ```ebnf
-RecordType  ::= "{" [ RecordField { "," RecordField } [ "," ] [ ".." Identifier ] ] "}"
-RecordField ::= [ "mut" ] Identifier ":" TypeExpression
+RecordType     ::= "{" [ RecordField { "," RecordField } [ "," ] [ ".." Identifier ] ] "}"
+RecordField    ::= [ "mut" ] Identifier ":" TypeExpression
+TypeProjection ::= PrimaryType "." ( Identifier | "(" TypeExpression ")" )
 ```
 
 ```ril
@@ -330,14 +331,18 @@ let user_id = u.id                     -- OK: direct static offset lookup
 -- let bad_index = u["name"]           -- Error [E0301]: records do not support dynamic index lookup
 -- let bad_accessor = u.("name")       -- Error [E0301]: dynamic string accessor prohibited
 
--- 3. Named row tail polymorphism (generic type preservation):
+-- 3. Type-level field projection:
+type IdType = User.id                  -- OK: direct static field type extraction (int)
+-- type BadIndex = User["id"]          -- Error [E0301]: record types do not support bracket indexing, use User.id
+
+-- 4. Named row tail polymorphism (generic type preservation):
 fn with_timestamp<R>(r: { ..R }) -> { timestamp: int, ..R } {
     .{ timestamp: 1600000000, ..r }
 }
 let stamped = with_timestamp(.{ id: 1, tag: "audit" })
 assert(stamped.tag == "audit" && stamped.timestamp == 1600000000)
 
--- 4. Type-precise rest destructuring:
+-- 5. Type-precise rest destructuring:
 type Account = { id: int, username: str, email: str, role: str }
 let acc: Account = .{ id: 42, username: "admin", email: "adm@ril.org", role: "root" }
 
@@ -531,22 +536,73 @@ let mut unused_mut = 42                -- Error [E0527]: variable 'unused_mut' d
 
 ### 3.10 Path-Wise Copy-on-Write Functional Updates (`derive`)
 
-**`derive(base, recipe)`**: Executes deep functional updates over reference data graphs via path-wise copy-on-write (structural sharing) mechanics. The mutating closure `recipe` mutates a derived proxy `next` in place, returning a fresh, unaliased immutable object without modifying `base`. Unmodified subtrees preserve pointer identity with `base`. Derived proxies cannot escape the recipe closure (`E0607`).
+**`derive(base, recipe)`**: Executes deep functional updates over reference data graphs via path-wise copy-on-write (structural sharing) mechanics. The mutating closure `recipe` mutates a derived proxy `next` in place, returning a fresh, unaliased immutable object without modifying `base`. Unmodified subtrees preserve pointer identity with `base`. Derived proxies cannot escape the recipe closure via return, external assignment, or closure publication (`E0607`).
+
+#### Normative Rules for `derive`:
+1. **Transactional Abort-Safety Invariant**: `derive` provides all-or-nothing transactional derivation. If `recipe` terminates abnormally via delimited early abort (§9.3) or runtime panic (§1.4):
+   - `base` remains completely unmodified and structurally intact.
+   - The in-flight derived proxy `next` and uncommitted path-copied nodes are discarded during stack frame unwinding without publishing a derived value, becoming unreachable garbage collected by tracing GC.
+2. **Preservation of Commit-on-Write**: Ambient physical mutations to external memory performed by `recipe` prior to an abort remain permanently committed (§9.3) and are never rolled back.
+3. **Derived Proxy Confinement (`E0607`)**: Derived proxies cannot escape the `recipe` closure via return value, external variable assignment, or closure publication (`E0607: DerivedProxyEscapeError`).
 
 ```ril
-type UserProfile = { mut name: str, mut settings: { mut theme: str } }
+type UserSettings = { mut theme: str, mut notifications: bool }
+type UserProfile = { mut name: str, mut settings: UserSettings }
 
-let u1 = UserProfile.{ name: "Alice", settings: .{ theme: "dark" } }
-
--- Functional update via derive:
-let u2 = u1 |> derive \mut next -> {
-    next.settings.theme = "light"     -- In-place mutation on derived proxy
+let u1 = UserProfile.{
+    name: "Alice",
+    settings: UserSettings.{ theme: "dark", notifications: true },
 }
-assert(u1.settings.theme == "dark")    -- u1 remains unchanged
-assert(u2.settings.theme == "light")   -- u2 is a fresh updated copy
 
--- Derived proxy escape is strictly prohibited:
--- let escaped = u1 |> derive \mut next -> next -- Error [E0607]: derived proxy cannot escape 'derive' closure
+-- 1. Normal derivation via path-wise copy-on-write:
+let u2 = u1 |> derive \mut next -> {
+    next.settings.theme = "light"
+}
+assert(u1.settings.theme == "dark")     -- u1 remains unchanged
+assert(u2.settings.theme == "light")    -- u2 is a fresh updated copy
+assert(u1.settings != u2.settings)      -- Modified subtree gets a fresh copy
+
+-- 2. Transactional Abort-Safety: Delimited Early Abort (§9.3)
+effect Auth {
+    check() -> bool,
+}
+
+let mut audit_log: []str = []
+let abort_result = {
+    with Auth::check() -> "ABORTED"     -- Handler aborts early without resume
+    u1 |> derive \mut next -> {
+        audit_log !> Array::push("RECIPE_START") -- Physical mutation committed
+        next.settings.theme = "solarized"        -- Path-wise CoW proxy modified
+        Auth::check()                            -- Delimited early abort triggered
+        next.name = "Bob"                        -- Unreachable
+    }
+}
+assert(abort_result == "ABORTED")
+assert(u1.settings.theme == "dark")              -- base is strictly unmodified
+assert(u1.name == "Alice")
+-- Commit-on-Write invariant: external mutations performed prior to abort stay committed:
+assert(audit_log == ["RECIPE_START"])
+
+-- 3. Transactional Abort-Safety: Runtime Panic (§1.4)
+use ril/concurrent::{scope, TaskFault}
+
+let panic_result: Result<UserProfile, TaskFault> = scope \mut s -> {
+    s.fork \-> {
+        u1 |> derive \mut next -> {
+            next.settings.theme = "contrast"
+            let zero = 0
+            let _ = 10 / zero                    -- Panics: division by zero
+            next.name = "Charlie"
+        }
+    }
+}
+-- panic_result evaluates to Err(TaskFault::Panicked(...))
+assert(u1.settings.theme == "dark")              -- base remains pristine
+
+-- 4. Derived proxy escape is strictly rejected:
+-- let esc1 = u1 |> derive \mut next -> next     -- Error [E0607]: DerivedProxyEscapeError: derived proxy cannot escape 'derive' closure
+-- let mut leaked = ()
+-- u1 |> derive \mut next -> { leaked = next }   -- Error [E0607]: DerivedProxyEscapeError: derived proxy cannot escape 'derive' closure
 ```
 
 ---
@@ -591,6 +647,12 @@ start += 1; end -= 1                   -- OK: individual fields mutated
 
 Scoped bindings associate resources with lexical scopes. When exiting the enclosing scope (by normal completion, return, or unwinding), the cleanup handler executes in strict Last-In, First-Out (LIFO) order.
 
+#### Normative Rules for Scoped Bindings:
+1. **LIFO Destruction Order**: Scoped cleanups execute in strict reverse declaration order upon exiting the enclosing lexical block.
+2. **Hermetic Cleanup Invariant (`E0616`, `E0617`)**: The `on_close` cleanup handler associated with `let scoped` MUST be effect-closed ($\mathop{\mathrm{Effects}} = \emptyset$, rejected under `E0616: ScopedCleanupEffectError`) and non-divergent (`@Div` prohibited, rejected under `E0617: ScopedCleanupDivergenceError`).
+3. **Permitted In-Place Mutation**: In-place mutations on local and external mutable state (`&mut`, `&^mut`) within `on_close` are permitted under Commit-on-Write semantics (§9.3).
+4. **Double-Fault Escalation**: If an unhandled panic occurs while executing an `on_close` handler during active stack unwinding (due to prior panic or delimited early abort), the runtime MUST NOT attempt secondary unwinding. In structured concurrency scopes, the task transitions immediately to `TaskFault::DoubleFaultFatal` (§9.5); in unsupervised execution frames, the process terminates immediately with an unrecoverable fatal abort.
+
 ```ebnf
 ScopedDecl ::= "let" "scoped" [ "mut" ] Identifier [ ":" TypeExpression ] "=" Expression
 ```
@@ -598,7 +660,7 @@ ScopedDecl ::= "let" "scoped" [ "mut" ] Identifier [ ":" TypeExpression ] "=" Ex
 ```ril
 type Resource = { name: str, on_close: fn() -> () }
 
--- Scoped bindings invoke cleanup upon exiting enclosing scope in strict LIFO order:
+-- 1. Scoped bindings invoke cleanup upon exiting enclosing scope in strict LIFO order:
 let mut event_log: []str = []
 {
     let scoped first = Resource.{
@@ -617,7 +679,7 @@ let mut event_log: []str = []
 }
 assert(event_log == ["closed_R2", "closed_R1"])
 
--- Iteration cleanup executes at the end of each iteration:
+-- 2. Iteration cleanup executes at the end of each iteration:
 let mut iter_log: []str = []
 for item in ["A", "B"] {
     let scoped res = Resource.{
@@ -627,6 +689,19 @@ for item in ["A", "B"] {
     -- 'res' is cleaned up immediately before the next iteration begins
 }
 assert(iter_log == ["closed_A", "closed_B"])
+
+-- 3. Hermetic Cleanup Invariant: algebraic effects and divergence are strictly rejected:
+effect RemoteAudit { log(str) -> () }
+
+-- let scoped bad_eff = Resource.{
+--     name: "R_bad",
+--     on_close: \-> RemoteAudit::log("closing") -- Error [E0616]: ScopedCleanupEffectError: cleanup handler 'on_close' cannot invoke unhandled algebraic effect '@RemoteAudit'
+-- }
+
+-- let scoped bad_div = Resource.{
+--     name: "R_div",
+--     on_close: \-> while true {}               -- Error [E0617]: ScopedCleanupDivergenceError: cleanup handler 'on_close' cannot carry divergent loop '@Div'
+-- }
 ```
 
 ### 4.4 Live View Bindings (`let view`)
@@ -1655,7 +1730,7 @@ let abstract_stashing: StashingWorker = concrete_stashing -- OK: preserves &^mut
 
 Effects define abstract operation tags that callers invoke and enclosing handlers intercept. An effect operation signature is an ordinary callable signature: it declares argument types, return types, and optional capabilities (`&mut`, `&^mut`).
 
-When an effect operation requires in-place mutation (e.g., writing into a caller-supplied buffer), it explicitly declares `&mut` on its operation signature. Callers invoking the operation and handlers servicing it must track, forward, or discharge this capability under standard capability tracking rules (§8). Concurrency boundaries (`scope.fork`, `Parallel::map`) enforce Data-Race Freedom (DRF-SC) directly through capability checking: any value or closure crossing a concurrency boundary must not carry live mutable capabilities (`&mut`, `&^mut`, `&{mut var}`), rejected statically under `E0601: CrossThreadDataRaceHazardError`.
+When an effect operation requires in-place mutation (e.g., writing into a caller-supplied buffer), it explicitly declares `&mut` on its operation signature. Callers invoking the operation and handlers servicing it must track, forward, or discharge this capability under standard capability tracking rules (§8). Concurrency boundaries (`scope.fork`, `Parallel::map`) enforce Data-Race Freedom (DRF-SC) directly through capability checking: any value or closure crossing a concurrency boundary must not carry live mutable capabilities (`&mut`, `&^mut`, `&{mut var}`), rejected statically under `E0601: CrossThreadDataRaceHazardError`. Concurrency boundaries simultaneously enforce Algebraic Control Confinement: child tasks must be effect-closed under user-defined effects (§9.5), rejected statically under `E0615: CrossTaskUnhandledEffectError`.
 
 ```ril
 -- 1. Pure Effect Operations & Ambient Context:
@@ -1709,7 +1784,7 @@ fn concurrent_boundary_check() {
 
 `with` intercepts operations within its lexical scope, discharging the effect from the enclosing function's signature. When placed within a block, `with HandlerSpec` establishes the active deep handler for all subsequent expressions and statements in the remainder of that enclosing block. Handlers in Ril are **deep handlers**: evaluating `resume v` does not discard the handler; it remains active for all subsequent effect invocations until the block terminates.
 
-Closures constructed in a scope with an active `with` handler **automatically capture the handler** into their heap environment (`&closure`), safely discharging the effect from the closure's public signature. Closures carrying unhandled effects that escape to heap records without an in-scope handler are statically rejected (`E0614`).
+Closures constructed in a scope with an active `with` handler **automatically capture the handler** into their heap environment (`&closure`), safely discharging the effect from the closure's public signature. Closures carrying unhandled effects that escape to heap records without an in-scope handler are statically rejected (`E0614`). Automatic handler capture (`&closure`) is strictly task-confined: handlers established in an enclosing scope MUST NOT be captured into closures crossing concurrent task boundaries (`scope.fork`, `Parallel::map`). Closures passed across concurrent task boundaries must be effect-confined (§9.5), rejected under `E0615` if unhandled effects or externally captured handlers are present.
 
 ```ebnf
 WithExpr    ::= "with" HandlerSpec
@@ -1931,7 +2006,7 @@ halt fn factorial(n: int) -> int {
 
 ### 9.5 Structured Concurrency (`scope`) & Isolated Panic Containment
 
-All concurrent child tasks must be forked within a structured `scope`. A parent scope cannot exit until all child tasks finish. Panics in child tasks are isolated at the scope boundary and resolve to `Result<T, TaskFault>` (`TaskFault::Panicked`).
+All concurrent child tasks must be forked within a structured `scope`. A parent scope cannot exit until all child tasks finish. Panics and task failures in child tasks are isolated at the scope boundary and resolve to `Result<T, TaskFault>` (`TaskFault::Panicked`, `TaskFault::Cancelled`, or `TaskFault::DoubleFaultFatal`).
 
 #### Normative Rules for Structured Concurrency:
 1. **Lifetime Containment Invariant**:
@@ -1943,9 +2018,13 @@ All concurrent child tasks must be forked within a structured `scope`. A parent 
    - **Synchronous Scope Unwind-Barrier**: When an unwind occurs (due to parent frame panic or sibling task cancellation), the unwinder MUST NOT pop the stack frame hosting an active scope until all active child tasks reach terminal state (`Completed`, `Panicked`, or `Cancelled`), execute their `let scoped` LIFO cleanup handlers, and unlink from the scope descriptor (`active_count == 0`), strictly preventing stack-use-after-free hazards.
    - **Result Rendezvous Ownership**: Child return values $T$ reside within the quiescent child stack frame until moved out via `task.join()` or dropped during scope LIFO exit.
 3. **Boundary Capability Confinement**: Passing active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) or live views across concurrent task boundaries is statically rejected (`E0601: CrossThreadDataRaceHazardError`).
+4. **Concurrent Task Effect Confinement Invariant (`E0615`)**:
+   For any concurrent child task $c$ spawned via `s.fork(task)` or data-parallel combinator (`Parallel::map`, `Parallel::fold`), the task callable $task$ MUST be closed under all user-defined algebraic effects:
+   $$\mathop{\mathrm{Effects}}(task) \subseteq \{\text{Fiber}\} \quad \text{(or } \emptyset \text{ for pure/parallel combinators)}$$
+   Every algebraic effect operation invoked within the execution tree of a concurrent child task MUST be intercepted and discharged by a local `with` handler lexically enclosed within that child task. Handlers established in parent or ancestor tasks MUST NOT be captured across concurrent task boundaries (`&closure`). Passing a callable carrying unhandled algebraic effects or capturing external effect handlers across a concurrent task boundary is statically rejected at compile time under `E0615: CrossTaskUnhandledEffectError`. Runtime-managed cooperative fiber scheduling operations (`effect Fiber`) are exempt.
 
 ```ril
-use ril/concurrent::{scope, Scope, Task, TaskFault}
+use ril/concurrent::{scope, Scope, Task, TaskFault, PanicInfo, DoubleFaultInfo}
 
 -- 1. Structured Concurrency and Task Panic Containment:
 fn run_isolated_workers() -> Result<(str, int), TaskFault> {
@@ -1970,6 +2049,10 @@ fn run_isolated_workers() -> Result<(str, int), TaskFault> {
                 0                       -- Gracefully handled in supervisor frame
             },
             Err(TaskFault::Cancelled) -> 0,
+            Err(TaskFault::DoubleFaultFatal(df)) -> {
+                Logger::fatal("Double fault: primary=" ++ df.primary.message ++ ", cleanup=" ++ df.cleanup.message)
+                0
+            },
         }
 
         Ok((ok_val, err_val))
@@ -2003,6 +2086,29 @@ fn batch_transform(items: []int) -> Result<[]int, TaskFault> @Concurrent {
             results !> Array::push(t.join()?)
         }
         Ok(results)
+    })
+}
+
+-- 4. Concurrent Task Effect Confinement Invariant (E0615):
+effect WorkerLog { log(str) -> () }
+
+fn test_task_effect_confinement() {
+    with WorkerLog::log(msg) -> resume ()      -- Active in parent activation frame
+
+    scope(\mut s -> {
+        -- Prohibited: child task carries unhandled effect; parent handler cannot cross task boundary:
+        -- s.fork(\-> {
+        --     WorkerLog::log("worker started") -- Error [E0615]: CrossTaskUnhandledEffectError: concurrent task closure carries unhandled effect '@WorkerLog'; external handlers cannot cross task boundary
+        -- })
+
+        -- Compliant: Effect is intercepted and discharged locally within the child task:
+        let t = s.fork(\-> {
+            with WorkerLog::log(msg) -> resume () -- Local handler confined to child fiber
+            WorkerLog::log("worker started")      -- OK: discharged locally within child task
+            42
+        })
+        let _ = t.join()
+        Ok
     })
 }
 ```
@@ -2136,9 +2242,13 @@ type RecursiveLoop = \T -> RecursiveLoop<T>
 -- type Overflow = RecursiveLoop<int>  -- Error [E0811]: compile-time evaluation budget exceeded (max 100,000 steps)
 ```
 
-### 10.4 Mapped Schemas (`keyof`, Field Indexing `T[K]`)
+### 10.4 Mapped Schemas (`keyof`, Field Dot Projection `T.field`, `T.(K)`)
 
-Static type closures inspect and transform record schemas using `keyof` and indexed field lookup `T[K]`:
+Static type closures inspect and transform record schemas using `keyof` and dot field projection (`T.field` for static identifier lookup, `T.(K)` for computed/inferred key projection):
+
+```ebnf
+TypeProjection ::= PrimaryType "." ( Identifier | "(" TypeExpression ")" )
+```
 
 ```ril
 type User = { id: int, name: str, active: bool }
@@ -2146,12 +2256,23 @@ type User = { id: int, name: str, active: bool }
 -- 1. Schema Key Extraction (keyof):
 type UserKeys = keyof User             -- Resolves to "id" | "name" | "active"
 
--- 2. Schema Field Indexing:
-type IdType = User["id"]               -- Resolves to int
+-- 2. Schema Field Dot Projection:
+type IdType = User.id                  -- Resolves to int (static identifier projection)
+type UserName = User.name              -- Resolves to str
+-- type BadField = User.missing        -- Error [E0301]: field 'missing' does not exist in record 'User'
 
--- 3. Mapped Schema Construction:
+-- Nested schema dot projection:
+type NestedConfig = { db: { host: str, port: int } }
+type HostType = NestedConfig.db.host   -- Resolves to str
+
+-- Dot projection on inferred record types:
+let current_user = .{ id: 101, name: "Alice" }
+type InferredId = typeof current_user.id          -- Resolves to int (value-level direct access)
+type InferredName = (typeof current_user).name    -- Resolves to str (parenthesized type-level projection)
+
+-- 3. Mapped Schema Construction (computed key projection T.(K)):
 type OptionalSchema = \T -> type<{
-    [K in keyof T]: ?T[K]
+    [K in keyof T]: ?T.(K)
 }>
 
 type UserPatch = OptionalSchema<User>
@@ -2190,7 +2311,7 @@ type ActivePayload = VersionedSchema<2> -- Resolves to SchemaV2
 let user_v2: ActivePayload = .{ id: 10, name: "Alice", email: "alice@test.com" }
 
 -- Structural constraint & keyof bound adaptation:
-type PickField = \T: { ..R }, K: keyof T -> T[K]
+type PickField = \T: { ..R }, K: keyof T -> T.(K)
 type UserName = PickField<SchemaV1, "name"> -- Resolves to str
 -- type BadField = PickField<SchemaV1, "missing"> -- Error [E0301]: "missing" not in keyof SchemaV1
 
@@ -2448,11 +2569,14 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0531`** | `ImmutableTargetViewError` | Attempting to create a live view (`let view`) over an immutable binding |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Passing live mutable view across concurrent task boundary |
 | **`E0605`** | `InvalidParallelCapabilityError` | Capturing external mutable capabilities in parallel combinator |
-| **`E0607`** | `DerivedProxyEscapeError` | Attempting to return derived proxy out of `derive` recipe |
+| **`E0607`** | `DerivedProxyEscapeError` | Derived proxy escapes 'derive' recipe via return, assignment, or closure publication |
 | **`E0610`** | `DuplicateResumeInvocationError` | Invoking affine one-shot resumption `resume` more than once |
 | **`E0611`** | `EscapingResumeError` | Escaping resumption handle beyond handler arm lexical scope |
 | **`E0612`** | `UnhandledEffectError` | Invoking effect operation without in-scope handler or declaring effect in callable signature |
 | **`E0614`** | `EscapingEffectClosureError` | Closure with unhandled effect escaping to heap record without in-scope handler |
+| **`E0615`** | `CrossTaskUnhandledEffectError` | Passing callable with unhandled effect or external effect handler across concurrent task boundary |
+| **`E0616`** | `ScopedCleanupEffectError` | Resource cleanup handler (`on_close`) declares or invokes unhandled algebraic effects |
+| **`E0617`** | `ScopedCleanupDivergenceError` | Resource cleanup handler (`on_close`) declares or invokes divergent operations (`@Div`) |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
 | **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
 | **`E0710`** | `IllegalControlTransferInFallbackError` | Embedding `return`/`break` in fallback operator `??` |
