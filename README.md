@@ -7,7 +7,7 @@
 ### 1. Algebraic Effects (`@Effect`)
 
 ```ril
-pub effect Ask {
+pub eff Ask {
     prompt(str) -> str,
 }
 

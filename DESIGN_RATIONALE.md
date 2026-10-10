@@ -257,9 +257,9 @@ In languages such as Python and JavaScript, the `yield` keyword is overloaded to
 
 Ril rejects this conflation:
 1. **Eliminating Handler Hijacking**: If scheduling and data emission shared the same effect, an ambient stream consumer `with Yield::emit(...)` could inadvertently capture runtime scheduler time-slicing yields, causing scheduler starvation.
-2. **Untyped Scheduler vs. Typed Payload**: `@Fiber` operates at the untyped machine-state level (declared as `yield() -> ()` within `effect Fiber`), merely swapping instruction pointers and CPU register frames. Conversely, value streaming carries domain data of type $T$.
-3. **Freestanding Purity**: Streaming functions annotated with `effect Yield<T>` are ordinary algebraic effects. They can be compiled, linked, and executed in freestanding embedded targets without dragging in a fiber runtime or thread scheduler.
-4. **Push vs. Pull Semantics**: Under Ril's affine resumption and no-escape invariant (`E0611`), `effect Yield<T>` evaluates as a zero-cost in-situ **push stream**. External pull iterators (`Iterator<T>`) are cleanly constructed via compiler state-machine lowering or dedicated fiber channels without compromising handler encapsulation.
+2. **Untyped Scheduler vs. Typed Payload**: `@Fiber` operates at the untyped machine-state level (declared as `yield() -> ()` within `eff Fiber`), merely swapping instruction pointers and CPU register frames. Conversely, value streaming carries domain data of type $T$.
+3. **Freestanding Purity**: Streaming functions annotated with `eff Yield<T>` are ordinary algebraic effects. They can be compiled, linked, and executed in freestanding embedded targets without dragging in a fiber runtime or thread scheduler.
+4. **Push vs. Pull Semantics**: Under Ril's affine resumption and no-escape invariant (`E0611`), `eff Yield<T>` evaluates as a zero-cost in-situ **push stream**. External pull iterators (`Iterator<T>`) are cleanly constructed via compiler state-machine lowering or dedicated fiber channels without compromising handler encapsulation.
 
 ### 3.2 Structured Concurrency Scopes as Defect Containment Domains
 
@@ -564,26 +564,26 @@ To prevent waist `where` from degrading into the "Buried Body" anti-pattern (whe
 | Tier | Syntactic Location | Permitted Declarations | Architectural Purpose |
 | :--- | :--- | :--- | :--- |
 | **Waist (`SignatureWhereClause`)** | Signature $\dots$ `{` | **`type` ONLY** | **Interface Specification**: Decomposing complex callable signatures, effects, and capability sets. |
-| **Tail (`BlockWhereClause`)** | End of Block `{ ... }` | **`fn`, `type`, `effect`** | **Implementation Mechanics**: Mutually recursive worker functions, local scratch types, and private delimited control effects. |
+| **Tail (`BlockWhereClause`)** | End of Block `{ ... }` | **`fn`, `type`, `eff`** | **Implementation Mechanics**: Mutually recursive worker functions, local scratch types, and private delimited control effects. |
 
-Declaring procedural helpers (`fn`) or algebraic effects (`effect`) at the waist is statically rejected (`E0704`). This ensures that executable blocks (`{ ... }`) never appear before the function's primary body block.
+Declaring procedural helpers (`fn`) or algebraic effects (`eff`) at the waist is statically rejected (`E0704`). This ensures that executable blocks (`{ ... }`) never appear before the function's primary body block.
 
-#### 3. Resolving the Escapability Paradox: Why Waist Prohibits `effect`
-Why can't local algebraic effects (`effect`) be declared in the waist `where` clause alongside types?
+#### 3. Resolving the Escapability Paradox: Why Waist Prohibits `eff`
+Why can't local algebraic effects (`eff`) be declared in the waist `where` clause alongside types?
 
 Ril enforces the **Strict Local Discharge Invariant (`E0618`)**: any locally declared effect MUST be completely handled within the declaring function via an in-scope handler (`with`). A local effect CANNOT escape into the public `@Effect` annotation because external callers cannot import or name an unexported private effect.
 
-Permitting `effect` at the waist triggers the **Escapability Paradox**:
+Permitting `eff` at the waist triggers the **Escapability Paradox**:
 1. If the effect appears in the outer signature `@MyEffect`, callers cannot name it and the function is statically uncallable.
 2. If the effect does NOT appear in the outer signature, it is purely internal implementation mechanism. Placing it at the signature waist falsely advertises private control flow as part of the public interface contract.
 
-Therefore, `SignatureWhereClause` is restricted to `type` aliases (which may freely reference in-scope *ambient* effects, such as `@Io`), while generative local `effect` declarations are strictly confined to the block where they are handled (`BlockWhereClause`).
+Therefore, `SignatureWhereClause` is restricted to `type` aliases (which may freely reference in-scope *ambient* effects, such as `@Io`), while generative local `eff` declarations are strictly confined to the block where they are handled (`BlockWhereClause`).
 
 #### 4. Strict Declarative Partitioning (`E0703` vs `E0702`)
 In languages like C++, Rust, or JavaScript, developers can scatter `type` aliases and local function declarations arbitrarily across procedural code. This creates temporal illusions (e.g. wondering whether a type is dynamically bound or lexically hoisted) and complicates dead-code elimination.
 
 Ril enforces **Strict Declarative Partitioning**:
-- The sequential statement sequence (`StatementSequence`) contains strictly imperative code (`let`, `var`, `with`, pipelines, control transfer). Interleaving `fn`, `type`, or `effect` is statically rejected (`E0703: IllegalSequentialDeclarationError`).
+- The sequential statement sequence (`StatementSequence`) contains strictly imperative code (`let`, `var`, `with`, pipelines, control transfer). Interleaving `fn`, `type`, or `eff` is statically rejected (`E0703: IllegalSequentialDeclarationError`).
 - Conversely, `where` clauses contain strictly hoisted, side-effect-free declarations. Placing variable bindings (`let`, `var`) in `where` is statically rejected (`E0702: InvalidWhereItemError`).
 
 #### 5. Soundness: Stratified Tarjan SCC & Downward Isolation (`E0705`, `E0706`)

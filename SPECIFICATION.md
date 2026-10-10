@@ -152,7 +152,7 @@ Wildcard           ::= "_"
 
 Identifiers are strictly partitioned at the lexer and parser levels across grammatical roles under the **Closed Casing Invariant**:
 
-1. **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`effect`), and generic type parameters (`T`, `ItemType`).
+1. **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`eff`), and generic type parameters (`T`, `ItemType`).
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
 2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), named functions (`fn`, `meta fn`), record fields, and module path segments.
 3. **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`) MUST use `snake_case`.
@@ -162,7 +162,7 @@ Identifiers are strictly partitioned at the lexer and parser levels across gramm
 -- 1. PascalCase: Types, Constructors, Effects, and Generic Parameters
 type UserAccount = { id: int }         -- OK: type identifier
 type Result<T, E> = Ok(T) | Err(E)     -- OK: generic parameters and constructors
-effect FileIo { read() -> str }        -- OK: effect identifier
+eff FileIo { read() -> str }           -- OK: effect identifier
 type HttpServerConfig = { port: int }  -- OK: title-cased acronym
 
 -- 2. snake_case: Variables (local, param, top-level var / let mut), Functions, and Fields
@@ -197,7 +197,7 @@ fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' suppresses un
 The following 36 tokens are strictly reserved keywords:
 
 ```
-as       effect   else     false    fn
+as       eff      else     false    fn
 for      halt     if       in       infer
 is       keyof    last     let      loop
 match    meta     module   mut      never
@@ -211,7 +211,7 @@ with
 -- Reserved keywords in action:
 pub opaque type Token = int            -- 'pub', 'opaque', 'type'
 meta let COMPILE_ID = 101              -- 'meta', 'let'
-effect Logger { log(str) -> () }       -- 'effect'
+eff Logger { log(str) -> () }          -- 'eff'
 use ril/array::{push}                  -- 'use'
 halt fn total_step() -> bool { true }  -- 'halt', 'true', 'fn'
 let scoped res = File::open("a.txt")?  -- 'scoped' in let binding
@@ -688,7 +688,7 @@ assert(u2.settings.theme == "light")    -- u2 is a fresh updated copy
 assert(u1.settings != u2.settings)      -- Modified subtree gets a fresh copy
 
 -- 2. Transactional Abort-Safety: Delimited Early Abort (§9.3)
-effect Auth {
+eff Auth {
     check() -> bool,
 }
 
@@ -989,23 +989,23 @@ let token_map: [SessionToken: int] = [token: 42]
 ### 4.7 Effect Declarations
 
 ```ebnf
-EffectDecl   ::= [ "pub" ] "effect" Identifier [ GenericParams ] "{" EffectOpDecl { "," EffectOpDecl } [ "," ] "}"
-               | [ "pub" ] "effect" Identifier [ GenericParams ] "{" TypeExpression { "," TypeExpression } [ "," ] "}"
+EffectDecl   ::= [ "pub" ] "eff" Identifier [ GenericParams ] "{" EffectOpDecl { "," EffectOpDecl } [ "," ] "}"
+               | [ "pub" ] "eff" Identifier [ GenericParams ] "{" TypeExpression { "," TypeExpression } [ "," ] "}"
 EffectOpDecl ::= Identifier "(" [ ParameterList ] ")" [ "->" TypeExpression ] [ StateAnnot ]
 ```
 
 ```ril
-effect Console {
+eff Console {
     print(str) -> (),
     read_line() -> str,
 }
 
-effect State<S> {
+eff State<S> {
     get() -> S,
     put(val: S) -> (),
 }
 
-effect AppEffects { Console, State<int> } -- Combined effect set
+eff AppEffects { Console, State<int> } -- Combined effect set
 ```
 
 ---
@@ -1210,7 +1210,7 @@ pinned_buf.capacity = 32               -- OK: field assignment through pinned ha
 
 ### 6.1 Block Expressions, Tail Values & Hoisted Block `where` Declarations
 
-A block `{ ... }` evaluates to its tail expression. A block may conclude with a trailing `where` clause (`BlockWhereClause`) declaring mutually recursive helper functions (`fn`), local types (`type`), and local algebraic effects (`effect`). All items in `BlockWhereClause` are hoisted across the enclosing block scope.
+A block `{ ... }` evaluates to its tail expression. A block may conclude with a trailing `where` clause (`BlockWhereClause`) declaring mutually recursive helper functions (`fn`), local types (`type`), and local algebraic effects (`eff`). All items in `BlockWhereClause` are hoisted across the enclosing block scope.
 
 ```ebnf
 Block               ::= "{" [ StatementSequence ] [ TailExpression ] [ BlockWhereClause ] "}"
@@ -1232,10 +1232,10 @@ BlockWhereItem      ::= FunctionDecl | TypeDecl | EffectDecl
 #### Invariants
 
 1. **Declarative Partitioning (`E0703`, `E0702`)**:
-   - Declarations (`fn`, `type`, `effect`) MUST NOT appear in `StatementSequence` (`E0703`).
+   - Declarations (`fn`, `type`, `eff`) MUST NOT appear in `StatementSequence` (`E0703`).
    - Variable bindings (`let`, `let mut`, `var`) MUST NOT appear in `where` clauses (`E0702`).
 2. **Local Effect Discharge (`E0618`)**:
-   - Any local `effect` declared in `BlockWhereClause` MUST be completely discharged via an in-scope `with` handler within the enclosing block frame.
+   - Any local `eff` declared in `BlockWhereClause` MUST be completely discharged via an in-scope `with` handler within the enclosing block frame.
    - Local effects MUST NOT appear in outer `@Effect` annotations or escape into unhandled closures.
 3. **Local Nominal Confinement (`E0315`)**:
    - Local nominal wrappers (`type Id(T)`) and sum types (`type S { ... }`) MUST NOT appear in the return type of the enclosing function. Structural type aliases (`type Alias = T`) are exempt.
@@ -1263,7 +1263,7 @@ fn search_matrix(grid: [][]int) -> ?int {
     walk_grid(grid)
     found                              -- Pure signature: @Search completely discharged
 where
-    effect Search { hit(int) -> () }
+    eff Search { hit(int) -> () }
     fn walk_grid(g: [][]int) @Search {
         for g as row {
             for row as item {
@@ -1277,7 +1277,7 @@ where
 -- let bad_statement = {
 --     let x = 10
 --     type Step = int                 -- Error [E0703]: IllegalSequentialDeclarationError: declarations of 'type' are prohibited in sequential statement stream; place in 'where' clause
---     effect Bail { exit() -> never } -- Error [E0703]: IllegalSequentialDeclarationError: declarations of 'effect' are prohibited in sequential statement stream; place in 'where' clause
+--     eff Bail { exit() -> never }    -- Error [E0703]: IllegalSequentialDeclarationError: declarations of 'eff' are prohibited in sequential statement stream; place in 'where' clause
 --     x + 1
 -- }
 
@@ -1293,7 +1293,7 @@ where
 --     LocalStep::tick()
 --     1
 -- where
---     effect LocalStep { tick() -> () }
+--     eff LocalStep { tick() -> () }
 -- }
 
 -- 6. Prohibited: Local nominal type escaping function boundary (E0315):
@@ -1739,7 +1739,7 @@ TrailingClosure      ::= AnonFnExpr
 #### Dual-Tier `where` Invariants
 
 1. **Signature `where` Scope (`SignatureWhereClause`, `E0704`)**:
-   - `SignatureWhereClause` is restricted to `LocalTypeDecl` (`type`). Declaring `fn` or `effect` is statically rejected (`E0704`).
+   - `SignatureWhereClause` is restricted to `LocalTypeDecl` (`type`). Declaring `fn` or `eff` is statically rejected (`E0704`).
    - Types declared in `SignatureWhereClause` are in scope across the function signature and the function body block.
 2. **Signature Reference Confinement (`E0706`)**:
    - Any type referenced in a function signature MUST be declared in `SignatureWhereClause` or an outer scope. Referencing types declared in `BlockWhereClause` is statically rejected (`E0706`).
@@ -1770,11 +1770,11 @@ where
     Ok(out)
 }
 
--- 2. Prohibited: Declaring 'fn' or 'effect' in SignatureWhereClause (E0704):
+-- 2. Prohibited: Declaring 'fn' or 'eff' in SignatureWhereClause (E0704):
 -- fn bad_waist_fn(x: int) -> int
 -- where
 --     fn helper(n: int) -> int { n * 2 }    -- Error [E0704]: InvalidSignatureWhereItemError: 'fn' cannot be declared in signature 'where' clause; place in block 'where' clause
---     effect Yield { emit(int) -> () }      -- Error [E0704]: InvalidSignatureWhereItemError: 'effect' cannot be declared in signature 'where' clause; place in block 'where' clause
+--     eff Yield { emit(int) -> () }         -- Error [E0704]: InvalidSignatureWhereItemError: 'eff' cannot be declared in signature 'where' clause; place in block 'where' clause
 -- {
 --     helper(x)
 -- }
@@ -2020,7 +2020,7 @@ fn apply<T, R>(x: T, f: fn(T) -> R) -> R {
 let r_pure = apply(10, \x -> x * 2)   -- Pure call: zero effect, zero capability
 
 -- 2. Algebraic Effect Forwarding:
-effect Logger { log(str) -> () }
+eff Logger { log(str) -> () }
 fn logged_square(n: int) -> int @Logger {
     Logger::log("calculating")
     n * n
@@ -2400,17 +2400,17 @@ When an effect operation requires in-place mutation (e.g., writing into a caller
 
 ```ril
 -- 1. Pure Effect Operations & Ambient Context:
-effect Console {
+eff Console {
     print(str) -> (),
     read_line() -> str,
 }
 
-effect Context<T> {
+eff Context<T> {
     ask() -> T,                        -- OK: Ambient context value
 }
 
 -- 2. Effect Operations Declaring Mutation Capabilities:
-effect BufferIO {
+eff BufferIO {
     read_into(mut buf: []u8) -> int &mut, -- OK: Operation declares in-place buffer mutation
 }
 
@@ -2529,7 +2529,7 @@ fn bad_escaping_resume() -> fn() -> int {
 }
 
 -- 3. Delimited Early Abort with Proven LIFO Cleanup & Commit-on-Write Memory:
-effect Auth {
+eff Auth {
     authenticate() -> bool,
 }
 
@@ -2574,11 +2574,11 @@ The sub-effect lattice satisfies $\emptyset \subset \{\text{Fiber}\} \subset \{\
 #### Normative Rules for Built-in Effects:
 1. **Least-Privilege Leaf I/O Principle (`@Fiber`)**: Leaf I/O operations requiring cooperative suspension without forking child tasks MUST declare only `@Fiber`. Holding `@Fiber` does not grant authority to fork concurrent tasks (`@Concurrent`), preserving frame containment and single-fiber DRF-SC invariants.
 2. **Compound Asynchronous Workflows (`@Async`)**: Functions that both suspend on I/O and manage concurrent child tasks declare `@Async`.
-3. **Decoupling Quantum Scheduling from Value Generators**: Cooperative scheduling operations declared within `effect Fiber` (`yield() -> ()` and `park() -> ()`) are strictly untyped quantum transfer primitives. Value-emitting streams MUST be modeled via user-defined algebraic effects (e.g., `effect Yield<T> { emit(T) -> () }`), evaluated as internal push streams under one-shot delimited resumption (`resume ()`). External pull iterators cannot escape `resume` past handler arm boundaries (`E0611`) and are constructed via compiler-lowered state machines or fiber channels.
+3. **Decoupling Quantum Scheduling from Value Generators**: Cooperative scheduling operations declared within `eff Fiber` (`yield() -> ()` and `park() -> ()`) are strictly untyped quantum transfer primitives. Value-emitting streams MUST be modeled via user-defined algebraic effects (e.g., `eff Yield<T> { emit(T) -> () }`), evaluated as internal push streams under one-shot delimited resumption (`resume ()`). External pull iterators cannot escape `resume` past handler arm boundaries (`E0611`) and are constructed via compiler-lowered state machines or fiber channels.
 
 ```ril
 -- 0. Built-in Fiber Effect Declaration:
-effect Fiber {
+eff Fiber {
     yield() -> (),                     -- Relinquishes quantum to runtime scheduler
     park() -> (),                      -- Suspends execution until external event/wakeup
     unpark() -> (),                    -- Awakens a parked fiber context
@@ -2617,7 +2617,7 @@ fn cooperative_worker(mut count: int) -> () @Fiber {
 }
 
 -- 4. Value-Streaming Generator Orthogonality:
-effect Yield<T> {
+eff Yield<T> {
     emit(value: T) -> ()
 }
 
@@ -2687,7 +2687,7 @@ All concurrent child tasks must be forked within a structured `scope`. A parent 
 4. **Concurrent Task Effect Confinement Invariant (`E0615`)**:
    For any concurrent child task $c$ spawned via `s.fork(task)` or data-parallel combinator (`Parallel::map`, `Parallel::fold`), the task callable $task$ MUST be closed under all user-defined algebraic effects:
    $$\mathop{\mathrm{Effects}}(task) \subseteq \{\text{Fiber}\} \quad \text{(or } \emptyset \text{ for pure/parallel combinators)}$$
-   Every algebraic effect operation invoked within the execution tree of a concurrent child task MUST be intercepted and discharged by a local `with` handler lexically enclosed within that child task. Handlers established in parent or ancestor tasks MUST NOT be captured across concurrent task boundaries (`&closure`). Passing a callable carrying unhandled algebraic effects or capturing external effect handlers across a concurrent task boundary is statically rejected at compile time under `E0615: CrossTaskUnhandledEffectError`. Runtime-managed cooperative fiber scheduling operations (`effect Fiber`) are exempt.
+   Every algebraic effect operation invoked within the execution tree of a concurrent child task MUST be intercepted and discharged by a local `with` handler lexically enclosed within that child task. Handlers established in parent or ancestor tasks MUST NOT be captured across concurrent task boundaries (`&closure`). Passing a callable carrying unhandled algebraic effects or capturing external effect handlers across a concurrent task boundary is statically rejected at compile time under `E0615: CrossTaskUnhandledEffectError`. Runtime-managed cooperative fiber scheduling operations (`eff Fiber`) are exempt.
 
 ```ril
 use ril/concurrent::{scope, Scope, Task, TaskFault, PanicInfo, DoubleFaultInfo}
@@ -2756,7 +2756,7 @@ fn batch_transform(items: []int) -> Result<[]int, TaskFault> @Concurrent {
 }
 
 -- 4. Concurrent Task Effect Confinement Invariant (E0615):
-effect WorkerLog { log(str) -> () }
+eff WorkerLog { log(str) -> () }
 
 fn test_task_effect_confinement() {
     with WorkerLog::log(msg) -> resume ()      -- Active in parent activation frame
@@ -3318,8 +3318,8 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0618`** | `UndischargedLocalEffectError` | Local algebraic effect declared in 'where' is not completely discharged within enclosing block |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
 | **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
-| **`E0703`** | `IllegalSequentialDeclarationError` | Declaring 'fn', 'type', or 'effect' in sequential statement stream instead of 'where' clause |
-| **`E0704`** | `InvalidSignatureWhereItemError` | Declaring 'fn' or 'effect' in signature 'where' clause (signature where is restricted to 'type') |
+| **`E0703`** | `IllegalSequentialDeclarationError` | Declaring 'fn', 'type', or 'eff' in sequential statement stream instead of 'where' clause |
+| **`E0704`** | `InvalidSignatureWhereItemError` | Declaring 'fn' or 'eff' in signature 'where' clause (signature where is restricted to 'type') |
 | **`E0705`** | `DownwardScopeReferenceError` | Signature 'where' clause references item declared in inner block 'where' clause |
 | **`E0706`** | `SignatureTypeNotInWaistWhereError` | Function signature references type declared in block 'where' clause instead of signature 'where' clause |
 | **`E0710`** | `IllegalControlTransferInFallbackError` | Embedding `return`/`last` in fallback operator `??` |
