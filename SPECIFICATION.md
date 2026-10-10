@@ -811,6 +811,81 @@ fn check_buf(runtime_size: int) {
 }
 ```
 
+### 3.12 The Tripartite Ontology & Type Definition Boundaries
+
+Ril partitions program semantics across three mutually exclusive domains, converging exclusively at the callable computation arrow:
+
+1. **Data & Shape Domain ($\mathcal{T}$)**: Memory layout and structural topology of values at rest. Includes primitive value types, heap reference types (records, arrays, maps, tuples), sums/GADTs, nominal wrappers, and opaque types. The record field `mut` prefix is strictly an interior mutability layout marker, not a capability.
+2. **Storage & Access Domain ($\mathcal{C}$)**: Mutation authority, pointer stability, and aliasing exclusivity over memory locations (`let`, `let mut`, `var`, `let view`, parameter modes, `&mut`, `&^mut`, `&closure`, `&capture`, `&{ident}`).
+3. **Control & Transfer Domain ($\mathcal{E}$)**: Delimited control inversion, algebraic effects (`eff`), deep handlers (`with`), affine resumption (`resume`), and built-ins (`@Async`, `@Fiber`, `@Concurrent`, `@Div`).
+4. **Computation Confluence Point**:
+   $$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\,\&\mathcal{C}\,]$$
+   Latent effects and capabilities reside exclusively on callable arrows. Values in normal form carry zero latent effects.
+
+#### Normative Boundary Invariants for `type T = ...`:
+1. **Bare Effect Alias Prohibition (`E0330`)**: Effect rows cannot be aliased under `type T = ...`. Effects must be declared and combined via `eff`.
+2. **Bare Capability Alias Prohibition (`E0331`)**: Capabilities cannot be aliased under `type T = ...`.
+3. **Variant Computation Prohibition (`E0332`)**: Sum type variants cannot declare `@Eff` or `&Cap`. Variants are passive data constructors; computational behaviors must be typed as callable payloads.
+4. **Field Computation Prohibition (`E0333`)**: Record fields and tuple components cannot declare `@Eff` or `&Cap`. Fields store data or callables; interior mutability uses the structural `mut` prefix.
+5. **Generic Computation Constraint Prohibition (`E0334`)**: Generic parameters cannot be constrained by `@Eff` or `&Cap`. Generic parameters parameterize types or const values; higher-order functions forward effects and capabilities automatically.
+6. **Pure Type Function Computation Prohibition (`E0335`)**: Compile-time type functions (`type`, `halt type`) cannot declare `@Eff` or `&Cap`. Type functions evaluate strictly within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
+7. **Value Effect Annotation Prohibition (`E0613`)**: Values and variable bindings cannot declare `@Eff`. Effects belong exclusively to callable arrows.
+
+```ril
+-- 1. Bare Effect Aliases (E0330):
+-- type BadEffect = @Io                         -- Error [E0330]: bare effect '@Io' cannot be aliased as a type; declare effects using 'eff'
+-- type CombinedEffect = @Io + Async            -- Error [E0330]: bare effect row '@Io + Async' cannot be aliased as a type; combine effects via 'eff'
+eff Io { read_line() -> str, write_line(str) -> () }
+eff AsyncIo { Io, Fiber }                      -- OK: effect combination declared via 'eff'
+type ReaderFn = fn() -> str @Io                -- OK: effect annotates callable arrow
+
+-- 2. Bare Capability Aliases (E0331):
+-- type BadMut = &mut                           -- Error [E0331]: bare capability '&mut' cannot be aliased as a type
+-- type BadShare = &^mut                        -- Error [E0331]: bare capability '&^mut' cannot be aliased as a type
+type StateNode = { mut count: int, tag: str }  -- OK: field 'mut' is interior mutability marker
+type Mutator<T> = fn(mut target: T) -> () &mut -- OK: capability annotates callable arrow
+
+-- 3. Variant Computation Annotations (E0332):
+-- type BadStatus { Pending, Running @Async }   -- Error [E0332]: sum variant 'Running' cannot declare algebraic effect '@Async'
+-- type BadMutation { Idle, Mutating &mut }     -- Error [E0332]: sum variant 'Mutating' cannot declare state capability '&mut'
+type TaskStatus {
+    Pending,                                   -- OK: nullary data constructor tag
+    Running(fn() -> () @Async),                -- OK: payload is a callable arrow encapsulating effect
+    Mutating(fn(mut StateNode) -> () &mut),    -- OK: payload is a callable arrow encapsulating capability
+}
+
+-- 4. Field Computation Annotations (E0333):
+-- type BadChannel = { stream: str @Io }        -- Error [E0333]: record field 'stream' cannot declare algebraic effect '@Io'
+-- type BadBuffer = { data: []u8 &mut }         -- Error [E0333]: record field 'data' cannot declare state capability '&mut'
+type ValidChannel = {
+    mut buffer: []u8,                          -- OK: structural field interior mutability
+    stream: fn() -> str @Io,                   -- OK: field stores a callable arrow carrying effect
+    writer: fn(mut []u8) -> () &mut,           -- OK: field stores a callable arrow carrying capability
+}
+
+-- 5. Generic Computation Constraints (E0334):
+-- fn bad_exec<T: @Io>(task: T) -> () { task() } -- Error [E0334]: generic parameter 'T' cannot be constrained by algebraic effect '@Io'
+-- type BadWrapper<T: &mut> = { item: T }      -- Error [E0334]: generic parameter 'T' cannot be constrained by state capability '&mut'
+fn execute<T, R>(task: fn(T) -> R, arg: T) -> R {
+    task(arg)                                  -- OK: automatically forwards callee's effects and capabilities
+}
+fn get_field<T, K: keyof T>(record: T, key: K) -> T.(K) {
+    record.(key)                               -- OK: keyof constraint is a shape property
+}
+
+-- 6. Pure Type Function Computation Annotations (E0335):
+-- halt type BadTransform<T> = \T -> type<T> @Io -- Error [E0335]: pure type function cannot declare algebraic effect '@Io'
+-- type BadMapper<T> = \T -> type<T> &mut       -- Error [E0335]: pure type function cannot declare state capability '&mut'
+halt type MakeNullable = \T -> type<?T>        -- OK: pure type evaluation returning type<T>
+
+-- 7. Value Effect Annotations Prohibited (E0613):
+-- type BadRecord = { val: int @Io }            -- Error [E0613]: record field has value type 'int'; raw effects cannot reside on values
+fn run_service() @Io {
+    let result: str = Io::read_line()          -- OK: evaluated value is pure 'str'
+    -- let bad_bind: str @Io = result          -- Error [E0613]: binding 'bad_bind' specifies effect '@Io'; values in normal form carry no latent effects
+}
+```
+
 ---
 
 ## 4. Declarations & Bindings
@@ -1646,9 +1721,9 @@ match status_code {
 }
 
 -- Or-patterns with variable bindings:
-fn get_dimension(s: Shape) -> f64 {
+fn get_size(s: Shape) -> f64 {
     match s {
-        Circle(dim) | Rect(dim, _) if dim > 0.0 -> dim,
+        Circle(sz) | Rect(sz, _) if sz > 0.0 -> sz,
         _ -> 0.0,
     }
 }
@@ -1972,7 +2047,7 @@ let r2 = tax_fn(100)                   -- OK: 20
 let r3 = tax_closure(100)              -- OK: 20
 ```
 
-| Dimension | Named Function (`fn`) | Stateless Anonymous Function (`\x -> ...`) | Stateful Closure (`\x -> ... &closure`) |
+| Aspect | Named Function (`fn`) | Stateless Anonymous Function (`\x -> ...`) | Stateful Closure (`\x -> ... &closure`) |
 | :--- | :--- | :--- | :--- |
 | **Hoisting** | Module-wide newspaper ordering | Strictly lexical (definition before use) | Strictly lexical (definition before use) |
 | **Environment Allocation** | Zero | Zero (bare machine code pointer) | Fat pointer (code pointer + environment struct) |
@@ -2088,17 +2163,17 @@ let employees = [
 let names = employees |> Array::map(\.name)                   -- Evaluates to ["Alice", "Bob"]
 let salaries = employees |> Array::map(\.salary)               -- Evaluates to [8000, 6000]
 
--- 3b. Tuple positional index projection (\.index):
+-- 3(b). Tuple positional index projection (\.index):
 let pairs: [](int, str) = [(1, "Alice"), (2, "Bob")]
 let ids = pairs |> Array::map(\.0)                            -- Evaluates to [1, 2]
 let labels = pairs |> Array::map(\.1)                         -- Evaluates to ["Alice", "Bob"]
 
--- 3c. Mixed nested projection:
+-- 3(c). Mixed nested projection:
 type Team = { id: int, leader: (str, int) }
 let teams = [Team.{ id: 10, leader: ("Alice", 30) }]
 let leader_ages = teams |> Array::map(\.leader.1)             -- Evaluates to [30]
 
--- 3d. Safe navigation projection (\.field?.subfield, \?.field):
+-- 3(d). Safe navigation projection (\.field?.subfield, \?.field):
 let companies: []Company = [
     Company.{ name: "CorpA", dept: Some(Department.{ name: "Engineering", leader: Some(employees[0]) }) },
     Company.{ name: "CorpB", dept: None },
@@ -2763,7 +2838,7 @@ fn cooperative_worker(mut count: int) -> () @Fiber {
     }
 }
 
--- 4. Value-Streaming Generator Orthogonality:
+-- 4. Value-Streaming Generator Composition:
 eff Yield<T> {
     emit(value: T) -> ()
 }
@@ -2792,12 +2867,12 @@ fn collect_first_evens() -> []int {
     collected
 }
 
--- (b) Orthogonal Composition: Suspendable Async Generator:
+-- (b) Independent Composition: Suspendable Async Generator:
 fn stream_remote_chunks(fd: int) -> () @Yield<[]u8> @Fiber {
     while true {
         let chunk = read_socket_chunk(fd)
         if len(chunk) == 0 { last }
-        Yield::emit(chunk)             -- Orthogonally composes @Yield<[]u8> and @Fiber
+        Yield::emit(chunk)             -- Composes independent @Yield<[]u8> and @Fiber
     }
 }
 
@@ -3455,6 +3530,12 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0317`** | `FunctionDefaultGenericProhibitedError` | Function generic parameter declares default type or value argument |
 | **`E0320`** | `ForwardTypeDefaultReferenceError` | Generic default parameter expression contains forward reference or circular dependency |
 | **`E0323`** | `ConstGenericSortMismatchError` | Const generic argument does not match expected parameter sort |
+| **`E0330`** | `BareEffectTypeAliasError` | Attempting to alias an effect ('@Eff') under 'type E = ...' instead of 'eff' declaration |
+| **`E0331`** | `BareCapabilityTypeAliasError` | Attempting to alias a capability ('&mut', '&^mut') under 'type C = ...' |
+| **`E0332`** | `VariantComputationAnnotationError` | Attaching '@Eff' or '&Cap' directly to a sum type variant constructor |
+| **`E0333`** | `FieldComputationAnnotationError` | Attaching '@Eff' or '&Cap' directly to a record field or tuple component |
+| **`E0334`** | `GenericComputationConstraintError` | Constraining a generic parameter with an effect ('<T: @Io>') or capability ('<T: &mut>') |
+| **`E0335`** | `TypeFunctionComputationAnnotationError` | Declaring '@Eff' or '&Cap' on a pure compile-time type function ('type', 'halt type') |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0402`** | `ValueTypePinnedMutError` | Attempting to declare a value type as pinned mutable handle `let mut` |
 | **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
@@ -3481,6 +3562,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0610`** | `DuplicateResumeInvocationError` | Invoking affine one-shot resumption `resume` more than once |
 | **`E0611`** | `EscapingResumeError` | Escaping resumption handle beyond handler arm lexical scope |
 | **`E0612`** | `UnhandledEffectError` | Invoking effect operation without in-scope handler or declaring effect in callable signature |
+| **`E0613`** | `ValueEffectAnnotationError` | Attaching algebraic effect annotation ('@Eff') to a non-callable type expression or value binding |
 | **`E0614`** | `EscapingEffectClosureError` | Closure with unhandled effect escaping to heap record without in-scope handler |
 | **`E0615`** | `CrossTaskUnhandledEffectError` | Passing callable with unhandled effect or external effect handler across concurrent task boundary |
 | **`E0616`** | `ScopedCleanupEffectError` | Resource cleanup handler (`on_close`) declares or invokes unhandled algebraic effects |

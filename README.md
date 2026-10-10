@@ -49,7 +49,7 @@ fn register(mut hub: Hub, mut listener: Listener) &^mut {
 }
 
 -- External state access requires explicit capability annotation
-let mut counter = 0
+var counter = 0
 fn tick() -> int &{mut counter} {
     counter += 1
     counter
@@ -64,7 +64,7 @@ fn share_counter() -> (fn() -> int &{mut counter}) &{^mut counter} {
 
 -- Escaping stateful closures require &capture; returned callable carries &closure
 pub fn make_step() -> (fn() -> int &closure) &capture {
-    let mut n = 0
+    var n = 0
     \-> { n += 1; n }
 }
 

@@ -158,7 +158,7 @@ In Ril, a view's static type remains $T$. The immutability constraint is enforce
 
 ### 2.4 Named External Retained Sharing
 
-External state and retained sharing are separate dimensions: `&{mut counter}` permits mutation of an external origin, while `&{^mut counter}` additionally discloses establishing another writable access path that survives a call or closure publication boundary. Copying an integer value does not share its variable cell; publishing a closure that mutates that cell can. Merely mutating already-shared state does not introduce a new sharing obligation.
+External state and retained sharing are separate concerns: `&{mut counter}` permits mutation of an external origin, while `&{^mut counter}` additionally discloses establishing another writable access path that survives a call or closure publication boundary. Copying an integer value does not share its variable cell; publishing a closure that mutates that cell can. Merely mutating already-shared state does not introduce a new sharing obligation.
 
 The name identifies shared source storage, not the container receiving it. Origin identities survive aliases and indirect calls. Hiding a private origin behind a callable interface retains both `&closure` and anonymous `&^mut`; the hazard cannot disappear through abstraction. Local discharge checks captured origins and retention destinations as well as explicit arguments, so local arguments cannot disguise retention of global state.
 
@@ -196,21 +196,21 @@ Discarding in-flight proxy nodes does not contradict Commit-on-Write:
 2. Any physical mutations executed on external reachable state (such as appending to an audit log or updating an external mutable variable cell via `&mut`) remain permanently committed.
 3. Because `E0607` (`DerivedProxyEscapeError`) statically forbids `next` from escaping or being stored in external containers, partial derivations cannot leak into surviving scopes.
 
-### 2.6 The Three-Tier Mutability Architecture: Orthogonalizing Reassignment and Interior Mutation (`let`, `let mut`, `var`)
+### 2.6 The Three-Tier Mutability Architecture: Decoupling Reassignment and Interior Mutation (`let`, `let mut`, `var`)
 
 #### 2.6.1 The Historical Conflation Trap: Rust vs. Java/Kotlin
 In programming language design, two historical paradigms dominated mutable variable declarations, both exhibiting fundamental semantic flaws:
 1. **The Rust Conflation Trap (`let mut`)**: Rust merges slot reassignability and interior mutability into a single keyword `mut`. In Rust, declaring `let mut x = ...` simultaneously grants permission to rewrite the storage slot (`x = ...`) and to mutate through references (`&mut x`). While sound under exclusive ownership, it leaves developers unable to express "pinned mutable handles"—variables intended to be mutated in-place whose identity must never be rebound. Furthermore, it creates cognitive friction when interacting with reference types vs. scalar primitives.
 2. **The Java/Kotlin Shallow Immutability Trap (`val` / `final`)**: In Java, Kotlin, and Swift, `val` / `final` / `let` only governs variable slot reassignment (`x = ...`). The mutability of the referenced object is entirely detached from the binding, leading to dangerous "shallow immutability" illusions: a developer writes `val list = ArrayList()` assuming immutability, yet can freely mutate elements in place, defeating data-race freedom and deterministic sharing.
 
-#### 2.6.2 Ril's Orthogonal Three-Tier Taxonomy
-Ril resolves both traps by establishing an orthogonal, three-tier capability hierarchy:
+#### 2.6.2 Ril's Three-Tier Taxonomy
+Ril resolves both traps by establishing a clear three-tier capability hierarchy:
 
 | Binding Form | Variable Reassignment (`x = ...`) | In-Place Mutation (`x.f = ...`, `x !> ...`) | Semantic Classification | Mental Model |
 | :--- | :---: | :---: | :--- | :--- |
-| **`let`** | ❌ Rejected (`E0501`) | ❌ Rejected (`E0520`) | Immutable Binding | Constant value, frozen snapshot |
-| **`let mut`** | ❌ Rejected (`E0502`) | ✅ Permitted | **Pinned Mutable Handle** | Fixed heap buffer, collection, closure handle |
-| **`var`** | ✅ Permitted | ✅ Permitted | **Reassignable Variable** | Loop counter, accumulator, dynamic cursor |
+| **`let`** | [Prohibited] (`E0501`) | [Prohibited] (`E0520`) | Immutable Binding | Constant value, frozen snapshot |
+| **`let mut`** | [Prohibited] (`E0502`) | [Permitted] | **Pinned Mutable Handle** | Fixed heap buffer, collection, closure handle |
+| **`var`** | [Permitted] | [Permitted] | **Reassignable Variable** | Loop counter, accumulator, dynamic cursor |
 
 #### 2.6.3 The Empirical Validation: 100% Pinned Handle Alignment
 An exhaustive empirical audit of all reference objects, collections, and closures across the Ril specification confirmed a striking design invariant: **100% of reference handles declared `let mut` already behaved strictly as pinned handles**. In industrial codebase practice, developers almost never reassign a heap buffer (`buf = new_buf`) or connection handle; they mutate its contents in place. Declaring `let mut` as a pinned handle aligns static compiler enforcement with real-world developer intent.
@@ -293,7 +293,7 @@ Ril introduces no nominal marker traits, tags, or ad-hoc concurrency classificat
 - **Zero-Capability Invariant for Cross-Boundary Transfer**: Pure values, immutable records, and frozen `Immut<T>` values carry zero mutable capabilities. They are inherently data-race free and can safely cross concurrent task boundaries (`scope.fork`, `Parallel::map`) without wrapper types or marker trait implementations.
 - **Direct Static DRF-SC Enforcement**: Concurrency boundaries directly inspect capability requirements. Any closure or captured payload carrying active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) or live views over mutable roots is rejected at compile time under `E0601: CrossThreadDataRaceHazardError`.
 - **First-Class Effect Signatures**: Algebraic effect operations are ordinary callable signatures (`fn(Args) -> Ret @Effects &Capabilities`), tracking in-place mutation (`&mut`) directly where required without imposing artificial restrictions or marker trait requirements.
-- **Conceptual Minimality and Orthogonality**: Concurrency safety is an inherent static property derived from capability tracking and value immutability, rather than a nominal trait bolted onto type definitions. Type definitions remain lean, APIs avoid marker trait clutter, and developers reason about thread safety through familiar capability rules.
+- **Conceptual Minimality and Clean Separation**: Concurrency safety is an inherent static property derived from capability tracking and value immutability, rather than a nominal trait bolted onto type definitions. Type definitions remain lean, APIs avoid marker trait clutter, and developers reason about thread safety through familiar capability rules.
 
 ### 3.4 Effect Confinement at Concurrent Boundaries: Why Algebraic Effects Cannot Cross Tasks
 
@@ -301,7 +301,7 @@ Mainstream effect systems in single-threaded research languages (e.g., Koka, Eff
 
 1. **Destruction of Zero-Cost Stack Scopes**: Ril child fibers execute with stack-allocated `TaskNode` tracking blocks on independent fiber stacks (§9.5.2). If a child fiber could invoke an effect intercepted by a handler on the parent stack, the runtime would require cross-fiber delimited continuations, allocating frame descriptors on the heap and destroying the Zero-Heap Fast Path.
 2. **Delimited Early Abort Across Threads**: If an ambient parent handler intercepts an effect from a child task and executes an early abort (returning without `resume`), unwinding the parent stack while the child continues executing would violate the Synchronous Scope Unwind-Barrier. Conversely, attempting to asynchronously cancel the child from the parent handler introduces non-deterministic thread coordination.
-3. **Orthogonal Symmetry with DRF-SC**: Just as Boundary Capability Confinement (`E0601`) guarantees that mutable memory handles cannot cross task boundaries to eliminate data races, Concurrent Task Effect Confinement (`E0615`) guarantees that control transfers cannot cross task boundaries to eliminate cross-thread continuation hazards. Child tasks communicate exclusively through structured value channels (`task.join()`, channels), never via synchronous ambient effect invocations.
+3. **Symmetric Isolation Barrier with DRF-SC**: Just as Boundary Capability Confinement (`E0601`) guarantees that mutable memory handles cannot cross task boundaries to eliminate data races, Concurrent Task Effect Confinement (`E0615`) guarantees that control transfers cannot cross task boundaries to eliminate cross-thread continuation hazards. Child tasks communicate exclusively through structured value channels (`task.join()`, channels), never via synchronous ambient effect invocations.
 
 ---
 
@@ -359,7 +359,7 @@ Ril establishes strict syntactic and conceptual segregation between compile-time
 3. **Type-Level Symmetry via Dot Projection (`T.field`, `T.(K)`)**:
    - In conformity with the strict segregation between compile-time records and dynamic collections, Ril prohibits bracket string indexing on record types (`User["id"]`). Record fields are identifiers, not strings.
    - Field types of static records are extracted symmetrically via dot projection (`User.id`).
-   - For inferred anonymous record instances, direct value access `typeof expr.field` or parenthesized type projection `(typeof expr).field` maintains complete orthogonality.
+   - For inferred anonymous record instances, direct value access `typeof expr.field` or parenthesized type projection `(typeof expr).field` maintains complete consistency.
    - In mapped schema computations (`[K in keyof T]`), computed key projections use `T.(K)` to unambiguously distinguish evaluated type parameters from literal field names, preserving complete consistency across value and type spaces.
 4. **Product Types vs. Generic Container Parameter Extraction**:
    - **Product Types (Records & Tuples)**: Possess statically fixed shapes and physical memory offsets. Member extraction in both value and type space uniformly employs dot syntax (`u.id` / `User.id` for records; `coords.0` / `Coords.0` for tuples).
@@ -474,8 +474,8 @@ In many languages, naming conventions are relegated to optional style linters. I
    In languages that only warn on casing (e.g. Rust), writing `match x { None => ... }` when `none` or a unit struct is out of scope can silently introduce an all-shadowing variable binding pattern. By enforcing `PascalCase` for constructors and `snake_case` for variable bindings at the parser level, Ril eliminates constructor-vs-variable pattern ambiguity with zero backtracking and zero scope speculation.
 2. **Strict Scope of `SCREAMING_SNAKE_CASE`**:
    Ril strictly confines `SCREAMING_SNAKE_CASE` to **compile-time constants (`meta let`)** and **top-level immutable constants (`let`)**.
-   - Top-level mutable variables (`let mut`) MUST use `snake_case` (e.g., `let mut active_workers = 0`, `let mut session_data = 0`).
-   - *Rationale*: All-caps signifies a permanent, compile-time or freeze-time invariant value. Allowing mutable variables to be all-caps would create a misleading visual signal of immutability. Requiring `snake_case` for all mutable variables (`let mut`) unifies local and global mutable state under the exact same semantic and visual rules.
+   - Top-level mutable bindings and variables (`let mut`, `var`) MUST use `snake_case` (e.g., `let mut active_workers = Workers.[]`, `var session_count = 0`).
+   - *Rationale*: All-caps signifies a permanent, compile-time or freeze-time invariant value. Allowing mutable state to be all-caps would create a misleading visual signal of immutability. Requiring `snake_case` for all mutable handles and variables (`let mut`, `var`) unifies local and global mutable state under the exact same semantic and visual rules.
 3. **Acronym Title-Casing Regularization (`E0102`)**:
    Acronyms embedded in `PascalCase` must be title-cased (`HttpServer`, `UserId`, `JsonParser`, rejecting `HTTPServer`, `UserID`, `JSONParser`). This guarantees unambiguous CamelHump word boundary segmentation (e.g., distinguishing `HttpServer` from `HttpsServer` without arbitrary lookahead).
 4. **Cross-Platform Path Invariance**:
@@ -486,7 +486,7 @@ The standard prelude operation `clone_immut(x)` is a compound semantic primitive
 1. **`clone` (Deep Duplication)**: Traverses the object graph and allocates an independent memory duplicate.
 2. **`immut` (Deep Freezing)**: Recursively seals all mutable fields and handles into permanently immutable `Immut<T>`.
 
-When an entity carries active capabilities (`&mut`, `&^mut`), stateful closures, or scoped cleanup handles (e.g., `counter_handle`), passing it to `clone_immut` violates **both** dimensions simultaneously:
+When an entity carries active capabilities (`&mut`, `&^mut`), stateful closures, or scoped cleanup handles (e.g., `counter_handle`), passing it to `clone_immut` violates **both** semantic invariants simultaneously:
 - **Unclonable**: An active capability represents an exclusive or linear modification permit. Duplicating it would forge unauthorized concurrent access routes.
 - **Unfreezable**: Active capabilities and closures are executable effect vectors, not passive data values. They cannot be stripped of their mutating essence into static inert data.
 
@@ -617,7 +617,7 @@ By incorporating `?.` into `AccessorExpr`, Ril preserves total function semantic
 3. When navigating from an already-optional root (`?T`), the leading safe navigation `\?.field` avoids unnecessary unboxing ceremonies.
 
 #### 3. Why Dynamic Collections (Array, Map) are Excluded from Accessor Shorthand
-A tempting proposal is extending shorthand accessors to dynamic collections, such as `\[0]` or `\.[0]` for arrays and `\.["key"]` for associative maps. Ril explicitly rejects this design across three architectural dimensions:
+A tempting proposal is extending shorthand accessors to dynamic collections, such as `\[0]` or `\.[0]` for arrays and `\.["key"]` for associative maps. Ril explicitly rejects this design across three architectural considerations:
 
 1. **Total Projections vs. Partial Operations**:
    - Record fields and tuple indices are infallible, total projections.
@@ -706,7 +706,7 @@ Instead of promoting values to types, Ril adopts **Many-Sorted System $F_\omega$
 $$\text{Kind } \kappa ::= \text{Type} \mid \kappa_1 \to \kappa_2 \mid s \to \kappa \quad (s \in \{ \text{int}, \text{str}, \text{bool}, \dots \})$$
 Values remain values, but pure compile-time terms can parameterize type constructors:
 - **Memory Layout Guidance**: `Buffer<u8, 1024>` instructs the GC allocator to allocate a flat, contiguous 1024-byte payload inline with the object header, eliminating indirection pointers while remaining entirely lifetime-free.
-- **Dimensional Safety**: `Quantity<M: int, L: int, T: int>` models physical dimensions at zero runtime cost, verifying multiplication and division exponents statically.
+- **Physical Unit Safety**: `Quantity<M: int, L: int, T: int>` models physical unit exponents at zero runtime cost, verifying multiplication and division exponents statically.
 - **Pure Schema Metaprogramming**: String constants serve as pure inputs to type functions (e.g., URL route parsing `RouteParams<"/users/:id">`), mapping into structural records without inventing dedicated secondary dialects.
 - **Leibniz Equivalence**: Because const evaluation executes within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$), compile-time terms are normalized to canonical normal forms, ensuring that $\text{Matrix}\langle 2 + 2 \rangle \equiv \text{Matrix}\langle 4 \rangle$ is soundly and deterministically decidable.
 
@@ -714,3 +714,52 @@ Values remain values, but pure compile-time terms can parameterize type construc
 - **Telescopic Dependency**: Generic parameter lists form an incremental telescope $\Delta_0 \subset \Delta_1 \subset \dots \subset \Delta_n$. A default parameter $D_i$ can reference any previously bound parameter $X_1, \dots, X_{i-1}$, enabling natural dependencies like `Matrix<T, rows: int, cols: int = rows>` and `Pair<First, Second = First>`. Forward references and circular defaults are statically rejected with `E0320`.
 - **Trailing Rule**: Once a parameter declares a default, all subsequent parameters must declare defaults (`E0316`), ensuring that argument omission at call sites is strictly right-associative and free of positional gaps.
 - **Elaboration-Stage Desugaring**: Default arguments are injected during the semantic Elaboration phase rather than AST parsing or HIR lowering. This preserves source span fidelity for error diagnostics and IDE navigation, correctly accommodates module-wide newspaper ordering, and enables precise monomorphization caching (`MonoKey = (DefId, [CanonicalArgs])`) with COMDAT linker deduplication (`linkonce_odr`).
+
+---
+
+## 5. Tripartite Ontology and Asymmetric Scope of Influence
+
+### 5.1 The Tripartite Ontology: Stratifying Shape, Access, and Control
+
+Programming languages historically struggle with the conflation of data layouts, mutability permissions, and computational side effects.
+- **The Rust Conflation**: Rust merges spatial memory layouts with temporal lifetime annotations (`&'a mut T`), causing function signatures to become encumbered with complex lifetime parameters and borrow checker friction.
+- **The Object-Oriented Conflation**: Java and TypeScript conflate identity, mutability, and effectful methods, allowing any object handle to perform hidden network I/O, throw unchecked exceptions, or mutate shared heap fields.
+- **The Effect System Conflation**: Early algebraic effect systems attempted to treat effects as general monadic types or decorated all values with effect rows, leading to pervasive function coloring and viral contagion across data structures.
+
+Ril resolves these conflations by establishing a stratified **Tripartite Ontology** across three disjoint semantic domains:
+$$\mathbf{Semantic\ Domains} = \langle \mathbf{Shape\ (Type)}\ \mathcal{T},\ \mathbf{Access\ (Capability)}\ \mathcal{C},\ \mathbf{Control\ (Effect)}\ \mathcal{E} \rangle$$
+
+1. **Shape Domain ($\mathcal{T}$)**: Governs data at rest in normal form. It defines memory layout, bit alignment, structural fields, sum variants, and nominal boundaries. Passive data values cannot yield execution control, trigger side effects, or hold ambient access permissions.
+2. **Access Domain ($\mathcal{C}$)**: Governs operational permissions over physical storage locations. It defines whether a binding can be rebound (`var`), whether heap fields can be mutated in place (`let mut`), and tracks surviving write paths ($\&mut$, $\&^mut$, $\&closure$, $\&capture$).
+3. **Control Domain ($\mathcal{E}$)**: Governs dynamic, non-local control transfers during expression evaluation. It defines algebraic operations (`eff`), deep stack handlers (`with`), affine resumption (`resume`), and built-in fiber scheduling (`@Async`, `@Fiber`).
+
+### 5.2 The Computation Confluence Point: Why Callables Mediate All Three Domains
+
+The three domains are mutually exclusive and never mix directly. They converge exclusively at the first-class callable arrow:
+$$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\,\&\mathcal{C}\,]$$
+
+A function or closure is an unevaluated, suspendable computation. It takes input shapes ($P \in \mathcal{T}$), produces an output shape ($R \in \mathcal{T}$), performs ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and accesses or mutates storage locations ($\&\mathcal{C} \subseteq \mathcal{C}$). Because $\tau_{\text{callable}}$ is itself a first-class type in the Shape Domain ($\tau_{\text{callable}} \in \mathcal{T}$), callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
+
+### 5.3 The Asymmetric Scope of Influence: Why Capabilities Govern Bindings and Effects Do Not
+
+A fundamental architectural principle in Ril is the **Asymmetric Scope of Influence**:
+- **Capabilities CAN and MUST govern bindings**: A variable binding is an access portal to physical storage in registers, the stack frame, or the GC heap. Memory is spatial and persistent. Every binding introduces an aliasing relationship. Therefore, capability tracking governs reassignment privilege (`var`), interior write privilege (`let mut`), live observation (`let view`), and anti-laundering degradation across destructuring and containers (`E0520`–`E0528`).
+- **Algebraic Effects NEVER govern bindings**: Algebraic effects describe temporal processes that occur during expression evaluation. Once an expression reduces to normal form, its effects have already transpired and been handled. The resulting value is inert memory. Decorating variable bindings with effects (e.g., `let @Async x = 42`) represents an ontological category error: it confuses the process of evaluation with the properties of the resulting value, and would infect every struct field and collection with viral effect colors. Values in Ril are 100% colorless.
+
+### 5.4 Domain Isolation Invariants: Preventing Cross-Domain Laundering (`E0330`–`E0335`, `E0613`)
+
+To prevent domain blurring, Ril enforces seven static isolation barriers:
+1. **`E0330: BareEffectTypeAliasError`**: Rejecting `type E = @Io`. Effects are stack protocols, not data shapes; they must be declared with `eff`.
+2. **`E0331: BareCapabilityTypeAliasError`**: Rejecting `type C = &mut`. Capabilities are operational permissions, not data values.
+3. **`E0332: VariantComputationAnnotationError`**: Rejecting `type S = Init @Async`. Sum variants are passive data constructors; computational behaviors must be typed as callable payloads.
+4. **`E0333: FieldComputationAnnotationError`**: Rejecting `type C = { f: str @Io }`. Fields store data or callables; interior mutability uses the structural `mut` prefix.
+5. **`E0334: GenericComputationConstraintError`**: Rejecting `<T: @Io>` and `<T: &mut>`. Generics parameterize types or const values; higher-order functions forward effects and capabilities automatically.
+6. **`E0335: TypeFunctionComputationAnnotationError`**: Rejecting pure type functions with `@Eff` or `&Cap`. Type functions evaluate strictly in the compile-time symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
+7. **`E0613: ValueEffectAnnotationError`**: Rejecting effect annotations on value bindings (`let x: int @Io = ...`). Effects reside exclusively on callable arrows.
+
+### 5.5 Write Path Counting: Deterministic Escape Analysis without Borrow Checkers
+
+Ril formalizes retained mutable sharing through **Surviving Write Path Counting**:
+$$\mathcal{W}_{\text{surviving}}(\text{origin}) \ge 2 \iff \&\hat{\;}\mathrm{mut}$$
+When a function allocates a fresh mutable record and exports it solely within an escaping closure, the activation frame terminates, leaving exactly one surviving write path ($\mathcal{W} = 1$). This is an encapsulated private cell requiring `&capture`, NOT `&^mut` (annotating `&^mut` triggers `E0529`). If both the closure and the record handle escape, or if a borrowed parameter is stashed into an external container, multiple write paths survive ($\mathcal{W} \ge 2$), requiring `&^mut`. This gives Ril deterministic escape analysis and aliasing safety with zero lifetime parameters.
+

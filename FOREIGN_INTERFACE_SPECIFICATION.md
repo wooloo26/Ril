@@ -50,8 +50,8 @@ flowchart TD
     end
 
     subgraph Phase3 ["3. Target Code Artifacts"]
-        WRAPPER["&lt;module&gt;.ril.&lt;ext&gt;<br/><b>Fixed Safe Wrapper (Machine-Generated)</b><br/>🔒 READ-ONLY<br/>• Hard Try-Catch / Trap Boundary<br/>• Delimited Effect Hook Dispatcher<br/>• Slot Registry &amp; Traps"]
-        IMPL["&lt;module&gt;.impl.&lt;ext&gt;<br/><b>User Injection Implementation</b><br/>✏️ USER-AUTHORED<br/>• Host System / Native Calls<br/>• Slot Implementation Functions"]
+        WRAPPER["&lt;module&gt;.ril.&lt;ext&gt;<br/><b>Fixed Safe Wrapper (Machine-Generated)</b><br/>[READ-ONLY]<br/>• Hard Try-Catch / Trap Boundary<br/>• Delimited Effect Hook Dispatcher<br/>• Slot Registry &amp; Traps"]
+        IMPL["&lt;module&gt;.impl.&lt;ext&gt;<br/><b>User Injection Implementation</b><br/>[USER-AUTHORED]<br/>• Host System / Native Calls<br/>• Slot Implementation Functions"]
     end
 
     subgraph Phase4 ["4. Target Build &amp; Linkage"]
