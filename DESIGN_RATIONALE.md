@@ -87,7 +87,7 @@ Ril resolves this tension through **Constructor-Tuple Equivalence at $n = 0$ (`O
 3. **Deterministic Synthesis & First-Class Clarity**:
    - `let x = Ok()` unambiguously synthesizes `Result<(), _>`, requiring no speculative guessing or type annotations.
    - Bare `Ok` is cleanly preserved as the first-class constructor function (`fn(T) -> Result<T, E>`).
-4. **Pattern Matching Symmetry**: In pattern matching, `match res { Ok() -> ..., Err(e) -> ... }` mirrors value construction with perfect symmetry. *(See §4.10 for the general treatment across all arities $n \ge 0$).*
+4. **Pattern Matching Symmetry**: In pattern matching, `match res { Ok() -> ..., Err(e) -> ... }` mirrors value construction with perfect symmetry. (See §4.10 for the general treatment across all arities $n \ge 0$.)
 
 ### 1.7 Hermetic Scoped Cleanups and Double-Fault Containment
 
@@ -243,7 +243,8 @@ Ril eliminates function coloring through **Algebraic Effects**:
 #### 3.1.1 Least-Privilege Effect Annotation: Leaf `@Fiber` vs. Compound `@Async`
 
 `@Async` is formally defined as an effect alias:
-$$\text{@Async} \equiv \{\text{Fiber}, \text{Concurrent}\}$$
+
+$$\text{@}\text{Async} \equiv \lbrace\text{Fiber}, \text{Concurrent}\rbrace$$
 
 This bundling provides seamless ergonomics for high-level application workflows that simultaneously perform suspendable I/O and coordinate concurrent child tasks (such as racing, timeouts, and structured fan-out).
 
@@ -357,6 +358,38 @@ Ril establishes **File-as-Module by Default**:
 - Every `.ril` file is automatically an independent compilation unit named after its path stem.
 - Items marked `pub` at the file root constitute the module's public interface; unmarked declarations remain strictly private to the file (`E0201`).
 - Source files require zero wrapping boilerplate. Local, block-scoped helper imports (`use module::{item}`) allow localized scoping inside functions without global namespace pollution.
+
+#### 4.1.1 Automatic PascalCase Namespace Derivation vs. Redundant `as` Ceremony
+
+A classic friction in language ergonomics occurs when file paths and in-code qualifiers have conflicting casing conventions:
+1. **The Cross-Platform File Path Constraint**: On disk, file names and directories MUST be strictly `snake_case` (e.g. `ril/array.ril`, `ril/concurrent/channel.ril`). Case-sensitive operating systems (Linux `ext4`) and case-insensitive systems (Windows `NTFS`, macOS `APFS`) diverge fatally when module paths permit mixed casing.
+2. **The In-Code Qualifier Invariant**: Within Ril code, static scope qualifiers on the left of `::` are strictly `PascalCase` (`Array::push`, `Channel::bounded`, `Geometry::circle_area`), preserving the **Closed Casing Invariant** (§2.4) that visually distinguishes static namespaces, types, and effect handlers from runtime variable bindings and struct fields.
+
+If a module import simply bound the raw terminal path segment (`array`, `channel`), developers would be forced into endless mechanical ceremony:
+```ril
+-- The Redundant Ceremony Anti-Pattern (Rejected):
+use ril/array as Array
+use ril/map as Map
+use ril/concurrent/channel as Channel
+use math/geometry as Geometry
+```
+
+Ril resolves this tension through **Automatic PascalCase Namespace Derivation**:
+- An unqualified module import `use a/b/c` automatically transforms the terminal path segment `c` into its canonical `PascalCase` equivalent (`to_pascal_case("c")`) in the current lexical scope:
+  - `use math/geometry` $\implies$ automatically binds `Geometry`.
+  - `use ril/concurrent/channel` $\implies$ automatically binds `Channel`.
+  - `use text/string_builder` $\implies$ automatically binds `StringBuilder`.
+- **Zero Ceremony for the 99% Common Case**: Developers import the module path directly (`use ril/concurrent/channel`) and immediately invoke qualified operations (`Channel::bounded(32)`) with zero `as` boilerplate.
+- **Explicit Override via `as PascalCase`**: When two imported modules share the same terminal segment (e.g. `use db/v1/client` and `use db/v2/client`), developers explicitly provide an alias (`as V1Client`, `as V2Client`). Supplying a non-PascalCase alias is rejected under `E0101`.
+
+#### 4.1.2 Ambient Core Collection Modules in the Standard Prelude
+
+While automatic PascalCase derivation solves module imports in general, forcing developers to import standard array, map, and set operations introduces needless friction for pervasive language primitives.
+
+In Ril, arrays `[]T`, maps `[K: V]`, sets `Set<T>`, and strings `str` are first-class lexical and syntactic types. Forcing developers to write `use ril/array` or `use ril/map` before calling standard combinators contradicts the code-first principle:
+- Ril promotes the core collection modules **`Array`**, **`Map`**, **`Set`**, and **`String`** directly into the **Standard Prelude**.
+- Invocations such as `items !> Array::push(x)`, `map |> Map::get(k)`, and `s |> String::split(",")` are ambiently available in every compilation unit with zero import statements.
+- Modular type parameter extractions (`type Elem<[]T> = T`, `type Key<[K: V]> = K`) remain cleanly accessible either via `Array::Elem` / `Map::Key` or via explicit selective imports from `ril/array` and `ril/map`.
 
 ### 4.2 First-Class Operation Records vs. Ad-Hoc Typeclasses and Coherence
 
@@ -484,7 +517,7 @@ Ril avoids these pitfalls through a fundamental distinction:
 - **Ordinary Functions (`fn`) maintain Strict Parameter Isolation**: Named and anonymous functions, methods, and mutating pipelines possess dedicated parameter lists with names, defaults, `mut` roots, and capability annotations. Ordinary functions NEVER auto-tuple. Calling `add(1, 2)` with a tuple `add(pair)` is statically rejected (`E0301`).
 - **Data Constructors represent Pure Algebraic Product Packaging**: Sum type variants and nominal wrappers possess unique lexical identities. They are not overloaded methods; they are pure injection functions into tagged sum spaces. Conflating constructor arguments with product tuples introduces zero constraint solving explosion.
 
-#### 2. Deterministic Arity Partitioning across $n \ge 0$
+#### 2. Deterministic Arity Partitioning across `n >= 0`
 Because Ril strictly possesses **no 1-element tuples `(T,)`** (`(x)` is parenthesized expression grouping, while tuples strictly require $k \ge 2$ elements; `()` represents the unit product), constructor arity partitioning is strictly deterministic:
 - **$n = 0$**: Unit payload constructor absorption (`Ok()` for unit `()`). Outer constructor parentheses absorb the 0-element unit tuple `()`. Contrast with pure nullary tags (like `None`), which possess zero payload parameters and strictly prohibit parentheses.
 - **$n = 1$**: Single scalar payload, OR whole-tuple binding when passed/matched with a single variable identifier (`Ok(pair)`).
@@ -565,7 +598,7 @@ Ril achieves **100% mathematical soundness** without whole-program alias analysi
 1. **Immutable Handles (`let`)**: Guarantee deep and permanent immutability. Narrowing on `let` is monotonic throughout its dominance region, completely impervious to external function calls or background tasks.
 2. **Pinned Mutable Handles (`let mut`)**: Handle pointer addresses and constructor discriminants are permanently pinned (`E0502`). Variant identity cannot change; only mutable fields require invalidation upon direct writes.
 3. **Reassignable Variables (`var`)**: Direct assignments immediately invalidate prior refinements (`E0310`).
-4. **Transitive Latent Havoc**: If an external function call, higher-order callback (such as `list !> Array::for_each`), or active effect handler transitively holds mutable capability over a `var` binding ($\&\{\text{mut } v\}$), the compiler conservatively Havocs all refinements prefixed by $v$.
+4. **Transitive Latent Havoc**: If an external function call, higher-order callback (such as `list !> Array::for_each`), or active effect handler transitively holds mutable capability over a `var` binding (`&{mut v}`), the compiler conservatively Havocs all refinements prefixed by $v$.
 5. **Anti-Aliasing Shield (`E0533`)**: If a `var` binding is aliased via a live view (`let view`) or captured in an escaping mutable closure, the compiler statically forbids flow narrowing, requiring developers to freeze the value into an immutable `let` handle before branching.
 
 #### 4. Bounded Complexity: $D_{\max} = 3$ Path Truncation & $K = 3$ Widening Budget
@@ -632,7 +665,7 @@ Ril enforces **Strict Declarative Partitioning**:
 To eliminate cross-tier dependency cycles and phase-ordering deadlocks, Ril's type checker formalizes **Unidirectional Downward Isolation**:
 1. **No Downward References (`E0705`)**: Types in `SignatureWhereClause` cannot reference declarations in `BlockWhereClause`.
 2. **Signature Reference Confinement (`E0706`)**: Any type alias used in the outer signature MUST reside in `SignatureWhereClause` or module scope, never in `BlockWhereClause`.
-3. **Stratified Dependency Graph**: The dependency graph $\mathcal{G} = \mathcal{G}_{\text{waist}} \ \vec{\sqcup}\ \mathcal{G}_{\text{block}}$ contains zero bipartite cross-edges from Waist to Block ($E_{\text{waist} \to \text{block}} = \emptyset$). Tarjan's SCC algorithm runs independently per layer, guaranteeing that the combined graph is a strictly stratified DAG with provably zero cross-tier mutual recursion deadlocks.
+3. **Stratified Dependency Graph**: The dependency graph $\mathcal{G} = \mathcal{G}_ {\text{waist}} \ \vec{\sqcup}\ \mathcal{G}_ {\text{block}}$ contains zero bipartite cross-edges from Waist to Block ($E_{\text{waist} \to \text{block}} = \emptyset$). Tarjan's SCC algorithm runs independently per layer, guaranteeing that the combined graph is a strictly stratified DAG with provably zero cross-tier mutual recursion deadlocks.
 
 ### 4.14 Ergonomics and Soundness of Shorthand Projection Accessors: Product Types vs. Dynamic Collections
 
@@ -712,7 +745,7 @@ A common trap in language design is addressing compile-time type transformations
 
 #### 4. Canonical Lexicographical Key Ordering and Leibniz Equivalence
 In Ril, structural record equality is order-independent (§3.3):
-$$\{ \text{id}: \text{int}, \text{name}: \text{str} \} \equiv \{ \text{name}: \text{str}, \text{id}: \text{int} \}$$
+$$\lbrace \text{id}: \text{int}, \text{name}: \text{str} \rbrace \equiv \lbrace \text{name}: \text{str}, \text{id}: \text{int} \rbrace$$
 If `keyof T` returned fields in source declaration order, two structurally identical types $T_1 \equiv T_2$ would evaluate to different string arrays (`["id", "name"]` vs `["name", "id"]`). Any type function relying on array indexing or folding would then yield $F\langle T_1 \rangle \not\equiv F\langle T_2 \rangle$, violating **Leibniz's Indiscernibility of Identicals**:
 $$\forall T_1, T_2. \quad T_1 \equiv T_2 \implies F\langle T_1 \rangle \equiv F\langle T_2 \rangle$$
 To preserve soundness, Ril enforces the **Canonical Lexicographical Key Ordering Invariant**: in expression contexts, `keyof T` strictly returns field names sorted in UTF-8 byte order.
@@ -734,7 +767,7 @@ $$D : I \to \mathcal{C}, \quad k \mapsto T_k$$
 Categorically, `keyof T` extracts the index category $\text{Ob}(I) = \text{dom}(D)$ *prior to* limit or colimit formation:
 - **Records (Finite Labeled Products)**: $\lim D = \prod_{k \in I} T_k$ where $I \subset \text{String}$. `keyof T` evaluates to `[]str` sorted in canonical UTF-8 byte order.
 - **Sum Types (Finite Labeled Coproducts)**: $\text{colim } D = \coprod_{k \in I} T_k$ where $I \subset \text{String}$. `keyof T` evaluates to `[]str` sorted in canonical UTF-8 byte order.
-- **Tuples (Finite Ordered Products)**: $\lim D = \prod_{i \in [n]} T_i$ where $[n] = \{0, 1, \dots, n-1\} \subset \mathbb{N}_0$. `keyof T` evaluates to `[]int` in strictly monotonic ascending order $[0, 1, \dots, n-1]$.
+- **Tuples (Finite Ordered Products)**: $\lim D = \prod_{i \in [n]} T_i$ where $[n] = \lbrace 0, 1, \dots, n-1\rbrace \subset \mathbb{N}_0$. `keyof T` evaluates to `[]int` in strictly monotonic ascending order $[0, 1, \dots, n-1]$.
 
 ##### Universal Diagram Application via `T.(K)` and `.Payload` Elimination
 At the type level, `T.(K)` evaluates the diagram application $D(K)$ without grammatical suffixes (`.Payload`):
@@ -744,7 +777,7 @@ At the type level, `T.(K)` evaluates the diagram application $D(K)$ without gram
 
 ##### Symmetrical Mapped Comprehensions
 By the universal property of coproducts, morphisms out of a coproduct into $R$ form a product:
-$$\hom_{\mathcal{C}}\left(\coprod_{k \in I} T_k, \, R\right) \cong \prod_{k \in I} \hom_{\mathcal{C}}(T_k, \, R)$$
+$$\hom_{\mathcal{C}}\left(\coprod_{k \in I} T_k, R\right) \cong \prod_{k \in I} \hom_{\mathcal{C}}(T_k, R)$$
 Therefore, the mapped comprehension `{ [K in keyof T]: fn(T.(K)) -> R }` is mathematically universal, operating identically over Records and Sum Types. For Tuples, `( [I in keyof T]: T.(I) )` operates over integer keys. Mapped tuple comprehensions evaluated over index arrays of length 1 are rejected (`E0343`), preserving the invariant that Ril strictly has no 1-tuples.
 
 ##### Preservation of Leibniz Equivalence
@@ -782,11 +815,11 @@ In web-oriented languages like TypeScript, string and numeric literal types (`ty
    ```ril
    pub type HttpMethod { Get, Post, Put, Delete }
    ```
-   At machine level, `HttpMethod` compiles to a compact 1-byte integer tag. Branch matching executes via a single CPU jump table instruction ($O(1)$), accompanied by complete compile-time exhaustiveness checking.
+   At machine level, `HttpMethod` compiles to a compact 1-byte integer tag. Branch matching executes in $O(1)$ time via a single CPU jump table instruction, accompanied by complete compile-time exhaustiveness checking.
 
 #### 3. Many-Sorted Const Generics: Values as Parameters, Not as Types
 Instead of promoting values to types, Ril adopts **Many-Sorted System $F_\omega$**:
-$$\text{Kind } \kappa ::= \text{Type} \mid \kappa_1 \to \kappa_2 \mid s \to \kappa \quad (s \in \{ \text{int}, \text{str}, \text{bool}, \dots \})$$
+$$\text{Kind } \kappa ::= \text{Type} \mid \kappa_1 \to \kappa_2 \mid s \to \kappa \quad (s \in \lbrace \text{int}, \text{str}, \text{bool}, \dots \rbrace)$$
 Values remain values, but pure compile-time terms can parameterize type constructors:
 - **Memory Layout Guidance**: `Buffer<u8, 1024>` instructs the GC allocator to allocate a flat, contiguous 1024-byte payload inline with the object header, eliminating indirection pointers while remaining entirely lifetime-free.
 - **Physical Unit Safety**: `Quantity<M: int, L: int, T: int>` models physical unit exponents at zero runtime cost, verifying multiplication and division exponents statically.
@@ -819,18 +852,18 @@ Programming languages historically struggle with the conflation of data layouts,
 - **The Effect System Conflation**: Early algebraic effect systems attempted to treat effects as general monadic types or decorated all values with effect rows, leading to pervasive function coloring and viral contagion across data structures.
 
 Ril resolves these conflations by establishing a stratified **Tripartite Ontology** across three disjoint semantic domains:
-$$\mathbf{Semantic\ Domains} = \langle \mathbf{Shape\ (Type)}\ \mathcal{T},\ \mathbf{Access\ (Capability)}\ \mathcal{C},\ \mathbf{Control\ (Effect)}\ \mathcal{E} \rangle$$
+$$\text{Semantic Domains} = \langle \text{Shape (Type)}\ \mathcal{T},\ \text{Access (Capability)}\ \mathcal{C},\ \text{Control (Effect)}\ \mathcal{E} \rangle$$
 
 1. **Shape Domain ($\mathcal{T}$)**: Governs data at rest in normal form. It defines memory layout, bit alignment, structural fields, sum variants, and nominal boundaries. Passive data values cannot yield execution control, trigger side effects, or hold ambient access permissions.
-2. **Access Domain ($\mathcal{C}$)**: Governs operational permissions over physical storage locations. It defines whether a binding can be rebound (`var`), whether heap fields can be mutated in place (`let mut`), and tracks surviving write paths ($\&mut$, $\&^mut$, $\&closure$, $\&capture$).
+2. **Access Domain ($\mathcal{C}$)**: Governs operational permissions over physical storage locations. It defines whether a binding can be rebound (`var`), whether heap fields can be mutated in place (`let mut`), and tracks surviving write paths (`&mut`, `&^mut`, `&closure`, `&capture`).
 3. **Control Domain ($\mathcal{E}$)**: Governs dynamic, non-local control transfers during expression evaluation. It defines algebraic operations (`eff`), deep stack handlers (`with`), affine resumption (`resume`), and built-in fiber scheduling (`@Async`, `@Fiber`).
 
 ### 5.2 The Computation Confluence Point: Why Callables Mediate All Three Domains
 
 The three domains are mutually exclusive and never mix directly. They converge exclusively at the first-class callable arrow:
-$$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\,\&\mathcal{C}\,]$$
+$$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\mathbin{\And}\mathcal{C}]$$
 
-A function or closure is an unevaluated, suspendable computation. It takes input shapes ($P \in \mathcal{T}$), produces an output shape ($R \in \mathcal{T}$), performs ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and accesses or mutates storage locations ($\&\mathcal{C} \subseteq \mathcal{C}$). Because $\tau_{\text{callable}}$ is itself a first-class type in the Shape Domain ($\tau_{\text{callable}} \in \mathcal{T}$), callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
+A function or closure is an unevaluated, suspendable computation. It takes input shapes ($P \in \mathcal{T}$), produces an output shape ($R \in \mathcal{T}$), performs ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and accesses or mutates storage locations ($\mathbin{\And}\mathcal{C} \subseteq \mathcal{C}$). Because $\tau_{\text{callable}}$ is itself a first-class type in the Shape Domain ($\tau_{\text{callable}} \in \mathcal{T}$), callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
 
 ### 5.3 The Asymmetric Scope of Influence: Why Capabilities Govern Bindings and Effects Do Not
 
@@ -854,6 +887,6 @@ To prevent domain blurring, Ril enforces nine static isolation barriers:
 ### 5.5 Write Path Counting: Deterministic Escape Analysis without Borrow Checkers
 
 Ril formalizes retained mutable sharing through **Surviving Write Path Counting**:
-$$\mathcal{W}_{\text{surviving}}(\text{origin}) \ge 2 \iff \&\hat{\;}\mathrm{mut}$$
+$$\mathcal{W}_{\text{surviving}}(\text{origin}) \ge 2 \iff \mathbin{\And}\hat{~}\mathrm{mut}$$
 When a function allocates a fresh mutable record and exports it solely within an escaping closure, the activation frame terminates, leaving exactly one surviving write path ($\mathcal{W} = 1$). This is an encapsulated private cell requiring `&capture`, NOT `&^mut` (annotating `&^mut` triggers `E0529`). If both the closure and the record handle escape, or if a borrowed parameter is stashed into an external container, multiple write paths survive ($\mathcal{W} \ge 2$), requiring `&^mut`. This gives Ril deterministic escape analysis and aliasing safety with zero lifetime parameters.
 

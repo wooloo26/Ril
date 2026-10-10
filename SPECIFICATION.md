@@ -152,9 +152,9 @@ Wildcard           ::= "_"
 
 Identifiers are strictly partitioned at the lexer and parser levels across grammatical roles under the **Closed Casing Invariant**:
 
-1. **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`eff`), and generic type parameters (`T`, `ItemType`).
+1. **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`eff`), generic type parameters (`T`, `ItemType`), and module namespace identifiers (`Array`, `Channel`, `Geometry`).
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
-2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module path segments.
+2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module path segments (`ril/array`, `math/geometry`).
 3. **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`) MUST use `snake_case`.
 4. **Wildcard & Suppression**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0301`). An identifier with a leading underscore `_snake_case` declares an intentionally unused variable or parameter, suppressing unused binding diagnostics (`E0527`).
 
@@ -194,7 +194,7 @@ fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' suppresses un
 
 ### 2.5 Keywords
 
-The following 35 tokens are strictly reserved keywords:
+The following 34 tokens are strictly reserved keywords:
 
 ```
 as       eff      else     false    fn
@@ -202,8 +202,8 @@ for      halt     if       in       is
 keyof    last     let      loop     match
 meta     module   mut      never    next
 opaque   pub      resume   return   scoped
-test     true     type     typeof   use
-var      view     where    while    with
+true     type     typeof   use      var
+view     where    while    with
 ```
 
 ```ril
@@ -489,11 +489,11 @@ Because Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenth
 1. **Scope Restriction (Strict Constructor Boundary)**: Equivalence is confined strictly to Data Constructors. Ordinary functions (`fn`), closures, and methods maintain strictly separate parameter lists and register ABIs (`E0301`).
 2. **Positional Tuple Expansion & Literal Compatibility ($n \ge 2$)**: In expression construction and pattern matching, $C(e_1, \dots, e_n)$ and explicit tuple literals $C((e_1, \dots, e_n))$ are definitionally equivalent: outer constructor parentheses absorb inner tuple parentheses.
 3. **Whole-Tuple Binding or Single Argument ($n = 1$)**: $C(val)$ constructs or matches the scalar payload or whole-tuple object.
-4. **Unit Payload Constructor ($n = 0$)**: When a variant's payload type is `()`, $C()$ constructs or matches the unit payload directly ($C() \equiv C(())$). Bare constructor identifiers without parentheses (e.g. bare `Ok`) are strictly first-class constructor functions (`fn(T) -> Result<T, E>`), and cannot be evaluated as values without `()` (`E0301`).
+4. **Unit Payload Constructor ($n = 0$)**: When a variant's payload type is `()`, $C()$ constructs or matches the unit payload directly ($C() \equiv C(())$ ). Bare constructor identifiers without parentheses (e.g. bare `Ok`) are strictly first-class constructor functions (`fn(T) -> Result<T, E>`), and cannot be evaluated as values without `()` (`E0301`).
 5. **Nullary Variant Tag Invariant**: Variants declared without a payload (e.g. `None` in `type Option<T> { Some(T), None }`) are pure zero-field tags: they MUST be written without parentheses (`None`). Supplying argument parentheses to a nullary variant (`None()`) is statically rejected (`E0301`).
 6. **Non-Transitivity (Single-Layer Invariant)**: Equivalence applies strictly to the outermost constructor argument boundary. Nested tuples (e.g. `Variant((A, B), C)`) require explicit grouping and do NOT flatten recursively (`Variant(a, b, c)` is rejected with `E0301`).
 7. **Rigid Type Variable Invariant**: Deconstructing $C(p_1, \dots, p_n)$ ($n \ge 2$) against an unconstrained generic type parameter $T$ is statically rejected with `E0301`.
-8. **First-Class Constructor Canonical Type**: A constructor $C$ carrying a tuple payload $(T_1, \dots, T_n)$ possesses the canonical unary first-class callable type $\text{fn}((T_1, \dots, T_n)) \to S$. In Check Mode expecting a multi-parameter callable ($\Gamma \vdash C \Leftarrow \text{fn}(T_1, \dots, T_n) \to S$), context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$) applies.
+8. **First-Class Constructor Canonical Type**: A constructor $C$ carrying a tuple payload $(T_1, \dots, T_n)$ possesses the canonical unary first-class callable type $\text{fn}((T_1, \dots, T_n)) \to S$. In Check Mode expecting a multi-parameter callable ($\Gamma \vdash C \Leftarrow \text{fn}(T_1, \dots, T_n) \to S$), context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$ ) applies.
 
 ```ril
 -- 1. Result construction and matching with unit payload (n = 0):
@@ -866,14 +866,14 @@ $$\text{Semantic Domains} = \langle \text{Shape (Type)}\ \mathcal{T},\ \text{Acc
      - *Algebraic Effect Definitions*: `eff FileIo { read() -> str }`.
      - *Stack Handlers*: `with Handler { op(args) -> ... }`.
      - *Affine Resumptions*: `resume value`.
-     - *Built-in Effect Sub-Lattice*: `@Fiber` (cooperative leaf I/O quantum) $\subset$ `@Async` (compound concurrency alias) $\equiv \{\text{Fiber}, \text{Concurrent}\}$, disjoint from `@Div` (divergence).
+     - *Built-in Effect Sub-Lattice*: `@Fiber` (cooperative leaf I/O quantum) $\subset$ `@Async` (compound concurrency alias) $\equiv \lbrace\text{Fiber}, \text{Concurrent}\rbrace$, disjoint from `@Div` (divergence).
    - **Axiom of Delimited Execution**: Effects represent active computational protocols between code and ambient stack handlers. Once an expression is reduced to normal form, its effects have transpired; evaluated values carry zero latent effects.
 
-#### 3.12.2 The Computation Confluence Point ($\mathbf{fn}$)
+#### 3.12.2 The Computation Confluence Point (`fn`)
 
 The three domains are mutually exclusive and never mix directly. They converge **exclusively** at the first-class callable arrow:
 
-$$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\,\&\mathcal{C}\,]$$
+$$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\mathbin{\And}\mathcal{C}]$$
 
 ```ril
 -- The Computation Confluence in Action:
@@ -884,7 +884,7 @@ $$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \
 type SocketHandler = fn(mut buffer: []u8, timeout_ms: int) -> Result<int, IoError> @Fiber &mut
 ```
 
-- **Confluence Semantics**: A function, closure, or thunk is an unevaluated, suspendable computation mediating between input/output data shapes ($P \in \mathcal{T}, R \in \mathcal{T}$), ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and storage access permissions ($\&\mathcal{C} \subseteq \mathcal{C}$).
+- **Confluence Semantics**: A function, closure, or thunk is an unevaluated, suspendable computation mediating between input/output data shapes ($P \in \mathcal{T}, R \in \mathcal{T}$), ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and storage access permissions ($\mathbin{\And}\mathcal{C} \subseteq \mathcal{C}$).
 - **First-Class Closure Property**: Because $\tau_{\text{callable}}$ is itself a first-class type in Domain I ($\tau_{\text{callable}} \in \mathcal{T}$), callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
 
 #### 3.12.3 Boundaries of Type Definitions (`type T = ...`)
@@ -1127,8 +1127,8 @@ Ril decomposes storage mutability into a 2×2 matrix, cleanly separating variabl
 | Binding Form | Variable Reassignment (`x = ...`) | In-Place Mutation (`x.f = ...`, `x !> ...`) | Storage Semantics | Mental Model & Lifetime Invariants |
 | :--- | :---: | :---: | :--- | :--- |
 | **`let`** | Prohibited (`E0501`) | Prohibited (`E0520`) | **Immutable Binding** | Frozen snapshot, pure scalar copy, constant handle. |
-| **`let mut`** | Prohibited (`E0502`) | Permitted ($\&mut$) | **Pinned Mutable Handle** | Fixed GC heap allocation; guaranteed pointer stability. |
-| **`var`** | Permitted | Permitted ($\&mut$) / Prohibited (`E0520` if ReadOnly) | **Reassignable Variable** | Dynamic slot, loop accumulator, reassignable cursor. |
+| **`let mut`** | Prohibited (`E0502`) | Permitted (`&mut`) | **Pinned Mutable Handle** | Fixed GC heap allocation; guaranteed pointer stability. |
+| **`var`** | Permitted | Permitted (`&mut`) / Prohibited (`E0520` if ReadOnly) | **Reassignable Variable** | Dynamic slot, loop accumulator, reassignable cursor. |
 | **`let view`** | Prohibited (`E0501`) | Prohibited (`E0520`) | **Live Read-Only View** | Read-only observation window over a pinned mutable root. |
 
 ```ril
@@ -2063,7 +2063,7 @@ NarrowingExpr      ::= NarrowingPredicate
    - `let`: Permanently narrowed across dominance region.
    - `var`: Reassignment (`=`, `+=`, `!>`) invalidates narrowing (`E0310`).
    - `let mut`: Tag identity is pinned (`E0502`); `mut` fields invalidate upon write.
-6. **Transitive Latent Havoc**: Invoking a callable transitively carrying mutable capability $\&\{\text{mut } v\}$ (via callee, arguments, or active effect handlers) resets $v$ to $T_{\text{root}}$.
+6. **Transitive Latent Havoc**: Invoking a callable transitively carrying mutable capability `&{mut v}` (via callee, arguments, or active effect handlers) resets $v$ to $T_{\text{root}}$.
 7. **Anti-Aliasing (`E0533`)**: Narrowing a `var` aliased by a live view (`let view`) or captured in a mutable closure (`&{mut x}`) is rejected (`E0533`). Copy to `let` to narrow.
 8. **Generic Confinement**:
    - Testing bare type parameters (`x is T`) is rejected (`E0301`).
@@ -2595,7 +2595,7 @@ fn clear_items(mut list: []int) &mut {
 
 The boundary between frame-confined mutation and surviving retained aliasing is governed by **Surviving Write Path Counting**:
 
-$$\mathcal{W}_{\text{surviving}}(\text{origin}) \ge 2 \iff \&\hat{\;}\mathrm{mut}$$
+$$\mathcal{W}_{\text{surviving}}(\text{origin}) \ge 2 \iff \mathbin{\And}\hat{~}\mathrm{mut}$$
 
 ```
                 ┌──────────────────────────────────────────────────┐
@@ -3054,7 +3054,7 @@ Ril provides four foundational built-in algebraic effects tracking execution cap
 
 The sub-effect lattice satisfies:
 
-$$\emptyset \subset \{\text{Fiber}\} \subset \{\text{Fiber}, \text{Concurrent}\} \equiv \text{Async}, \quad \text{disjoint from } \{\text{Div}\}$$
+$$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \text{Concurrent}\rbrace \equiv \text{Async}, \quad \text{disjoint from } \lbrace\text{Div}\rbrace$$
 
 #### Normative Rules for Built-in Effects:
 1. **Least-Privilege Leaf I/O Principle (`@Fiber`)**: Leaf I/O operations requiring cooperative suspension without forking child tasks MUST declare only `@Fiber`. Holding `@Fiber` does not grant authority to fork concurrent tasks (`@Concurrent`), preserving frame containment and single-fiber DRF-SC invariants.
@@ -3171,7 +3171,7 @@ All concurrent child tasks must be forked within a structured `scope`. A parent 
 3. **Boundary Capability Confinement**: Passing active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) or live views across concurrent task boundaries is statically rejected (`E0601: CrossThreadDataRaceHazardError`).
 4. **Concurrent Task Effect Confinement Invariant (`E0615`)**:
    For any concurrent child task $c$ spawned via `s.fork(task)` or data-parallel combinator (`Parallel::map`, `Parallel::fold`), the task callable $task$ MUST be closed under all user-defined algebraic effects:
-   $$\mathop{\mathrm{Effects}}(task) \subseteq \{\text{Fiber}\} \quad \text{(or } \emptyset \text{ for pure/parallel combinators)}$$
+   $$\mathop{\mathrm{Effects}}(task) \subseteq \lbrace\text{Fiber}\rbrace \quad \text{(or } \emptyset \text{ for pure/parallel combinators)}$$
    Every algebraic effect operation invoked within the execution tree of a concurrent child task MUST be intercepted and discharged by a local `with` handler lexically enclosed within that child task. Handlers established in parent or ancestor tasks MUST NOT be captured across concurrent task boundaries (`&closure`). Passing a callable carrying unhandled algebraic effects or capturing external effect handlers across a concurrent task boundary is statically rejected at compile time under `E0615: CrossTaskUnhandledEffectError`. Runtime-managed cooperative fiber scheduling operations (`eff Fiber`) are exempt.
 
 ```ril
@@ -3278,19 +3278,24 @@ Data parallelism in Ril provides deterministic, multi-core evaluation of pure ex
 
 #### 9.6.3 Observational Equivalence & Short-Circuit Determinism (Leftmost Index Supremacy)
 For short-circuiting operations (`Parallel::find`, `Parallel::any`, `Parallel::first`), concurrent evaluation enforces the **Leftmost Index Supremacy Axiom**:
-$$\mathbf{Parallel}::find(S, P) \equiv \begin{cases}
-  \text{Some}(S[k^*]) & \text{where } k^* = \min \{ i \in [0, |S|-1] \mid P(S[i]) = \text{true} \}, \text{ if matches exist} \\
-  \text{None} & \text{if no match exists}
-\end{cases}$$
 
-Under the **Deterministic Horizon & Cancellation Protocol**, when an arbitrary core finds a match at index $k$, it establishes a temporary upper bound (Horizon $H = k$). Partitions with lower indices $> k$ are immediately cancelled. Low-index partitions $< k$ MUST be completely evaluated; only if all low partitions yield no match is $k$ committed as the canonical result.
+$$
+\mathbf{Parallel}::find(S, P) \equiv \begin{cases}
+  \text{Some}(S[k^{\ast}]) & \text{where } k^{\ast} = \min \lbrace i \in [0, |S|-1] \mid P(S[i]) = \text{true} \rbrace, \text{ if matches exist} \cr
+  \text{None} & \text{if no match exists}
+\end{cases}
+$$
+
+Under the **Deterministic Horizon & Cancellation Protocol**, when an arbitrary core finds a match at index $k$, it establishes a temporary upper bound (Horizon $H = k$). Partitions with lower indices $\gt k$ are immediately cancelled. Low-index partitions $\lt k$ MUST be completely evaluated; only if all low partitions yield no match is $k$ committed as the canonical result.
 
 #### 9.6.4 Canonical Leftmost Panic Precedence Rule
 When multiple partitions trigger runtime Panics concurrently across different cores, the abstract machine enforces the **Canonical Leftmost Panic Precedence Rule**:
-$$\pi_{\text{observed}} \equiv \pi_{\min(\mathcal{D})}, \quad \text{where } \mathcal{D} = \{ i \mid \text{evaluation of item } i \text{ triggers Panic} \}$$
-Panics at indices $j > \min(\mathcal{D})$ are treated as **Subsumed Defective Branches**. Furthermore:
-- **Leftmost Panic Overrides Rightward Match**: A panic at index $k$ aborts and overrides a successful predicate match at index $j > k$.
-- **Leftmost Match Suppresses Rightward Panic**: A successful short-circuit match at index $k$ suppresses and discards any potential panic at index $j > k$.
+
+$$\pi_{\text{observed}} \equiv \pi_{\min(\mathcal{D})}, \quad \text{where } \mathcal{D} = \lbrace i \mid \text{evaluation of item } i \text{ triggers Panic} \rbrace$$
+
+Panics at indices $j \gt \min(\mathcal{D})$ are treated as **Subsumed Defective Branches**. Furthermore:
+- **Leftmost Panic Overrides Rightward Match**: A panic at index $k$ aborts and overrides a successful predicate match at index $j \gt k$.
+- **Leftmost Match Suppresses Rightward Panic**: A successful short-circuit match at index $k$ suppresses and discards any potential panic at index $j \gt k$.
 
 #### 9.6.5 Lightweight Divide-and-Conquer (`Parallel::join`)
 `Parallel::join` evaluates multiple pure thunks across available compute workers, joining execution synchronously at the parent call frame:
@@ -3298,10 +3303,12 @@ Panics at indices $j > \min(\mathcal{D})$ are treated as **Subsumed Defective Br
 pub fn join<A, B>(task_a: fn() -> A, task_b: fn() -> B) -> (A, B)
 pub fn join3<A, B, C>(task_a: fn() -> A, task_b: fn() -> B, task_c: fn() -> C) -> (A, B, C)
 ```
-1. **Stack Frame Borrowing Invariant**: The parent frame $\text{Frame}_{\text{join}}$ synchronously blocks until all joined child tasks terminate. The contexts satisfy $\mathop{\mathrm{Lifetime}}(E_{\text{child}}) \subseteq \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{join}})$, allowing safe borrowing of parent stack data without heap allocation.
+1. **Stack Frame Borrowing Invariant**: The parent frame $\text{Frame}_ {\text{join}}$ synchronously blocks until all joined child tasks terminate. The contexts satisfy $\mathop{\mathrm{Lifetime}}(E_ {\text{child}}) \subseteq \mathop{\mathrm{Lifetime}}(\text{Frame}_ {\text{join}})$, allowing safe borrowing of parent stack data without heap allocation.
 2. **Linear Run-to-Completion**: Joined branches are effect-free ($\mathbf{Eff} = \emptyset$) and execute exactly once without cooperative quantum suspension or delimited re-entry.
 3. **Bernstein Disjoint Access Invariant (`E0619`)**: Parallel branches passed to `Parallel::join` MUST have mutually disjoint write and read sets:
+
    $$\mathrm{Write}(A) \cap (\mathrm{Read}(B) \cup \mathrm{Write}(B)) = \emptyset$$
+
    Simultaneous mutable access to overlapping memory paths across parallel branches triggers `E0619: ParallelDisjointAccessConflictError`. Concurrent branches in `Parallel::join` operate on distinct root variable bindings or pure expressions; low-level manual slice index splitting is disallowed in user code.
 4. **Transparent Panic Unwinding**: Joined panics unwind child frames in LIFO order and re-throw the primary panic into the parent frame without `TaskFault` reification. If both branches panic, the primary panic is selected via deterministic left-biased resolution.
 
@@ -3313,7 +3320,7 @@ pub fn join3<A, B, C>(task_a: fn() -> A, task_b: fn() -> B, task_c: fn() -> C) -
 In accordance with `E0615`, all callables passed to data-parallel combinators (`Parallel::map`, `Parallel::fold`, `Parallel::join`, `Parallel::for_each`) MUST be strictly closed with zero latent algebraic effects ($\mathbf{Eff} = \emptyset$). Environmental context, pseudo-random generator states, and configuration parameters MUST be passed explicitly as pure input values or deeply frozen `Immut<T>` graphs, preserving the single-stack affine resumption invariant without cross-thread continuation leakage.
 
 ```ril
-use ril/parallel::Parallel
+use ril/parallel                      -- OK: automatically binds 'Parallel' namespace
 use ril/concurrent::{scope, TaskFault}
 
 -- 1. Pure Data-Parallel Mapping (Colorless; callable in halt fn):
@@ -3413,7 +3420,7 @@ Communication across concurrent tasks is mediated exclusively by structured mess
 
 ```ril
 use ril/concurrent::{scope, TaskFault}
-use ril/concurrent/channel as Channel
+use ril/concurrent/channel              -- OK: automatically binds 'Channel' namespace
 use ril/concurrent/channel::{Sender, Receiver}
 
 type Message = { id: int, body: str }
@@ -3859,18 +3866,55 @@ use platform/fs::{FileHandle, read_file} -- OK: importing from declaration unit
 ### 11.2 Imports (`use`) & Visibility (`pub`)
 
 ```ebnf
-UseDecl ::= [ "pub" ] "use" ModulePath [ "::" ( "{" ImportList "}" | "*" | Identifier ) ]
+UseDecl    ::= [ "pub" ] "use" ModulePath [ "as" PascalCase ]
+             | [ "pub" ] "use" ModulePath "::" ( "{" ImportList "}" | "*" | ImportItem )
+ModulePath ::= SnakeCase { "/" SnakeCase }
+ImportList ::= ImportItem { "," ImportItem } [ "," ]
+ImportItem ::= Identifier [ "as" Identifier ]
 ```
 
-```ril
-use ril/array::{push, pop}             -- Import specific items
-pub use ril/math::*                    -- Re-export all public math items
+#### Normative Import Rules:
 
+1. **Automatic PascalCase Namespace Derivation**:
+   When a module path is imported directly without `::` and without an explicit `as` clause (`use ModulePath`), the module namespace bound in the current lexical scope defaults to the canonical PascalCase transformation of the terminal path segment (`to_pascal_case(last_segment)`):
+   - `use math/geometry` automatically binds the namespace identifier `Geometry`.
+   - `use ril/concurrent/channel` automatically binds `Channel`.
+   - `use data/string_builder` automatically binds `StringBuilder`.
+   Developers can invoke exported declarations via qualified member projection (e.g., `Geometry::circle_area(...)`, `Channel::bounded(...)`) without manual `as PascalCase` renaming ceremony.
+2. **Explicit Namespace Aliasing (`as PascalCase`)**:
+   Providing an explicit `as PascalCase` clause overrides the canonical derived namespace identifier (e.g., `use math/geometry as Geo`). Supplying a non-PascalCase alias is statically rejected under `E0101`.
+3. **Selective Member Import (`use ModulePath::{ ... }`)**:
+   Imports specific exported declarations into the lexical scope without qualification. Each imported item may optionally specify a local alias via `as Identifier`, conforming to identifier casing invariants (`E0101`).
+4. **Glob Import & Re-Export (`pub use ModulePath::*`)**:
+   Re-exports or imports all public symbols from the target module into the local scope.
+5. **Lexical Scoping**:
+   `use` declarations evaluate within their enclosing scope (file-level or block-level). Block-scoped imports remain strictly private to the enclosing block.
+
+```ril
+-- 1. Automatic PascalCase Namespace Binding (omits redundant 'as'):
+use math/geometry                       -- Automatically binds namespace 'Geometry'
+let area = Geometry::circle_area(5.0)   -- OK: qualified static call
+
+-- 2. Explicit Namespace Aliasing:
+use ril/crypto as Hash                  -- OK: explicit alias override via 'as PascalCase'
+let digest = Hash::sha256("data")
+-- use ril/crypto as hash               -- Error [E0101]: module namespace alias must be PascalCase, found 'hash'
+
+-- 3. Selective Member Import with Optional Renaming:
+use ril/array::{push, pop as remove_last}
+let mut arr = [1, 2]
+arr !> push(3)
+let last_item = arr !> remove_last()
+
+-- 4. Glob Re-Export:
+pub use ril/math::*                     -- Re-export all public math items
+
+-- 5. Lexical Block-Scoped Import:
 fn calculate() {
-    use ril/crypto::{sha256}           -- Block-scoped import: visible strictly inside calculate()
-    let digest = sha256("data")
+    use ril/crypto::{sha256}            -- Block-scoped import: visible strictly inside calculate()
+    let d = sha256("data")
 }
--- let bad = sha256("data")             -- Error [E0301]: unresolved identifier 'sha256'
+-- let bad = sha256("data")              -- Error [E0301]: unresolved identifier 'sha256'
 ```
 
 ### 11.3 Top-Level Initialization & Purity
@@ -3887,15 +3931,91 @@ var active_workers: int = 0            -- OK: initialized with constant expressi
 -- let db = Database::connect("db.loc") -- Error [E0202]: top-level declaration cannot invoke runtime I/O or effects
 ```
 
-### 11.4 Unit Testing Blocks (`test`)
+### 11.4 Test Conventions & Execution Protocol
 
-`test` blocks define isolated unit test suites and are not executed during normal program execution.
+Test entry points are ordinary public functions conforming to the naming prefix `test_*` and returning either `()` or `Result<(), E>`. Test functions evaluate within isolated activation frames and enforce domain invariants via standard assertions:
+
+1. **Pure & Direct Tests**: Functions returning `()` verify invariants using deterministic runtime panics on breach (`assert`).
+2. **Fallible Tests**: Functions returning `Result<(), E>` enable cascading error propagation via postfix `?`. Returning `Err(e)` indicates test assertion failure.
+3. **Hermetic Scoped Mocking**: Environmental algebraic effects are mocked within standard lexical blocks `{ with HandlerSpec; logic }`. The handler is automatically popped upon exiting the block. Unhandled operations trigger deterministic panics or domain errors under the Hermetic Sandbox invariant.
+4. **Panic Isolation Assertion**: Asserting that defective operations trigger deterministic runtime panics is evaluated across structured concurrency task boundaries (`scope.fork`), capturing faults into `TaskFault::Panicked` without violating synchronous frame panic isolation.
+5. **Resource Lifecycle**: Ephemeral and in-memory test resources use `let scoped` bindings, guaranteeing strict LIFO destruction. Effectful I/O transactions utilize higher-order wrapper functions.
 
 ```ril
-test "array pushing and popping" {
+use ril/array::{push}
+
+-- 1. Direct unit test returning ():
+pub fn test_array_push() -> () {
     let mut items = [1, 2]
-    items !> Array::push(3)
+    items !> push(3)
     assert(len(items) == 3, "expected 3 items")
+}
+
+-- 2. Fallible unit test with '?' error cascade:
+pub fn test_parse_pipeline() -> Result<(), str> {
+    let raw = "100"
+    let parsed = parse_int(raw)?
+    assert(parsed == 100, "expected parsed integer 100")
+    Ok()
+}
+
+-- 3. Hermetic sandbox mock testing via scoped handler block:
+eff Database {
+    query(sql: str) -> Result<str, str>,
+}
+
+pub fn test_user_query() -> Result<(), str> {
+    let outcome = {
+        with Database::query(sql) -> {
+            if sql == "SELECT user FROM users WHERE id = 1" {
+                resume Ok("Alice")
+            } else {
+                -- Hermetic Sandbox: unexpected calls trigger deterministic defect panic
+                panic("Unexpected mock query: " ++ sql)
+            }
+        }
+
+        let user = Database::query("SELECT user FROM users WHERE id = 1")?
+        assert(user == "Alice", "user mismatch")
+        Ok()
+    }
+    outcome
+}
+
+-- 4. Scoped resource cleanup following strict LIFO order:
+pub fn test_scoped_cleanup() -> Result<(), str> {
+    let mut trace: []str = []
+    {
+        let scoped res = Resource.{
+            name: "test_db",
+            on_close: \-> trace !> push("db_closed"),
+        }
+        trace !> push("test_executed")
+    }
+    assert(trace == ["test_executed", "db_closed"], "cleanup must follow LIFO order")
+    Ok()
+}
+
+-- 5. Defect panic assertion via structured concurrency boundary:
+use ril/concurrent::{scope, TaskFault}
+
+pub fn test_out_of_bounds_defect() -> Result<(), str> {
+    let outcome = scope(\mut s -> {
+        s.fork(\-> {
+            let arr = [1, 2]
+            let _ = arr[5]             -- Triggers defect panic: index out of bounds
+            Ok()
+        })
+        Ok()
+    })
+
+    match outcome {
+        Err(TaskFault::Panicked(info)) -> {
+            assert(info.message == "index out of bounds (index 5, length 2)", "panic message mismatch")
+            Ok()
+        },
+        _ -> panic("expected operation to panic, but completed normally"),
+    }
 }
 ```
 
@@ -3921,13 +4041,17 @@ pub fn main() -> Result<(), str> {
 
 ### 11.6 Standard Prelude Built-ins
 
-The following types and functions are implicitly available in every compilation unit:
+The following types, functions, and core modules are implicitly available in every compilation unit without explicit `use` statements:
 
 | Item | Kind | Description |
 | :--- | :--- | :--- |
 | `Option<T>`, `?T` | Sum Type | Optional value: `Some(T)` or `None` |
 | `Result<T, E>` | Sum Type | Fallible operation outcome: `Ok(T)` or `Err(E)` |
 | `[K: V]`, `Set<T>` | Types | Built-in associative map and unique set |
+| `Array` | Module | Standard dynamic array combinators and mutation primitives (`push`, `pop`, `map`, `filter`, `fold`, `contains`, `reverse`) |
+| `Map` | Module | Standard associative map combinators and access primitives (`get`, `set`, `remove`, `contains`, `keys`, `values`) |
+| `Set` | Module | Standard unique set operations and algebraic combinators (`contains`, `insert`, `remove`, `union`, `intersect`, `diff`) |
+| `String` | Module | Standard string operations and character inspection (`split`, `trim`, `contains`, `replace`, `starts_with`, `ends_with`) |
 | `inner(wrapper)` | Function | Extracts underlying value from nominal wrapper `type W(T)` |
 | `clone(x)` | Function | Allocates deep independent mutable duplicate of heap reference |
 | `clone_immut(x)` | Function | Freezes heap object into permanently immutable `Immut<T>` |
@@ -3938,32 +4062,42 @@ The following types and functions are implicitly available in every compilation 
 | `print(s)`, `println(s)` | Functions | Writes text to standard output |
 
 ```ril
--- 1. Nominal Unwrapping via inner():
+-- 1. Ambient Prelude Collection Modules (no 'use' required):
+let mut list = [1, 2]
+list !> Array::push(3)                  -- OK: 'Array' is ambiently available from prelude
+let evens = list |> Array::filter(\x -> x % 2 == 0)
+
+let config_map: [str: int] = ["timeout": 5000, "retries": 3]
+let timeout_val = config_map |> Map::get("timeout") -- OK: 'Map' is ambiently available
+
+let words = "hello,world,ril" |> String::split(",") -- OK: 'String' is ambiently available
+
+-- 2. Nominal Unwrapping via inner():
 type UserId(int)
 let uid = UserId(1001)
 let raw_id: int = inner(uid)           -- 1001
 
--- 2. Deep Mutable Cloning via clone():
+-- 3. Deep Mutable Cloning via clone():
 let mut original = [1, 2, 3]
 let mut detached = clone(original)
 detached !> Array::push(4)             -- Mutates 'detached'; 'original' remains [1, 2, 3]
 
--- 3. Permanent Immutability Freezing via clone_immut():
+-- 4. Permanent Immutability Freezing via clone_immut():
 let frozen: Immut<[]int> = clone_immut(original)
 -- frozen !> Array::push(5)            -- Error [E0520]: cannot mutate permanently immutable Immut<T>
 
--- 4. Functional Derivation via derive():
+-- 5. Functional Derivation via derive():
 let base_cfg = .{ theme: "dark", retries: 3 }
 let updated_cfg = base_cfg |> derive \mut next -> {
     next.theme = "light"
 }
 assert(base_cfg.theme == "dark" && updated_cfg.theme == "light")
 
--- 5. Length Inspection via len():
+-- 6. Length Inspection via len():
 let count = len("hello")               -- 5 (Unicode scalar count)
 let array_len = len([10, 20, 30])      -- 3
 
--- 6. Invariants and Panic Primitives:
+-- 7. Invariants and Panic Primitives:
 assert(len(original) > 0, "must not be empty") -- OK
 if len(original) == 0 {
     panic("unreachable state reached")  -- Initiates deterministic runtime panic
