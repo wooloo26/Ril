@@ -154,14 +154,14 @@ Identifiers are strictly partitioned at the lexer and parser levels across gramm
 
 1. **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`eff`), and generic type parameters (`T`, `ItemType`).
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
-2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), named functions (`fn`, `meta fn`), record fields, and module path segments.
+2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module path segments.
 3. **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`) MUST use `snake_case`.
 4. **Wildcard & Suppression**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0301`). An identifier with a leading underscore `_snake_case` declares an intentionally unused variable or parameter, suppressing unused binding diagnostics (`E0527`).
 
 ```ril
 -- 1. PascalCase: Types, Constructors, Effects, and Generic Parameters
 type UserAccount = { id: int }         -- OK: type identifier
-type Result<T, E> = Ok(T) | Err(E)     -- OK: generic parameters and constructors
+type Result<T, E = str> { Ok(T), Err(E) } -- OK: generic parameters and constructors
 eff FileIo { read() -> str }           -- OK: effect identifier
 type HttpServerConfig = { port: int }  -- OK: title-cased acronym
 
@@ -728,6 +728,87 @@ assert(u1.settings.theme == "dark")              -- base remains pristine
 -- let esc1 = u1 |> derive \mut next -> next     -- Error [E0607]: DerivedProxyEscapeError: derived proxy cannot escape 'derive' closure
 -- let mut leaked = ()
 -- u1 |> derive \mut next -> { leaked = next }   -- Error [E0607]: DerivedProxyEscapeError: derived proxy cannot escape 'derive' closure
+```
+
+### 3.11 Generic Parameters, Default Arguments & Value Sorts
+
+Generic parameters parameterize data type declarations (`type`, `pub type`), nominal wrappers, and algebraic sum types. Parameters are partitioned into **Type Parameters** (of sort `Type` or higher-kinded `Type -> Type`) and **Const Value Parameters** (`name: ValueType`).
+
+```ebnf
+GenericParams         ::= "<" GenericParamDecl { "," GenericParamDecl } [ "," ] ">"
+GenericParamDecl      ::= TypeParamDecl | ConstParamDecl
+TypeParamDecl         ::= PascalCase [ ":" TypeSort ] [ "=" TypeExpression ]
+ConstParamDecl        ::= SnakeCase ":" ValueType [ "=" Expression ]
+TypeSort              ::= "Type" | KindSignature | RecordConstraint | KeyofConstraint
+KindSignature         ::= "Type" "->" ( "Type" | KindSignature )
+RecordConstraint      ::= "{" [ RecordConstraintField { "," RecordConstraintField } [ "," ] ] ".." Identifier "}"
+RecordConstraintField ::= [ "mut" ] Identifier ":" TypeExpression
+KeyofConstraint       ::= "keyof" TypeExpression
+GenericArgs           ::= "<" GenericArg { "," GenericArg } [ "," ] ">"
+GenericArg            ::= TypeExpression | Expression
+```
+
+1. **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list MUST declare default arguments.
+2. **Telescopic Left-to-Right Scoping Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
+3. **Const Generic Evaluation & Purity Invariant (`E0810`, `E0323`)**: Const generic arguments evaluate at compile time within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). Non-constant runtime expressions passed to const parameters trigger `E0810`. Arguments failing sort constraints trigger `E0323`.
+4. **No Untagged Literal Types (`E0301`)**: Concrete values (strings, integers, booleans) cannot serve as bare types. Discrete domain states MUST be modeled via tagged sum types (`type HttpMethod { Get, Post }`). Concrete values enter the type system strictly as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`).
+5. **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = int>` is rejected); function types are inferred bidirectionally at call sites.
+
+```ril
+-- 1. Sum Type with default type argument:
+pub type Result<T, E = str> {
+    Ok(T),
+    Err(E),
+}
+
+let r1: Result<int> = Ok(42)                    -- OK: resolves to Result<int, str>
+let r2: Result<int, int> = Err(404)             -- OK: explicit override of default E
+
+-- 2. Nominal wrapper with default const generic and type parameter:
+pub type Buffer<T = u8, cap: int = 1024>({
+    data: []T,
+    len: int,
+})
+
+let b1: Buffer = Buffer.{ data: [], len: 0 }    -- OK: resolves to Buffer<u8, 1024>
+let b2: Buffer<u8, 2048> = Buffer.{ data: [], len: 0 } -- OK: explicit capacity override
+let b3: Buffer<i32> = Buffer.{ data: [], len: 0 } -- OK: resolves to Buffer<i32, 1024>
+
+-- 3. Dependent default arguments (Telescopic Left-to-Right):
+pub type Matrix<T, rows: int, cols: int = rows> = {
+    data: []T,
+}
+
+let m_sq: Matrix<f64, 4> = .{ data: [] }        -- OK: square matrix, cols defaults to rows (4)
+let m_rect: Matrix<f64, 4, 2> = .{ data: [] }   -- OK: explicit rectangular override
+
+pub type Pair<First, Second = First> = {
+    first: First,
+    second: Second,
+}
+let p1: Pair<int> = .{ first: 1, second: 2 }    -- OK: Second defaults to First (int)
+
+-- 4. Rejection: Non-trailing default generic parameter (E0316):
+-- type BadOrder<T = int, U> = { a: T, b: U }
+-- Error [E0316]: generic parameter without default 'U' cannot follow generic parameter with default 'T'
+
+-- 5. Rejection: Forward reference in default argument (E0320):
+-- type BadForward<T = U, U = int> = { a: T }
+-- Error [E0320]: default argument for 'T' contains forward reference to parameter 'U'
+
+-- 6. Rejection: Function generic parameter with default (E0317):
+-- fn bad_fn<T = int>(x: T) -> T { x }
+-- Error [E0317]: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
+
+-- 7. Rejection: Literal types and untagged unions prohibited (E0301):
+-- type BadMethod = "GET" | "POST"
+-- Error [E0301]: literal values cannot be used as types; declare a tagged sum type instead
+
+-- 8. Rejection: Runtime expression passed to const generic (E0810):
+fn check_buf(runtime_size: int) {
+    -- let bad_b: Buffer<u8, runtime_size> = Buffer.{ data: [], len: 0 }
+    -- Error [E0810]: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
+}
 ```
 
 ---
@@ -1867,6 +1948,7 @@ player !> add_score(5)                 -- OK: mutating pipeline desugars to add_
 2. Mutable parameters (`mut param: T`) CANNOT declare default values.
 3. Explicit arguments evaluate strictly left-to-right before omitted defaults.
 4. Named arguments allow order-independent binding at call sites.
+5. Generic parameters on function declarations (`fn name<...>`) CANNOT declare default types or values (`E0317`). All function generic parameters must be inferred from value arguments via bidirectional type checking or explicitly specified at call sites.
 
 ```ril
 fn create_server(
@@ -1889,6 +1971,7 @@ let s4 = create_server(host: "api.internal", port: 9000, enable_tls: true)
 -- Rejections:
 -- fn bad_def(mut u: User = User.{ name: "A", score: 0 }) {} -- Error [E0401]: mutable parameter cannot have default
 -- create_server("127.0.0.1", host: "duplicate")            -- Error [E0301]: parameter 'host' supplied both positionally and by name
+-- fn bad_fn_gen<T = int>(x: T) -> T { x }                  -- Error [E0317]: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
 ```
 
 ### 7.3 Anonymous Functions, Trailing Closures & Projection Accessors
@@ -3015,6 +3098,7 @@ Type functions accept four parameter sorts:
 2. **Const Values (`\param: ValueType`)**: Accepts compile-time known constants (literals, `meta let`, statically foldable expressions). Passing runtime variables raises `E0810`.
 3. **Bounded & Structural Types (`\T: { id: int, ..R }`, `\K: keyof T`)**: Enforces structural row subtyping and key inclusion.
 4. **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
+5. **Default Sort Arguments**: Type function parameters support default expressions conforming to their sort: `\T = u8`, `\cap: int = 1024`. Default arguments follow the Telescopic scoping and trailing rules (§3.11).
 
 **Call-Site Interpretation**: In `TypeFunc<Arg1, Arg2>`, type parameter positions parse as `TypeExpression`; const value positions parse as compile-time expressions.
 
@@ -3045,6 +3129,14 @@ type UserName = PickField<SchemaV1, "name"> -- Resolves to str
 type Wrapper = \M: Type -> Type, T -> M<T>
 type OptInt = Wrapper<Option, int>      -- Resolves to Option<int>
 -- type BadKind = Wrapper<int, int>     -- Error [E0306]: KindMismatchError, expected Type -> Type, found int
+
+-- Default arguments in pure type functions:
+halt type PaddedRecord = \T: { ..R }, align: int = 8 -> type<{
+    alignment: int,
+    ..T,
+}>
+type DefaultPadded = PaddedRecord<SchemaV1>      -- OK: align defaults to 8
+type CustomPadded = PaddedRecord<SchemaV1, 16>   -- OK: explicit override align = 16
 ```
 
 ### 10.6 Compile-Time Execution (`meta let`, `meta fn`) & Callable Introspection
@@ -3285,6 +3377,10 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0311`** | `ContradictoryNarrowingError` | Narrowing predicate is statically unsatisfiable under active flow environment |
 | **`E0313`** | `CyclicTypeAliasError` | Structural type aliases form a cyclic dependency without nominal or sum indirection |
 | **`E0315`** | `EscapingLocalNominalTypeError` | Local nominal wrapper or sum type escapes enclosing function boundary as return type |
+| **`E0316`** | `NonTrailingDefaultGenericParamError` | Generic parameter without default follows generic parameter with default |
+| **`E0317`** | `FunctionDefaultGenericProhibitedError` | Function generic parameter declares default type or value argument |
+| **`E0320`** | `ForwardTypeDefaultReferenceError` | Generic default parameter expression contains forward reference or circular dependency |
+| **`E0323`** | `ConstGenericSortMismatchError` | Const generic argument does not match expected parameter sort |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0402`** | `ValueTypePinnedMutError` | Attempting to declare a value type as pinned mutable handle `let mut` |
 | **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |

@@ -678,5 +678,39 @@ To preserve soundness, Ril enforces the **Canonical Lexicographical Key Ordering
 #### 5. Zero-Cost Native Lowering (CTFE Pipeline)
 During compilation, all higher-order pipelines (`Array::filter`, `Array::map`, `Record::from_fields`) are reduced by the deterministic compile-time evaluator. The resulting record schemas are lower-level lowered into contiguous machine structs with statically fixed offsets, 8-byte alignment, and GC pointer masks. At runtime, machine code executes zero dynamic string comparisons, zero dictionary queries, and retains zero type-level metadata, achieving 100% zero-cost abstraction.
 
+### 4.16 Default Generic Arguments & Const Generics vs. Ad-Hoc Literal Types
 
+#### 1. The Asymmetry of Default Generic Parameters: Types vs. Functions
+In API design, generic parameters frequently carry natural defaults: `Result<T, E = str>` simplifies 80% of application code where string errors suffice; `Buffer<T = u8, cap: int = 1024>` provides a sensible 1KB heap-inlined byte buffer; `Matrix<T, rows: int, cols: int = rows>` defaults to a square transformation matrix.
 
+However, Ril enforces a strict architectural asymmetry between type declarations and callable functions:
+- **Type Declarations (`type`, Sum Types, Nominals, Type Functions)**: Fully admit default type and const generic parameters. Because type instantiation is an explicit type-level substitution, unsupplied trailing arguments are unambiguously replaced by their evaluated defaults during the Elaboration phase (§3.11).
+- **Function Declarations (`fn`, `meta fn`, `eff`)**: Strictly prohibit default generic parameters (`E0317`). 
+  - **The Hindley-Milner / Bidirectional Conflict**: Function calls rely on term-to-type unification (`foo(x)` unifies the type of `x` against parameter type $T$). If a function generic parameter could declare a default (`fn foo<T = int>(x: T)`), the type checker faces a fatal ambiguity when unconstrained: should it report an under-constrained type error, or silently fall back to the default?
+  - **The TypeScript Anti-Pattern**: TypeScript permits function default type parameters (`function query<T = DefaultSchema>(req: Request): T`). In practice, when callers accidentally omit contextual type assertions, TypeScript silently falls back to `DefaultSchema`, masking subtle type bugs and destroying principal type properties.
+  - **The Rust RFC 213 Precedent**: Rust deliberately rejected default type parameters on functions while supporting them on structs and traits. Ril upholds this exact soundness invariant: function generic parameters must be 100% determined by call-site argument inference or explicit turbofish instantiation.
+
+#### 2. The Fallacy of Ad-Hoc Literal Types: Why Ril Rejects `"GET" | "POST"`
+In web-oriented languages like TypeScript, string and numeric literal types (`type Method = "GET" | "POST"`, `type Port = 80 | 443`) are widespread. While convenient for retrofitting dynamic JavaScript conventions, lifting arbitrary values into first-class types introduces catastrophic design defects in a compiled, strongly typed language:
+1. **Type Widening Hell**: In a language with literal types, `let x = "GET"` creates an intractable dilemma: is `x` typed as string `"GET"` (immutable singleton) or `str` (widened to accept other strings)? TypeScript was forced to introduce arbitrary heuristics (`const` preserves literals, `let` widens to primitive) and clumsy manual overrides like `as const`.
+2. **Untagged Union Cost and Tag Erasure**: `"GET" | "POST"` is an untagged union. At machine code level, discriminating between values requires byte-by-byte memory comparisons or hash lookups ($O(L)$ runtime overhead).
+3. **Set Absorption and Soundness Leaks**: In untagged union lattices, `('GET' | string)` silently collapses to `string`, erasing developer invariants without compiler diagnostics.
+4. **The Superiority of Tagged Sum Types**: In Ril, discrete states are modeled exclusively via algebraic sum types:
+   ```ril
+   pub type HttpMethod { Get, Post, Put, Delete }
+   ```
+   At machine level, `HttpMethod` compiles to a compact 1-byte integer tag. Branch matching executes via a single CPU jump table instruction ($O(1)$), accompanied by complete compile-time exhaustiveness checking.
+
+#### 3. Many-Sorted Const Generics: Values as Parameters, Not as Types
+Instead of promoting values to types, Ril adopts **Many-Sorted System $F_\omega$**:
+$$\text{Kind } \kappa ::= \text{Type} \mid \kappa_1 \to \kappa_2 \mid s \to \kappa \quad (s \in \{ \text{int}, \text{str}, \text{bool}, \dots \})$$
+Values remain values, but pure compile-time terms can parameterize type constructors:
+- **Memory Layout Guidance**: `Buffer<u8, 1024>` instructs the GC allocator to allocate a flat, contiguous 1024-byte payload inline with the object header, eliminating indirection pointers while remaining entirely lifetime-free.
+- **Dimensional Safety**: `Quantity<M: int, L: int, T: int>` models physical dimensions at zero runtime cost, verifying multiplication and division exponents statically.
+- **Pure Schema Metaprogramming**: String constants serve as pure inputs to type functions (e.g., URL route parsing `RouteParams<"/users/:id">`), mapping into structural records without inventing dedicated secondary dialects.
+- **Leibniz Equivalence**: Because const evaluation executes within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$), compile-time terms are normalized to canonical normal forms, ensuring that $\text{Matrix}\langle 2 + 2 \rangle \equiv \text{Matrix}\langle 4 \rangle$ is soundly and deterministically decidable.
+
+#### 4. Telescopic Left-to-Right Scoping and Elaboration-Stage Desugaring
+- **Telescopic Dependency**: Generic parameter lists form an incremental telescope $\Delta_0 \subset \Delta_1 \subset \dots \subset \Delta_n$. A default parameter $D_i$ can reference any previously bound parameter $X_1, \dots, X_{i-1}$, enabling natural dependencies like `Matrix<T, rows: int, cols: int = rows>` and `Pair<First, Second = First>`. Forward references and circular defaults are statically rejected with `E0320`.
+- **Trailing Rule**: Once a parameter declares a default, all subsequent parameters must declare defaults (`E0316`), ensuring that argument omission at call sites is strictly right-associative and free of positional gaps.
+- **Elaboration-Stage Desugaring**: Default arguments are injected during the semantic Elaboration phase rather than AST parsing or HIR lowering. This preserves source span fidelity for error diagnostics and IDE navigation, correctly accommodates module-wide newspaper ordering, and enables precise monomorphization caching (`MonoKey = (DefId, [CanonicalArgs])`) with COMDAT linker deduplication (`linkonce_odr`).
