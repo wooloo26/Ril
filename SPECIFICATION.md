@@ -485,7 +485,7 @@ fn eval<T>(e: Expr<T>) -> T {
 Data constructors (algebraic sum type variants and nominal type wrappers) establish a definitional equivalence between comma-separated multi-field declarations and single-tuple payloads:
 $$\text{Variant}(T_1, T_2, \dots, T_n) \equiv \text{Variant}((T_1, T_2, \dots, T_n)) \quad (n \ge 0)$$
 
-Because Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenthesized grouping; tuples require $\ge 2$ elements; `()` denotes unit), constructor arity $n$ in expressions and patterns is strictly deterministic:
+Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenthesized grouping; tuples require $\ge 2$ elements; `()` denotes unit). Constructor arity $n$ in expressions and patterns is strictly deterministic:
 1. **Scope Restriction (Strict Constructor Boundary)**: Equivalence is confined strictly to Data Constructors. Ordinary functions (`fn`), closures, and methods maintain strictly separate parameter lists and register ABIs (`E0301`).
 2. **Positional Tuple Expansion & Literal Compatibility ($n \ge 2$)**: In expression construction and pattern matching, $C(e_1, \dots, e_n)$ and explicit tuple literals $C((e_1, \dots, e_n))$ are definitionally equivalent: outer constructor parentheses absorb inner tuple parentheses.
 3. **Whole-Tuple Binding or Single Argument ($n = 1$)**: $C(val)$ constructs or matches the scalar payload or whole-tuple object.
@@ -885,7 +885,7 @@ type SocketHandler = fn(mut buffer: []u8, timeout_ms: int) -> Result<int, IoErro
 ```
 
 - **Confluence Semantics**: A function, closure, or thunk is an unevaluated, suspendable computation mediating between input/output data shapes ($P \in \mathcal{T}, R \in \mathcal{T}$), ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and storage access permissions ($\mathbin{\And}\mathcal{C} \subseteq \mathcal{C}$).
-- **First-Class Closure Property**: Because $\tau_{\text{callable}}$ is itself a first-class type in Domain I ($\tau_{\text{callable}} \in \mathcal{T}$), callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
+- **First-Class Closure Property**: $\tau_{\text{callable}}$ is a first-class type in Domain I ($\tau_{\text{callable}} \in \mathcal{T}$); callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
 
 #### 3.12.3 Boundaries of Type Definitions (`type T = ...`)
 
@@ -1184,7 +1184,7 @@ A binding declared with `let mut` binds a reference-type heap object as a **pinn
 #### Normative Rules for Pinned Handles:
 1. **Pinned Handle Invariant (`E0502`)**: A `let mut` handle is permanently pinned to its initial heap allocation. Reassigning the identifier (`handle = new_obj`) is statically rejected under `E0502: PinnedHandleReassignmentError`.
 2. **Value Type Prohibition (`E0402`)**: Primitive value types (`int`, `bool`, `f64`, etc.) have no interior mutable fields. Declaring a value type as `let mut` is statically rejected under `E0402: ValueTypePinnedMutError`; mutable value types MUST be declared with `var`.
-3. **Live View Stability**: Because a pinned mutable handle cannot be rebound, it provides guaranteed pointer stability as a mutable root for live views (`let view`).
+3. **Live View Stability**: Pinned mutable handles provide guaranteed pointer stability as mutable roots for live views (`let view`).
 
 ```ebnf
 LetMutDecl ::= "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression
@@ -1458,7 +1458,7 @@ DeclLet          ::= "let" Identifier ":" TypeExpression
 3. **Opaque Nominal External Types**: A type declaration in `.d.ril` without a definition body (`pub type DomWindow`) defines an uninterpreted opaque nominal type. Direct field access (`x.field`), bracket indexing (`x[0]`), nominal unwrapping (`inner(x)`), pattern deconstruction, and direct value instantiation are statically rejected under `E0907: ForeignStructuralFieldPenetrationError`.
 4. **Exchange Contract Types**: Transparent type aliases, records, and tagged sum types MAY provide full shape definitions in `.d.ril` to define exchange data contracts.
 5. **Top-Level Immutability**: Top-level variables in `.d.ril` are restricted to immutable handles (`let`). Declaring `var` or `let mut` is statically rejected under `E0901`.
-6. **Dual-Tier `where` Compatibility**: `DeclFunction` supports waist `where` (`SignatureWhereClause`) for aliasing signature callback types, but block-level `where` is omitted because foreign functions have no body block.
+6. **Dual-Tier `where` Compatibility**: `DeclFunction` supports waist `where` (`SignatureWhereClause`) for aliasing signature callback types; block-level `where` is not permitted in foreign declarations.
 7. **Hard Safety Membrane Invariant**: Invocations across `.d.ril` external boundaries are strictly sealed against unhandled host faults. External traps or host exceptions never corrupt caller stack frames; they resolve either to domain error variants (`Result<T, E>`) or deterministic runtime panics contained at `scope` boundaries.
 
 ```ril
@@ -2054,7 +2054,7 @@ NarrowingExpr      ::= NarrowingPredicate
 1. **Environment Splitting**: Predicate $P$ splits context $\Gamma$ into true/false environments: $\Gamma \vdash P \rightsquigarrow (\Gamma_t, \Gamma_f)$.
 2. **Zero-Binding Refinement**: Narrowing refines existing bindings in-place across conditional branches without introducing new variable bindings (contrasting with `match` and `let ... else` which introduce new bindings).
 3. **Non-Binding Predicates**: Pattern variables in `x is Variant(p)` are scoped strictly to trailing guards (`if guard`) and cannot escape to branch blocks (`E0301`).
-4. **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ (§3.5.1):
+4. **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ (§3.5):
    - $n = 0$: No payload; projection raises `E0301`.
    - $n = 1$: Projected via `.0` (`p.0`). `?T != None` directly unboxes to `T`.
    - $n \ge 2$: Projected via positional tuple indices `.0`, `.1`, ..., `.(n-1)`.
@@ -2389,7 +2389,7 @@ TupleIndex    ::= Digit { Digit }
    - `\.field?.subfield` desugars to `\x -> x.field?.subfield`
    - `\?.field` desugars to `\x -> x?.field`
 2. **Product Type Duality**:
-   - `Identifier` statically projects named fields from records (`{...}`), nominal structs, or refined named variants. Unmatched fields trigger static error `E0301`.
+   - `Identifier` statically projects named fields from records (`{...}`), nominal wrappers, or refined named variants. Unmatched fields trigger static error `E0301`.
    - `TupleIndex` statically projects 0-indexed positional components from tuples (`(T0, T1, ...)`) or refined positional variant payloads ($S|_V$). Positional indices are statically checked at compile time against tuple arity $n$ ($0 \le i < n$). Out-of-bounds indices trigger `E0301`.
 3. **Safe Navigation Propagation**:
    - If any navigation segment uses safe navigation `?.`, evaluation short-circuits to `None` when the intermediate receiver is `None`. The resulting accessor closure return type is automatically lifted into `?T`.
@@ -2971,8 +2971,8 @@ type Button = { label: str, on_click: fn() -> () }
 fn make_button() -> Button {
     with Console::print(msg) -> resume ()
 
-    -- Closure invokes Console::print. Because 'with Console' is active in scope,
-    -- Active handler is captured into the closure environment:
+    -- Closure invokes Console::print. With 'with Console' active in scope,
+    -- the active handler is captured into the closure environment:
     let cb = \-> Console::print("Button clicked!")
     -- 'cb' has type fn() -> () &closure (@Console discharged!)
 
@@ -3314,7 +3314,7 @@ pub fn join3<A, B, C>(task_a: fn() -> A, task_b: fn() -> B, task_c: fn() -> C) -
 
 #### 9.6.6 Declarative Data Parallelism & Concurrency Bounding
 1. **`Parallel::for_each`**: Applies an in-place mutation closure `fn(mut T) -> () &mut` across slice elements. Element mutations execute in-place under abstract machine chunk scheduling. Closures are strictly forbidden from capturing external mutable variables (`E0605`).
-2. **`Parallel::map_bounded`**: Evaluates data-parallel transformations while bounding active parallel worker concurrency (`max_concurrency: int`) to prevent downstream resource exhaustion. Observational equivalence and Leftmost Index Supremacy remain 100% bit-exact and identical to unconstrained evaluation.
+2. **`Parallel::map_bounded`**: Evaluates data-parallel transformations with bounded active parallel worker concurrency (`max_concurrency: int`). Observational equivalence and Leftmost Index Supremacy remain 100% bit-exact and identical to unconstrained evaluation.
 
 #### 9.6.7 The Absolute Effect-Free Parallel Invariant
 In accordance with `E0615`, all callables passed to data-parallel combinators (`Parallel::map`, `Parallel::fold`, `Parallel::join`, `Parallel::for_each`) MUST be strictly closed with zero latent algebraic effects ($\mathbf{Eff} = \emptyset$). Environmental context, pseudo-random generator states, and configuration parameters MUST be passed explicitly as pure input values or deeply frozen `Immut<T>` graphs, preserving the single-stack affine resumption invariant without cross-thread continuation leakage.
@@ -3699,8 +3699,8 @@ TypePatternInner ::= RigidNominalPattern | TuplePattern | RecordPattern
 ```
 
 1. **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `type<P>` introduces an immutable type variable scoped strictly to the arm's guard and RHS expression. `U` MUST be `PascalCase` (`E0101`).
-2. **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0309`). Multi-position equality is asserted via explicit guards (`if type<A> == type<B>`).
-3. **Rigid Head Invariant**: The outermost constructor of a type pattern must be a rigid, known nominal constructor (e.g. `Option<let U>`). Binding the type constructor itself as a variable pattern (`(let M)<let U>`) is statically rejected (`E0306: UnconstrainedHigherOrderPatternError`).
+2. **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0203: DuplicateDeclarationError`). Multi-position equality is asserted via explicit guards (`if type<A> == type<B>`).
+3. **Rigid Head Invariant**: The outermost constructor of a type pattern must be a rigid, known nominal constructor (e.g. `Option<let U>`). Binding the type constructor itself as a variable pattern (`(let M)<let U>`) is statically rejected (`E0306: KindMismatchError`).
 
 ```ril
 -- 1. Deep Recursive Unwrapping of Container / Fallible Types:
@@ -4106,7 +4106,7 @@ if len(original) == 0 {
 
 ### 11.7 Anti-Fault Masking: Mandatory Inspection of `Result` (`E0720`)
 
-To prevent silent bug propagation, Ril enforces the **Anti-Fault Masking Invariant**: any expression evaluating to `Result<T, E>` MUST be explicitly inspected, propagated, matched, or unpacked. Discarding a fallible `Result` without inspection is statically rejected (`E0720`).
+Under the **Anti-Fault Masking Invariant**, any expression evaluating to `Result<T, E>` MUST be explicitly inspected, propagated, matched, or unpacked. Discarding a fallible `Result` without inspection is statically rejected (`E0720`).
 
 ```ril
 fn save_profile(user_id: int) -> Result<(), str> {
