@@ -1089,6 +1089,70 @@ eff State<S> {
 eff AppEffects { Console, State<int> } -- Combined effect set
 ```
 
+### 4.8 External Interface Declarations (`.d.ril`)
+
+External interface declarations are defined in dedicated declaration units with the `.d.ril` extension. A `.d.ril` module declares foreign signatures, opaque types, ambient constants, and exchange contract types without adding new keywords or dialects to the language.
+
+```ebnf
+DeclUnitItem     ::= [ "pub" ] ( DeclFunction | DeclType | DeclLet | DeclOpaqueType )
+
+DeclFunction     ::= "fn" Identifier [ GenericParams ]
+                     "(" [ ParameterList ] ")" [ ReturnType ]
+                     [ EffectAnnot ] [ StateAnnot ]
+                     [ SignatureWhereClause ]
+
+DeclType         ::= SumTypeDecl | NominalDecl | TypeDecl
+DeclOpaqueType   ::= "type" Identifier [ GenericParams ]
+DeclLet          ::= "let" Identifier ":" TypeExpression
+```
+
+#### Normative Rules for `.d.ril` Modules:
+1. **Body Prohibition Invariant (`E0901`)**: Functions declared in `.d.ril` MUST NOT contain implementation bodies (`{ ... }`). Top-level constants MUST NOT declare initialization expressions (`= expr`). Supplying an implementation body or initializer in a `.d.ril` file is statically rejected under `E0901: BodyInDeclModuleError`.
+2. **Missing Body Invariant (`E0902`)**: Omitting an implementation body from a function in a standard `.ril` module is statically rejected under `E0902: MissingBodyInStandardModuleError`. External signatures must reside in `.d.ril` modules.
+3. **Opaque Nominal External Types**: A type declaration in `.d.ril` without a definition body (`pub type DomWindow`) defines an uninterpreted opaque nominal type. Direct field access (`x.field`), bracket indexing (`x[0]`), nominal unwrapping (`inner(x)`), pattern deconstruction, and direct value instantiation are statically rejected under `E0907: ForeignStructuralFieldPenetrationError`.
+4. **Exchange Contract Types**: Transparent type aliases, records, and tagged sum types MAY provide full shape definitions in `.d.ril` to define exchange data contracts.
+5. **Top-Level Immutability**: Top-level variables in `.d.ril` are restricted to immutable handles (`let`). Declaring `var` or `let mut` is statically rejected under `E0901`.
+6. **Dual-Tier `where` Compatibility**: `DeclFunction` supports waist `where` (`SignatureWhereClause`) for aliasing signature callback types, but block-level `where` is omitted because foreign functions have no body block.
+
+```ril
+-- In file: platform/dom.d.ril
+
+-- 1. Opaque nominal external types:
+pub type DomWindow
+pub type DomElement
+pub type DomEvent
+
+-- 2. Ambient external handle:
+pub let WINDOW: DomWindow
+
+-- 3. Transparent contract data types:
+pub type QueryOptions = {
+    timeout_ms: int,
+    all_matches: bool,
+}
+
+pub type DomError {
+    ElementNotFound,
+    SecurityViolation(str),
+}
+
+-- 4. External function signatures:
+pub fn query_selector(win: DomWindow, sel: str) -> Result<DomElement, DomError>
+pub fn set_attribute(mut elem: DomElement, key: str, val: str) -> () &mut
+pub fn add_listener(elem: DomElement, event_type: str, handler: EventHandler) -> () @Async
+where
+    type EventHandler = fn(DomEvent) -> () &mut
+
+-- 5. Body prohibition in .d.ril (E0901):
+-- pub fn bad_body() -> int { 42 }     -- Error [E0901]: BodyInDeclModuleError: functions in '.d.ril' cannot have an implementation body
+-- pub let BAD_CONST: int = 100        -- Error [E0901]: BodyInDeclModuleError: constants in '.d.ril' cannot have an initializer expression
+
+-- 6. Opaque penetration prohibited (E0907):
+-- fn test_penetrate(elem: DomElement) {
+--     let id = elem.id                 -- Error [E0907]: ForeignStructuralFieldPenetrationError: cannot access field on opaque type 'DomElement'
+-- }
+```
+
 ---
 
 ## 5. Expressions & Operators
@@ -3196,10 +3260,15 @@ fn dispatch_computation<F, T, R>(f: F, arg: T) -> R {
 
 ### 11.1 Modules & Compilation Units
 
-Every source file is an independent compilation unit. Top-level items are private to the file by default unless marked with `pub`.
+Every source file is an independent compilation unit. Compilation units are partitioned into two mutually exclusive kinds:
+
+1. **Implementation Units (`.ril`)**: Standard modules containing executable definitions. Functions in `.ril` modules MUST provide implementation bodies (`{ ... }`).
+2. **External Interface Declaration Units (`.d.ril`)**: Contract-only modules declaring external types, ambient constants, and foreign signatures without implementation bodies (§4.8). When a module path resolves to `<path>.d.ril`, the module is designated as an `ExternalContractModule` and linked to target-specific safe wrappers.
+
+Top-level items in both unit types are private to the file by default unless marked with `pub`.
 
 ```ril
--- In file: math/geometry.ril
+-- In file: math/geometry.ril (Implementation Unit)
 let PI = 3.141592653589793              -- Private to module 'geometry'
 pub let TAU = 6.283185307179586         -- Public: exported from module
 
@@ -3207,8 +3276,13 @@ pub fn circle_area(radius: f64) -> f64 {
     PI * radius * radius                -- OK: internal access to private 'PI'
 }
 
+-- In file: platform/fs.d.ril (External Interface Declaration Unit)
+pub type FileHandle                     -- OK: opaque nominal external type
+pub fn read_file(path: str) -> Result<[]u8, str> @Async -- OK: bodyless external signature
+
 -- In file: app/main.ril
-use math/geometry::{TAU, circle_area}   -- OK: importing public symbols
+use math/geometry::{TAU, circle_area}   -- OK: importing from implementation unit
+use platform/fs::{FileHandle, read_file} -- OK: importing from declaration unit
 -- use math/geometry::{PI}              -- Error [E0201]: symbol 'PI' is private to module 'math/geometry'
 ```
 
@@ -3425,3 +3499,6 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting compiler evaluation step budget in meta/type functions |
 | **`E0820`** | `TotalityViolationError` | Totality certification failed in `halt fn` (unbounded recursion/loop) |
 | **`E0830`** | `MetaAssertionFailedError` | Compile-time `assert` condition evaluated to `false` in `meta` context |
+| **`E0901`** | `BodyInDeclModuleError` | Supplying an implementation body, variable initializer, or mutable binding in a '.d.ril' declaration unit |
+| **`E0902`** | `MissingBodyInStandardModuleError` | Omitting an implementation body from a function declared in a standard '.ril' module |
+| **`E0907`** | `ForeignStructuralFieldPenetrationError` | Attempting to access fields, mutate, index, deconstruct, or instantiate an opaque external type |
