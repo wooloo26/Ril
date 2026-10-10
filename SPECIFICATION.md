@@ -3263,35 +3263,202 @@ fn test_task_effect_confinement() {
 }
 ```
 
-### 9.6 Data Parallelism (`Parallel::map`, `Parallel::fold`) & Deterministic Reductions
+### 9.6 Deterministic Data Parallelism (`Parallel::*`) & Divide-and-Conquer Primitives
 
-`ril/parallel` exports the `Parallel` namespace for evaluating data-parallel combinators across slice partitions. `Parallel::fold` requires chunk-local accumulators with local `&mut`, avoiding cross-core cache invalidation. Reductions merge intermediate results via a canonical binary tree ($G_{\text{canonical}} = 64$) guaranteeing bit-for-bit floating-point determinism.
+Data parallelism in Ril provides deterministic, multi-core evaluation of pure expressions over partitioned data structures and recursive divide-and-conquer workflows. Pure parallel evaluation carries **zero latent effects** ($\mathbf{Eff} = \emptyset$) in Domain III and is strictly distinguished from non-deterministic structured concurrency (`@Concurrent`).
+
+#### 9.6.1 The Colorless Parallel Principle & Domain Boundary
+1. **Zero-Effect Purity ($\mathbf{Eff} = \emptyset$)**:
+   Data-parallel combinators (`Parallel::map`, `Parallel::fold`, `Parallel::join`, `Parallel::for_each_mut`) are evaluation strategies of the abstract machine, not control inversion protocols. Functions orchestrating pure data parallelism remain completely colorless and may be called within total certified functions (`halt fn`). Attaching `@Parallel` annotations is an ontological category error and is statically rejected under `E0612: UnhandledEffectError`.
+2. **Observational Equivalence Axiom**:
+   For any data-parallel evaluation $\mathbf{Parallel}::op(S, f)$, the observed terminal state (normal return value or defect panic) MUST be 100% bit-for-bit equivalent to sequential left-to-right evaluation on a single core.
+
+#### 9.6.2 Deterministic Reductions & Bit-Exact Floating-Point Trees
+`Parallel::fold` evaluates associative reductions across slice partitions. Chunk-local accumulators utilize thread-local `&mut`, avoiding cross-core cache invalidation. Reductions merge intermediate results via a canonical binary tree ($G_{\text{canonical}} = 64$) guaranteeing bit-for-bit floating-point determinism across all architectures and core counts.
+
+#### 9.6.3 Observational Equivalence & Short-Circuit Determinism (Leftmost Index Supremacy)
+For short-circuiting operations (`Parallel::find`, `Parallel::any`, `Parallel::first`), concurrent evaluation enforces the **Leftmost Index Supremacy Axiom**:
+$$\mathbf{Parallel}::find(S, P) \equiv \begin{cases}
+  \text{Some}(S[k^*]) & \text{where } k^* = \min \{ i \in [0, |S|-1] \mid P(S[i]) = \text{true} \}, \text{ if matches exist} \\
+  \text{None} & \text{if no match exists}
+\end{cases}$$
+
+Under the **Deterministic Horizon & Cancellation Protocol**, when an arbitrary core finds a match at index $k$, it establishes a temporary upper bound (Horizon $H = k$). Partitions with lower indices $> k$ are immediately cancelled. Low-index partitions $< k$ MUST be completely evaluated; only if all low partitions yield no match is $k$ committed as the canonical result.
+
+#### 9.6.4 Canonical Leftmost Panic Precedence Rule
+When multiple partitions trigger runtime Panics concurrently across different cores, the abstract machine enforces the **Canonical Leftmost Panic Precedence Rule**:
+$$\pi_{\text{observed}} \equiv \pi_{\min(\mathcal{D})}, \quad \text{where } \mathcal{D} = \{ i \mid \text{evaluation of item } i \text{ triggers Panic} \}$$
+Panics at indices $j > \min(\mathcal{D})$ are treated as **Subsumed Defective Branches**. Furthermore:
+- **Leftmost Panic Overrides Rightward Match**: A panic at index $k$ aborts and overrides a successful predicate match at index $j > k$.
+- **Leftmost Match Suppresses Rightward Panic**: A successful short-circuit match at index $k$ suppresses and discards any potential panic at index $j > k$.
+
+#### 9.6.5 Lightweight Divide-and-Conquer (`Parallel::join`)
+`Parallel::join` evaluates multiple pure thunks across available compute workers, joining execution synchronously at the parent call frame:
+```ril
+pub fn join<A, B>(task_a: fn() -> A, task_b: fn() -> B) -> (A, B)
+pub fn join3<A, B, C>(task_a: fn() -> A, task_b: fn() -> B, task_c: fn() -> C) -> (A, B, C)
+```
+1. **Stack Frame Borrowing Invariant**: The parent frame $\text{Frame}_{\text{join}}$ synchronously blocks until all joined child tasks terminate. The contexts satisfy $\mathop{\mathrm{Lifetime}}(E_{\text{child}}) \subseteq \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{join}})$, allowing safe borrowing of parent stack data without heap allocation.
+2. **Linear Run-to-Completion**: Joined branches are effect-free ($\mathbf{Eff} = \emptyset$) and execute exactly once without cooperative quantum suspension or delimited re-entry.
+3. **Bernstein Disjoint Access Invariant (`E0619`)**: Parallel branches passed to `Parallel::join` MUST have mutually disjoint write and read sets:
+   $$\mathrm{Write}(A) \cap (\mathrm{Read}(B) \cup \mathrm{Write}(B)) = \emptyset$$
+   Simultaneous mutable access to overlapping memory paths across parallel branches triggers `E0619: ParallelDisjointAccessConflictError`. Concurrent branches in `Parallel::join` operate on distinct root variable bindings or pure expressions; low-level manual slice index splitting is disallowed in user code.
+4. **Transparent Panic Unwinding**: Joined panics unwind child frames in LIFO order and re-throw the primary panic into the parent frame without `TaskFault` reification. If both branches panic, the primary panic is selected via deterministic left-biased resolution.
+
+#### 9.6.6 Declarative Data Parallelism & Concurrency Bounding
+1. **`Parallel::for_each`**: Applies an in-place mutation closure `fn(mut T) -> () &mut` across slice elements. Element mutations execute in-place under abstract machine chunk scheduling. Closures are strictly forbidden from capturing external mutable variables (`E0605`).
+2. **`Parallel::map_bounded`**: Evaluates data-parallel transformations while bounding active parallel worker concurrency (`max_concurrency: int`) to prevent downstream resource exhaustion. Observational equivalence and Leftmost Index Supremacy remain 100% bit-exact and identical to unconstrained evaluation.
+
+#### 9.6.7 The Absolute Effect-Free Parallel Invariant
+In accordance with `E0615`, all callables passed to data-parallel combinators (`Parallel::map`, `Parallel::fold`, `Parallel::join`, `Parallel::for_each`) MUST be strictly closed with zero latent algebraic effects ($\mathbf{Eff} = \emptyset$). Environmental context, pseudo-random generator states, and configuration parameters MUST be passed explicitly as pure input values or deeply frozen `Immut<T>` graphs, preserving the single-stack affine resumption invariant without cross-thread continuation leakage.
 
 ```ril
 use ril/parallel::Parallel
+use ril/concurrent::{scope, TaskFault}
 
+-- 1. Pure Data-Parallel Mapping (Colorless; callable in halt fn):
+halt fn square_all(numbers: []f64) -> []f64 {
+    numbers |> Parallel::map(\x -> x * x)
+}
+
+-- 2. Floating-Point Deterministic Fold (G_canonical = 64):
 let numbers: []f64 = [1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7, 8.8]
-
--- 1. Pure Data-Parallel Mapping:
-let scaled = numbers |> Parallel::map(\x -> x * 2.0)
-
--- 2. Floating-Point Deterministic Fold via Canonical Binary Reduction Tree (G_canonical = 64):
 let total_sum = Parallel::fold(
     numbers,
     init_acc: \-> 0.0f64,
-    fold_local: \mut acc, x -> { acc += x }, -- OK: thread-local &mut accumulator
+    fold_local: \mut acc, x -> { acc += x },
     merge_acc: \a, b -> a + b
 )
 
--- 3. Capability Confinement: Rejecting external mutable captures in parallel combinator
+-- 3. Observational Equivalence & Short-Circuit Leftmost Index Supremacy:
+let data: []int = [10, 20, 30, 40, 50, 60, 70, 80]
+let first_match = data |> Parallel::find(\x -> x > 25)
+assert(first_match == Some(30))         -- Guaranteed Leftmost: 30, never 50 or 60
+
+-- 4. Canonical Leftmost Panic Precedence Rule:
+let faulty_slice: []int = [10, 0, 50, 0, 100] -- index 1 and 3 are zero
+let fault_result = scope(\mut s -> {
+    let t = s.fork(\-> faulty_slice |> Parallel::map(\d -> 1000 / d))
+    t.join()
+})
+match fault_result {
+    Err(TaskFault::Panicked(info)) -> assert(info.index == 1), -- Strictly index 1
+    _ -> panic("expected deterministic panic at index 1"),
+}
+
+-- 5. Lightweight Pure Divide-and-Conquer Fork-Join (Parallel::join):
+pub fn parallel_merge_sort(s: []int) -> []int {
+    if len(s) <= 1024 {
+        return Array::sort(s)
+    }
+    let mid = len(s) / 2
+    let left_slice = s[0..mid]
+    let right_slice = s[mid..len(s)]
+
+    let (sorted_l, sorted_r) = Parallel::join(
+        \-> parallel_merge_sort(left_slice),
+        \-> parallel_merge_sort(right_slice),
+    )
+    Array::merge(sorted_l, sorted_r)
+}
+
+-- 6. In-Place Element Mutation (Parallel::for_each):
+let mut matrix_row: []f64 = [1.0, 2.0, 3.0, 4.0]
+matrix_row !> Parallel::for_each(\mut item -> { item *= 2.0 })
+assert(matrix_row == [2.0, 4.0, 6.0, 8.0])
+
+-- 7. Concurrency-Bounded Execution (Parallel::map_bounded):
+let urls: []str = ["api/a", "api/b", "api/c", "api/d"]
+let hashes = urls |> Parallel::map_bounded(max_concurrency: 2, \u -> Crypto::sha256(u))
+
+-- 8. Negative Examples: Parallel Capability and Effect Confinement
 var external_counter = 0
--- let bad = numbers |> Parallel::map(\x -> {
+-- let bad_capture = data |> Parallel::map(\x -> {
 --     external_counter += 1            -- Error [E0605]: cannot capture external mutable variable 'external_counter' in parallel combinator
---     x * 2.0
+--     x * 2
 -- })
+
+-- Parallel::join(
+--     \-> { external_counter += 1 },   -- Error [E0619]: ParallelDisjointAccessConflictError: parallel branch captures mutable path 'external_counter' overlapping concurrent branch
+--     \-> { external_counter += 2 },
+-- )
 ```
 
-### 9.7 The Arrow-Only Law of Effects (`E0613`)
+### 9.7 Structured Concurrency Channels (`ril/concurrent/channel`)
+
+Communication across concurrent tasks is mediated exclusively by structured message-passing channels (`ril/concurrent/channel`) and deeply frozen immutable values (`Immut<T>`). Ril strictly prohibits raw atomic shared memory primitives (`Atomic<T>`) and weak memory orderings.
+
+#### Normative Rules for Structured Channels:
+1. **Opaque Nominal Endpoint Types**: A channel is created as an asymmetric pair of Domain I opaque nominal endpoints:
+   ```ril
+   pub opaque type Sender<T>
+   pub opaque type Receiver<T>
+   ```
+2. **Endpoint Topology & Affine Uniqueness**:
+   - Channels operate under MPSC (Multiple-Producer, Single-Consumer) topology.
+   - `Sender<T>` implements explicit cloning (`clone(tx)`), allowing fan-out across worker tasks.
+   - `Receiver<T>` is **affinely unique** and CANNOT be cloned (`E0530`). A channel has exactly one consumer.
+3. **Capability & Effect Signatures**:
+   - Sending and receiving advance endpoint cursors in-place, requiring mutable capability (`&mut`) on the respective endpoint.
+   - Suspendable channel operations declare cooperative suspension `@Fiber`.
+4. **Zero-Capability Payload Invariant (`E0602`)**:
+   Values transmitted via `Sender::send` MUST carry zero active mutable capabilities and zero active views. Types permitted across channels are:
+   - Scalar value types (`int`, `f64`, `bool`, `str`, `bytes`).
+   - Immutable records, arrays, and tuples composed entirely of value types.
+   - Deeply frozen immutable graphs (`Immut<U>`).
+   - Detached channel endpoints (e.g., transmitting `Sender<U>`).
+   Attempting to send types with interior mutable fields or active views triggers `E0602: IllegalChannelPayloadCapabilityError`.
+5. **Endpoint Aliasing Prohibition (`E0603`)**:
+   Passing the same un-cloned `Sender<T>` handle to multiple concurrent tasks triggers `E0603: ChannelEndpointAliasingConflictError` (and `E0601`).
+
+```ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel as Channel
+use ril/concurrent/channel::{Sender, Receiver}
+
+type Message = { id: int, body: str }
+
+fn run_channel_pipeline() -> Result<int, TaskFault> {
+    scope(\mut s -> {
+        let (tx, mut rx) = Channel::bounded<Message>(32)
+
+        -- Producer 1: Cloned endpoint
+        let mut tx1 = clone(tx)
+        s.fork(\-> {
+            tx1 !> Channel::send(Message.{ id: 1, body: "hello from worker 1" })?
+            Ok()
+        })
+
+        -- Producer 2: Original endpoint
+        let mut tx2 = tx
+        s.fork(\-> {
+            tx2 !> Channel::send(Message.{ id: 2, body: "hello from worker 2" })?
+            Ok()
+        })
+
+        -- Consumer: Single unique receiver
+        var count = 0
+        while count < 2 {
+            let msg = rx !> Channel::recv()?
+            println(msg.body)
+            count += 1
+        }
+        Ok(count)
+    })
+}
+
+-- Negative Examples: Channel Boundary Safety
+type MutableState = { mut count: int }
+-- fn bad_channel_send(mut tx: Sender<MutableState>, s: MutableState) @Fiber &mut {
+--     tx !> Channel::send(s)           -- Error [E0602]: IllegalChannelPayloadCapabilityError: payload type 'MutableState' contains mutable fields; cannot cross task boundary via Channel
+-- }
+
+-- fn bad_receiver_clone(rx: Receiver<int>) {
+--     let rx_copy = clone(rx)          -- Error [E0530]: IllegalCapabilityCloneImmutError: 'Receiver<T>' is an affinely unique endpoint and cannot be cloned
+-- }
+```
+
+### 9.8 The Arrow-Only Law of Effects (`E0613`)
 
 Computations reduce to values in normal form. Once reduced, no further control transfers can occur. Passive values carry Shape and Access, but **zero latent effects**.
 
@@ -3888,6 +4055,8 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0532`** | `ReassignableScopedResourceError` | Attempting to declare a scoped resource binding with `var scoped` |
 | **`E0533`** | `AliasedNarrowingHazardError` | Narrowing a `var` binding aliased by a live view or captured in a mutable closure |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Passing live mutable view across concurrent task boundary |
+| **`E0602`** | `IllegalChannelPayloadCapabilityError` | Transmitting payload carrying active mutable capabilities, views, or unfrozen references across channel |
+| **`E0603`** | `ChannelEndpointAliasingConflictError` | Borrowing same un-cloned channel endpoint across concurrent tasks |
 | **`E0605`** | `InvalidParallelCapabilityError` | Capturing external mutable capabilities in parallel combinator |
 | **`E0607`** | `DerivedProxyEscapeError` | Derived proxy escapes 'derive' recipe via return, assignment, or closure publication |
 | **`E0610`** | `DuplicateResumeInvocationError` | Invoking affine one-shot resumption `resume` more than once |
@@ -3899,6 +4068,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0616`** | `ScopedCleanupEffectError` | Resource cleanup handler (`on_close`) declares or invokes unhandled algebraic effects |
 | **`E0617`** | `ScopedCleanupDivergenceError` | Resource cleanup handler (`on_close`) declares or invokes divergent operations (`@Div`) |
 | **`E0618`** | `UndischargedLocalEffectError` | Local algebraic effect declared in 'where' is not completely discharged within enclosing block |
+| **`E0619`** | `ParallelDisjointAccessConflictError` | Parallel branches in `Parallel::join` capture or access overlapping mutable memory paths (Bernstein violation) |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
 | **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
 | **`E0703`** | `IllegalSequentialDeclarationError` | Declaring 'fn', 'type', or 'eff' in sequential statement stream instead of 'where' clause |

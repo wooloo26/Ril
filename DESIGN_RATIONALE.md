@@ -303,6 +303,48 @@ Mainstream effect systems in single-threaded research languages (e.g., Koka, Eff
 2. **Delimited Early Abort Across Threads**: If an ambient parent handler intercepts an effect from a child task and executes an early abort (returning without `resume`), unwinding the parent stack while the child continues executing would violate the Synchronous Scope Unwind-Barrier. Conversely, attempting to asynchronously cancel the child from the parent handler introduces non-deterministic thread coordination.
 3. **Symmetric Isolation Barrier with DRF-SC**: Just as Boundary Capability Confinement (`E0601`) guarantees that mutable memory handles cannot cross task boundaries to eliminate data races, Concurrent Task Effect Confinement (`E0615`) guarantees that control transfers cannot cross task boundaries to eliminate cross-thread continuation hazards. Child tasks communicate exclusively through structured value channels (`task.join()`, channels), never via synchronous ambient effect invocations.
 
+### 3.5 The Colorless Parallelism Principle: Why Data Parallelism Carries Zero Latent Effects
+
+In effect systems, an algebraic effect represents a control-inversion protocol: computation yields control to an ambient stack handler via operation requests, and the handler decides whether and how to resume the continuation.
+
+Data parallelism (`Parallel::map`, `Parallel::fold`, `Parallel::join`) differs fundamentally from algebraic effects:
+1. **No Control Inversion**: An item mapping operation `x * 2` does not yield to a handler, make requests, or require delimited resumption. It is a pure mathematical calculation.
+2. **Evaluation Strategy vs. Effect**: Parallelism is an abstract machine evaluation strategy for executing independent expressions across multiple physical CPU cores. Attaching an `@Parallel` effect to pure computations would reintroduce function coloring to mathematical functions and prevent them from being certified as total functions (`halt fn`).
+3. **Preservation of Blelloch-Steele Determinism**: A pure data-parallel expression possesses observational equivalence to serial evaluation. By establishing that data-parallel combinators carry $\mathbf{Eff} = \emptyset$, Ril preserves function colorlessness while maximizing multi-core throughput.
+
+### 3.6 Rejection of Bare Atomics & Weak Memory Models in Favor of Total Isolation
+
+Mainstream systems languages (C++, Rust) expose atomic primitives (`std::atomic`, `AtomicI32`) parameterized by weak memory orderings (`Relaxed`, `Acquire`, `Release`, `SeqCst`).
+
+Ril rejects bare atomic shared-memory primitives in safe code for critical architectural reasons:
+1. **Preserving the Handle-Level Immutability Invariant**: In Ril, a binding declared with `let` establishes a strictly immutable handle (§3.9). Allowing `counter.fetch_add(1)` on a `let counter` handle would introduce an interior mutability backdoor (the `UnsafeCell` hazard). Conversely, requiring `let mut counter` would trigger `E0601`, preventing it from crossing task boundaries.
+2. **Preventing Marker Trait Contagion**: To allow atomics across threads, languages must introduce nominal marker traits (`Send`, `Sync`). Ril derives DRF-SC directly from capability tracking and value immutability without marker traits (§3.3). Special-casing atomics would shatter this orthogonal model.
+3. **Total Isolation via `Immut<T>` and MPSC Channels**: Multi-core reads are served with zero overhead and zero lock contention via deeply frozen `Immut<T>`. Inter-task state coordination is mediated exclusively via structured MPSC channels (`Sender<T>` / `Receiver<T>`), preserving memory safety and defect isolation.
+
+### 3.7 Declarative Data Parallelism vs. Low-Level Slice Partitioning: Eliminating Index Arithmetic
+
+In low-level systems languages without garbage collection (such as Rust), parallel algorithms over contiguous arrays require explicit, manual slice partitioning (`split_at_mut`) to prove disjointness to the borrow checker. While sound, this model forces application developers to calculate midpoint indices, manage off-by-one boundary cases, and contend with complex borrow states.
+
+Ril targets modern mid-to-high-level applications, cloud services, and data processing systems. In this domain, manual slice arithmetic constitutes an ergonomic impedance mismatch:
+1. **Topology-Agnostic Declarative Operations**: Developers think in terms of operations over elements (`Parallel::map`, `Parallel::fold`, `Parallel::for_each`), not pointer slices or partition arithmetic.
+2. **Abstract Machine Chunk Scheduling**: The distribution of elements and partition boundaries is an internal scheduling concern of the abstract machine work-stealing engine. The runtime guarantees Data-Race Freedom under Sequential Consistency (DRF-SC) without exposing index arithmetic or manual partition boundaries to user code.
+3. **Pure Divide-and-Conquer via `Parallel::join`**: When recursive divide-and-conquer is required (e.g., parallel merge sort), algorithms operate naturally over immutable slice partitions (`s[0..mid]` and `s[mid..len]`), returning new values without mutating shared buffers.
+
+### 3.8 Observational Equivalence: Leftmost Index Supremacy and Panic Arbitration
+
+A central tenet of Ril is that abstract machine semantics must never depend on physical core count, CPU clock frequencies, or thread scheduling interleavings (§1.3).
+
+When executing parallel operations across cores:
+1. **Leftmost Index Supremacy in Short-Circuiting**: In operations like `Parallel::find`, an arbitrary core may find a match at index 60 before another core inspects index 20. If index 60 were returned, execution would become non-deterministic. Ril enforces the **Deterministic Horizon & Cancellation Protocol**: matches establish an upper bound to cancel higher partitions, but lower partitions must always be exhaustively verified. The observed result is guaranteed identical to serial evaluation.
+2. **Canonical Leftmost Panic Precedence**: If index 1 and index 3 trigger panics simultaneously across two cores (e.g. division by zero), the abstract machine deterministically surfaces the panic at index 1 ($\pi_{\min(\mathcal{D})}$). Defective branches at higher indices are classified as Subsumed Defective Branches. This eliminates race conditions in test suites and defect handling.
+
+### 3.9 Compiler Auto-Vectorization vs. Language-Level SIMD: Keeping Domain Models Clean
+
+Hardware vector extensions (SIMD: AVX, NEON, SVE) provide immense computational throughput. However, introducing raw fixed-width SIMD types (`simd[f32, 4]`) into the core language syntax creates significant design friction for application software:
+1. **Domain Model Pollution**: Enterprise domain models (orders, user profiles, ledger entries, event streams) should not be burdened with hardware register lane counts, masks, and lane-count type errors.
+2. **Auto-Vectorization of Pure Combinators**: In garbage-collected, functional-friendly languages, hardware vectorization is most effectively achieved via compiler optimization over pure, immutable slice combinators (`Parallel::map`, `Parallel::fold`), freeing developers from writing architecture-specific intrinsics or managing epilogue remainder loops.
+3. **Library-Level Encapsulation**: Numerical and scientific workloads requiring specialized vector operations are addressed via standard library modules (e.g. `ril/std/numeric`), preserving the purity, elegance, and simplicity of Ril's core tripartite ontology.
+
 ---
 
 ## 4. Syntax Ergonomics and Deliberate Omissions
