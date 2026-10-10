@@ -12,7 +12,7 @@
 ### 1.1 The Sovereignty Axiom
 > **"Only external targets adapt to Ril; Ril never adapts to them."**
 
-1. **Zero Lexical Dialects**: Ril introduces zero foreign keywords (`extern`, `foreign`, `unsafe`, `native`). Ril source text remains strictly within its canonical 36-keyword vocabulary.
+1. **Zero Lexical Dialects**: Ril introduces zero foreign keywords (`extern`, `foreign`, `unsafe`, `native`). Ril source text remains strictly within its canonical reserved keyword vocabulary.
 2. **Zero Foreign Compromise Types**: No dynamic or foreign-specific types (`any`, `unknown`, `void*`, `c_int`, `dyn Object`) exist in Ril. All external contracts are expressed purely in first-class Ril types (`int`, `str`, `[]T`, records, sum types, `Result<T, E>`, `Option<T>`).
 3. **Target-Agnostic Boundary**: The foreign interface architecture is target-independent. It applies universally whether the compilation target is native machine code (LLVM/C), WebAssembly, or a garbage-collected host VM (JavaScript/V8, JVM, CLR).
 

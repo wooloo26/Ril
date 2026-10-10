@@ -194,17 +194,16 @@ fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' suppresses un
 
 ### 2.5 Keywords
 
-The following 36 tokens are strictly reserved keywords:
+The following 35 tokens are strictly reserved keywords:
 
 ```
 as       eff      else     false    fn
-for      halt     if       in       infer
-is       keyof    last     let      loop
-match    meta     module   mut      never
-next     opaque   pub      resume   return
-scoped   test     true     type     typeof
-use      var      view     where    while
-with
+for      halt     if       in       is
+keyof    last     let      loop     match
+meta     module   mut      never    next
+opaque   pub      resume   return   scoped
+test     true     type     typeof   use
+var      view     where    while    with
 ```
 
 ```ril
@@ -353,7 +352,8 @@ Named row tail polymorphism (`..R`) allows generic functions to accept and prese
 ```ebnf
 RecordType     ::= "{" [ RecordField { "," RecordField } [ "," ] [ ".." Identifier ] ] "}"
 RecordField    ::= [ "mut" ] Identifier ":" TypeExpression
-TypeProjection ::= PrimaryType "." ( Identifier | IntLiteral | "(" TypeExpression ")" )
+TypeProjection ::= PrimaryType "." ( Identifier | TupleIndex | "(" Expression ")" )
+TupleIndex     ::= Digit { Digit }
 ```
 
 ```ril
@@ -3066,187 +3066,212 @@ let value: IntNullable = Some(42)         -- OK: used as concrete type annotatio
 let pair: StringIntPair = .{ first: "id", second: 101 }
 ```
 
-### 10.2 Pure Type Functions & Computation Model (`halt type`, `halt fn`)
+### 10.2 Pure Type Functions & The Monopoly of Type Return Privilege
 
-1. **Return Invariant**: A type function is a compile-time pure function whose return expression MUST evaluate to a `type<T>`. Returning a non-type value raises `E0301`.
-2. **Axiomatic Purity & Zero-Annotation Invariant**: Type functions evaluate strictly within the pure compile-time domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). They MUST NOT declare or carry algebraic effects (`@Effect`) or state capabilities (`&mut`, `&closure`, `&capture`, `&{ident}`) (`E0301`). Type function bodies enjoy unrestricted pure functional computation: local immutable bindings (`let`), conditionals (`if`), pattern matching (`match`), invocation of pure `meta fn` functions, pure collection combinators, and recursion.
-3. **Totality Certification**: `halt type` certifies normal termination. Unmarked type functions operate under configurable compiler evaluation budgets (`E0811`).
+1. **Monopoly of Type Return Privilege Invariant**: Type declarations and pure type functions (`type`, `halt type`) strictly monopolize the authority to construct and return `type<T>`. Value-domain compile-time functions (`meta fn`) MUST NOT declare return sort `Type` or return `type<...>` (`E0812: MetaTypeReturnProhibitedError`). Types govern types; values govern values.
+2. **Read-Only Reflection Tokens in `meta fn`**: `meta fn` callables MAY accept `type<T>` as input parameters. Within `meta fn`, `type<T>` acts as an immutable, non-generative reflection token projecting properties of shapes into the value domain ($\mathcal{T} \to \mathcal{V}$, e.g. `byte_size(type<T>) -> int`). `meta fn` retains zero generative privilege to synthesize or mutate types.
+3. **Axiomatic Purity & Zero-Annotation Invariant**: Both type functions and `meta fn` evaluate strictly within the pure compile-time domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
+   - Type functions MUST NOT declare or carry algebraic effects (`@Effect`) or state capabilities (`&mut`, `&closure`, `&capture`, `&{ident}`) (`E0335`).
+   - `meta fn` signatures MUST NOT declare algebraic effects or state capabilities (`E0813`).
+   - Both enjoy full pure functional computation: local immutable bindings (`let`), conditionals (`if`), pattern matching (`match`), invocation of pure `meta fn` helpers, pure collection combinators, and recursion.
+4. **Totality Certification**: `halt type` certifies normal termination. Unmarked type functions operate under configurable compiler evaluation budgets (`E0811`). `halt fn` certifies total runtime execution.
 
 ```ril
--- 1. Meta helper function (compile-time pure calculation):
+-- 1. Meta helper function: value domain computation only (returns int, not type<T>)
 meta fn pad_align(size: int, align: int) -> int {
     (size + align - 1) & !(align - 1)
 }
 
--- 2. Pure type function with control flow, meta computation, and type output:
+-- 2. Meta predicate consuming read-only type token (parametric generic, strictly no 'any'):
+meta fn is_compact<T>(t: type<T>) -> bool {
+    byte_size(t) <= 16                         -- OK: inspects shape, returns value bool
+}
+
+-- 3. Pure type function: monopolizes construction of type<T>
 halt type PaddedBuffer = \raw_size: int, T -> {
-    let actual_size = pad_align(raw_size, 8)     -- OK: consumes meta fn and const value
-    if actual_size > 1024 {
-        type<{ heap_ptr: int, cap: int }>        -- Branch evaluates to type<T>
+    let actual_size = pad_align(raw_size, 8)   -- OK: consumes meta fn value output
+    if is_compact(type<T>) {                   -- OK: consumes meta predicate
+        type<{ inline_data: []T, len: int }>   -- OK: constructs shape
     } else {
-        type<{ inline_data: []T, len: int }>     -- Branch evaluates to type<T>
+        type<{ heap_ptr: int, cap: int }>      -- OK: constructs shape
     }
 }
 
-type FastBuf = PaddedBuffer<64, u8>              -- Resolves to { inline_data: []u8, len: int }
+type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u8, len: int }
 
--- Static rejection of non-type return, effects, and capabilities:
--- type BadReturn = \T -> 42                     -- Error [E0301]: type function must evaluate to type<T>, found int
--- type BadEffect = \T -> type<T> @Async         -- Error [E0301]: type functions cannot declare algebraic effects
--- type BadCap = \T -> type<T> &closure          -- Error [E0301]: type functions cannot declare state capabilities
-
--- 3. Total Runtime Computation (halt fn):
-halt fn total_clamp(val: int, min_val: int, max_val: int) -> int {
-    if val < min_val { min_val }
-    else if val > max_val { max_val }
-    else { val }
-}                                      -- OK: provably terminating runtime function
-
--- halt fn bad_loop(n: int) -> int {  -- Error [E0820]: 'halt fn' contains uncertified unbounded loop
---     while true {}
+-- Static Rejection of Violations:
+-- meta fn bad_type_gen() -> type<int> {       -- Error [E0812]: 'meta fn' cannot return 'type<...>'; monopolized by type functions
+--     type<int>
 -- }
+-- halt type BadEffect = \T -> type<T> @Async  -- Error [E0335]: type functions cannot declare algebraic effects
+-- meta fn bad_eff() -> int @Io { 0 }          -- Error [E0813]: 'meta fn' cannot declare algebraic effects
 ```
 
-### 10.3 Disjoint Call Families & Evaluation Budgets
+### 10.3 Disjoint Call Families, Evaluation Budgets & Pre-Effect Dead-Branch Pruning
 
 1. **Family Isolation**: Type functions can invoke `meta fn` callables and other type functions, but cannot invoke runtime `fn` callables (`E0810`).
 2. **Runtime Isolation**: Runtime functions cannot invoke type functions (`E0810`).
-3. **Budget Exhaustion**: Exceeding compiler evaluation limits halts compilation with `E0811`.
+3. **Pre-Effect Dead-Branch Pruning Invariant**: In generic runtime functions with static meta guards (`if is_pure(type<F>)`), dead branches are pruned during monomorphization *prior to* latent effect row calculation ($\mathbf{Eff}$). A specialized instance whose surviving branch is pure incurs zero latent effect obligations, preventing spurious effect pollution for callers.
+4. **Budget Exhaustion**: Exceeding compiler evaluation limits halts compilation with `E0811`.
 
 ```ril
-fn runtime_helper() -> int { 42 }
+fn pure_worker(x: int) -> int { x + 1 }
+fn effectful_worker(x: int) -> int @Console { Console::print("log"); x }
 
--- Type function cannot execute runtime function:
--- type BadStatic = \T -> {
---     let x = runtime_helper()        -- Error [E0810]: cannot invoke runtime function from compile-time type function
---     type<int>
--- }
-
--- Runtime function cannot invoke type function:
-fn bad_runtime_fn() {
-    -- let t = FastBuf<64, u8>         -- Error [E0810]: cannot invoke type function from runtime function
+fn dispatch_worker<F>(f: F, val: int) -> int {
+    meta let pure = is_pure(type<F>)
+    if pure {
+        f(val)                                 -- For pure_worker, surviving branch has Eff = ∅
+    } else {
+        f(val)                                 -- For effectful_worker, surviving branch carries @Console
+    }
 }
 
--- Compiler Evaluation Budget Exhaustion:
-type RecursiveLoop = \T -> RecursiveLoop<T>
--- type Overflow = RecursiveLoop<int>  -- Error [E0811]: compile-time evaluation budget exceeded (max 100,000 steps)
+fn test_specialization() {
+    let _ = dispatch_worker(pure_worker, 10)   -- OK: dead branch pruned, zero @Console required
+}
 ```
 
-### 10.4 Mapped Schemas & Type Introspection (`keyof`, Field Dot Projection `T.field`, `T.(K)`)
+### 10.4 Unified Tripartite Introspection (`keyof T`, `T.(K)`)
 
-Type functions inspect and transform record schemas using `keyof`, dot field projection (`T.field` for static identifier lookup, `T.(expr)` for computed key projection), and mapped schema comprehensions (`{ [K in Expr]: TypeExpr }`):
+Ril unifies compile-time introspection across all three composite data forms (Records, Sum Types, Tuples) under a single operator pair: `keyof T` and constituent projection `T.(K)`.
 
 ```ebnf
-TypeProjection   ::= PrimaryType "." ( Identifier | "(" Expression ")" )
+TypeProjection   ::= PrimaryType "." ( Identifier | TupleIndex | "(" Expression ")" )
+TupleIndex       ::= Digit { Digit }
 MappedRecordType ::= "{" "[" Identifier "in" Expression "]" ":" TypeExpression "}"
+MappedTupleType  ::= "(" "[" Identifier "in" Expression "]" ":" TypeExpression ")"
 ```
 
-1. **Schema Key Extraction (`keyof T`)**:
-   - In type parameter bounds (`\K: keyof T`), `keyof T` enforces field membership.
-   - In expression / meta contexts, `keyof T` evaluates to a compile-time immutable array `[]str`.
-   - **Canonical Lexicographical Ordering**: `keyof T` is sorted strictly in UTF-8 byte order, ensuring Leibniz equivalence ($T_1 \equiv T_2 \implies \text{keyof } T_1 \equiv \text{keyof } T_2$).
-2. **Field Dot Projection**: `T.field` statically projects field types. Computed projection `T.(expr)` evaluates any compile-time `str` expression against schema fields.
-3. **Zero-Dialect Mapped Schema Comprehension (`{ [K in Expr]: TypeExpr }`)**:
-   - `Expr` MUST evaluate to a compile-time known `[]str`.
-   - `Identifier` binds the field name (of sort `str`) within the lexical scope of `TypeExpression`.
-   - Key renaming and schema reshaping use ordinary pure expressions and helper functions; no dedicated keyword dialects (such as `as`) are admitted.
+#### 1. Universal Coordinate Indexing (`keyof T`)
+In expression and meta contexts, `keyof T` queries the coordinate index set of composite type $T$:
+- **Records**: Evaluates to an immutable array `[]str` of field names sorted strictly in UTF-8 byte order.
+- **Sum Types (ADTs)**: Evaluates to an immutable array `[]str` of variant constructor names sorted strictly in UTF-8 byte order.
+- **Tuples**: Evaluates to an immutable array `[]int` of positional indices `[0, 1, ..., n-1]` in monotonic ascending order.
+- **Leibniz Invariance**: Canonical sorting guarantees that structurally equivalent types produce identical coordinate index arrays ($T_1 \equiv T_2 \implies \text{keyof } T_1 \equiv \text{keyof } T_2$).
+
+#### 2. Universal Constituent Projection (`T.(K)`)
+For any composite type $T$ and coordinate key $K \in \text{keyof } T$, `T.(K)` statically projects the corresponding constituent shape:
+- **Records**: `User.id` or `User.("id")` resolves to the declared field type.
+- **Sum Types**: `UiEvent.Click` or `UiEvent.("Click")` resolves to the variant payload type under Constructor-Tuple Equivalence:
+  - Multi-field variants ($n \ge 2$): Resolves to anonymous product tuple `(T1, ..., Tn)`.
+  - Single-field variants ($n = 1$): Resolves to scalar type $T_1$ (Ril strictly has no 1-tuples).
+  - Unit constructors ($n = 0$, declared `Variant()`): Resolves to unit `()`.
+  - Nullary tags (declared `Variant`): Resolves to unit `()` as its injection domain, ensuring generic eliminators `fn(T.(K)) -> R` remain universally callable.
+- **Tuples**: `Pair.0` or `Pair.(0)` resolves to the component type at positional index $K$.
+
+#### 3. Symmetrical Mapped Comprehensions
+- **Mapped Records (`{ [K in Expr]: TypeExpr }`)**: `Expr` MUST evaluate to compile-time `[]str`. Supplying `[]int` triggers `E0341: InvalidRecordKeySortError`. Both Records and Sum Types can be mapped symmetrically:
+  ```ril
+  -- Generic visitor / handler table valid for BOTH records and sum types:
+  type SchemaTable = \T -> type<{
+      [K in keyof T]: T.(K)
+  }>
+  ```
+- **Mapped Tuples (`( [I in Expr]: TypeExpr )`)**: `Expr` MUST evaluate to compile-time `[]int`. Supplying `[]str` triggers `E0342: InvalidTupleKeySortError`.
+- **Single-Element Tuple Prohibition (`E0343`)**: A mapped tuple comprehension evaluated over an index array of length 1 is statically rejected at compile time, preserving the invariant that Ril has no 1-tuples.
 
 ```ril
-type User = { id: int, name: str, active: bool, secret_token: str }
-
--- 1. Schema Key Extraction (canonical []str in expression context):
-meta let USER_KEYS: []str = keyof User
--- Resolves to: ["active", "id", "name", "secret_token"] (lexicographical order)
-
--- 2. Schema Field Dot Projection:
-type IdType = User.id                  -- Resolves to int (static identifier projection)
-type UserName = User.name              -- Resolves to str
--- type BadField = User.missing        -- Error [E0301]: field 'missing' does not exist in record 'User'
-
--- Nested schema dot projection:
-type NestedConfig = { db: { host: str, port: int } }
-type HostType = NestedConfig.db.host   -- Resolves to str
-
--- Dot projection on inferred record types:
-let current_user = .{ id: 101, name: "Alice" }
-type InferredId = typeof current_user.id          -- Resolves to int (value-level direct access)
-type InferredName = (typeof current_user).name    -- Resolves to str (parenthesized type-level projection)
-
--- 3. Pick and Omit via standard array combinators:
-type Omit = \T, Excluded: []str -> {
-    let valid_keys = keyof T |> Array::filter(\k -> !(Excluded |> Array::contains(k)))
-    type<{
-        [K in valid_keys]: T.(K)
-    }>
-}
+-- 1. Records:
+type User = { id: int, name: str, active: bool }
+meta let USER_KEYS: []str = keyof User         -- ["active", "id", "name"] (UTF-8 sorted)
+type UserId = User.id                          -- int
+type UserName = User.("name")                  -- str
 
 type Pick = \T, Included: []str -> {
     let valid_keys = keyof T |> Array::filter(\k -> Included |> Array::contains(k))
-    type<{
-        [K in valid_keys]: T.(K)
-    }>
+    type<{ [K in valid_keys]: T.(K) }>
 }
+type PublicUser = Pick<User, ["id", "name"]>   -- { id: int, name: str }
 
-type PublicUser = Omit<User, ["secret_token"]>
--- Resolves to: { active: bool, id: int, name: str }
-
-type UserCredentials = Pick<User, ["id", "name"]>
--- Resolves to: { id: int, name: str }
-
--- 4. Zero-Dialect Key Renaming (PrefixKeys via ordinary string expression):
-type PrefixKeys = \T, prefix: str -> {
-    let prefixed_keys = keyof T |> Array::map(\k -> prefix + "_" + k)
-    type<{
-        [K in prefixed_keys]: T.(str_strip_prefix(K, prefix + "_"))
-    }>
+-- 2. Sum Types (ADTs):
+type UiEvent {
+    Click({ x: int, y: int }),
+    Hover(int, int),
+    Focus,
 }
+meta let EVENT_KEYS: []str = keyof UiEvent     -- ["Click", "Focus", "Hover"] (UTF-8 sorted)
+type ClickPayload = UiEvent.Click              -- { x: int, y: int }
+type HoverPayload = UiEvent.("Hover")          -- (int, int)
+type FocusPayload = UiEvent.Focus              -- () (nullary injection domain)
 
-type ApiUser = PrefixKeys<User, "api">
--- Resolves to: { api_active: bool, api_id: int, api_name: str, api_secret_token: str }
-
--- 5. Filtering by Field Value Type via first-class type equality (==):
-type FilterByType = \T, TargetType -> {
-    let matched_keys = keyof T |> Array::filter(\k -> type<T.(k)> == type<TargetType>)
-    type<{
-        [K in matched_keys]: T.(K)
-    }>
-}
-
-type StringFields = FilterByType<User, str>
--- Resolves to: { name: str, secret_token: str }
-
--- 6. Pattern Matching over Field Types:
-type FlexiblePatch = \T -> type<{
-    [K in keyof T]: match type<T.(K)> {
-        type<bool> -> bool,
-        _          -> ?T.(K),
-    }
+type EventHandlerTable = \T, R -> type<{
+    [K in keyof T]: fn(T.(K)) -> R
 }>
+type UiHandlerTable = EventHandlerTable<UiEvent, ()>
+-- { Click: fn({ x: int, y: int }) -> (), Focus: fn(()) -> (), Hover: fn((int, int)) -> () }
 
-type UserPatch = FlexiblePatch<User>
--- Resolves to: { active: bool, id: ?int, name: ?str, secret_token: ?str }
+-- 3. Tuples:
+type Pair = (int, str)
+meta let PAIR_KEYS: []int = keyof Pair         -- [0, 1]
+type First = Pair.0                            -- int
+type Second = Pair.(1)                         -- str
 
-let patch: UserPatch = .{ active: true, id: Some(1), name: None, secret_token: None }
+-- Canonical Tuple Reversal via array pipeline:
+halt type ReverseTuple = \T -> {
+    let rev_indices = keyof T |> Array::reverse
+    type<(
+        [I in rev_indices]: T.(I)
+    )>
+}
+type ReversedPair = ReverseTuple<Pair>         -- (str, int)
 ```
 
-### 10.5 Static Parameter Sorts & Adaptation Rules (`\param: Sort`)
+### 10.5 Structural Type Pattern Matching (`match type<T>`)
+
+Type functions deconstruct types using standard `match` over quoted type expressions `type<T>` without dedicated macro dialects:
+
+```ebnf
+TypeMatchExpr    ::= "match" "type" "<" TypeExpression ">" "{" { TypeMatchArm } "}"
+TypeMatchArm     ::= TypePattern [ "if" Expression ] "->" Expression
+TypePattern      ::= "type" "<" TypePatternInner ">" | "_"
+TypePatternInner ::= RigidNominalPattern | TuplePattern | RecordPattern
+                   | ArrayPattern | MapPattern | PrimitivePattern | Wildcard | "let" PascalCase
+```
+
+1. **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `type<P>` introduces an immutable type variable scoped strictly to the arm's guard and RHS expression. `U` MUST be `PascalCase` (`E0101`).
+2. **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0309`). Multi-position equality is asserted via explicit guards (`if type<A> == type<B>`).
+3. **Rigid Head Invariant**: The outermost constructor of a type pattern must be a rigid, known nominal constructor (e.g. `Option<let U>`). Binding the type constructor itself as a variable pattern (`(let M)<let U>`) is statically rejected (`E0306: UnconstrainedHigherOrderPatternError`).
+
+```ril
+-- 1. Deep Recursive Unwrapping of Container / Fallible Types:
+halt type UnwrapAll = \T -> match type<T> {
+    type<Result<let OkVal, let _>> -> UnwrapAll<OkVal>,
+    type<Option<let SomeVal>>      -> UnwrapAll<SomeVal>,
+    _                              -> type<T>,
+}
+
+-- 2. Element Extraction from Collections:
+halt type ElementOf = \T -> match type<T> {
+    type<[]let E>        -> type<E>,
+    type<Set<let E>>     -> type<E>,
+    type<[let _: let V]> -> type<V>,
+    _                    -> type<never>,
+}
+
+-- 3. Tuple Destructuring:
+halt type DeconstructTuple = \T -> match type<T> {
+    type<(let Head, ..let Tail)> -> type<{ head: Head, tail: Tail }>,
+    _                            -> type<never>,
+}
+
+type Nested = Option<Result<int, str>>
+type Unwrapped = UnwrapAll<Nested>             -- int
+type Elem = ElementOf<[]str>                   -- str
+type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) }
+```
+
+### 10.6 Static Parameter Sorts & Adaptation Rules (`\param: Sort`)
 
 Type functions accept four parameter sorts:
 
 1. **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
 2. **Const Values (`\param: ValueType`)**: Accepts compile-time known constants (literals, `meta let`, statically foldable expressions). Passing runtime variables raises `E0810`.
-3. **Bounded & Structural Types (`\T: { id: int, ..R }`, `\K: keyof T`)**: Enforces structural row subtyping and key inclusion.
+3. **Bounded & Structural Types (`\T: { id: int, ..R }`, `\K: keyof T`)**: Enforces structural row subtyping and coordinate key inclusion.
 4. **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
 5. **Default Sort Arguments**: Type function parameters support default expressions conforming to their sort: `\T = u8`, `\cap: int = 1024`. Default arguments follow the Telescopic scoping and trailing rules (§3.11).
 
-**Call-Site Interpretation**: In `TypeFunc<Arg1, Arg2>`, type parameter positions parse as `TypeExpression`; const value positions parse as compile-time expressions.
-
 ```ril
-type WirePacket<version: int>(bytes)
-
-let v1_packet: WirePacket<1> = WirePacket(b"\x01payload")
-let v2_packet: WirePacket<2> = WirePacket(b"\x02payload_extended")
-
 type SchemaV1 = { id: int, name: str }
 type SchemaV2 = { id: int, name: str, email: str }
 
@@ -3256,77 +3281,85 @@ type VersionedSchema = \version: int -> match version {
     _ -> type<never>,
 }
 
-type ActivePayload = VersionedSchema<2> -- Resolves to SchemaV2
-let user_v2: ActivePayload = .{ id: 10, name: "Alice", email: "alice@test.com" }
+type ActivePayload = VersionedSchema<2>        -- SchemaV2
 
--- Structural constraint & keyof bound adaptation:
-type PickField = \T: { ..R }, K: keyof T -> T.(K)
-type UserName = PickField<SchemaV1, "name"> -- Resolves to str
--- type BadField = PickField<SchemaV1, "missing"> -- Error [E0301]: "missing" not in keyof SchemaV1
+type PickField = \T: { ..R }, K: keyof T -> type<T.(K)>
+type UserName = PickField<SchemaV1, "name">    -- str
 
--- Higher-kinded constructor adaptation:
-type Wrapper = \M: Type -> Type, T -> M<T>
-type OptInt = Wrapper<Option, int>      -- Resolves to Option<int>
--- type BadKind = Wrapper<int, int>     -- Error [E0306]: KindMismatchError, expected Type -> Type, found int
-
--- Default arguments in pure type functions:
-halt type PaddedRecord = \T: { ..R }, align: int = 8 -> type<{
-    alignment: int,
-    ..T,
-}>
-type DefaultPadded = PaddedRecord<SchemaV1>      -- OK: align defaults to 8
-type CustomPadded = PaddedRecord<SchemaV1, 16>   -- OK: explicit override align = 16
+type Wrapper = \M: Type -> Type, T -> type<M<T>>
+type OptInt = Wrapper<Option, int>             -- Option<int>
 ```
 
-### 10.6 Compile-Time Execution (`meta let`, `meta fn`) & Callable Introspection
+### 10.7 Compile-Time Execution (`meta let`, `meta fn`) & Layout Cooperation
 
-`meta let` and `meta fn` execute strictly during compilation under deterministic totality budgets. Built-in reflection predicates (`is_pure`, `has_effect`, `has_capability`) inspect callables for purity, effects, and capabilities. Compile-time assertions reuse the standard prelude intrinsic `assert`, failing compilation with `E0830` (`MetaAssertionFailedError`) when breached. Conditional specialization reuses standard `if` branching over meta conditions without dedicated dialects.
+`meta let` and `meta fn` execute strictly during compilation under deterministic totality budgets. Values produced by `meta` evaluation degrade monotonically into immutable constants and inlined immediates ($\text{Meta} \succ \text{Runtime}$).
 
-**Phase Distinction & Cross-Stage Relaxation**:
-Evaluation is divided into compile-time (meta stage) and runtime:
-1. **Strict Compile-Time Closedness**: A `meta` context (`meta let`, `meta fn`) can only depend on and consume entities known at compile time (`meta` bindings, pure `meta fn` invocations, compile-time type values, and literals). Attempting to pass dynamic runtime values into a `meta` context or calling runtime functions from `meta` code is statically rejected (`E0810: CallFamilyViolationError`).
-2. **Unidirectional Cross-Stage Relaxation**: Conversely, non-meta runtime contexts (`let`, `fn`) can freely consume `meta` bindings without restriction. Values produced by `meta` evaluation degrade monotonically into immutable constants and inlined immediates, representing a safe information-flow relaxation ($\text{Meta} \succ \text{Runtime}$).
+**Cooperation Pattern**: `meta fn` computes hardware alignments, pad bytes, and metrics; type functions ingest those values to synthesize specialized data structures.
 
 ```ril
--- 1. Meta Bindings & Compile-Time Functions:
-meta let MAX_BUFFER_SIZE = 1024 * 64
-meta fn compute_hash_mask(bits: int) -> int {
-    (1 << bits) - 1
-}
-meta let CACHE_MASK = compute_hash_mask(8) -- Evaluated at compile-time: 255
-
--- Non-meta runtime function freely consumes meta binding (relaxation):
-fn get_cache_slot(key: int) -> int {
-    key & CACHE_MASK                       -- OK: CACHE_MASK is an inlined compile-time constant
+-- 1. Pure compile-time layout calculations (meta fn: returns values only):
+meta fn align_to(offset: int, alignment: int) -> int {
+    (offset + alignment - 1) & !(alignment - 1)
 }
 
--- 2. Callable Reflection Predicates:
-fn pure_add(a: int, b: int) -> int { a + b }
-fn effectful_log(s: str) -> () @Console { Console::print(s) }
-fn mutating_sort(mut arr: []int) &mut { arr !> Array::sort() }
+meta fn compute_padding(offset: int, alignment: int) -> int {
+    align_to(offset, alignment) - offset
+}
 
--- 'is_pure' asserts zero effects and zero parameter/external mutation:
-meta let _ = assert(is_pure(pure_add), "pure_add must be mathematically pure")     -- OK
-meta let _ = assert(!is_pure(effectful_log), "effectful_log is not pure")         -- OK
-meta let _ = assert(!is_pure(mutating_sort), "mutating_sort is not pure")         -- OK
-
--- 'has_effect' and 'has_capability' inspect specific effects and capabilities:
-meta let _ = assert(has_effect(effectful_log, @Console), "has @Console effect")   -- OK
-meta let _ = assert(has_capability(mutating_sort, &mut), "requires &mut")        -- OK
-
--- Failed compile-time assertion halts compilation:
--- meta let _ = assert(is_pure(effectful_log), "audit check")
--- Error [E0830]: MetaAssertionFailedError: audit check (carries unhandled effect @Console)
-
--- 3. Zero-Dialect Static Specialization via Standard 'if':
-fn dispatch_computation<F, T, R>(f: F, arg: T) -> R {
-    meta let pure = is_pure(type<F>)
-    if pure {
-        f(arg)                         -- Compiler specializes: thread-safe, pure fast path
-    } else {
-        f(arg)                         -- Sequential, side-effect-aware path
+-- Parametric inspection: strictly no 'any'
+meta fn primitive_size<T>(_t: type<T>) -> int {
+    match type<T> {
+        type<u8> | type<i8> | type<bool>   -> 1,
+        type<u16> | type<i16>              -> 2,
+        type<u32> | type<i32> | type<f32>  -> 4,
+        type<u64> | type<i64> | type<f64>  -> 8,
+        type<[]_>                          -> 16, -- Managed slice header
+        _                                  -> 8,  -- Managed object reference
     }
 }
+
+-- 2. Specialized packet layout generator:
+halt type AlignedPacket = \HeaderType, PayloadType, align_boundary: int = 8 -> {
+    meta let header_bytes = primitive_size(type<HeaderType>)
+    meta let pad_bytes = compute_padding(header_bytes, align_boundary)
+    
+    if pad_bytes == 0 {
+        type<{
+            header: HeaderType,
+            payload: PayloadType,
+        }>
+    } else {
+        type<{
+            header: HeaderType,
+            _pad: [pad_bytes]u8,
+            payload: PayloadType,
+        }>
+    }
+}
+
+-- 3. Storage hierarchy specialization:
+halt type OptimizedStorage = \capacity_bytes: int -> {
+    meta let aligned_cap = align_to(capacity_bytes, 16)
+    if aligned_cap <= 128 {
+        type<{
+            inline_buf: [aligned_cap]u8,
+            len: int,
+        }>
+    } else {
+        type<{
+            heap_ptr: int,
+            capacity: int,
+            len: int,
+        }>
+    }
+}
+
+type FastPacket = AlignedPacket<u32, u64, 8>   -- { _pad: [4]u8, header: u32, payload: u64 }
+type SmallBuffer = OptimizedStorage<60>         -- { inline_buf: [64]u8, len: int }
+type LargeBuffer = OptimizedStorage<1024>       -- { capacity: int, heap_ptr: int, len: int }
+
+-- Static assertions:
+meta let _ = assert(align_to(4, 8) == 8, "alignment calculation verified")
 ```
 
 ---
@@ -3536,6 +3569,9 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0333`** | `FieldComputationAnnotationError` | Attaching '@Eff' or '&Cap' directly to a record field or tuple component |
 | **`E0334`** | `GenericComputationConstraintError` | Constraining a generic parameter with an effect ('<T: @Io>') or capability ('<T: &mut>') |
 | **`E0335`** | `TypeFunctionComputationAnnotationError` | Declaring '@Eff' or '&Cap' on a pure compile-time type function ('type', 'halt type') |
+| **`E0341`** | `InvalidRecordKeySortError` | Supplying integer keys to mapped record comprehension '{ [K in Expr]: ... }' (requires '[]str') |
+| **`E0342`** | `InvalidTupleKeySortError` | Supplying string keys to mapped tuple comprehension '( [I in Expr]: ... )' (requires '[]int') |
+| **`E0343`** | `SingleElementTupleProhibitedError` | Mapped tuple comprehension evaluated over an index array of length 1 (Ril strictly has no 1-tuples) |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0402`** | `ValueTypePinnedMutError` | Attempting to declare a value type as pinned mutable handle `let mut` |
 | **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
@@ -3579,6 +3615,8 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0720`** | `UnusedFallibleResultError` | Discarding fallible `Result` without inspection |
 | **`E0810`** | `CallFamilyViolationError` | Crossing disjoint runtime `fn` and compile-time `meta`/`type` call families |
 | **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting compiler evaluation step budget in meta/type functions |
+| **`E0812`** | `MetaTypeReturnProhibitedError` | 'meta fn' attempting to return 'type<...>' or sort 'Type'; type construction is monopolized by type functions |
+| **`E0813`** | `MetaComputationAnnotationError` | Declaring algebraic effects ('@Eff') or state capabilities ('&Cap') on a 'meta fn' signature |
 | **`E0820`** | `TotalityViolationError` | Totality certification failed in `halt fn` (unbounded recursion/loop) |
 | **`E0830`** | `MetaAssertionFailedError` | Compile-time `assert` condition evaluated to `false` in `meta` context |
 | **`E0901`** | `BodyInDeclModuleError` | Supplying an implementation body, variable initializer, or mutable binding in a '.d.ril' declaration unit |

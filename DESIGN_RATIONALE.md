@@ -678,6 +678,47 @@ To preserve soundness, Ril enforces the **Canonical Lexicographical Key Ordering
 #### 5. Zero-Cost Native Lowering (CTFE Pipeline)
 During compilation, all higher-order pipelines (`Array::filter`, `Array::map`, `Record::from_fields`) are reduced by the deterministic compile-time evaluator. The resulting record schemas are lower-level lowered into contiguous machine structs with statically fixed offsets, 8-byte alignment, and GC pointer masks. At runtime, machine code executes zero dynamic string comparisons, zero dictionary queries, and retains zero type-level metadata, achieving 100% zero-cost abstraction.
 
+#### 6. The Monopoly of Type Return Privilege: Preventing Dependent Type Collapse
+In Ril's Many-Sorted System $F_\omega$, types may depend on compile-time constant terms (Const Generics $\text{Sort} \to \text{Type}$, such as `[1024]u8` or `Buffer<Cap: int>`). However, **terms cannot evaluate to types** ($\text{Term} \not\to \text{Type}$).
+
+`type<...>` is the first-class type quotation operator producing a type shape in Domain I ($\mathcal{T}$). The privilege of returning `type<...>` MUST be strictly monopolized by type declarations and pure type functions (`type`, `halt type`), and strictly prohibited in value-domain compile-time functions (`meta fn`, `E0812`):
+1. **Preventing Dependent Type Collapse**: If `meta fn` could return `type<...>` (e.g. `meta fn make_type() -> type<int>`), value-level computations would possess generative authority over types. This would collapse Many-Sorted System $F_\omega$ into full Dependent Type Theory ($\lambda\Pi$), forcing the compiler to perform arbitrary term-level $\beta$-reduction during type checking and destroying decidable, modular phase separation.
+2. **Separation of Evaluation Engines**: Type functions evaluate inside the compiler's **Symbolic Type Elaboration Engine** via syntactic substitution and AST normalization. `meta fn` evaluates inside the **CTFE Bytecode Interpreter**. Monopolizing type creation inside type functions ensures that type elaboration does not depend on bytecode interpretation to discover type shapes.
+3. **Read-Only Reflection Tokens**: While `meta fn` cannot return `type<...>`, it can freely consume `type<T>` as an input argument (e.g., `byte_size(type<T>) -> int`, `is_pure(type<F>) -> bool`). In this role, `type<T>` is an inert, non-generative reflection token projecting properties of shapes into the value domain ($\mathcal{T} \to \mathcal{V}$), posing zero risk of type generation leakage.
+
+#### 7. The Grand Unification of `keyof`: Category-Theoretic Limits and Colimits
+Ril eliminates ad-hoc introspection operators (`variantof`, `tuple_len`) by recognizing that in category theory, both limits (records, tuples) and colimits (sum types) are diagrams indexed by a discrete small category (index set) $I$:
+$$D : I \to \mathcal{C}, \quad k \mapsto T_k$$
+Categorically, `keyof T` extracts the index category $\text{Ob}(I) = \text{dom}(D)$ *prior to* limit or colimit formation:
+- **Records (Finite Labeled Products)**: $\lim D = \prod_{k \in I} T_k$ where $I \subset \text{String}$. `keyof T` evaluates to `[]str` sorted in canonical UTF-8 byte order.
+- **Sum Types (Finite Labeled Coproducts)**: $\text{colim } D = \coprod_{k \in I} T_k$ where $I \subset \text{String}$. `keyof T` evaluates to `[]str` sorted in canonical UTF-8 byte order.
+- **Tuples (Finite Ordered Products)**: $\lim D = \prod_{i \in [n]} T_i$ where $[n] = \{0, 1, \dots, n-1\} \subset \mathbb{N}_0$. `keyof T` evaluates to `[]int` in strictly monotonic ascending order $[0, 1, \dots, n-1]$.
+
+##### Universal Diagram Application via `T.(K)` and `.Payload` Elimination
+At the type level, `T.(K)` evaluates the diagram application $D(K)$ without grammatical suffixes (`.Payload`):
+- For Records: $D(K)$ is the field type at key $K$.
+- For Tuples: $D(K)$ is the element type at index $K$.
+- For Sum Types: $D(K)$ is the variant payload type at constructor tag $K$. Under Constructor-Tuple Equivalence, multi-field payloads are product tuples $(T_1, \dots, T_n)$, single-field payloads are scalars $T_1$, and nullary tags (like `Focus` in `UiEvent` or `None` in `Option<T>`) project to unit `()`. Categorically, a constant constructor is an arrow from the terminal object $c : \mathbf{1} \to S$, NOT the initial object $\mathbf{0}$ (`never`). Treating the injection domain as `()` guarantees that generic eliminators `fn(T.(K)) -> R` remain universally callable, preventing uninhabited handler records.
+
+##### Symmetrical Mapped Comprehensions
+By the universal property of coproducts, morphisms out of a coproduct into $R$ form a product:
+$$\hom_{\mathcal{C}}\left(\coprod_{k \in I} T_k, \, R\right) \cong \prod_{k \in I} \hom_{\mathcal{C}}(T_k, \, R)$$
+Therefore, the mapped comprehension `{ [K in keyof T]: fn(T.(K)) -> R }` is mathematically universal, operating identically over Records and Sum Types. For Tuples, `( [I in keyof T]: T.(I) )` operates over integer keys. Mapped tuple comprehensions evaluated over index arrays of length 1 are rejected (`E0343`), preserving the invariant that Ril strictly has no 1-tuples.
+
+##### Preservation of Leibniz Equivalence
+Because both string keys and integer indices are canonically ordered (UTF-8 byte order and monotonic ordinal order), compile-time functions folding or mapping over `keyof T` are guaranteed referentially transparent:
+$$\forall T_1, T_2. \quad T_1 \equiv T_2 \implies \text{keyof } T_1 \equiv \text{keyof } T_2 \land T_1.(K) \equiv T_2.(K)$$
+
+#### 8. First-Class Structural Type Pattern Matching vs. Ad-Hoc `infer` Dialects
+In languages like TypeScript, deconstructing constituent types requires ad-hoc secondary keywords (`T extends Promise<infer U> ? U : T`). In Ril, because `type<...>` is a first-class quotation and type functions possess the full computational power of pure pattern matching, structural type deconstruction is achieved directly through native `match type<T>`:
+- **Pattern Bindings (`let U`)**: Inside `type<Pattern>`, `let U` explicitly designates a scoped, fresh type variable binding. Bare identifiers in scope match by type equality, eliminating variable capture ambiguities.
+- **Linearity Invariant (`E0309`)**: To ensure deterministic, unambiguous matching, type patterns must be linear (each `let U` appears at most once). Multi-position equality is explicitly validated via pattern guards (`if type<A> == type<B>`).
+- **Rigid Head Invariant (`E0306`)**: Huet's theorem proves that unconstrained higher-order pattern unification is undecidable. To ensure deterministic resolution, all type patterns must have a rigid, statically known nominal constructor head (e.g. `Option<let U>`), prohibiting variable constructor heads like `(let M)<let U>`.
+
+#### 9. Pre-Effect Dead-Branch Pruning & Zero Spurious Effect Pollution
+In generic runtime functions guarded by compile-time predicates (`if is_pure(type<F>)`), naive type checking would force the enclosing function to declare all latent effects present in either branch, polluting pure callers with spurious effect obligations.
+Ril resolves this via **Pre-Effect Dead-Branch Pruning**: during generic monomorphization, static `meta` guards are resolved and unselected branches are excised from the AST *prior to* latent effect row calculation ($\mathbf{Eff}$). When instantiated with a pure callable `f`, the effectful branch is completely erased, resulting in $\mathbf{Eff}_{\text{specialized}} \equiv \emptyset$ and requiring zero effect handling from callers.
+
 ### 4.16 Default Generic Arguments & Const Generics vs. Ad-Hoc Literal Types
 
 #### 1. The Asymmetry of Default Generic Parameters: Types vs. Functions
@@ -748,7 +789,7 @@ A fundamental architectural principle in Ril is the **Asymmetric Scope of Influe
 
 ### 5.4 Domain Isolation Invariants: Preventing Cross-Domain Laundering (`E0330`–`E0335`, `E0613`)
 
-To prevent domain blurring, Ril enforces seven static isolation barriers:
+To prevent domain blurring, Ril enforces nine static isolation barriers:
 1. **`E0330: BareEffectTypeAliasError`**: Rejecting `type E = @Io`. Effects are stack protocols, not data shapes; they must be declared with `eff`.
 2. **`E0331: BareCapabilityTypeAliasError`**: Rejecting `type C = &mut`. Capabilities are operational permissions, not data values.
 3. **`E0332: VariantComputationAnnotationError`**: Rejecting `type S = Init @Async`. Sum variants are passive data constructors; computational behaviors must be typed as callable payloads.
@@ -756,6 +797,8 @@ To prevent domain blurring, Ril enforces seven static isolation barriers:
 5. **`E0334: GenericComputationConstraintError`**: Rejecting `<T: @Io>` and `<T: &mut>`. Generics parameterize types or const values; higher-order functions forward effects and capabilities automatically.
 6. **`E0335: TypeFunctionComputationAnnotationError`**: Rejecting pure type functions with `@Eff` or `&Cap`. Type functions evaluate strictly in the compile-time symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
 7. **`E0613: ValueEffectAnnotationError`**: Rejecting effect annotations on value bindings (`let x: int @Io = ...`). Effects reside exclusively on callable arrows.
+8. **`E0812: MetaTypeReturnProhibitedError`**: Rejecting `meta fn` returning `type<...>` or sort `Type`. Value-domain terms cannot construct type-domain shapes; type generation is strictly monopolized by type declarations and type functions.
+9. **`E0813: MetaComputationAnnotationError`**: Rejecting `@Eff` or `&Cap` annotations on `meta fn` signatures. All compile-time functions evaluate in the axiomatically pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
 
 ### 5.5 Write Path Counting: Deterministic Escape Analysis without Borrow Checkers
 
