@@ -491,3 +491,47 @@ When an entity carries active capabilities (`&mut`, `&^mut`), stateful closures,
 - **Unfreezable**: Active capabilities and closures are executable effect vectors, not passive data values. They cannot be stripped of their mutating essence into static inert data.
 
 Therefore, `E0530: IllegalCapabilityCloneImmutError` reflects this dual impossibility: the target entity is **neither clonable nor freezable into `Immut<T>`**. Calling either `clone()` or `clone_immut()` on active capabilities is statically rejected.
+
+### 4.12 Flow-Sensitive Type Narrowing: In-Place Refinement vs. Binding Ceremony
+
+#### 1. The Cognitive Friction of Redundant Variable Rebinding
+In traditional statically-typed languages lacking flow-sensitive type refinement (such as Rust), inspecting optional or sum-type values requires continuous variable shadowing or dummy identifiers:
+```rust
+// Rust: Continuous shadowing ceremony
+let opt: Option<User> = fetch_user();
+let opt = match opt {
+    Some(user) => user,
+    None => return,
+};
+```
+When an algorithm merely needs to assert that an existing variable satisfies an invariant and continue execution, forcing the developer to invent distinct variable names or shadow bindings clutters the lexical scope and creates unnecessary cognitive friction.
+
+#### 2. Reconciling with the Non-Vacuous Binding Invariant (`E0309`)
+Ril establishes the **Universal Non-Vacuous Binding Invariant (`E0309`)**, strictly prohibiting `let` patterns that bind zero variables (such as `let None = opt else { ... }` or `let Ok() = res else { ... }`). A declaration statement exists definitionally to *introduce new bindings* into scope; using `let` with zero variables degrades declaration syntax into an ad-hoc conditional branch.
+
+Flow-sensitive type narrowing completes the architectural symmetry:
+- **`match`**: Used for multi-way structural decomposition, introducing new pattern variables per arm.
+- **`let ... else`**: Used for linear early-exit extraction, mandating $\ge 1$ new bound variables.
+- **Narrowing (`if` / `while`)**: Used for in-place refinement of *existing* identifiers, introducing 0 new variables.
+
+By offloading in-place type refinement to flow typing, developers naturally write `if opt == None { return }` or `if res is Ok { ... }` without ever being tempted to construct vacuous bindings.
+
+#### 3. Soundness via the Three-Tier Mutability Architecture & Latent Capability Tracking
+In dynamic or permissive languages (e.g. TypeScript), flow typing is notoriously vulnerable to aliasing bugs: an object property is checked for non-nullness, but an intervening function call mutates the property behind the compiler's back. Kotlin partially mitigates this by prohibiting smart casts on `var` properties, but still faces subtle concurrency and closure capture hazards.
+
+Ril achieves **100% mathematical soundness** without whole-program alias analysis by resting flow typing directly on its Three-Tier Mutability Architecture and State Capability system:
+1. **Immutable Handles (`let`)**: Guarantee deep and permanent immutability. Narrowing on `let` is monotonic throughout its dominance region, completely impervious to external function calls or background tasks.
+2. **Pinned Mutable Handles (`let mut`)**: Handle pointer addresses and constructor discriminants are permanently pinned (`E0502`). Variant identity cannot change; only mutable fields require invalidation upon direct writes.
+3. **Reassignable Variables (`var`)**: Direct assignments immediately invalidate prior refinements (`E0310`).
+4. **Transitive Latent Havoc**: If an external function call, higher-order callback (such as `list !> Array::for_each`), or active effect handler transitively holds mutable capability over a `var` binding ($\&\{\text{mut } v\}$), the compiler conservatively Havocs all refinements prefixed by $v$.
+5. **Anti-Aliasing Shield (`E0533`)**: If a `var` binding is aliased via a live view (`let view`) or captured in an escaping mutable closure, the compiler statically forbids flow narrowing, requiring developers to freeze the value into an immutable `let` handle before branching.
+
+#### 4. Bounded Complexity: $D_{\max} = 3$ Path Truncation & $K = 3$ Widening Budget
+Unchecked path narrowing on recursive structures (e.g. `node.next.0.next.0...`) and deep fixpoint iterations across nested loops can trigger state space explosion, turning type checking into an exponential constraint-satisfaction problem.
+
+Ril bounds this complexity with two hard compiler invariants:
+- **Path Depth Bound ($D_{\max} = 3$)**: Paths longer than 3 segments (e.g. `a.b.c.d`) evaluate normally at runtime, but the compiler does not track their refinement in $\Gamma$. Deep structures must be anchored to local `let` bindings.
+- **Widening Budget ($K = 3$)**: In loop fixpoint analysis, if a variable's flow type does not converge within 3 iterations, it is forcibly widened to its root declared type $T_{\text{root}}$.
+
+This guarantees that type narrowing operates in strictly linear time $O(1)$ per branch, ensuring instantaneous compiler diagnostics and sub-millisecond IDE responsiveness.
+

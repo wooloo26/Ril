@@ -1481,6 +1481,181 @@ match unit_res {
 }
 ```
 
+### 6.8 Flow-Sensitive Type Narrowing
+
+Flow-sensitive type narrowing refines the static type of existing bindings in-place across conditional branches, guard clauses, and loops without introducing new variable bindings.
+
+```ebnf
+NarrowingTarget    ::= Identifier | NarrowingFieldPath
+NarrowingFieldPath ::= Identifier "." Identifier [ "." Identifier ]
+NarrowingOp        ::= "is" | "==" | "!="
+NarrowingPredicate ::= NarrowingTarget "is" QualifiedName
+                     | NarrowingTarget "!=" "None"
+                     | NarrowingTarget "==" "None"
+                     | NarrowingTarget "==" Literal
+                     | NarrowingTarget "!=" Literal
+NarrowingExpr      ::= NarrowingPredicate
+                     | "!" NarrowingExpr
+                     | NarrowingExpr "&&" Expression
+                     | NarrowingExpr "||" Expression
+```
+
+#### Normative Semantic Rules & Invariants
+
+1. **Environment Splitting**: Predicate $P$ splits context $\Gamma$ into true/false environments: $\Gamma \vdash P \rightsquigarrow (\Gamma_t, \Gamma_f)$.
+2. **Division of Labor**:
+   - `match`: Decomposes structures into new variables; exhaustiveness required.
+   - `let ... else`: Extracts $\ge 1$ new bindings (`E0309`); `else` must diverge (`never`).
+   - Narrowing (`if`/`while`): In-place refinement of existing bindings; binds 0 new variables.
+3. **Non-Binding Predicates**: Pattern variables in `x is Variant(p)` are scoped strictly to trailing guards (`if guard`) and cannot escape to branch blocks (`E0301`).
+4. **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ (§3.5.1):
+   - $n = 0$: No payload; projection raises `E0301`.
+   - $n = 1$: Projected via `.0` (`p.0`). `?T != None` directly unboxes to `T`.
+   - $n \ge 2$: Projected via positional tuple indices `.0`, `.1`, ..., `.(n-1)`.
+   - Record: Projected via declared field names (`x.field`).
+5. **Stability & Invalidation**:
+   - `let`: Permanently narrowed across dominance region.
+   - `var`: Reassignment (`=`, `+=`, `!>`) invalidates narrowing (`E0310`).
+   - `let mut`: Tag identity is pinned (`E0502`); `mut` fields invalidate upon write.
+6. **Transitive Latent Havoc**: Invoking a callable transitively carrying mutable capability $\&\{\text{mut } v\}$ (via callee, arguments, or active effect handlers) resets $v$ to $T_{\text{root}}$.
+7. **Anti-Aliasing (`E0533`)**: Narrowing a `var` aliased by a live view (`let view`) or captured in a mutable closure (`&{mut x}`) is rejected (`E0533`). Copy to `let` to narrow.
+8. **Generic Confinement**:
+   - Testing bare type parameters (`x is T`) is rejected (`E0301`).
+   - GADT equations on $x$ are local to $x$ and do not rebind $T$ elsewhere in scope.
+   - Mutable fields preserve container invariance (§3.8).
+9. **Dead Paths & Phase Ordering**:
+   - Divergent branches (`never`) are pruned from joins ($\Gamma \sqcup \bot = \Gamma$).
+   - Provably false predicates are rejected under `E0311`.
+   - Dead-path pruning precedes Definite Mutation analysis (`E0527`); writes in dead paths do not count as reachable mutations.
+10. **Bounded Analysis**:
+    - **Path Bound**: Field paths are tracked up to depth 3 (`a.b.c`); deeper paths default to $T_{\text{root}}$.
+    - **Loop Widening**: Unconverged loop variables widen to $T_{\text{root}}$ after $K = 3$ iterations.
+
+```ril
+-- 1. In-place optional unwrapping (?T -> T):
+type User = { id: int, name: str }
+
+fn process_user(u: ?User) -> str {
+    if u != None {
+        u.name                                 -- OK: 'u' narrowed to User; direct field access
+    } else {
+        "Anonymous"
+    }
+}
+
+-- 2. Guard clause with early divergent return:
+fn fetch_id(u: ?User) -> int {
+    if u == None {
+        return -1                              -- Diverges (never); pruned from join
+    }
+    u.id                                       -- OK: sequential flow inherits User
+}
+
+-- 3. Sum type variant discrimination via 'is' and payload projection:
+type Geometry {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+
+fn compute_area(g: Geometry) -> f64 {
+    if g is Geometry::Circle {
+        3.14159 * g.0 * g.0                    -- OK: n = 1 scalar payload projected via .0
+    } else if g is Geometry::Rect {
+        g.0 * g.1                              -- OK: n = 2 tuple payload projected via .0, .1
+    } else {
+        0.0                                    -- OK: Point (n = 0) has no payload
+    }
+}
+
+-- 4. Short-circuit conjunction with immutable path chaining (depth <= 3):
+type Account = { id: int, details: ?{ balance: int } }
+
+fn check_solvent(acc: Account) -> bool {
+    (acc.details != None) && (acc.details.balance > 0) -- OK: acc.details narrowed in right operand
+}
+
+-- 5. Loop body narrowing and post-loop refinement:
+fn drain_cursor(var cursor: ?int) -> int {
+    var total = 0
+    while cursor != None {
+        total += cursor                        -- OK: cursor narrowed to int in loop body
+        cursor = None                          -- Invalidation: reset to ?int
+    }
+    assert(cursor == None)                     -- OK: post-loop inherits cond == false (None)
+    total
+}
+
+-- 6. Reassignment invalidation (E0310):
+fn test_invalidation() {
+    var opt: ?int = Some(42)
+    if opt != None {
+        let _ = opt + 1                        -- OK: opt is int
+        opt = None                             -- Reassignment: refinement invalidated
+        -- let bad = opt + 2                   -- Error [E0310]: variable 'opt' was narrowed to 'int', but refinement was invalidated by reassignment; current flow type is '?int'
+    }
+}
+
+-- 7. Contradictory narrowing rejection (E0311):
+fn test_contradiction(g: Geometry) {
+    if g is Geometry::Circle {
+        -- if g is Geometry::Rect {            -- Error [E0311]: condition 'g is Geometry::Rect' is statically unsatisfiable; target is already narrowed to 'Geometry::Circle'
+        --     println("unreachable")
+        -- }
+    }
+}
+
+-- 8. Aliased narrowing hazard rejection (E0533):
+fn test_aliased_hazard() {
+    var raw: ?int = Some(10)
+    let view v = raw                           -- Live view aliases 'raw'
+    -- if raw != None {                        -- Error [E0533]: cannot narrow mutable variable 'raw' because it is aliased by live view 'v'; bind to immutable 'let' before branching
+    --     println(raw + 1)
+    -- }
+}
+
+-- 9. Pattern bindings in 'is' cannot escape guard clause:
+fn test_non_binding_predicate(g: Geometry) {
+    if g is Geometry::Circle(r) if r > 5.0 {
+        let radius = g.0                       -- OK: payload access via .0
+        -- let escaped = r                     -- Error [E0301]: unresolved identifier 'r'; pattern bindings in 'is' are strictly scoped to guard clause
+    }
+}
+
+-- 10. Transitive Latent Havoc via mutating call:
+fn test_latent_havoc() {
+    var count: ?int = Some(10)
+    if count != None {
+        let mut step = \-> &{mut count} { count = None }
+        step()                                 -- Mutating call invalidates 'count'
+        -- let bad_use = count + 1             -- Error [E0310]: variable 'count' was narrowed to 'int', but refinement was invalidated by mutating call 'step()'; current flow type is '?int'
+    }
+}
+
+-- 11. Generic confinement: bare type parameter rejected:
+fn test_generic_confinement<T>(x: Geometry) {
+    -- if x is T {                             -- Error [E0301]: cannot test unconstrained generic type parameter 'T' in narrowing predicate
+    --     println("invalid")
+    -- }
+}
+
+-- 12. Dead-path mutation phase ordering:
+fn test_dead_write_phase_ordering() {
+    -- var unused: ?int = Some(10)            -- Error [E0527]: variable 'unused' declared 'var' is never modified along reachable paths
+    -- if unused == None {
+    --     unused = Some(20)                  -- Write in statically unreachable branch does not satisfy Definite Mutation Invariant
+    -- }
+}
+
+-- 13. Path depth bound (depth <= 3 tracked; depth > 3 requires local 'let' anchor):
+fn test_bounded_path_depth(root: { a: ?{ b: ?{ c: ?{ d: int } } } }) {
+    if (root.a != None) && (root.a.b != None) && (root.a.b.c != None) {
+        let c_node = root.a.b.c                -- OK: path depth 3 (root.a.b.c) tracked
+        let d_val = c_node.d                   -- OK: access deeper fields through local anchor
+    }
+}
+```
+
 ---
 
 ## 7. Functions, Closures & Callables
@@ -2871,6 +3046,8 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0306`** | `KindMismatchError` | Mismatched higher-kinded type constructor or sort constraint |
 | **`E0308`** | `OpaqueBoundaryViolationError` | Attempting to unpack, penetrate with `inner()`, or pattern deconstruct an opaque type externally |
 | **`E0309`** | `VacuousBindingError` | 'let' pattern binds zero variables (excluding explicit wildcard discard 'let _ = expr') |
+| **`E0310`** | `InvalidatedNarrowingAccessError` | Accessing identifier whose flow narrowing was invalidated by reassignment or mutation |
+| **`E0311`** | `ContradictoryNarrowingError` | Narrowing predicate is statically unsatisfiable under active flow environment |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0402`** | `ValueTypePinnedMutError` | Attempting to declare a value type as pinned mutable handle `let mut` |
 | **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
@@ -2890,6 +3067,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0530`** | `IllegalCapabilityCloneImmutError` | Target carrying active capabilities or scoped handles is neither clonable nor freezable into `Immut<T>` |
 | **`E0531`** | `ImmutableTargetViewError` | Attempting to create a live view (`let view`) over an immutable binding or non-pinned handle |
 | **`E0532`** | `ReassignableScopedResourceError` | Attempting to declare a scoped resource binding with `var scoped` |
+| **`E0533`** | `AliasedNarrowingHazardError` | Narrowing a `var` binding aliased by a live view or captured in a mutable closure |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Passing live mutable view across concurrent task boundary |
 | **`E0605`** | `InvalidParallelCapabilityError` | Capturing external mutable capabilities in parallel combinator |
 | **`E0607`** | `DerivedProxyEscapeError` | Derived proxy escapes 'derive' recipe via return, assignment, or closure publication |
