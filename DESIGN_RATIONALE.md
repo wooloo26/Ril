@@ -535,7 +535,7 @@ Ril bounds this complexity with two hard compiler invariants:
 
 This guarantees that type narrowing operates in strictly linear time $O(1)$ per branch, ensuring instantaneous compiler diagnostics and sub-millisecond IDE responsiveness.
 
-### 4.12 Dual-Tier 'where' Architecture: Interface Abstraction vs. Implementation Encapsulation
+### 4.13 Dual-Tier 'where' Architecture: Interface Abstraction vs. Implementation Encapsulation
 
 Modern statically typed languages with algebraic effects and fine-grained capability systems face an unavoidable ergonomic challenge: **Signature Bloat**. When higher-order functions declare generics, fallible closures, algebraic effects (`@Fiber + Async`), and explicit mutable capability sets (`&{mut log} &closure`), the signature header expands into an unreadable 5-to-10 line wall of annotations.
 
@@ -591,5 +591,60 @@ To eliminate cross-tier dependency cycles and phase-ordering deadlocks, Ril's ty
 1. **No Downward References (`E0705`)**: Types in `SignatureWhereClause` cannot reference declarations in `BlockWhereClause`.
 2. **Signature Reference Confinement (`E0706`)**: Any type alias used in the outer signature MUST reside in `SignatureWhereClause` or module scope, never in `BlockWhereClause`.
 3. **Stratified Dependency Graph**: The dependency graph $\mathcal{G} = \mathcal{G}_{\text{waist}} \ \vec{\sqcup}\ \mathcal{G}_{\text{block}}$ contains zero bipartite cross-edges from Waist to Block ($E_{\text{waist} \to \text{block}} = \emptyset$). Tarjan's SCC algorithm runs independently per layer, guaranteeing that the combined graph is a strictly stratified DAG with provably zero cross-tier mutual recursion deadlocks.
+
+### 4.14 Ergonomics and Soundness of Shorthand Projection Accessors: Product Types vs. Dynamic Collections
+
+Modern functional pipelines rely heavily on higher-order combinators (`Array::map`, `Array::filter`, `Array::sort_by`). Writing verbose lambda headers (`\x -> x.field`) for simple, single-path property projections introduces unneeded lexical overhead. Ril resolves this via shorthand projection accessors (`\.field`, `\.0`, `\.field?.subfield`, `\?.field`).
+
+#### 1. The Categorical Product Duality: Records and Tuples
+Record types and tuple types are categorical duals under finite product types ($\prod_{i=1}^n T_i$):
+- **Records**: Static finite products with string labels ($\pi_{\text{field}}: R \to T$).
+- **Tuples**: Static finite products with ordinal positions ($\pi_k: (T_0, \dots, T_{n-1}) \to T_k$).
+
+In Ril's core type system, value extraction for both constructs uniformly employs the dot member operator (`val.field`, `val.0`). Extending `AccessorExpr` from `\.field` to `\.0` guarantees mathematical symmetry across all product projections.
+
+Furthermore, tuple accessors are **statically total morphisms**:
+- Tuple arity $n$ is known at compile time.
+- Any out-of-bounds access (`\.2` on `(int, str)`) is statically diagnosed and rejected as `E0301`.
+- Because evaluation never incurs bounds-check branching, runtime dynamic allocation, or panics, the accessor lowers directly to a zero-cost offset load.
+
+#### 2. Safe Navigation Accessor Chaining (`?.`)
+In business domain schemas, optional nesting is pervasive (`?Department`, `?Employee`). In imperative or naive functional styles, extracting a nested property requires verbose null-guarding or chained Option combinators (`\c -> c.dept?.leader?.name`).
+
+By incorporating `?.` into `AccessorExpr`, Ril preserves total function semantics across optional boundaries:
+1. If an intermediate receiver evaluates to `None`, navigation short-circuits to `None` without evaluating downstream accessors.
+2. The compiler automatically lifts the closure's inferred return type from $T$ to $?T$.
+3. When navigating from an already-optional root (`?T`), the leading safe navigation `\?.field` avoids unnecessary unboxing ceremonies.
+
+#### 3. Why Dynamic Collections (Array, Map) are Excluded from Accessor Shorthand
+A tempting proposal is extending shorthand accessors to dynamic collections, such as `\[0]` or `\.[0]` for arrays and `\.["key"]` for associative maps. Ril explicitly rejects this design across three architectural dimensions:
+
+1. **Total Projections vs. Partial Operations**:
+   - Record fields and tuple indices are infallible, total projections.
+   - Array indexing `arr[i]` is a **partial operation**: accessing an empty array panics at runtime. Providing lightweight shorthand for partial operations encourages developers to write crash-prone data pipelines.
+   - Map lookups `map[key]` are associative queries that return an `Option<V>`. A syntactic accessor `\.["key"]` obscures the distinction between static schema projection and dynamic runtime table queries.
+
+2. **Segregation of Product Types and Dynamic Collections ( 4.4)**:
+   - Ril maintains an absolute partition between compile-time schema shapes (`{}` and `()`) and runtime heap collections (`[]` and `[:]`).
+   - Dot projection on collections is statically rejected (`E0301`). Introducing `\.[0]` or `\.0` on arrays would breach this invariant, creating semantic ambiguity over whether an expression denotes a tuple or an array.
+
+3. **Lexical Hygiene & Pattern Matching Disambiguation**:
+   - `\[...]` as a prefix clashes directly with lambda pattern matching:
+     ```ril
+     let match_fn = \[0] -> "singleton zero"   -- Lambda with pattern matching on array literal
+     ```
+     Allowing `\[0]` as an accessor expression creates parsing lookahead hazards and degrades compiler diagnostic clarity.
+
+4. **Primacy of Higher-Order Combinators**:
+   - In idiomatic Ril, collection access is addressed using first-class functions and combinators:
+     ```ril
+     -- Array: explicit safe indexing or dedicated combinators:
+     let first_cols = matrix |> Array::filter_map(\row -> row?[0])
+     let heads = matrix |> Array::filter_map(Array::first)
+
+     -- Map: first-class key lookup function:
+     let values = configs |> Array::filter_map(Map::get("host"))
+     ```
+   - Standard library combinators cleanly communicate optionality and failure semantics without compromising grammar or type checker soundness.
 
 

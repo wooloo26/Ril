@@ -1891,14 +1891,30 @@ let s4 = create_server(host: "api.internal", port: 9000, enable_tls: true)
 -- create_server("127.0.0.1", host: "duplicate")            -- Error [E0301]: parameter 'host' supplied both positionally and by name
 ```
 
-### 7.3 Anonymous Functions, Trailing Closures & Field Accessors
+### 7.3 Anonymous Functions, Trailing Closures & Projection Accessors
 
 ```ebnf
-AnonFnExpr   ::= "\" [ AnonParams ] "->" ( Expression | Block )
-AnonParams   ::= AnonParam { "," AnonParam } [ "," ]
-AnonParam    ::= [ "mut" ] Identifier [ ":" TypeExpression ]
-AccessorExpr ::= "\" "." Identifier { "." Identifier }
+AnonFnExpr    ::= "\" [ AnonParams ] "->" ( Expression | Block )
+AnonParams    ::= AnonParam { "," AnonParam } [ "," ]
+AnonParam     ::= [ "mut" ] Identifier [ ":" TypeExpression ]
+AccessorExpr  ::= "\" AccessorNav AccessorField { AccessorNav AccessorField }
+AccessorNav   ::= "." | "?."
+AccessorField ::= Identifier | TupleIndex
+TupleIndex    ::= Digit { Digit }
 ```
+
+1. **Unary Desugaring Equivalence**: An `AccessorExpr` evaluates to a unary pure function projecting properties from its argument:
+   - `\.field` desugars to `\x -> x.field`
+   - `\.0` desugars to `\x -> x.0`
+   - `\.field?.subfield` desugars to `\x -> x.field?.subfield`
+   - `\?.field` desugars to `\x -> x?.field`
+2. **Product Type Duality**:
+   - `Identifier` statically projects named fields from records (`{...}`), nominal structs, or refined named variants. Unmatched fields trigger static error `E0301`.
+   - `TupleIndex` statically projects 0-indexed positional components from tuples (`(T0, T1, ...)`) or refined positional variant payloads ($S|_V$). Positional indices are statically checked at compile time against tuple arity $n$ ($0 \le i < n$). Out-of-bounds indices trigger `E0301`.
+3. **Safe Navigation Propagation**:
+   - If any navigation segment uses safe navigation `?.`, evaluation short-circuits to `None` when the intermediate receiver is `None`. The resulting accessor closure return type is automatically lifted into `?T`.
+4. **Collection Segregation**:
+   - Dynamic collections (`[]T`, `[K: V]`, `Set<T>`) are not product types and cannot be projected via dot/accessor syntax directly (`E0301`). Element and key extractions require explicit bracket indexing (`\arr -> arr?[i]`) or higher-order combinators (`Array::first`, `Map::get`).
 
 ```ril
 -- 1. Standard Anonymous Functions:
@@ -1911,15 +1927,43 @@ let doubled = [1, 2, 3] |> Array::map \x -> x * 2
 fn run_job(f: fn() -> int) -> int { f() }
 let job_res = run_job \-> 42
 
--- 3. Shorthand Field Projection Accessors (\.field):
+-- 3. Shorthand Projection Accessors:
 type Employee = { id: int, name: str, salary: int }
+type Department = { name: str, leader: ?Employee }
+type Company = { name: str, dept: ?Department }
+
 let employees = [
     Employee.{ id: 1, name: "Alice", salary: 8000 },
     Employee.{ id: 2, name: "Bob", salary: 6000 },
 ]
 
-let names = employees |> Array::map(\.name)       -- Evaluates to ["Alice", "Bob"]
-let salaries = employees |> Array::map(\.salary)   -- Evaluates to [8000, 6000]
+-- 3a. Record field projection (\.field):
+let names = employees |> Array::map(\.name)                   -- Evaluates to ["Alice", "Bob"]
+let salaries = employees |> Array::map(\.salary)               -- Evaluates to [8000, 6000]
+
+-- 3b. Tuple positional index projection (\.index):
+let pairs: [](int, str) = [(1, "Alice"), (2, "Bob")]
+let ids = pairs |> Array::map(\.0)                            -- Evaluates to [1, 2]
+let labels = pairs |> Array::map(\.1)                         -- Evaluates to ["Alice", "Bob"]
+
+-- 3c. Mixed nested projection:
+type Team = { id: int, leader: (str, int) }
+let teams = [Team.{ id: 10, leader: ("Alice", 30) }]
+let leader_ages = teams |> Array::map(\.leader.1)             -- Evaluates to [30]
+
+-- 3d. Safe navigation projection (\.field?.subfield, \?.field):
+let companies: []Company = [
+    Company.{ name: "CorpA", dept: Some(Department.{ name: "Engineering", leader: Some(employees[0]) }) },
+    Company.{ name: "CorpB", dept: None },
+]
+let leader_names = companies |> Array::map(\.dept?.leader?.name) -- Evaluates to [Some("Alice"), None]
+let opt_depts: []?Department = [Some(Department.{ name: "Sales", leader: None }), None]
+let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to [Some("Sales"), None]
+
+-- Rejections:
+-- let bad_idx = pairs |> Array::map(\.2)                     -- Error [E0301]: tuple index 2 out of bounds for (int, str)
+-- let bad_field = employees |> Array::map(\.age)             -- Error [E0301]: unknown field 'age' on type 'Employee'
+-- let bad_arr = [[1, 2], [3]] |> Array::map(\.0)             -- Error [E0301]: collections do not have named fields or static tuple projections
 ```
 
 ### 7.4 Closures, Factory Signatures & Lexical Environments
