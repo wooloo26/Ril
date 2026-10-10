@@ -535,3 +535,61 @@ Ril bounds this complexity with two hard compiler invariants:
 
 This guarantees that type narrowing operates in strictly linear time $O(1)$ per branch, ensuring instantaneous compiler diagnostics and sub-millisecond IDE responsiveness.
 
+### 4.12 Dual-Tier 'where' Architecture: Interface Abstraction vs. Implementation Encapsulation
+
+Modern statically typed languages with algebraic effects and fine-grained capability systems face an unavoidable ergonomic challenge: **Signature Bloat**. When higher-order functions declare generics, fallible closures, algebraic effects (`@Fiber + Async`), and explicit mutable capability sets (`&{mut log} &closure`), the signature header expands into an unreadable 5-to-10 line wall of annotations.
+
+Ril resolves this tension through the **Dual-Tier 'where' Architecture**, establishing an asymmetric, mathematically stratified division of responsibility between interface-level type abstraction and block-level implementation encapsulation.
+
+#### 1. Why Waist 'where' is Indispensable: Cognitive Reading Flow & Visual Locality
+A naive compiler optimization might suggest eliminating waist `where` altogether, forcing all local declarations into a single trailing `where` clause at the bottom of the function's root block. However, this produces a severe cognitive defect: **Disrupted Cognitive Reading Flow**.
+
+Consider an engineer reading a library function:
+```ril
+pub fn process_stream<T, R, E>(
+    stream: []T,
+    transform: TransformFn<T, R, E>,
+    sink: AuditSink<R>,
+) -> Result<[]R, E> @Async &{mut audit_log}
+```
+Upon reading the parameter list, the reader's immediate question is: *"What concrete signature and capability contract does `TransformFn` enforce?"*
+- **Under Tail-Only Where**: If the function body spans 80 lines of imperative data pipeline logic, the definition of `TransformFn` is buried 80 lines below at the bottom of the screen. The reader must scroll all the way to the bottom to discover the contract, and then scroll back up to understand the body logic. This breaks the **Newspaper Principle**.
+- **Under Waist Where (`SignatureWhereClause`)**: The concrete contract is located immediately below the signature header and directly above the root block `{`. The reader's gaze flows naturally: Function Identity $\to$ Parameter Roles $\to$ Contract Definitions $\to$ Body Execution. The entire interface contract is verified in a single visual field.
+
+Furthermore, API documentation generators (`docgen`) and language servers (LSP) can extract public signatures and their waist definitions in $O(1)$ header time, without parsing or traversing function execution bodies.
+
+#### 2. The Asymmetric Separation of Concerns
+To prevent waist `where` from degrading into the "Buried Body" anti-pattern (where procedural helper functions push the main body dozens of lines down), Ril enforces an **Asymmetric Declaration Partition**:
+
+| Tier | Syntactic Location | Permitted Declarations | Architectural Purpose |
+| :--- | :--- | :--- | :--- |
+| **Waist (`SignatureWhereClause`)** | Signature $\dots$ `{` | **`type` ONLY** | **Interface Specification**: Decomposing complex callable signatures, effects, and capability sets. |
+| **Tail (`BlockWhereClause`)** | End of Block `{ ... }` | **`fn`, `type`, `effect`** | **Implementation Mechanics**: Mutually recursive worker functions, local scratch types, and private delimited control effects. |
+
+Declaring procedural helpers (`fn`) or algebraic effects (`effect`) at the waist is statically rejected (`E0704`). This ensures that executable blocks (`{ ... }`) never appear before the function's primary body block.
+
+#### 3. Resolving the Escapability Paradox: Why Waist Prohibits `effect`
+Why can't local algebraic effects (`effect`) be declared in the waist `where` clause alongside types?
+
+Ril enforces the **Strict Local Discharge Invariant (`E0618`)**: any locally declared effect MUST be completely handled within the declaring function via an in-scope handler (`with`). A local effect CANNOT escape into the public `@Effect` annotation because external callers cannot import or name an unexported private effect.
+
+Permitting `effect` at the waist triggers the **Escapability Paradox**:
+1. If the effect appears in the outer signature `@MyEffect`, callers cannot name it and the function is statically uncallable.
+2. If the effect does NOT appear in the outer signature, it is purely internal implementation mechanism. Placing it at the signature waist falsely advertises private control flow as part of the public interface contract.
+
+Therefore, `SignatureWhereClause` is restricted to `type` aliases (which may freely reference in-scope *ambient* effects, such as `@Io`), while generative local `effect` declarations are strictly confined to the block where they are handled (`BlockWhereClause`).
+
+#### 4. Strict Declarative Partitioning (`E0703` vs `E0702`)
+In languages like C++, Rust, or JavaScript, developers can scatter `type` aliases and local function declarations arbitrarily across procedural code. This creates temporal illusions (e.g. wondering whether a type is dynamically bound or lexically hoisted) and complicates dead-code elimination.
+
+Ril enforces **Strict Declarative Partitioning**:
+- The sequential statement sequence (`StatementSequence`) contains strictly imperative code (`let`, `var`, `with`, pipelines, control transfer). Interleaving `fn`, `type`, or `effect` is statically rejected (`E0703: IllegalSequentialDeclarationError`).
+- Conversely, `where` clauses contain strictly hoisted, side-effect-free declarations. Placing variable bindings (`let`, `var`) in `where` is statically rejected (`E0702: InvalidWhereItemError`).
+
+#### 5. Soundness: Stratified Tarjan SCC & Downward Isolation (`E0705`, `E0706`)
+To eliminate cross-tier dependency cycles and phase-ordering deadlocks, Ril's type checker formalizes **Unidirectional Downward Isolation**:
+1. **No Downward References (`E0705`)**: Types in `SignatureWhereClause` cannot reference declarations in `BlockWhereClause`.
+2. **Signature Reference Confinement (`E0706`)**: Any type alias used in the outer signature MUST reside in `SignatureWhereClause` or module scope, never in `BlockWhereClause`.
+3. **Stratified Dependency Graph**: The dependency graph $\mathcal{G} = \mathcal{G}_{\text{waist}} \ \vec{\sqcup}\ \mathcal{G}_{\text{block}}$ contains zero bipartite cross-edges from Waist to Block ($E_{\text{waist} \to \text{block}} = \emptyset$). Tarjan's SCC algorithm runs independently per layer, guaranteeing that the combined graph is a strictly stratified DAG with provably zero cross-tier mutual recursion deadlocks.
+
+

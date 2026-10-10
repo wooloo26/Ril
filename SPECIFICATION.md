@@ -1208,17 +1208,40 @@ pinned_buf.capacity = 32               -- OK: field assignment through pinned ha
 
 ## 6. Control Flow & Pattern Matching
 
-### 6.1 Block Expressions, Tail Values & Hoisted `where` Declarations
+### 6.1 Block Expressions, Tail Values & Hoisted Block `where` Declarations
 
-A block `{ ... }` evaluates to its tail expression. A block may conclude with a trailing `where` clause declaring mutually recursive helper functions (`fn`) and local types (`type`). Because functions and types are purely declarative with no sequential initialization side effects, they are hoisted across the entire block scope. Variable bindings (`let`, `let mut`, `var`) carry sequential side effects and are strictly prohibited in `where` (`E0702`).
+A block `{ ... }` evaluates to its tail expression. A block may conclude with a trailing `where` clause (`BlockWhereClause`) declaring mutually recursive helper functions (`fn`), local types (`type`), and local algebraic effects (`effect`). All items in `BlockWhereClause` are hoisted across the enclosing block scope.
 
 ```ebnf
-Block       ::= "{" [ StatementList ] [ Expression ] [ WhereClause ] "}"
-WhereClause ::= "where" WhereItem { Separator WhereItem }
-WhereItem   ::= FunctionDecl | TypeDecl
+Block               ::= "{" [ StatementSequence ] [ TailExpression ] [ BlockWhereClause ] "}"
+                      | "{" Expression "}"
+StatementSequence   ::= Statement { Separator Statement } [ Separator ]
+Statement           ::= LetDecl
+                      | LetMutDecl
+                      | VarDecl
+                      | ScopedDecl
+                      | LetViewDecl
+                      | WithStatement
+                      | ControlTransfer
+                      | AssignmentExpr
+                      | Expression
+BlockWhereClause    ::= "where" BlockWhereItem { Separator BlockWhereItem } [ Separator ]
+BlockWhereItem      ::= FunctionDecl | TypeDecl | EffectDecl
 ```
 
+#### Invariants
+
+1. **Declarative Partitioning (`E0703`, `E0702`)**:
+   - Declarations (`fn`, `type`, `effect`) MUST NOT appear in `StatementSequence` (`E0703`).
+   - Variable bindings (`let`, `let mut`, `var`) MUST NOT appear in `where` clauses (`E0702`).
+2. **Local Effect Discharge (`E0618`)**:
+   - Any local `effect` declared in `BlockWhereClause` MUST be completely discharged via an in-scope `with` handler within the enclosing block frame.
+   - Local effects MUST NOT appear in outer `@Effect` annotations or escape into unhandled closures.
+3. **Local Nominal Confinement (`E0315`)**:
+   - Local nominal wrappers (`type Id(T)`) and sum types (`type S { ... }`) MUST NOT appear in the return type of the enclosing function. Structural type aliases (`type Alias = T`) are exempt.
+
 ```ril
+-- 1. Mutually recursive functions and types hoisted in block 'where':
 let total = {
     let base = compute_base()
     let parity = is_even(base)
@@ -1229,21 +1252,55 @@ where
     fn is_odd(n: int) -> bool { if n == 0 { false } else { is_even(n - 1) } }
 }
 
--- Types and functions can be mutually declared in 'where':
-let user_summary = {
-    let u: LocalUser = .{ id: 1, name: "Alice" }
-    format_user(u)
+-- 2. Local algebraic effect declared in 'where' and fully discharged locally:
+fn search_matrix(grid: [][]int) -> ?int {
+    var found: ?int = None
+    with Search::hit(val) -> {
+        found = Some(val)
+        return found                   -- Delimited early return; discharges Search
+    }
+
+    walk_grid(grid)
+    found                              -- Pure signature: @Search completely discharged
 where
-    type LocalUser = { id: int, name: str }
-    fn format_user(u: LocalUser) -> str { u.name ++ "#" ++ Int::to_str(u.id) }
+    effect Search { hit(int) -> () }
+    fn walk_grid(g: [][]int) @Search {
+        for g as row {
+            for row as item {
+                if item > 0 { Search::hit(item) }
+            }
+        }
+    }
 }
 
--- Prohibited: variable bindings cannot be declared in 'where' (only 'fn' and 'type' permitted):
--- let bad = {
---     base + offset
+-- 3. Prohibited: Declarations inside sequential statement stream (E0703):
+-- let bad_statement = {
+--     let x = 10
+--     type Step = int                 -- Error [E0703]: IllegalSequentialDeclarationError: declarations of 'type' are prohibited in sequential statement stream; place in 'where' clause
+--     effect Bail { exit() -> never } -- Error [E0703]: IllegalSequentialDeclarationError: declarations of 'effect' are prohibited in sequential statement stream; place in 'where' clause
+--     x + 1
+-- }
+
+-- 4. Prohibited: Variable bindings declared in 'where' (E0702):
+-- let bad_where = {
+--     base + 1
 -- where
---     fn compute() -> int { 10 }
---     let offset = 25                  -- Error [E0702]: InvalidWhereItemError: variable bindings cannot be declared in 'where' clause
+--     let base = 10                   -- Error [E0702]: InvalidWhereItemError: variable bindings cannot be declared in 'where' clause
+-- }
+
+-- 5. Prohibited: Undischarged local effect escaping block boundary (E0618):
+-- fn bad_effect_leak() -> int @LocalStep { -- Error [E0618]: UndischargedLocalEffectError: local effect 'LocalStep' cannot escape enclosing block to function signature
+--     LocalStep::tick()
+--     1
+-- where
+--     effect LocalStep { tick() -> () }
+-- }
+
+-- 6. Prohibited: Local nominal type escaping function boundary (E0315):
+-- fn bad_nominal_leak() -> Token {    -- Error [E0315]: EscapingLocalNominalTypeError: local nominal type 'Token' cannot escape declaring function
+--     Token(42)
+-- where
+--     type Token(int)
 -- }
 ```
 
@@ -1665,16 +1722,90 @@ fn test_bounded_path_depth(root: { a: ?{ b: ?{ c: ?{ d: int } } } }) {
 Named functions are declared at module or block scope. They support newspaper ordering (module-wide hoisting) and mutual recursion without forward declarations.
 
 ```ebnf
-FunctionDecl      ::= [ "pub" ] [ "halt" ] "fn" Identifier [ GenericParams ]
-                      "(" [ ParameterList ] ")" [ ReturnType ] [ EffectAnnot ] [ StateAnnot ]
-                      [ WhereClause ] Block
-ParameterList     ::= Parameter { "," Parameter } [ "," ]
-Parameter         ::= [ "mut" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
+FunctionDecl         ::= [ "pub" ] [ "halt" ] "fn" Identifier [ GenericParams ]
+                         "(" [ ParameterList ] ")" [ ReturnType ] [ EffectAnnot ] [ StateAnnot ]
+                         [ SignatureWhereClause ] Block
+SignatureWhereClause ::= "where" SignatureWhereItem { Separator SignatureWhereItem } [ Separator ]
+SignatureWhereItem   ::= LocalTypeDecl
+ParameterList        ::= Parameter { "," Parameter } [ "," ]
+Parameter            ::= [ "mut" ] Identifier [ ":" TypeExpression ] [ "=" Expression ]
 
-Argument          ::= [ Identifier ":" ] ( "mut" AssignTarget | Expression )
-ArgumentList      ::= Argument { "," Argument } [ "," ]
-CallExpr          ::= Expression "(" [ ArgumentList ] ")" [ TrailingClosure ]
-TrailingClosure   ::= AnonFnExpr
+Argument             ::= [ Identifier ":" ] ( "mut" AssignTarget | Expression )
+ArgumentList         ::= Argument { "," Argument } [ "," ]
+CallExpr             ::= Expression "(" [ ArgumentList ] ")" [ TrailingClosure ]
+TrailingClosure      ::= AnonFnExpr
+```
+
+#### Dual-Tier `where` Invariants
+
+1. **Signature `where` Scope (`SignatureWhereClause`, `E0704`)**:
+   - `SignatureWhereClause` is restricted to `LocalTypeDecl` (`type`). Declaring `fn` or `effect` is statically rejected (`E0704`).
+   - Types declared in `SignatureWhereClause` are in scope across the function signature and the function body block.
+2. **Signature Reference Confinement (`E0706`)**:
+   - Any type referenced in a function signature MUST be declared in `SignatureWhereClause` or an outer scope. Referencing types declared in `BlockWhereClause` is statically rejected (`E0706`).
+3. **Downward Isolation (`E0705`)**:
+   - Items in `SignatureWhereClause` MUST NOT reference items declared in `BlockWhereClause` (`E0705`). Items in `BlockWhereClause` MAY reference items from `SignatureWhereClause`.
+4. **Collision Prohibition (`E0203`)**:
+   - Declaring an identical identifier in both `SignatureWhereClause` and `BlockWhereClause` of the same function is statically rejected (`E0203`).
+5. **Export Inlining**:
+   - For `pub fn`, structural type aliases in `SignatureWhereClause` are canonically expanded in exported module interface artifacts (`.rilm`).
+
+```ril
+-- 1. Signature-level where for complex higher-order pipeline:
+pub fn process_stream<T, R, E>(
+    stream: []T,
+    transform: TransformFn<T, R, E>,
+    sink: AuditSink<R>,
+) -> Result<[]R, E> @Async &{mut audit_log}
+where
+    type TransformFn<In, Out, Err> = fn(In) -> Result<Out, Err> @Fiber + Async &mut
+    type AuditSink<Item>           = fn(Item) -> () &{mut audit_log} &closure
+{
+    var out: []R = []
+    for stream as item {
+        let res = transform(item)?
+        sink(res)
+        out !> Array::push(res)
+    }
+    Ok(out)
+}
+
+-- 2. Prohibited: Declaring 'fn' or 'effect' in SignatureWhereClause (E0704):
+-- fn bad_waist_fn(x: int) -> int
+-- where
+--     fn helper(n: int) -> int { n * 2 }    -- Error [E0704]: InvalidSignatureWhereItemError: 'fn' cannot be declared in signature 'where' clause; place in block 'where' clause
+--     effect Yield { emit(int) -> () }      -- Error [E0704]: InvalidSignatureWhereItemError: 'effect' cannot be declared in signature 'where' clause; place in block 'where' clause
+-- {
+--     helper(x)
+-- }
+
+-- 3. Prohibited: Downward reference from waist to block where (E0705):
+-- fn bad_downward<T>(item: T) -> Wrapper
+-- where
+--     type Wrapper = { state: InternalState } -- Error [E0705]: DownwardScopeReferenceError: signature 'where' clause cannot reference 'InternalState' declared in inner block 'where' clause
+-- {
+--     Wrapper.{ state: .{ code: 0 } }
+-- where
+--     type InternalState = { code: int }
+-- }
+
+-- 4. Prohibited: Signature referencing type defined in block where (E0706):
+-- fn bad_sig_target(cb: Callback) -> ()      -- Error [E0706]: SignatureTypeNotInWaistWhereError: type 'Callback' used in function signature must be declared in signature 'where' clause, not block 'where' clause
+-- {
+--     cb()
+-- where
+--     type Callback = fn() -> ()
+-- }
+
+-- 5. Prohibited: Duplicate declaration across waist and block tiers (E0203):
+-- fn bad_duplicate(h: Handler) -> ()
+-- where
+--     type Handler = fn() -> ()
+-- {
+--     ()
+-- where
+--     type Handler = fn(int) -> ()           -- Error [E0203]: DuplicateDeclarationError: type 'Handler' is already declared in signature 'where' clause
+-- }
 ```
 
 ```ril
@@ -3048,6 +3179,8 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0309`** | `VacuousBindingError` | 'let' pattern binds zero variables (excluding explicit wildcard discard 'let _ = expr') |
 | **`E0310`** | `InvalidatedNarrowingAccessError` | Accessing identifier whose flow narrowing was invalidated by reassignment or mutation |
 | **`E0311`** | `ContradictoryNarrowingError` | Narrowing predicate is statically unsatisfiable under active flow environment |
+| **`E0313`** | `CyclicTypeAliasError` | Structural type aliases form a cyclic dependency without nominal or sum indirection |
+| **`E0315`** | `EscapingLocalNominalTypeError` | Local nominal wrapper or sum type escapes enclosing function boundary as return type |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0402`** | `ValueTypePinnedMutError` | Attempting to declare a value type as pinned mutable handle `let mut` |
 | **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
@@ -3078,8 +3211,13 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0615`** | `CrossTaskUnhandledEffectError` | Passing callable with unhandled effect or external effect handler across concurrent task boundary |
 | **`E0616`** | `ScopedCleanupEffectError` | Resource cleanup handler (`on_close`) declares or invokes unhandled algebraic effects |
 | **`E0617`** | `ScopedCleanupDivergenceError` | Resource cleanup handler (`on_close`) declares or invokes divergent operations (`@Div`) |
+| **`E0618`** | `UndischargedLocalEffectError` | Local algebraic effect declared in 'where' is not completely discharged within enclosing block |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
 | **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
+| **`E0703`** | `IllegalSequentialDeclarationError` | Declaring 'fn', 'type', or 'effect' in sequential statement stream instead of 'where' clause |
+| **`E0704`** | `InvalidSignatureWhereItemError` | Declaring 'fn' or 'effect' in signature 'where' clause (signature where is restricted to 'type') |
+| **`E0705`** | `DownwardScopeReferenceError` | Signature 'where' clause references item declared in inner block 'where' clause |
+| **`E0706`** | `SignatureTypeNotInWaistWhereError` | Function signature references type declared in block 'where' clause instead of signature 'where' clause |
 | **`E0710`** | `IllegalControlTransferInFallbackError` | Embedding `return`/`last` in fallback operator `??` |
 | **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
 | **`E0720`** | `UnusedFallibleResultError` | Discarding fallible `Result` without inspection |
