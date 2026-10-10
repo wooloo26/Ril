@@ -487,14 +487,13 @@ $$\text{Variant}(T_1, T_2, \dots, T_n) \equiv \text{Variant}((T_1, T_2, \dots, T
 
 Because Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenthesized grouping; tuples require $\ge 2$ elements; `()` denotes unit), constructor arity $n$ in expressions and patterns is strictly deterministic:
 1. **Scope Restriction (Strict Constructor Boundary)**: Equivalence is confined strictly to Data Constructors. Ordinary functions (`fn`), closures, and methods maintain strictly separate parameter lists and register ABIs (`E0301`).
-2. **Positional Tuple Expansion ($n \ge 2$)**: In expression construction and pattern matching, $C(e_1, \dots, e_n)$ constructs or matches the tuple payload elements directly. Outer constructor parentheses absorb inner tuple parentheses.
+2. **Positional Tuple Expansion & Literal Compatibility ($n \ge 2$)**: In expression construction and pattern matching, $C(e_1, \dots, e_n)$ and explicit tuple literals $C((e_1, \dots, e_n))$ are definitionally equivalent: outer constructor parentheses absorb inner tuple parentheses.
 3. **Whole-Tuple Binding or Single Argument ($n = 1$)**: $C(val)$ constructs or matches the scalar payload or whole-tuple object.
 4. **Unit Payload Constructor ($n = 0$)**: When a variant's payload type is `()`, $C()$ constructs or matches the unit payload directly ($C() \equiv C(())$). Bare constructor identifiers without parentheses (e.g. bare `Ok`) are strictly first-class constructor functions (`fn(T) -> Result<T, E>`), and cannot be evaluated as values without `()` (`E0301`).
 5. **Nullary Variant Tag Invariant**: Variants declared without a payload (e.g. `None` in `type Option<T> { Some(T), None }`) are pure zero-field tags: they MUST be written without parentheses (`None`). Supplying argument parentheses to a nullary variant (`None()`) is statically rejected (`E0301`).
-6. **Explicit Tuple Literal Compatibility**: Explicit tuple literals $C((e_1, \dots, e_n))$ and patterns $C((p_1, \dots, p_n))$ remain valid as supplying a 1-argument tuple payload directly.
-7. **Non-Transitivity (Single-Layer Invariant)**: Equivalence applies strictly to the outermost constructor argument boundary. Nested tuples (e.g. `Variant((A, B), C)`) require explicit grouping and do NOT flatten recursively (`Variant(a, b, c)` is rejected with `E0301`).
-8. **Rigid Type Variable Invariant**: Deconstructing $C(p_1, \dots, p_n)$ ($n \ge 2$) against an unconstrained generic type parameter $T$ is statically rejected with `E0301`.
-9. **First-Class Constructor Canonical Type**: A constructor $C$ carrying a tuple payload $(T_1, \dots, T_n)$ possesses the canonical unary first-class callable type $\text{fn}((T_1, \dots, T_n)) \to S$. In Check Mode expecting a multi-parameter callable ($\Gamma \vdash C \Leftarrow \text{fn}(T_1, \dots, T_n) \to S$), the compiler applies context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$).
+6. **Non-Transitivity (Single-Layer Invariant)**: Equivalence applies strictly to the outermost constructor argument boundary. Nested tuples (e.g. `Variant((A, B), C)`) require explicit grouping and do NOT flatten recursively (`Variant(a, b, c)` is rejected with `E0301`).
+7. **Rigid Type Variable Invariant**: Deconstructing $C(p_1, \dots, p_n)$ ($n \ge 2$) against an unconstrained generic type parameter $T$ is statically rejected with `E0301`.
+8. **First-Class Constructor Canonical Type**: A constructor $C$ carrying a tuple payload $(T_1, \dots, T_n)$ possesses the canonical unary first-class callable type $\text{fn}((T_1, \dots, T_n)) \to S$. In Check Mode expecting a multi-parameter callable ($\Gamma \vdash C \Leftarrow \text{fn}(T_1, \dots, T_n) \to S$), context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$) applies.
 
 ```ril
 -- 1. Result construction and matching with unit payload (n = 0):
@@ -555,7 +554,7 @@ NominalDecl ::= [ "pub" ] "type" Identifier [ GenericParams ] [ "(" TypeExpressi
 ```
 
 When `(TypeExpression)` is omitted, `NominalDecl` defines a **Unit Nominal Type** (e.g. `type Marker`).
-- **Memory Layout**: Unit nominal types have a 0-byte memory layout (zero-sized type / ZST) and compile to zero runtime overhead.
+- **Memory Layout**: Unit nominal types have a 0-byte memory layout (zero-sized type / ZST).
 - **Value Construction**: The bare identifier `Marker` denotes its canonical singleton value (`let m = Marker`).
 - **Pattern Matching**: `Marker` acts as a nullary constructor pattern in multi-variant `match` expressions (`match event { Marker -> ... }`). In `let` statements, patterns introducing zero variable bindings (such as `let Marker = m`) are strictly prohibited under the **Non-Vacuous Binding Invariant (`E0309: VacuousBindingError`)**.
 - **Prelude Unwrapping**: Unwrapping via `inner(Marker)` evaluates to `()`.
@@ -813,82 +812,354 @@ fn check_buf(runtime_size: int) {
 
 ### 3.12 The Tripartite Ontology & Type Definition Boundaries
 
-Ril partitions program semantics across three mutually exclusive domains, converging exclusively at the callable computation arrow:
+Ril establishes a mathematically rigorous, stratified **Tripartite Ontology**, partitioning program semantics across three mutually exclusive domains that converge exclusively at the callable computation arrow:
 
-1. **Data & Shape Domain ($\mathcal{T}$)**: Memory layout and structural topology of values at rest. Includes primitive value types, heap reference types (records, arrays, maps, tuples), sums/GADTs, nominal wrappers, and opaque types. The record field `mut` prefix is strictly an interior mutability layout marker, not a capability.
-2. **Storage & Access Domain ($\mathcal{C}$)**: Mutation authority, pointer stability, and aliasing exclusivity over memory locations (`let`, `let mut`, `var`, `let view`, parameter modes, `&mut`, `&^mut`, `&closure`, `&capture`, `&{ident}`).
-3. **Control & Transfer Domain ($\mathcal{E}$)**: Delimited control inversion, algebraic effects (`eff`), deep handlers (`with`), affine resumption (`resume`), and built-ins (`@Async`, `@Fiber`, `@Concurrent`, `@Div`).
-4. **Computation Confluence Point**:
-   $$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\,\&\mathcal{C}\,]$$
-   Latent effects and capabilities reside exclusively on callable arrows. Values in normal form carry zero latent effects.
+```
++---------------------------------------------------------------------------------------------------+
+|                                      THE TRIPARTITE ONTOLOGY                                      |
++---------------------------------------------------------------------------------------------------+
+|  Domain I: Data & Shape (T)         |  Domain II: Storage & Access (C)    |  Domain III: Control & Transfer (E) |
+|  - Types at rest                    |  - Storage cell permissions         |  - Stack-delimited control flows    |
+|  - Value vs Reference types         |  - Three-tier mutability            |  - Algebraic effects ('eff')        |
+|  - Records, Arrays, Tuples, Sums    |  - Parameter modes ('mut')          |  - Handlers ('with')                |
+|  - Nominals & Opaque types          |  - Capability tracking (&mut, &^mut)|  - Affine resumption ('resume')     |
+|  - Field 'mut' (interior marker)    |  - Aliasing exclusivity             |  - Built-ins (@Async, @Fiber, @Div) |
++-------------------------------------+-------------------------------------+-------------------------------------+
+                                                   |
+                                                   v
+                                +-------------------------------------+
+                                |     COMPUTATION CONFLUENCE (fn)     |
+                                |   fn(P) -> R  @Eff  &Cap            |
+                                | - P in T (parameters at rest)       |
+                                | - R in T (return shape at rest)     |
+                                | - @Eff in E (latent control flow)   |
+                                | - &Cap in C (latent access rights)  |
+                                +-------------------------------------+
+```
 
-#### Normative Boundary Invariants for `type T = ...`:
-1. **Bare Effect Alias Prohibition (`E0330`)**: Effect rows cannot be aliased under `type T = ...`. Effects must be declared and combined via `eff`.
-2. **Bare Capability Alias Prohibition (`E0331`)**: Capabilities cannot be aliased under `type T = ...`.
-3. **Variant Computation Prohibition (`E0332`)**: Sum type variants cannot declare `@Eff` or `&Cap`. Variants are passive data constructors; computational behaviors must be typed as callable payloads.
-4. **Field Computation Prohibition (`E0333`)**: Record fields and tuple components cannot declare `@Eff` or `&Cap`. Fields store data or callables; interior mutability uses the structural `mut` prefix.
-5. **Generic Computation Constraint Prohibition (`E0334`)**: Generic parameters cannot be constrained by `@Eff` or `&Cap`. Generic parameters parameterize types or const values; higher-order functions forward effects and capabilities automatically.
-6. **Pure Type Function Computation Prohibition (`E0335`)**: Compile-time type functions (`type`, `halt type`) cannot declare `@Eff` or `&Cap`. Type functions evaluate strictly within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
-7. **Value Effect Annotation Prohibition (`E0613`)**: Values and variable bindings cannot declare `@Eff`. Effects belong exclusively to callable arrows.
+#### 3.12.1 The Three Disjoint Semantic Domains
+
+$$\text{Semantic Domains} = \langle \text{Shape (Type)}\ \mathcal{T},\ \text{Access (Capability)}\ \mathcal{C},\ \text{Control (Effect)}\ \mathcal{E} \rangle$$
+
+1. **Domain I: Data & Shape Domain ($\mathcal{T}$)**:
+   - **Metaphysical Nature**: Memory representation, data alignment, structural topology, and nominal identity of values in *normal form* (quiescent data at rest).
+   - **Syntactic Locus**: Values, expressions, variables, data structures, and function parameter/return types.
+   - **Constituents**:
+     - *Primitive Value Types*: `bool`, `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `int`, `bigint`, `f32`, `f64`, `str`, `bytes`, `()`, `never`.
+     - *Heap Reference Types*: Structural records `{...}`, linear arrays `[]T`, associative maps `[K: V]`, unique sets `Set<T>`, anonymous tuples `(...)`.
+     - *Algebraic Sum Types & GADTs*: `type Option<T> { Some(T), None }`.
+     - *Nominal Wrappers & Unit Nominals*: `type UserId(int)`, `type Marker`.
+     - *Opaque Types*: `pub opaque type SessionToken = str`.
+   - **Structural Field Modifier**: The record field modifier `mut` (e.g. `{ mut val: int }`) is strictly an interior mutability layout marker of a heap reference cell. It is **not** an operational capability.
+   - **Axiom of Inactivity**: Types are inert shapes. A type cannot perform computation, yield execution control, hold ambient access capabilities, or trigger algebraic side effects.
+
+2. **Domain II: Storage & Access Domain ($\mathcal{C}$)**:
+   - **Metaphysical Nature**: Static tracking of heap mutation authority, storage cell access rights, pointer stability, and aliasing exclusivity. It specifies what memory an activation frame or handle is permitted to mutate, reassign, or retain.
+   - **Syntactic Locus**: Variable bindings (`let`, `let mut`, `var`, `let view`), function parameter modes (`p: T`, `mut p: T`), and callable capability qualifiers (`&mut`, `&^mut`, `&closure`, `&capture`, `&{ident}`, `&{mut ident}`).
+   - **Guarantees**: Governed by the Law of Exclusivity, Monotonic Permission Degradation, and Anti-Laundering theorems (`E0520`–`E0528`), preventing hidden aliasing, pointer invalidation, and data races without marker traits or lifetime annotations.
+   - **Axiom of Non-Reification**: Capabilities are operational permissions, not data values. A capability cannot be instantiated at runtime, bound to a variable, stored in a collection, or aliased as a standalone type.
+
+3. **Domain III: Control & Transfer Domain ($\mathcal{E}$)**:
+   - **Metaphysical Nature**: Dynamic control inversion, delimited continuation interception, stack unwinding protocols, and cooperative fiber scheduling. It specifies what non-local control transfers and ambient runtime requests can occur during expression reduction.
+   - **Syntactic Locus**: Exclusively confined to computation / arrow signatures (`fn(P) -> R @Eff &Cap`), effect declarations (`eff`), and handler blocks (`with`).
+   - **Constituents**:
+     - *Algebraic Effect Definitions*: `eff FileIo { read() -> str }`.
+     - *Stack Handlers*: `with Handler { op(args) -> ... }`.
+     - *Affine Resumptions*: `resume value`.
+     - *Built-in Effect Sub-Lattice*: `@Fiber` (cooperative leaf I/O quantum) $\subset$ `@Async` (compound concurrency alias) $\equiv \{\text{Fiber}, \text{Concurrent}\}$, disjoint from `@Div` (divergence).
+   - **Axiom of Delimited Execution**: Effects represent active computational protocols between code and ambient stack handlers. Once an expression is reduced to normal form, its effects have transpired; evaluated values carry zero latent effects.
+
+#### 3.12.2 The Computation Confluence Point ($\mathbf{fn}$)
+
+The three domains are mutually exclusive and never mix directly. They converge **exclusively** at the first-class callable arrow:
+
+$$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\,\&\mathcal{C}\,]$$
 
 ```ril
--- 1. Bare Effect Aliases (E0330):
+-- The Computation Confluence in Action:
+--   Parameters (Domain I: Shape)
+--   Return Type (Domain I: Shape)
+--   Latent Effects (Domain III: Control)
+--   Latent Capabilities (Domain II: Access)
+type SocketHandler = fn(mut buffer: []u8, timeout_ms: int) -> Result<int, IoError> @Fiber &mut
+```
+
+- **Confluence Semantics**: A function, closure, or thunk is an unevaluated, suspendable computation mediating between input/output data shapes ($P \in \mathcal{T}, R \in \mathcal{T}$), ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and storage access permissions ($\&\mathcal{C} \subseteq \mathcal{C}$).
+- **First-Class Closure Property**: Because $\tau_{\text{callable}}$ is itself a first-class type in Domain I ($\tau_{\text{callable}} \in \mathcal{T}$), callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
+
+#### 3.12.3 Boundaries of Type Definitions (`type T = ...`)
+
+##### Supported Constructs
+1. **Structural Product Shapes & Interior Mutability**: Record definitions with field-level interior mutability `{ mut val: int, tag: str }`.
+2. **First-Class Callable Signatures**: Nested function arrows carrying latent effects and capabilities `fn(In) -> Result<Out, Err> @Fiber + Async &mut`.
+3. **Algebraic Sum Variants & GADTs**: Constructors with positional payloads `Some(T)`, record payloads `Record{ x: int }`, or constructor equations `Lit(int) -> Expr<int>`, including variants holding callable types `Handler(fn(Event) -> () @Io)`.
+4. **Nominal Wrappers & Unit Nominals**: `type UserId(int)`, `type Marker`.
+5. **Opaque Type Representations**: `pub opaque type SessionToken = str`.
+6. **Pure Compile-Time Type Functions**: `halt type Transform<T> = ...` (strictly pure compile-time functions returning `type<T>`).
+
+##### Forbidden Anti-Patterns
+Ril statically rejects six structural anti-patterns that attempt to violate domain isolation:
+
+| # | Forbidden Anti-Pattern | Semantic Domain Violation | Diagnostic Code | Diagnostic Identifier |
+| :-: | :--- | :--- | :-: | :--- |
+| **1** | Bare effect aliases (`type E = @Io`) | Attempting to alias Domain III (Control) as Domain I (Data) | **`E0330`** | `BareEffectTypeAliasError` |
+| **2** | Bare capability aliases (`type C = &mut`) | Attempting to alias Domain II (Access) as Domain I (Data) | **`E0331`** | `BareCapabilityTypeAliasError` |
+| **3** | Direct variant computation annotations (`type S = Init @Async`) | Injecting Domain II/III onto Domain I data constructor tags | **`E0332`** | `VariantComputationAnnotationError` |
+| **4** | Direct field computation annotations (`type C = { f: str @Io }`) | Injecting Domain II/III onto Domain I passive storage slots | **`E0333`** | `FieldComputationAnnotationError` |
+| **5** | Generic computation constraints (`<T: @Io>`, `<T: &mut>`) | Constraining Domain I type parameters by Domain II/III | **`E0334`** | `GenericComputationConstraintError` |
+| **6** | Type function computation annotations (`halt type F<T> = ... @Io`) | Polluting compile-time symbolic evaluation with runtime effects/caps | **`E0335`** | `TypeFunctionComputationAnnotationError` |
+
+#### 3.12.4 Code-First Normative Rules & Contrast Matrix
+
+```ril
+-- 1. Bare Effect Aliases (E0330) vs. 'eff' Declarations:
 -- type BadEffect = @Io                         -- Error [E0330]: bare effect '@Io' cannot be aliased as a type; declare effects using 'eff'
 -- type CombinedEffect = @Io + Async            -- Error [E0330]: bare effect row '@Io + Async' cannot be aliased as a type; combine effects via 'eff'
-eff Io { read_line() -> str, write_line(str) -> () }
-eff AsyncIo { Io, Fiber }                      -- OK: effect combination declared via 'eff'
+-- type DynamicEff = @Fiber                     -- Error [E0330]: bare effect '@Fiber' cannot be used in type definition
+
+eff Io {
+    read_line() -> str,
+    write_line(str) -> (),
+}
+
+eff AsyncIo { Io, Fiber }                      -- OK: effect set combination declared via 'eff'
 type ReaderFn = fn() -> str @Io                -- OK: effect annotates callable arrow
+type AsyncWorker<T> = fn(T) -> () @AsyncIo     -- OK: effect annotates callable arrow
 
--- 2. Bare Capability Aliases (E0331):
--- type BadMut = &mut                           -- Error [E0331]: bare capability '&mut' cannot be aliased as a type
+-- 2. Bare Capability Aliases (E0331) vs. Interior Mutability Markers:
+-- type BadMut = &mut                           -- Error [E0331]: bare capability '&mut' cannot be aliased as a type; capabilities belong to storage and callable domains
 -- type BadShare = &^mut                        -- Error [E0331]: bare capability '&^mut' cannot be aliased as a type
-type StateNode = { mut count: int, tag: str }  -- OK: field 'mut' is interior mutability marker
-type Mutator<T> = fn(mut target: T) -> () &mut -- OK: capability annotates callable arrow
+-- type BadGlobal = &{mut app_cache}            -- Error [E0331]: bare capability '&{mut app_cache}' cannot be aliased as a type
+-- type BadClosure = &closure                   -- Error [E0331]: bare capability '&closure' cannot be aliased as a type
 
--- 3. Variant Computation Annotations (E0332):
--- type BadStatus { Pending, Running @Async }   -- Error [E0332]: sum variant 'Running' cannot declare algebraic effect '@Async'
--- type BadMutation { Idle, Mutating &mut }     -- Error [E0332]: sum variant 'Mutating' cannot declare state capability '&mut'
+type StateNode = {
+    mut count: int,                            -- OK: field 'mut' is a structural layout marker, not a capability
+    tag: str,
+}
+type Mutator<T> = fn(mut target: T) -> () &mut -- OK: capability annotates callable arrow
+type SharedLogger = fn(str) -> () &closure &^mut -- OK: capability annotates callable arrow
+
+-- 3. Sum Variant Computation Annotations (E0332) vs. Callable Payloads:
+-- type TaskStatus {
+--     Pending,
+--     Running @Async,                         -- Error [E0332]: sum variant 'Running' cannot declare algebraic effect '@Async'; variants are data constructors, not computations
+--     Mutating &mut,                          -- Error [E0332]: sum variant 'Mutating' cannot declare state capability '&mut'; variants are data constructors, not computations
+--     Suspended(int) @Fiber,                  -- Error [E0332]: sum variant 'Suspended' cannot declare algebraic effect '@Fiber'
+-- }
+
 type TaskStatus {
     Pending,                                   -- OK: nullary data constructor tag
-    Running(fn() -> () @Async),                -- OK: payload is a callable arrow encapsulating effect
-    Mutating(fn(mut StateNode) -> () &mut),    -- OK: payload is a callable arrow encapsulating capability
+    Running(fn() -> () @Async),                -- OK: payload is a callable arrow encapsulating computational effect
+    Mutating(fn(mut StateNode) -> () &mut),    -- OK: payload is a callable arrow encapsulating mutation capability
+    Suspended({ duration_ms: int }),           -- OK: pure record payload
+    Completed(int),                            -- OK: pure scalar payload
 }
 
--- 4. Field Computation Annotations (E0333):
--- type BadChannel = { stream: str @Io }        -- Error [E0333]: record field 'stream' cannot declare algebraic effect '@Io'
--- type BadBuffer = { data: []u8 &mut }         -- Error [E0333]: record field 'data' cannot declare state capability '&mut'
+let status: TaskStatus = Running(\-> {
+    Async::sleep(100)
+})                                             -- OK: constructs data variant holding callable thunk
+
+-- 4. Record Field Computation Annotations (E0333) vs. Callable Fields:
+-- type BadChannel = {
+--     stream: str @Io,                        -- Error [E0333]: record field 'stream' cannot declare algebraic effect '@Io'; fields store values or callables
+--     buffer: []u8 &mut,                      -- Error [E0333]: record field 'buffer' cannot declare state capability '&mut'; use 'mut' prefix or callable arrow
+--     sink: int &{mut app_cache},             -- Error [E0333]: record field 'sink' cannot declare external state capability
+-- }
+
 type ValidChannel = {
-    mut buffer: []u8,                          -- OK: structural field interior mutability
-    stream: fn() -> str @Io,                   -- OK: field stores a callable arrow carrying effect
-    writer: fn(mut []u8) -> () &mut,           -- OK: field stores a callable arrow carrying capability
+    mut buffer: []u8,                          -- OK: 'mut' prefix marks heap interior mutability
+    stream: fn() -> str @Io,                   -- OK: field stores a callable arrow carrying algebraic effect
+    writer: fn(mut []u8) -> () &mut,           -- OK: field stores a callable arrow carrying state capability
 }
 
--- 5. Generic Computation Constraints (E0334):
--- fn bad_exec<T: @Io>(task: T) -> () { task() } -- Error [E0334]: generic parameter 'T' cannot be constrained by algebraic effect '@Io'
+let mut ch = ValidChannel.{
+    buffer: [],
+    stream: \-> Io::read_line(),
+    writer: \mut buf -> { buf !> Array::push(0) },
+}
+ch.buffer !> Array::push(42)                   -- OK: mutate interior mutable field via 'let mut' root
+
+-- 5. Generic Computation Constraints (E0334) vs. Automatic Forwarding:
+-- fn bad_exec<T: @Io>(task: T) -> () { task() } -- Error [E0334]: generic parameter 'T' cannot be constrained by algebraic effect '@Io'; generics parameterize types or values
 -- type BadWrapper<T: &mut> = { item: T }      -- Error [E0334]: generic parameter 'T' cannot be constrained by state capability '&mut'
+-- fn bad_pipe<T: @Async + Io>(x: T) -> T { x } -- Error [E0334]: generic parameter 'T' cannot be constrained by effect row '@Async + Io'
+
 fn execute<T, R>(task: fn(T) -> R, arg: T) -> R {
     task(arg)                                  -- OK: automatically forwards callee's effects and capabilities
+}
+fn log_id<T: { id: int, ..R }>(item: T) -> int {
+    item.id                                    -- OK: row constraint is a shape property
 }
 fn get_field<T, K: keyof T>(record: T, key: K) -> T.(K) {
     record.(key)                               -- OK: keyof constraint is a shape property
 }
 
--- 6. Pure Type Function Computation Annotations (E0335):
--- halt type BadTransform<T> = \T -> type<T> @Io -- Error [E0335]: pure type function cannot declare algebraic effect '@Io'
+-- 6. Pure Type Function Computation Annotations (E0335) vs. Symbolic Purity:
+-- halt type BadTransform<T> = \T -> type<T> @Io -- Error [E0335]: pure type function cannot declare algebraic effect '@Io'; type functions are axiomatically pure
 -- type BadMapper<T> = \T -> type<T> &mut       -- Error [E0335]: pure type function cannot declare state capability '&mut'
-halt type MakeNullable = \T -> type<?T>        -- OK: pure type evaluation returning type<T>
+-- halt type BadAsyncType<T> = \T -> type<T> @Async &closure -- Error [E0335]: pure type function cannot declare effects or capabilities
 
--- 7. Value Effect Annotations Prohibited (E0613):
--- type BadRecord = { val: int @Io }            -- Error [E0613]: record field has value type 'int'; raw effects cannot reside on values
-fn run_service() @Io {
-    let result: str = Io::read_line()          -- OK: evaluated value is pure 'str'
-    -- let bad_bind: str @Io = result          -- Error [E0613]: binding 'bad_bind' specifies effect '@Io'; values in normal form carry no latent effects
+halt type MakeNullable = \T -> type<?T>        -- OK: pure type evaluation returning type<T>
+halt type SafeRecord = \T -> {
+    if typeof(T) == typeof(int) {
+        type<{ val: int, valid: bool }>
+    } else {
+        type<{ val: T, valid: bool }>
+    }
 }
+type NullableInt = MakeNullable<int>           -- Resolves to ?int
+type IntRecord   = SafeRecord<int>             -- Resolves to { val: int, valid: bool }
+```
+
+#### 3.12.5 The Asymmetric Scope of Influence
+
+##### Capabilities Govern Bindings
+Variable bindings serve as access portals to physical storage locations in registers, stack frames, and the GC heap. Memory is spatial, persistent, and subject to aliasing relationships. Consequently, static capability tracking governs:
+1. **Reassignment Privilege**: Whether a binding slot can be overwritten (`var` vs `let` / `let mut`).
+2. **Interior Write Privilege**: Whether fields reachable through a handle can be mutated in place (`let mut` / `var` vs `let` / `let view`).
+3. **Live Observation**: Whether a handle dynamically observes background mutations of an aliased heap object (`let view`).
+4. **Anti-Laundering Degradation**: Enforcing monotonic permission degradation ($\text{Mut} \succ \text{ReadOnly} \succ \text{None}$) across destructuring patterns, container insertions, and returns (`E0520`–`E0528`).
+
+##### Algebraic Effects Never Govern Bindings (Function & Data Colorlessness)
+Algebraic effects govern dynamic, non-local control transfers during expression evaluation:
+1. When an effectful operation is evaluated (`Console::print("hi")`, `Yield::emit(x)`), it traverses up the dynamic execution stack to find an active enclosing `with` handler.
+2. Upon reduction to normal form, all effect operations have already been dispatched and handled.
+3. The resulting value is an inert memory representation in normal form, carrying Shape and Access permissions, but **zero latent effects**.
+4. Value bindings, record fields, tuple components, and array elements are strictly colorless. Decorating value bindings with `@Eff` triggers `E0613: ValueEffectAnnotationError`.
+
+##### The Intersecting Boundary: Capability-Bearing Effect Operations
+The tripartite domains intersect cleanly in capability-bearing effect operations, where control routing and memory mutation rights are orthogonal:
+
+```ril
+eff BufferIO {
+    read_into(mut buf: []u8) -> int &mut,       -- Operation demands in-place buffer mutation
+}
+```
+- The effect tag `BufferIO` governs **Control** (Domain III: who intercepts the operation up the call stack).
+- The capability annotation `&mut` governs **Access** (Domain II: the operation demands write authority into caller-supplied storage).
+
+#### 3.12.6 Precise Tripartite EBNF Grammar Formalization
+
+```ebnf
+(* ========================================================================= *)
+(* 1. TYPE EXPRESSIONS (Domain I: Data & Shape)                              *)
+(* ========================================================================= *)
+
+TypeDecl         ::= [ "pub" ] [ "halt" ] "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
+OpaqueTypeDecl   ::= [ "pub" ] "opaque" "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
+NominalDecl      ::= [ "pub" ] "type" PascalCase [ GenericParams ] [ "(" TypeExpression ")" ] [ WhereClause ]
+SumTypeDecl      ::= [ "pub" ] "type" PascalCase [ GenericParams ] [ WhereClause ] "{" VariantDeclList "}"
+
+TypeExpression   ::= PrimaryType
+                   | RecordType
+                   | TupleType
+                   | ArrayType
+                   | MapType
+                   | SetType
+                   | CallableType
+                   | TypeProjection
+                   | TypeFunctionExpr
+
+PrimaryType      ::= PrimitiveType | NominalRef | "(" TypeExpression ")"
+NominalRef       ::= PascalCase [ GenericArgs ]
+
+(* Callable Type: THE COMPUTATION CONFLUENCE POINT *)
+CallableType     ::= "fn" "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ EffectAnnot ] [ StateAnnot ]
+ParameterTypeList::= ParameterTypeItem { "," ParameterTypeItem } [ "," ]
+ParameterTypeItem::= [ "mut" ] [ SnakeCase ":" ] TypeExpression
+
+(* Records: 'mut' is exclusively an interior field layout marker *)
+RecordType       ::= "{" [ RecordFieldList ] "}"
+RecordFieldList  ::= RecordField { "," RecordField } [ "," ] [ ".." SnakeCase ]
+RecordField      ::= [ "mut" ] SnakeCase ":" TypeExpression
+
+(* Sum Types: Variants are pure data constructors *)
+VariantDeclList  ::= VariantDecl { "," VariantDecl } [ "," ]
+VariantDecl      ::= PascalCase [ GenericParams ] [ VariantPayload ] [ "->" TypeExpression ]
+VariantPayload   ::= "(" VariantFields ")" | "{" RecordFieldList "}"
+VariantFields    ::= VariantField { "," VariantField } [ "," ]
+VariantField     ::= [ SnakeCase ":" ] TypeExpression
+
+(* Generic Parameters: Strictly Types or Const Values *)
+GenericParams    ::= "<" GenericParamDecl { "," GenericParamDecl } [ "," ] ">"
+GenericParamDecl ::= TypeParamDecl | ConstParamDecl
+TypeParamDecl    ::= PascalCase [ ":" TypeSort ] [ "=" TypeExpression ]
+ConstParamDecl   ::= SnakeCase ":" ValueType [ "=" Expression ]
+TypeSort         ::= "Type" | KindSignature | RecordConstraint | KeyofConstraint
+KindSignature    ::= "Type" "->" ( "Type" | KindSignature )
+RecordConstraint ::= "{" [ RecordConstraintField { "," RecordConstraintField } [ "," ] ] ".." SnakeCase "}"
+RecordConstraintField ::= [ "mut" ] SnakeCase ":" TypeExpression
+KeyofConstraint  ::= "keyof" TypeExpression
+
+(* ========================================================================= *)
+(* 2. CONTROL & TRANSFER DOMAIN (Domain III: Algebraic Effects)              *)
+(* ========================================================================= *)
+
+EffectDecl       ::= [ "pub" ] "eff" PascalCase [ GenericParams ] "{" EffectMemberList "}"
+EffectMemberList ::= ( EffectOpDecl { "," EffectOpDecl } [ "," ] )
+                   | ( PascalCase { "," PascalCase } [ "," ] )
+EffectOpDecl     ::= SnakeCase "(" [ ParameterList ] ")" [ "->" TypeExpression ] [ StateAnnot ]
+EffectAnnot      ::= "@" EffectRow
+EffectRow        ::= EffectIdentifier { "+" EffectIdentifier }
+EffectIdentifier ::= PascalCase [ GenericArgs ]
+
+(* ========================================================================= *)
+(* 3. STORAGE & ACCESS DOMAIN (Domain II: Capabilities)                      *)
+(* ========================================================================= *)
+
+StateAnnot       ::= StateCapability { StateCapability }
+StateCapability  ::= "&mut"
+                   | "&^mut"
+                   | "&closure"
+                   | "&capture"
+                   | "&{" [ "^" ] "mut" SnakeCase "}"
+                   | "&{" SnakeCase "}"
 ```
 
 ---
 
 ## 4. Declarations & Bindings
+
+### The Three-Tier Mutability Architecture & Storage Matrix
+
+Ril decomposes storage mutability into a 2×2 matrix, cleanly separating variable slot reassignment from interior heap mutation:
+
+| Binding Form | Variable Reassignment (`x = ...`) | In-Place Mutation (`x.f = ...`, `x !> ...`) | Storage Semantics | Mental Model & Lifetime Invariants |
+| :--- | :---: | :---: | :--- | :--- |
+| **`let`** | Prohibited (`E0501`) | Prohibited (`E0520`) | **Immutable Binding** | Frozen snapshot, pure scalar copy, constant handle. |
+| **`let mut`** | Prohibited (`E0502`) | Permitted ($\&mut$) | **Pinned Mutable Handle** | Fixed GC heap allocation; guaranteed pointer stability. |
+| **`var`** | Permitted | Permitted ($\&mut$) / Prohibited (`E0520` if ReadOnly) | **Reassignable Variable** | Dynamic slot, loop accumulator, reassignable cursor. |
+| **`let view`** | Prohibited (`E0501`) | Prohibited (`E0520`) | **Live Read-Only View** | Read-only observation window over a pinned mutable root. |
+
+```ril
+type UserDoc = { mut title: str, mut score: int }
+
+-- 1. Immutable Binding ('let'):
+let ro_val = 100
+let ro_doc = UserDoc.{ title: "Guide", score: 50 }
+-- ro_val = 200                         -- Error [E0501]: cannot reassign immutable binding 'ro_val'
+-- ro_doc.score = 51                    -- Error [E0520]: cannot mutate field through read-only handle 'ro_doc'
+
+-- 2. Pinned Mutable Handle ('let mut'):
+let mut pinned_doc = UserDoc.{ title: "Draft", score: 0 }
+pinned_doc.score = 10                  -- OK: in-place interior mutation permitted
+pinned_doc.title = "Published"         -- OK: in-place field write permitted
+-- pinned_doc = UserDoc.{ title: "New", score: 0 } -- Error [E0502]: cannot reassign pinned mutable handle 'pinned_doc'; use 'var'
+
+-- 3. Reassignable Mutable Variable ('var'):
+var counter = 0
+counter += 1                           -- OK: reassignable scalar
+var cursor_doc = pinned_doc            -- OK: reassignable reference variable
+cursor_doc.score = 15                  -- OK: interior mutation permitted
+cursor_doc = UserDoc.{ title: "Next", score: 100 } -- OK: handle reassignment permitted
+
+-- 4. Live Read-Only View ('let view'):
+let view observer = pinned_doc         -- OK: live view over pinned mutable root
+assert(observer.score == 15)           -- OK: reads current state
+pinned_doc.score = 20                  -- Mutate via root
+assert(observer.score == 20)           -- OK: live view dynamically observes mutation
+-- observer.score = 25                 -- Error [E0520]: cannot mutate through read-only view 'observer'
+```
 
 ### 4.1 Immutable Bindings (`let`)
 
@@ -1166,7 +1437,7 @@ eff AppEffects { Console, State<int> } -- Combined effect set
 
 ### 4.8 External Interface Declarations (`.d.ril`)
 
-External interface declarations are defined in dedicated declaration units with the `.d.ril` extension. A `.d.ril` module declares foreign signatures, opaque types, ambient constants, and exchange contract types without adding new keywords or dialects to the language.
+External interface declarations are contract-only modules defined in `.d.ril` files, specifying host signatures, opaque nominal types, and exchange contracts without implementation bodies.
 
 ```ebnf
 DeclUnitItem     ::= [ "pub" ] ( DeclFunction | DeclType | DeclLet | DeclOpaqueType )
@@ -1188,6 +1459,7 @@ DeclLet          ::= "let" Identifier ":" TypeExpression
 4. **Exchange Contract Types**: Transparent type aliases, records, and tagged sum types MAY provide full shape definitions in `.d.ril` to define exchange data contracts.
 5. **Top-Level Immutability**: Top-level variables in `.d.ril` are restricted to immutable handles (`let`). Declaring `var` or `let mut` is statically rejected under `E0901`.
 6. **Dual-Tier `where` Compatibility**: `DeclFunction` supports waist `where` (`SignatureWhereClause`) for aliasing signature callback types, but block-level `where` is omitted because foreign functions have no body block.
+7. **Hard Safety Membrane Invariant**: Invocations across `.d.ril` external boundaries are strictly sealed against unhandled host faults. External traps or host exceptions never corrupt caller stack frames; they resolve either to domain error variants (`Result<T, E>`) or deterministic runtime panics contained at `scope` boundaries.
 
 ```ril
 -- In file: platform/dom.d.ril
@@ -1683,7 +1955,7 @@ RecordPattern      ::= [ TypeReference ] ".{" [ RecordPatternField { "," RecordP
 RecordPatternField ::= [ BindingModifier ] Identifier [ ":" Pattern ] | Identifier
 ```
 
-Matches are evaluated top-to-bottom. The compiler enforces exhaustiveness.
+Matches are evaluated top-to-bottom and must be exhaustive.
 
 ```ril
 type Shape {
@@ -1733,7 +2005,7 @@ fn get_size(s: Shape) -> f64 {
 --     match n {
 --         x if x >= 0 -> "positive",
 --         x if x < 0  -> "negative",
---     }                               -- Error [E0301]: non-exhaustive match: compiler cannot prove guards cover all inputs
+--     }                               -- Error [E0301]: non-exhaustive match: pattern guards do not prove coverage of all inputs
 -- }
 
 -- Boolean pattern test via 'is':
@@ -1780,10 +2052,7 @@ NarrowingExpr      ::= NarrowingPredicate
 #### Normative Semantic Rules & Invariants
 
 1. **Environment Splitting**: Predicate $P$ splits context $\Gamma$ into true/false environments: $\Gamma \vdash P \rightsquigarrow (\Gamma_t, \Gamma_f)$.
-2. **Division of Labor**:
-   - `match`: Decomposes structures into new variables; exhaustiveness required.
-   - `let ... else`: Extracts $\ge 1$ new bindings (`E0309`); `else` must diverge (`never`).
-   - Narrowing (`if`/`while`): In-place refinement of existing bindings; binds 0 new variables.
+2. **Zero-Binding Refinement**: Narrowing refines existing bindings in-place across conditional branches without introducing new variable bindings (contrasting with `match` and `let ... else` which introduce new bindings).
 3. **Non-Binding Predicates**: Pattern variables in `x is Variant(p)` are scoped strictly to trailing guards (`if guard`) and cannot escape to branch blocks (`E0301`).
 4. **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ (§3.5.1):
    - $n = 0$: No payload; projection raises `E0301`.
@@ -2029,28 +2298,17 @@ where
 ```
 
 ```ril
--- 1. Named Function: Module-level hoisted, zero environment allocation, static function pointer
+-- Hoisted Named Function:
 pub fn calculate_tax(amount: int) -> int {
     amount * 20 / 100
 }
-
--- 2. Stateless Anonymous Function: Pure function pointer, zero-cost (no environment allocation)
-let tax_fn: fn(int) -> int = \amount -> amount * 20 / 100
-
--- 3. State-Capturing Closure: Carries environment pointer, type carries &closure
-let rate = 20
-let tax_closure: fn(int) -> int &closure = \amount -> amount * rate / 100
-
--- Invocations:
-let r1 = calculate_tax(100)            -- OK: 20
-let r2 = tax_fn(100)                   -- OK: 20
-let r3 = tax_closure(100)              -- OK: 20
+let r1 = calculate_tax(100)            -- OK: direct call
 ```
 
 | Aspect | Named Function (`fn`) | Stateless Anonymous Function (`\x -> ...`) | Stateful Closure (`\x -> ... &closure`) |
 | :--- | :--- | :--- | :--- |
 | **Hoisting** | Module-wide newspaper ordering | Strictly lexical (definition before use) | Strictly lexical (definition before use) |
-| **Environment Allocation** | Zero | Zero (bare machine code pointer) | Fat pointer (code pointer + environment struct) |
+| **Environment Capture** | None (no captured state) | None (no captured state) | Lexically captured state (`&closure`) |
 | **Type Representation** | Item identity / `fn(P) -> R` | `fn(P) -> R` | `fn(P) -> R &closure` |
 | **Handle Requirement** | Direct call / `let` handle | Callable via `let` handle | `let` (read-only capture) or `let mut` / `var` (mut capture) |
 
@@ -2335,6 +2593,26 @@ fn clear_items(mut list: []int) &mut {
 
 ### 8.3 Retained Mutable Sharing (`&^mut`, `&{^mut ident}`)
 
+The boundary between frame-confined mutation and surviving retained aliasing is governed by **Surviving Write Path Counting**:
+
+$$\mathcal{W}_{\text{surviving}}(\text{origin}) \ge 2 \iff \&\hat{\;}\mathrm{mut}$$
+
+```
+                ┌──────────────────────────────────────────────────┐
+                │          SURVIVING WRITE PATH COUNTING           │
+                └─────────────────────────┬────────────────────────┘
+                                          │
+                  ┌───────────────────────┴───────────────────────┐
+                  ▼                                               ▼
+         W_surviving = 1                                 W_surviving ≥ 2
+   (Encapsulated Private Cell)                     (Retained Mutable Sharing)
+   ───────────────────────────                     ──────────────────────────
+   • Stack frame terminates                        • Multiple persistent paths
+   • Only the closure holds the cell               • Stashed in external container
+   • Requires &capture, &closure                   • Requires &^mut, &{^mut ident}
+   • &^mut rejected as EXCESSIVE (E0529)           • Omitting triggers E0510
+```
+
 Retained mutable sharing occurs when execution creates a persistent writable access path that survives the call or closure publication boundary ($\ge 2$ independent surviving write paths). Origin identities survive intermediate local bindings: forwarding an external or borrowed reference through a local `let mut` handle does not alter its storage origin or discharge capability obligations. Conversely, allocating a fresh mutable reference that escapes solely through a single closure creates exactly 1 surviving write path and requires only `&capture`, while exposing multiple surviving handles creates $\ge 2$ write paths and requires `&^mut`.
 
 ```ril
@@ -2476,6 +2754,8 @@ let msg = greeter("Alice")             -- OK: read-only capture can be invoked v
 
 For every argument passed to a `mut` parameter, its memory path MUST be pairwise disjoint from every other argument and active closure capture in that call:
 
+$$\forall i \in \mathrm{MutArgs},\quad \forall j \ne i,\quad \mathrm{Path}(a_i) \cap \mathrm{Path}(a_j) = \emptyset$$
+
 ```ril
 type Point = { mut x: int, mut y: int }
 type Buffer = { mut size: int, mut data: []int }
@@ -2616,9 +2896,9 @@ let abstract_stashing: StashingWorker = concrete_stashing -- OK: preserves &^mut
 
 ### 9.1 Effect Declarations & Operation Signatures
 
-Effects define abstract operation tags that callers invoke and enclosing handlers intercept. An effect operation signature is an ordinary callable signature: it declares argument types, return types, and optional capabilities (`&mut`, `&^mut`).
-
-When an effect operation requires in-place mutation (e.g., writing into a caller-supplied buffer), it explicitly declares `&mut` on its operation signature. Callers invoking the operation and handlers servicing it must track, forward, or discharge this capability under standard capability tracking rules (§8). Concurrency boundaries (`scope.fork`, `Parallel::map`) enforce Data-Race Freedom (DRF-SC) directly through capability checking: any value or closure crossing a concurrency boundary must not carry live mutable capabilities (`&mut`, `&^mut`, `&{mut var}`), rejected statically under `E0601: CrossThreadDataRaceHazardError`. Concurrency boundaries simultaneously enforce Algebraic Control Confinement: child tasks must be effect-closed under user-defined effects (§9.5), rejected statically under `E0615: CrossTaskUnhandledEffectError`.
+Effects define abstract operation tags intercepted by enclosing handlers. An effect operation signature is an ordinary callable signature declaring argument types, return types, and optional state capabilities (`&mut`, `&^mut`):
+- **Pure Operations**: Perform ambient control transfer without mutating caller storage.
+- **Capability-Bearing Operations**: Operations that mutate caller storage explicitly declare state capabilities (`&mut`, `&^mut`), which callers and handlers must track and discharge under standard capability rules (§8).
 
 ```ril
 -- 1. Pure Effect Operations & Ambient Context:
@@ -2646,25 +2926,6 @@ fn hello() -> () @Console {
 -- Effectful computation invoking capability-bearing BufferIO:
 fn fill_header(mut target: []u8) -> int @BufferIO &mut {
     BufferIO::read_into(mut target)    -- OK: &mut capability flows through caller to operation
-}
-
--- 3. Concurrent Task Boundary: DRF-SC Capability Enforcement:
-fn concurrent_boundary_check() {
-    let immut_data = "immutable configuration"
-    let mut local_buf = [0u8, 0u8, 0u8]
-
-    scope(\mut s -> {
-        -- OK: Immutable value has zero mutable capabilities, safely crosses task boundary:
-        s.fork(\-> {
-            immut_data
-        })
-
-        -- Error [E0601]: CrossThreadDataRaceHazardError: live mutable capability cannot cross task boundary
-        -- s.fork(\-> {
-        --     local_buf[0] = 1u8
-        -- })
-        Ok()
-    })
 }
 ```
 
@@ -2711,7 +2972,7 @@ fn make_button() -> Button {
     with Console::print(msg) -> resume ()
 
     -- Closure invokes Console::print. Because 'with Console' is active in scope,
-    -- compiler automatically captures the handler into closure environment:
+    -- Active handler is captured into the closure environment:
     let cb = \-> Console::print("Button clicked!")
     -- 'cb' has type fn() -> () &closure (@Console discharged!)
 
@@ -2791,12 +3052,14 @@ Ril provides four foundational built-in algebraic effects tracking execution cap
 3. **`@Async` (Suspendable I/O)**: An effect alias `{Fiber, Concurrent}` tracking uncolored asynchronous computations.
 4. **`@Div` (Divergence Tracking)**: Tracks potential non-termination in unbounded loops and general recursive functions. Total functions (`halt fn`) strictly prohibit `@Div`.
 
-The sub-effect lattice satisfies $\emptyset \subset \{\text{Fiber}\} \subset \{\text{Fiber}, \text{Concurrent}\} = \text{Async}$.
+The sub-effect lattice satisfies:
+
+$$\emptyset \subset \{\text{Fiber}\} \subset \{\text{Fiber}, \text{Concurrent}\} \equiv \text{Async}, \quad \text{disjoint from } \{\text{Div}\}$$
 
 #### Normative Rules for Built-in Effects:
 1. **Least-Privilege Leaf I/O Principle (`@Fiber`)**: Leaf I/O operations requiring cooperative suspension without forking child tasks MUST declare only `@Fiber`. Holding `@Fiber` does not grant authority to fork concurrent tasks (`@Concurrent`), preserving frame containment and single-fiber DRF-SC invariants.
 2. **Compound Asynchronous Workflows (`@Async`)**: Functions that both suspend on I/O and manage concurrent child tasks declare `@Async`.
-3. **Decoupling Quantum Scheduling from Value Generators**: Cooperative scheduling operations declared within `eff Fiber` (`yield() -> ()` and `park() -> ()`) are strictly untyped quantum transfer primitives. Value-emitting streams MUST be modeled via user-defined algebraic effects (e.g., `eff Yield<T> { emit(T) -> () }`), evaluated as internal push streams under one-shot delimited resumption (`resume ()`). External pull iterators cannot escape `resume` past handler arm boundaries (`E0611`) and are constructed via compiler-lowered state machines or fiber channels.
+3. **Decoupling Quantum Scheduling from Value Generators**: Cooperative scheduling operations declared within `eff Fiber` (`yield() -> ()` and `park() -> ()`) are strictly untyped quantum transfer primitives. Value-emitting streams MUST be modeled via user-defined algebraic effects (e.g., `eff Yield<T> { emit(T) -> () }`), evaluated as internal push streams under one-shot delimited resumption (`resume ()`). External pull iterators cannot escape `resume` past handler arm boundaries (`E0611`) and are constructed via state machines or fiber channels.
 
 ```ril
 -- 0. Built-in Fiber Effect Declaration:
@@ -2900,11 +3163,11 @@ All concurrent child tasks must be forked within a structured `scope`. A parent 
 1. **Lifetime Containment Invariant**:
    For any scope $S$ and any child task $c \in \text{Children}(S)$:
    $$\mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(S) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})$$
-2. **Stack-Allocated Scope Invariant (Zero-Heap Fast Path)**:
-   When a `scope` block is lexically enclosed within the calling activation frame:
-   - **Intrusive Child-Stack Descriptors**: The parent `Scope` descriptor is allocated contiguously on the caller stack frame with $O(1)$ footprint (intrusive list head). Task tracking nodes (`TaskNode`) are allocated inline on each child fiber's own stack frame. Dynamic or static task fan-out requires zero dynamic heap allocation.
-   - **Synchronous Scope Unwind-Barrier**: When an unwind occurs (due to parent frame panic or sibling task cancellation), the unwinder MUST NOT pop the stack frame hosting an active scope until all active child tasks reach terminal state (`Completed`, `Panicked`, or `Cancelled`), execute their `let scoped` LIFO cleanup handlers, and unlink from the scope descriptor (`active_count == 0`), strictly preventing stack-use-after-free hazards.
-   - **Result Rendezvous Ownership**: Child return values $T$ reside within the quiescent child stack frame until moved out via `task.join()` or dropped during scope LIFO exit.
+2. **Synchronous Scope Completion & Abort Barrier**:
+   A `scope` block cannot complete or exit until all spawned child tasks reach a terminal state (`Completed`, `Panicked`, or `Cancelled`):
+   - **Orderly Termination**: Normal scope completion blocks until all spawned tasks complete their execution.
+   - **Synchronous Abort Barrier**: When an abnormal termination occurs (due to parent frame panic or child task defect), sibling tasks are immediately cancelled, and the scope boundary halts unwinding until all active children terminate and execute their `let scoped` LIFO cleanup handlers.
+   - **Result Transfer**: Child return values $T$ are transferred upon `task.join()`, or discarded if the task is cancelled or unwound.
 3. **Boundary Capability Confinement**: Passing active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) or live views across concurrent task boundaries is statically rejected (`E0601: CrossThreadDataRaceHazardError`).
 4. **Concurrent Task Effect Confinement Invariant (`E0615`)**:
    For any concurrent child task $c$ spawned via `s.fork(task)` or data-parallel combinator (`Parallel::map`, `Parallel::fold`), the task callable $task$ MUST be closed under all user-defined algebraic effects:
@@ -2958,10 +3221,9 @@ fn bad_concurrent_data_race() {
     })
 }
 
--- 3. Stack-Allocated Dynamic Fan-Out Invariant (Zero-Heap Fast Path):
+-- 3. Dynamic Task Fan-Out:
 fn batch_transform(items: []int) -> Result<[]int, TaskFault> @Concurrent {
-    -- Invariant: parent Scope descriptor is allocated on caller stack (O(1)).
-    -- Intrusive TaskNode tracking descriptors are allocated on respective child stacks.
+    -- Dynamic child tasks spawned in loops are bounded and tracked by the enclosing scope
     scope(\mut s -> {
         let mut tasks: []Task<int> = []
         for items as item {
@@ -3029,6 +3291,39 @@ var external_counter = 0
 -- })
 ```
 
+### 9.7 The Arrow-Only Law of Effects (`E0613`)
+
+Computations reduce to values in normal form. Once reduced, no further control transfers can occur. Passive values carry Shape and Access, but **zero latent effects**.
+
+Attaching `@Eff` annotations to value bindings, record fields, tuple elements, or arrays represents an ontological category error and is statically rejected under `E0613: ValueEffectAnnotationError`:
+
+```ril
+-- -----------------------------------------------------------------------------
+-- Negative Examples: Prohibited Value Effect Annotations (E0613)
+-- -----------------------------------------------------------------------------
+-- type BadField = { data: int @Io }            -- Error [E0613]: record field has value type 'int'; raw effects cannot reside on values
+-- type BadTuple = (str @Io, int)               -- Error [E0613]: tuple component has value type 'str'; raw effects cannot reside on values
+-- type BadArray = []int @Async                 -- Error [E0613]: array element has value type 'int'; raw effects cannot reside on values
+
+-- fn test_binding_error() @Io {
+--     let bad_bind: str @Io = "hello"          -- Error [E0613]: binding 'bad_bind' specifies effect '@Io'; values in normal form carry no latent effects
+--     let @Io bad_prefix = "hello"             -- Error [E0613]: binding pattern specifies effect '@Io'; misplaced effect annotation
+-- }
+
+-- -----------------------------------------------------------------------------
+-- Positive Examples: Arrow-Only Law
+-- -----------------------------------------------------------------------------
+type ValidService = {
+    name: str,                                  -- Pure value at rest
+    fetch_data: fn() -> str @Io,                -- OK: callable arrow carrying latent effect
+}
+
+fn test_valid_binding() @Io {
+    let result: str = Io::read_line()           -- OK: expression executes @Io; resulting value is pure 'str'
+    assert(result != "")
+}
+```
+
 ---
 
 ## 10. Compile-Time Computation & Totality
@@ -3074,7 +3369,7 @@ let pair: StringIntPair = .{ first: "id", second: 101 }
    - Type functions MUST NOT declare or carry algebraic effects (`@Effect`) or state capabilities (`&mut`, `&closure`, `&capture`, `&{ident}`) (`E0335`).
    - `meta fn` signatures MUST NOT declare algebraic effects or state capabilities (`E0813`).
    - Both enjoy full pure functional computation: local immutable bindings (`let`), conditionals (`if`), pattern matching (`match`), invocation of pure `meta fn` helpers, pure collection combinators, and recursion.
-4. **Totality Certification**: `halt type` certifies normal termination. Unmarked type functions operate under configurable compiler evaluation budgets (`E0811`). `halt fn` certifies total runtime execution.
+4. **Totality Certification**: `halt type` certifies normal termination. Unmarked type functions operate under configurable evaluation step budgets (`E0811`). `halt fn` certifies total runtime execution.
 
 ```ril
 -- 1. Meta helper function: value domain computation only (returns int, not type<T>)
@@ -3111,8 +3406,8 @@ type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u
 
 1. **Family Isolation**: Type functions can invoke `meta fn` callables and other type functions, but cannot invoke runtime `fn` callables (`E0810`).
 2. **Runtime Isolation**: Runtime functions cannot invoke type functions (`E0810`).
-3. **Pre-Effect Dead-Branch Pruning Invariant**: In generic runtime functions with static meta guards (`if is_pure(type<F>)`), dead branches are pruned during monomorphization *prior to* latent effect row calculation ($\mathbf{Eff}$). A specialized instance whose surviving branch is pure incurs zero latent effect obligations, preventing spurious effect pollution for callers.
-4. **Budget Exhaustion**: Exceeding compiler evaluation limits halts compilation with `E0811`.
+3. **Pre-Effect Dead-Branch Pruning Invariant**: In generic runtime functions with static meta guards (`if is_pure(type<F>)`), dead branches are pruned *prior to* latent effect row calculation ($\mathbf{Eff}$). An instance whose surviving branch is pure incurs zero latent effect obligations, preventing spurious effect pollution for callers.
+4. **Budget Exhaustion**: Exceeding evaluation step limits is statically rejected under `E0811`.
 
 ```ril
 fn pure_worker(x: int) -> int { x + 1 }
@@ -3371,7 +3666,7 @@ meta let _ = assert(align_to(4, 8) == 8, "alignment calculation verified")
 Every source file is an independent compilation unit. Compilation units are partitioned into two mutually exclusive kinds:
 
 1. **Implementation Units (`.ril`)**: Standard modules containing executable definitions. Functions in `.ril` modules MUST provide implementation bodies (`{ ... }`).
-2. **External Interface Declaration Units (`.d.ril`)**: Contract-only modules declaring external types, ambient constants, and foreign signatures without implementation bodies (§4.8). When a module path resolves to `<path>.d.ril`, the module is designated as an `ExternalContractModule` and linked to target-specific safe wrappers.
+2. **External Interface Declaration Units (`.d.ril`)**: Contract-only modules declaring external types, ambient constants, and foreign signatures without implementation bodies (§4.8). When a module path resolves to `<path>.d.ril`, the module is designated as an `ExternalContractModule` providing foreign interface signatures without local definitions.
 
 Top-level items in both unit types are private to the file by default unless marked with `pub`.
 
@@ -3427,7 +3722,7 @@ var active_workers: int = 0            -- OK: initialized with constant expressi
 
 ### 11.4 Unit Testing Blocks (`test`)
 
-`test` blocks define isolated unit test suites. In production compilation modes, `test` blocks are completely eliminated from binary generation and carry zero runtime overhead.
+`test` blocks define isolated unit test suites and are not executed during normal program execution.
 
 ```ril
 test "array pushing and popping" {
@@ -3614,7 +3909,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
 | **`E0720`** | `UnusedFallibleResultError` | Discarding fallible `Result` without inspection |
 | **`E0810`** | `CallFamilyViolationError` | Crossing disjoint runtime `fn` and compile-time `meta`/`type` call families |
-| **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting compiler evaluation step budget in meta/type functions |
+| **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting evaluation step budget in meta/type functions |
 | **`E0812`** | `MetaTypeReturnProhibitedError` | 'meta fn' attempting to return 'type<...>' or sort 'Type'; type construction is monopolized by type functions |
 | **`E0813`** | `MetaComputationAnnotationError` | Declaring algebraic effects ('@Eff') or state capabilities ('&Cap') on a 'meta fn' signature |
 | **`E0820`** | `TotalityViolationError` | Totality certification failed in `halt fn` (unbounded recursion/loop) |

@@ -259,7 +259,7 @@ Ril rejects this conflation:
 1. **Eliminating Handler Hijacking**: If scheduling and data emission shared the same effect, an ambient stream consumer `with Yield::emit(...)` could inadvertently capture runtime scheduler time-slicing yields, causing scheduler starvation.
 2. **Untyped Scheduler vs. Typed Payload**: `@Fiber` operates at the untyped machine-state level (declared as `yield() -> ()` within `eff Fiber`), merely swapping instruction pointers and CPU register frames. Conversely, value streaming carries domain data of type $T$.
 3. **Freestanding Purity**: Streaming functions annotated with `eff Yield<T>` are ordinary algebraic effects. They can be compiled, linked, and executed in freestanding embedded targets without dragging in a fiber runtime or thread scheduler.
-4. **Push vs. Pull Semantics**: Under Ril's affine resumption and no-escape invariant (`E0611`), `eff Yield<T>` evaluates as a zero-cost in-situ **push stream**. External pull iterators (`Iterator<T>`) are cleanly constructed via compiler state-machine lowering or dedicated fiber channels without compromising handler encapsulation.
+4. **Push vs. Pull Semantics**: Under Ril's affine resumption and no-escape invariant (`E0611`), `eff Yield<T>` evaluates as a zero-cost in-situ **push stream**. External pull iterators (`Iterator<T>`) are cleanly constructed via state machines or dedicated fiber channels without compromising handler encapsulation.
 
 ### 3.2 Structured Concurrency Scopes as Defect Containment Domains
 
@@ -276,14 +276,14 @@ A parent scope cannot exit until all child tasks finish. If a child task panics,
 2. All `let scoped` resource handles inside cancelled fibers execute their cleanup handlers in strict LIFO order.
 3. No orphan tasks remain executing in the background.
 
-#### 3.2.1 Zero-Cost Structured Concurrency: Intrusive Child-Stack Scopes and the Synchronous Unwind-Barrier
+#### 3.2.1 Structured Lifetime Containment and the Synchronous Unwind-Barrier
 
-In unstructured runtimes (e.g. Go goroutines or Node.js Promises), task control blocks, synchronization semaphores, and closures must be allocated on the heap because child task lifetimes may arbitrarily outlive the parent call frame.
+In unstructured runtimes (e.g. Go goroutines or Node.js Promises), task lifetimes may arbitrarily outlive the parent call frame, creating background orphan tasks and resource leaks.
 
-Under Ril's structured lifetime invariant $\mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(S) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})$, metadata never escapes the lexical scope. Ril translates this mathematical guarantee into a **Zero-Heap Fast Path**:
-1. **Intrusive Child-Stack Descriptors**: The parent activation record hosts an $O(1)$ `Scope` descriptor containing only an intrusive doubly-linked list head (16–24 bytes). When `s.fork` is invoked, the `TaskNode` tracking block is allocated directly within the child fiber's own stack frame. Dynamic fan-out loops (`for item in items { s.fork(...) }`) scale arbitrarily without requiring dynamic heap allocation.
-2. **Synchronous Scope Unwind-Barrier**: If a panic occurs in the parent frame while child fibers are executing concurrently, releasing the parent stack frame immediately would lead to catastrophic stack-use-after-free corruption when child tasks access the parent `Scope` descriptor. Ril enforces a Synchronous Unwind-Barrier: on panic or early abort, the unwinder marks the scope cancelled and pauses at the frame boundary until all children reach a terminal state (`active_count == 0`) and complete their `let scoped` LIFO cleanups. Only then is the parent stack memory reclaimed.
-3. **Quiescent Result Rendezvous**: Child return values $T$ are stored in an inline slot within the child's stack frame, remaining valid in a quiescent state until transferred to the parent via `task.join()` or discarded during scope unwinding. Structured concurrency thus achieves zero-cost abstraction without GC overhead.
+Under Ril's structured lifetime invariant $\mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(S) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})$, task lifecycles are strictly bounded by their enclosing lexical scope:
+1. **Hierarchical Lifetime Containment**: Child tasks are strictly scoped to the parent block. Spawning child tasks within loops or blocks preserves lexical containment without allowing background tasks to outlive the enclosing scope.
+2. **Synchronous Scope Unwind-Barrier**: If a panic occurs in the parent frame or a sibling task while child fibers are executing concurrently, releasing the parent context prematurely would violate lexical invariants. Ril enforces a Synchronous Unwind-Barrier: on panic or early abort, the scope cancels all children and pauses at the frame boundary until all children reach a terminal state (`Completed`, `Panicked`, or `Cancelled`) and complete their `let scoped` LIFO cleanups.
+3. **Deterministic Result Rendezvous**: Child return values $T$ remain encapsulated within the child task until transferred to the parent via `task.join()` or discarded during scope unwinding, ensuring structured error containment without orphan task execution.
 
 ### 3.3 Concurrency Boundary Safety via Capability Tracking: Direct DRF-SC Without Marker Traits
 
@@ -675,15 +675,15 @@ If `keyof T` returned fields in source declaration order, two structurally ident
 $$\forall T_1, T_2. \quad T_1 \equiv T_2 \implies F\langle T_1 \rangle \equiv F\langle T_2 \rangle$$
 To preserve soundness, Ril enforces the **Canonical Lexicographical Key Ordering Invariant**: in expression contexts, `keyof T` strictly returns field names sorted in UTF-8 byte order.
 
-#### 5. Zero-Cost Native Lowering (CTFE Pipeline)
-During compilation, all higher-order pipelines (`Array::filter`, `Array::map`, `Record::from_fields`) are reduced by the deterministic compile-time evaluator. The resulting record schemas are lower-level lowered into contiguous machine structs with statically fixed offsets, 8-byte alignment, and GC pointer masks. At runtime, machine code executes zero dynamic string comparisons, zero dictionary queries, and retains zero type-level metadata, achieving 100% zero-cost abstraction.
+#### 5. Compile-Time Reduction and Zero-Cost Structural Abstraction
+During compile-time evaluation, pure collection combinators and type-level operations are fully reduced. The resulting record schemas resolve to concrete static shapes without requiring dynamic string comparisons, dictionary queries, or runtime type metadata, delivering full zero-cost abstraction.
 
 #### 6. The Monopoly of Type Return Privilege: Preventing Dependent Type Collapse
 In Ril's Many-Sorted System $F_\omega$, types may depend on compile-time constant terms (Const Generics $\text{Sort} \to \text{Type}$, such as `[1024]u8` or `Buffer<Cap: int>`). However, **terms cannot evaluate to types** ($\text{Term} \not\to \text{Type}$).
 
 `type<...>` is the first-class type quotation operator producing a type shape in Domain I ($\mathcal{T}$). The privilege of returning `type<...>` MUST be strictly monopolized by type declarations and pure type functions (`type`, `halt type`), and strictly prohibited in value-domain compile-time functions (`meta fn`, `E0812`):
-1. **Preventing Dependent Type Collapse**: If `meta fn` could return `type<...>` (e.g. `meta fn make_type() -> type<int>`), value-level computations would possess generative authority over types. This would collapse Many-Sorted System $F_\omega$ into full Dependent Type Theory ($\lambda\Pi$), forcing the compiler to perform arbitrary term-level $\beta$-reduction during type checking and destroying decidable, modular phase separation.
-2. **Separation of Evaluation Engines**: Type functions evaluate inside the compiler's **Symbolic Type Elaboration Engine** via syntactic substitution and AST normalization. `meta fn` evaluates inside the **CTFE Bytecode Interpreter**. Monopolizing type creation inside type functions ensures that type elaboration does not depend on bytecode interpretation to discover type shapes.
+1. **Preventing Dependent Type Collapse**: If `meta fn` could return `type<...>` (e.g. `meta fn make_type() -> type<int>`), value-level computations would possess generative authority over types. This would collapse Many-Sorted System $F_\omega$ into full Dependent Type Theory ($\lambda\Pi$), forcing arbitrary term-level $\beta$-reduction during type checking and destroying decidable, modular phase separation.
+2. **Ontological Domain Stratification**: Type functions evaluate strictly within Domain I ($\mathcal{T}$), manipulating type shapes via symbolic substitution. `meta fn` evaluates strictly within Domain III ($\mathcal{V}$), manipulating values. Monopolizing type creation inside type functions ensures that type-level reasoning remains stratified and never depends on term-level evaluation to discover type shapes.
 3. **Read-Only Reflection Tokens**: While `meta fn` cannot return `type<...>`, it can freely consume `type<T>` as an input argument (e.g., `byte_size(type<T>) -> int`, `is_pure(type<F>) -> bool`). In this role, `type<T>` is an inert, non-generative reflection token projecting properties of shapes into the value domain ($\mathcal{T} \to \mathcal{V}$), posing zero risk of type generation leakage.
 
 #### 7. The Grand Unification of `keyof`: Category-Theoretic Limits and Colimits
@@ -751,10 +751,19 @@ Values remain values, but pure compile-time terms can parameterize type construc
 - **Pure Schema Metaprogramming**: String constants serve as pure inputs to type functions (e.g., URL route parsing `RouteParams<"/users/:id">`), mapping into structural records without inventing dedicated secondary dialects.
 - **Leibniz Equivalence**: Because const evaluation executes within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$), compile-time terms are normalized to canonical normal forms, ensuring that $\text{Matrix}\langle 2 + 2 \rangle \equiv \text{Matrix}\langle 4 \rangle$ is soundly and deterministically decidable.
 
-#### 4. Telescopic Left-to-Right Scoping and Elaboration-Stage Desugaring
+#### 4. Telescopic Left-to-Right Scoping and Substitution Rules
 - **Telescopic Dependency**: Generic parameter lists form an incremental telescope $\Delta_0 \subset \Delta_1 \subset \dots \subset \Delta_n$. A default parameter $D_i$ can reference any previously bound parameter $X_1, \dots, X_{i-1}$, enabling natural dependencies like `Matrix<T, rows: int, cols: int = rows>` and `Pair<First, Second = First>`. Forward references and circular defaults are statically rejected with `E0320`.
 - **Trailing Rule**: Once a parameter declares a default, all subsequent parameters must declare defaults (`E0316`), ensuring that argument omission at call sites is strictly right-associative and free of positional gaps.
-- **Elaboration-Stage Desugaring**: Default arguments are injected during the semantic Elaboration phase rather than AST parsing or HIR lowering. This preserves source span fidelity for error diagnostics and IDE navigation, correctly accommodates module-wide newspaper ordering, and enables precise monomorphization caching (`MonoKey = (DefId, [CanonicalArgs])`) with COMDAT linker deduplication (`linkonce_odr`).
+- **Declaration-Scope Substitution**: Unsupplied generic parameters are substituted directly with their evaluated default terms in the lexical scope of the declaration, preserving modularity and avoiding call-site positional ambiguities.
+
+### 4.17 External Interoperability & The Sovereignty Axiom
+
+Programming languages often introduce dialect keywords (`extern "C"`, `foreign`, `unsafe`) and second-class compromise types (`void*`, `any`) to interface with foreign hosts. This introduces severe design defects: keyword pollution, type system erosion, and leaky foreign failure semantics.
+
+Ril resolves this via **The Sovereignty Axiom**: *"Only external targets adapt to Ril; Ril never adapts to them."*
+- **Zero Foreign Keywords**: External interfaces are declared in dedicated `.d.ril` contract units, reusing canonical syntax (`pub fn`, `pub type`) without introducing keywords like `extern` or `unsafe`.
+- **Zero Compromise Types**: All foreign signatures use first-class Ril types, algebraic effects (`@Effect`), and capabilities (`&mut`). Host handles are declared as uninterpreted opaque nominal types (`pub type DomWindow`), with field penetration statically forbidden (`E0907`).
+- **Hard Safety Membrane**: Boundary execution is hermetically sealed. External defects resolve deterministically into typed domain errors (`Result<T, E>`) or structured-concurrency-contained panics, strictly isolating host faults from caller evaluation invariants.
 
 ---
 
