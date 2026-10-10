@@ -2821,7 +2821,7 @@ let a: int = 10
 let b: typeof a = 20                   -- OK: direct 'typeof' in type annotation
 ```
 
-2. **Expression Contexts**: In static type closures and expression positions, ALL types without exception MUST be enclosed in `type<...>`:
+2. **Expression Contexts**: In type functions and expression positions, ALL types without exception MUST be enclosed in `type<...>`:
 
 ```ril
 let t_int = type<int>                  -- OK: all types enclosed in type<...>
@@ -2830,13 +2830,13 @@ let t_inferred = type<typeof (1 + 2)>  -- OK: 'typeof' enclosed in type<...> in 
 -- let bad_inferred = typeof (1 + 2)   -- Error [E0301]: bare 'typeof' in expression context
 ```
 
-3. **Static Closures & Invocation**: Unannotated static closure parameters default to sort `Type` (`\T -> ...`). Static closure application uses generic angle brackets `<...>`:
+3. **Type Functions & Invocation**: Unannotated type function parameters default to sort `Type` (`\T -> ...`). Type function application uses generic angle brackets `<...>`:
 
 ```ril
 type Nullable = \T -> type<?T>
 type PairOf = \T, U -> type<{ first: T, second: U }>
 
--- Applying static type closures via '<...>':
+-- Applying type functions via '<...>':
 type IntNullable = Nullable<int>          -- Resolves to ?int
 type StringIntPair = PairOf<str, int>     -- Resolves to { first: str, second: int }
 
@@ -2844,11 +2844,11 @@ let value: IntNullable = Some(42)         -- OK: used as concrete type annotatio
 let pair: StringIntPair = .{ first: "id", second: 101 }
 ```
 
-### 10.2 Static Type Closures & Computation Model (`halt type`, `halt fn`)
+### 10.2 Pure Type Functions & Computation Model (`halt type`, `halt fn`)
 
-1. **Return Invariant**: A static type closure is a compile-time function whose return expression MUST evaluate to a `type<T>`. Returning a non-type value raises `E0301`.
-2. **Computation Semantics**: Closure bodies support standard local bindings (`let`), control flow (`if`, `match`), and invocations of `meta fn` callables.
-3. **Totality Certification**: `halt type` certifies normal termination. Unmarked static closures operate under configurable compiler evaluation budgets (`E0811`).
+1. **Return Invariant**: A type function is a compile-time pure function whose return expression MUST evaluate to a `type<T>`. Returning a non-type value raises `E0301`.
+2. **Axiomatic Purity & Zero-Annotation Invariant**: Type functions evaluate strictly within the pure compile-time domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). They MUST NOT declare or carry algebraic effects (`@Effect`) or state capabilities (`&mut`, `&closure`, `&capture`, `&{ident}`) (`E0301`). Type function bodies enjoy unrestricted pure functional computation: local immutable bindings (`let`), conditionals (`if`), pattern matching (`match`), invocation of pure `meta fn` functions, pure collection combinators, and recursion.
+3. **Totality Certification**: `halt type` certifies normal termination. Unmarked type functions operate under configurable compiler evaluation budgets (`E0811`).
 
 ```ril
 -- 1. Meta helper function (compile-time pure calculation):
@@ -2856,7 +2856,7 @@ meta fn pad_align(size: int, align: int) -> int {
     (size + align - 1) & !(align - 1)
 }
 
--- 2. Static type closure with control flow, meta computation, and type output:
+-- 2. Pure type function with control flow, meta computation, and type output:
 halt type PaddedBuffer = \raw_size: int, T -> {
     let actual_size = pad_align(raw_size, 8)     -- OK: consumes meta fn and const value
     if actual_size > 1024 {
@@ -2868,8 +2868,10 @@ halt type PaddedBuffer = \raw_size: int, T -> {
 
 type FastBuf = PaddedBuffer<64, u8>              -- Resolves to { inline_data: []u8, len: int }
 
--- Static closure returning non-type is rejected:
--- type BadReturn = \T -> 42                     -- Error [E0301]: type closure must evaluate to type<T>, found int
+-- Static rejection of non-type return, effects, and capabilities:
+-- type BadReturn = \T -> 42                     -- Error [E0301]: type function must evaluate to type<T>, found int
+-- type BadEffect = \T -> type<T> @Async         -- Error [E0301]: type functions cannot declare algebraic effects
+-- type BadCap = \T -> type<T> &closure          -- Error [E0301]: type functions cannot declare state capabilities
 
 -- 3. Total Runtime Computation (halt fn):
 halt fn total_clamp(val: int, min_val: int, max_val: int) -> int {
@@ -2885,22 +2887,22 @@ halt fn total_clamp(val: int, min_val: int, max_val: int) -> int {
 
 ### 10.3 Disjoint Call Families & Evaluation Budgets
 
-1. **Family Isolation**: Static closures can invoke `meta fn` callables and static closures, but cannot invoke runtime `fn` callables (`E0810`).
-2. **Runtime Isolation**: Runtime functions cannot invoke static type closures (`E0810`).
+1. **Family Isolation**: Type functions can invoke `meta fn` callables and other type functions, but cannot invoke runtime `fn` callables (`E0810`).
+2. **Runtime Isolation**: Runtime functions cannot invoke type functions (`E0810`).
 3. **Budget Exhaustion**: Exceeding compiler evaluation limits halts compilation with `E0811`.
 
 ```ril
 fn runtime_helper() -> int { 42 }
 
--- Static closure cannot execute runtime function:
+-- Type function cannot execute runtime function:
 -- type BadStatic = \T -> {
---     let x = runtime_helper()        -- Error [E0810]: cannot invoke runtime function from compile-time static type closure
+--     let x = runtime_helper()        -- Error [E0810]: cannot invoke runtime function from compile-time type function
 --     type<int>
 -- }
 
--- Runtime function cannot invoke static type closure:
+-- Runtime function cannot invoke type function:
 fn bad_runtime_fn() {
-    -- let t = FastBuf<64, u8>         -- Error [E0810]: cannot invoke static type closure from runtime function
+    -- let t = FastBuf<64, u8>         -- Error [E0810]: cannot invoke type function from runtime function
 }
 
 -- Compiler Evaluation Budget Exhaustion:
@@ -2908,19 +2910,31 @@ type RecursiveLoop = \T -> RecursiveLoop<T>
 -- type Overflow = RecursiveLoop<int>  -- Error [E0811]: compile-time evaluation budget exceeded (max 100,000 steps)
 ```
 
-### 10.4 Mapped Schemas (`keyof`, Field Dot Projection `T.field`, `T.(K)`)
+### 10.4 Mapped Schemas & Type Introspection (`keyof`, Field Dot Projection `T.field`, `T.(K)`)
 
-Static type closures inspect and transform record schemas using `keyof` and dot field projection (`T.field` for static identifier lookup, `T.(K)` for computed/inferred key projection):
+Type functions inspect and transform record schemas using `keyof`, dot field projection (`T.field` for static identifier lookup, `T.(expr)` for computed key projection), and mapped schema comprehensions (`{ [K in Expr]: TypeExpr }`):
 
 ```ebnf
-TypeProjection ::= PrimaryType "." ( Identifier | "(" TypeExpression ")" )
+TypeProjection   ::= PrimaryType "." ( Identifier | "(" Expression ")" )
+MappedRecordType ::= "{" "[" Identifier "in" Expression "]" ":" TypeExpression "}"
 ```
 
-```ril
-type User = { id: int, name: str, active: bool }
+1. **Schema Key Extraction (`keyof T`)**:
+   - In type parameter bounds (`\K: keyof T`), `keyof T` enforces field membership.
+   - In expression / meta contexts, `keyof T` evaluates to a compile-time immutable array `[]str`.
+   - **Canonical Lexicographical Ordering**: `keyof T` is sorted strictly in UTF-8 byte order, ensuring Leibniz equivalence ($T_1 \equiv T_2 \implies \text{keyof } T_1 \equiv \text{keyof } T_2$).
+2. **Field Dot Projection**: `T.field` statically projects field types. Computed projection `T.(expr)` evaluates any compile-time `str` expression against schema fields.
+3. **Zero-Dialect Mapped Schema Comprehension (`{ [K in Expr]: TypeExpr }`)**:
+   - `Expr` MUST evaluate to a compile-time known `[]str`.
+   - `Identifier` binds the field name (of sort `str`) within the lexical scope of `TypeExpression`.
+   - Key renaming and schema reshaping use ordinary pure expressions and helper functions; no dedicated keyword dialects (such as `as`) are admitted.
 
--- 1. Schema Key Extraction (keyof):
-type UserKeys = keyof User             -- Resolves to "id" | "name" | "active"
+```ril
+type User = { id: int, name: str, active: bool, secret_token: str }
+
+-- 1. Schema Key Extraction (canonical []str in expression context):
+meta let USER_KEYS: []str = keyof User
+-- Resolves to: ["active", "id", "name", "secret_token"] (lexicographical order)
 
 -- 2. Schema Field Dot Projection:
 type IdType = User.id                  -- Resolves to int (static identifier projection)
@@ -2936,20 +2950,66 @@ let current_user = .{ id: 101, name: "Alice" }
 type InferredId = typeof current_user.id          -- Resolves to int (value-level direct access)
 type InferredName = (typeof current_user).name    -- Resolves to str (parenthesized type-level projection)
 
--- 3. Mapped Schema Construction (computed key projection T.(K)):
-type OptionalSchema = \T -> type<{
-    [K in keyof T]: ?T.(K)
+-- 3. Pick and Omit via standard array combinators:
+type Omit = \T, Excluded: []str -> {
+    let valid_keys = keyof T |> Array::filter(\k -> !(Excluded |> Array::contains(k)))
+    type<{
+        [K in valid_keys]: T.(K)
+    }>
+}
+
+type Pick = \T, Included: []str -> {
+    let valid_keys = keyof T |> Array::filter(\k -> Included |> Array::contains(k))
+    type<{
+        [K in valid_keys]: T.(K)
+    }>
+}
+
+type PublicUser = Omit<User, ["secret_token"]>
+-- Resolves to: { active: bool, id: int, name: str }
+
+type UserCredentials = Pick<User, ["id", "name"]>
+-- Resolves to: { id: int, name: str }
+
+-- 4. Zero-Dialect Key Renaming (PrefixKeys via ordinary string expression):
+type PrefixKeys = \T, prefix: str -> {
+    let prefixed_keys = keyof T |> Array::map(\k -> prefix + "_" + k)
+    type<{
+        [K in prefixed_keys]: T.(str_strip_prefix(K, prefix + "_"))
+    }>
+}
+
+type ApiUser = PrefixKeys<User, "api">
+-- Resolves to: { api_active: bool, api_id: int, api_name: str, api_secret_token: str }
+
+-- 5. Filtering by Field Value Type via first-class type equality (==):
+type FilterByType = \T, TargetType -> {
+    let matched_keys = keyof T |> Array::filter(\k -> type<T.(k)> == type<TargetType>)
+    type<{
+        [K in matched_keys]: T.(K)
+    }>
+}
+
+type StringFields = FilterByType<User, str>
+-- Resolves to: { name: str, secret_token: str }
+
+-- 6. Pattern Matching over Field Types:
+type FlexiblePatch = \T -> type<{
+    [K in keyof T]: match type<T.(K)> {
+        type<bool> -> bool,
+        _          -> ?T.(K),
+    }
 }>
 
-type UserPatch = OptionalSchema<User>
--- Resolves to: { id: ?int, name: ?str, active: ?bool }
+type UserPatch = FlexiblePatch<User>
+-- Resolves to: { active: bool, id: ?int, name: ?str, secret_token: ?str }
 
-let patch: UserPatch = .{ id: Some(1), name: None, active: Some(true) }
+let patch: UserPatch = .{ active: true, id: Some(1), name: None, secret_token: None }
 ```
 
 ### 10.5 Static Parameter Sorts & Adaptation Rules (`\param: Sort`)
 
-Static type closures accept four parameter sorts:
+Type functions accept four parameter sorts:
 
 1. **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
 2. **Const Values (`\param: ValueType`)**: Accepts compile-time known constants (literals, `meta let`, statically foldable expressions). Passing runtime variables raises `E0810`.
@@ -3266,6 +3326,6 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
 | **`E0720`** | `UnusedFallibleResultError` | Discarding fallible `Result` without inspection |
 | **`E0810`** | `CallFamilyViolationError` | Crossing disjoint runtime `fn` and compile-time `meta`/`type` call families |
-| **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting compiler evaluation step budget in meta/type closures |
+| **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting compiler evaluation step budget in meta/type functions |
 | **`E0820`** | `TotalityViolationError` | Totality certification failed in `halt fn` (unbounded recursion/loop) |
 | **`E0830`** | `MetaAssertionFailedError` | Compile-time `assert` condition evaluated to `false` in `meta` context |
