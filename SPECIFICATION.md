@@ -14,7 +14,9 @@
 - **Normative Code Annotations**: Code examples define normative verification cases in the stated fixture context:
   - `-- OK`: Syntactically and semantically valid Ril programs.
   - `-- Error [EXXXX]`: Programs that must be statically rejected by the compiler with the indicated diagnostic error code.
+  - `-- Warning [WXXXX]`: Valid programs meeting a specified advisory warning condition; reporting the warning is optional.
   - `-- Panics`: Programs that raise deterministic runtime panics under defect conditions.
+- **Diagnostic Text**: Codes and their triggering conditions are normative. Example message text, source highlighting, notes, and suggested repairs are illustrative. `-- OK` asserts validity, not the absence of advisory warnings.
 - **Examples**: Blocks are independent fixtures unless marked as complete source files.
 - Local statements run in an enclosing callable; displayed declarations belong to its enclosing declaration scope. Free names are typed fixture inputs or supplied contracts.
 - Fixtures handle their local expressions' effects. Named functions and complete files obey their own annotations, casing, and initialization rules.
@@ -28,12 +30,15 @@
 - [Notation, Abstract Machine, and Conformance](#notation-abstract-machine-and-conformance)
   - [Grammar Notation](#grammar-notation)
   - [Program Conformance](#program-conformance)
+  - [Diagnostic Classification](#diagnostic-classification)
   - [Abstract Machine and Memory Semantics](#abstract-machine-and-memory-semantics)
   - [Failure Model and Error Categories](#failure-model-and-error-categories)
+  - [Run-Time Failure Conditions](#run-time-failure-conditions)
 - [Source Text and Lexical Elements](#source-text-and-lexical-elements)
   - [Character Set and Encoding](#character-set-and-encoding)
   - [Comments](#comments)
   - [Whitespace and Layout Rules](#whitespace-and-layout-rules)
+  - [Syntactic Diagnostic Conditions](#syntactic-diagnostic-conditions)
   - [Identifiers and Casing Invariants](#identifiers-and-casing-invariants)
   - [Keywords](#keywords)
   - [Numeric Literals](#numeric-literals)
@@ -128,6 +133,7 @@
   - [Standard Prelude Built-ins](#standard-prelude-built-ins)
   - [Mandatory Inspection of Fallible Results](#mandatory-inspection-of-fallible-results)
 - [Diagnostic Error Codes Summary](#diagnostic-error-codes-summary)
+- [Advisory Warnings](#advisory-warnings)
 
 ---
 
@@ -162,6 +168,21 @@ A conforming Ril implementation MUST:
 - Statically reject all invalid programs with the exact diagnostic conditions specified herein.
 - Emit artifacts adhering strictly to the abstract machine semantics, memory model, and determinism invariants.
 - Enforce the complete provenance obligations below regardless of which optional annotations or diagnostic explanations are displayed. Static validity is determined by the specified conservative judgments, not by an assumption that arbitrary run-time behavior can be decided exactly.
+
+### Diagnostic Classification
+
+```ril
+let value: str = 1                    -- Error [E0301]: incompatible expression type
+let unused_value = 1                  -- Warning [W0001]: valid unused read-only binding
+let quotient = 1 / 0                  -- Panics: integer division by zero
+meta let QUOTIENT = 1 / 0             -- Error [E0831]: panic during static evaluation
+```
+
+An `E` diagnostic rejects a program under a specified syntactic or semantic rule. A `W` diagnostic is advisory and cannot change language validity. A panic is an execution outcome, not a static diagnostic or an algebraic effect. Recoverable `Result` and `Option` values are ordinary data, not diagnostic categories.
+
+For an isolated violation, the diagnostic assigned by its defining rule is required. A specific applicable condition takes precedence over a general condition such as `E0301`; for example, an absent record member is `E0336`, not an arbitrary type mismatch. Dedicated placement restrictions, such as declarations in the sequential statement stream, retain their specific codes instead of a general syntax diagnostic. Independent violations may produce multiple diagnostics; their reporting order and the number of secondary diagnostics are unspecified. These rules do not prescribe error recovery or permit an invalid program to be accepted.
+
+Diagnostic explanations should identify the violated requirement and the relevant source construct. When applicable, they should distinguish expected and actual types, identify the declaration or authority responsible for a restriction, or identify an uncovered case. Suggested changes are advisory and must not claim to preserve intent when they change effects, sharing, ownership of resources, or error handling. Exact wording and presentation are not conformance requirements.
 
 ### Abstract Machine and Memory Semantics
 
@@ -221,11 +242,60 @@ assert(scope_outcome is Err(TaskFault::Panicked(_)))
 
 ---
 
+### Run-Time Failure Conditions
+
+```ril
+let smallest: i8 = -128i8              -- OK: representable signed literal
+-- let too_large = 128i8              -- Error [E0326]: unrepresentable literal
+-- let overflow = 127i8 + 1i8         -- Panics: checked arithmetic overflow
+let wrapped = 127i8 +% 1i8            -- OK: -128i8
+let safe = 1 /? 0                     -- OK: None
+let ieee = 1.0 / 0.0                  -- OK: positive infinity
+-- meta let OVERFLOW = 127i8 + 1i8    -- Error [E0831]: static evaluation panic
+-- meta let CHECK = assert(false)    -- Error [E0830]: static assertion failure
+```
+
+| Condition when evaluated | Outcome |
+| :--- | :--- |
+| `panic(message)` | Begin panic unwinding with the supplied message |
+| False `assert` condition | Assertion panic |
+| Integer `/` or `%` with zero divisor | Division-by-zero panic |
+| Unrepresentable checked fixed-width integer result, including negation and `MIN / -1` | Integer-overflow panic; `MIN % -1` remains zero |
+| Fixed-width shift count negative or at least the bit width; negative `bigint` shift count | Invalid-shift panic |
+| Ordinary array/slice element index outside its bounds | Index-bounds panic |
+| Negative, reversed, or out-of-bounds slice window | Slice-bounds panic under the [slicing rules](#range-and-slicing-expressions) |
+| Non-positive channel capacity or bounded-parallel concurrency limit | Panic before creating the channel or invoking a callback |
+| External fault whose declared boundary contract maps it to a defect | Panic under that contract; a domain failure remains a `Result` value |
+
+These categories describe conditions, not new types, effect tags, or fields of `PanicInfo`. Messages are explanatory text; their exact spelling is not normative. `PanicInfo.index` retains its specified parallel-source-index meaning and is not a general out-of-bounds index field.
+
+Ordinary execution retains these outcomes even when a defect is statically predictable. Only evaluation required in the static domain turns a failed assertion into `E0830` or another panic into `E0831`. Safe division/remainder and safe lookup preserve their specified `None` outcomes; a missing map key and channel closure retain their ordinary fallible values. Floating-point overflow and division by zero retain their IEEE results.
+
+| Abnormal control or cleanup condition | Consequence |
+| :--- | :--- |
+| Effect arm completes without resumption | Delimited abort; prior writes remain committed and scoped cleanup runs |
+| Structured cancellation | Non-resumable exit under the scope/channel rules; not a fabricated panic or business error |
+| Cleanup panics during normal exit | Begin panic unwinding through the remaining resources |
+| Cleanup panics during panic, cancellation, or effect abort | Record both causes and abandon remaining cleanup in the failed frame; `DoubleFaultFatal` |
+
+The [scoped cleanup](#scoped-resource-bindings), [structured concurrency](#structured-concurrency-and-panic-containment), and [parallel fault visibility](#canonical-leftmost-panic-precedence-rule) rules determine propagation and ordering. This classification does not add synchronous panic catching, change `TaskFault` or `UnwindCause`, or change which fault is observable.
+
 ## Source Text and Lexical Elements
 
 ### Character Set and Encoding
 
 Source text is encoded in UTF-8. Case is significant.
+
+```text
+Source bytes: FF                      -- Error [E0104]: not a UTF-8 source sequence
+```
+
+```ril
+-- let value = $                     -- Error [E0105]: no token admits '$' here
+let text = "$"                       -- OK: admitted string content
+```
+
+Ill-formed UTF-8 is `E0104`. A decoded character that cannot occur in any token at its source position is `E0105`. Admissible string, raw-string, and comment contents are determined by their own rules; identifier casing and spelling use `E0101`/`E0102` instead.
 
 ### Comments
 
@@ -238,6 +308,13 @@ BlockComment ::= "{-" { SourceChar | BlockComment } "-}"
 -- Single-line comment to end of line
 {- Block comment {- nested block comment -} continues -}
 ```
+
+```ril
+-- Error [E0106]: nested block comment remains open at end of this source fragment
+{- outer {- inner -}
+```
+
+Every opened block comment requires a matching `-}`; reaching the end of source with an open comment is `E0106`.
 
 ### Whitespace and Layout Rules
 
@@ -281,6 +358,34 @@ Spaces and tabs separate tokens. A newline ends a complete statement except belo
 
 `;` separates statements and discards their values. The final expression before `}` or `where` is the block value unless followed by `;`; a newline preserves it. Empty blocks and binding-ended blocks yield `()`.
 
+### Syntactic Diagnostic Conditions
+
+```ril
+-- let value = )                     -- Error [E0120]: unexpected token, with no matching opener
+-- let pair = (1, 2]                 -- Error [E0123]: ']' cannot close '('
+-- let values = [1 2]                -- Error [E0124]: missing comma between elements
+```
+
+```ril
+-- Error [E0121]: an initializer is required at end of source
+let value =
+```
+
+```ril
+-- Error [E0122]: the array's closing delimiter is missing at end of source
+let values = [1, 2
+```
+
+| Condition | Diagnostic |
+| :--- | :--- |
+| Unexpected token with no more specific lexical, delimiter, or construct restriction | `E0120` |
+| End of source where a required constituent is missing, with no open delimiter | `E0121` |
+| Open syntactic delimiter at end of source | `E0122` |
+| Closing delimiter disagrees with its corresponding opener | `E0123` |
+| A required separator or other grammar token is absent between otherwise identifiable constituents | `E0124` |
+
+Unterminated literals and comments use their lexical diagnostics rather than `E0121`/`E0122`. `E0124` does not make a token mandatory where the grammar or newline rules permit omission. Malformed interpolation uses `E0112` for its own braces, empty expression, or format syntax; an independently invalid embedded expression retains its ordinary diagnostic.
+
 ### Identifiers and Casing Invariants
 
 ```ebnf
@@ -305,7 +410,7 @@ Identifier grammatical roles obey the **Closed Casing Invariant**:
 type First { Shared }
 type Second { Shared }
 let first: First = First::Shared       -- OK: qualified constructor
--- let ambiguous: First = Shared      -- Error [E0203]: expected type does not resolve the abbreviation
+-- let ambiguous: First = Shared      -- Error [E0206]: expected type does not resolve the abbreviation
 type Maybe<T> = Option<T>
 let value: Maybe<int> = Some(1)        -- OK: an alias adds no constructor candidate
 ```
@@ -316,7 +421,7 @@ Declarations and imports share one namespace. Same-scope duplicates are `E0203`;
 | :--- | :--- |
 | Nominal type/constructor; predefined `Set<T>`/`Set::from` | Roles of one declaration; separate user declarations cannot merge |
 | `S::V` | Variant member of S; no second enclosing-scope declaration |
-| Unqualified constructor name | Ordinary lexical binding first; otherwise require one variant candidate (`E0203` if ambiguous) |
+| Unqualified constructor name | Ordinary lexical binding first; otherwise require one variant candidate (`E0206` if ambiguous) |
 | Candidate set | Directly visible sum types; a module import alone does not expose its internal sums |
 | Aliases and re-exports | Deduplicate candidates by variant declaration identity |
 | Expected type / generic arguments | Expected types never choose a declaration; infer/check arguments after selection |
@@ -371,6 +476,14 @@ true     type     typeof   use      var
 view     where    while    with
 ```
 
+```ril
+-- let while = 1                     -- Error [E0113]: reserved keyword in a binding position
+-- type Record = { if: int }         -- Error [E0113]: reserved keyword as a field label
+let while_count = 1                   -- OK
+```
+
+A reserved keyword in a position requiring an ordinary identifier or field label is `E0113`, rather than an identifier-casing violation. Its defined grammatical uses remain valid.
+
 `closure` remains an ordinary identifier. In a state group, a leading `closure` followed by a comma, or by a capture-owner name and a comma, is a contextual group header. This interpretation is fixed before name resolution; it never falls back to a list of global names. The state-group rules specify the remaining cases.
 
 ```ril
@@ -422,6 +535,16 @@ FloatSuffix    ::= "f32" | "f64"
 ```
 
 ```ril
+-- let bad_digit = 0b102              -- Error [E0111]: digit is not in the selected base
+-- let bad_separator = 1__0          -- Error [E0111]: separators must separate digits
+-- let bad_exponent = 1.0e+          -- Error [E0111]: exponent requires digits
+-- let bad_suffix = 12u7             -- Error [E0111]: unsupported numeric suffix
+let valid_digit = 0b10                -- OK
+```
+
+A numeric literal violating its base, digit, separator, exponent, or suffix production is `E0111`. A well-formed integer literal whose value does not fit its selected type is `E0326`; this is distinct from overflow while evaluating arithmetic. An immediately applied minus participates in the literal range check.
+
+```ril
 let decimal = 1_000_000                -- Type: int
 let hex_val = 0xFF_AA                  -- Type: int
 let oct_val = 0o755                    -- Type: int (octal)
@@ -433,7 +556,7 @@ let float_f32 = 2.5f32                 -- Type: f32
 let scientific = 1.25e-4               -- Type: f64 (exponent)
 let big_num = 12345678901234567890bigint -- Type: bigint
 let smallest: i8 = -128i8               -- OK: signed literal is checked as a whole
--- let too_large: i8 = 128i8            -- Error [E0301]: literal is outside its selected type's range
+-- let too_large: i8 = 128i8            -- Error [E0326]: literal is outside its selected type's range
 -- let mixed = 1u8 + 1u16               -- Error [E0301]: no implicit numeric promotion
 ```
 
@@ -442,11 +565,11 @@ let smallest: i8 = -128i8               -- OK: signed literal is checked as a wh
 | Suffixed literal | Suffix fixes the type |
 | Unsuffixed integer | Compatible numeric context, otherwise `int`; round once if selected as floating-point |
 | Unsuffixed float | Contextual `f32`/`f64`, otherwise `f64` |
-| Integer-typed literal | Must fit its type (`E0301`); an immediately applied `-` is included in the range check |
+| Integer-typed literal | Must fit its type (`E0326`); an immediately applied `-` is included in the range check |
 | Negating an evaluated fixed-width minimum | Panic; the literal exception does not apply |
 | Numeric arithmetic/comparison | Same operand type (`E0301`); no conversion of already typed values |
 | Shift count | Integer; need not have the left operand's width |
-| Fixed array length | Static nonnegative `int`; wrong sort/negative: `E0323`, run-time value: `E0810` |
+| Fixed array length | Static nonnegative `int`; wrong sort: `E0323`, negative: `E0815`, run-time value: `E0814` |
 
 ### Text and Byte Literals
 
@@ -460,6 +583,31 @@ FillAlign         ::= [ SourceChar ] ( "<" | "^" | ">" )
 Width             ::= Digit { Digit }
 Precision         ::= Digit { Digit }
 FormatType        ::= "x" | "X" | "b" | "o" | "e" | "f" | "s"
+```
+
+```ril
+-- let escape = "\q"                 -- Error [E0108]: unsupported escape
+-- let scalar = "\u{D800}"           -- Error [E0109]: surrogate is not a Unicode scalar
+-- let byte_value = b"\xG0"          -- Error [E0110]: byte escape requires two hex digits
+-- let non_ascii = b"é"              -- Error [E0110]: non-ASCII byte-literal character
+-- let empty = "value: {}"           -- Error [E0112]: interpolation requires an expression
+-- let format = "{1:04q}"            -- Error [E0112]: malformed format specifier
+-- let open = "value: {1"            -- Error [E0112]: interpolation lacks its closing brace
+let braces = "{{value}}"              -- OK: literal braces
+let scalar = "\u{1F642}"              -- OK: Unicode scalar
+```
+
+```ril
+-- Error [E0107]: string delimiter remains open at end of this source fragment
+let text = "unfinished
+```
+
+An unclosed ordinary, raw, or byte string is `E0107`. Unsupported or malformed ordinary-string escapes are `E0108`; a syntactically well-formed Unicode escape outside the scalar range, including surrogates, is `E0109`. Invalid byte-literal contents or escapes are `E0110`. These conditions are not malformed identifiers. A recognized interpolation's malformed braces, absent expression, or malformed format syntax is `E0112`; a valid format incompatible with the interpolated type is `E0329`.
+
+```ril
+let word = "Ada"
+-- let text = "{word:x}"             -- Error [E0329]: integer format applied to str
+let text = "{42:x}"                   -- OK
 ```
 
 ```ril
@@ -477,14 +625,14 @@ let binary_data = b"RIFF\x00\x01\xFF"  -- Type: bytes with byte hex escapes
 ```
 
 
-- Strings contain Unicode scalars. Escapes: `\n`, `\r`, `\t`, `\0`, `\\`, `\"`, `\u{hex_digits}`. Invalid scalars/escapes are `E0102`.
+- Strings contain Unicode scalars. Escapes: `\n`, `\r`, `\t`, `\0`, `\\`, `\"`, `\u{hex_digits}`. Malformed escapes are `E0108`; non-scalar Unicode escapes are `E0109`.
 - Interpolated strings use `{{` and `}}` for literal braces.
 - Raw strings have no escapes/interpolation and cannot contain their closing backtick.
 - Byte literals contain ASCII or `\xHH` with exactly two hex digits.
 
 Combine strings and values with interpolation, such as `"Hello, {name}"`. Arithmetic operators do not perform string conversion or concatenation.
 
-A leading zero in a numeric format width, as in `04x`, selects zero padding. Otherwise the default fill is a space. Width counts Unicode scalars; precision for `f` is digits after the decimal point. A format specifier incompatible with the value type is `E0301`.
+A leading zero in a numeric format width, as in `04x`, selects zero padding. Otherwise the default fill is a space. Width counts Unicode scalars; precision for `f` is digits after the decimal point. A format specifier incompatible with the value type is `E0329`.
 
 ### Boolean and Unit Literals
 
@@ -542,9 +690,22 @@ assert(n2.val == 99)                   -- OK: 'n2' observes mutation due to refe
 ### Record Types and Row Polymorphism
 
 - Field `mut` permits replacing that slot. A projected reference retains its stored origin and permissions, limited by the permissions of the entire access path. Slot mutability neither upgrades a child reference nor makes its data immutable.
-- Named rows contain the fields not explicitly declared. Overlapping labels are `E0302`.
+- Named rows contain the fields not explicitly declared. Overlapping labels between an explicit field and its named row are `E0212`.
 
 Records have structural named fields. Closed records reject width subtyping; open records use declared or structurally bound `..R`, never anonymous `..`.
+
+```ril
+type User = { id: int, name: str }
+let user = User.{ id: 1, name: "Ada" }
+-- let missing: User = .{ id: 1 }     -- Error [E0307]: required field 'name' is absent
+-- let unknown = user.age            -- Error [E0336]: this product has no field 'age'
+-- type Repeated = { id: int, id: int } -- Error [E0210]: field label declared twice
+type WithId<R> = { id: int, ..R }
+-- type Overlap = WithId<{ id: int }> -- Error [E0212]: row tail overlaps explicit 'id'
+type Extended = WithId<{ name: str }> -- OK: disjoint row labels
+```
+
+Missing required construction fields use `E0307`. Unknown labels projected or matched against a known product schema use `E0336`. Repeated declared, explicit, or generated field labels use `E0210`; overlap between an explicit type field and a named row uses `E0212`. Projection on a type that does not admit that product projection uses `E0337`, rather than reporting a missing field. Existing opacity restrictions take precedence when the representation is inaccessible.
 
 Use `r.field` or a statically known `r.(key)`. Types use the corresponding `T.field`/`T.(key)`. Record bracket indexing and run-time keys are `E0324`.
 
@@ -602,6 +763,15 @@ TupleType        ::= "(" TypeExpression "," TypeExpression { "," TypeExpression 
 ```
 
 ```ril
+-- let negative: [-1]int = []         -- Error [E0815]: fixed array length must be nonnegative
+-- let wrong_sort: ["4"]int = []      -- Error [E0323]: length must have sort int
+-- let indexed = 42[0]               -- Error [E0352]: int has no element lookup
+let empty: [0]int = []                -- OK
+```
+
+A statically known `int` used as a fixed array length must be nonnegative (`E0815`). Wrong sorts use `E0323`; an unavailable static value uses `E0814`. A receiver without the requested ordinary or safe element-lookup operation is `E0352`. Record bracket access retains its more specific prohibition `E0324`; invalid index types on an otherwise indexable receiver use `E0301`. A validly typed array index can still panic at run time when out of bounds.
+
+```ril
 -- Linear Array ([]T dynamic slice, [N]T fixed-length array):
 let numbers: []int = [1, 2, 3]         -- Type: []int (dynamic slice)
 let buffer: [4]u8 = [0, 0, 0, 0]       -- Type: [4]u8 (fixed-length array)
@@ -632,8 +802,8 @@ type HostKey = Key<[str: int]>         -- Resolves to str
 type PortVal = Value<[str: int]>       -- Resolves to int
 
 -- Collections are not product types; dot projection on collections is rejected:
--- type BadArrElem = ([]int).elem      -- Error [E0301]: TypeMismatchError: collection type '[]int' has no named fields or member projections; use 'ril/array::{Elem}'
--- type BadMapKey = ([str: int]).key   -- Error [E0301]: TypeMismatchError: collection type '[str: int]' has no named fields or member projections; use 'ril/map::{Key}'
+-- type BadArrElem = ([]int).elem      -- Error [E0337]: NonProductProjectionError: collection type '[]int' has no named fields or member projections; use 'ril/array::{Elem}'
+-- type BadMapKey = ([str: int]).key   -- Error [E0337]: NonProductProjectionError: collection type '[str: int]' has no named fields or member projections; use 'ril/map::{Key}'
 ```
 
 ### Sum Types and GADTs
@@ -690,7 +860,7 @@ Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenthesized g
 - **Positional Tuple Expansion & Literal Compatibility ($n \ge 2$)**: In expression construction and pattern matching, $C(e_1, \dots, e_n)$ and explicit tuple literals $C((e_1, \dots, e_n))$ are definitionally equivalent: outer constructor parentheses absorb inner tuple parentheses.
 - **Whole-Tuple Binding or Single Argument ($n = 1$)**: $C(val)$ constructs or matches the scalar payload or whole-tuple object.
 - **Unit Payload Constructor ($n = 0$)**: When a variant's payload type is `()`, $C()$ constructs or matches the unit payload directly ($C() \equiv C(())$ ). Bare constructor identifiers without parentheses (e.g. bare `Ok`) are strictly first-class constructor functions (`fn(T) -> Result<T, E>`), and can be bound or passed as function values. Constructing a payload-bearing result still requires a call.
-- **Nullary Variant Tag Invariant**: Variants declared without a payload (e.g. `None` in `type Option<T> { Some(T), None }`) are pure zero-field tags: they MUST be written without parentheses (`None`). Supplying argument parentheses to a nullary variant (`None()`) is statically rejected (`E0301`).
+- **Nullary Variant Tag Invariant**: Variants declared without a payload (e.g. `None` in `type Option<T> { Some(T), None }`) are pure zero-field tags: they MUST be written without parentheses (`None`). Supplying argument parentheses to a nullary variant (`None()`) is statically rejected (`E0353`).
 - **Non-Transitivity (Single-Layer Invariant)**: Equivalence applies strictly to the outermost constructor argument boundary. Nested tuples (e.g. `Variant((A, B), C)`) require explicit grouping and do NOT flatten recursively (`Variant(a, b, c)` is rejected with `E0314`).
 - **Rigid Type Variable Invariant**: Deconstructing $C(p_1, \dots, p_n)$ ($n \ge 2$) against an unconstrained generic type parameter $T$ is statically rejected with `E0301`.
 - **First-Class Constructor Canonical Type**: A constructor $C$ carrying a tuple payload $(T_1, \dots, T_n)$ possesses the canonical unary first-class callable type $\text{fn}((T_1, \dots, T_n)) \to S$. In Check Mode expecting a multi-parameter callable ($\Gamma \vdash C \Leftarrow \text{fn}(T_1, \dots, T_n) \to S$), context-directed $\eta$-expansion ($\backslash x_1, \dots, x_n \to C(x_1, \dots, x_n)$ ) applies.
@@ -709,7 +879,7 @@ match unit_res {
 
 -- Nullary variant tags vs. Data constructors:
 let opt: Option<int> = None                      -- OK: nullary tag without parentheses
--- let bad_none = None()                         -- Error [E0301]: TypeMismatchError: variant 'None' has no payload; remove call parentheses
+-- let bad_none = None()                         -- Error [E0353]: NullaryVariantCallError: variant 'None' has no payload; remove call parentheses
 
 -- Result construction and matching with tuple payload:
 let res: Result<(int, str), str> = Ok(200, "OK") -- OK: n = 2 constructs (int, str) directly
@@ -1039,9 +1209,18 @@ GenericArg            ::= TypeExpression | Expression
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list MUST declare default arguments.
 - **Telescopic Left-to-Right Scoping Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
 - **Static Value Sorts**: Const parameters admit scalar values and finite immutable aggregate values whose constituents have no resource or callable authority. `ValueType` in the parameter grammar denotes such an admissible value sort, not permission to pass a run-time or live value.
-- **Const Generic Evaluation & Purity Invariant (`E0810`, `E0323`)**: Const generic arguments evaluate at compile time within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). Non-constant runtime expressions passed to const parameters trigger `E0810`. Arguments failing sort constraints trigger `E0323`.
+- **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
 - **No Untagged Literal Types (`E0318`)**: Concrete values (strings, integers, booleans) cannot serve as bare types. Discrete domain states MUST be modeled via tagged sum types (`type HttpMethod { Get, Post }`). Concrete values enter the type system strictly as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`).
 - **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = int>` is rejected); function types are inferred bidirectionally at call sites.
+
+```ril
+-- type TooMany = Option<int, str>    -- Error [E0340]: Option has one generic parameter
+fn make_empty<T>() -> []T { [] }
+-- let unknown = make_empty()        -- Error [E0344]: no context determines T
+let known: []int = make_empty()       -- OK: result context determines T
+```
+
+An explicit generic argument list that cannot fit the declared parameter list is `E0340`, distinct from ordinary value-argument arity (`E0314`) and a supplied argument's kind/sort (`E0306`/`E0323`). Defaults and permitted inference apply before diagnosing absent generic arguments. Where a type or static argument must be determined and neither supplied information nor contextual constraints determine it, use `E0344`; this does not invent a default type for an unconstrained parameter. Incompatible determined types still use their specific mismatch diagnostic.
 
 ```ril
 -- Sum Type with default type argument:
@@ -1095,10 +1274,10 @@ let p1: Pair<int> = .{ first: 1, second: 2 }    -- OK: Second defaults to First 
 -- type BadMethod = "GET" | "POST"
 -- Error [E0318]: LiteralTypeProhibitedError: literal values cannot be used as types; declare a tagged sum type instead
 
--- Rejection: Runtime expression passed to const generic (E0810):
+-- Rejection: Runtime expression passed to const generic (E0814):
 fn check_buf(runtime_size: int) {
     -- let bad_b: Buffer<u8, runtime_size> = Buffer.{ data: [], len: 0 }
-    -- Error [E0810]: CallFamilyViolationError: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
+    -- Error [E0814]: StaticValueRequiredError: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
 }
 
 -- Rejection: Const generic sort mismatch (E0323):
@@ -1529,7 +1708,7 @@ TypeRestPattern ::= ".." "let" PascalCase
 - `^mut` is a prefix sharing expression at unary precedence. It evaluates its operand once and preserves that value's identity and permissions; its permitted uses are defined under [Retained Mutable Sharing](#retained-mutable-sharing). It is not a first-class capability value.
 - Type patterns use type-specific products. Bare literals are allowed only in const-argument positions.
 - Comments and literal delimiters follow lexical rules.
-- Numeric patterns use the scrutinee's numeric type and the same representability rules as numeric expressions. Range patterns require integer endpoints of that type with `lower <= upper`; an equal-bound closed range matches one value and an equal-bound half-open range matches none. Arbitrary computed expressions are not literal patterns (`E0301`).
+- Numeric patterns use the scrutinee's numeric type and the same representability rules as numeric expressions. Range patterns require integer endpoints of that type with `lower <= upper`; an equal-bound closed range matches one value and an equal-bound half-open range matches none. Arbitrary computed expressions are not literal patterns (`E0349`); a non-integer or reversed range pattern is `E0348`.
 
 ## Declarations and Bindings
 
@@ -1690,15 +1869,15 @@ let mut events: []str = []
     resource.on_close = \-> { events !> Array::push("new") }
 }
 assert(events == ["new"])
--- let scoped scalar = 42              -- Error [E0301]: no cleanup contract
+-- let scoped scalar = 42              -- Error [E0541]: no cleanup contract
 ```
 
 #### Normative Rules for Scoped Bindings
 
 | Concern | Rule |
 | :--- | :--- |
-| Ordinary resource | Accessible `on_close: fn() -> ()` required (`E0301`) |
-| Opaque resource | Requires an explicit scoped-cleanup contract; opacity alone supplies none (`E0301`) |
+| Ordinary resource | Accessible `on_close: fn() -> ()` required (`E0541`) |
+| Opaque resource | Requires an explicit scoped-cleanup contract; opacity alone supplies none (`E0541`) |
 | Registration | After successful initialization; per binding and per loop activation; failed initialization registers nothing |
 | Exit | Invoke once in reverse registration order, including cancellation/abort; double-fault exception below |
 | Callback selection | Read the current `on_close` at exit; retain no earlier snapshot. Opaque resources use their specified action |
@@ -1708,6 +1887,15 @@ assert(events == ["new"])
 | Invocation | Internal handlers and permitted writes allowed; check exclusivity then, not as a continuous registration loan |
 | Escape | Views, closures, containers, and transfer cannot carry scoped authority out (`E0604`); detached ordinary-data copies are exempt |
 | Children | Finish before cleanup of resources they could access |
+
+```ril
+type WrongCleanup = { on_close: int }
+-- let scoped bad = WrongCleanup.{ on_close: 0 } -- Error [E0541]: on_close is not fn() -> ()
+type Cleanup = { on_close: fn() -> () }
+{ let scoped good = Cleanup.{ on_close: \-> () } } -- OK: implicit cleanup uses the binding
+```
+
+Missing, inaccessible, or shape-incompatible scoped cleanup contracts are `E0541`. A shape-compatible cleanup's residual effects, divergence, or insufficient authority retain `E0616`, `E0617`, or the applicable permission diagnostic. An opaque resource requires its explicit contract; no structural access through opacity is implied.
 
 | Cleanup panic occurs during | Outcome |
 | :--- | :--- |
@@ -1997,7 +2185,7 @@ let wrap_mul: u8 = 128u8 *% 2u8        -- 0u8 (wrapping multiplication)
 | Signed `/`, `%` | Quotient truncates toward zero; nonzero remainder has the dividend's sign; `a = (a / b) * b + a % b` |
 | Checked fixed-width arithmetic | Panic on an unrepresentable result, including negation and `MIN / -1`; `MIN % -1` is zero |
 | Safe division/remainder | `None` for a zero divisor or invalid result |
-| Wrapping arithmetic | Fixed-width integers only (`E0301` otherwise); reduce modulo their representation |
+| Wrapping arithmetic | Fixed-width integers only (`E0327` otherwise); reduce modulo their representation |
 | Fixed-width shifts | Panic for count < 0 or >= bit width; left discards high bits, signed right extends sign, unsigned right is logical |
 | `bigint` | No arithmetic overflow; negative shift counts panic; bitwise operations use unbounded two's complement |
 
@@ -2013,6 +2201,16 @@ let wrap_mul: u8 = 128u8 *% 2u8        -- 0u8 (wrapping multiplication)
 The pointer-sized `int` has target-dependent range; fixed-width guarantees do not fix its overflow boundary.
 
 ### Bitwise and Shift Operators
+
+```ril
+-- let text_sum = "a" + "b"           -- Error [E0327]: arithmetic does not concatenate strings
+-- let wrapped_float = 1.0 +% 2.0     -- Error [E0327]: wrapping arithmetic requires fixed-width integers
+let left = "a"
+let right = "b"
+let text = "{left}{right}"            -- OK: interpolation
+```
+
+An operator applied to a type for which that operation is not defined is `E0327`, including unsupported equality constituents and ordering operands. Different otherwise admissible operand types still use `E0301`; there is no implicit numeric promotion. Boolean conditions and logical operands use the more specific `E0350`.
 
 ```ril
 let and_val = 0b1100 & 0b1010          -- 0b1000 (8)
@@ -2052,8 +2250,8 @@ assert(!(nan == nan) && nan != nan)
 let mut ordered: [str: int] = ["b": 1, "a": 2]
 ordered !> Map::set("b", 3)
 assert(Map::keys(ordered) == ["b", "a"]) -- Replacing a value preserves its key's position
--- let bad_keys: [f64: int] = [nan: 1] -- Error [E0301]: floating-point keys are not admitted
--- let graph_key = [.{ id: 1 }: 0]    -- Error [E0301]: immutable records are still reference-type keys
+-- let bad_keys: [f64: int] = [nan: 1] -- Error [E0328]: floating-point keys are not admitted
+-- let graph_key = [.{ id: 1 }: 0]    -- Error [E0328]: immutable records are still reference-type keys
 ```
 
 `!=` negates `==`. Equality requires compatible same-typed values (`E0301` otherwise), except the Option/None tag test below.
@@ -2067,9 +2265,9 @@ assert(Map::keys(ordered) == ["b", "a"]) -- Replacing a value preserves its key'
 | Maps / sets | Key-value membership / membership; insertion order ignored |
 | Ordinary opaque types | Same-type equality when the representation supports it |
 | Option compared to `None` | Tag only; payload need not support equality |
-| Callable, task, resource, type-function values | `E0301`, including nested constituents |
+| Callable, task, resource, type-function values | `E0327`, including nested constituents |
 
-Ordering (`<`, `<=`, `>`, `>=`) accepts same-typed numbers, strings, or bytes only (`E0301`). Strings/bytes use lexicographic order; every ordered comparison involving NaN is false.
+Ordering (`<`, `<=`, `>`, `>=`) accepts same-typed numbers, strings, or bytes only (`E0327` for an unsupported operand type; `E0301` for different otherwise admissible types). Strings/bytes use lexicographic order; every ordered comparison involving NaN is false.
 
 For finite cyclic graphs, equality is the greatest binary relation satisfying these structural rules; allocation identity and sharing count are irrelevant. Comparison terminates without user code or overlapping writes; provenance and exclusivity still govern reads.
 
@@ -2077,7 +2275,7 @@ For finite cyclic graphs, equality is the greatest binary relation satisfying th
 | :--- | :--- |
 | `bool`, integers including `bigint`, `str`, `bytes`, `()` | Allowed |
 | Nominal / ordinary opaque wrappers | Allowed when recursively preserving one of those value representations |
-| Floats, reference graphs (even Immut), callables, resources | `E0301` |
+| Floats, reference graphs (even Immut), callables, resources | `E0328` |
 
 Eligibility depends on the concrete type, not equality support alone. Keys are copied by value: source reassignment cannot change them. No freezing, graph cloning, or user equality/order/hash callbacks occur.
 
@@ -2094,6 +2292,13 @@ Eligibility depends on the concrete type, not equality support alone. Keys are c
 ### Logical Operators
 
 `&&` and `||` exhibit strict short-circuiting: the right operand is evaluated only when the left operand does not determine the result.
+
+```ril
+-- let bad = 1 && true                -- Error [E0350]: logical operand must be bool
+let valid = (1 != 0) && true           -- OK
+```
+
+Conditions of `if`, `while`, and pattern guards, and operands of `!`, `&&`, and `||`, must be `bool` (`E0350`). Ril has no implicit truth-value conversion.
 
 ```ril
 let valid_and = (p != None) && (p.x > 0) -- Right side not evaluated if p == None
@@ -2179,12 +2384,34 @@ let out_of_bounds = arr?[99]           -- Evaluates to None (?int) (safe array i
 
 | Operator | Success | Failure / constraint |
 | :--- | :--- | :--- |
-| `Option<T>?` | Unwrap T | Return `None`; enclosing callable must return `Option<U>` (`E0301`) |
-| `Result<T, E>?` | Unwrap T | Return `Err(e)`; enclosing result must accept E (`E0301`) |
+| `Option<T>?` | Unwrap T | Return `None`; enclosing callable must return `Option<U>` (`E0713`) |
+| `Result<T, E>?` | Unwrap T | Return `Err(e)`; enclosing result must accept E (`E0713`) |
 | `Option<T> ?? rhs` | Unwrap T; skip rhs | Evaluate rhs as T; never auto-invoke a supplier |
 | `Result<T, E> ?? handler` | Unwrap T; skip handler | Evaluate and invoke `fn(E) -> T` once; raw T is `E0711` |
 
 `?` outside a function/closure is `E0205`, including module initializers. It performs no Option/Result or error conversion; payload provenance, permissions, and nested inspection duties survive.
+
+```ril
+fn invalid_operand() -> ?int {
+    -- let number = 42?               -- Error [E0712]: operand is neither Option nor Result
+    Some(42)
+}
+fn invalid_target(value: ?int) -> int {
+    -- let number = value?            -- Error [E0713]: enclosing callable cannot return None
+    value ?? 0
+}
+fn incompatible_error(value: Result<int, str>) -> Result<int, int> {
+    -- let number = value?            -- Error [E0713]: str failure cannot become int
+    match value { Ok(number) -> Ok(number), Err(_error) -> Err(0) } -- OK: explicit mapping
+}
+-- let fallback = 42 ?? 0             -- Error [E0714]: no fallback operation for int
+let record = .{ name: "Ada" }
+-- let safe_name = record?.name       -- Error [E0715]: '?.' requires an optional receiver
+let optional_record: ?{ name: str } = Some(record)
+let safe_name = optional_record?.name -- OK
+```
+
+Inside a callable, a postfix `?` operand other than `Option` or `Result` is `E0712`. A valid operand whose failure cannot be returned by the enclosing callable is `E0713`, including an incompatible Result error type. A `??` left operand outside those two families is `E0714`; a raw-value Result fallback retains `E0711`, and incompatible fallback value/callable types use `E0301`. Safe field access on a non-optional receiver is `E0715`; safe element lookup also admits ordinary collections as specified below, and unsupported lookup receivers use `E0352`.
 
 `??` evaluates its left operand once. Callback effects/permissions remain checked. Direct outward `return`/`last`/`next` is `E0710`; a return inside a nested callable stays local to it.
 
@@ -2199,7 +2426,16 @@ let out_of_bounds = arr?[99]           -- Evaluates to None (?int) (safe array i
 
 ### Record Construction and Functional Update
 
-Explicit fields override equally named fields from a value spread, independent of their written position. Multiple explicit definitions of one field, or unresolved conflicting spread sources without an explicit override, are `E0203`. A spread copies values and references with their existing permissions; it does not deep-clone live data or make it immutable.
+Explicit fields override equally named fields from a value spread, independent of their written position. Multiple explicit definitions of one field are `E0210`; conflicting spread sources without an explicit override are `E0211`. A spread copies values and references with their existing permissions; it does not deep-clone live data or make it immutable.
+
+```ril
+let left = .{ id: 1 }
+let right = .{ id: 2 }
+-- let duplicate = .{ id: 1, id: 2 }  -- Error [E0210]: two explicit definitions
+-- let conflict = .{ ..left, ..right } -- Error [E0211]: both spreads supply id
+let chosen = .{ ..left, ..right, id: 3 } -- OK: explicit override resolves the conflict
+let mapping = ["id": 1, "id": 2]     -- OK: duplicate map keys retain the last value
+```
 
 ```ril
 type Point = { x: int, y: int, z: int }
@@ -2211,6 +2447,16 @@ let p2 = Point.{ z: 10, ..p1 }         -- Functional record update: { x: 1, y: 2
 ### Assignments and Compound Assignments
 
 Assignments require an addressable mutable lvalue target. Assignments are expressions evaluating to `()`.
+
+```ril
+-- (1 + 2) = 3                       -- Error [E0503]: expression is not an assignable location
+let fixed = 1
+-- fixed = 2                         -- Error [E0501]: location exists but binding is immutable
+var changing = 1
+changing = 2                         -- OK
+```
+
+A target that is not an addressable lvalue is `E0503`. Existing locations with insufficient reassignment or interior authority use `E0501`, `E0502`, or `E0520`; missing members and invalid indexing retain their specific diagnostics. Chained assignment retains `E0701`.
 
 Qualified names and static computed fields keep ordinary lvalue permissions. Compound assignment evaluates the location once, then reads, evaluates the RHS, and writes.
 
@@ -2287,7 +2533,7 @@ BlockWhereItem      ::= FunctionDecl | LocalTypeDecl | EffectDecl | MetaFnDecl
 
 ```ril
 fn read_after_init() -> int {
-    -- read_value()                    -- Error [E0204]: value is not initialized
+    -- read_value()                    -- Error [E0207]: value is not initialized
     let value = 1
     read_value()                       -- OK
     where
@@ -2295,7 +2541,7 @@ fn read_after_init() -> int {
 }
 ```
 
-Local bindings become available after initialization. Hoisted helpers may capture later bindings, but invocation, publication, and passing to another call require every capture initialized (`E0204`). Hoisting executes neither initializers nor helpers.
+Local bindings become available after initialization. Hoisted helpers may capture later bindings, but invocation, publication, and passing to another call require every capture initialized (`E0207`). Hoisting executes neither initializers nor helpers.
 
 ```ril
 -- Mutually recursive functions and types hoisted in block 'where':
@@ -2362,7 +2608,12 @@ where
 
 ### Conditional Expressions
 
-`if` requires a boolean condition. Its branches must have compatible types; a `never` branch imposes no returned-value constraint. An `if` without an `else` evaluates to `()` and requires its then branch to have type `()` or `never` (`E0301` otherwise).
+`if` requires a boolean condition (`E0350`). Its branches must have compatible types (`E0351`); a `never` branch imposes no returned-value constraint. An `if` without an `else` evaluates to `()` and requires its then branch to have type `()` or `never` (`E0301` otherwise).
+
+```ril
+-- let value = if 1 { 10 } else { 20 } -- Error [E0350]: condition must be bool
+let value = if true { 10 } else { panic("stopped") } -- OK: never does not conflict with int
+```
 
 ```ril
 let max = if a > b { a } else { b }
@@ -2372,7 +2623,7 @@ if logging_enabled {
 }
 
 -- Incompatible branch types are statically rejected:
--- let bad = if true { 10 } else { "error" } -- Error [E0301]: TypeMismatchError: if-else branches have incompatible types: expected 'int', found 'str'
+-- let bad = if true { 10 } else { "error" } -- Error [E0351]: IncompatibleBranchTypesError: if-else branches have incompatible types: expected 'int', found 'str'
 ```
 
 ### Loop Expressions
@@ -2409,7 +2660,7 @@ assert(sum == 9)                       -- 1 + 3 + 5
 | Loop | Type / constraint |
 | :--- | :--- |
 | `while` | Boolean condition; result and `last` values are unit (`E0301`) |
-| `for` | Result and `last` values are unit (`E0301`); element pattern irrefutable (`E0303`), never an implicit filter |
+| `for` | Result and `last` values are unit (`E0301`); element pattern irrefutable (`E0345`), never an implicit filter |
 | `loop` | Common type of reachable `last` values, or `never` if none |
 
 Body tails are discarded subject to Result inspection duties.
@@ -2474,13 +2725,13 @@ fn search(matrix: [][]int, target: int) -> bool {
 
 ```ril
 fn unwrap_or_zero(value: ?int) -> int {
-    -- let Some(x) = value             -- Error [E0303]: refutable binding needs else
+    -- let Some(x) = value             -- Error [E0345]: refutable binding needs else
     let Some(x) = value else { return 0 }
     x
 }
 ```
 
-Without `else`, patterns must be irrefutable under the initializer's static type/refinement (`E0303`), including mutable/destructuring bindings. A single-variant constructor may qualify. Guarded names exist after success, not in the failure block.
+Without `else`, patterns must be irrefutable under the initializer's static type/refinement (`E0345`), including mutable/destructuring bindings. A single-variant constructor may qualify. Guarded names exist after success, not in the failure block.
 
 - **Divergence Invariant**: The `else` block MUST diverge (evaluate to `never`).
 - **Universal Non-Vacuous Binding Invariant (`E0309`)**: All `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`. Patterns that introduce zero variable bindings (such as `let Marker = m`, `let () = expr`, `let Ok() = expr else { ... }`, `let None = expr else { ... }`, or `let _ = expr else { ... }`) are statically rejected (`E0309: VacuousBindingError`). To conditionally guard or test without binding variables, developers must use postfix `?`, boolean pattern tests (`if expr is Pattern`), or explicit `match` expressions.
@@ -2546,7 +2797,30 @@ RecordPattern      ::= [ TypeReference ] ".{" [ RecordPatternField { "," RecordP
 RecordPatternField ::= [ BindingModifier ] FieldLabel [ ":" Pattern ] | ".." Identifier
 ```
 
-Matches are evaluated top-to-bottom and must be exhaustive. A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes; a guard cannot establish exhaustiveness.
+Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once (`E0347`). A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
+
+```ril
+type Choice { Left(int), Right(int) }
+fn invalid_alternative(value: Choice) -> int {
+    -- match value { Left(x) | Right(y) -> 0 } -- Error [E0346]: different binding names
+    match value { Left(x) | Right(x) -> x }    -- OK: same binding contract
+}
+-- let (same, same) = (1, 2)          -- Error [E0347]: duplicate binder in one pattern
+let (first, second) = (1, 2)           -- OK
+fn invalid_range(value: int) -> int {
+    match value {
+        -- 5..=1 -> 1,               -- Error [E0348]: reversed pattern bounds
+        -- (1 + 2) -> 1,             -- Error [E0349]: computed expression is not a literal pattern
+        _ -> 0,
+    }
+}
+fn incompatible_arms(value: bool) -> int {
+    -- match value { true -> 1, false -> "no" } -- Error [E0351]: arm result types disagree
+    match value { true -> 1, false -> 0 }       -- OK
+}
+```
+
+`E0345` applies when a binding, `for` element pattern, or handler parameter requires an irrefutable pattern but the pattern may fail. It is distinct from a nonexhaustive `match` (`E0303`). Reversed or non-integer numeric range patterns use `E0348`; a valid empty half-open range still follows ordinary coverage/reachability rules. Repeated identifiers across alternatives are not duplicate binders. Arbitrary computed expressions in a literal-pattern position use `E0349`.
 
 ```ril
 type Shape {
@@ -2646,7 +2920,7 @@ NarrowingExpr      ::= NarrowingPredicate
 - **Zero-Binding Refinement**: Narrowing refines existing bindings in-place across conditional branches without introducing new variable bindings (contrasting with `match` and `let ... else` which introduce new bindings).
 - **Non-Binding Predicates**: Pattern variables in `x is Variant(p)` are scoped strictly to trailing guards (`if guard`) and cannot escape to branch blocks (`E0204`).
 - **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ ([Sum Types and GADTs](#sum-types-and-gadts)):
-   - $n = 0$: No payload; projection raises `E0301`.
+   - $n = 0$: No payload; value projection raises `E0337`.
    - $n = 1$: Projected via `.0` (`p.0`). `?T != None` directly unboxes to `T`.
    - $n \ge 2$: Projected via positional tuple indices `.0`, `.1`, ..., `.(n-1)`.
    - Record: Projected via declared field names (`x.field`).
@@ -2963,7 +3237,7 @@ fn bump(mut cell: Cell) &mut { cell.count += 1 }
 let mut cell = Cell.{ count: 0 }
 bump(mut cell)
 cell !> bump()
--- bump(cell)                          -- Error [E0520]: explicit mutable argument required
+-- bump(cell)                          -- Error [E0405]: explicit mutable argument required
 let view observed = cell
 -- bump(mut observed)                  -- Error [E0520]: view has no write permission
 ```
@@ -2977,6 +3251,18 @@ let view observed = cell
 - Mutable parameters require reference data or a mutable callable environment (`E0401`), remain pinned (`E0502`), and cannot use `var` (`E0403`).
 - Annotations, forwarding, and subtyping do not infer parameter modes. Retention requires `^mut` and its capability (`E0510`); `!>` supplies only `mut`.
 
+When a known parameter requires `mut` or `^mut`, supplying an ordinary argument without the required argument marker is `E0405`. An explicitly supplied argument mode that does not match the declared parameter mode is `E0406`. An explicitly mutable argument must designate an addressable target (`E0410`). A correct marker cannot grant missing authority (`E0520`). Callable types with incompatible data-parameter modes use `E0407`; callback-handle authority remains a separate requirement.
+
+```ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+fn inspect(cell: Cell) -> int { cell.count }
+let mut cell = Cell.{ count: 0 }
+-- inspect(mut cell)                 -- Error [E0406]: parameter is read-only
+-- let reader: fn(Cell) -> () &mut = bump -- Error [E0407]: callable parameter modes differ
+bump(mut cell)                        -- OK
+```
+
 A callback's parameter list and the mode of the callback handle are distinct. `f: fn(mut T) -> R` is a read-only function handle accepting a mutable *data argument*. `mut f: fn(T) -> R` grants permission to invoke a mutable *captured environment*. Both can be required by the same function. Mutable inline closures must first be bound to an appropriate writable handle before being passed with `mut`.
 
 #### Default Parameters and Named Arguments
@@ -2985,6 +3271,24 @@ A callback's parameter list and the mode of the callback handle are distinct. `f
 - Explicit arguments evaluate in written left-to-right order; omitted defaults follow in parameter order. A default may use earlier parameters, not itself or later parameters.
 - Named arguments bind by parameter name. Supplying one parameter twice is `E0325`.
 - Function generic defaults are prohibited (`E0317`).
+
+An unknown parameter label is `E0339`; a non-callable callee is `E0338`. Missing or excess ordinary arguments retain `E0314`, after accounting for supplied names and defaults. Nullary variant parentheses retain the specific `E0353`. These diagnostics introduce no new restriction on the relative order of positional and named arguments.
+
+```ril
+fn connect(host: str, port: int = 8080) -> str { "{host}:{port}" }
+-- connect("localhost", prot: 80)    -- Error [E0339]: unknown parameter label
+-- let call = 42()                   -- Error [E0338]: int is not callable
+let connected = connect("localhost", port: 80) -- OK
+
+-- fn bad_default(first: int = second, second: int = 1) -> int { first + second }
+-- Error [E0408]: default refers to a later parameter
+fn good_default(first: int, second: int = first) -> int { first + second } -- OK
+eff DefaultSource { read() -> int }
+-- fn impure_default(value: int = DefaultSource::read()) -> int @DefaultSource { value }
+-- Error [E0409]: default has a residual effect even though the function declares it
+```
+
+References from a parameter default to itself or a later parameter are `E0408`. Other unresolved names retain `E0204`; generic-default forward references retain `E0320`. A parameter default with any residual effect or state obligation is `E0409`, even if the enclosing callable declares that obligation. Pure defaults referring to earlier parameters remain valid.
 
 ```ril
 fn create_server(host: str, port: int = 8080, enable_tls: bool = true) -> str {
@@ -3012,12 +3316,12 @@ AccessorField ::= Identifier | TupleIndex
    - `\.field?.subfield` desugars to `\x -> x.field?.subfield`
    - `\?.field` desugars to `\x -> x?.field`
 - **Product Type Duality**:
-   - `Identifier` statically projects named fields from records (`{...}`), nominal wrappers, or refined named variants. Unknown fields trigger `E0307`.
+   - `Identifier` statically projects named fields from records (`{...}`), nominal wrappers, or refined named variants. Unknown fields trigger `E0336`.
    - `TupleIndex` statically projects 0-indexed positional components from tuples (`(T0, T1, ...)`) or refined positional variant payloads ($S|_V$). Positional indices are statically checked at compile time against tuple arity $n$ ($0 \le i < n$). Out-of-bounds indices trigger `E0312`.
 - **Safe Navigation Propagation**:
    - If any navigation segment uses safe navigation `?.`, evaluation short-circuits to `None` when the intermediate receiver is `None`. The resulting accessor closure return type is automatically lifted into `?T`.
 - **Collection Segregation**:
-   - Collections (slices `[]T`, maps `[K: V]`, and prelude `Set<T>`) are not product types and cannot be projected via dot/accessor syntax directly (`E0301`). Element and key extractions require explicit bracket indexing (`\arr -> arr?[i]`) or higher-order combinators (`Array::first`, `Map::get`).
+   - Collections (slices `[]T`, maps `[K: V]`, and prelude `Set<T>`) are not product types and cannot be projected via dot/accessor syntax directly (`E0337`). Element and key extractions require explicit bracket indexing (`\arr -> arr?[i]`) or higher-order combinators (`Array::first`, `Map::get`).
 
 ```ril
 -- Standard Anonymous Functions:
@@ -3065,8 +3369,8 @@ let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to
 
 -- Rejections:
 -- let bad_idx = pairs |> Array::map(\.2)                     -- Error [E0312]: TupleIndexOutOfBoundsError: tuple index 2 out of bounds for (int, str)
--- let bad_field = employees |> Array::map(\.age)             -- Error [E0307]: MissingFieldError: unknown field 'age' on type 'Employee'
--- let bad_arr = [[1, 2], [3]] |> Array::map(\.0)             -- Error [E0301]: TypeMismatchError: collections do not have named fields or static tuple projections
+-- let bad_field = employees |> Array::map(\.age)             -- Error [E0336]: UnknownFieldError: unknown field 'age' on type 'Employee'
+-- let bad_arr = [[1, 2], [3]] |> Array::map(\.0)             -- Error [E0337]: NonProductProjectionError: collections do not have named fields or static tuple projections
 ```
 
 ### Closures, Factory Signatures, and Lexical Environments
@@ -3108,7 +3412,6 @@ fn caller() -> int @Logger { apply(5, logged_square) }
 fn invoke_mut(mut f: fn() -> int &closure) -> int &mut { f() }
 let mut counter = create_counter(0)
 let first = invoke_mut(mut counter)    -- Explicit callback-handle authority
--- apply(0, \mut target -> target)    -- Error [E0301]: callback parameter modes do not match
 ```
 
 Higher-order calls forward actual effect and state obligations without changing permissions or parameter modes. Omitted callable rows preserve these dependencies separately for each actual argument. Only still-symbolic callable-parameter dependencies may remain implicit in a named definition; concrete invocation obligations require declaration after local discharge. An explicit closed row constrains the admitted arguments, as specified under [Callable Signature Abstraction](#callable-signature-abstraction).
@@ -3119,6 +3422,7 @@ fn apply_to_cell(mut cell: Cell, f: fn(mut Cell) -> () &mut) &mut {
 }
 let mut cell = Cell.{ count: 0 }
 apply_to_cell(mut cell, bump)           -- Both declaration and call specify the data mode
+-- apply_to_cell(mut cell, \target -> ()) -- Error [E0407]: callback data parameter must use mut
 ```
 
 `Array::map`, `filter`, and `fold` explicitly support ordinary and `mut callback` forms. Only the latter grants mutable-environment invocation. This is call-site mode selection, not implicit conversion; parallel contracts add confinement checks.
@@ -3238,9 +3542,9 @@ let mut original = Cell.{ count: 0 }
 let mut returned = retain(^mut original) -- Retention already marked at the call boundary
 returned.count += 1
 original.count += 1
--- let mut hidden = retain(original)  -- Error [E0520]: ordinary argument cannot provide retention authority
--- let mut hidden = retain((^mut original)) -- Error [E0520]: expression is not a ^mut argument mode
--- let mut hidden = retain(^mut clone(original)) -- Error [E0520]: mutable argument must be an assignable target
+-- let mut hidden = retain(original)  -- Error [E0405]: ordinary argument lacks the retention marker
+-- let mut hidden = retain((^mut original)) -- Error [E0405]: sharing expression is not an argument-mode marker
+-- let mut hidden = retain(^mut clone(original)) -- Error [E0410]: mutable argument must be an assignable target
 ```
 
 | Surviving references | Sharing obligation |
@@ -3458,7 +3762,7 @@ fn retain_wrapped(^mut cell: Counter::Cell) -> Counter::Cell &^mut &Counter::ret
 -- Error [E0201]: a contract reference does not export the private binding
 ```
 
-- **Provider and Position (`E0539`)**: `&callee` or `&Module::callee` references the verified concrete named-state contract of a visible ordinary named Ril function definition. Ordinary name resolution and visibility apply first (`E0204`/`E0201`); after successful resolution, a wrong provider kind or annotation position is `E0539`. This form is allowed only in the state annotation of an ordinary named function definition. It is not permitted in callable types, anonymous-function annotations, effect operation declarations, or bodyless foreign declarations. A value alias or callable parameter is not a provider declaration.
+- **Provider and Position (`E0539`)**: `&callee` or `&Module::callee` references the verified concrete named-state contract of a visible ordinary named Ril function definition. Ordinary name resolution and visibility apply first (`E0204` for lexical names, `E0209` for absent module members, `E0201` for private members); after successful resolution, a wrong provider kind or annotation position is `E0539`. This form is allowed only in the state annotation of an ordinary named function definition. It is not permitted in callable types, anonymous-function annotations, effect operation declarations, or bodyless foreign declarations. A value alias or callable parameter is not a provider declaration.
 - **Concrete Named Projection**: A reference denotes the provider's concrete global/captured source items and their verified access modes for its current invocation, including concrete named dependencies obtained through other calls. The bindings and lexical owners remain anchored to the provider's scope. It does not include effects, anonymous parameter permissions, standalone `&capture`/`&^mut`, symbolic callback dependencies, or a returned callable's future invocation obligations.
 - **Coverage, Not Authority**: The reference can cover matching concrete named obligations inherited from calls in the referencing definition. Apply the caller's existing local-discharge and parameter-authority rules before matching; a named source in the provider cannot substitute for the caller's required `&mut` or `&^mut`. The reference cannot cover the caller's direct storage access, including direct access in its handlers. Matching uses actual origin and permission relations, not just source names or a requirement that the body invoke one particular function name. Unrelated references do not cover an obligation (`E0510`); an unnecessary concrete reference remains subject to `E0529`.
 - **No Erasure**: Calling through an alias or higher-order helper preserves the concrete dependencies. A provider reference cannot turn them into unknown callback dependencies, discharge a conflicting loan, or prove a recursive dependency empty. `&{}` continues to constrain the total state, including referenced state.
@@ -3492,7 +3796,7 @@ let action = advance
 -- Counter is the ordinary module defined above.
 use counter
 -- fn private_reference() &Counter::private_advance {} -- Error [E0201]: private provider
--- fn unknown_reference() &Counter::missing {}         -- Error [E0204]: no such declaration
+-- fn unknown_reference() &Counter::missing {}         -- Error [E0209]: no such module member
 -- let invalid = \-> &Counter::advance ()               -- Error [E0539]: anonymous annotation
 -- eff Invalid { tick() &Counter::advance }              -- Error [E0539]: effect-operation annotation
 -- In a declaration-unit fixture with the same visible Counter namespace:
@@ -3747,7 +4051,31 @@ fn run_console() {
 
 `with` covers the remaining block. `resume value` supplies the operation result and reinstalls this handler for the continuation; the arm itself uses outer handlers, even for its own family.
 
-For block answer A, `resume value` and every arm's final value must have type A (`E0301`), including abort values and post-resumption tails.
+The operand of `resume` must match the handled operation's result type (`E0624`). For block answer A, the resulting `resume value` expression and every arm's final value must have type A (`E0625` for an incompatible arm answer), including abort values and post-resumption tails. An incompatible retained handler selection still uses its boundary-specific `E0614`.
+
+```ril
+eff ReadNumber { get() -> int }
+fn ordinary() -> int { 1 }
+fn handler_targets() -> int {
+    -- with ordinary() -> resume 1   -- Error [E0621]: target is not an effect operation
+    -- with { ReadNumber::get() -> resume 1, ReadNumber::get() -> resume 2 }
+    -- Error [E0622]: two arms for the same operation in one with
+    with ReadNumber::get() -> resume 1
+    ReadNumber::get()                 -- OK
+}
+fn resume_type() -> int {
+    -- with ReadNumber::get() -> resume "one" -- Error [E0624]: operation result is int
+    with ReadNumber::get() -> resume 1
+    ReadNumber::get()
+}
+fn answer_type() -> int {
+    -- with ReadNumber::get() -> "aborted" -- Error [E0625]: arm answer is str, block answer is int
+    with ReadNumber::get() -> 0       -- OK: abort answer fits the block
+    ReadNumber::get()
+}
+```
+
+A handler target must resolve to an effect operation (`E0621`). Missing names still use name-resolution diagnostics. Repeating an operation in one `with` is `E0622`; a nested handler for the same operation is allowed. Omitted operations forward outward and are not a missing-arm error; residual obligations use `E0612` when not handled or declared.
 
 ```ebnf
 WithStatement ::= "with" HandlerSpec
@@ -3765,7 +4093,7 @@ fn read_zero() -> int {
     }
     ReadAt::get(0)
 }
--- with ReadAt::get(0) -> resume 1      -- Error [E0303]: handler parameter is refutable
+-- with ReadAt::get(0) -> resume 1      -- Error [E0345]: handler parameter is refutable
 
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
@@ -3774,7 +4102,7 @@ fn edit_once(mut cell: Cell) -> int &mut {
         target.count += 1
         let saved = target.count
         let answer = resume ()
-        -- target.count += 1            -- Error [E0520]: this operation loan has ended
+        -- target.count += 1            -- Error [E0540]: this operation loan has ended
         answer + saved
     }
     Edit::apply(mut cell)
@@ -3784,8 +4112,8 @@ fn edit_once(mut cell: Cell) -> int &mut {
 
 | Handler dispatch | Rule |
 | :--- | :--- |
-| One `with` | At most one arm per operation (`E0203`) |
-| Parameters | Irrefutable patterns (`E0303`); mutable modes must match supplied authority |
+| One `with` | At most one arm per operation (`E0622`) |
+| Parameters | Irrefutable patterns (`E0345`); mutable modes must match supplied authority |
 | Request-value branches | Ordinary `if`/`match` inside the arm |
 | Unlisted operation | Forward outward; retain unhandled effects (`E0612`) |
 | Discharge an effect family | Cover every operation |
@@ -3793,7 +4121,7 @@ fn edit_once(mut cell: Cell) -> int &mut {
 | Operation's ordinary `mut` loan | Arm's permission |
 | :--- | :--- |
 | Before `resume`, including evaluation of its value | Access through the matching parameter |
-| Continuation starts | Return the loan; end all arm access through the parameter and derived aliases (`E0520`) |
+| Continuation starts | Return the loan; end all arm access through the parameter and derived aliases (`E0540`) |
 | `resume` returns | No restoration; copied scalars, independent data, and lawful retained `^mut` authority remain usable |
 
 Outer function/callback loans stay active. Independent captures and ambient aliases remain separate exclusivity participants. Neither resumption nor `^mut` extends a borrowed or scoped lifetime.
@@ -3925,6 +4253,15 @@ fn make_label_button(label: str) -> Button &capture {
 ### Affine Resumption and Delimited Early Abort
 
 `resume` is affine: repeated use or escape from its arm is rejected. An arm returning without resumption aborts the delimited computation and runs scoped cleanup in reverse order. Prior writes remain committed.
+
+```ril
+fn outside_handler() -> int {
+    -- resume 1                      -- Error [E0623]: no enclosing operation arm
+    1
+}
+```
+
+`resume` without an enclosing effect-operation arm is `E0623`. Capturing an enclosing arm's resumption across a prohibited callable boundary remains `E0611`; a second use remains `E0610`. Access through an operation's ended temporary loan, including a derived alias after resumption begins, is `E0540`. This does not revoke an independent lawful retained authority.
 
 ```ril
 -- Affine Resumption Violation: invoking resume more than once
@@ -4560,6 +4897,18 @@ type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u
 ### Disjoint Call Families, Evaluation Budgets, and Branch Pruning
 
 ```ril
+fn runtime_identity(value: int) -> int { value }
+-- meta let INVALID_CALL = runtime_identity(1) -- Error [E0810]: run-time fn in static evaluation
+fn length_from_runtime(size: int) {
+    -- let buffer: [size]int = []    -- Error [E0814]: a static length is required
+}
+meta let LENGTH = 0
+let buffer: [LENGTH]int = []          -- OK
+```
+
+`E0810` diagnoses a forbidden call across the specified evaluation families. `E0814` diagnoses a run-time value where a static value is required, including const arguments, static-key arguments, and fixed array lengths. Wrong sorts retain `E0323`; a known negative array length is `E0815`. Direct record access with a dynamic computed key retains `E0324`, rather than the argument-oriented static-key diagnostic.
+
+```ril
 eff Audit { write(str) -> () }
 fn logged_worker(x: int) -> int @Audit { Audit::write("work"); x }
 
@@ -4618,19 +4967,19 @@ let user = User.{ id: 1, name: "Ada" }
 let name: str = get_field(user, "name")
 -- get_field(user, "missing")          -- Error [E0323]: key is not in keyof User
 fn dynamic_key(user: User, key: str) {
-    -- get_field(user, key)             -- Error [E0810]: actual key is not statically known
+    -- get_field(user, key)             -- Error [E0814]: actual key is not statically known
 }
 ```
 
 - `K: keyof T` is a static string key for records/sums, or an integer tuple position; it is not a run-time literal type.
 - `key: K` requires an argument statically equal to K and permits inferring K from it. Both names denote that key in the body.
-- K is not an ordinary data type: `[]K` is `E0301`. Check membership after inference (`E0323`); unknown run-time keys are `E0810`.
+- K is not an ordinary data type: `[]K` is `E0301`. Check membership after inference (`E0323`); unknown run-time keys are `E0814`.
 
 | Value projection | Requirement |
 | :--- | :--- |
 | `record.(key)` / `record.("name")` | Static key; preserve reference permissions/origins; bracket indexing is `E0324` |
 | Tuple | Static positional index; excluded by the example's record constraint |
-| Sum payload | `match` or variant narrowing; membership in `keyof S` alone is insufficient (`E0301`) |
+| Sum payload | `match` or variant narrowing; membership in `keyof S` alone supplies no value-level product projection (`E0337`) |
 
 An immutable run-time string is not a static key. Sum type keys describe possible payload shapes, not fields present in every value.
 
@@ -4645,7 +4994,7 @@ For any composite type $T$ and coordinate key $K \in \text{keyof } T$, `T.(K)` s
 - **Tuples**: `Pair.0` or `Pair.(0)` resolves to the component type at positional index $K$.
 
 #### Symmetrical Mapped Comprehensions
-- **Mapped Records**: `{ [K in Expr]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0203`/`E0102`; ADT tables may use PascalCase constructor labels.
+- **Mapped Records**: `{ [K in Expr]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; ADT tables may use PascalCase constructor labels.
 - Fields are read-only unless written `{ mut [K in Expr]: TypeExpr }`; projecting a field type does not copy its mut marker. Records and sums use the same mapping form:
   ```ril
   -- Generic visitor / handler table valid for BOTH records and sum types:
@@ -4720,7 +5069,7 @@ TypePatternInner ::= RigidNominalPattern | TypeTuplePattern | TypeRecordPattern
 ```
 
 - **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `type<P>` introduces an immutable type variable scoped strictly to the arm's guard and RHS expression. `U` MUST be `PascalCase` (`E0101`).
-- **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0203: DuplicateDeclarationError`). Multi-position equality is asserted via explicit guards (`if type<A> == type<B>`).
+- **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0347: DuplicatePatternBindingError`). Multi-position equality is asserted via explicit guards (`if type<A> == type<B>`).
 - **Tuple Rest**: A type-pattern rest is a tuple type of the remaining components; an empty rest is unit. A one-component rest cannot form a tuple and fails that pattern, allowing the next arm to match. It is not silently coerced to its component type.
 - **Rigid Application Head (`E0306`)**: Require a known rigid type constructor; no head binding or inverse type-function matching. Transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
 
@@ -4764,7 +5113,7 @@ type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) 
 Type functions accept the following parameter sorts and constraints:
 
 - **Bare Types (`\T` or `\T: Type`)**: Accepts static type expressions. Unannotated parameters default to sort `Type`.
-- **Const Values (`\param: ValueType`)**: Accepts compile-time known constants (literals, `meta let`, statically foldable expressions). Passing runtime variables raises `E0810`.
+- **Const Values (`\param: ValueType`)**: Accepts compile-time known constants (literals, `meta let`, statically foldable expressions). Passing runtime variables raises `E0814`.
 - **Bounded Structural Types (`\T: { id: int, ..R }`) and Static Keys (`\K: keyof T`)**: Structural bounds constrain types; keyof bounds constrain static key values. These are distinct sorts even though both use PascalCase binders.
 - **Higher-Kinded Constructors (`\M: Type -> Type`)**: Enforces constructor kind arity (`E0306`).
 - **Default Sort Arguments**: Type function parameters support default expressions conforming to their sort: `\T = u8`, `\cap: int = 1024`. Default arguments follow the Telescopic scoping and trailing rules ([Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)).
@@ -4853,6 +5202,15 @@ ImportItem ::= Identifier [ "as" Identifier ]
 ```
 
 #### Normative Module Import Rules
+
+```ril
+-- Fixture module math/numbers.ril exports ONE; math/absent does not exist.
+-- use math/absent                   -- Error [E0208]: no module at this path
+-- use math/numbers::{TWO}           -- Error [E0209]: no member TWO in the resolved module
+use math/numbers::{ONE}              -- OK
+```
+
+An unresolved module path is `E0208`. A selective import or qualified module access naming no member of an existing module is `E0209`. An existing but inaccessible member retains `E0201`; an unavailable ordinary lexical name retains `E0204`. Import name collisions retain `E0203`. These conditions do not establish new module search, dependency-cycle, or path-precedence rules.
 
 - **Automatic PascalCase Namespace Derivation**:
    When a module path is imported directly without `::` and without an explicit `as` clause (`use ModulePath`), the module namespace bound in the current lexical scope defaults to the canonical PascalCase transformation of the terminal path segment (`to_pascal_case(last_segment)`):
@@ -4994,7 +5352,7 @@ pub fn test_out_of_bounds_defect() -> Result<(), str> @Concurrent {
 
     match outcome {
         Err(TaskFault::Panicked(info)) -> {
-            assert(info.message == "index out of bounds (index 5, length 2)", "panic message mismatch")
+            let _ = info              -- Payload text is explanatory, not a conformance assertion
             Ok()
         },
         _ -> panic("expected operation to panic, but completed normally"),
@@ -5003,6 +5361,13 @@ pub fn test_out_of_bounds_defect() -> Result<(), str> @Concurrent {
 ```
 
 ### Program Entry Point
+
+```ril
+-- Complete executable root; no root main is declared.
+pub fn helper() {}                    -- Error [E0903]: executable program lacks its root main
+```
+
+An executable program without its required root `main` function is `E0903`. An ordinary library module is not required to declare `main`. Duplicate declarations of root `main` retain `E0203`. This diagnostic does not impose parameter, visibility, or return-type restrictions beyond the entry-point rules below.
 
 Executable programs define one root `main` function. Its declared built-in system effects are provided by the program environment; user-defined effects still require handlers. The examples below are alternatives, not two definitions in one program. Prelude print/println have `@Fiber`, and file-I/O examples use the corresponding leaf-I/O contract:
 
@@ -5137,26 +5502,61 @@ Every Result must be inspected, propagated, unpacked, or returned with its oblig
 
 ---
 
-
 ## Diagnostic Error Codes Summary
+
+Each code identifies the condition defined in the corresponding language section. More specific conditions take precedence as specified under [Diagnostic Classification](#diagnostic-classification). Codes are not reused for unrelated conditions.
+
+### Source Text, Identifiers, and Syntax
 
 | Code | Diagnostic Name | Normative Condition |
 | :---: | :--- | :--- |
 | **`E0101`** | `InvalidIdentifierCasingError` | Identifier casing style violates grammatical role requirement |
-| **`E0102`** | `MalformedIdentifierSyntaxError` | Malformed identifier casing/underscores, invalid literal escape/scalar, or invalid generated field label |
+| **`E0102`** | `MalformedIdentifierSyntaxError` | Malformed identifier casing/underscores or invalid generated field label |
 | **`E0103`** | `PatternCasingCollisionError` | Pattern binding position contains illegal casing causing semantic collision |
+| **`E0104`** | `InvalidSourceEncodingError` | Source bytes are not a well-formed UTF-8 sequence |
+| **`E0105`** | `InvalidSourceCharacterError` | Decoded source character is not admitted by any token at its position |
+| **`E0106`** | `UnterminatedCommentError` | Block comment remains open at end of source |
+| **`E0107`** | `UnterminatedStringLiteralError` | Ordinary, raw, or byte string lacks its closing delimiter |
+| **`E0108`** | `InvalidEscapeSequenceError` | Ordinary-string escape is unsupported or malformed |
+| **`E0109`** | `InvalidUnicodeScalarError` | Well-formed Unicode escape denotes a value outside the Unicode scalar range |
+| **`E0110`** | `InvalidByteLiteralError` | Byte literal contains non-ASCII content or an invalid byte escape |
+| **`E0111`** | `MalformedNumericLiteralError` | Numeric literal violates its base, digits, separators, exponent, or suffix grammar |
+| **`E0112`** | `MalformedInterpolationError` | Recognized interpolation has malformed braces, no expression, or malformed format syntax |
+| **`E0113`** | `ReservedKeywordIdentifierError` | Reserved keyword is used where an ordinary identifier or field label is required |
+| **`E0120`** | `UnexpectedTokenError` | Token cannot occur at its position and no more specific condition applies |
+| **`E0121`** | `UnexpectedEndOfSourceError` | Source ends before a required constituent with no unclosed delimiter |
+| **`E0122`** | `UnclosedDelimiterError` | Syntactic delimiter remains open at end of source |
+| **`E0123`** | `MismatchedDelimiterError` | Closing delimiter does not match its corresponding opener |
+| **`E0124`** | `MissingTokenError` | Required grammar token is absent between otherwise identifiable constituents |
+
+### Names, Initialization, and Field Identity
+
+| Code | Diagnostic Name | Normative Condition |
+| :---: | :--- | :--- |
 | **`E0201`** | `PrivateItemAccessError` | Accessing or importing unexported private module symbol |
 | **`E0202`** | `TopLevelSideEffectError` | Top-level declaration contains non-constant runtime side effects |
-| **`E0203`** | `DuplicateDeclarationError` | Duplicate same-scope binding/handler operation or ambiguous unqualified constructor abbreviation |
-| **`E0204`** | `UnresolvedIdentifierError` | Reference to an unavailable identifier, including use/publication of a helper before its required captures initialize |
+| **`E0203`** | `DuplicateDeclarationError` | Duplicate same-scope declaration or import binding, including conflicting signature/block where declarations |
+| **`E0204`** | `UnresolvedIdentifierError` | Reference to an unavailable ordinary lexical identifier |
 | **`E0205`** | `QuestionMarkOutsideFunctionError` | Using postfix '?' operator outside an enclosing function or closure body (no enclosing activation frame to receive early return) |
-| **`E0301`** | `TypeMismatchError` | Expression type incompatible with expected type |
+| **`E0206`** | `AmbiguousConstructorError` | Unqualified constructor abbreviation has multiple distinct visible variant candidates |
+| **`E0207`** | `UseBeforeInitializationError` | Invocation, publication, or passing of a hoisted helper requires a capture not yet initialized |
+| **`E0208`** | `ModuleNotFoundError` | Imported module path does not resolve to a module |
+| **`E0209`** | `UnresolvedModuleMemberError` | Import or qualified access names no member of the resolved module |
+| **`E0210`** | `DuplicateFieldError` | Field label appears more than once in declared, explicit, or generated fields |
+| **`E0211`** | `ConflictingSpreadFieldsError` | Multiple value spreads supply the same field without an explicit override |
+| **`E0212`** | `OverlappingRowFieldError` | Named row tail overlaps a field explicitly declared in the enclosing record type |
+
+### Types, Expressions, Generics, and Patterns
+
+| Code | Diagnostic Name | Normative Condition |
+| :---: | :--- | :--- |
+| **`E0301`** | `TypeMismatchError` | Expression type incompatible with its required type, with no more specific diagnostic condition |
 | **`E0302`** | `UnexpectedFieldError` | Closed record supplied with undeclared fields |
-| **`E0303`** | `NonExhaustiveMatchError` | Nonexhaustive match or refutable pattern where an unguarded binding, for, or handler requires an irrefutable pattern |
+| **`E0303`** | `NonExhaustiveMatchError` | Match does not cover every possible subject value; guards do not establish exhaustive coverage |
 | **`E0304`** | `UnreachableMatchArmError` | Pattern match arm is statically unreachable due to preceding exhaustive patterns or GADT index constraints |
 | **`E0305`** | `NominalTypeMismatchError` | Mismatched nominal type wrapper identities |
 | **`E0306`** | `KindMismatchError` | Mismatched higher-kinded type constructor or sort constraint |
-| **`E0307`** | `MissingFieldError` | Record projection or construction expression lacks required declared field |
+| **`E0307`** | `MissingFieldError` | Record construction omits a required declared field |
 | **`E0308`** | `OpaqueBoundaryViolationError` | Attempting to unpack, penetrate with `inner()`, or pattern deconstruct an opaque type externally |
 | **`E0309`** | `VacuousBindingError` | 'let' pattern binds zero variables (excluding explicit wildcard discard 'let _ = expr') |
 | **`E0310`** | `InvalidatedNarrowingAccessError` | Accessing identifier whose flow narrowing was invalidated by reassignment or mutation |
@@ -5175,23 +5575,59 @@ Every Result must be inspected, propagated, unpacked, or returned with its oblig
 | **`E0323`** | `ConstGenericSortMismatchError` | Const/static-key argument has the wrong sort or is not a member of its keyof constraint |
 | **`E0324`** | `DynamicRecordIndexProhibitedError` | A record is accessed with bracket indexing or a non-static computed key |
 | **`E0325`** | `DuplicateArgumentError` | Duplicate named argument supplied in function or constructor call |
+| **`E0326`** | `LiteralOutOfRangeError` | Well-formed integer literal, including its immediately applied minus, does not fit the selected type |
+| **`E0327`** | `UnsupportedOperandTypeError` | Operator is not defined for an operand type or a required constituent type |
+| **`E0328`** | `InvalidCollectionKeyTypeError` | Map key or set element type does not satisfy the specified value-key eligibility rules |
+| **`E0329`** | `IncompatibleFormatSpecifierError` | Well-formed interpolation format is incompatible with the value type |
 | **`E0330`** | `BareEffectTypeAliasError` | Attempting to alias an effect ('@Eff') under 'type E = ...' instead of 'eff' declaration |
 | **`E0331`** | `BareCapabilityTypeAliasError` | Attempting to alias a capability ('&mut', '&^mut') under 'type C = ...' |
 | **`E0332`** | `VariantComputationAnnotationError` | Attaching '@Eff' or '&Cap' directly to a sum type variant constructor |
 | **`E0333`** | `FieldComputationAnnotationError` | Attaching '@Eff' or '&Cap' directly to a record field or tuple component |
 | **`E0334`** | `GenericComputationConstraintError` | Constraining a generic parameter with an effect ('<T: @Io>') or capability ('<T: &mut>') |
 | **`E0335`** | `TypeFunctionComputationAnnotationError` | Declaring '@Eff' or '&Cap' on a pure compile-time type function ('type', 'halt type') |
+| **`E0336`** | `UnknownFieldError` | Projection or product pattern names a field absent from the known product schema |
+| **`E0337`** | `NonProductProjectionError` | Receiver type does not admit the requested named-field or positional product projection |
+| **`E0338`** | `NonCallableInvocationError` | Call expression attempts to invoke a value that is not callable |
+| **`E0339`** | `UnknownNamedArgumentError` | Named argument label does not name a parameter of the selected callable |
+| **`E0340`** | `GenericArityMismatchError` | Explicit generic arguments cannot fit the declaration's generic parameter list |
 | **`E0341`** | `InvalidRecordKeySortError` | Supplying integer keys to mapped record comprehension '{ [K in Expr]: ... }' (requires '[]str') |
 | **`E0342`** | `InvalidTupleKeySortError` | Supplying string keys to mapped tuple comprehension '( [I in Expr]: ... )' (requires '[]int') |
 | **`E0343`** | `SingleElementTupleProhibitedError` | Mapped tuple comprehension evaluated over an index array of length 1 (Ril strictly has no 1-tuples) |
+| **`E0344`** | `InsufficientTypeInformationError` | Required type or static argument is undetermined after available context, defaults, and inference |
+| **`E0345`** | `RefutablePatternError` | Binding, for element, or handler parameter requires an irrefutable pattern but the supplied pattern may fail |
+| **`E0346`** | `OrPatternBindingMismatchError` | Alternatives bind different names or incompatible binding types or modes |
+| **`E0347`** | `DuplicatePatternBindingError` | An identifier is bound more than once within one value- or type-pattern alternative |
+| **`E0348`** | `InvalidRangePatternError` | Numeric range pattern has non-integer endpoints or reversed bounds |
+| **`E0349`** | `InvalidPatternExpressionError` | Computed expression is used where a literal pattern is required |
+| **`E0350`** | `NonBooleanConditionError` | Condition, pattern guard, or logical operand is not bool |
+| **`E0351`** | `IncompatibleBranchTypesError` | Otherwise valid if branches or reachable match arms have incompatible result types |
+| **`E0352`** | `InvalidIndexTargetError` | Receiver does not support the requested ordinary or safe element lookup |
+| **`E0353`** | `NullaryVariantCallError` | Parentheses are supplied to a payload-free variant tag |
+
+### Parameters, Argument Modes, and Defaults
+
+| Code | Diagnostic Name | Normative Condition |
+| :---: | :--- | :--- |
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as a mut/^mut parameter |
 | **`E0402`** | `ValueTypePinnedMutError` | Attempting to give a value type interior authority with `let mut` or `var mut` |
 | **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
 | **`E0404`** | `MutableParameterDefaultProhibitedError` | A mut/^mut parameter specifies a default value argument |
+| **`E0405`** | `MissingMutableArgumentMarkerError` | Ordinary argument is supplied instead of the required explicit mut or ^mut argument mode |
+| **`E0406`** | `InvalidArgumentModeError` | Explicit argument mode does not match the declared parameter mode |
+| **`E0407`** | `CallableParameterModeMismatchError` | Callable's data-parameter modes are incompatible with the required callable type |
+| **`E0408`** | `InvalidDefaultParameterReferenceError` | Ordinary parameter default refers to itself or a later parameter |
+| **`E0409`** | `ImpureParameterDefaultError` | Ordinary parameter default has residual effect or state obligations |
+| **`E0410`** | `InvalidMutableArgumentTargetError` | Explicitly mutable argument does not designate an addressable target |
+
+### Bindings, State, Permissions, and Resource Contracts
+
+| Code | Diagnostic Name | Normative Condition |
+| :---: | :--- | :--- |
 | **`E0501`** | `ImmutableReassignmentError` | Reassigning an immutable `let` binding |
 | **`E0502`** | `PinnedHandleReassignmentError` | Reassigning a pinned mutable handle `let mut` or borrowed `mut` parameter |
+| **`E0503`** | `InvalidAssignmentTargetError` | Assignment target is not an addressable lvalue |
 | **`E0510`** | `MissingCapabilityAnnotationError` | Missing required concrete invocation capability or local writable-sharing marker, including known inherited state, direct reads, creation, or retention |
-| **`E0520`** | `MutabilityLaunderingError` | Granting unsupplied write permission, using an invalid mutable mode, or accessing an operation's ended temporary loan after resume |
+| **`E0520`** | `MutabilityLaunderingError` | Attempt to acquire or exercise interior/environment write permission not supplied by the source or access path |
 | **`E0521`** | `DestructureMutabilityLaunderingError` | Pattern binding attempts to upgrade a referenced constituent; independent scalar copies are exempt |
 | **`E0522`** | `ContainerMutabilityLaunderingError` | A container operation attempts to grant write permission to an immutable or view constituent |
 | **`E0523`** | `MutMutAliasingConflictError` | Overlapping mutable arguments passed to `mut` parameters |
@@ -5211,6 +5647,13 @@ Every Result must be inspected, propagated, unpacked, or returned with its oblig
 | **`E0537`** | `LiveSliceInvalidationError` | Changing a backing collection's structure while a live slice window or alias may still be used |
 | **`E0538`** | `InvalidStateSourceGroupError` | A source group has no capture item, a wrong global/capture kind or owner, an omitted required named ancestor, or bindings from different capture layers |
 | **`E0539`** | `InvalidStateContractReferenceError` | A function state reference is used outside an ordinary named definition or does not name a visible ordinary named Ril function provider |
+| **`E0540`** | `EndedOperationLoanAccessError` | Handler accesses an operation's temporary mut loan or a derived alias after resumption begins |
+| **`E0541`** | `InvalidScopedCleanupContractError` | Scoped binding lacks an accessible, shape-compatible cleanup contract |
+
+### Effects, Resumption, Concurrency, and Escape
+
+| Code | Diagnostic Name | Normative Condition |
+| :---: | :--- | :--- |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Mutable/live ordinary data or a non-transferable active resource crosses a task boundary |
 | **`E0602`** | `IllegalChannelPayloadCapabilityError` | Channel payload is neither immutable ordinary data nor an explicitly detached resource descriptor |
 | **`E0603`** | `ChannelEndpointAliasingConflictError` | Endpoint/ticket authority is aliased across tasks, duplicated, or used after close/transfer |
@@ -5229,6 +5672,16 @@ Every Result must be inspected, propagated, unpacked, or returned with its oblig
 | **`E0618`** | `UndischargedLocalEffectError` | Local algebraic effect declared in 'where' is not completely discharged within enclosing block |
 | **`E0619`** | `ParallelDisjointAccessConflictError` | Parallel write/read or write/write regions overlap or cannot be proved disjoint |
 | **`E0620`** | `PseudoEffectAnnotationError` | Attaching non-effect evaluation strategy (such as '@Parallel') as an algebraic effect annotation |
+| **`E0621`** | `InvalidHandlerTargetError` | Resolved handler target is not an effect operation |
+| **`E0622`** | `DuplicateHandlerOperationError` | One with supplies multiple arms for the same effect operation |
+| **`E0623`** | `ResumeOutsideHandlerError` | Resume has no enclosing effect-operation arm |
+| **`E0624`** | `ResumeValueTypeMismatchError` | Resume operand is incompatible with the handled operation's result type |
+| **`E0625`** | `HandlerAnswerTypeMismatchError` | Handler arm's answer is incompatible with its delimited block's answer type |
+
+### Declaration Contexts, Control Flow, and Fallible Values
+
+| Code | Diagnostic Name | Normative Condition |
+| :---: | :--- | :--- |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
 | **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
 | **`E0703`** | `IllegalSequentialDeclarationError` | Declaring 'fn', 'type', or 'eff' in sequential statement stream instead of 'where' clause |
@@ -5238,15 +5691,68 @@ Every Result must be inspected, propagated, unpacked, or returned with its oblig
 | **`E0707`** | `InvalidControlTransferContextError` | Using last/next without an enclosing loop or return across a prohibited boundary |
 | **`E0710`** | `IllegalControlTransferInFallbackError` | Direct return/last/next transfer out of a fallback expression |
 | **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
+| **`E0712`** | `InvalidPropagationOperandError` | Postfix ? operand inside a callable is neither Option nor Result |
+| **`E0713`** | `IncompatiblePropagationTargetError` | Enclosing callable cannot return the failure of an otherwise valid ? operand |
+| **`E0714`** | `InvalidFallbackOperandError` | Left operand of ?? is neither Option nor Result |
+| **`E0715`** | `InvalidSafeAccessReceiverError` | Safe field access uses a non-optional receiver |
 | **`E0720`** | `UnusedFallibleResultError` | A fallible result is abandoned without inspection, including through aggregates, tasks, or channel queues |
-| **`E0810`** | `CallFamilyViolationError` | Crossing disjoint runtime `fn` and compile-time `meta`/`type` call families |
+
+### Static Computation and Totality
+
+| Code | Diagnostic Name | Normative Condition |
+| :---: | :--- | :--- |
+| **`E0810`** | `CallFamilyViolationError` | Invocation crosses the disjoint run-time fn and compile-time meta/type call families |
 | **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting evaluation step budget in meta/type functions |
 | **`E0812`** | `MetaTypeReturnProhibitedError` | 'meta fn' attempting to return 'type<...>' or sort 'Type'; type construction is monopolized by type functions |
 | **`E0813`** | `MetaComputationAnnotationError` | Declaring algebraic effects ('@Eff') or state capabilities ('&Cap') on a 'meta fn' signature |
+| **`E0814`** | `StaticValueRequiredError` | Run-time value is supplied where a static value is required |
+| **`E0815`** | `InvalidArrayLengthError` | Statically known int fixed-array length is negative |
 | **`E0820`** | `TotalityViolationError` | A halt function/type body has uncertified local recursion/iteration or a transitive Div obligation |
 | **`E0830`** | `MetaAssertionFailedError` | An assert condition evaluates to false during meta/type evaluation |
 | **`E0831`** | `StaticEvaluationPanicError` | A non-assertion panic occurs during meta/type evaluation |
+
+### Module Forms, Entry Points, and External Contracts
+
+| Code | Diagnostic Name | Normative Condition |
+| :---: | :--- | :--- |
 | **`E0901`** | `BodyInDeclModuleError` | Supplying an implementation body, variable initializer, or mutable binding in a '.d.ril' declaration unit |
 | **`E0902`** | `MissingBodyInStandardModuleError` | Omitting an implementation body from a function declared in a standard '.ril' module |
+| **`E0903`** | `MissingEntryPointError` | Executable program lacks its required root main function |
 | **`E0907`** | `ForeignStructuralFieldPenetrationError` | Attempting to access fields, mutate, index, deconstruct, or instantiate an opaque external type |
 | **`E0908`** | `UnsupportedExternalAuthorityContractError` | External declaration or use requests authority outside ordinary exchange, temporary callbacks, and explicitly listed resource contracts |
+
+## Advisory Warnings
+
+```ril
+fn example(unused_parameter: int) -> int { -- Warning [W0001]: parameter is never used
+    let unused_local = 1              -- Warning [W0001]: local binding is never used
+    let _intentional = 2              -- OK: intentionally unused
+    0
+}
+```
+
+```ril
+-- Complete library module; push is neither used nor re-exported.
+use ril/array::{push}                  -- Warning [W0002]: unused private import
+pub fn answer() -> int { 42 }
+```
+
+```ril
+fn finish() {
+    return
+    let _unreachable = 2              -- Warning [W0003]: preceding return cannot complete normally
+}
+```
+
+| Code | Diagnostic Name | Advisory Condition |
+| :---: | :--- | :--- |
+| **`W0001`** | `UnusedReadOnlyBindingWarning` | Read-only local binding or parameter has no use in its scope |
+| **`W0002`** | `UnusedPrivateImportWarning` | A privately imported binding is neither referenced nor publicly re-exported |
+| **`W0003`** | `UnreachableStatementWarning` | Sequential executable statement follows an unconditional control transfer or an expression of type never in the same statement sequence |
+
+Implementations MAY report these conditions; absence of a warning is not a conformance failure. Warnings do not reject otherwise valid programs, discharge semantic obligations, or suppress static errors. Their names and conditions distinguish them from the mandatory `E` diagnostics; presentation and wording remain unspecified. This section adds no warning-control syntax.
+
+- `W0001` excludes `_` discards, names beginning with the permitted suppressing underscore, mutable authorities, and scoped resources used by implicit cleanup. Reads, captures, and passing a value are uses; unused-result duties remain independent. Only local bindings and parameters are covered, not externally usable public declarations.
+- `W0002` applies to the actual imported binding, including aliases or namespace bindings. A reference through its imported name counts as use. Public re-exports are excluded. For a private glob import, a diagnostic may identify unused imported bindings without declaring the module itself inaccessible.
+- `W0003` describes sequential unreachability after `return`, `last`, `next`, or another expression of type `never`. Resumption is not unconditionally terminating in general. An unreachable statement still obeys applicable static rules. This warning does not change static-boolean branch pruning or the exhaustive-pattern rules, and does not require proving arbitrary conditions constant.
+- Unexercised mutable authority remains `E0527`, abandoned fallible results remain `E0720`, and unreachable match arms remain `E0304`. A warning cannot replace any of these errors.

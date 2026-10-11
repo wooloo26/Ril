@@ -12,6 +12,10 @@ Design choices and their tradeoffs. [SPECIFICATION.md](SPECIFICATION.md) defines
   - [Floating-Point and Collection Boundaries](#floating-point-and-collection-boundaries)
   - [Unit Success Without Implicit Wrapping](#unit-success-without-implicit-wrapping)
   - [Scoped Cleanup and Double Faults](#scoped-cleanup-and-double-faults)
+- [Diagnostics and Failure Classification](#diagnostics-and-failure-classification)
+  - [Conditions Before Message Wording](#conditions-before-message-wording)
+  - [Advisory Warnings and Mandatory Errors](#advisory-warnings-and-mandatory-errors)
+  - [Failure Categories Without New Runtime Types](#failure-categories-without-new-runtime-types)
 - [Aliasing, Mutability, and the Law of Exclusivity](#aliasing-mutability-and-the-law-of-exclusivity)
   - [Rejecting Mutability Laundering](#rejecting-mutability-laundering)
   - [Complete Provenance Without Repeating It in Source](#complete-provenance-without-repeating-it-in-source)
@@ -133,6 +137,48 @@ let scoped mut resource = Resource.{
 ```
 
 LIFO cleanup preserves resource order; calling the current `on_close` gives replacement its ordinary meaning without a destructor protocol or snapshot. Double faults preserve both causes rather than promise successful cleanup. Channel closing and parallel fault visibility keep their separate contracts.
+
+## Diagnostics and Failure Classification
+
+### Conditions Before Message Wording
+
+```ril
+type User = { id: int, name: str }
+let user = User.{ id: 1, name: "Ada" }
+-- let missing: User = .{ id: 1 }     -- Error [E0307]: construction lacks a required field
+-- let unknown = user.age            -- Error [E0336]: projection names no declared field
+```
+
+These failures need different corrections even though both involve record fields. Dedicated conditions similarly separate ambiguous constructors from duplicate declarations, uninitialized captures from unavailable names, and refutable bindings from nonexhaustive matches. General type mismatch remains useful when no narrower language rule applies.
+
+The specification fixes rejection conditions and diagnostic identities while leaving message wording and presentation flexible. A useful explanation names the failed requirement and connects it to the responsible declaration, expected type, or authority source. Suggested changes must respect the distinction between explaining a rule and choosing the program's intended behavior; adding sharing or an effect obligation can change the contract.
+
+The [C# statements specification](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/statements#132-end-points-and-reachability) states diagnostic conditions beside the relevant rules and examples. The [Rust Reference's diagnostic attributes](https://doc.rust-lang.org/reference/attributes/diagnostics.html) distinguish diagnostic levels and separate the supported lint catalog from the reference's language-level rules. Ril follows that separation of concerns while retaining its existing normative error-code convention.
+
+### Advisory Warnings and Mandatory Errors
+
+```ril
+let unused = 1                       -- Warning [W0001]: valid unused read-only binding
+let _intentional = 1                 -- OK
+-- let mut unused_items: []int = []  -- Error [E0527]: mutable authority must be exercised
+-- let _ = parse_id("42")            -- Error [E0720]: discard does not inspect a Result
+```
+
+An unused read-only binding, unused private import, or unreachable sequential statement can be reported without making the program invalid. Warning coverage is advisory rather than a promise to discover every useless computation. Implicit scoped cleanup and public re-exports count according to their actual contracts, not merely whether an ordinary expression mentions a name.
+
+Mutable-authority use, Result inspection, and match-arm reachability already participate in Ril's mandatory rules. Reclassifying them as optional warnings would weaken those rules. The underscore convention suppresses only intentionally unused read-only names; it cannot waive authority or fallible-result obligations.
+
+### Failure Categories Without New Runtime Types
+
+```ril
+-- let quotient = 1 / 0              -- Panics: ordinary integer division
+-- meta let QUOTIENT = 1 / 0         -- Error [E0831]: failure in required static evaluation
+let quotient = 1 /? 0                -- OK: None
+```
+
+The distinction is the evaluation domain and operation contract, not whether a defect happens to be predictable. Turning a predictable ordinary panic into rejection would change the language's existing execution rules. Safe operations and business Result values remain explicit alternatives with their own semantics.
+
+The [Go specification's run-time panic section](https://go.dev/ref/spec#Run_time_panics) defines execution conditions without fixing distinct error values for every condition. Ril likewise documents the triggers without adding a category field to `PanicInfo` or changing `TaskFault`. Cancellation, effect abort, and double faults keep their separate propagation and cleanup rules. Examples check the specified outcome rather than an explanatory message's exact wording.
 
 ## Aliasing, Mutability, and the Law of Exclusivity
 
