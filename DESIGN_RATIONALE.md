@@ -29,6 +29,8 @@ Design choices and their tradeoffs. [SPECIFICATION.md](SPECIFICATION.md) defines
   - [The Two Guarantees of clone_immut](#the-two-guarantees-of-clone_immut)
 - [Algebraic Effects, Concurrency, and Function Colorlessness](#algebraic-effects-concurrency-and-function-colorlessness)
   - [Colorless Functions and Separated System Effects](#colorless-functions-and-separated-system-effects)
+  - [Termination Facts and Finite Evaluation](#termination-facts-and-finite-evaluation)
+  - [Parameterized Handlers and Budget Configuration](#parameterized-handlers-and-budget-configuration)
   - [Structured Scopes as Defect Boundaries](#structured-scopes-as-defect-boundaries)
   - [Capability-Based Concurrency Safety](#capability-based-concurrency-safety)
   - [Effect Confinement at Task Boundaries](#effect-confinement-at-task-boundaries)
@@ -205,9 +207,10 @@ fn invoke(action: fn() -> ()) { action() }
 
 var count = 0
 fn advance() &{mut count} { count += 1 }
+fn invoke_pure(action: fn() -> ()) @{} &{} { action() }
 fn check_choice(choose_write: bool) {
     let action = if choose_write { advance } else { \-> () }
-    -- let closed: fn() -> () @{} &{} = action
+    -- invoke_pure(action)
     -- Error [E0534]: a run-time alternative retains the possible external write
 }
 ```
@@ -230,11 +233,14 @@ fn declared() &{mut count} { invoke(advance) }
 -- fn hidden() { invoke(advance) }    -- Error [E0510]
 fn invoke_pure(action: fn() -> ()) @{} &{} { action() }
 -- invoke_pure(advance)               -- Error [E0534]
+fn plain() {}
+-- fn noisy() @{} &{} {}             -- Error [E0542]
+-- type ClosedAction = fn() -> () @{} &{} -- Error [E0542]
 ```
 
 Default purity gives an ordinary named definition a useful meaning without extra syntax: it has no undeclared concrete outward state or residual effects. Calling another function does not make a known dependency disappear. Callback parameters are different: their actual obligations depend on the value supplied, so the language preserves that dependency until use rather than forcing repeated forwarding notation. The ordinary caller that supplies `advance` has a concrete obligation again.
 
-An explicit empty row constrains the whole domain, including forwarded obligations. It therefore has a stronger role in a higher-order definition than omission. Callable types retain their separate role as contracts over actual values; the empty state row cannot become merely a statement about absent global access. Local mutation and a callable's future latent operations remain separate from the enclosing invocation's outward obligations.
+Empty rows express callback constraints at higher-order boundaries. Ordinary definitions use default purity, while first-order callable types retain inferred obligations. This places each constraint at the call that needs it.
 
 ### Source Groups and Public Function Contracts
 
@@ -383,7 +389,43 @@ type Fetch = fn(str) -> Result<str, str> @Fiber
 
 Suspension changes a computation's obligations, not its ordinary return shape or call syntax. Higher-order functions can forward those obligations without separate async combinators. Leaf I/O uses Fiber; task creation requires Concurrent. Typed Yield data is distinct from unit-valued Fiber scheduling, so a stream consumer cannot accidentally intercept scheduler operations. Affine resume supports push streams; pull state must be represented explicitly.
 
-`halt` separates finite local computation from successful return and external progress. Guarded descent and static budgets avoid promises of arbitrary termination inference or a new proof language.
+Termination is an inferred callable property separate from effect rows. `Div` names the budget-exhaustion request; it does not label every potentially infinite computation. An empty effect row describes absence of residual requests, not a proof that computation ends.
+
+### Termination Facts and Finite Evaluation
+
+```ril
+fn spin() -> int { loop {} }
+fn countdown(n: int) -> int {
+    if n <= 0 { 0 } else { countdown(n - 1) }
+}
+halt fn checked(n: int) -> int { countdown(n) }
+
+halt fn bounded() -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(10_000)
+    Some(spin())
+}
+```
+
+Ordinary functions receive the same termination judgments as `halt` functions. The annotation makes outward purity and finite computation mandatory instead of enabling a more favorable analysis. Unknown behavior stays possibly non-terminating; an annotation cannot certify an arbitrary program. Pure computation may still loop, while finite computation may still panic. Local mutation and effects handled entirely inside the invocation remain compatible with outward purity.
+
+A budget changes one evaluation into a finite attempt; it does not prove the unbounded action terminates. Deterministic charged events make the allowance independent of elapsed time. Complete coverage matters more than whether the source looks pure: an external call with an empty effect row can still remain outside the budget's control. For that reason, bodyless external declarations provide neither termination evidence nor budget eligibility.
+
+Exhaustion ends the protected computation before requesting an ordinary abortive effect. Recovery can introduce its own effects, state, or divergence, so handling exhaustion alone cannot establish a `halt` contract. Finite cleanup has an independent obligation and cannot be skipped because the main computation used its last unit. An inner allowance cannot refill an outer one, and a returned closure cannot carry a finished invocation's allowance into a future call.
+
+### Parameterized Handlers and Budget Configuration
+
+```ril
+with Div::exhausted() -> None
+with Div::budget(10_000)
+Some(search())
+```
+
+The two forms serve different roles: an operation arm describes a response to a request, while a parameterized application supplies configuration to a scoped computation. A general `with f(args)` passes the remainder of the block as a final anonymous callable. Budget configuration therefore uses the same form as other parameterized handlers, without turning an operation's resumption value into a special configuration channel.
+
+Ordinary closure semantics remain applicable, including lexical handler selection, escape checks, and the callable's return target. This keeps the compact form equivalent to its explicit call. A wrapper can discharge still-forwarded effects but cannot rebind a handler already selected by the action. The finite-evaluation guarantee belongs to the built-in `Div::budget` contract, not to arbitrary wrappers that happen to count operations.
+
+Koka's [generalized with statements and abstracted handlers](https://koka-lang.github.io/koka/doc/book.html) provide a reference for the application form and for operation-counting handlers. Such counting does not establish coverage of arbitrary loops. Chez Scheme's [finite-allowance computation interface](https://cisco.github.io/ChezScheme/csug10.3.0/control.html) separates an allowance from completion and expiration; Ril's termination guarantee additionally requires that an exhausted computation cannot be indefinitely resumed or refilled. Static meta/type budgets retain their separate role as limits on individual symbolic evaluations, not evidence that an unbounded definition terminates.
 
 ### Structured Scopes as Defect Boundaries
 
@@ -442,7 +484,7 @@ halt fn squares(values: []f64) -> []f64 {
 }
 ```
 
-Independent evaluation does not require a new control-request effect named Parallel. The callback's residual effects, including Div, must be empty, though local handling and immutable captures remain useful. A fixed 64-element reduction tree supplies its own reference semantics; it is not ordinary left-fold equivalence or a claim that floating addition is associative.
+Independent evaluation does not require a new control-request effect named Parallel. The callback's residual effects must be empty and its computation must separately be proved finite, though local handling and immutable captures remain useful. A finite budget inside a callback can establish the latter when its recovery also terminates. A fixed 64-element reduction tree supplies its own reference semantics; it is not ordinary left-fold equivalence or a claim that floating addition is associative.
 
 ### No Bare Atomics or Weak Memory Orderings
 
@@ -700,6 +742,8 @@ The Ril contract remains the source of typing, effect, permission, and failure g
 
 A bodyless external declaration cannot establish that its host implementation tells the truth about that contract. This is an explicitly delimited trust boundary, not a general permission for application code to suppress provenance checks. Ordinary Ril code remains checked against the declared boundary contract and all origins and permissions that cross it.
 
+Termination has no corresponding foreign assertion: a bodyless function remains possibly non-terminating and cannot be made budget-covered by annotating it. Verified Ril definitions imported from another module and language-defined finite primitives have their own evidence; merely declaring an external function pure supplies none.
+
 ## Tripartite Ontology and Asymmetric Scope of Influence
 
 ### Three Domains: Shape, Access, and Control
@@ -723,10 +767,10 @@ Separating the questions prevents a field's mut marker from becoming an ambient 
 ```ril
 type Reader = fn(mut []u8) -> int @Fiber &mut
 type Action = fn() -> ()               -- Inferred obligations remain attached
-type ClosedAction = fn() -> () @{} &{}
+type PureInvoker = fn(Action) -> () @{} &{} -- Empty rows belong to the higher-order arrow
 ```
 
-A callable combines input/output shapes, access obligations, and control effects, and can itself be stored as data. Simplified types should not expose every captured variable, but must preserve its obligations. Named definitions declare concrete invocation state and effects, including known dependencies from calls; symbolic callback forwarding never changes parameter modes. Explicit empty rows constrain the total domain, while omitted callable-type rows retain actual inferred obligations.
+A callable combines input/output shapes, access obligations, and control effects, and can itself be stored as data. Simplified types should not expose every captured variable, but must preserve its obligations. Named definitions declare concrete invocation state and effects, including known dependencies from calls; symbolic callback forwarding never changes parameter modes. Admitted higher-order empty rows constrain the total invocation domain, while omitted callable-type rows retain actual inferred obligations.
 
 ```ril
 var count = 0

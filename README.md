@@ -47,8 +47,6 @@ pub fn greeting() -> str {
 
 Effects and closure obligations can flow through higher-order calls. Each invocation still needs a stable handler and the required access permissions; forwarding does not change parameter modes.
 
-A named `fn` defaults to no concrete outward state or residual effects. Confined local mutation can still be pure. Only genuine callable-parameter dependencies may be forwarded implicitly; once a caller supplies a known callback, it must declare the resulting concrete obligations. Explicit `@{}` and `&{}` close the total domains, including callback dependencies.
-
 ### Reassignment and interior writes
 
 ```ril
@@ -130,7 +128,7 @@ pub fn test_shared_step() {
 }
 ```
 
-Callable types can abbreviate environment details while preserving inferred obligations. An explicit `fn() -> () @{} &{}` contract requires both rows to be closed.
+Callable types abbreviate environment details while preserving inferred obligations.
 
 Lexical capture is inferred, and the machine tracks the sharing between `cell` and `step`. Escaping captures still obey the factory's `&capture`, `&^mut`, and parameter contracts. Calling an existing shared closure again does not create another sharing event.
 
@@ -180,7 +178,7 @@ fn invoke_pure(action: fn() -> ()) @{} &{} { action() }
 
 fn check_choice(choose_write: bool) {
     let action = if choose_write { advance } else { \-> () }
-    -- let closed: fn() -> () @{} &{} = action
+    -- invoke_pure(action)
     -- Error [E0534]: the possible external write survives the run-time branch
 }
 ```

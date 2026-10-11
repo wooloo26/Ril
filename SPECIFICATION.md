@@ -91,6 +91,7 @@
 - [Functions, Closures, and Callables](#functions-closures-and-callables)
   - [Named Function Declarations and Contrast Matrix](#named-function-declarations-and-contrast-matrix)
   - [Default Purity and Callback Dependencies](#default-purity-and-callback-dependencies)
+  - [Termination and halt Contracts](#termination-and-halt-contracts)
   - [Parameter Modes, Caller Obligations, and Defaults](#parameter-modes-caller-obligations-and-defaults)
   - [Anonymous Functions, Trailing Closures, and Projection Accessors](#anonymous-functions-trailing-closures-and-projection-accessors)
   - [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments)
@@ -109,8 +110,10 @@
 - [Algebraic Effects and Concurrency](#algebraic-effects-and-concurrency)
   - [Effect Declarations and Operation Signatures](#effect-declarations-and-operation-signatures)
   - [Effect Handlers](#effect-handlers)
+  - [Parameterized Handler Applications](#parameterized-handler-applications)
   - [Affine Resumption and Delimited Early Abort](#affine-resumption-and-delimited-early-abort)
   - [Built-in System Effects](#built-in-system-effects)
+  - [Finite Evaluation with Div](#finite-evaluation-with-div)
   - [Structured Concurrency and Panic Containment](#structured-concurrency-and-panic-containment)
   - [Deterministic Data Parallelism and Divide-and-Conquer Primitives](#deterministic-data-parallelism-and-divide-and-conquer-primitives)
   - [Structured Concurrency Channels](#structured-concurrency-channels)
@@ -260,6 +263,7 @@ let ieee = 1.0 / 0.0                  -- OK: positive infinity
 | `panic(message)` | Begin panic unwinding with the supplied message |
 | False `assert` condition | Assertion panic |
 | Integer `/` or `%` with zero divisor | Division-by-zero panic |
+| Negative `Div::budget` limit | Panic before invoking the protected action |
 | Unrepresentable checked fixed-width integer result, including negation and `MIN / -1` | Integer-overflow panic; `MIN % -1` remains zero |
 | Fixed-width shift count negative or at least the bit width; negative `bigint` shift count | Invalid-shift panic |
 | Ordinary array/slice element index outside its bounds | Index-bounds panic |
@@ -832,7 +836,7 @@ type Expr<T> {
 }
 
 -- Specialized evaluator: constructor equations prune impossible branches:
-fn eval_int(e: Expr<int>) -> int @Div {
+fn eval_int(e: Expr<int>) -> int {
     match e {
         LitInt(n) -> n,
         Add(a, b) -> eval_int(a) + eval_int(b),
@@ -841,7 +845,7 @@ fn eval_int(e: Expr<int>) -> int @Div {
 }
 
 -- Generic GADT evaluator: constructor equations refine return type T:
-fn eval<T>(e: Expr<T>) -> T @Div {
+fn eval<T>(e: Expr<T>) -> T {
     match e {
         LitInt(n) -> n,                -- Refines T ~ int
         LitBool(b) -> b,               -- Refines T ~ bool
@@ -1084,7 +1088,7 @@ assert(observed.count == 1)
 - **Complete Static Provenance Invariant**: Every storage cell, reference, callable environment, and resource authority MUST retain the possible origins, access permissions, immutable/live facts, alias relationships, retention and escape dependencies, and owning scope/task obligations required by the specified conservative judgments. Completeness means none of those obligations may be erased; it does not require exact prediction of arbitrary run-time paths or object identities. Independent scalar copies retain no reference-sharing authority; capturing a reassignable scalar cell still retains that cell's origin. The same requirement applies through aggregates, projection, branching, recursion, return, higher-order calls, opaque abstraction, handlers, cleanup, and module boundaries.
 - **No Semantic Erasure**: An omitted annotation, plain `-> T`, abbreviated callable type, or ordinary call spelling does not discard these facts. Private source names need not become public identifiers; their semantic dependencies still participate in every access and boundary check. Anonymous captures and symbolic callback obligations remain inferred. Named definitions must declare their concrete invocation obligations; no return modes, symbolic callback-forwarding notation, or call-site annotation is required.
 - **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize a loan, immutable publication, or task crossing that requires it.
-- **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. Apply the use's existing diagnostic when its required proof is absent.
+- **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. Apply the use's existing diagnostic when its required proof is absent.
 - **Authority and Discharge**: Prove each permission from a declaration, a traced source, a fresh-data rule, or an explicitly specified resource contract. Local discharge requires all relevant authority roots and environments to be confined; a local variable name or locally handled effect is not evidence of confinement. Minimal concrete capabilities (`E0529`) are calculated under these conservative rules, not arbitrary run-time equivalence.
 - **Source Annotations**: Binding modes, explicit mutable arguments, local writable-sharing markers, and required concrete invocation capabilities remain checked. Inference may determine their required spelling, but adding an annotation cannot supply absent authority or change sharing, object identity, or resource ownership. A completion that would require such a semantic change is not a valid annotation-only correction.
 - **Diagnostic Provenance**: Semantic diagnostics MUST make the derived access, sharing, escape, and effect obligations and their source explanations available, including facts omitted from source. An explanation identifies the relevant origin or contract, propagation steps, involved use or boundary, and the rule that accepts or rejects it. Multiple possible origins and an unproved disjointness condition must be reported as such, not replaced with a fabricated exact origin. Explanations also apply to accepted programs and inferred obligations; their presentation is optional and cannot change validity.
@@ -1341,7 +1345,7 @@ $$\text{Semantic Domains} = \langle \text{Shape (Type)}\ \mathcal{T},\ \text{Acc
      - *Algebraic Effect Definitions*: `eff FileIo { read() -> str }`.
      - *Stack Handlers*: `with Handler { op(args) -> ... }`.
      - *Affine Resumptions*: `resume value`.
-     - *Built-in Effect Sub-Lattice*: `@Fiber` (cooperative leaf I/O quantum) $\subset$ `@Async` (compound concurrency alias) $\equiv \lbrace\text{Fiber}, \text{Concurrent}\rbrace$, disjoint from `@Div` (divergence).
+     - *Built-in Effect Sub-Lattice*: `@Fiber` (cooperative leaf I/O quantum) $\subset$ `@Async` (compound concurrency alias) $\equiv \lbrace\text{Fiber}, \text{Concurrent}\rbrace$, disjoint from `@Div` (budget exhaustion). Possible non-termination is a separate inferred callable property, not an effect-row member.
    - **Axiom of Delimited Execution**: Effects represent active computational protocols between code and ambient stack handlers. Once an expression is reduced to normal form, its effects have transpired; passive data has no effect annotation of its own; callable constituents retain their latent obligations.
 
 #### The Computation Confluence Point (fn)
@@ -1349,6 +1353,8 @@ $$\text{Semantic Domains} = \langle \text{Shape (Type)}\ \mathcal{T},\ \text{Acc
 The three domains are mutually exclusive and never mix directly. They converge **exclusively** at the first-class callable arrow:
 
 $$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\mathbin{\And}\mathcal{C}]$$
+
+Termination and finite-budget coverage are judgments about invoking a callable. They remain available independently of the two rows; they are not additional value types, capability values, or effect labels.
 
 ```ril
 -- The Computation Confluence in Action:
@@ -1617,7 +1623,7 @@ Arrows associate right; effect/state suffixes bind to the nearest callable not c
 
 ---
 
-The productions below supply shared declaration vocabulary. An omitted callable row preserves inferred obligations in type expressions; explicit empty rows close that domain. `key: K` is a static-argument form only when K was declared with `keyof`.
+The productions below supply shared declaration vocabulary. Omitted callable rows preserve inferred obligations; [empty rows](#empty-rows-on-higher-order-signatures) constrain higher-order signatures. `key: K` is a static-argument form only when K was declared with `keyof`.
 
 ```ebnf
 ParameterMode    ::= "mut" | "^mut"
@@ -1881,7 +1887,7 @@ assert(events == ["new"])
 | Registration | After successful initialization; per binding and per loop activation; failed initialization registers nothing |
 | Exit | Invoke once in reverse registration order, including cancellation/abort; double-fault exception below |
 | Callback selection | Read the current `on_close` at exit; retain no earlier snapshot. Opaque resources use their specified action |
-| Initialization/replacement | Preserve cleanup eligibility and permissions; no residual effects (`E0616`) or Div (`E0617`) |
+| Initialization/replacement | Preserve cleanup eligibility and permissions; no residual effects (`E0616`), and prove finite cleanup (`E0617`) |
 | Mutable cleanup environment | Requires `let scoped mut` and a mutable `on_close` field; cleanup invocation satisfies `E0527` |
 | Other binding modes | Plain `let scoped` requires immutable data; rebinding: `E0502`; `var`/`var mut`: `E0532` |
 | Invocation | Internal handlers and permitted writes allowed; check exclusivity then, not as a continuous registration loan |
@@ -2059,6 +2065,7 @@ DeclLet          ::= "let" Identifier ":" TypeExpression
 - **Temporary Callbacks**: A separately declared callback parameter may be invoked only during the current foreign call and on the current Ril task. Its actual effects, access origins, environment permissions, and exclusivity obligations remain in force. A mutable callback requires the existing `mut` parameter/argument mode. The foreign side cannot inspect its environment, retain or return it, or send it to another task under this default contract. Every callback argument and result must itself satisfy the ordinary exchange or listed resource rules; temporary callback permission is not an exemption for mutable ordinary data or nested callable exchange.
 - **Listed Resource Contracts (`E0908`)**: Only resource operations explicitly specified here may extend those exchange rules. Opaque declarations, `@Fiber`, `mut`, and `^mut` do not by themselves authorize resource mutation, callback retention, copying, closing, or transfer. Requests outside the default or a listed contract are rejected. Ordinary Ril opaque types still preserve their actual data provenance and acquire no resource exemption.
 - **Trusted Boundary**: An external entity's conformance to its declared exchange and effect contracts is a trusted premise. Static checking establishes the Ril program's compliance with those contracts, not the truth of an implementation whose body is absent. Diagnostic explanations identify the foreign contract as the origin of such facts; missing authority is never replaced by an assumption of freshness or safety.
+- **Termination Boundary**: A bodyless external function is possibly non-terminating, even when its omitted effect/capability rows are closed by the external-declaration contract. Its declaration cannot assert termination or budget coverage; `halt` is not admitted on a bodyless function declaration. A reachable external call prevents ordinary termination certification and is inadmissible within `Div::budget` (`E0822`). Language-defined built-ins follow their normative computation contracts; verified ordinary Ril definitions retain their termination facts across module boundaries.
 
 ```ril
 -- In file: platform/dom.d.ril
@@ -2104,9 +2111,9 @@ The DOM contract above admits read-only `DomWindow`/`DomElement` resource descri
 ```ril
 -- In file: platform/text.d.ril; default ordinary exchange and temporary callback contracts:
 pub fn get_data() -> []int
-pub fn transform_text(text: str, transform: Transformer) -> str
+pub fn transform_text(text: str, transform: Transformer) -> str @{} &{}
 where
-    type Transformer = fn(str) -> str @{} &{}
+    type Transformer = fn(str) -> str
 
 -- pub fn edit(mut items: []int) @Fiber &mut
 -- Error [E0908]: no listed contract grants ordinary mutable-data exchange
@@ -2551,8 +2558,8 @@ let total = {
     base
 where
     fn compute_base() -> int { 100 }
-    fn is_even(n: int) -> bool @Div { if n == 0 { true } else { is_odd(n - 1) } }
-    fn is_odd(n: int) -> bool @Div { if n == 0 { false } else { is_even(n - 1) } }
+    fn is_even(n: int) -> bool { if n <= 0 { true } else { is_odd(n - 1) } }
+    fn is_odd(n: int) -> bool { if n <= 0 { false } else { is_even(n - 1) } }
 }
 
 -- Local algebraic effect declared in 'where' and fully discharged locally:
@@ -3220,14 +3227,156 @@ fn declared_field() &{mut global_count} { invoke_field(.{ run: tick }) }
 -- fn hidden_field() { invoke_field(.{ run: tick }) } -- Error [E0510]: wrapping the known callback does not erase state
 ```
 
-| Annotation context | Omitted row | Explicit empty row |
-| :--- | :--- | :--- |
-| Named definition without callback-dependent obligations | No concrete outward obligations in that domain | The same zero requirement |
-| Named definition with symbolic callback dependencies | No undeclared concrete obligations; retain the symbolic dependencies | Constrain the total row, including those dependencies, to zero |
-| Callable type | Preserve the actual value's inferred obligations | Require zero total residual obligations |
-| Anonymous definition | Infer and verify its actual obligations | Constrain the total residual obligations to zero |
+#### Empty Rows on Higher-Order Signatures
 
-`&{}` closes the whole state domain, including captures and inherited obligations; it is not an empty global-only group. `@{}` closes the whole residual-effect domain. Neither row erases latent obligations of a returned callable or grants permission to create an otherwise prohibited environment.
+```ril
+fn plain() {}                              -- Ordinary named functions use default purity
+halt fn answer() -> int { 42 }             -- halt also needs no empty rows
+type Action = fn() -> ()                   -- First-order callable types preserve actual obligations
+
+fn effects_closed(action: Action) @{} { action() }
+fn state_closed(action: Action) &{} { action() }
+fn both_closed(action: Action) @{} &{} { action() }
+type PureInvoker = fn(Action) -> () @{} &{} -- The annotated arrow itself is higher-order
+let invoke_anonymously = \action: Action -> @{} &{} action()
+
+-- fn noisy_effect() @{} {}                -- Error [E0542]
+-- fn noisy_state() &{} {}                 -- Error [E0542]
+-- fn noisy_both() @{} &{} {}               -- Error [E0542]
+-- halt fn noisy_halt() @{} {}              -- Error [E0542]
+-- let noisy_lambda = \-> &{} ()            -- Error [E0542]
+-- type ClosedAction = fn() -> () @{} &{}   -- Error [E0542]: first-order arrow, including in an alias
+-- fn bad_parameter(action: fn() -> () @{}) { action() }
+-- Error [E0542]: the callback arrow is first-order; annotate the enclosing function instead
+```
+
+A higher-order signature receives or returns callable values, directly or through transparent aliases and visible aggregate shapes. Empty rows apply to that signature's own arrow.
+
+```ril
+type Jobs = { run: Action }
+fn run_job(job: Jobs) @{} &{} { job.run() } -- Callback constituents count
+type JobRunner = fn(Jobs) -> () @{} &{}
+
+type Factory = fn() -> (fn() -> ()) @{} &{} -- Rows belong to the higher-order factory
+fn give_action() -> Action @{} &{} { plain }
+-- type BadFactory = fn() -> fn() -> () @{} &{}
+-- Error [E0542]: without parentheses, the rows belong to the returned first-order arrow
+
+-- fn known_call_only() @{} { plain() }    -- Error [E0542]: calling a known function is not higher-order
+-- fn unknown_shape<T>(value: T) &{} {}    -- Error [E0542]: unconstrained T does not establish a callable shape
+-- In a .d.ril declaration fixture:
+-- pub fn noisy_foreign() @{}             -- Error [E0542]: first-order external declaration
+```
+
+`@{}` closes the invocation's effect row; `&{}` closes its capability row, including captures and inherited access. Returned callables retain their own inferred rows.
+
+```ril
+-- Log and logged have the preceding contracts.
+fn give_logged() -> Action @{} &{} { logged } -- Returning an existing callable performs no Log operation
+-- fn hidden_returned_effect() { give_logged()() } -- Error [E0612]: the later invocation still requires Log
+-- both_closed(logged)                       -- Error [E0534]: valid higher-order constraint, incompatible callback
+```
+
+### Termination and halt Contracts
+
+```ril
+fn countdown(n: int) -> int {
+    if n <= 0 { 0 } else { countdown(n - 1) }
+}                                               -- Proven finite without halt
+fn spin() -> int { loop {} }                     -- Pure, possibly non-terminating; legal
+fn forward_spin() -> int { spin() }              -- Same termination conclusion; no effect declaration needed
+halt fn checked(n: int) -> int { countdown(n) }   -- Unmarked finite helpers are admissible
+-- halt fn unchecked() -> int { spin() }         -- Error [E0820]: no termination proof
+```
+
+Every callable retains a termination judgment independently of its effect and capability rows. `Finite` means its current invocation performs finite computation for all admitted inputs; `MayDiverge` means finite computation has not been established, including a known infinite loop or insufficient evidence. These are specification judgments, not source-level types or annotations. `MayDiverge` does not assert that some input has been proved to diverge.
+
+- **Mandatory Inference**: Apply the same finite-computation rules to ordinary named functions, anonymous functions, and `halt` definitions. Ordinary functions may be `MayDiverge` without any annotation. Neither default purity nor admitted higher-order empty-row constraints supply a termination proof. `@Div` denotes only the separate budget-exhaustion effect; writing it neither authorizes nor proves divergence.
+- **Finite Outcomes**: Normal return, early return, panic, and a terminating delimited abort count as finite outcomes. `never` describes absence of normal continuation, not infinite execution: a panic may be finite while `loop {}` is not. Finite local computation alone promises no wall-clock bound or external scheduling progress.
+- **Invocation Dependencies**: Preserve termination conditions through calls, evaluated parameter defaults, callable arguments and constituents, aliases, branches, handlers, resumption, cleanup, and required child completion. Unknown callable or handler behavior remains a symbolic condition; a concrete invocation is `Finite` only when its required conditions hold. Unknown conditions cannot establish termination. Built-in waits have their stated external-progress premises; arbitrary external functions have no such termination premise.
+- **Cycles**: Every possible execution cycle, including indirect callable invocation and handler re-entry, requires finite-descent evidence or a covering finite-evaluation boundary. Mutually dependent conclusions cannot establish one another without that evidence. Proving a loop finite does not prove an unbounded computation inside one iteration finite.
+- **Current vs. Latent Computation**: Creating, returning, or storing a callable does not execute its body. Preserve that callable's termination conditions for its later invocation. Creation, capture, and publication still retain their ordinary current-invocation obligations.
+- **`halt fn`**: Require `Finite` and empty effective outward effect/capability rows after lawful handling and local discharge, including all admitted parameter-default evaluations. Local mutation, temporary local callable environments, and completely handled local effects are allowed. A called helper need not itself be marked `halt`. A fixed failure of termination is `E0820`; residual effects or capabilities violate `halt` purity (`E0821`). Nonempty outward annotations cannot exempt a `halt` definition from purity. Evaluation of explicit caller-supplied arguments retains its separate caller obligations.
+- **Higher-Order Constraints**: A `halt` definition constrains admitted callable arguments wherever their obligations are inferable. An incompatible actual argument is `E0534`. These constraints and actual termination facts cross module and callable-type boundaries; no new callable-type annotation is required. Closing effect/capability rows alone imposes no termination constraint.
+
+```ril
+halt fn local_sum(values: []int) -> int {
+    var sum = 0
+    for values as value { sum += value }
+    sum
+}                                               -- Local writes discharge; overflow may panic
+
+eff ReadValue { get() -> int }
+halt fn local_read() -> int {
+    with ReadValue::get() -> resume 7
+    ReadValue::get()
+}                                               -- Internal handling remains pure and finite
+-- halt fn bad_io() @Fiber { Fiber::yield() }     -- Error [E0821]: outward effect
+
+var outside_count = 0
+-- halt fn bad_state() &{mut outside_count} { outside_count += 1 }
+-- Error [E0821]: outward capability
+
+fn invoke(action: fn() -> ()) { action() }
+halt fn invoke_finite(action: fn() -> ()) { action() }
+fn done() {}
+fn forever() { loop {} }
+invoke(done)                                    -- Finite
+-- invoke(forever)                              -- Legal, MayDiverge; not executed in this fixture
+invoke_finite(done)                             -- OK
+-- invoke_finite(forever)                       -- Error [E0534]: admitted callback must be finite
+
+halt fn make_later() -> (fn() -> int) { spin }   -- Returning an existing callable is finite
+-- halt fn run_later() -> int { make_later()() } -- Error [E0820]: its later invocation still diverges
+-- halt fn bad_default(value: int = spin()) -> int { value } -- Error [E0820]: default may diverge
+```
+
+| Finite-iteration case | Required proof |
+| :--- | :--- |
+| `for` | Finite collection/range and finite per-element computation |
+| `while`/`loop` | Each continuing path makes the next condition false, or advances a counter toward a stable finite bound |
+| Counter progression | Nonzero step in a fixed direction; continuation stays on the corresponding side of the bound |
+| Equality exit | Initial value and step are known to reach the exit |
+| `next` | The same progress obligation as every other continuing path |
+| Aliases, callbacks, handlers, other writes | Must not invalidate the counter, bound, or descent facts |
+| Arithmetic | Checked overflow is a finite panic; wrapping arithmetic alone proves no descent |
+
+| Recursive case | Required proof |
+| :--- | :--- |
+| Ordinary or `halt` recursion | Each cycle strictly decreases a nonnegative integer under a lower-bound guard, or takes a proper subpart of a known finite acyclic structure |
+| Mutual/indirect recursion | Preserve the same descent relation around every cycle; not every edge must strictly decrease, but no cycle may lack strict decrease |
+| Recursive type unfolding or potentially cyclic data | Not structural descent by itself |
+| Other calls and handler computation | Retain and discharge their own termination conditions |
+| `halt type` helpers | All reached meta/type computation must also be finite, whether or not the helpers are marked `halt` |
+
+```ril
+fn even(n: int) -> bool { if n <= 0 { true } else { odd(n - 1) } }
+fn odd(n: int) -> bool { if n <= 0 { false } else { even(n - 1) } }
+halt fn parity(n: int) -> bool { even(n) }        -- Certified mutual descent
+
+fn stuck(n: int) { if n > 0 { stuck(n) } }       -- MayDiverge: no descent
+fn skipped_progress(n: int) {
+    var i = 0
+    while i < n { if i == 0 { next }; i += 1 }
+}                                               -- MayDiverge: next bypasses progress
+-- halt fn bad_loop() { skipped_progress(1) }    -- Error [E0820]
+
+type Link = { mut following: ?Link }
+fn follow(node: Link) {
+    match node.following { Some(child) -> follow(child), None -> () }
+}                                               -- MayDiverge: Link need not be acyclic
+-- halt fn bad_follow(node: Link) { follow(node) } -- Error [E0820]
+
+fn closed_but_infinite(action: fn() -> ()) @{} &{} { action(); loop {} }
+-- Closed higher-order rows still permit divergence.
+fn inferred_alias() {
+    let action: fn() -> () = forever
+    action()
+}                                               -- Ascription preserves MayDiverge
+-- halt fn invalid_alias() { inferred_alias() }  -- Error [E0820]
+```
+
+Uncertified loops or recursion give `MayDiverge`, not an effect. The special [finite-evaluation contract](#finite-evaluation-with-div) can certify a bounded invocation without certifying its unbounded action. Merely handling `Div::exhausted`, counting selected user operations, or imposing a static-evaluation budget supplies no such proof for an arbitrary run-time call.
 
 ### Parameter Modes, Caller Obligations, and Defaults
 
@@ -3630,7 +3779,8 @@ fn parameter_call() &{mut transaction_count} { invoke_action(record_transaction)
 -- All three concrete wrappers must declare the inherited access.
 -- fn hidden_call() { record_transaction() } -- Error [E0510]: omission is not permission to inherit concrete state
 -- fn hidden_write() { transaction_count += 1 } -- Error [E0510]: this is direct storage access
--- fn falsely_closed() &{} { alias_call() }     -- Error [E0534]: inferred callee state is not empty
+-- fn falsely_closed(action: fn() -> ()) &{} { alias_call(); action() }
+-- Error [E0534]: the higher-order function's total state includes the concrete callee access
 ```
 
 ### State Groups and Captured Layers
@@ -3717,7 +3867,7 @@ fn read_both() -> int &{x, closure} { x + closure }
 -- &{closure,} is Error [E0538]: a captured group requires a real item.
 ```
 
-Standalone `&capture`, `&mut`, `&^mut`, and the callable-type abstraction `&closure` are not group entries. `&{}` is the total empty-state constraint, not an empty global group. No group declares that storage is unique, consumes authority, or merges a retained handler definition; those obligations retain their existing checks.
+Standalone `&capture`, `&mut`, `&^mut`, and the callable-type abstraction `&closure` are not group entries. `&{}` follows the [higher-order empty-row rules](#empty-rows-on-higher-order-signatures). No group declares that storage is unique, consumes authority, or merges a retained handler definition; those obligations retain their existing checks.
 
 ### Named Function State Contract References
 
@@ -3765,7 +3915,7 @@ fn retain_wrapped(^mut cell: Counter::Cell) -> Counter::Cell &^mut &Counter::ret
 - **Provider and Position (`E0539`)**: `&callee` or `&Module::callee` references the verified concrete named-state contract of a visible ordinary named Ril function definition. Ordinary name resolution and visibility apply first (`E0204` for lexical names, `E0209` for absent module members, `E0201` for private members); after successful resolution, a wrong provider kind or annotation position is `E0539`. This form is allowed only in the state annotation of an ordinary named function definition. It is not permitted in callable types, anonymous-function annotations, effect operation declarations, or bodyless foreign declarations. A value alias or callable parameter is not a provider declaration.
 - **Concrete Named Projection**: A reference denotes the provider's concrete global/captured source items and their verified access modes for its current invocation, including concrete named dependencies obtained through other calls. The bindings and lexical owners remain anchored to the provider's scope. It does not include effects, anonymous parameter permissions, standalone `&capture`/`&^mut`, symbolic callback dependencies, or a returned callable's future invocation obligations.
 - **Coverage, Not Authority**: The reference can cover matching concrete named obligations inherited from calls in the referencing definition. Apply the caller's existing local-discharge and parameter-authority rules before matching; a named source in the provider cannot substitute for the caller's required `&mut` or `&^mut`. The reference cannot cover the caller's direct storage access, including direct access in its handlers. Matching uses actual origin and permission relations, not just source names or a requirement that the body invoke one particular function name. Unrelated references do not cover an obligation (`E0510`); an unnecessary concrete reference remains subject to `E0529`.
-- **No Erasure**: Calling through an alias or higher-order helper preserves the concrete dependencies. A provider reference cannot turn them into unknown callback dependencies, discharge a conflicting loan, or prove a recursive dependency empty. `&{}` continues to constrain the total state, including referenced state.
+- **No Erasure**: Calling through an alias or higher-order helper preserves the concrete dependencies. A provider reference cannot turn them into unknown callback dependencies, discharge a conflicting loan, or prove a recursive dependency empty. An admitted higher-order `&{}` constrains the total state, including referenced state.
 - **Declaration Identity**: A declaration import alias or re-export preserves its provider identity. `let action = callee` and a public callable-valued binding do not create provider declarations; references to such bindings are `E0539`. The built-in capability spellings keep their established meanings; a same-spelled function requires a qualified reference. Public callable values without a suitable visible provider do not acquire an implicit private-state permission.
 
 ```ril
@@ -3789,7 +3939,8 @@ eff Tick { tick() -> () }
 let action = advance
 -- fn invalid_provider() &action {}  -- Error [E0539]: action is a value binding
 -- type InvalidContract = fn() -> () &advance -- Error [E0539]: reference form is not a callable-type annotation
--- fn closed() &{} { advance() }     -- Error [E0534]: a closed definition cannot inherit this state
+-- fn closed(step: fn() -> ()) &{} { advance(); step() }
+-- Error [E0534]: a closed higher-order definition cannot inherit this state
 ```
 
 ```ril
@@ -3937,22 +4088,24 @@ items !> Array::push(3)
 
 ```ril
 type Action = fn() -> ()               -- Omitted rows preserve actual obligations
-type ClosedAction = fn() -> () @{} &{} -- Explicitly closed effect and capability rows
+type PureInvoker = fn(Action) -> () @{} &{} -- Only the higher-order arrow has empty rows
 eff Log { write(str) -> () }
 fn write_log() @Log { Log::write("event") }
 let action: Action = write_log         -- OK: @Log remains required on invocation
--- let closed: ClosedAction = write_log -- Error [E0534]: explicit closed contract rejects @Log
+fn require_pure(action: Action) @{} &{} { action() }
+let checked_invoker: PureInvoker = require_pure
+-- checked_invoker(write_log)          -- Error [E0534]: the higher-order contract rejects @Log
 ```
 
 - **Omission**: Callable types infer omitted rows and preserve actual effects, environment modes, named origins, and sharing obligations through every use.
-- **Closed Rows**: `@{}` and `&{}` require zero residual effects and capabilities. Nonempty rows in callable types are total upper bounds; definition annotations follow the separate rules below. `&closure` abstracts capture details, but cannot erase an invocation's actual retained-publication obligation (`&^mut`, `E0534`). Already shared storage remains tracked even when invoking the callable creates no additional authority and therefore needs no new `&^mut`.
-- **Definitions**: All named functions declare their concrete state and unhandled effect obligations, including known obligations inherited from callees. They may infer and forward only still-symbolic callable-parameter dependencies. Anonymous definitions may infer their actual obligations. Bodyless foreign declarations have closed omitted rows. Concrete minimal annotations and callable upper bounds are separate checks.
+- **Termination**: Preserve actual termination facts and symbolic conditions separately from both rows. Neither higher-order empty-row constraints nor ascription to a nonempty effect-row upper bound changes a callable's termination judgment. A `halt` use checks the retained conditions, not the apparent absence of annotations.
+- **Row Bounds**: [Higher-order empty rows](#empty-rows-on-higher-order-signatures) require zero total residual obligations. Nonempty rows in callable types are total upper bounds; definition annotations follow the separate rules below. `&closure` abstracts capture details, but cannot erase an invocation's actual retained-publication obligation (`&^mut`, `E0534`). Already shared storage remains tracked even when invoking the callable creates no additional authority and therefore needs no new `&^mut`.
+- **Definitions**: All named functions declare their concrete state and unhandled effect obligations, including known obligations inherited from callees. They may infer and forward only still-symbolic callable-parameter dependencies in these domains. Anonymous definitions may infer their actual obligations. Bodyless foreign declarations have closed omitted effect/capability rows, but no termination or finite-budget-coverage guarantee. Concrete minimal annotations and callable upper bounds are separate checks; termination and coverage facts are always inferred independently.
 - **Handle Modes**: An abstract callable's inferred environment mode still controls binding and invocation. A mutable environment cannot become immutable or read-only-callable by changing its type annotation.
 - **Inference Is Mandatory**: Returns, call sites, and symbolic higher-order forwarding need no additional surface annotation. Their complete origin and obligation facts remain available for [provenance diagnostics](#complete-provenance-and-optional-annotations), including through private callable abstractions. A named definition's default-purity obligations are still enforced; neither diagnostic visibility nor a user's inspection substitutes for those checks.
 
 ```ril
 type Action = fn() -> ()
-type ClosedAction = fn() -> () @{} &{}
 eff Log { write(str) -> () }
 fn plain() {}
 fn logged() @Log { Log::write("event") }
@@ -3962,7 +4115,7 @@ fn closed(action: Action) @{} &{} { action() }
 closed(plain)                         -- OK: the closed body constrains the admitted callback
 -- closed(logged)                    -- Error [E0534]: argument violates the inferred closed callback constraint
 let selected: Action = if choose_log { plain } else { logged } -- choose_log is a run-time bool input
--- let erased: ClosedAction = selected -- Error [E0534]: run-time choice retains the possible Log obligation
+-- closed(selected)                  -- Error [E0534]: run-time choice retains the possible Log obligation
 fn call_plain() { invoke(plain) }      -- OK: another Action value does not acquire logged's effects
 fn call_logged() @Log { invoke(logged) }
 -- fn missing_log() { let action = logged; invoke(action) }
@@ -3970,21 +4123,21 @@ fn call_logged() @Log { invoke(logged) }
 ```
 
 - **Value-Specific Dependencies**: Omitted rows belong to each actual callable value and its uses, not one shared row attached to a type alias name. Callable values supplied through formal parameters, including their callable constituents, retain symbolic dependencies; actual arguments determine those dependencies at each use. A branch containing different callables retains every possible obligation. Such facts and constraints cross module boundaries with the callable's semantics even when private names cannot be written by the caller.
-- **Definition Constraints**: An explicit empty row on a definition constrains that domain's total effective obligations, including forwarded obligations. It constrains admitted callable arguments where their omitted rows are inferable; the definition above is valid, but a violating argument is `E0534`. A fixed incompatible body is rejected at its definition. A callable type's explicit nonempty row is a total upper bound. A definition's nonempty annotations declare its concrete obligations; still-symbolic callback dependencies continue to be forwarded in addition to them. This does not close those dependencies implicitly.
+- **Definition Constraints**: An empty row constrains the invocation's total obligations, including forwarded callback dependencies. Infer admitted arguments from the body; an incompatible argument is `E0534`, while a fixed incompatible body is rejected at its definition. Nonempty definition annotations declare concrete obligations and continue to forward symbolic callback dependencies.
 - **Concrete Obligations**: Current-invocation state and unhandled effects that no longer depend on a callable parameter require the enclosing named function's declarations (`E0510`/`E0612`). Latent body operations of a returned or stored callable belong to its future invocation; current creation and sharing obligations remain separate. Moving a known callee through an alias, aggregate, or higher-order helper does not make its obligations unknown. Named source groups or admissible state contract references may cover inherited named state; direct storage access requires its own group.
 
 ```ril
 -- Action, plain, and logged have the preceding contracts.
-fn repeat(n: int, action: Action) @Div {
+fn repeat(n: int, action: Action) {
     if n > 0 { action(); repeat(n - 1, action) }
 }
-fn repeat_plain() @Div { repeat(2, plain) }
-fn repeat_logged() @Div + Log { repeat(2, logged) }
--- fn erase_recursive() @Div { repeat(2, logged) }
+fn repeat_plain() { repeat(2, plain) }
+fn repeat_logged() @Log { repeat(2, logged) }
+-- fn erase_recursive() { repeat(2, logged) }
 -- Error [E0612]: recursion preserves the callback's Log dependency
 ```
 
-The recursive edge does not discharge the callback dependency. Declaring the concrete `@Div` obligation does not restrict the callback to `@Div`; the effective instantiated effect row also contains its actual residual effects.
+The recursive descent is finite, but does not discharge the callback's effect, state, or termination conditions. `repeat_plain` is finite; `repeat_logged` retains `Log` and the chosen handler's termination condition. Supplying a possibly non-terminating action makes the instantiated call possibly non-terminating without adding an effect label.
 
 ```ril
 type StashingWorker = fn(^mut Entry) -> () &closure &^mut
@@ -4049,7 +4202,7 @@ fn run_console() {
 }
 ```
 
-`with` covers the remaining block. `resume value` supplies the operation result and reinstalls this handler for the continuation; the arm itself uses outer handlers, even for its own family.
+An operation-arm `with` covers the remaining block. `resume value` supplies the operation result and reinstalls this handler for the continuation; the arm itself uses outer handlers, even for its own family. The separate parameterized application form below passes the remaining computation to a callable.
 
 The operand of `resume` must match the handled operation's result type (`E0624`). For block answer A, the resulting `resume value` expression and every arm's final value must have type A (`E0625` for an incompatible arm answer), including abort values and post-resumption tails. An incompatible retained handler selection still uses its boundary-specific `E0614`.
 
@@ -4075,12 +4228,13 @@ fn answer_type() -> int {
 }
 ```
 
-A handler target must resolve to an effect operation (`E0621`). Missing names still use name-resolution diagnostics. Repeating an operation in one `with` is `E0622`; a nested handler for the same operation is allowed. Omitted operations forward outward and are not a missing-arm error; residual obligations use `E0612` when not handled or declared.
+An operation-arm target (the form with `->`) must resolve to an effect operation (`E0621`). Missing names still use name-resolution diagnostics. Repeating an operation in one `with` is `E0622`; a nested handler for the same operation is allowed. Omitted operations forward outward and are not a missing-arm error; residual obligations use `E0612` when not handled or declared. A parameterized application without `->` follows ordinary callable resolution and argument checking.
 
 ```ebnf
-WithStatement ::= "with" HandlerSpec
+WithStatement ::= "with" ( HandlerSpec | WithApplication )
 HandlerSpec   ::= "{" HandlerArm { "," HandlerArm } [ "," ] "}" | HandlerArm
 HandlerArm    ::= QualifiedName "(" [ PatternList ] ")" "->" Expression
+WithApplication ::= QualifiedName [ GenericArgs ] "(" [ ArgumentList ] ")"
 ResumeExpr    ::= "resume" Expression
 ```
 
@@ -4174,8 +4328,9 @@ assert(reader() == 7)                 -- Fresh invocation boundary with compatib
 ```ril
 eff Read { get() -> int }
 type Reader = fn() -> int &closure
-type Deferred = fn() -> int @Read &{}
+type Deferred = fn() -> int @Read
 fn ask_read() -> int @Read { Read::get() }
+fn read_without_state(action: Deferred) -> int @Read &{} { action() }
 fn make_indirect_reader() -> Reader &capture {
     with Read::get() -> resume 7
     \-> ask_read()                    -- Captures the handler for the helper's residual Read operation
@@ -4219,11 +4374,11 @@ let existing = { with Read::get() -> resume 7; ask_read }
     assert(existing() == 99)            -- Referring to ask_read did not create a new callable
     assert(same_block() == 99)          -- Same-block with was not present at the declaration's creation scope
     assert(nested_block() == 7)         -- The nested declaration inherited the enclosing handler
+    assert(read_without_state(deferred) == 99)
+    -- read_without_state(captured)    -- Error [E0534]: the retained handler environment cannot cross a closed state contract
 }
--- fn incompatible() -> Deferred &capture {
---     with Read::get() -> resume 7
---     \-> Read::get()
--- }                                   -- Error [E0534]: the closed state row cannot erase the selected handler environment
+-- Deferred omits its state row, so it preserves each actual value's environment.
+-- The zero-state requirement belongs to read_without_state's higher-order signature.
 ```
 
 ```ril
@@ -4248,6 +4403,60 @@ fn make_label_button(label: str) -> Button &capture {
     } }
 }
 -- label is immutable; returning the callback inside Button still publishes its environment.
+```
+
+### Parameterized Handler Applications
+
+```ril
+eff ReadConfig { get() -> int }
+fn supply_config(value: int, action: fn() -> int) -> int {
+    with ReadConfig::get() -> resume value
+    action()
+}
+halt fn configured() -> int {
+    with supply_config(7)
+    ReadConfig::get() + 1
+}
+assert(configured() == 8)
+
+-- The application form has the same behavior as the explicit call:
+halt fn configured_explicit() -> int {
+    supply_config(7, \-> { ReadConfig::get() + 1 })
+}
+assert(configured_explicit() == 8)
+```
+
+`with f(args)` without `->` makes the rest of the containing block a zero-argument anonymous callable, supplied as the final argument to `f`. The result of that call is the result of the containing block's remaining computation. This is a general callable application form, not a special syntax for `Div`; `f` may define a parameterized handler or another scoped computation.
+
+| Application rule | Contract |
+| :--- | :--- |
+| Target and explicit arguments | Resolve and evaluate as an ordinary call, once, in ordinary evaluation order |
+| Remaining computation | Becomes the final callable argument; its body is not evaluated during argument creation |
+| Callable modes, captures, escape, default arguments, result types | Same checks as the corresponding explicit call with that final anonymous callable |
+| Mutable callback handles | No implicit `mut` or `^mut` argument; a remainder requiring such a handle must use an explicit binding and ordinary authorized call |
+| `return` in the remaining computation | Returns from that anonymous callable |
+| `last` / `next` | Cannot target a loop outside that callable (`E0707`); inner loops retain their ordinary targets |
+| Handler selection | Same creation-scope selection and residual forwarding as any anonymous callable; no rebinding of an already selected handler |
+| Repeated or omitted invocation | Determined by `f`'s contract; the `with` syntax alone guarantees neither execution nor termination |
+| Mixed forms | `with Eff::op(pattern) -> arm` binds operation parameters; `with helper(expression)` passes configuration arguments |
+
+A helper's internal handler can discharge operations that the final callable forwards, but cannot replace handlers already selected by that callable. The usual declaration partition and `where` scopes remain in force; this form creates no new declaration region beyond the anonymous callable's ordinary execution scope. Each application includes the following applications in its final callable, so applications nest in source order. A supplied argument list must leave the final callable parameter unbound; ordinary call diagnostics reject an incompatible target or duplicate argument.
+
+```ril
+halt fn existing_selection() -> int {
+    with ReadConfig::get() -> resume 3
+    with supply_config(7)
+    ReadConfig::get()
+}
+assert(existing_selection() == 3)     -- The callable already selected the outer handler
+
+fn pass(action: fn() -> int) -> int { action() }
+halt fn returned_from_action() -> int {
+    with pass()
+    return 9                         -- Returns from the supplied action; pass then returns 9
+}
+assert(returned_from_action() == 9)
+-- with pass() -> resume 9            -- Error [E0621]: an operation arm cannot target an ordinary function
 ```
 
 ### Affine Resumption and Delimited Early Abort
@@ -4319,12 +4528,12 @@ fn test_early_abort() {
 
 ### Built-in System Effects
 
-Ril provides the system operation families Fiber and Concurrent, the divergence obligation Div, and the alias Async:
+Ril provides the system operation families Fiber, Concurrent, and Div, and the alias Async:
 
 - **`@Fiber` (Cooperative Fiber Control)**: Cooperative yielding and leaf I/O suspension without concurrent task branching authority. A leaf operation's contract determines what event completes its wait; there is no bare public park/unpark operation.
 - **`@Concurrent` (Structured Concurrency)**: Structured scope, child-task forking, and joining, with the contracts below.
 - **`@Async` (Suspendable I/O)**: An effect alias `{Fiber, Concurrent}` tracking uncolored asynchronous computations.
-- **`@Div` (Divergence Tracking)**: Tracks potential non-termination in unbounded loops and general recursive functions. Total functions (`halt fn`) strictly prohibit `@Div`.
+- **`@Div` (Budget Exhaustion)**: Declares the abortive `Div::exhausted()` operation used by finite evaluation. It is an ordinary residual effect that can be handled. Possible non-termination is tracked separately and never automatically adds `@Div`.
 
 The sub-effect lattice satisfies:
 
@@ -4404,7 +4613,7 @@ fn collect_first_evens() -> []int {
 }
 
 -- (b) Independent Composition: Suspendable Async Generator:
-fn stream_remote_chunks(fd: int) -> () @Yield<[]u8> + Fiber + Div {
+fn stream_remote_chunks(fd: int) -> () @Yield<[]u8> + Fiber {
     while true {
         let chunk = read_socket_chunk(fd)
         if len(chunk) == 0 { last }
@@ -4412,20 +4621,197 @@ fn stream_remote_chunks(fd: int) -> () @Yield<[]u8> + Fiber + Div {
     }
 }
 
--- Divergence vs. Total Functions (@Div):
-fn collatz(n: int) -> int @Div {
+-- Termination inference is independent of effect annotations:
+fn collatz(n: int) -> int {
     if n <= 1 { 1 }
     else if n % 2 == 0 { collatz(n / 2) }
     else { collatz(3 * n + 1) }
 }
 
--- Total function: provably terminates; @Div is strictly forbidden
+-- Pure finite function; ordinary unmarked factorial would receive the same proof:
 halt fn factorial(n: int) -> int {
     if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
 -- halt fn bad_total(n: int) -> int {  -- Error [E0820]: TotalityViolationError: 'halt fn' contains uncertified recursion or unbounded loop
 --     collatz(n)
 -- }
+```
+
+### Finite Evaluation with Div
+
+```ril
+-- Built-in operation contract, not a user redeclaration:
+eff Div { exhausted() -> never }
+
+-- Built-in callable shape; its additional finite-evaluation contract is defined below:
+-- Div::budget<T>(limit: int, action: fn() -> T) -> T @Div
+
+fn spin() -> int { loop {} }               -- MayDiverge, with no algebraic effects
+halt fn bounded() -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(10_000)
+    Some(spin())
+}
+assert(bounded() == None)
+
+halt fn bounded_value() -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(10_000)
+    Some(42)
+}
+assert(bounded_value() == Some(42))
+
+-- The parameterized with is the ordinary final-callable application form:
+halt fn explicit_budget() -> ?int {
+    with Div::exhausted() -> None
+    Div::budget(10_000, \-> Some(spin()))
+}
+assert(explicit_budget() == None)
+```
+
+The built-in `Div` namespace contains the operation `exhausted` and the finite-evaluation callable `budget`. `Div::budget` is not an effect operation and cannot be the target of a `->` handler arm (`E0621`). Its limit is an ordinary call argument, not a handler parameter pattern or a resumption value.
+
+`Div::budget(limit, action)` creates a fresh finite-evaluation boundary and invokes `action` once when its initial allowance permits entry. Normal completion returns the action's value. At exhaustion the protected computation is irrevocably abandoned, its required finite cleanup runs, and the call requests `Div::exhausted()`. The operation has no returning continuation; any `resume` targeting it is `E0822`, before resumption-value type checking. Its answer and delimited scope use ordinary handler rules (`E0625`). The exhausted computation cannot be resumed or refilled.
+
+```ril
+fn finite_attempt() -> int @Div { Div::budget(10_000, spin) }
+-- fn missing_handler() -> int { finite_attempt() } -- Error [E0612]: real residual Div effect
+
+-- Merely installing an exhaustion handler does not limit a computation:
+fn handler_only() -> int {
+    with Div::exhausted() -> 0
+    spin()
+}                                           -- MayDiverge; spin never requests exhausted
+-- halt fn still_unbounded() -> int { handler_only() } -- Error [E0820]
+
+-- An exhaustion handler can itself diverge after the protected action ends:
+fn bad_recovery() -> int {
+    with Div::exhausted() -> spin()
+    with Div::budget(0)
+    42
+}                                           -- MayDiverge, although its effect row is empty
+-- halt fn invalid_recovery() -> int { bad_recovery() } -- Error [E0820]
+-- with Div::exhausted() -> resume ()         -- Error [E0822]: exhaustion is non-resumable
+```
+
+#### Coverage and Finite Outcomes
+
+- **Covered Computation (`E0822`)**: The protected invocation must be ordinary run-time Ril computation with no residual effects or outward capabilities after its internal handling and lawful local discharge. Confined mutation and temporary local environments are allowed. Termination of the action itself is not required. Actual calls, callback constituents, selected handlers, and cleanup all participate in this check; purity alone does not establish coverage.
+- **Local State**: Apply the existing origin, callback-handle, and local-discharge rules. Local mutation inside the action is permitted; capturing storage does not supply missing invocation authority. An annotation cannot discharge actual outside state. The boundary neither rolls back prior writes nor authorizes additional sharing or escape.
+- **Excluded Computation**: Reachable bodyless foreign calls, Fiber/I/O operations, structured concurrency, resource endpoint operations, and parallel combinators are inadmissible even if an enclosing handler removes their residual effect label. Ordinary finite language primitives and sequential collection computations follow their normative finite contracts. A primitive without a finite contract must expose its repeated computation to the charging rules or is inadmissible.
+- **Callable Dependencies**: Budget eligibility follows actual callable values through aliases, fields, returns, and modules. Symbolic callable parameters retain coverage constraints; incompatible or unresolved actual coverage at a required use is `E0822`. Closing a higher-order function's effect/capability rows alone cannot certify an arbitrary external callback as covered.
+- **Handler Boundary**: The budget callable's own `Div` obligation is outside its protected action. It uses the exhaustion handler selected for that invocation by ordinary handler-selection rules. Installing another exhaustion handler inside the action cannot intercept the enclosing boundary's exhaustion. Other effects, capabilities, and termination conditions introduced by recovery remain caller obligations.
+- **Termination Conclusion**: After finite evaluation of the explicit arguments, a valid budget boundary performs finite protected computation. The whole handled expression is `Finite` only if its required cleanup and recovery computation are finite too. An unhandled `Div` operation retains both its ordinary effect obligation and the chosen handler's termination condition. A `halt` caller must discharge all of them.
+- **Latent Computation**: A budget's allowance belongs to its dynamic invocation and never escapes inside a callable. Returning an action does not certify its later execution. Explicitly invoking `Div::budget` inside a later action creates a new boundary then; it does not recover an old allowance.
+- **Static Domain**: `Div::budget` is a run-time built-in, not a meta/type helper. Existing call-family restrictions (`E0810`) apply. Static evaluation retains its own budget and `E0811`.
+
+#### Allowance and Charging
+
+The limit has type `int`. Evaluate it and the action expression once, before establishing the new boundary, in ordinary argument order. A negative limit panics before invoking the action; zero abandons the call without invoking the action and requests exhaustion. Argument evaluation is not protected by the new boundary, so its purity and termination still require their own checks. These evaluations remain covered by any already active outer boundary.
+
+| Charged event while a boundary is active | Cost |
+| :--- | :--- |
+| Ordinary function or anonymous-callable entry, including the protected action | One unit before entering its body |
+| Each loop iteration | One unit before evaluating its condition/next-element test and possible body; `next` cannot skip this event |
+| Each effect-handler entry and each `resume` | One unit before executing the arm or continuing the computation |
+| Entry to an inner `Div::budget` | One unit to existing outer boundaries, before creating the inner allowance |
+| Finite primitive operation | No additional charge beyond its specified callable entry, if any |
+| Other finite expression steps | No additional charge |
+
+These are abstract language events, including source-level calls eliminated by an equivalent evaluation strategy. Every possible infinite execution path within eligible computation must encounter unboundedly many charged events; no uncharged primitive can conceal such a path. Sequential built-in combinators charge each callback entry and iteration under their specified sequential behavior. Installing a handler alone executes no operation; handler code runs only when its operation is requested.
+
+Before a charged event, if any active boundary has no remaining units, do not execute the event; exhaust the outermost such boundary. Otherwise subtract one unit from every active boundary and execute the event. Consuming the last unit does not itself interrupt the event; a later charged event triggers exhaustion. Inner boundaries never replenish, hide, or suspend outer allowances during ordinary computation. An inner handler cannot intercept exhaustion owned by an outer boundary.
+
+Cleanup must already be independently certified finite (`E0617`). During required cleanup, allowances that were active at the start of that cleanup are suspended; cleanup is neither skipped nor repeatedly interrupted by their exhaustion. A budget explicitly created inside cleanup has its own active allowance. After cleanup, surviving outer allowances apply again, including to recovery handlers. Ordinary LIFO cleanup, `EffectAborted` unwinding, and double-fault behavior apply; no transaction or rollback is added. The supplied limit bounds charged protected events, not the total work of finite cleanup or recovery, and is not a wall-clock deadline.
+
+```ril
+fn one() -> int { 1 }
+halt fn zero_allowance() -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(0)
+    Some(1)
+}
+halt fn one_entry() -> ?int {
+    with Div::exhausted() -> None
+    Some(Div::budget(1, one))          -- The action entry consumes the one unit
+}
+assert(zero_allowance() == None)
+assert(one_entry() == Some(1))
+halt fn negative_allowance() -> ?int {
+    with Div::exhausted() -> None
+    Some(Div::budget(-1, one))
+}
+-- negative_allowance()             -- Panics before invoking one; exhaustion handler is not requested
+
+halt fn nested_limits() -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(2)
+    with Div::exhausted() -> Some(99)
+    with Div::budget(100)
+    Some(spin())
+}
+assert(nested_limits() == None)       -- Outer exhaustion bypasses the inner arm
+
+halt fn make_later() -> (fn() -> int) {
+    with Div::exhausted() -> one
+    with Div::budget(100)
+    spin
+}
+-- halt fn run_later() -> int { make_later()() } -- Error [E0820]: no escaped budget
+
+-- A separate .d.ril fixture declares: pub fn foreign_work() -> int
+-- with Div::exhausted() -> 0
+-- with Div::budget(100)
+-- foreign_work()                    -- Error [E0822]: external computation is not covered
+```
+
+```ril
+-- The limit expression runs before its own budget becomes active:
+-- halt fn bad_limit_expression() -> int {
+--     with Div::exhausted() -> 0
+--     Div::budget(spin(), one)
+-- }                                 -- Error [E0820]: computing the limit may diverge
+
+fn budgeted_action(action: fn() -> int) -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(100)
+    Some(action())
+}
+assert(budgeted_action(spin) == None)  -- Eligible divergence is bounded
+-- budgeted_action(foreign_work)     -- Error [E0822]: forwarding cannot conceal uncovered code
+
+halt fn handler_work() -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(100)
+    with ReadConfig::get() -> resume spin()
+    Some(ReadConfig::get())
+}
+assert(handler_work() == None)        -- Executed user-handler computation also consumes the budget
+
+halt fn limited_sum(values: []int) -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(100)
+    var total = 0
+    for values as value { total += value }
+    Some(total)
+}
+assert(limited_sum([1, 2, 3]) == Some(6)) -- Confined mutation remains admissible
+
+type Guard = { on_close: fn() -> () }
+halt fn cleanup_before_recovery() -> ?int {
+    with Div::exhausted() -> None
+    with Div::budget(100)
+    let scoped guard = Guard.{ on_close: \-> panic("cleanup fault") }
+    loop {}
+}
+-- cleanup_before_recovery()         -- Finite DoubleFaultFatal: cleanup panics during budget abort; no None recovery
+-- A budget cannot legalize divergent cleanup:
+-- let scoped bad = Guard.{ on_close: \-> { loop {} } } -- Error [E0617]
+
+-- with Div::exhausted() -> ()
+-- with Fiber::yield() -> resume ()
+-- with Div::budget(100)
+-- Fiber::yield()                     -- Error [E0822]: excluded operation, even with an outer handler
 ```
 
 ### Structured Concurrency and Panic Containment
@@ -4461,9 +4847,9 @@ All three require `@Concurrent` and forward callback effects. No implicit join, 
 | `Err(TaskFault)`, panic, cancellation, or delimited abort | Cancel children and wait |
 
 Run child cleanups except those abandoned by double fault. A parent panic/abort continues outward after the barrier; this scope does not catch it as a Result.
-- **Termination**: The barrier forbids premature exit, not divergence. `@Div` remains an obligation and cannot be handled away. Built-in waits respond to cancellation; divergence outside cancellation points may prevent exit. No finite completion bound is promised.
+- **Termination**: The barrier forbids premature exit, not divergence. Preserve the body's and every required child's termination conditions independently of effects. Built-in waits respond to cancellation; divergence outside cancellation points may prevent exit. No finite completion bound is promised. A child's local finite budget may bound eligible child computation, but an enclosing budget cannot contain structured concurrency.
 - **Fault Order**: Among actual faults: double fault, then panic, then cancellation. Ties use task creation order, with an explicit body fault first. Cancellation never replaces its cause; different runs may produce different fault sets.
-- **Confinement**: Share immutable ordinary data; reject live/mutable data and non-transferable resources (`E0601`). The listed resource exceptions are detached endpoint transfer and the limited immutable Sender clone-source borrow. Child system effects may include Fiber/Concurrent/Div; user effects need child-local handlers (`E0615`).
+- **Confinement**: Share immutable ordinary data; reject live/mutable data and non-transferable resources (`E0601`). The listed resource exceptions are detached endpoint transfer and the limited immutable Sender clone-source borrow. Child system effects may include Fiber/Concurrent; Div exhaustion and user effects need child-local handlers (`E0615`). Possible divergence is a separate termination condition, not a child effect.
 - **Transitive Access (`E0601`)**: Check every possible access through named external state, callees, callbacks, handlers, and cleanup. An immutable callable descriptor does not make its dependencies immutable. Outside live reads and ordinary writes are rejected even when no captured value crosses the boundary. Apply the separately listed resource permissions without extending them to ordinary data.
 - **Results (`E0720`)**: `Task<Result<U, E>>` retains inner inspection duties. Normal success must inspect, propagate, or return them; join checks only the outer result. Abnormal unwinding may discard inaccessible/unfinished results, but cannot report success while losing an error.
 
@@ -4535,7 +4921,7 @@ assert(first == Some(30))
 
 #### The Colorless Parallel Principle and Domain Boundary
 
-Parallel callbacks have no residual effects, including Div; `@Parallel` is invalid (`E0620`). Allow immutable captures and locally handled operations. Reject outside mutable/live handlers and resource operations; apply each combinator's access contract.
+Parallel callbacks have no residual effects and must independently be proved finite; empty effect rows alone do not suffice. Unhandled Div exhaustion is an effect violation; unresolved termination is a finite-computation violation (`E0820`). `@Parallel` is invalid (`E0620`). Allow immutable captures and locally handled operations, including a valid finite budget inside an individual callback. Reject outside mutable/live handlers and resource operations; apply each combinator's access contract.
 
 Pure map/find/fold follow their reference evaluation. Disjoint-write join/for_each follow their [completion rule](#declarative-data-parallelism-and-concurrency-bounding); no universal left-fold equivalence applies.
 
@@ -4610,7 +4996,7 @@ copy.0.count += 1                     -- Sequential access is valid
 
 #### The Absolute Effect-Free Parallel Invariant
 
-Apply effect, access, and termination checks transitively through calls and handlers. Div cannot be handled away. Resource endpoint operations are not pure parallel operations. Only join/for_each grant confined outside write authority; no live aliases escape.
+Apply effect, access, and termination checks transitively through calls and handlers. Handling Div exhaustion does not by itself prove termination; a valid finite budget certifies only its protected invocation, with finite cleanup and recovery still required. Resource endpoint operations are not pure parallel operations. Only join/for_each grant confined outside write authority; no live aliases escape.
 
 ### Structured Concurrency Channels
 
@@ -4811,7 +5197,7 @@ let pair: StringIntPair = .{ first: "id", second: 101 }
 halt type Identity = \T -> type<T>              -- OK: type-producing function
 meta fn size_of<T>(t: type<T>) -> int { byte_size(t) } -- OK: reflection produces a value
 halt fn checked_increment(n: int) -> int { n + 1 } -- May panic at int's maximum
-halt fn yield_once() @Fiber { Fiber::yield() }     -- No promise about external scheduling progress
+-- halt fn yield_once() @Fiber { Fiber::yield() } -- Error [E0821]: halt requires outward purity
 -- halt fn forever() { loop {} }                  -- Error [E0820]: uncertified local loop
 -- meta let BAD_SUM = 127i8 + 1i8                 -- Error [E0831]: panic during static evaluation
 ```
@@ -4824,32 +5210,9 @@ halt fn yield_once() @Fiber { Fiber::yield() }     -- No promise about external 
 
 Both run with empty effect/capability domains. Local `let`, `if`, `match`, pure meta helpers/combinators, and recursion are supported.
 
-| `halt` boundary | Guarantee |
-| :--- | :--- |
-| `halt fn` | Finite local computation; panic, early return, and effect abort remain possible |
-| I/O, system operations, child waits | Progress conditional on completion; waiting alone is not Div |
-| Transitive calls/callbacks/handlers/cleanup | No Div in the current invocation |
-| `halt type` | Finite symbolic computation; invalid inputs/static defects can still fail |
+Apply [Termination and halt Contracts](#termination-and-halt-contracts) to symbolic computation as well. All meta/type functions retain finite or possibly non-terminating judgments even though their effect and capability domains are empty. `halt type` requires finite symbolic computation, including every reached helper; invalid input or static defects may still fail. Uncertified `halt` computation is `E0820`; type/meta annotation prohibitions retain `E0335`/`E0813`.
 
-| Finite-iteration case | Required proof |
-| :--- | :--- |
-| `for` | Finite collection/range |
-| `while`/`loop` | Every continuing path makes the next condition false, or advances one counter toward a stable finite bound |
-| Counter progression | Nonzero step in a fixed direction; continuation stays on the corresponding side of the bound |
-| Equality exit (`while` or `loop`) | Initial value and step known to reach the exit |
-| `next` | Same progress obligation |
-| Other writes, aliases, callbacks, handlers | Cannot invalidate the counter/bound |
-| Arithmetic | Checked overflow is finite panic; wrapping updates do not qualify |
-
-| Recursive case | Rule |
-| :--- | :--- |
-| Ordinary run-time cycle | Contributes Div |
-| `halt` group | Each cycle strictly decreases a nonnegative integer under a lower-bound guard, or takes a proper subpart of a known finite acyclic structure |
-| Mutual recursion | Preserve the same decreasing argument/structure relation throughout the cycle |
-| Recursive type unfolding | Not structural decrease |
-| Calls outside the group | Keep their obligations; all meta/type helpers reached by `halt type` must also be finite |
-
-Uncertified run-time loops contribute Div; unmarked static loops/recursion use their budget without Div. An uncertified `halt` body is `E0820`. Neither an annotation, an empty effect row, nor a budget proves termination.
+Unmarked static loops and recursion remain admissible subject to the static-evaluation budget. Exhaustion rejects that evaluation (`E0811`); it does not certify the underlying definition as terminating. Certified static computations consume the same budget. The run-time `Div` effect is not involved, and `with Div::exhausted()` cannot intercept a static-evaluation diagnostic.
 
 | Static evaluation | Budget / failure |
 | :--- | :--- |
@@ -5649,6 +6012,7 @@ Each code identifies the condition defined in the corresponding language section
 | **`E0539`** | `InvalidStateContractReferenceError` | A function state reference is used outside an ordinary named definition or does not name a visible ordinary named Ril function provider |
 | **`E0540`** | `EndedOperationLoanAccessError` | Handler accesses an operation's temporary mut loan or a derived alias after resumption begins |
 | **`E0541`** | `InvalidScopedCleanupContractError` | Scoped binding lacks an accessible, shape-compatible cleanup contract |
+| **`E0542`** | `NonHigherOrderEmptyRowError` | Explicit @{} or &{} on a first-order callable signature |
 
 ### Effects, Resumption, Concurrency, and Escape
 
@@ -5668,11 +6032,11 @@ Each code identifies the condition defined in the corresponding language section
 | **`E0614`** | `UnstableHandlerCaptureError` | Retained handler cannot provide a stable legal environment, compatible answer type, or fresh boundary |
 | **`E0615`** | `CrossTaskUnhandledEffectError` | Residual effects violate a boundary contract, or an ancestor active handler crosses a task boundary |
 | **`E0616`** | `ScopedCleanupEffectError` | Resource cleanup handler (`on_close`) declares or invokes unhandled algebraic effects |
-| **`E0617`** | `ScopedCleanupDivergenceError` | Resource cleanup handler (`on_close`) declares or invokes divergent operations (`@Div`) |
+| **`E0617`** | `ScopedCleanupDivergenceError` | Resource cleanup handler (`on_close`), including its transitive calls and recovery, cannot be independently proved finite |
 | **`E0618`** | `UndischargedLocalEffectError` | Local algebraic effect declared in 'where' is not completely discharged within enclosing block |
 | **`E0619`** | `ParallelDisjointAccessConflictError` | Parallel write/read or write/write regions overlap or cannot be proved disjoint |
 | **`E0620`** | `PseudoEffectAnnotationError` | Attaching non-effect evaluation strategy (such as '@Parallel') as an algebraic effect annotation |
-| **`E0621`** | `InvalidHandlerTargetError` | Resolved handler target is not an effect operation |
+| **`E0621`** | `InvalidHandlerTargetError` | Target of a with operation arm (`->` form) is not an effect operation; parameterized applications use ordinary call checking |
 | **`E0622`** | `DuplicateHandlerOperationError` | One with supplies multiple arms for the same effect operation |
 | **`E0623`** | `ResumeOutsideHandlerError` | Resume has no enclosing effect-operation arm |
 | **`E0624`** | `ResumeValueTypeMismatchError` | Resume operand is incompatible with the handled operation's result type |
@@ -5707,7 +6071,9 @@ Each code identifies the condition defined in the corresponding language section
 | **`E0813`** | `MetaComputationAnnotationError` | Declaring algebraic effects ('@Eff') or state capabilities ('&Cap') on a 'meta fn' signature |
 | **`E0814`** | `StaticValueRequiredError` | Run-time value is supplied where a static value is required |
 | **`E0815`** | `InvalidArrayLengthError` | Statically known int fixed-array length is negative |
-| **`E0820`** | `TotalityViolationError` | A halt function/type body has uncertified local recursion/iteration or a transitive Div obligation |
+| **`E0820`** | `TotalityViolationError` | A halt function/type body or pure parallel callback cannot be proved finite, including transitive callable, handler, cleanup, or recovery computation |
+| **`E0821`** | `HaltPurityViolationError` | A halt fn retains outward effects or capabilities after lawful handling and local discharge, or declares a nonempty outward row |
+| **`E0822`** | `InvalidBudgetBoundaryError` | Div::budget computation fails purity or coverage requirements, a required actual callable's coverage is unresolved, or a Div::exhausted arm attempts resumption |
 | **`E0830`** | `MetaAssertionFailedError` | An assert condition evaluates to false during meta/type evaluation |
 | **`E0831`** | `StaticEvaluationPanicError` | A non-assertion panic occurs during meta/type evaluation |
 
