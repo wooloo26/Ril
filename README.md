@@ -2,7 +2,7 @@
 
 **Ril** is an expression-oriented, strongly typed language with algebraic effects, immutable data, live read-only views, and explicit mutable-sharing capabilities.
 
-The [specification](SPECIFICATION.md) defines the language. [Design rationale](DESIGN_RATIONALE.md) explains its choices.
+The [language specification](SPECIFICATION.md) defines syntax and semantics. The [standard library specification](STANDARD_LIBRARY.md) defines the prelude, collections, text and binary operations, local system interfaces, concurrency, and testing. [Design rationale](DESIGN_RATIONALE.md) explains their choices.
 
 ### Immutable values and live views
 

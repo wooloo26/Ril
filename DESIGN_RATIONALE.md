@@ -1,9 +1,10 @@
 # Ril Language Design Rationale
 
-Design choices and their tradeoffs. [SPECIFICATION.md](SPECIFICATION.md) defines the authoritative rules; examples below use its independent-fixture convention. This document covers language semantics, not implementation design.
+Design choices, tradeoffs, and reference languages. Examples are independent fixtures: local statements run in an enclosing callable, free names are typed inputs, and required local handlers are supplied. Named functions obey their written annotations.
 
 ## Contents
 
+- [Standard Library Boundaries and Local Tooling](#standard-library-boundaries-and-local-tooling)
 - [Failure Model and Error Semantics](#failure-model-and-error-semantics)
   - [Defects and Recoverable Errors](#defects-and-recoverable-errors)
   - [Panics Are Not Algebraic Effects](#panics-are-not-algebraic-effects)
@@ -66,6 +67,38 @@ Design choices and their tradeoffs. [SPECIFICATION.md](SPECIFICATION.md) defines
   - [Domain Isolation Without Hidden Permission Changes](#domain-isolation-without-hidden-permission-changes)
   - [Independent Surviving Write Authorities](#independent-surviving-write-authorities)
 
+## Standard Library Boundaries and Local Tooling
+
+```ril
+let words = "a,b" |> String::split(",")
+use ril/file
+use ril/path
+use ril/io
+fn load(path: Path::Path) -> Result<str, str> @Fiber {
+    Results::map_err(File::read_text(path), Io::error_text)
+}
+```
+
+The closed prelude makes common values and collection namespaces immediately available. `Options` and `Results` name the transformation modules; `Option<T>` and `Result<T, E>` keep their type roles. Prelude aliases avoid repeated `use ... as ...` declarations without changing the normal module-name derivation rule. Rust's [prelude documentation](https://doc.rust-lang.org/std/prelude/index.html) provides a reference for an explicit automatic-import surface.
+
+The library's local-tooling baseline covers text, collections, numeric conversion, binary encoding, filesystem access, native paths, environment data, child processes, and testing. Go's [standard library index](https://pkg.go.dev/std) and [binary encoding package](https://pkg.go.dev/encoding/binary) are references for this breadth and for specifying portable data encodings independently of machine layout. These general operations support self-hosted local tools without prescribing their internal design. Network protocols and general serialization remain separate future scope.
+
+```ril
+use ril/os
+use ril/path
+let native_path = Path::from_native(native_name)
+let display = Path::to_string(native_path)
+match display { Ok(text) -> println(text), Err(_error) -> println("non-Unicode path") }
+```
+
+Native names cannot always be represented by a Unicode string. Rust's [OsString documentation](https://doc.rust-lang.org/std/ffi/struct.OsString.html) describes this distinction for Unix bytes and Windows UTF-16. Ril therefore preserves native data and makes Unicode conversion fallible. Lexical normalization is separate from filesystem canonicalization because links can change what a path traversal means. The [Unicode 17.0.0 reference](https://www.unicode.org/versions/Unicode17.0.0/) fixes text classification and case conversion for this library version; it does not alter Ril's identifier syntax or scalar-counting convention.
+
+Go's [I/O contracts](https://pkg.go.dev/io) demonstrate why progress and an error can coexist. Ril's stream operations expose committed prefixes and require helpers to retry only unwritten bytes. Implicit file release has a narrowly specified finite contract; error-reporting close, flush, and process cleanup remain explicit operations or effectful wrappers. This keeps the language's scoped-cleanup restrictions intact. Process arguments follow an explicit vector model, with the Windows interpretation boundary recorded in the contract; Rust's [Command documentation](https://doc.rust-lang.org/std/process/struct.Command.html) provides a corresponding reference for separating arguments from shell parsing.
+
+Deterministic collections, seeded random sequences, and binary byte order support reproducible ordinary computations. Stable content digests use [FIPS 180-4 SHA-256](https://csrc.nist.gov/pubs/fips/180-4/upd1/final); internal collection hashing is not a persistence format. Environmental observations still declare their effects and do not become deterministic merely because the surrounding algorithm is pure.
+
+Cloning affects provenance, derive confines draft authority, and Div bounds covered computation. Their rules concern general language semantics. Channel protocols, parallel reference evaluations, and test conventions describe concrete APIs. This distinction keeps syntax and general semantics separate from the library surface.
+
 ## Failure Model and Error Semantics
 
 ### Defects and Recoverable Errors
@@ -116,7 +149,7 @@ let empty = items[len(items)..len(items)] -- Valid empty half-open window
 -- items[0..3]                        -- Panics: upper bound exceeds the length
 ```
 
-Floating arithmetic retains IEEE special values rather than treating every zero divisor as an integer defect. Missing map keys are routine domain conditions. Valid half-open slices permit equal bounds, including an empty window at the collection's end. Negative, reversed, or out-of-range bounds panic; slicing never clamps them. The [collection rules](SPECIFICATION.md#range-and-slicing-expressions) define the accepted bounds.
+Floating arithmetic retains IEEE special values. Missing map keys are ordinary absence. Half-open slices permit an empty window at the end; negative, reversed, or out-of-range bounds panic instead of being clamped.
 
 ### Unit Success Without Implicit Wrapping
 
@@ -153,7 +186,7 @@ let user = User.{ id: 1, name: "Ada" }
 
 These failures need different corrections even though both involve record fields. Dedicated conditions similarly separate ambiguous constructors from duplicate declarations, uninitialized captures from unavailable names, and refutable bindings from nonexhaustive matches. General type mismatch remains useful when no narrower language rule applies.
 
-The specification fixes rejection conditions and diagnostic identities while leaving message wording and presentation flexible. A useful explanation names the failed requirement and connects it to the responsible declaration, expected type, or authority source. Suggested changes must respect the distinction between explaining a rule and choosing the program's intended behavior; adding sharing or an effect obligation can change the contract.
+Fixed rejection conditions and diagnostic identities permit flexible message wording and presentation. A useful explanation names the failed requirement and connects it to the responsible declaration, expected type, or authority source. Suggested changes must respect the distinction between explaining a rule and choosing the program's intended behavior; adding sharing or an effect obligation can change the contract.
 
 The [C# statements specification](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/statements#132-end-points-and-reachability) states diagnostic conditions beside the relevant rules and examples. The [Rust Reference's diagnostic attributes](https://doc.rust-lang.org/reference/attributes/diagnostics.html) distinguish diagnostic levels and separate the supported lint catalog from the reference's language-level rules. Ril follows that separation of concerns while retaining its existing normative error-code convention.
 
@@ -656,7 +689,7 @@ meta let DEFAULT_PORT = 8080
 var active_connections = 0
 ```
 
-Casing makes constructor tests, variable bindings, types, and constants distinguishable at their use sites. All-caps belongs to static/top-level immutable constants, not mutable state; acronyms use title casing and module paths use snake_case. Static-key binders and generated schema labels retain the specification's explicit exceptions rather than weakening ordinary variable rules.
+Casing makes constructor tests, variable bindings, types, and constants distinguishable at their use sites. All-caps belongs to static/top-level immutable constants, not mutable state; acronyms use title casing and module paths use snake_case. Static-key binders and generated schema labels use distinct casing roles without weakening ordinary variable rules.
 
 ### Flow Narrowing Without Rebinding
 

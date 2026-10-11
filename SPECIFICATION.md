@@ -9,6 +9,8 @@
 
 ## Document Conventions
 
+This document defines Ril grammar, typing, permissions, effects, abstract-machine behavior, and diagnostics.
+
 - **Normative Invariants**: Language guarantees and type safety rules are formally declared under titled normative invariants. All conforming Ril implementations must enforce these invariants unconditionally.
 - **Grammar Productions**: Syntactic grammar is formally specified in Extended Backus-Naur Form (EBNF).
 - **Normative Code Annotations**: Code examples define normative verification cases in the stated fixture context:
@@ -133,7 +135,7 @@
   - [Top-Level Initialization and Purity](#top-level-initialization-and-purity)
   - [Test Conventions and Execution Protocol](#test-conventions-and-execution-protocol)
   - [Program Entry Point](#program-entry-point)
-  - [Standard Prelude Built-ins](#standard-prelude-built-ins)
+  - [Prelude Scope](#prelude-scope)
   - [Mandatory Inspection of Fallible Results](#mandatory-inspection-of-fallible-results)
 - [Diagnostic Error Codes Summary](#diagnostic-error-codes-summary)
 - [Advisory Warnings](#advisory-warnings)
@@ -268,10 +270,9 @@ let ieee = 1.0 / 0.0                  -- OK: positive infinity
 | Fixed-width shift count negative or at least the bit width; negative `bigint` shift count | Invalid-shift panic |
 | Ordinary array/slice element index outside its bounds | Index-bounds panic |
 | Negative, reversed, or out-of-bounds slice window | Slice-bounds panic under the [slicing rules](#range-and-slicing-expressions) |
-| Non-positive channel capacity or bounded-parallel concurrency limit | Panic before creating the channel or invoking a callback |
 | External fault whose declared boundary contract maps it to a defect | Panic under that contract; a domain failure remains a `Result` value |
 
-These categories describe conditions, not new types, effect tags, or fields of `PanicInfo`. Messages are explanatory text; their exact spelling is not normative. `PanicInfo.index` retains its specified parallel-source-index meaning and is not a general out-of-bounds index field.
+Panic categories describe conditions, not additional types, effect tags, or `PanicInfo` fields. Message spelling is unspecified. `PanicInfo.index` denotes a parallel source index, not a general bounds-error index.
 
 Ordinary execution retains these outcomes even when a defect is statically predictable. Only evaluation required in the static domain turns a failed assertion into `E0830` or another panic into `E0831`. Safe division/remainder and safe lookup preserve their specified `None` outcomes; a missing map key and channel closure retain their ordinary fallible values. Floating-point overflow and division by zero retain their IEEE results.
 
@@ -282,7 +283,7 @@ Ordinary execution retains these outcomes even when a defect is statically predi
 | Cleanup panics during normal exit | Begin panic unwinding through the remaining resources |
 | Cleanup panics during panic, cancellation, or effect abort | Record both causes and abandon remaining cleanup in the failed frame; `DoubleFaultFatal` |
 
-The [scoped cleanup](#scoped-resource-bindings), [structured concurrency](#structured-concurrency-and-panic-containment), and [parallel fault visibility](#canonical-leftmost-panic-precedence-rule) rules determine propagation and ordering. This classification does not add synchronous panic catching, change `TaskFault` or `UnwindCause`, or change which fault is observable.
+Scoped cleanup is LIFO. A task boundary contains child faults, not a panic from its own parent frame. Parallel evaluation exposes only faults visible in its specified reference order, including double faults; a skipped branch cannot fail a successful result.
 
 ## Source Text and Lexical Elements
 
@@ -468,25 +469,28 @@ fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' is intentiona
 
 ### Keywords
 
-The following 34 tokens are strictly reserved keywords; they cannot be ordinary identifiers or field labels:
+The following 35 tokens are reserved; they cannot be ordinary identifiers or field labels:
 
 ```
-as       eff      else     false    fn
-for      halt     if       in       is
-keyof    last     let      loop     match
-meta     module   mut      never    next
-opaque   pub      resume   return   scoped
-true     type     typeof   use      var
-view     where    while    with
+as       capture  eff      else     false
+fn       for      halt     if       in
+is       keyof    last     let      loop
+match    meta     module   mut      never
+next     opaque   pub      resume   return
+scoped   true     type     typeof   use
+var      view     where    while    with
 ```
 
 ```ril
 -- let while = 1                     -- Error [E0113]: reserved keyword in a binding position
 -- type Record = { if: int }         -- Error [E0113]: reserved keyword as a field label
+-- let capture = 1                   -- Error [E0113]: capture is reserved
+-- fn capture() {}                   -- Error [E0113]: reserved function name
+-- type Config = { capture: bool }   -- Error [E0113]: reserved field label
 let while_count = 1                   -- OK
 ```
 
-A reserved keyword in a position requiring an ordinary identifier or field label is `E0113`, rather than an identifier-casing violation. Its defined grammatical uses remain valid.
+A reserved keyword used as an ordinary identifier or field label is `E0113`. `&capture` remains a valid capability annotation.
 
 `closure` remains an ordinary identifier. In a state group, a leading `closure` followed by a comma, or by a capture-owner name and a comma, is a contextual group header. This interpretation is fixed before name resolution; it never falls back to a list of global names. The state-group rules specify the remaining cases.
 
@@ -497,6 +501,8 @@ meta let COMPILE_ID = 101              -- 'meta', 'let'
 eff Logger { log(str) -> () }          -- 'eff'
 use ril/array::{push}                  -- 'use'
 halt fn total_step() -> bool { true }  -- 'halt', 'true', 'fn'
+use ril/file
+use ril/io::{IoError}
 fn manage_resource() -> Result<(), IoError> @Fiber {
     let scoped mut res = File::open("a.txt")?  -- 'scoped', '?' inside function frame
     let view v = res                       -- 'view' in handle binding
@@ -758,7 +764,7 @@ assert(rest.role == "root")
 
 ### Array, Map, and Tuple Types
 
-Bracket syntax (`[...]`) unifies linear sequences (dynamic slices `[]T` and compile-time fixed-length arrays `[N]T`) and associative maps (`[K: V]`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`). The unique set type `Set<T>` is provided as a standard library collection type via the prelude `Set` module, rather than dedicated core language syntax.
+Bracket syntax (`[...]`) unifies linear sequences (dynamic slices `[]T` and compile-time fixed-length arrays `[N]T`) and associative maps (`[K: V]`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`). The unique set type `Set<T>` and collection type extractors are standard library declarations, not dedicated core syntax.
 
 ```ebnf
 ArrayType   ::= "[" [ Expression ] "]" TypeExpression
@@ -785,10 +791,6 @@ let config: [str: str] = ["env": "prod", "host": "127.0.0.1"]
 let empty_map: [str: int] = [:]        -- Empty map literal
 let host = config["host"]              -- Evaluates to ?str (Some("127.0.0.1"))
 
--- Prelude Unique Set (Set<T>):
-let visited: Set<int> = Set::from([10, 20, 30]) -- Constructed via prelude Set module
-let roles = Set::of(["admin", "guest"])
-
 -- Tuple ((T1, T2)):
 let coords: (int, str) = (10, "Alice") -- Type: (int, str)
 let x = coords.0                       -- Value positional access: 10
@@ -796,14 +798,6 @@ let name = coords.1                    -- Value positional access: "Alice"
 type CoordX = (typeof coords).0        -- Inferred tuple positional projection: int
 type First = (int, str).0              -- Static tuple positional projection: int
 -- type OutOfBounds = (int, str).2      -- Error [E0312]: TupleIndexOutOfBoundsError: tuple index 2 out of bounds for (int, str)
-
--- Collection Type Parameter Extraction (modular, non-prelude):
-use ril/array::{Elem}
-use ril/map::{Key, Value}
-
-type IntElem = Elem<[]int>             -- Resolves to int
-type HostKey = Key<[str: int]>         -- Resolves to str
-type PortVal = Value<[str: int]>       -- Resolves to int
 
 -- Collections are not product types; dot projection on collections is rejected:
 -- type BadArrElem = ([]int).elem      -- Error [E0337]: NonProductProjectionError: collection type '[]int' has no named fields or member projections; use 'ril/array::{Elem}'
@@ -996,7 +990,7 @@ assert(immutable.count == 1)
 Both accept eligible view data and preserve field declarations.
 - **Copy Isolation**: Ordinary deep copying does not suspend, invoke user callbacks, or permit an overlapping write during the copy. Both operations preserve the source.
 - **Eligibility (`E0530`)**: Check every reachable ordinary constituent. Retained closure environments, scoped resources, tasks, unique receivers, and other non-clonable values cannot be hidden by wrapping or views.
-- Immutable environment-free function values are copyable. Opaque resources use only their [explicit contracts](#structured-concurrency-channels).
+- Immutable environment-free function values are copyable. Opaque resources use only their explicit contracts.
 
 ```ril
 type Cell = { mut count: int }
@@ -1085,7 +1079,8 @@ assert(observed.count == 1)
 -- let mut stolen = identity(observed) -- Error [E0528]: read-only return cannot grant write authority
 ```
 
-- **Complete Static Provenance Invariant**: Every storage cell, reference, callable environment, and resource authority MUST retain the possible origins, access permissions, immutable/live facts, alias relationships, retention and escape dependencies, and owning scope/task obligations required by the specified conservative judgments. Completeness means none of those obligations may be erased; it does not require exact prediction of arbitrary run-time paths or object identities. Independent scalar copies retain no reference-sharing authority; capturing a reassignable scalar cell still retains that cell's origin. The same requirement applies through aggregates, projection, branching, recursion, return, higher-order calls, opaque abstraction, handlers, cleanup, and module boundaries.
+- **Complete Static Provenance**: Track possible origins, permissions, immutable/live facts, aliases, retention/escape dependencies, and scope/task ownership for all storage, references, environments, and resources. Conservative judgments may overapproximate execution; obligations cannot be erased.
+- **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
 - **No Semantic Erasure**: An omitted annotation, plain `-> T`, abbreviated callable type, or ordinary call spelling does not discard these facts. Private source names need not become public identifiers; their semantic dependencies still participate in every access and boundary check. Anonymous captures and symbolic callback obligations remain inferred. Named definitions must declare their concrete invocation obligations; no return modes, symbolic callback-forwarding notation, or call-site annotation is required.
 - **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize a loan, immutable publication, or task crossing that requires it.
 - **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. Apply the use's existing diagnostic when its required proof is absent.
@@ -1908,7 +1903,7 @@ Missing, inaccessible, or shape-incompatible scoped cleanup contracts are `E0541
 | Normal exit | Begin panic unwinding of remaining resources |
 | Panic, cancellation, or abort | Record both causes; abandon remaining cleanup in the failed frame |
 
-Abandoned computations cannot resume. A double fault reports `DoubleFaultFatal` to its task or aborts an unsupervised program; pure parallel branches use [reference visibility](#canonical-leftmost-panic-precedence-rule).
+Abandoned computations cannot resume. A double fault fatally fails its task or an unsupervised program. A pure parallel branch exposes the double fault only when that branch is visible in reference evaluation.
 
 ```ebnf
 ScopedDecl ::= "let" "scoped" [ "mut" ] Identifier [ ":" TypeExpression ] "=" Expression
@@ -2062,8 +2057,8 @@ DeclLet          ::= "let" Identifier ":" TypeExpression
 - **Dual-Tier `where` Compatibility**: `DeclFunction` supports waist `where` (`SignatureWhereClause`) for aliasing signature callback types; block-level `where` is not permitted in foreign declarations.
 - **Hard Safety Membrane Invariant**: Invocations across `.d.ril` external boundaries are strictly sealed against unhandled host faults. External traps or host exceptions never corrupt caller stack frames; they resolve either to domain error variants (`Result<T, E>`) or deterministic runtime panics contained at `scope` boundaries.
 - **Ordinary Exchange**: Ordinary inputs, outputs, and constants must be scalars or deeply immutable ordinary data with no surviving foreign writer. They cannot contain live views, callables, tasks, or resources. This excludes even immutable environment-free function values: only a separate callback parameter receives the temporary callback contract below. An immutable returned graph may share immutable storage; a plain return type does not establish freshness or write permission (`E0528`).
-- **Temporary Callbacks**: A separately declared callback parameter may be invoked only during the current foreign call and on the current Ril task. Its actual effects, access origins, environment permissions, and exclusivity obligations remain in force. A mutable callback requires the existing `mut` parameter/argument mode. The foreign side cannot inspect its environment, retain or return it, or send it to another task under this default contract. Every callback argument and result must itself satisfy the ordinary exchange or listed resource rules; temporary callback permission is not an exemption for mutable ordinary data or nested callable exchange.
-- **Listed Resource Contracts (`E0908`)**: Only resource operations explicitly specified here may extend those exchange rules. Opaque declarations, `@Fiber`, `mut`, and `^mut` do not by themselves authorize resource mutation, callback retention, copying, closing, or transfer. Requests outside the default or a listed contract are rejected. Ordinary Ril opaque types still preserve their actual data provenance and acquire no resource exemption.
+- **Temporary Callbacks**: Invoke only during the current foreign call, on the current task. Preserve actual effects, origins, environment permissions, and exclusivity; mutable invocation requires `mut` on parameter and argument. No environment inspection, retention, return, or cross-task transfer is permitted. Arguments/results must satisfy ordinary exchange or explicit resource contracts; mutable data and nested callables gain no exemption.
+- **Listed Resource Contracts (`E0908`)**: Only an explicit resource contract may extend ordinary exchange. Opaque declarations and `@Fiber`/`mut`/`^mut` alone grant no resource mutation, callback retention, copying, closing, or transfer. Reject unsupported requests. Ordinary opaque data retains its actual provenance.
 - **Trusted Boundary**: An external entity's conformance to its declared exchange and effect contracts is a trusted premise. Static checking establishes the Ril program's compliance with those contracts, not the truth of an implementation whose body is absent. Diagnostic explanations identify the foreign contract as the origin of such facts; missing authority is never replaced by an assumption of freshness or safety.
 - **Termination Boundary**: A bodyless external function is possibly non-terminating, even when its omitted effect/capability rows are closed by the external-declaration contract. Its declaration cannot assert termination or budget coverage; `halt` is not admitted on a bodyless function declaration. A reachable external call prevents ordinary termination certification and is inadmissible within `Div::budget` (`E0822`). Language-defined built-ins follow their normative computation contracts; verified ordinary Ril definitions retain their termination facts across module boundaries.
 
@@ -2293,8 +2288,6 @@ Eligibility depends on the concrete type, not equality support alone. Keys are c
 | Replace map value / reinsert present set member | Keep position |
 | Remove, then insert | Append |
 | Duplicate map literal key | Last value, first position; operands still evaluate left-to-right |
-| Set `union` | Left order, then new right members |
-| Set `intersect` / `diff` | Left order |
 
 ### Logical Operators
 
@@ -2741,7 +2734,7 @@ fn unwrap_or_zero(value: ?int) -> int {
 Without `else`, patterns must be irrefutable under the initializer's static type/refinement (`E0345`), including mutable/destructuring bindings. A single-variant constructor may qualify. Guarded names exist after success, not in the failure block.
 
 - **Divergence Invariant**: The `else` block MUST diverge (evaluate to `never`).
-- **Universal Non-Vacuous Binding Invariant (`E0309`)**: All `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`. Patterns that introduce zero variable bindings (such as `let Marker = m`, `let () = expr`, `let Ok() = expr else { ... }`, `let None = expr else { ... }`, or `let _ = expr else { ... }`) are statically rejected (`E0309: VacuousBindingError`). To conditionally guard or test without binding variables, developers must use postfix `?`, boolean pattern tests (`if expr is Pattern`), or explicit `match` expressions.
+- **Non-Vacuous Binding (`E0309`)**: Every ordinary or guarded `let` must bind a variable, except unguarded `let _ = expr`. Nullary patterns, unit patterns, and guarded wildcard discards are rejected. Binding-free tests use `?`, `is`, or `match`.
 
 ```ril
 fn process_account(data: [str: str]) -> Result<str, str> {
@@ -3574,7 +3567,7 @@ apply_to_cell(mut cell, bump)           -- Both declaration and call specify the
 -- apply_to_cell(mut cell, \target -> ()) -- Error [E0407]: callback data parameter must use mut
 ```
 
-`Array::map`, `filter`, and `fold` explicitly support ordinary and `mut callback` forms. Only the latter grants mutable-environment invocation. This is call-site mode selection, not implicit conversion; parallel contracts add confinement checks.
+An ordinary callback argument supplies no mutable-environment authority. A mutable callback requires the explicit `mut` call-site mode.
 
 ## State and Capability Tracking
 
@@ -3731,7 +3724,7 @@ fn share_connections() -> Ticker &capture &{^mut active_connections} {
 }
 ```
 
-`Array::push` and `Map::set` preserve a normal argument's read-only permission. Their explicit `^mut value` form retains write permission and incurs `&^mut`. A writable container never upgrades an immutable/view element (`E0522`).
+A writable container never upgrades an immutable/view element (`E0522`). Retaining an inserted writer requires `^mut` and the corresponding retention capability.
 
 ### External State Tracking
 
@@ -3912,9 +3905,10 @@ fn retain_wrapped(^mut cell: Counter::Cell) -> Counter::Cell &^mut &Counter::ret
 -- Error [E0201]: a contract reference does not export the private binding
 ```
 
-- **Provider and Position (`E0539`)**: `&callee` or `&Module::callee` references the verified concrete named-state contract of a visible ordinary named Ril function definition. Ordinary name resolution and visibility apply first (`E0204` for lexical names, `E0209` for absent module members, `E0201` for private members); after successful resolution, a wrong provider kind or annotation position is `E0539`. This form is allowed only in the state annotation of an ordinary named function definition. It is not permitted in callable types, anonymous-function annotations, effect operation declarations, or bodyless foreign declarations. A value alias or callable parameter is not a provider declaration.
+- **Provider (`E0539`)**: `&callee` / `&Module::callee` selects a visible ordinary named Ril definition's verified named-state contract. Resolve names first: lexical absence `E0204`, absent module member `E0209`, private member `E0201`; then reject a wrong provider kind with `E0539`. Value aliases and callable parameters are not providers.
+- **Position (`E0539`)**: Allowed only on ordinary named function definitions. Reject it on callable types, anonymous functions, effect operations, and bodyless foreign declarations.
 - **Concrete Named Projection**: A reference denotes the provider's concrete global/captured source items and their verified access modes for its current invocation, including concrete named dependencies obtained through other calls. The bindings and lexical owners remain anchored to the provider's scope. It does not include effects, anonymous parameter permissions, standalone `&capture`/`&^mut`, symbolic callback dependencies, or a returned callable's future invocation obligations.
-- **Coverage, Not Authority**: The reference can cover matching concrete named obligations inherited from calls in the referencing definition. Apply the caller's existing local-discharge and parameter-authority rules before matching; a named source in the provider cannot substitute for the caller's required `&mut` or `&^mut`. The reference cannot cover the caller's direct storage access, including direct access in its handlers. Matching uses actual origin and permission relations, not just source names or a requirement that the body invoke one particular function name. Unrelated references do not cover an obligation (`E0510`); an unnecessary concrete reference remains subject to `E0529`.
+- **Coverage**: After local discharge, match inherited concrete named obligations by origin and permission. The caller need not invoke the provider by name. Direct storage/handler access and required parameter `&mut`/`&^mut` remain separate. Unrelated references leave `E0510`; unnecessary references remain `E0529`.
 - **No Erasure**: Calling through an alias or higher-order helper preserves the concrete dependencies. A provider reference cannot turn them into unknown callback dependencies, discharge a conflicting loan, or prove a recursive dependency empty. An admitted higher-order `&{}` constrains the total state, including referenced state.
 - **Declaration Identity**: A declaration import alias or re-export preserves its provider identity. `let action = callee` and a public callable-valued binding do not create provider declarations; references to such bindings are `E0539`. The built-in capability spellings keep their established meanings; a same-spelled function requires a qualified reference. Public callable values without a suitable visible provider do not acquire an implicit private-state permission.
 
@@ -4722,7 +4716,14 @@ These are abstract language events, including source-level calls eliminated by a
 
 Before a charged event, if any active boundary has no remaining units, do not execute the event; exhaust the outermost such boundary. Otherwise subtract one unit from every active boundary and execute the event. Consuming the last unit does not itself interrupt the event; a later charged event triggers exhaustion. Inner boundaries never replenish, hide, or suspend outer allowances during ordinary computation. An inner handler cannot intercept exhaustion owned by an outer boundary.
 
-Cleanup must already be independently certified finite (`E0617`). During required cleanup, allowances that were active at the start of that cleanup are suspended; cleanup is neither skipped nor repeatedly interrupted by their exhaustion. A budget explicitly created inside cleanup has its own active allowance. After cleanup, surviving outer allowances apply again, including to recovery handlers. Ordinary LIFO cleanup, `EffectAborted` unwinding, and double-fault behavior apply; no transaction or rollback is added. The supplied limit bounds charged protected events, not the total work of finite cleanup or recovery, and is not a wall-clock deadline.
+| Cleanup and allowance | Rule |
+| :--- | :--- |
+| Eligibility | Cleanup independently finite (`E0617`) |
+| Entry | Suspend allowances already active; exhaustion cannot skip or repeatedly interrupt cleanup |
+| Budget created inside cleanup | Its own allowance remains active |
+| Exit | Restore surviving outer allowances, including for recovery handlers |
+| Unwinding | LIFO, EffectAborted, and double-fault rules remain in force; no rollback |
+| Limit | Counts protected events; excludes total cleanup/recovery work and wall-clock time |
 
 ```ril
 fn one() -> int { 1 }
@@ -4826,87 +4827,9 @@ fn isolated_value() -> Result<int, TaskFault> @Concurrent {
 }
 ```
 
-#### Normative Rules for Structured Concurrency
+Task boundaries enforce the language's ordinary permission, provenance, effect, and termination judgments. In particular, outside mutable/live ordinary data and indirect outside access cannot cross a task boundary (`E0601`); an immutable function descriptor does not erase its callable obligations. Residual user effects and Div exhaustion require child-local handlers (`E0615`). Scope/task authority cannot escape its owner or be concealed in aggregates (`E0606`). Result inspection duties survive task packaging and joining (`E0720`).
 
-| Structured operation | Result |
-| :--- | :--- |
-| `s.fork(fn() -> T)` | `Task<T>` |
-| `task.join()` | `Result<T, TaskFault>` |
-| `scope(body)` where body returns `Result<T, TaskFault>` | Same result shape, after children terminate |
-
-All three require `@Concurrent` and forward callback effects. No implicit join, result flattening, or conversion of business errors to panics occurs.
-- **Receivers**: `s.fork` borrows its `mut s` receiver. `Task.join` uses result-observation authority, not mutable data access. Ordinary function arguments do not inherit these built-in contracts.
-- **Lifetime (`E0606`)**: Children and their Scope/Task handles stay in their owning scope. Handles cannot be cloned, moved to another task, or hidden in escaping aggregates/closures.
-- Join a result once. Task control state is external to its stable descriptor; ordinary returned data must satisfy immutable publication. Resources follow explicit transfer contracts.
-- **Failure**: Child panic/double fault permanently fails the scope, even after inspection by `join`. Cancel unfinished descendants and active body waits. Any later `fork` cancels the body; returning `Ok` cannot restore success.
-- **Cancellation**: Channel and leaf-I/O waits, pending joins, and nested scope waits must wake. Transfer to the scope boundary without resumption; user `with` cannot absorb cancellation.
-- A join of the failed task may deliver its fault for inspection, without clearing failure. Other cancelled waits cannot complete successfully.
-| Body exit | Before leaving |
-| :--- | :--- |
-| `Ok` | Wait for all children |
-| `Err(TaskFault)`, panic, cancellation, or delimited abort | Cancel children and wait |
-
-Run child cleanups except those abandoned by double fault. A parent panic/abort continues outward after the barrier; this scope does not catch it as a Result.
-- **Termination**: The barrier forbids premature exit, not divergence. Preserve the body's and every required child's termination conditions independently of effects. Built-in waits respond to cancellation; divergence outside cancellation points may prevent exit. No finite completion bound is promised. A child's local finite budget may bound eligible child computation, but an enclosing budget cannot contain structured concurrency.
-- **Fault Order**: Among actual faults: double fault, then panic, then cancellation. Ties use task creation order, with an explicit body fault first. Cancellation never replaces its cause; different runs may produce different fault sets.
-- **Confinement**: Share immutable ordinary data; reject live/mutable data and non-transferable resources (`E0601`). The listed resource exceptions are detached endpoint transfer and the limited immutable Sender clone-source borrow. Child system effects may include Fiber/Concurrent; Div exhaustion and user effects need child-local handlers (`E0615`). Possible divergence is a separate termination condition, not a child effect.
-- **Transitive Access (`E0601`)**: Check every possible access through named external state, callees, callbacks, handlers, and cleanup. An immutable callable descriptor does not make its dependencies immutable. Outside live reads and ordinary writes are rejected even when no captured value crosses the boundary. Apply the separately listed resource permissions without extending them to ordinary data.
-- **Results (`E0720`)**: `Task<Result<U, E>>` retains inner inspection duties. Normal success must inspect, propagate, or return them; join checks only the outer result. Abnormal unwinding may discard inaccessible/unfinished results, but cannot report success while losing an error.
-
-```ril
--- Module declarations and an invocation fixture inside an owning scope:
-type Cell = { mut count: int }
-let SNAPSHOT = Cell.{ count: 1 }
-let mut global_cell = Cell.{ count: 0 }
-fn read_snapshot() -> int &{SNAPSHOT} { SNAPSHOT.count }
-fn read_global() -> int &{global_cell} { global_cell.count }
-fn write_global() &{mut global_cell} { global_cell.count += 1 }
-
-let task = s.fork(read_snapshot)       -- OK: immutable named dependency
-let result = task.join()
-match result { Ok(value) -> { assert(value == 1) }, Err(_fault) -> {} }
--- s.fork(read_global)                -- Error [E0601]: outside live state, despite an immutable function value
--- s.fork(write_global)               -- Error [E0601]: outside write
--- s.fork(\-> read_global())          -- Error [E0601]: indirect access has the same origin
-let selected = if choose_live { read_global } else { read_snapshot } -- run-time bool input
--- s.fork(selected)                   -- Error [E0601]: one possible dependency is live
-```
-
-```ril
-pub type PanicInfo = { message: str, index: ?int }
-pub type UnwindCause {
-    Panicked(PanicInfo),
-    EffectAborted,
-    Cancelled,
-}
-pub type DoubleFaultInfo = { primary: UnwindCause, cleanup: PanicInfo }
-pub type TaskFault {
-    Panicked(PanicInfo),
-    Cancelled,
-    DoubleFaultFatal(DoubleFaultInfo),
-}
-
-fn inspect_business_result() -> Result<Result<int, str>, TaskFault> @Concurrent {
-    scope \mut s -> {
-        let task = s.fork(\-> {
-            let answer: Result<int, str> = Err("domain failure")
-            answer
-        })
-        let business = task.join()?
-        Ok(business)                  -- The caller now owns the inner inspection obligation
-    }
-}
--- scope \mut s -> { s.fork(\-> Err("lost")); Ok() }
--- Error [E0720]: successful scope exit abandons a fallible task result
-```
-
-
-```ril
--- Returning s from a scope, or a closure capturing s, is E0606.
--- Returning a Task<T> handle rather than its joined data is E0606.
--- Capturing a let scoped resource into a returned callback is E0604.
--- Wrapping any such handle in a record does not change these outcomes.
-```
+A child panic may become a Result at its owning structured boundary. Synchronous frames cannot catch panics. Child barriers constrain lifetimes without proving that arbitrary child computation terminates.
 
 ### Deterministic Data Parallelism and Divide-and-Conquer Primitives
 
@@ -4915,209 +4838,26 @@ use ril/parallel
 halt fn square_all(numbers: []f64) -> []f64 {
     numbers |> Parallel::map(\x -> x * x)
 }
-let first = [10, 20, 30, 40] |> Parallel::find(\x -> x > 25)
-assert(first == Some(30))
+-- @Parallel is not an effect annotation (E0620).
 ```
 
-#### The Colorless Parallel Principle and Domain Boundary
+Parallel invocation requires no residual effects and independently established finite computation; empty effect rows alone are insufficient (`E0820`). Outside mutable/live/resource dependencies, including those hidden in handlers or cleanup, are rejected (`E0605`), except the explicitly lent disjoint regions admitted by a concrete library operation. Overlapping or unproved-disjoint write/read or write/write regions are `E0619`. Checks are transitive; a distinct name, index, or copied graph path is not evidence of independence. Handling Div exhaustion alone does not establish finiteness. No live authority may escape the invocation.
 
-Parallel callbacks have no residual effects and must independently be proved finite; empty effect rows alone do not suffice. Unhandled Div exhaustion is an effect violation; unresolved termination is a finite-computation violation (`E0820`). `@Parallel` is invalid (`E0620`). Allow immutable captures and locally handled operations, including a valid finite budget inside an individual callback. Reject outside mutable/live handlers and resource operations; apply each combinator's access contract.
-
-Pure map/find/fold follow their reference evaluation. Disjoint-write join/for_each follow their [completion rule](#declarative-data-parallelism-and-concurrency-bounding); no universal left-fold equivalence applies.
-
-#### Deterministic Reductions and Bit-Exact Floating-Point Trees
-
-`Parallel::fold(items, init_acc, fold_local, merge_acc)` has this reference evaluation:
-
-1. Partition the input by increasing index into consecutive groups of at most 64 elements.
-2. For each group in order, call `init_acc()` once and perform `fold_local` from left to right over that group. Finish all groups before starting merges.
-3. Merge adjacent group results from left to right at each level. An unpaired final result advances unchanged. Repeat levels until one result remains.
-4. Empty input calls `init_acc()` exactly once and returns it. No merge is performed for fewer than two groups.
-5. The first fault in this reference order is the visible fault; later reference operations need not be evaluated. A dependent operation is not evaluated after its input failed. A fold-local fault records the source element index; initialization and merge faults use `PanicInfo.index = None`.
-
-This rule applies to non-associative operations as well. Floating-point addition is permitted but is not claimed to be associative or equal to ordinary sequential left folding. Given fixed primitive numeric semantics, the tree and result do not change with scheduling or worker count.
-
-```ril
-let total = Parallel::fold(
-    [1.0, 2.0, 3.0],
-    init_acc: \-> 0.0,
-    fold_local: \acc, x -> acc + x,
-    merge_acc: \left, right -> left + right,
-)
-assert(total == 6.0)
-```
-
-#### Observational Equivalence and Short-Circuit Determinism
-
-`map` follows element order. `find`, `first`, and `any` stop at the first decisive match or fault in that order. A match suppresses everything to its right; skipped branches may have no outside-observable effects.
-
-#### Canonical Leftmost Panic Precedence Rule
-
-- A pure branch's panic/double fault first becomes a local terminal outcome. Propagate only faults visible in reference evaluation; skipped rightward faults cannot fail the parent.
-- Branches own their mutable state and cleanup. Abandoned cleanup must not affect an outside-observable resource (`E0605`).
-
-Wait for all started branches. Propagate the selected panic; a selected double fault fatally fails the owning task or aborts an unsupervised program. Never resume a failed branch or restart abandoned cleanup.
-
-```ril
-let found = [0, 1] |> Parallel::find(\x -> {
-    if x == 0 { true } else { panic("right branch") }
-})
-assert(found == Some(0))               -- Even if the right branch ran speculatively
-```
-
-The same reference-visibility rule applies if the skipped right branch suffers a double fault in branch-local cleanup. There is no exception that lets speculative fatal outcomes change an otherwise successful leftmost result.
-
-#### Lightweight Divide-and-Conquer (Parallel::join)
-
-`Parallel::join(a, b)` returns `(a(), b())`; `join3` returns three results. Invoke each branch once and wait for all branches.
-
-- Share immutable reads. Temporary parent-data writes require disjoint write/read and write/write regions (`E0619`). Check actual captures; distinct names/indices do not prove separation.
-- The parent suspends access to lent regions until completion; other tasks cannot access them. Branch invocation authority is confined and does not create a lasting owner.
-
-#### Declarative Data Parallelism and Concurrency Bounding
-
-- **for_each**: `cells !> Parallel::for_each(\mut cell -> { ... })` explicitly lends each writable element to one invocation. Every element's writable reachable region must be disjoint from every other invocation's reads/writes (`E0619`). Immutable elements or unknown overlapping aliases are rejected; outside mutable captures are rejected (`E0605`).
-- **Completion**: join/join3/for_each finish every independent invocation and retain its writes. Then report double fault before panic, breaking ties by branch/index order. There is no rollback or sequential-short-circuit partial-state guarantee.
-- **map_bounded**: A positive `max_concurrency` bounds active evaluations without changing pure reference semantics. A non-positive bound panics before any callback invocation.
-
-```ril
-type Cell = { mut count: int }
-let mut cells = [Cell.{ count: 1 }, Cell.{ count: 2 }]
-cells !> Parallel::for_each(\mut cell -> { cell.count *= 2 })
-assert(cells[0].count == 2 && cells[1].count == 4)
-
-let original = Cell.{ count: 0 }
-let repeated = (original, original)
-let mut copy = ^mut clone(repeated)
--- Parallel::join(\-> { copy.0.count += 1 }, \-> { copy.1.count += 1 })
--- Error [E0619]: both branches would write the same copied origin
-copy.0.count += 1                     -- Sequential access is valid
-```
-
-#### The Absolute Effect-Free Parallel Invariant
-
-Apply effect, access, and termination checks transitively through calls and handlers. Handling Div exhaustion does not by itself prove termination; a valid finite budget certifies only its protected invocation, with finite cleanup and recovery still required. Resource endpoint operations are not pure parallel operations. Only join/for_each grant confined outside write authority; no live aliases escape.
+Parallel reference evaluation determines result order and observable faults. Double faults in branch-local cleanup use the same visibility rule. Permitted writes remain confined to their explicitly lent regions.
 
 ### Structured Concurrency Channels
 
 ```ril
-use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
-
-fn one_message() -> Result<int, TaskFault> @Async {
-    scope \mut s -> {
-        let (tx, mut rx) = Channel::bounded<int>(1)
-        let producer = s.fork(\-> {
-            -- Channel::close(tx)     -- Error [E0603]: a child clone-source borrow cannot consume the owner
-            let mut local_tx = clone(tx)
-            (local_tx !> Channel::send(42))
-                ?? \_error -> panic("receiver closed")
-            Channel::close(local_tx)
-        })
-        -- Channel::close(tx)         -- Error [E0603]: producer still holds a clone-source borrow
-        let value = (rx !> Channel::recv())
-            ?? \_error -> panic("sender closed")
-        producer.join()?
-        Channel::close(tx)
-        Ok(value)
-    }
-}
-```
-
-#### Normative Rules for Structured Channels
-
-
-The following declarations describe the channel module's contracts (opaque declaration-unit forms):
-
-```ril
-pub type Sender<T>
-pub type Receiver<T>
-pub type Detached<E>
-pub type ChannelError { Closed }
-pub fn bounded<T>(capacity: int) -> (Sender<T>, Receiver<T>) @Fiber
-pub fn send<T>(mut endpoint: Sender<T>, value: T) -> Result<(), ChannelError> @Fiber &mut
-pub fn recv<T>(mut endpoint: Receiver<T>) -> Result<T, ChannelError> @Fiber &mut
-```
-
-Sender/Receiver/Detached are scope-owned opaque resources. Immutable descriptors may enter `let`; protocol state is external and effect-accessed. These resource contracts do not apply to ordinary data.
-
-| Access or copy | Contract |
-| :--- | :--- |
-| Send/receive | Writable endpoint, `@Fiber &mut`; one owning task (`E0603`) |
-| `clone(Sender<T>)` | `@Fiber`; independent task-local endpoint authority, same channel; no resource-graph isolation guarantee |
-| Immutable Sender captured by a child | Clone-source only; no send/close/detach or acquisition of owner authority (`E0603`), even through aggregates/closures |
-| Owner close/detach while borrowed | Suspended until every borrowing task's terminal join or the scope's child barrier (`E0603`) |
-| Scheduling progress, dropped Task, last textual use | Do not end a clone-source borrow |
-| Clone Receiver/Detached; endpoint `clone_immut` | `E0530`, including inside containers |
-| Endpoint `derive` | `E0536`, including inside containers |
-
-```ril
--- Within an owning scope; rx has no other usable alias:
+-- Invocation fixture in the owning scope with exclusive receiver authority:
 let ticket = Channel::detach(mut rx)
 -- rx !> Channel::recv()               -- Error [E0603]: authority was transferred
 -- clone(ticket)                      -- Error [E0530]: detached authority cannot be duplicated
--- The receiving task can consume ticket once with Channel::attach(ticket).
 ```
 
-```ril
--- Within one owning scope; resource_rx is an exclusive endpoint and control_tx accepts its Detached descriptor.
-let ticket = Channel::detach(mut resource_rx)
-let sent = control_tx !> Channel::send(ticket)
-match sent { Ok() -> {}, Err(_error) -> {} }
--- Channel::attach(ticket)             -- Error [E0603]: both send outcomes consumed the ticket
-```
+Channel payloads admit immutable ordinary data or explicitly detached resource descriptors (`E0602`), not implicit transfer of a `mut`/`^mut` authority. Endpoint/ticket use respects its one-task and transfer permissions (`E0603`); scope escape is `E0606`. Clone and derive eligibility inspect nested constituents (`E0530`, `E0536`). Result inspection obligations follow actual payloads and aliases; inspecting transport success does not inspect a nested Result (`E0720`).
 
-| Operation (`@Fiber`) | Authority change |
-| :--- | :--- |
-| `detach(mut endpoint)` | Consume exclusive endpoint; return non-clonable `Detached<Endpoint>` |
-| `attach(ticket)` | Consume once; obtain writable endpoint in receiving task |
-| Enter `send(ticket)` after argument evaluation | Consume ticket on every outcome; pending send owns it |
-| Enqueue / successful receive | Ownership passes to queue / receiver |
-| `Err(Closed)` or cancellation before enqueue | Close submitted endpoint once; never restore ticket |
-| Receiver close | Close unreceived queued detached endpoints once |
-
-Detach rejects other usable aliases/views/captures and invalidates old paths (`E0603`). Only detached descriptors are transferable resource payloads; `mut`/`^mut` alone never transfer. Transfers and cross-task clones stay within the owning scope's descendants (`E0606`), independently of GC.
-
-Payloads may be scalars, immutable ordinary data (even with field `mut` markers), or one-use detached descriptors. Live data, mutable environments, ordinary write authority, and hidden non-transferable resources are `E0602`.
-
-```ril
--- Within an owning scope; writable rx receives Result<int, str> payloads.
-match (rx !> Channel::recv()) {
-    Ok(business) -> { let _ = business ?? \_error -> 0 },
-    Err(_error) -> {},
-}
--- match (rx !> Channel::recv()) { Ok(_) -> {}, Err(_) -> {} }
--- Error [E0720]: only the transport result was inspected
-```
-
-| Fallible payload event | Outstanding inspection obligation |
-| :--- | :--- |
-| Successful send / receive | Passes to queue / received value |
-| Send returns `Err(Closed)` | Stays with sender's original value/aliases; no implicit payload return |
-| Inspect send/recv's outer Result | Does not inspect a payload Result |
-| Normal completion, including another business `Err` | Must preserve or discharge the obligation (`E0720`) |
-| Normal receiver close / scope exit | Cannot discard possibly uninspected queued Results (`E0720`) |
-| Receive returns `Err(Closed)` | Queue is empty |
-| Panic, cancellation, effect abort | Ordinary abnormal-unwinding exemption |
-
-Aliases share one obligation; transmission does not create an independent copy.
-
-| Operation | Result and ordering |
-| :--- | :--- |
-| `send` | `Result<(), ChannelError>`; closed receiver gives `Err(Closed)` |
-| `recv` | `Result<T, ChannelError>`; drain queue, then `Err(Closed)` after all senders close |
-| `bounded` | Positive capacity limits queued messages; invalid capacity panics before creation |
-
-Successful sends retain each sender's order; different senders have no global order.
-
-| Closing or cancellation | Rule |
-| :--- | :--- |
-| `Channel::close` | `@Fiber`; consumes the descriptor's authority and invalidates its aliases |
-| Task termination | Close writable local endpoints |
-| Scope exit | Close remaining descriptors after the child barrier |
-| Automatic close | Structured boundary's `@Fiber` contract; not `on_close` or a separate `let scoped` contract |
-| Immutable clone-source Sender | Open until close/scope exit; EOF never depends on GC |
-| Cancel blocked send/recv | Non-resumable scope exit; no fabricated message/error. Producer failure wakes a body blocked on recv |
+A resource contract must state endpoint creation, cloning, transfer, closure, and cancellation permissions. Endpoint-specific permissions do not authorize copying or transferring ordinary writable graphs or unrelated opaque resources.
 
 ### Arrow-Only Law of Effects
 
@@ -5290,7 +5030,7 @@ fn run_logged() -> int @Audit { dispatch_worker<true>(logged_worker, 10) }
 | :--- | :--- |
 | Type function | Other type functions and `meta fn`; no run-time `fn` (`E0810`) |
 | Run-time function | No type-function invocation (`E0810`) |
-| Both phases | Pure arithmetic/comparison, `len`, `assert`, pure Array/String/Map combinators |
+| Both phases | Pure arithmetic/comparison, `len`, `assert`, and library operations explicitly declared dual-phase |
 
 Static callbacks capture symbolic constants. Mutable resources, handlers, and ordinary run-time calls have no phase-polymorphic exception. Static budget exhaustion is `E0811`.
 
@@ -5637,91 +5377,7 @@ fn start_worker() &{mut active_workers} { active_workers += 1 }
 
 ### Test Conventions and Execution Protocol
 
-Test entry points are ordinary public functions conforming to the naming prefix `test_*` and returning either `()` or `Result<(), E>`. Test functions evaluate within isolated activation frames and enforce domain invariants via standard assertions:
-
-- **Pure & Direct Tests**: Functions returning `()` verify invariants using deterministic runtime panics on breach (`assert`).
-- **Fallible Tests**: Functions returning `Result<(), E>` enable cascading error propagation via postfix `?`. Returning `Err(e)` indicates test assertion failure.
-- **Hermetic Scoped Mocking**: Environmental algebraic effects are mocked within standard lexical blocks `{ with HandlerSpec; logic }`. The handler is automatically popped upon exiting the block. Missing handlers are rejected statically; a mock handler may explicitly panic on an unexpected but handled request.
-- **Panic Isolation Assertion**: Asserting that defective operations trigger deterministic runtime panics is evaluated across structured concurrency task boundaries (`s.fork` inside `scope`), capturing faults into `TaskFault::Panicked` without violating synchronous frame panic isolation.
-- **Resource Lifecycle**: Ephemeral and in-memory test resources use `let scoped` bindings, guaranteeing strict LIFO destruction. Effectful I/O transactions utilize higher-order wrapper functions.
-
-```ril
-use ril/array::{push}
-
--- Direct unit test returning ():
-pub fn test_array_push() -> () {
-    let mut items = [1, 2]
-    items !> push(3)
-    assert(len(items) == 3, "expected 3 items")
-}
-
--- Fallible unit test with '?' error cascade:
-pub fn test_parse_pipeline() -> Result<(), str> {
-    let raw = "100"
-    let parsed = parse_int(raw)?
-    assert(parsed == 100, "expected parsed integer 100")
-    Ok()
-}
-
--- Hermetic sandbox mock testing via scoped handler block:
-eff Database {
-    query(sql: str) -> Result<str, str>,
-}
-
-pub fn test_user_query() -> Result<(), str> {
-    let outcome = {
-        with Database::query(sql) -> {
-            if sql == "SELECT user FROM users WHERE id = 1" {
-                resume Ok("Alice")
-            } else {
-                -- Hermetic Sandbox: unexpected calls trigger deterministic defect panic
-                panic("Unexpected mock query: {sql}")
-            }
-        }
-
-        let user = Database::query("SELECT user FROM users WHERE id = 1")?
-        assert(user == "Alice", "user mismatch")
-        Ok()
-    }
-    outcome
-}
-
--- Scoped resource cleanup following strict LIFO order:
-pub fn test_scoped_cleanup() -> Result<(), str> {
-    let mut trace: []str = []
-    {
-        let scoped mut res = Resource.{
-            name: "test_db",
-            on_close: \-> trace !> push("db_closed"),
-        }
-        trace !> push("test_executed")
-    }
-    assert(trace == ["test_executed", "db_closed"], "cleanup must follow LIFO order")
-    Ok()
-}
-
--- Defect panic assertion via structured concurrency boundary:
-use ril/concurrent::{scope, TaskFault}
-
-pub fn test_out_of_bounds_defect() -> Result<(), str> @Concurrent {
-    let outcome = scope(\mut s -> {
-        s.fork(\-> {
-            let arr = [1, 2]
-            let _ = arr[5]             -- Triggers defect panic: index out of bounds
-            Ok()
-        })
-        Ok()
-    })
-
-    match outcome {
-        Err(TaskFault::Panicked(info)) -> {
-            let _ = info              -- Payload text is explanatory, not a conformance assertion
-            Ok()
-        },
-        _ -> panic("expected operation to panic, but completed normally"),
-    }
-}
-```
+Tests are ordinary functions. Their handlers, scoped bindings, Result inspection duties, and panic boundaries obey the same rules as other functions.
 
 ### Program Entry Point
 
@@ -5739,7 +5395,8 @@ pub fn main() -> () @Fiber {
     println("Hello, Ril!")
 }
 
--- Fallible main:
+-- Alternative complete fallible executable root:
+use ril/file
 pub fn main() -> Result<(), str> @Fiber {
     let config = File::read("config.json")?
     if config == "" {
@@ -5750,72 +5407,17 @@ pub fn main() -> Result<(), str> @Fiber {
 }
 ```
 
-### Standard Prelude Built-ins
-
-The following types, functions, and core modules are implicitly available in every compilation unit without explicit `use` statements:
-
-| Item | Kind | Description |
-| :--- | :--- | :--- |
-| `Option<T>`, `?T` | Sum Type | Optional value: `Some(T)` or `None` |
-| `Result<T, E>` | Sum Type | Fallible operation outcome: `Ok(T)` or `Err(E)` |
-| `Immut<T>` | Type | Explicit immutable ordinary data; nested outer Immut qualifiers normalize |
-| `[K: V]` | Type | Built-in associative map |
-| `Array` | Module | Standard dynamic array combinators and mutation primitives (`push`, `pop`, `map`, `filter`, `fold`, `contains`, `reverse`) |
-| `Map` | Module | Standard associative map combinators and access primitives (`get`, `set`, `remove`, `contains`, `keys`, `values`) |
-| `Set` | Module | Standard unique set operations and algebraic combinators (`contains`, `insert`, `remove`, `union`, `intersect`, `diff`) |
-| `String` | Module | Standard string operations and character inspection (`split`, `trim`, `contains`, `replace`, `starts_with`, `ends_with`) |
-| `inner(wrapper)` | Function | Extracts underlying value from nominal wrapper `type W(T)` |
-| `clone(x)` | Function | Deep isolated ordinary-data copy; sender resources use their separate effectful contract |
-| `clone_immut(x)` | Function | Copies eligible ordinary data as immutable data into `Immut<T>` |
-| `derive(base, recipe)` | Function | Confined graph derivation with immutable input/output and unchanged immutable sharing |
-| `len(coll)` | Function | Returns element count of string, bytes, array, map, or set |
-| `panic(msg)` | Function | Initiates deterministic runtime panic unwinding |
-| `assert(cond, msg)` | Function | Verifies invariant; panics on breach |
-| `print(s)`, `println(s)` | Functions | Writes text to standard output with `@Fiber` |
+### Prelude Scope
 
 ```ril
--- Ambient Prelude Collection Modules (no 'use' required):
-let mut list = [1, 2]
-list !> Array::push(3)                  -- OK: 'Array' is ambiently available from prelude
-let evens = list |> Array::filter(\x -> x % 2 == 0)
-
-let config_map: [str: int] = ["timeout": 5000, "retries": 3]
-let timeout_val = config_map |> Map::get("timeout") -- OK: 'Map' is ambiently available
-
-let words = "hello,world,ril" |> String::split(",") -- OK: 'String' is ambiently available
-let tags: Set<str> = Set::from(["system", "kernel"]) -- OK: 'Set' library module is ambiently available from prelude
-
--- Nominal Unwrapping via inner():
-type UserId(int)
-let uid = UserId(1001)
-let raw_id: int = inner(uid)           -- 1001
-
--- Deep Mutable Cloning via clone():
-let original = [1, 2, 3]
-let mut detached = clone(original)
-detached !> Array::push(4)             -- Mutates 'detached'; 'original' remains [1, 2, 3]
-
--- Immutable Copy via clone_immut():
-let immutable: Immut<[]int> = clone_immut(original)
--- immutable !> Array::push(5)            -- Error [E0520]: MutabilityLaunderingError: cannot mutate permanently immutable Immut<T>
-
--- Functional Derivation via derive():
-let base_cfg = .{ theme: "dark", retries: 3 }
-let updated_cfg = base_cfg |> derive \mut draft -> {
-    draft.theme = "light"
-}
-assert(base_cfg.theme == "dark" && updated_cfg.theme == "light")
-
--- Length Inspection via len():
-let count = len("hello")               -- 5 (Unicode scalar count)
-let array_len = len([10, 20, 30])      -- 3
-
--- Invariants and Panic Primitives:
-assert(len(original) > 0, "must not be empty") -- OK
-if len(original) == 0 {
-    panic("unreachable state reached")  -- Initiates deterministic runtime panic
-}
+let outcome: Result<int, str> = Ok(3)
+assert(outcome is Ok(3))
+let count = len([1, 2, 3])
 ```
+
+The prelude is an enclosing lexical scope. Local declarations may shadow its names; same-scope duplicates remain `E0203`. Shadowing does not change built-in syntax or the declaration identities required by language-defined operators.
+
+Primitive spellings, `?T`, collection syntax, and system effects are language constructs, not imported declarations.
 
 ### Mandatory Inspection of Fallible Results
 
