@@ -68,7 +68,7 @@ fn init_session() -> Result<int, str> {
     let id = parse_id("10")?           -- OK: propagated via postfix '?' within function frame
     Ok(id)
 }
--- let top_id = parse_id("10")?        -- Error [E0205]: TopLevelQuestionMarkProhibitedError: cannot evaluate postfix '?' in top-level declaration 'top_id'; no enclosing caller function frame exists to receive error
+-- let top_id = parse_id("10")?        -- Error [E0205]: QuestionMarkOutsideFunctionError: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
 -- parse_id("10")                       -- Error [E0720]: UnusedFallibleResultError: unused fallible Result must be handled via '?', 'match', or fallback '??'
 
 -- 2. Deterministic runtime panic on defect:
@@ -828,9 +828,9 @@ fn check_buf(runtime_size: int) {
 Ril establishes a mathematically rigorous, stratified **Tripartite Ontology**, partitioning program semantics across three mutually exclusive domains that converge exclusively at the callable computation arrow:
 
 ```
-+---------------------------------------------------------------------------------------------------+
-|                                      THE TRIPARTITE ONTOLOGY                                      |
-+---------------------------------------------------------------------------------------------------+
++-----------------------------------------------------------------------------------------------------------------+
+|                                             THE TRIPARTITE ONTOLOGY                                             |
++-------------------------------------+-------------------------------------+-------------------------------------+
 |  Domain I: Data & Shape (T)         |  Domain II: Storage & Access (C)    |  Domain III: Control & Transfer (E) |
 |  - Types at rest                    |  - Storage cell permissions         |  - Stack-delimited control flows    |
 |  - Value vs Reference types         |  - Three-tier mutability            |  - Algebraic effects ('eff')        |
@@ -838,16 +838,16 @@ Ril establishes a mathematically rigorous, stratified **Tripartite Ontology**, p
 |  - Nominals & Opaque types          |  - Capability tracking (&mut, &^mut)|  - Affine resumption ('resume')     |
 |  - Field 'mut' (interior marker)    |  - Aliasing exclusivity             |  - Built-ins (@Async, @Fiber, @Div) |
 +-------------------------------------+-------------------------------------+-------------------------------------+
-                                                   |
-                                                   v
-                                +-------------------------------------+
-                                |     COMPUTATION CONFLUENCE (fn)     |
-                                |   fn(P) -> R  @Eff  &Cap            |
-                                | - P in T (parameters at rest)       |
-                                | - R in T (return shape at rest)     |
-                                | - @Eff in E (latent control flow)   |
-                                | - &Cap in C (latent access rights)  |
-                                +-------------------------------------+
+                                                         |
+                                                         v
+                                      +-------------------------------------+
+                                      |     COMPUTATION CONFLUENCE (fn)     |
+                                      |   fn(P) -> R  @Eff  &Cap            |
+                                      | - P in T (parameters at rest)       |
+                                      | - R in T (return shape at rest)     |
+                                      | - @Eff in E (latent control flow)   |
+                                      | - &Cap in C (latent access rights)  |
+                                      +-------------------------------------+
 ```
 
 #### 3.12.1 The Three Disjoint Semantic Domains
@@ -1414,7 +1414,7 @@ fn validate_token(token: SessionToken) -> bool {
 -- In file: app/main.ril
 use auth/session::{SessionToken, create_token, reveal_token}
 
--- let bad_top_token = create_token("secret_token_1234")? -- Error [E0205]: TopLevelQuestionMarkProhibitedError: postfix '?' prohibited in top-level context; no enclosing function to receive early return
+-- let bad_top_token = create_token("secret_token_1234")? -- Error [E0205]: QuestionMarkOutsideFunctionError: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
 
 fn authenticate_client() -> ?SessionToken {
     let token = create_token("secret_token_1234")? -- OK: propagated via '?' inside function frame
@@ -1652,7 +1652,7 @@ items !> Array::push(4)                -- In-place mutation: items is now [1, 2,
 ### 5.8 Error & Fallback Operators (`?`, `??`, `?.`, `?[`)
 
 1. **Postfix `?`**: Unwraps `Ok(v)` / `Some(v)`, or returns early with `Err(e)` / `None` into the enclosing function frame.
-   - **Top-Level Prohibition Invariant (`E0205`)**: Postfix `?` performs an early return into an enclosing caller frame. Evaluating postfix `?` within top-level statements, module initializers, or constant expressions is statically rejected (`E0205: TopLevelQuestionMarkProhibitedError`), as no enclosing function frame exists to receive propagated errors.
+   - **Enclosing Callable Requirement (`E0205`)**: Postfix `?` performs an early control transfer (return) into an enclosing activation frame. Evaluating postfix `?` outside an enclosing function or closure body (e.g., in module-scope declarations, initializers, or constant expressions) is statically rejected (`E0205: QuestionMarkOutsideFunctionError`), as no enclosing callable activation frame exists to receive propagated errors.
 2. **Fallback `??`**:
    - For `Option<T>`: Evaluates to `T` using the fallback value or supplier closure.
    - For `Result<T, E>`: Right operand MUST be an error-consuming closure `\err -> T`.
@@ -1663,7 +1663,7 @@ fn find_record(id: int) -> Result<str, str> {
     let user = fetch_user(id)?         -- Early return Err if fetch_user fails
     Ok(user.name)
 }
--- let bad_top_record = find_record(1)? -- Error [E0205]: TopLevelQuestionMarkProhibitedError: postfix '?' prohibited in top-level context; no enclosing function to receive error
+-- let bad_top_record = find_record(1)? -- Error [E0205]: QuestionMarkOutsideFunctionError: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
 
 let opt: ?int = None
 let v1 = opt ?? 100                    -- 100 (Option fallback with default value)
@@ -4006,7 +4006,7 @@ fn calculate() {
 
 ### 11.3 Top-Level Initialization & Purity
 
-Top-level declarations MUST be free of observable runtime side effects. Top-level mutable variables must be initialized with constant expressions. Furthermore, evaluating postfix `?` in top-level declarations or module-scope expressions is strictly prohibited (`E0205: TopLevelQuestionMarkProhibitedError`) because there is no enclosing caller function frame to receive propagated fallible outcomes.
+Top-level declarations MUST be free of observable runtime side effects. Top-level mutable variables must be initialized with constant expressions. Furthermore, evaluating postfix `?` outside a function or closure body (such as in top-level declarations or module-scope expressions) is strictly prohibited (`E0205: QuestionMarkOutsideFunctionError`) because there is no enclosing callable activation frame to receive propagated fallible outcomes.
 
 ```ril
 let MAX_CONNECTIONS: int = 100
@@ -4016,7 +4016,7 @@ var active_workers: int = 0            -- OK: initialized with constant expressi
 -- Prohibited top-level runtime side effects and error propagation:
 -- let current_time = Clock::now()      -- Error [E0202]: TopLevelSideEffectError: top-level declaration must be a pure constant expression
 -- let db = Database::connect("db.loc") -- Error [E0202]: TopLevelSideEffectError: top-level declaration cannot invoke runtime I/O or effects
--- let top_parse = parse_id("10")?      -- Error [E0205]: TopLevelQuestionMarkProhibitedError: postfix '?' prohibited in top-level context; no enclosing function to receive error
+-- let top_parse = parse_id("10")?      -- Error [E0205]: QuestionMarkOutsideFunctionError: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
 ```
 
 ### 11.4 Test Conventions & Execution Protocol
@@ -4235,7 +4235,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0202`** | `TopLevelSideEffectError` | Top-level declaration contains non-constant runtime side effects |
 | **`E0203`** | `DuplicateDeclarationError` | Redeclaring an existing identifier in the same scope |
 | **`E0204`** | `UnresolvedIdentifierError` | Reference to an undeclared or unimported identifier in lexical scope |
-| **`E0205`** | `TopLevelQuestionMarkProhibitedError` | Using postfix '?' operator in top-level expression or declaration outside an enclosing function body |
+| **`E0205`** | `QuestionMarkOutsideFunctionError` | Using postfix '?' operator outside an enclosing function or closure body (no enclosing activation frame to receive early return) |
 | **`E0301`** | `TypeMismatchError` | Expression type incompatible with expected type |
 | **`E0302`** | `UnexpectedFieldError` | Closed record supplied with undeclared fields |
 | **`E0303`** | `NonExhaustiveMatchError` | Pattern match expression does not cover all possible variant or structural cases |
