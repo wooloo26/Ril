@@ -19,6 +19,7 @@
 - Local statements run in an enclosing callable; displayed declarations belong to its enclosing declaration scope. Free names are typed fixture inputs or supplied contracts.
 - Fixtures handle their local expressions' effects. Named functions and complete files obey their own annotations, casing, and initialization rules.
 - Negative statements are checked individually with valid setup. Blocks containing `...` are schematic.
+- Static-evaluation fixtures use the selected abstract target and a sufficient evaluation budget unless a budget-exhaustion case is explicitly specified.
 - **Semantic Cross-References**: Internal specifications and rule cross-references link directly to their defining sections via Markdown anchors.
 ---
 
@@ -215,6 +216,7 @@ let scope_outcome: Result<int, TaskFault> = scope(\mut s -> {
     Ok(42)
 })
 -- scope_outcome evaluates to Err(TaskFault::Panicked(...))
+assert(scope_outcome is Err(TaskFault::Panicked(_)))
 ```
 
 ---
@@ -238,8 +240,6 @@ BlockComment ::= "{-" { SourceChar | BlockComment } "-}"
 ```
 
 ### Whitespace and Layout Rules
-
-Whitespace (spaces, tabs, newlines) separates tokens. Semicolons `;` are optional expression separators. The final expression in a block without a semicolon serves as the block's return value. Newlines act as statement terminators unless an expression continuation operator (`+`, `-`, `*`, `|>` etc.) indicates ongoing evaluation.
 
 ```ril
 -- Semicolon as explicit expression separator:
@@ -269,6 +269,18 @@ let d = {
 }                                      -- Block evaluates to ()
 ```
 
+Spaces and tabs separate tokens. A newline ends a complete statement except below:
+
+| Context | Newline rule |
+| :--- | :--- |
+| Parentheses, brackets, generic lists, record/declaration fields | Whitespace; nested executable blocks keep their own boundaries |
+| Trailing operator, comma, `=`, `:`, `->` | Continue the required operand or body |
+| Required declaration body, `else`, `where` | Stay attached to the preceding construct |
+| Leading `\|>`, `!>`, `??` | Continue the preceding expression |
+| Other leading operators or `(` | Do not reopen a completed statement |
+
+`;` separates statements and discards their values. The final expression before `}` or `where` is the block value unless followed by `;`; a newline preserves it. Empty blocks and binding-ended blocks yield `()`.
+
 ### Identifiers and Casing Invariants
 
 ```ebnf
@@ -290,6 +302,26 @@ Identifier grammatical roles obey the **Closed Casing Invariant**:
 - **Wildcard & Suppression**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore `_snake_case` declares an intentionally unused read-only variable or parameter. It does not waive mutable-authority use requirements (`E0527`).
 
 ```ril
+type First { Shared }
+type Second { Shared }
+let first: First = First::Shared       -- OK: qualified constructor
+-- let ambiguous: First = Shared      -- Error [E0203]: expected type does not resolve the abbreviation
+type Maybe<T> = Option<T>
+let value: Maybe<int> = Some(1)        -- OK: an alias adds no constructor candidate
+```
+
+Declarations and imports share one namespace. Same-scope duplicates are `E0203`; inner declarations may shadow outer ones, including the enclosing prelude.
+
+| Name | Resolution |
+| :--- | :--- |
+| Nominal type/constructor; predefined `Set<T>`/`Set::from` | Roles of one declaration; separate user declarations cannot merge |
+| `S::V` | Variant member of S; no second enclosing-scope declaration |
+| Unqualified constructor name | Ordinary lexical binding first; otherwise require one variant candidate (`E0203` if ambiguous) |
+| Candidate set | Directly visible sum types; a module import alone does not expose its internal sums |
+| Aliases and re-exports | Deduplicate candidates by variant declaration identity |
+| Expected type / generic arguments | Expected types never choose a declaration; infer/check arguments after selection |
+
+```ril
 -- PascalCase: Types, Constructors, Effects, and Generic Parameters
 type UserAccount = { id: int }         -- OK: type identifier
 type Result<T, E = str> { Ok(T), Err(E) } -- OK: generic parameters and constructors
@@ -299,7 +331,9 @@ type HttpServerConfig = { port: int }  -- OK: title-cased acronym
 -- snake_case: Variables (local, param, top-level var / let mut), Functions, and Fields
 let user_count = 10                    -- OK: local variable identifier
 var total_score = 0                    -- OK: local reassignable variable
+total_score += 1
 var active_workers = 0                 -- OK: top-level reassignable mutable variable
+fn start_worker() &{mut active_workers} { active_workers += 1 }
 fn compute_area(width: f64) -> f64 { width * 2.0 } -- OK: function identifier
 meta fn pad_align(size: int) -> int { size }       -- OK: compile-time function
 
@@ -362,6 +396,7 @@ fn calculate(val: ?int) -> int {       -- 'fn'
     let in_bounds = bound in 1..=10    -- 'in'
     var sum = 0                        -- 'var'
     for [1, 2, 3] as n {               -- 'for', 'as'
+        sum += n
         if sum > 10 { last }           -- 'last'
         else { next }                  -- 'else', 'next'
     }
@@ -397,7 +432,21 @@ let float_val = 3.14159_f64            -- Type: f64
 let float_f32 = 2.5f32                 -- Type: f32
 let scientific = 1.25e-4               -- Type: f64 (exponent)
 let big_num = 12345678901234567890bigint -- Type: bigint
+let smallest: i8 = -128i8               -- OK: signed literal is checked as a whole
+-- let too_large: i8 = 128i8            -- Error [E0301]: literal is outside its selected type's range
+-- let mixed = 1u8 + 1u16               -- Error [E0301]: no implicit numeric promotion
 ```
+
+| Form | Type / check |
+| :--- | :--- |
+| Suffixed literal | Suffix fixes the type |
+| Unsuffixed integer | Compatible numeric context, otherwise `int`; round once if selected as floating-point |
+| Unsuffixed float | Contextual `f32`/`f64`, otherwise `f64` |
+| Integer-typed literal | Must fit its type (`E0301`); an immediately applied `-` is included in the range check |
+| Negating an evaluated fixed-width minimum | Panic; the literal exception does not apply |
+| Numeric arithmetic/comparison | Same operand type (`E0301`); no conversion of already typed values |
+| Shift count | Integer; need not have the left operand's width |
+| Fixed array length | Static nonnegative `int`; wrong sort/negative: `E0323`, run-time value: `E0810` |
 
 ### Text and Byte Literals
 
@@ -649,7 +698,8 @@ Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenthesized g
 ```ril
 -- Result construction and matching with unit payload (n = 0):
 let unit_res: Result<(), str> = Ok()             -- OK: n = 0 constructs () payload directly
-let auto_unit = Ok()                             -- OK: synthesizes Result<(), _> (payload is ())
+let auto_unit: Result<(), str> = Ok()            -- OK: the zero-argument constructor supplies ()
+assert(auto_unit is Ok())
 let make_ok: fn(int) -> Result<int, str> = Ok     -- OK: first-class constructor function
 
 match unit_res {
@@ -664,8 +714,10 @@ let opt: Option<int> = None                      -- OK: nullary tag without pare
 -- Result construction and matching with tuple payload:
 let res: Result<(int, str), str> = Ok(200, "OK") -- OK: n = 2 constructs (int, str) directly
 let pair = (200, "OK")
-let res_from_pair = Ok(pair)                     -- OK: n = 1 passes existing tuple
-let res_compat = Ok((200, "OK"))                 -- OK: n = 1 explicit tuple literal
+let res_from_pair: Result<(int, str), str> = Ok(pair) -- OK: n = 1 passes existing tuple
+let res_compat: Result<(int, str), str> = Ok((200, "OK")) -- OK: explicit tuple literal
+assert(res_from_pair is Ok(_))
+assert(res_compat is Ok(_))
 
 match res {
     Ok(code, msg) -> println(msg),               -- OK: n = 2 directly unpacks tuple elements
@@ -772,20 +824,47 @@ Both accept eligible view data and preserve field declarations.
 - **Eligibility (`E0530`)**: Check every reachable ordinary constituent. Retained closure environments, scoped resources, tasks, unique receivers, and other non-clonable values cannot be hidden by wrapping or views.
 - Immutable environment-free function values are copyable. Opaque resources use only their [explicit contracts](#structured-concurrency-channels).
 
-### Type Identity and Subtyping
+```ril
+type Cell = { mut count: int }
+fn read(cell: Cell) -> int { cell.count }
+let original = Cell.{ count: 1 }
+let explicit: Immut<Cell> = original
+assert(read(explicit) == 1)
+-- let mut upgraded: Cell = explicit   -- Error [E0520]: removing a qualifier does not grant writes
+let mut live = Cell.{ count: 1 }
+live.count += 1
+-- let invalid: Immut<Cell> = live     -- Error [E0535]: an ascription cannot freeze a live graph
+```
 
-- **Width Subtyping**: Rejected on closed records. Permitted only via open row parameters (`{ id: int, ..R }`).
-- **Depth Subtyping**: Mutable fields are invariant. Read-only fields are covariant.
-- **Callable Subtyping**: Parameters are contravariant; return types are covariant. State capabilities are covariant across the capability lattice (`&mut` $\sqsubset$ `&^mut`).
+| Ascription | Requirement |
+| :--- | :--- |
+| `Immut<T>` to read-only T | Preserve immutable provenance |
+| T to `Immut<T>` | Entire ordinary reachable graph already proven immutable (`E0535` otherwise) |
+
+Ascription never copies, freezes, consumes, grants writes, or makes a resource ordinary data.
+
+### Type Identity and Subtyping
 
 ```ril
 type Animal = { name: str }
 type Dog = { name: str, breed: str }
-
--- Covariant read-only return:
 type Getter<T> = fn() -> T
--- fn(d: Dog) -> Dog is NOT a subtype of fn(d: Dog) -> Animal: both records are closed.
+fn make_dog() -> Dog { .{ name: "Fido", breed: "Collie" } }
+let get_dog: Getter<Dog> = make_dog       -- OK
+-- let get_animal: Getter<Animal> = make_dog -- Error [E0301]: closed records reject width subtyping
 ```
+
+| Type position | Subtyping |
+| :--- | :--- |
+| Closed record | No width subtyping; extra fields require an open row |
+| Record field | Mutable: invariant; read-only: covariant |
+| Callable with identical parameter modes | Parameters contravariant; result covariant; actual obligations fit destination rows |
+| `&^mut` row bound | Admits `&mut`; never changes parameter modes or handle permissions |
+| Array / map | Element and key/value types invariant; fixed lengths must match |
+| Tuple | Components invariant; writable access permits slot replacement |
+| Sum / nominal arguments | Invariant; transparent aliases retain the expanded type's identity |
+
+Read-only access and Immut qualification add no container subtyping.
 
 ### Memory Model and Handle Invariants
 
@@ -973,6 +1052,8 @@ pub type Result<T, E = str> {
 
 let r1: Result<int> = Ok(42)                    -- OK: resolves to Result<int, str>
 let r2: Result<int, int> = Err(404)             -- OK: explicit override of default E
+assert(r1 is Ok(_))
+assert(r2 is Err(_))
 
 -- Nominal wrapper with default const generic and type parameter:
 pub type Buffer<T = u8, cap: int = 1024>({
@@ -1205,7 +1286,7 @@ fn execute<T, R>(task: fn(T) -> R, arg: T) -> R {
 fn log_id<T: { id: int, ..R }>(item: T) -> int {
     item.id                                    -- OK: row constraint is a shape property
 }
-fn get_field<T, K: keyof T>(record: T, key: K) -> T.(K) {
+fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) {
     record.(key)                               -- OK: keyof constraint is a shape property
 }
 
@@ -1321,7 +1402,7 @@ EffectMemberList ::= EffectOpDecl { "," EffectOpDecl } [ "," ] | EffectIdentifie
 EffectOpDecl     ::= SnakeCase "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ StateAnnot ]
 EffectAnnot      ::= "@" ( EffectRow | "{" "}" )
 EffectRow        ::= EffectIdentifier { "+" EffectIdentifier }
-EffectIdentifier ::= PascalCase [ GenericArgs ]
+EffectIdentifier ::= QualifiedName [ GenericArgs ]
 
 (* ========================================================================= *)
 (* 3. STORAGE & ACCESS DOMAIN (Domain II: Capabilities)                      *)
@@ -1346,6 +1427,14 @@ StateContractRef ::= "&" QualifiedName
 ```
 
 The contextual `closure` group header takes precedence over the global-list production. A captured group requires at least one item: `&{closure,}` is `E0538`, while `&{closure}` reads a global binding named `closure`. Built-in `&mut`, `&^mut`, `&capture`, and `&closure` retain their meanings ahead of the reference production. A state contract reference is permitted only on an ordinary named function definition, subject to [its reference rules](#named-function-state-contract-references); the common grammar does not authorize it in other annotation positions.
+
+```ril
+type DeferredFactory = fn() -> fn() -> int @Io -- Io belongs to the returned callable
+type EffectfulFactory = fn() -> (fn() -> int) @Io -- Io belongs to the factory
+type CapturingFactory = fn() -> (fn() -> int &closure) &capture
+```
+
+Arrows associate right; effect/state suffixes bind to the nearest callable not closed by parentheses. Omitted returns mean `-> ()` on named functions, callable types, and effect operations. Anonymous results are inferred.
 
 ---
 
@@ -1373,7 +1462,7 @@ MetaLetDecl      ::= "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpress
 MetaFnDecl       ::= [ "pub" ] "meta" "fn" SnakeCase [ GenericParams ] "(" [ ParameterList ] ")" ReturnType Block
 ```
 
-The casing, static-sort and parameter-mode constraints apply in addition to these productions. In particular, PascalCase field labels require a mapped schema, and mutable modes do not apply to static key arguments.
+The casing, static-sort and parameter-mode constraints apply in addition to these productions. In particular, PascalCase field labels require a mapped schema, effect names resolve to PascalCase effect declarations, and mutable modes do not apply to static key arguments.
 
 ---
 
@@ -1416,14 +1505,15 @@ IndexExpr       ::= Expression ( "[" | "?[" ) Expression "]"
 RangeExpr       ::= [ Expression ] ( ".." | "..=" ) [ Expression ]
 IsExpr          ::= Expression "is" OrPattern [ "if" Expression ]
 AssignmentExpr  ::= AssignTarget AssignmentOperator Expression
-AssignTarget    ::= Identifier | Expression "." ( FieldLabel | TupleIndex ) | Expression "[" Expression "]"
+AssignTarget    ::= QualifiedName | Expression "." ( FieldLabel | TupleIndex | "(" Expression ")" )
+                  | Expression "[" Expression "]"
 AssignmentOperator ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
                      | "&=" | "|=" | "^=" | "<<=" | ">>="
-TailExpression  ::= Expression
 Separator       ::= ";" | Newline
-LiteralPattern  ::= Literal
+NumericPattern  ::= [ "-" ] ( IntLiteral | FloatLiteral )
+LiteralPattern  ::= Literal | NumericPattern
 WildcardPattern ::= "_"
-RangePattern    ::= Literal ( ".." | "..=" ) Literal
+RangePattern    ::= NumericPattern ( ".." | "..=" ) NumericPattern
 RigidNominalPattern ::= QualifiedName [ "<" TypePatternInner { "," TypePatternInner } [ "," ] ">" ]
 PrimitivePattern ::= PrimitiveType
 ArrayPattern    ::= "[" [ Expression ] "]" TypePatternInner
@@ -1439,6 +1529,7 @@ TypeRestPattern ::= ".." "let" PascalCase
 - `^mut` is a prefix sharing expression at unary precedence. It evaluates its operand once and preserves that value's identity and permissions; its permitted uses are defined under [Retained Mutable Sharing](#retained-mutable-sharing). It is not a first-class capability value.
 - Type patterns use type-specific products. Bare literals are allowed only in const-argument positions.
 - Comments and literal delimiters follow lexical rules.
+- Numeric patterns use the scrutinee's numeric type and the same representability rules as numeric expressions. Range patterns require integer endpoints of that type with `lower <= upper`; an equal-bound closed range matches one value and an equal-bound half-open range matches none. Arbitrary computed expressions are not literal patterns (`E0301`).
 
 ## Declarations and Bindings
 
@@ -1589,18 +1680,41 @@ let mut events: []str = []
 assert(events == ["second", "first"])
 ```
 
+```ril
+-- Resource has the structural declaration above.
+let mut events: []str = []
+{
+    let scoped mut resource = Resource.{
+        name: "r", on_close: \-> { events !> Array::push("old") },
+    }
+    resource.on_close = \-> { events !> Array::push("new") }
+}
+assert(events == ["new"])
+-- let scoped scalar = 42              -- Error [E0301]: no cleanup contract
+```
+
 #### Normative Rules for Scoped Bindings
 
-- **Cleanup Order**: Register after successful initialization. Run once in reverse order on every exit, including cancellation and abort. Each loop iteration is a separate activation; failed initialization registers nothing.
-- **Scoped Permissions**: Mutable cleanup environments require `let scoped mut` and a mutable `on_close` field. Cleanup invocation satisfies `E0527`. Ordinary `let scoped` requires immutable data. Rebinding is `E0502`; scoped bindings cannot use `var` or `var mut` (`E0532`).
-- **Cleanup**: Return `()`, with no residual effects (`E0616`) or divergence (`E0617`). Internal handlers and permitted state writes are allowed. Check exclusivity at invocation; registration is not a continuous write loan. Abandoned computations cannot resume.
-- **Confinement (`E0604`)**: Scoped authority cannot escape its block through views, closures, containers, or transfer. Detached ordinary-data copies are exempt. Children finish before resources they could access are cleaned up.
+| Concern | Rule |
+| :--- | :--- |
+| Ordinary resource | Accessible `on_close: fn() -> ()` required (`E0301`) |
+| Opaque resource | Requires an explicit scoped-cleanup contract; opacity alone supplies none (`E0301`) |
+| Registration | After successful initialization; per binding and per loop activation; failed initialization registers nothing |
+| Exit | Invoke once in reverse registration order, including cancellation/abort; double-fault exception below |
+| Callback selection | Read the current `on_close` at exit; retain no earlier snapshot. Opaque resources use their specified action |
+| Initialization/replacement | Preserve cleanup eligibility and permissions; no residual effects (`E0616`) or Div (`E0617`) |
+| Mutable cleanup environment | Requires `let scoped mut` and a mutable `on_close` field; cleanup invocation satisfies `E0527` |
+| Other binding modes | Plain `let scoped` requires immutable data; rebinding: `E0502`; `var`/`var mut`: `E0532` |
+| Invocation | Internal handlers and permitted writes allowed; check exclusivity then, not as a continuous registration loan |
+| Escape | Views, closures, containers, and transfer cannot carry scoped authority out (`E0604`); detached ordinary-data copies are exempt |
+| Children | Finish before cleanup of resources they could access |
+
 | Cleanup panic occurs during | Outcome |
 | :--- | :--- |
-| Normal exit | Begin ordinary panic unwinding of remaining resources |
+| Normal exit | Begin panic unwinding of remaining resources |
 | Panic, cancellation, or abort | Record both causes; abandon remaining cleanup in the failed frame |
 
-A double fault reports `DoubleFaultFatal` to its structured task or aborts an unsupervised program. Pure parallel branches use [reference-visibility rules](#canonical-leftmost-panic-precedence-rule).
+Abandoned computations cannot resume. A double fault reports `DoubleFaultFatal` to its task or aborts an unsupervised program; pure parallel branches use [reference visibility](#canonical-leftmost-panic-precedence-rule).
 
 ```ebnf
 ScopedDecl ::= "let" "scoped" [ "mut" ] Identifier [ ":" TypeExpression ] "=" Expression
@@ -1883,9 +1997,9 @@ let wrap_mul: u8 = 128u8 *% 2u8        -- 0u8 (wrapping multiplication)
 | Signed `/`, `%` | Quotient truncates toward zero; nonzero remainder has the dividend's sign; `a = (a / b) * b + a % b` |
 | Checked fixed-width arithmetic | Panic on an unrepresentable result, including negation and `MIN / -1`; `MIN % -1` is zero |
 | Safe division/remainder | `None` for a zero divisor or invalid result |
-| Wrapping arithmetic | Reduce modulo the fixed-width representation |
-| Fixed-width shifts | Panic if count is negative or at least the bit width; signed right shift is arithmetic, unsigned is logical |
-| `bigint` | No arithmetic overflow; negative shift counts panic |
+| Wrapping arithmetic | Fixed-width integers only (`E0301` otherwise); reduce modulo their representation |
+| Fixed-width shifts | Panic for count < 0 or >= bit width; left discards high bits, signed right extends sign, unsigned right is logical |
+| `bigint` | No arithmetic overflow; negative shift counts panic; bitwise operations use unbounded two's complement |
 
 | Floating-point property | Rule |
 | :--- | :--- |
@@ -1929,6 +2043,53 @@ let in_set   = 42 in visited_set       -- true
 let opt: ?int = Some(42)
 let matches = opt is Some(x) if x > 0  -- true; 'x' is scoped strictly to guard expression
 ```
+
+```ril
+assert([1, 2] == [1, 2])               -- Structural equality, independent of allocation identity
+assert(.{ x: 1, y: 2 } == .{ y: 2, x: 1 })
+let nan = 0.0 / 0.0
+assert(!(nan == nan) && nan != nan)
+let mut ordered: [str: int] = ["b": 1, "a": 2]
+ordered !> Map::set("b", 3)
+assert(Map::keys(ordered) == ["b", "a"]) -- Replacing a value preserves its key's position
+-- let bad_keys: [f64: int] = [nan: 1] -- Error [E0301]: floating-point keys are not admitted
+-- let graph_key = [.{ id: 1 }: 0]    -- Error [E0301]: immutable records are still reference-type keys
+```
+
+`!=` negates `==`. Equality requires compatible same-typed values (`E0301` otherwise), except the Option/None tag test below.
+
+| Values | Equality |
+| :--- | :--- |
+| Numbers | Same numeric type; IEEE NaN unequal to everything, signed zeros equal |
+| `bool`, `str`, `bytes`, `()` | Value, exact Unicode scalar sequence, byte sequence, unit |
+| Records / tuples / arrays | Labels and values / positions and values / length and elements |
+| Sums / nominal wrappers | Constructor and payload / same nominal identity and underlying value (`E0305` for distinct wrappers) |
+| Maps / sets | Key-value membership / membership; insertion order ignored |
+| Ordinary opaque types | Same-type equality when the representation supports it |
+| Option compared to `None` | Tag only; payload need not support equality |
+| Callable, task, resource, type-function values | `E0301`, including nested constituents |
+
+Ordering (`<`, `<=`, `>`, `>=`) accepts same-typed numbers, strings, or bytes only (`E0301`). Strings/bytes use lexicographic order; every ordered comparison involving NaN is false.
+
+For finite cyclic graphs, equality is the greatest binary relation satisfying these structural rules; allocation identity and sharing count are irrelevant. Comparison terminates without user code or overlapping writes; provenance and exclusivity still govern reads.
+
+| Map key / set element type | Eligibility |
+| :--- | :--- |
+| `bool`, integers including `bigint`, `str`, `bytes`, `()` | Allowed |
+| Nominal / ordinary opaque wrappers | Allowed when recursively preserving one of those value representations |
+| Floats, reference graphs (even Immut), callables, resources | `E0301` |
+
+Eligibility depends on the concrete type, not equality support alone. Keys are copied by value: source reassignment cannot change them. No freezing, graph cloning, or user equality/order/hash callbacks occur.
+
+| Collection operation | Order |
+| :--- | :--- |
+| Array iteration | Increasing index |
+| Map/set iteration; `Map::keys`/`values` | First insertion |
+| Replace map value / reinsert present set member | Keep position |
+| Remove, then insert | Append |
+| Duplicate map literal key | Last value, first position; operands still evaluate left-to-right |
+| Set `union` | Left order, then new right members |
+| Set `intersect` / `diff` | Left order |
 
 ### Logical Operators
 
@@ -1988,13 +2149,6 @@ items !> Array::push(4)                -- In-place mutation: items is now [1, 2,
 
 ### Error and Fallback Operators
 
-- **Postfix `?`**: Unwraps `Ok(v)` / `Some(v)`, or returns early with `Err(e)` / `None` into the enclosing function frame.
-   - **Enclosing Callable Requirement (`E0205`)**: Postfix `?` performs an early control transfer (return) into an enclosing activation frame. Evaluating postfix `?` outside an enclosing function or closure body (e.g., in module-scope declarations, initializers, or constant expressions) is statically rejected (`E0205: QuestionMarkOutsideFunctionError`), as no enclosing callable activation frame exists to receive propagated errors.
-- **Fallback `??`**:
-   - For `Option<T>`: Evaluates to `T` using the fallback value or supplier closure.
-   - For `Result<T, E>`: Right operand MUST be an error-consuming closure `\err -> T`.
-- **Safe Navigation `?.`, `?[`**: Evaluates to `None` if the target is `None`; otherwise accesses field or index safely.
-
 ```ril
 fn find_record(id: int) -> Result<str, str> {
     let user = fetch_user(id)?         -- Early return Err if fetch_user fails
@@ -2004,7 +2158,10 @@ fn find_record(id: int) -> Result<str, str> {
 
 let opt: ?int = None
 let v1 = opt ?? 100                    -- 100 (Option fallback with default value)
-let v2 = opt ?? \-> compute_default()  -- Option fallback with lazy supplier closure
+let v2 = opt ?? compute_default()       -- Evaluates compute_default only when opt is None
+let optional_action: ?(fn() -> int) = None
+let action = optional_action ?? (\-> 7) -- The fallback is a function value, not an invocation
+assert(action() == 7)
 
 let res: Result<int, str> = Err("unavailable")
 let recovered = res ?? \err -> 0       -- 0: Result fallback MUST consume the error
@@ -2020,6 +2177,26 @@ let arr = [10, 20, 30]
 let out_of_bounds = arr?[99]           -- Evaluates to None (?int) (safe array index)
 ```
 
+| Operator | Success | Failure / constraint |
+| :--- | :--- | :--- |
+| `Option<T>?` | Unwrap T | Return `None`; enclosing callable must return `Option<U>` (`E0301`) |
+| `Result<T, E>?` | Unwrap T | Return `Err(e)`; enclosing result must accept E (`E0301`) |
+| `Option<T> ?? rhs` | Unwrap T; skip rhs | Evaluate rhs as T; never auto-invoke a supplier |
+| `Result<T, E> ?? handler` | Unwrap T; skip handler | Evaluate and invoke `fn(E) -> T` once; raw T is `E0711` |
+
+`?` outside a function/closure is `E0205`, including module initializers. It performs no Option/Result or error conversion; payload provenance, permissions, and nested inspection duties survive.
+
+`??` evaluates its left operand once. Callback effects/permissions remain checked. Direct outward `return`/`last`/`next` is `E0710`; a return inside a nested callable stays local to it.
+
+| Safe access | Rule |
+| :--- | :--- |
+| `?.` | Field projection from an optional receiver |
+| `?[` | Array/slice/map element lookup, also through an optional receiver |
+| `None` receiver | Return `None`; skip access and index evaluation |
+| Missing key / out-of-bounds element | Return `None` |
+| Selected U / selected `Option<U>` | `Some(value)` / unchanged Option; no further flattening |
+| Range index | Use ordinary slicing syntax and bounds rules |
+
 ### Record Construction and Functional Update
 
 Explicit fields override equally named fields from a value spread, independent of their written position. Multiple explicit definitions of one field, or unresolved conflicting spread sources without an explicit override, are `E0203`. A spread copies values and references with their existing permissions; it does not deep-clone live data or make it immutable.
@@ -2034,6 +2211,8 @@ let p2 = Point.{ z: 10, ..p1 }         -- Functional record update: { x: 1, y: 2
 ### Assignments and Compound Assignments
 
 Assignments require an addressable mutable lvalue target. Assignments are expressions evaluating to `()`.
+
+Qualified names and static computed fields keep ordinary lvalue permissions. Compound assignment evaluates the location once, then reads, evaluates the RHS, and writes.
 
 ```ril
 var x = 10
@@ -2062,6 +2241,7 @@ flags >>= 2                            -- 0b00100
 type Buffer = { mut capacity: int }
 let mut pinned_buf = Buffer.{ capacity: 16 }
 pinned_buf.capacity = 32               -- OK: field assignment through pinned handle
+pinned_buf.("capacity") += 1           -- OK: same field permissions
 -- pinned_buf = Buffer.{ capacity: 64 } -- Error [E0502]: PinnedHandleReassignmentError: use 'var mut' when reassignment and interior writes are both needed
 
 -- Chained assignment is prohibited:
@@ -2077,8 +2257,7 @@ pinned_buf.capacity = 32               -- OK: field assignment through pinned ha
 A block `{ ... }` evaluates to its tail expression. A block may conclude with a trailing `where` clause (`BlockWhereClause`) declaring mutually recursive helper functions (`fn`), local types (`type`), and local algebraic effects (`eff`). All items in `BlockWhereClause` are visible throughout the enclosing block scope.
 
 ```ebnf
-Block               ::= "{" [ StatementSequence ] [ TailExpression ] [ BlockWhereClause ] "}"
-                      | "{" Expression "}"
+Block               ::= "{" [ StatementSequence ] [ BlockWhereClause ] "}"
 StatementSequence   ::= Statement { Separator Statement } [ Separator ]
 Statement           ::= LetDecl
                       | LetMutDecl
@@ -2104,7 +2283,19 @@ BlockWhereItem      ::= FunctionDecl | LocalTypeDecl | EffectDecl | MetaFnDecl
    - Any local `eff` declared in `BlockWhereClause` MUST be completely discharged via an in-scope `with` handler within the enclosing block frame.
    - Local effects MUST NOT appear in outer `@Effect` annotations or escape into unhandled closures.
 - **Local Nominal Confinement (`E0315`)**:
-   - Local nominal wrappers (`type Id(T)`) and sum types (`type S { ... }`) MUST NOT appear in the return type of the enclosing function. Structural type aliases (`type Alias = T`) are exempt.
+   - Returned value/callable types cannot contain function-local nominal, opaque, or sum identities, including signature-`where` identities. Expand structural aliases first. Signature references to block-`where` types fail scope checking (`E0706`) before this check.
+
+```ril
+fn read_after_init() -> int {
+    -- read_value()                    -- Error [E0204]: value is not initialized
+    let value = 1
+    read_value()                       -- OK
+    where
+        fn read_value() -> int &{closure, value} { value }
+}
+```
+
+Local bindings become available after initialization. Hoisted helpers may capture later bindings, but invocation, publication, and passing to another call require every capture initialized (`E0204`). Hoisting executes neither initializers nor helpers.
 
 ```ril
 -- Mutually recursive functions and types hoisted in block 'where':
@@ -2114,8 +2305,8 @@ let total = {
     base
 where
     fn compute_base() -> int { 100 }
-    fn is_even(n: int) -> bool { if n == 0 { true } else { is_odd(n - 1) } }
-    fn is_odd(n: int) -> bool { if n == 0 { false } else { is_even(n - 1) } }
+    fn is_even(n: int) -> bool @Div { if n == 0 { true } else { is_odd(n - 1) } }
+    fn is_odd(n: int) -> bool @Div { if n == 0 { false } else { is_even(n - 1) } }
 }
 
 -- Local algebraic effect declared in 'where' and fully discharged locally:
@@ -2163,16 +2354,15 @@ where
 -- }
 
 -- Prohibited: Local nominal type escaping function boundary (E0315):
--- fn bad_nominal_leak() -> Token {    -- Error [E0315]: EscapingLocalNominalTypeError: local nominal type 'Token' cannot escape declaring function
---     Token(42)
+-- fn bad_nominal_leak() -> Token
 -- where
 --     type Token(int)
--- }
+-- { Token(42) }                       -- Error [E0315]: signature-local nominal identity escapes
 ```
 
 ### Conditional Expressions
 
-`if` is an expression. Both branches must have compatible types. An `if` without an `else` evaluates to `()`.
+`if` requires a boolean condition. Its branches must have compatible types; a `never` branch imposes no returned-value constraint. An `if` without an `else` evaluates to `()` and requires its then branch to have type `()` or `never` (`E0301` otherwise).
 
 ```ril
 let max = if a > b { a } else { b }
@@ -2215,6 +2405,14 @@ for 1..=5 as x {
 }
 assert(sum == 9)                       -- 1 + 3 + 5
 ```
+
+| Loop | Type / constraint |
+| :--- | :--- |
+| `while` | Boolean condition; result and `last` values are unit (`E0301`) |
+| `for` | Result and `last` values are unit (`E0301`); element pattern irrefutable (`E0303`), never an implicit filter |
+| `loop` | Common type of reachable `last` values, or `never` if none |
+
+Body tails are discarded subject to Result inspection duties.
 
 ### Control Transfers
 
@@ -2273,6 +2471,16 @@ fn search(matrix: [][]int, target: int) -> bool {
 ### Guarded Bindings and Non-Vacuous Invariant
 
 `let Pattern = expr else { Block }` matches a refutable pattern or diverges.
+
+```ril
+fn unwrap_or_zero(value: ?int) -> int {
+    -- let Some(x) = value             -- Error [E0303]: refutable binding needs else
+    let Some(x) = value else { return 0 }
+    x
+}
+```
+
+Without `else`, patterns must be irrefutable under the initializer's static type/refinement (`E0303`), including mutable/destructuring bindings. A single-variant constructor may qualify. Guarded names exist after success, not in the failure block.
 
 - **Divergence Invariant**: The `else` block MUST diverge (evaluate to `never`).
 - **Universal Non-Vacuous Binding Invariant (`E0309`)**: All `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`. Patterns that introduce zero variable bindings (such as `let Marker = m`, `let () = expr`, `let Ok() = expr else { ... }`, `let None = expr else { ... }`, or `let _ = expr else { ... }`) are statically rejected (`E0309: VacuousBindingError`). To conditionally guard or test without binding variables, developers must use postfix `?`, boolean pattern tests (`if expr is Pattern`), or explicit `match` expressions.
@@ -2454,7 +2662,7 @@ NarrowingExpr      ::= NarrowingPredicate
    - Mutable fields preserve container invariance ([Type Identity and Subtyping](#type-identity-and-subtyping)).
 - **Dead Paths & Phase Ordering**:
    - Divergent branches (`never`) are pruned from joins ($\Gamma \sqcup \bot = \Gamma$).
-   - Provably false predicates are rejected under `E0311`.
+   - A narrowing predicate contradictory to an already active refinement is `E0311`. An ordinary constant-false condition is instead an inactive branch; it does not by itself produce this diagnostic.
    - Dead-path pruning precedes Definite Mutation analysis (`E0527`); writes in dead paths do not count as reachable mutations.
 - **Bounded Analysis**:
     - **Path Bound**: Field paths are tracked through at most three projections after the root (`a.b.c.d`); deeper paths default to $T_{\text{root}}$.
@@ -2570,7 +2778,7 @@ fn test_generic_confinement<T>(x: Geometry) {
 -- Dead-path mutation phase ordering:
 fn test_dead_write_phase_ordering() {
     -- var unused: ?int = Some(10)            -- Error [E0527]: UnusedMutableBindingError: variable 'unused' declared 'var' is never modified along reachable paths
-    -- if unused == None {
+    -- if false {
     --     unused = Some(20)                  -- Write in statically unreachable branch does not satisfy Definite Mutation Invariant
     -- }
 }
@@ -3537,16 +3745,9 @@ fn run_console() {
 }
 ```
 
-- **Extent**: `with` covers the remaining block. Handle each operation or retain its effect obligation (`E0612`). A partial handler forwards uncovered operations; removing a family requires full coverage.
-- **Resumption**: `resume value` supplies the operation result and reinstalls the current handler for the continuation. The arm itself uses outer handlers, including for its own effect family.
-- **Answer (`E0301`)**: For block answer A, both `resume value` and each arm's final value have type A, including abort values and tails after resumption.
-- **Escape**: Stored or returned callables retain residual effects. Each invocation must handle or forward them; an explicitly closed contract requires discharge. Escape alone is valid.
-- **Persistent Handler (`E0614`)**: Retain only a compatible definition and lawful environment. Each invocation gets a new boundary and resumptions, never old continuations, scoped resources, or lexical return/loop targets.
-- Check every arm's final value against the new answer type. Retained outer dependencies need stable handlers or residual effect rows. Capture, live-view, and mutable-environment obligations remain independent.
-- **Lexical Selection**: A new callable retains the lexically enclosing handlers at its creation scope for its transitive residual operations, including operations reached through callees. Handlers established inside its own body are established when it is invoked instead. If no enclosing handler covers an operation, that operation remains residual. Selection precedes checking an expected callable type: an incompatible retained handler is rejected, not silently replaced by a future caller's handler.
-- **Stable Creation Context**: Referring to, binding, or returning an existing callable does not rebind its handler environment. A hoisted block-local named callable uses the enclosing handler context on entry to its defining block, before that block's sequential `with` statements; declarations in a nested block inherit the handlers enclosing that nested block. The first reference to a declaration does not choose its context. Merely creating a callable does not execute its latent body operations; only actual environment creation, sharing, and escape contribute creation-time obligations.
-- **Complete Handler Provenance**: Inferred retention preserves the effective operation dispatch and any outer handler definitions needed by its arms, together with all access, sharing, and escape dependencies. Uncovered operations keep their residual effects. Handling an effect removes only that effect obligation; it never removes the handler's state obligations. These facts need no additional source capture syntax and remain available in provenance diagnostics.
-- **Task Boundary (`E0615`)**: Do not carry an ancestor's active handler into a child. Immutable handler data may create a child-local handler; live or mutable environments cannot cross.
+`with` covers the remaining block. `resume value` supplies the operation result and reinstalls this handler for the continuation; the arm itself uses outer handlers, even for its own family.
+
+For block answer A, `resume value` and every arm's final value must have type A (`E0301`), including abort values and post-resumption tails.
 
 ```ebnf
 WithStatement ::= "with" HandlerSpec
@@ -3554,6 +3755,63 @@ HandlerSpec   ::= "{" HandlerArm { "," HandlerArm } [ "," ] "}" | HandlerArm
 HandlerArm    ::= QualifiedName "(" [ PatternList ] ")" "->" Expression
 ResumeExpr    ::= "resume" Expression
 ```
+
+```ril
+eff ReadAt { get(int) -> int }
+fn read_zero() -> int {
+    with ReadAt::get(index) -> match index {
+        0 -> resume 1,
+        _ -> resume 2,
+    }
+    ReadAt::get(0)
+}
+-- with ReadAt::get(0) -> resume 1      -- Error [E0303]: handler parameter is refutable
+
+type Cell = { mut count: int }
+eff Edit { apply(mut Cell) -> () &mut }
+fn edit_once(mut cell: Cell) -> int &mut {
+    with Edit::apply(mut target) -> {
+        target.count += 1
+        let saved = target.count
+        let answer = resume ()
+        -- target.count += 1            -- Error [E0520]: this operation loan has ended
+        answer + saved
+    }
+    Edit::apply(mut cell)
+    cell.count
+}
+```
+
+| Handler dispatch | Rule |
+| :--- | :--- |
+| One `with` | At most one arm per operation (`E0203`) |
+| Parameters | Irrefutable patterns (`E0303`); mutable modes must match supplied authority |
+| Request-value branches | Ordinary `if`/`match` inside the arm |
+| Unlisted operation | Forward outward; retain unhandled effects (`E0612`) |
+| Discharge an effect family | Cover every operation |
+
+| Operation's ordinary `mut` loan | Arm's permission |
+| :--- | :--- |
+| Before `resume`, including evaluation of its value | Access through the matching parameter |
+| Continuation starts | Return the loan; end all arm access through the parameter and derived aliases (`E0520`) |
+| `resume` returns | No restoration; copied scalars, independent data, and lawful retained `^mut` authority remain usable |
+
+Outer function/callback loans stay active. Independent captures and ambient aliases remain separate exclusivity participants. Neither resumption nor `^mut` extends a borrowed or scoped lifetime.
+
+| Retained handler context | Rule |
+| :--- | :--- |
+| New callable | Select creation-scope lexical handlers for transitive residual operations, including callees |
+| Handler inside callable body | Establish on invocation |
+| Hoisted block-local function | Context at defining-block entry, before its sequential `with`; nested blocks inherit their enclosing context |
+| Existing callable / first reference | Never rebind or select a new handler context |
+| Expected callable type | Check after selection; reject an incompatible selection rather than substitute a future caller's handler |
+| Uncovered operations | Remain residual; each later invocation must handle/forward them; closed contracts require discharge |
+| Persistent definition (`E0614`) | Lawful environment and fresh boundary/resumptions per invocation; no old continuations, scoped resources, or return/loop targets |
+| Answer (`E0614`) | Every retained arm tail fits the new answer type; outer dependencies have stable handlers or residual rows |
+| Creation | Does not execute latent body operations; counts actual environment creation, sharing, and escape |
+| Child task (`E0615`) | No ancestor active handler or live/mutable environment; immutable data may establish a child-local handler |
+
+Escape alone is valid. Retention preserves dispatch, required outer definitions, and access/sharing/escape facts for provenance diagnostics, without extra capture syntax. Effect discharge never removes state, capture, live-view, or mutable-environment obligations.
 
 ```ril
 type Button = { label: str, on_click: fn() -> () &closure }
@@ -3670,6 +3928,7 @@ fn make_label_button(label: str) -> Button &capture {
 
 ```ril
 -- Affine Resumption Violation: invoking resume more than once
+eff Op { query() -> int }
 fn bad_double_resume() -> int {
     with Op::query() -> {
         let first = resume 1
@@ -3680,12 +3939,13 @@ fn bad_double_resume() -> int {
 }
 
 -- Escaping Resumption Violation: resume escaping the handler arm
-fn bad_escaping_resume() -> fn() -> int {
+fn bad_escaping_resume() -> (fn() -> int) &capture {
     with Op::query() -> {
-        let esc = \-> resume 42         -- Error [E0611]: EscapingResumeError: affine resumption 'resume' cannot escape handler arm lexical scope
+        let esc = \-> { let _ = resume 42; 0 } -- Error [E0611]: resumption captured by an escaping callable
         esc
     }
-    Op::query()
+    let value = Op::query()
+    \-> value
 }
 
 -- Delimited Early Abort with Proven LIFO Cleanup & Commit-on-Write Memory:
@@ -3722,10 +3982,10 @@ fn test_early_abort() {
 
 ### Built-in System Effects
 
-Ril provides four foundational built-in algebraic effects tracking execution capabilities:
+Ril provides the system operation families Fiber and Concurrent, the divergence obligation Div, and the alias Async:
 
-- **`@Fiber` (Cooperative Fiber Control)**: Low-level cooperative scheduling primitives (`yield`, `park`, `unpark`). Purely cooperative execution-quantum transfer without concurrent task branching authority.
-- **`@Concurrent` (Structured Concurrency)**: High-level concurrent task forking, joining, racing, and timeout mechanics.
+- **`@Fiber` (Cooperative Fiber Control)**: Cooperative yielding and leaf I/O suspension without concurrent task branching authority. A leaf operation's contract determines what event completes its wait; there is no bare public park/unpark operation.
+- **`@Concurrent` (Structured Concurrency)**: Structured scope, child-task forking, and joining, with the contracts below.
 - **`@Async` (Suspendable I/O)**: An effect alias `{Fiber, Concurrent}` tracking uncolored asynchronous computations.
 - **`@Div` (Divergence Tracking)**: Tracks potential non-termination in unbounded loops and general recursive functions. Total functions (`halt fn`) strictly prohibit `@Div`.
 
@@ -3736,26 +3996,23 @@ $$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \tex
 #### Normative Rules for Built-in System Effects
 - **Least-Privilege Leaf I/O Principle (`@Fiber`)**: Leaf I/O operations requiring cooperative suspension without forking child tasks MUST declare only `@Fiber`. Holding `@Fiber` does not grant authority to fork concurrent tasks (`@Concurrent`), preserving frame containment and single-fiber DRF-SC invariants.
 - **Compound Asynchronous Workflows (`@Async`)**: Functions that both suspend on I/O and manage concurrent child tasks declare `@Async`.
-- **Decoupling Quantum Scheduling from Value Generators**: Cooperative scheduling operations declared within `eff Fiber` (`yield() -> ()` and `park() -> ()`) are strictly untyped quantum transfer primitives. Value-emitting streams MUST be modeled via user-defined algebraic effects (e.g., `eff Yield<T> { emit(T) -> () }`), evaluated as internal push streams under one-shot delimited resumption (`resume ()`). External pull iterators cannot escape `resume` past handler arm boundaries (`E0611`) and are constructed via state machines or fiber channels.
+- **Scheduling and Value Generators**: `Fiber::yield() -> ()` yields cooperatively without emitting a user value. Value-emitting streams use user-defined effects such as `eff Yield<T> { emit(T) -> () }`, with affine resumption. A resumption cannot escape its handler arm to become a pull iterator (`E0611`).
 
 ```ril
--- Built-in Fiber Effect Declaration:
+-- Signature of the built-in yielding operation, not a redeclaration in user code:
 eff Fiber {
     yield() -> (),                     -- Relinquishes quantum to runtime scheduler
-    park() -> (),                      -- Suspends execution until external event/wakeup
-    unpark() -> (),                    -- Awakens a parked fiber context
 }
 
 -- Leaf I/O Suspension Principle (@Fiber):
 fn read_socket_chunk(fd: int) -> []u8 @Fiber {
-    Fiber::park()                      -- Suspends execution until runtime I/O notification
-    Socket::drain(fd)                  -- OK: leaf I/O without concurrent task forking authority
+    Socket::read_chunk(fd)             -- Fixture contract: waits for this socket and returns immutable data, @Fiber
 }
 
 -- Functions declared @Fiber cannot invoke structured concurrency primitives:
 fn bad_leaf_fork(fd: int) -> []u8 @Fiber {
     -- scope(\mut s -> {               -- Error [E0612]: UnhandledEffectError: function declares '@Fiber' but invokes unhandled '@Concurrent' primitive 'scope'
-    --     s.fork(\-> Socket::drain(fd))
+    --     s.fork(\-> Socket::read_chunk(fd))
     -- })
     read_socket_chunk(fd)
 }
@@ -3859,7 +4116,7 @@ All three require `@Concurrent` and forward callback effects. No implicit join, 
 - **Lifetime (`E0606`)**: Children and their Scope/Task handles stay in their owning scope. Handles cannot be cloned, moved to another task, or hidden in escaping aggregates/closures.
 - Join a result once. Task control state is external to its stable descriptor; ordinary returned data must satisfy immutable publication. Resources follow explicit transfer contracts.
 - **Failure**: Child panic/double fault permanently fails the scope, even after inspection by `join`. Cancel unfinished descendants and active body waits. Any later `fork` cancels the body; returning `Ok` cannot restore success.
-- **Cancellation**: Channel waits, park, pending joins, and nested scope waits must wake. Transfer to the scope boundary without resumption; user `with` cannot absorb cancellation.
+- **Cancellation**: Channel and leaf-I/O waits, pending joins, and nested scope waits must wake. Transfer to the scope boundary without resumption; user `with` cannot absorb cancellation.
 - A join of the failed task may deliver its fault for inspection, without clearing failure. Other cancelled waits cannot complete successfully.
 | Body exit | Before leaving |
 | :--- | :--- |
@@ -4030,7 +4287,7 @@ fn one_message() -> Result<int, TaskFault> @Async {
         let producer = s.fork(\-> {
             -- Channel::close(tx)     -- Error [E0603]: a child clone-source borrow cannot consume the owner
             let mut local_tx = clone(tx)
-            local_tx !> Channel::send(42)
+            (local_tx !> Channel::send(42))
                 ?? \_error -> panic("receiver closed")
             Channel::close(local_tx)
         })
@@ -4059,31 +4316,17 @@ pub fn send<T>(mut endpoint: Sender<T>, value: T) -> Result<(), ChannelError> @F
 pub fn recv<T>(mut endpoint: Receiver<T>) -> Result<T, ChannelError> @Fiber &mut
 ```
 
-The resource-only detach/attach/close and sender-clone contracts below specify their additional consuming authority rules. Those rules are not available to arbitrary ordinary-data functions.
+Sender/Receiver/Detached are scope-owned opaque resources. Immutable descriptors may enter `let`; protocol state is external and effect-accessed. These resource contracts do not apply to ordinary data.
 
-- **Descriptors**: Sender/Receiver/Detached are opaque scope-owned resources. Their immutable descriptions may enter `let`; channel/protocol state is external and effect-accessed. Ordinary clone, immutable-copy, and derive rules do not apply.
-- **Modes**: Send/receive require a writable endpoint and `@Fiber &mut`. One task owns each writable endpoint (`E0603`). An immutable sender may supply clones; closing consumes resource authority, not ordinary data.
-- **Sender Clone**: `clone(Sender<T>)` has `@Fiber`, creates independent task-local endpoint state/authority, and keeps channel identity. It does not prove resource-graph isolation.
-- **Cross-Task Clone Source**: A child capture of an immutable Sender grants only clone-source authority. The child cannot send, close, detach, or acquire the owner's authority through that alias (`E0603`). Indirect captures through aggregates or closures carry the same restriction.
-- **Borrow Completion (`E0603`)**: The owner's close/detach authority is suspended until every task borrowing that descriptor has completed a join, or its owning scope has completed the child barrier. A join returning any terminal result ends that task's borrow. Scheduling progress, dropping a Task handle, and last textual use do not end it. Scope-owned automatic closing occurs after the child barrier.
-- Receiver/Detached cloning is `E0530`; endpoint `clone_immut`/`derive` is `E0530`/`E0536`, including inside containers.
-| Operation (`@Fiber`) | Authority change |
+| Access or copy | Contract |
 | :--- | :--- |
-| `Channel::detach(mut endpoint)` | Consume an exclusively held endpoint; return non-clonable `Detached<Endpoint>` |
-| `Channel::attach(ticket)` | Consume the ticket once; obtain a writable endpoint in the receiving task |
-
-Detach rejects any other usable alias, view, or capture. Old paths become invalid (`E0603`). Only detached descriptors may be resource payloads; ordinary mut/^mut never imply transfer.
-- **Payloads (`E0602`)**: Accept scalar/immutable ordinary data, regardless of underlying field mut markers, or a one-use detached descriptor. Reject live data, mutable environments, ordinary write authority, and hidden non-transferable resources.
-| Operation | Result and ordering |
-| :--- | :--- |
-| `send` | `Result<(), ChannelError>`; closed receiver gives `Err(Closed)` |
-| `recv` | `Result<T, ChannelError>`; drain queued data, then `Err(Closed)` once all senders close |
-| `bounded` | Positive capacity limits queued messages; invalid capacity panics before creation |
-
-Each sender preserves successful-send order; different senders have no global ordering guarantee.
-- **Close**: `Channel::close` has `@Fiber` and invalidates the descriptor's authority and aliases. Tasks close writable local endpoints at termination; scopes close remaining descriptors at exit.
-- Immutable clone-source senders stay open until close/scope exit. EOF never depends on garbage collection. Cross-task clones remain in the owning scope's descendants (`E0606`).
-- **Cancelled I/O**: Blocked send/receive use the scope's non-resumable cancellation exit, never a fabricated message or ChannelError. Producer failure therefore wakes a body blocked on recv.
+| Send/receive | Writable endpoint, `@Fiber &mut`; one owning task (`E0603`) |
+| `clone(Sender<T>)` | `@Fiber`; independent task-local endpoint authority, same channel; no resource-graph isolation guarantee |
+| Immutable Sender captured by a child | Clone-source only; no send/close/detach or acquisition of owner authority (`E0603`), even through aggregates/closures |
+| Owner close/detach while borrowed | Suspended until every borrowing task's terminal join or the scope's child barrier (`E0603`) |
+| Scheduling progress, dropped Task, last textual use | Do not end a clone-source borrow |
+| Clone Receiver/Detached; endpoint `clone_immut` | `E0530`, including inside containers |
+| Endpoint `derive` | `E0536`, including inside containers |
 
 ```ril
 -- Within an owning scope; rx has no other usable alias:
@@ -4092,6 +4335,66 @@ let ticket = Channel::detach(mut rx)
 -- clone(ticket)                      -- Error [E0530]: detached authority cannot be duplicated
 -- The receiving task can consume ticket once with Channel::attach(ticket).
 ```
+
+```ril
+-- Within one owning scope; resource_rx is an exclusive endpoint and control_tx accepts its Detached descriptor.
+let ticket = Channel::detach(mut resource_rx)
+let sent = control_tx !> Channel::send(ticket)
+match sent { Ok() -> {}, Err(_error) -> {} }
+-- Channel::attach(ticket)             -- Error [E0603]: both send outcomes consumed the ticket
+```
+
+| Operation (`@Fiber`) | Authority change |
+| :--- | :--- |
+| `detach(mut endpoint)` | Consume exclusive endpoint; return non-clonable `Detached<Endpoint>` |
+| `attach(ticket)` | Consume once; obtain writable endpoint in receiving task |
+| Enter `send(ticket)` after argument evaluation | Consume ticket on every outcome; pending send owns it |
+| Enqueue / successful receive | Ownership passes to queue / receiver |
+| `Err(Closed)` or cancellation before enqueue | Close submitted endpoint once; never restore ticket |
+| Receiver close | Close unreceived queued detached endpoints once |
+
+Detach rejects other usable aliases/views/captures and invalidates old paths (`E0603`). Only detached descriptors are transferable resource payloads; `mut`/`^mut` alone never transfer. Transfers and cross-task clones stay within the owning scope's descendants (`E0606`), independently of GC.
+
+Payloads may be scalars, immutable ordinary data (even with field `mut` markers), or one-use detached descriptors. Live data, mutable environments, ordinary write authority, and hidden non-transferable resources are `E0602`.
+
+```ril
+-- Within an owning scope; writable rx receives Result<int, str> payloads.
+match (rx !> Channel::recv()) {
+    Ok(business) -> { let _ = business ?? \_error -> 0 },
+    Err(_error) -> {},
+}
+-- match (rx !> Channel::recv()) { Ok(_) -> {}, Err(_) -> {} }
+-- Error [E0720]: only the transport result was inspected
+```
+
+| Fallible payload event | Outstanding inspection obligation |
+| :--- | :--- |
+| Successful send / receive | Passes to queue / received value |
+| Send returns `Err(Closed)` | Stays with sender's original value/aliases; no implicit payload return |
+| Inspect send/recv's outer Result | Does not inspect a payload Result |
+| Normal completion, including another business `Err` | Must preserve or discharge the obligation (`E0720`) |
+| Normal receiver close / scope exit | Cannot discard possibly uninspected queued Results (`E0720`) |
+| Receive returns `Err(Closed)` | Queue is empty |
+| Panic, cancellation, effect abort | Ordinary abnormal-unwinding exemption |
+
+Aliases share one obligation; transmission does not create an independent copy.
+
+| Operation | Result and ordering |
+| :--- | :--- |
+| `send` | `Result<(), ChannelError>`; closed receiver gives `Err(Closed)` |
+| `recv` | `Result<T, ChannelError>`; drain queue, then `Err(Closed)` after all senders close |
+| `bounded` | Positive capacity limits queued messages; invalid capacity panics before creation |
+
+Successful sends retain each sender's order; different senders have no global order.
+
+| Closing or cancellation | Rule |
+| :--- | :--- |
+| `Channel::close` | `@Fiber`; consumes the descriptor's authority and invalidates its aliases |
+| Task termination | Close writable local endpoints |
+| Scope exit | Close remaining descriptors after the child barrier |
+| Automatic close | Structured boundary's `@Fiber` contract; not `on_close` or a separate `let scoped` contract |
+| Immutable clone-source Sender | Open until close/scope exit; EOF never depends on GC |
+| Cancel blocked send/recv | Non-resumable scope exit; no fabricated message/error. Producer failure wakes a body blocked on recv |
 
 ### Arrow-Only Law of Effects
 
@@ -4140,6 +4443,8 @@ let a: int = 10
 let b: typeof a = 20                   -- OK: direct 'typeof' in type annotation
 ```
 
+`typeof e` checks names, types, and permissions without evaluating e: no effects, writes, or environment creation.
+
 - **Expression Contexts**: A type used as a static type value must be enclosed in `type<...>`. A bare nominal constructor or nullary tag in a value expression denotes its callable/value meaning, not its type. The following let bindings are in a symbolic type-computation fixture; type tokens do not become ordinary run-time data:
 
 ```ril
@@ -4165,13 +4470,57 @@ let pair: StringIntPair = .{ first: "id", second: 101 }
 
 ### Pure Type Functions and Type Return Privilege
 
-- **Type Return (`E0812`)**: Only type declarations/functions synthesize and return types. `meta fn` may reflect on known types but cannot return `Type` or `type<...>`.
-- **Read-Only Reflection Tokens in `meta fn`**: `meta fn` callables MAY accept `type<T>` as input parameters. Within `meta fn`, `type<T>` acts as an immutable, non-generative reflection token projecting properties of shapes into the value domain ($\mathcal{T} \to \mathcal{V}$, e.g. `byte_size(type<T>) -> int`). `meta fn` retains zero generative privilege to synthesize or mutate types.
-- **Axiomatic Purity & Zero-Annotation Invariant**: Both type functions and `meta fn` evaluate strictly within the pure compile-time domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
-   - Type functions MUST NOT declare or carry algebraic effects (`@Effect`) or state capabilities (`&mut`, `&closure`, `&capture`, `&{ident}`) (`E0335`).
-   - `meta fn` signatures MUST NOT declare algebraic effects or state capabilities (`E0813`).
-   - Both enjoy full pure functional computation: local immutable bindings (`let`), conditionals (`if`), pattern matching (`match`), invocation of pure `meta fn` helpers, pure collection combinators, and recursion.
-- **Totality Certification**: `halt type` certifies normal termination. Unmarked type functions operate under configurable evaluation step budgets (`E0811`). `halt fn` certifies total runtime execution.
+```ril
+halt type Identity = \T -> type<T>              -- OK: type-producing function
+meta fn size_of<T>(t: type<T>) -> int { byte_size(t) } -- OK: reflection produces a value
+halt fn checked_increment(n: int) -> int { n + 1 } -- May panic at int's maximum
+halt fn yield_once() @Fiber { Fiber::yield() }     -- No promise about external scheduling progress
+-- halt fn forever() { loop {} }                  -- Error [E0820]: uncertified local loop
+-- meta let BAD_SUM = 127i8 + 1i8                 -- Error [E0831]: panic during static evaluation
+```
+
+| Static definition | Result / restriction |
+| :--- | :--- |
+| Type declaration/function | May synthesize and return types; effects/capabilities forbidden (`E0335`) |
+| `meta fn` | Returns values, never `Type`/`type<...>` (`E0812`); effect/state annotations forbidden (`E0813`) |
+| `type<T>` input to `meta fn` | Immutable, non-generative reflection token; cannot synthesize or mutate types |
+
+Both run with empty effect/capability domains. Local `let`, `if`, `match`, pure meta helpers/combinators, and recursion are supported.
+
+| `halt` boundary | Guarantee |
+| :--- | :--- |
+| `halt fn` | Finite local computation; panic, early return, and effect abort remain possible |
+| I/O, system operations, child waits | Progress conditional on completion; waiting alone is not Div |
+| Transitive calls/callbacks/handlers/cleanup | No Div in the current invocation |
+| `halt type` | Finite symbolic computation; invalid inputs/static defects can still fail |
+
+| Finite-iteration case | Required proof |
+| :--- | :--- |
+| `for` | Finite collection/range |
+| `while`/`loop` | Every continuing path makes the next condition false, or advances one counter toward a stable finite bound |
+| Counter progression | Nonzero step in a fixed direction; continuation stays on the corresponding side of the bound |
+| Equality exit (`while` or `loop`) | Initial value and step known to reach the exit |
+| `next` | Same progress obligation |
+| Other writes, aliases, callbacks, handlers | Cannot invalidate the counter/bound |
+| Arithmetic | Checked overflow is finite panic; wrapping updates do not qualify |
+
+| Recursive case | Rule |
+| :--- | :--- |
+| Ordinary run-time cycle | Contributes Div |
+| `halt` group | Each cycle strictly decreases a nonnegative integer under a lower-bound guard, or takes a proper subpart of a known finite acyclic structure |
+| Mutual recursion | Preserve the same decreasing argument/structure relation throughout the cycle |
+| Recursive type unfolding | Not structural decrease |
+| Calls outside the group | Keep their obligations; all meta/type helpers reached by `halt type` must also be finite |
+
+Uncertified run-time loops contribute Div; unmarked static loops/recursion use their budget without Div. An uncertified `halt` body is `E0820`. Neither an annotation, an empty effect row, nor a budget proves termination.
+
+| Static evaluation | Budget / failure |
+| :--- | :--- |
+| Each root evaluation | Configured positive budget, including certified computations |
+| Meta/type function entry, static callback entry, loop iteration | Consume one unit each |
+| Next charged step with no budget | `E0811` |
+| Alias cycle | Separate `E0313` check |
+| Failed `assert` / other panic | Static `E0830` / `E0831` |
 
 ```ril
 -- Meta helper function: value domain computation only (returns int, not type<T>)
@@ -4203,35 +4552,42 @@ type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u
 -- }
 -- halt type BadEffect = \T -> type<T> @Async  -- Error [E0335]: TypeFunctionComputationAnnotationError: type functions cannot declare algebraic effects
 -- meta fn bad_eff() -> int @Io { 0 }          -- Error [E0813]: MetaComputationAnnotationError: 'meta fn' cannot declare algebraic effects
--- type BadInfinite<T> = BadInfinite<T>        -- Error [E0811]: CompileTimeBudgetExceededError: evaluation step budget exceeded in pure type function 'BadInfinite'
+-- type BadInfinite<T> = BadInfinite<T>        -- Error [E0313]: cyclic alias without nominal or sum indirection
+-- type Spin = \T -> Spin<T>
+-- type NeverFinishes = Spin<int>             -- Error [E0811]: recursive type-function evaluation exhausts its budget
 ```
 
 ### Disjoint Call Families, Evaluation Budgets, and Branch Pruning
 
-- **Phase-Polymorphic Prelude**: Pure arithmetic, comparisons, `len`, `assert`, and pure Array/String/Map combinators may operate on static values in meta/type computation as well as ordinary run-time values. Static callback captures are symbolic constants, not run-time closure environments. Mutable-resource, handler, and ordinary run-time function calls do not gain this exception.
-- **Family Isolation**: Type functions can invoke `meta fn` callables and other type functions, but cannot invoke runtime `fn` callables (`E0810`).
-- **Runtime Isolation**: Runtime functions cannot invoke type functions (`E0810`).
-- **Pre-Effect Dead-Branch Pruning Invariant**: In generic runtime functions with static meta guards (`if is_pure(type<F>)`), dead branches are pruned *prior to* latent effect row calculation ($\mathbf{Eff}$). An instance whose surviving branch is pure incurs zero latent effect obligations, preventing spurious effect pollution for callers.
-- **Budget Exhaustion**: Exceeding evaluation step limits is statically rejected under `E0811`.
-
 ```ril
-fn pure_worker(x: int) -> int { x + 1 }
-fn effectful_worker(x: int) -> int @Console { Console::print("log"); x }
+eff Audit { write(str) -> () }
+fn logged_worker(x: int) -> int @Audit { Audit::write("work"); x }
 
-fn dispatch_worker<F>(f: F, val: int) -> int {
-    meta let PURE = is_pure(type<F>)
-    if PURE {
-        f(val)                                 -- For pure_worker, surviving branch has Eff = ∅
-    } else {
-        f(val)                                 -- For effectful_worker, surviving branch carries @Console
-    }
+fn dispatch_worker<run: bool>(f: fn(int) -> int, val: int) -> int {
+    if run { f(val) } else { val }
 }
 
 fn test_specialization() {
-    let _ = dispatch_worker(pure_worker, 10)   -- OK: dead branch pruned, zero @Console required
+    assert(dispatch_worker<false>(logged_worker, 10) == 10) -- OK: callback is not invoked
 }
+fn run_logged() -> int @Audit { dispatch_worker<true>(logged_worker, 10) }
+-- fn hidden_log() -> int { dispatch_worker<true>(logged_worker, 10) } -- Error [E0612]
 ```
 
+| Call family | Permitted calls |
+| :--- | :--- |
+| Type function | Other type functions and `meta fn`; no run-time `fn` (`E0810`) |
+| Run-time function | No type-function invocation (`E0810`) |
+| Both phases | Pure arithmetic/comparison, `len`, `assert`, pure Array/String/Map combinators |
+
+Static callbacks capture symbolic constants. Mutable resources, handlers, and ordinary run-time calls have no phase-polymorphic exception. Static budget exhaustion is `E0811`.
+
+| Condition | Invocation effects, state, escape, authority use |
+| :--- | :--- |
+| Static boolean | Selected branch only |
+| Run-time boolean | Both branches' possible obligations |
+
+Both branches still obey syntax, name resolution, and ordinary type compatibility. Type tokens expose no callable-value effects/provenance; no built-in `is_pure` exists.
 ### Unified Tripartite Introspection
 
 Ril unifies compile-time introspection across all three composite data forms (Records, Sum Types, Tuples) under a single operator pair: `keyof T` and constituent projection `T.(K)`.
@@ -4254,7 +4610,7 @@ In expression and meta contexts, `keyof T` queries the coordinate index set of c
 #### Static Key Parameters and Computed Value Projection
 
 ```ril
-fn get_field<T, K: keyof T>(record: T, key: K) -> T.(K) {
+fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) {
     record.(key)
 }
 type User = { id: int, name: str }
@@ -4270,7 +4626,13 @@ fn dynamic_key(user: User, key: str) {
 - `key: K` requires an argument statically equal to K and permits inferring K from it. Both names denote that key in the body.
 - K is not an ordinary data type: `[]K` is `E0301`. Check membership after inference (`E0323`); unknown run-time keys are `E0810`.
 
-`record.(key)` and `record.("name")` are legal computed projections only for statically determined keys. Bracket indexing on records remains prohibited (`E0324`). Such projection preserves the projected reference's permissions and origin facts. A immutable run-time string is not thereby a compile-time constant.
+| Value projection | Requirement |
+| :--- | :--- |
+| `record.(key)` / `record.("name")` | Static key; preserve reference permissions/origins; bracket indexing is `E0324` |
+| Tuple | Static positional index; excluded by the example's record constraint |
+| Sum payload | `match` or variant narrowing; membership in `keyof S` alone is insufficient (`E0301`) |
+
+An immutable run-time string is not a static key. Sum type keys describe possible payload shapes, not fields present in every value.
 
 #### Universal Constituent Projection
 For any composite type $T$ and coordinate key $K \in \text{keyof } T$, `T.(K)` statically projects the corresponding constituent shape:
@@ -4354,17 +4716,17 @@ TypeMatchExpr    ::= "match" "type" "<" TypeExpression ">" "{" [ TypeMatchArm { 
 TypeMatchArm     ::= TypePattern { "|" TypePattern } [ "if" Expression ] "->" Expression
 TypePattern      ::= "type" "<" TypePatternInner ">" | "_"
 TypePatternInner ::= RigidNominalPattern | TypeTuplePattern | TypeRecordPattern
-                   | ArrayPattern | MapPattern | PrimitivePattern | Literal | Wildcard | "let" ( PascalCase | Wildcard )
+                   | ArrayPattern | MapPattern | PrimitivePattern | LiteralPattern | Wildcard | "let" ( PascalCase | Wildcard )
 ```
 
 - **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `type<P>` introduces an immutable type variable scoped strictly to the arm's guard and RHS expression. `U` MUST be `PascalCase` (`E0101`).
 - **Linearity Invariant**: Pattern variables MUST be linear; repeating the same identifier within a pattern branch is statically rejected (`E0203: DuplicateDeclarationError`). Multi-position equality is asserted via explicit guards (`if type<A> == type<B>`).
 - **Tuple Rest**: A type-pattern rest is a tuple type of the remaining components; an empty rest is unit. A one-component rest cannot form a tuple and fails that pattern, allowing the next arm to match. It is not silently coerced to its component type.
-- **Rigid Head Invariant**: The outermost constructor of a type pattern must be a rigid, known nominal constructor (e.g. `Option<let U>`). Binding the type constructor itself as a variable pattern (`(let M)<let U>`) is statically rejected (`E0306: KindMismatchError`).
+- **Rigid Application Head (`E0306`)**: Require a known rigid type constructor; no head binding or inverse type-function matching. Transparent aliases may expand. Primitive/structural patterns and whole-type `_`/`let U` remain legal.
 
 ```ril
 -- Deep Recursive Unwrapping of Container / Fallible Types:
-halt type UnwrapAll = \T -> match type<T> {
+type UnwrapAll = \T -> match type<T> {
     type<Result<let OkVal, let _>> -> UnwrapAll<OkVal>,
     type<Option<let SomeVal>>      -> UnwrapAll<SomeVal>,
     _                              -> type<T>,
@@ -4386,6 +4748,7 @@ halt type DeconstructTuple = \T -> match type<T> {
 
 type Nested = Option<Result<int, str>>
 type Unwrapped = UnwrapAll<Nested>             -- int
+-- UnwrapAll uses the evaluation budget: recursive type graphs need not have a finite wrapper depth.
 type Elem = ElementOf<[]str>                   -- str
 type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) }
 
@@ -4471,7 +4834,7 @@ pub fn circle_area(radius: f64) -> f64 &{PI} {
 
 -- In file: platform/fs.d.ril (External Interface Declaration Unit)
 pub type FileHandle                     -- OK: opaque nominal external type
-pub fn read_file(path: str) -> Result<[]u8, str> @Async -- OK: bodyless external signature
+pub fn read_file(path: str) -> Result<[]u8, str> @Fiber -- OK: bodyless leaf-I/O signature
 
 -- In file: app/main.ril
 use math/geometry::{TAU, circle_area}   -- OK: importing from implementation unit
@@ -4543,6 +4906,7 @@ fn calculate() {
 let MAX_CONNECTIONS: int = 100
 let DEFAULT_TITLE: str = "Ril Application"
 var active_workers: int = 0            -- OK: initialized with constant expression
+fn start_worker() &{mut active_workers} { active_workers += 1 }
 
 -- Prohibited top-level runtime side effects and error propagation:
 -- let current_time = Clock::now()      -- Error [E0202]: TopLevelSideEffectError: top-level declaration must be a pure constant expression
@@ -4727,11 +5091,6 @@ if len(original) == 0 {
 
 ### Mandatory Inspection of Fallible Results
 
-- Every `Result<T, E>` must be inspected, propagated, unpacked, or returned with its obligation (`E0720`).
-- Bindings, aliases, aggregates, and Tasks retain that obligation. `_`, wrapping, or checking only an outer tag does not inspect an inner Result.
-- Testing the actual success/error tag counts as inspection; `?` propagates failure to the enclosing callable.
-- Abnormal unwinding may discard values; ordinary success may not abandon outstanding results.
-
 ```ril
 fn save_profile(user_id: int) -> Result<(), str> {
     if user_id <= 0 { Err("invalid id") } else { Ok() }
@@ -4757,6 +5116,25 @@ fn process_request(id: int) -> Result<(), str> @Fiber {
 }
 ```
 
+```ril
+let result: Result<int, str> = Ok(1)
+let alias = result
+assert(alias is Ok(_))                 -- OK: discharges the same result's obligation
+```
+
+Every Result must be inspected, propagated, unpacked, or returned with its obligation (`E0720`).
+
+| Operation / exit | Inspection duty |
+| :--- | :--- |
+| Actual success/error tag test | Inspected; any alias discharges the same produced Result |
+| Binding, alias, wrapping, aggregate, Task | Preserve one obligation, not one per name |
+| Deep copy | Preserve copied Results' obligations; copying is not inspection |
+| `_`, overwrite, removal, lost last path | Do not discharge |
+| Outer tag test | Does not inspect an inner Result |
+| `?` | Propagates failure to the enclosing callable |
+| Normal completion, including `Err` return | Cannot abandon other outstanding Results |
+| Abnormal unwinding | May discard; structured cancellation keeps its specified rules |
+
 ---
 
 
@@ -4765,16 +5143,16 @@ fn process_request(id: int) -> Result<(), str> @Fiber {
 | Code | Diagnostic Name | Normative Condition |
 | :---: | :--- | :--- |
 | **`E0101`** | `InvalidIdentifierCasingError` | Identifier casing style violates grammatical role requirement |
-| **`E0102`** | `MalformedIdentifierSyntaxError` | Identifier contains illegal consecutive/trailing underscores or unnormalized acronym casing |
+| **`E0102`** | `MalformedIdentifierSyntaxError` | Malformed identifier casing/underscores, invalid literal escape/scalar, or invalid generated field label |
 | **`E0103`** | `PatternCasingCollisionError` | Pattern binding position contains illegal casing causing semantic collision |
 | **`E0201`** | `PrivateItemAccessError` | Accessing or importing unexported private module symbol |
 | **`E0202`** | `TopLevelSideEffectError` | Top-level declaration contains non-constant runtime side effects |
-| **`E0203`** | `DuplicateDeclarationError` | Redeclaring an existing identifier in the same scope |
-| **`E0204`** | `UnresolvedIdentifierError` | Reference to an undeclared or unimported identifier in lexical scope |
+| **`E0203`** | `DuplicateDeclarationError` | Duplicate same-scope binding/handler operation or ambiguous unqualified constructor abbreviation |
+| **`E0204`** | `UnresolvedIdentifierError` | Reference to an unavailable identifier, including use/publication of a helper before its required captures initialize |
 | **`E0205`** | `QuestionMarkOutsideFunctionError` | Using postfix '?' operator outside an enclosing function or closure body (no enclosing activation frame to receive early return) |
 | **`E0301`** | `TypeMismatchError` | Expression type incompatible with expected type |
 | **`E0302`** | `UnexpectedFieldError` | Closed record supplied with undeclared fields |
-| **`E0303`** | `NonExhaustiveMatchError` | Pattern match expression does not cover all possible variant or structural cases |
+| **`E0303`** | `NonExhaustiveMatchError` | Nonexhaustive match or refutable pattern where an unguarded binding, for, or handler requires an irrefutable pattern |
 | **`E0304`** | `UnreachableMatchArmError` | Pattern match arm is statically unreachable due to preceding exhaustive patterns or GADT index constraints |
 | **`E0305`** | `NominalTypeMismatchError` | Mismatched nominal type wrapper identities |
 | **`E0306`** | `KindMismatchError` | Mismatched higher-kinded type constructor or sort constraint |
@@ -4782,20 +5160,20 @@ fn process_request(id: int) -> Result<(), str> @Fiber {
 | **`E0308`** | `OpaqueBoundaryViolationError` | Attempting to unpack, penetrate with `inner()`, or pattern deconstruct an opaque type externally |
 | **`E0309`** | `VacuousBindingError` | 'let' pattern binds zero variables (excluding explicit wildcard discard 'let _ = expr') |
 | **`E0310`** | `InvalidatedNarrowingAccessError` | Accessing identifier whose flow narrowing was invalidated by reassignment or mutation |
-| **`E0311`** | `ContradictoryNarrowingError` | Narrowing predicate is statically unsatisfiable under active flow environment |
+| **`E0311`** | `ContradictoryNarrowingError` | Narrowing predicate contradicts an already active refinement |
 | **`E0312`** | `TupleIndexOutOfBoundsError` | Static tuple index projection exceeds bounds of tuple type |
 | **`E0313`** | `CyclicTypeAliasError` | Structural type aliases form a cyclic dependency without nominal or sum indirection |
 | **`E0314`** | `ArityMismatchError` | Argument count differs from the ordinary function or constructor/pattern arity |
-| **`E0315`** | `EscapingLocalNominalTypeError` | Local nominal wrapper or sum type escapes enclosing function boundary as return type |
+| **`E0315`** | `EscapingLocalNominalTypeError` | An in-scope function-local nominal, opaque, or sum identity escapes through a returned value or callable's type |
 | **`E0316`** | `NonTrailingDefaultGenericParamError` | Generic parameter without default follows generic parameter with default |
 | **`E0317`** | `FunctionDefaultGenericProhibitedError` | Function generic parameter declares default type or value argument |
-| **`E0318`** | `LiteralTypeProhibitedError` | Value literal used directly as a type expression without singleton wrapper |
+| **`E0318`** | `LiteralTypeProhibitedError` | Value literal used as a type instead of a const argument or a tagged sum state |
 | **`E0319`** | `BareTypeInExpressionContextError` | Bare type name used in expression context without enclosing `type<...>` wrapper |
 | **`E0320`** | `ForwardTypeDefaultReferenceError` | Generic default parameter expression contains forward reference or circular dependency |
-| **`E0321`** | `NonDivergentElseError` | 'let ... else' block does not diverge via control transfer ('return', 'panic', 'last') |
+| **`E0321`** | `NonDivergentElseError` | A guarded binding's else block can complete normally instead of having type never |
 | **`E0322`** | `WildcardExpressionError` | Standalone wildcard '_' used in expression position outside pattern binding or discard context |
 | **`E0323`** | `ConstGenericSortMismatchError` | Const/static-key argument has the wrong sort or is not a member of its keyof constraint |
-| **`E0324`** | `DynamicRecordIndexProhibitedError` | Dynamic expression indexing attempted on closed static record type |
+| **`E0324`** | `DynamicRecordIndexProhibitedError` | A record is accessed with bracket indexing or a non-static computed key |
 | **`E0325`** | `DuplicateArgumentError` | Duplicate named argument supplied in function or constructor call |
 | **`E0330`** | `BareEffectTypeAliasError` | Attempting to alias an effect ('@Eff') under 'type E = ...' instead of 'eff' declaration |
 | **`E0331`** | `BareCapabilityTypeAliasError` | Attempting to alias a capability ('&mut', '&^mut') under 'type C = ...' |
@@ -4806,20 +5184,20 @@ fn process_request(id: int) -> Result<(), str> @Fiber {
 | **`E0341`** | `InvalidRecordKeySortError` | Supplying integer keys to mapped record comprehension '{ [K in Expr]: ... }' (requires '[]str') |
 | **`E0342`** | `InvalidTupleKeySortError` | Supplying string keys to mapped tuple comprehension '( [I in Expr]: ... )' (requires '[]int') |
 | **`E0343`** | `SingleElementTupleProhibitedError` | Mapped tuple comprehension evaluated over an index array of length 1 (Ril strictly has no 1-tuples) |
-| **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
+| **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as a mut/^mut parameter |
 | **`E0402`** | `ValueTypePinnedMutError` | Attempting to give a value type interior authority with `let mut` or `var mut` |
 | **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
-| **`E0404`** | `MutableParameterDefaultProhibitedError` | Function parameter declared 'mut' specifies a default value argument |
+| **`E0404`** | `MutableParameterDefaultProhibitedError` | A mut/^mut parameter specifies a default value argument |
 | **`E0501`** | `ImmutableReassignmentError` | Reassigning an immutable `let` binding |
 | **`E0502`** | `PinnedHandleReassignmentError` | Reassigning a pinned mutable handle `let mut` or borrowed `mut` parameter |
 | **`E0510`** | `MissingCapabilityAnnotationError` | Missing required concrete invocation capability or local writable-sharing marker, including known inherited state, direct reads, creation, or retention |
-| **`E0520`** | `MutabilityLaunderingError` | Granting unsupplied write permission to `let mut`/`var mut`, writing through plain `var`/view, or supplying an invalid mutable argument mode |
+| **`E0520`** | `MutabilityLaunderingError` | Granting unsupplied write permission, using an invalid mutable mode, or accessing an operation's ended temporary loan after resume |
 | **`E0521`** | `DestructureMutabilityLaunderingError` | Pattern binding attempts to upgrade a referenced constituent; independent scalar copies are exempt |
 | **`E0522`** | `ContainerMutabilityLaunderingError` | A container operation attempts to grant write permission to an immutable or view constituent |
 | **`E0523`** | `MutMutAliasingConflictError` | Overlapping mutable arguments passed to `mut` parameters |
 | **`E0524`** | `ReadMutAliasingHazardError` | Mutable argument aliases simultaneous read-only argument |
 | **`E0525`** | `SpreadLaunderingError` | Spread attempts to grant write permission to a referenced immutable/view constituent |
-| **`E0526`** | `CollectionMutationDuringIterationError` | Mutating collection in place while iterating in `for` loop |
+| **`E0526`** | `CollectionMutationDuringIterationError` | Structurally changing a collection through any alias during an active `for` iteration |
 | **`E0527`** | `UnusedMutableBindingError` | Declared mutable authority is never exercised by a reachable write, invocation, retention, or explicit transfer |
 | **`E0528`** | `ReturnMutabilityLaunderingError` | A returned borrowed/external reference is received with permissions not supplied by its source |
 | **`E0529`** | `ExcessiveCapabilityAnnotationError` | Concrete definition declares unnecessary capabilities; callable contract upper bounds are exempt |
@@ -4857,16 +5235,17 @@ fn process_request(id: int) -> Result<(), str> @Fiber {
 | **`E0704`** | `InvalidSignatureWhereItemError` | Declaring 'fn' or 'eff' in signature 'where' clause (signature where is restricted to 'type') |
 | **`E0705`** | `DownwardScopeReferenceError` | Signature 'where' clause references item declared in inner block 'where' clause |
 | **`E0706`** | `SignatureTypeNotInWaistWhereError` | Function signature references type declared in block 'where' clause instead of signature 'where' clause |
-| **`E0707`** | `InvalidControlTransferContextError` | Using 'last' outside loop or 'return' across prohibited boundary |
-| **`E0710`** | `IllegalControlTransferInFallbackError` | Embedding `return`/`last` in fallback operator `??` |
+| **`E0707`** | `InvalidControlTransferContextError` | Using last/next without an enclosing loop or return across a prohibited boundary |
+| **`E0710`** | `IllegalControlTransferInFallbackError` | Direct return/last/next transfer out of a fallback expression |
 | **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
-| **`E0720`** | `UnusedFallibleResultError` | A fallible result is abandoned without inspection, including inside aggregates or Task<Result<...>> |
+| **`E0720`** | `UnusedFallibleResultError` | A fallible result is abandoned without inspection, including through aggregates, tasks, or channel queues |
 | **`E0810`** | `CallFamilyViolationError` | Crossing disjoint runtime `fn` and compile-time `meta`/`type` call families |
 | **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting evaluation step budget in meta/type functions |
 | **`E0812`** | `MetaTypeReturnProhibitedError` | 'meta fn' attempting to return 'type<...>' or sort 'Type'; type construction is monopolized by type functions |
 | **`E0813`** | `MetaComputationAnnotationError` | Declaring algebraic effects ('@Eff') or state capabilities ('&Cap') on a 'meta fn' signature |
-| **`E0820`** | `TotalityViolationError` | Totality certification failed in `halt fn` (unbounded recursion/loop) |
-| **`E0830`** | `MetaAssertionFailedError` | Compile-time `assert` condition evaluated to `false` in `meta` context |
+| **`E0820`** | `TotalityViolationError` | A halt function/type body has uncertified local recursion/iteration or a transitive Div obligation |
+| **`E0830`** | `MetaAssertionFailedError` | An assert condition evaluates to false during meta/type evaluation |
+| **`E0831`** | `StaticEvaluationPanicError` | A non-assertion panic occurs during meta/type evaluation |
 | **`E0901`** | `BodyInDeclModuleError` | Supplying an implementation body, variable initializer, or mutable binding in a '.d.ril' declaration unit |
 | **`E0902`** | `MissingBodyInStandardModuleError` | Omitting an implementation body from a function declared in a standard '.ril' module |
 | **`E0907`** | `ForeignStructuralFieldPenetrationError` | Attempting to access fields, mutate, index, deconstruct, or instantiate an opaque external type |

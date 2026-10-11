@@ -116,6 +116,7 @@ Floating arithmetic retains IEEE special values rather than treating every zero 
 
 ```ril
 let saved: Result<(), str> = Ok()       -- Equivalent to Ok(())
+assert(saved is Ok())
 let absent: ?int = None                -- A tag, not None()
 let make_ok: fn(int) -> Result<int, str> = Ok
 ```
@@ -131,7 +132,7 @@ let scoped mut resource = Resource.{
 }
 ```
 
-Cleanup needs state access, but cannot depend on unhandled effects or divergence while its context is leaving. Reverse registration order makes resource dependencies predictable. A second fault during panic, cancellation, or abort preserves both causes and stops that frame's remaining cleanup; it does not promise that every destructor succeeded. Pure parallel branches retain their separate fault-visibility contract.
+LIFO cleanup preserves resource order; calling the current `on_close` gives replacement its ordinary meaning without a destructor protocol or snapshot. Double faults preserve both causes rather than promise successful cleanup. Channel closing and parallel fault visibility keep their separate contracts.
 
 ## Aliasing, Mutability, and the Law of Exclusivity
 
@@ -322,6 +323,8 @@ independent.count += 1
 
 `clone_immut` combines isolation from the source with immutable result data. Merely removing a view's write permission would not provide either guarantee. Eligibility covers the whole ordinary graph: views and wrappers cannot hide a non-copyable environment or resource. Internal aliases remain internal aliases; `Immut<T>` records immutability without implying uniqueness.
 
+Ascription records the existing immutable guarantee without hidden copying, freezing, or restored write permission.
+
 ## Algebraic Effects, Concurrency, and Function Colorlessness
 
 ### Colorless Functions and Separated System Effects
@@ -333,6 +336,8 @@ type Fetch = fn(str) -> Result<str, str> @Fiber
 ```
 
 Suspension changes a computation's obligations, not its ordinary return shape or call syntax. Higher-order functions can forward those obligations without separate async combinators. Leaf I/O uses Fiber; task creation requires Concurrent. Typed Yield data is distinct from unit-valued Fiber scheduling, so a stream consumer cannot accidentally intercept scheduler operations. Affine resume supports push streams; pull state must be represented explicitly.
+
+`halt` separates finite local computation from successful return and external progress. Guarded descent and static budgets avoid promises of arbitrary termination inference or a new proof language.
 
 ### Structured Scopes as Defect Boundaries
 
@@ -381,6 +386,8 @@ Escape is safe when each invocation has stable handling. Retaining a handler ret
 
 The concise closure syntax does not require a separate handler-capture list. Retained handler environments remain part of the machine's provenance and authority checks. Their reads, writes, sharing, and task restrictions survive effect handling and can be expanded in diagnostics just like an ordinary closure's captures.
 
+Operation dispatch reuses ordinary `match` for request values. Ending temporary loans at `resume` avoids assuming caller resources survive the continuation; outer loans still prevent reentrant aliasing.
+
 ### Effect-Free Data Parallelism
 
 ```ril
@@ -412,6 +419,8 @@ Channel::close(local_tx)
 ```
 
 Sender clones keep channel identity but gain independent endpoint authority, so this resource operation has Fiber rather than an ordinary deep-copy guarantee. Protocol state is effect-accessed external state, not a mutable child of an immutable descriptor. Detach/attach explicitly transfer unique authority; close and scope/task exit determine lifetime without depending on garbage collection.
+
+Consuming detached tickets on every send outcome gives failure a closing action without rollback. Transport success does not settle a payload's business-error inspection duty.
 
 ### Declarative Parallel Work Instead of Manual Slice Proofs
 
@@ -464,6 +473,8 @@ fn before<T>(ops: Ordering<T>, left: T, right: T) -> bool {
 
 Passing operations explicitly makes the selected behavior visible and permits multiple choices for the same data type. It avoids implicit-instance coherence and orphan-rule questions, and does not turn built-in operators into hidden user calls. Actual callback effects and permissions still follow the supplied operations.
 
+Structural equality avoids callbacks and allocation identity. Value-only keys preserve clone/derive permissions; floats are excluded because NaN equality is not reflexive. Insertion order needs no implicit comparator.
+
 ### One Lexical Namespace
 
 ```ril
@@ -471,7 +482,7 @@ use math/geometry                     -- Binds Geometry
 -- type Geometry = int                -- Error [E0203]: same-scope name already exists
 ```
 
-A name should identify one declaration without a second type/value import dialect. Nominal type and constructor uses are roles of the same declaration, not unrelated duplicate entities. This keeps references, imports, and renaming consistent; casing supplies additional grammatical role information.
+One declaration can have type/constructor roles, or Set's type/namespace roles, without a second import dialect. Qualified variants permit repeated labels across sums; unique abbreviations keep common code short without type-directed name resolution.
 
 ### Static Records and Dynamic Collections
 
@@ -513,6 +524,7 @@ Opaque types allow direct representation use inside their module while preservin
 type Marker
 let marker: Marker = Marker
 let result: Result<Marker, str> = Ok(Marker)
+assert(result is Ok(_))
 ```
 
 A zero-payload domain identity remains useful even without stored data. Marker is distinct from unit, so `Ok()` cannot silently replace `Ok(Marker)`. Visibility and opacity control who can create protected witnesses; a publicly constructible marker is simply a nominal value.
@@ -540,6 +552,7 @@ Higher-kinded parameters support reusable shape transformations without introduc
 
 ```ril
 let reply: Result<(int, str), str> = Ok(200, "ready")
+assert(reply is Ok(_))
 -- Ok((200, "ready")) constructs the same payload.
 fn add(left: int, right: int) -> int { left + right }
 -- add((1, 2))                         -- Error [E0314]
@@ -608,10 +621,12 @@ halt type Element = \T -> match type<T> {
 - Explicit `let U` type binders, linear patterns, and known constructor heads keep matching unambiguous. Static branch pruning prevents unreachable branches from imposing effect obligations.
 
 ```ril
-fn get_field<T, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
+fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 ```
 
-The static-key form preserves common field-access syntax while requiring a known member of T. It does not promote arbitrary run-time strings into types.
+Static keys preserve record access without promoting run-time strings. Sum keys describe possible payload types; matching selects the actual payload.
+
+Callable effects belong to values, so type-name purity reflection would conflict with omitted-row inference. Static values and shape queries suffice for branch selection.
 
 ### Generic Defaults and Const Values Instead of Literal Types
 
