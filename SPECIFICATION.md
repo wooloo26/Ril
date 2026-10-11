@@ -26,7 +26,7 @@ Code examples throughout this specification use inline test annotations:
 
 ```ril
 let x = 42                             -- OK: valid declaration
-let y: str = 42                        -- Error [E0301]: type mismatch, expected str, found int
+let y: str = 42                        -- Error [E0301]: TypeMismatchError: expected type 'str', found 'int'
 let z = 10 / 0                         -- Panics: division by zero
 ```
 
@@ -44,7 +44,7 @@ Ril executes on an abstract machine with automatic memory management (tracing ga
 ```ril
 -- Strict left-to-right evaluation order across operands and arguments:
 let mut trace: []int = []
-let log = \n -> { trace !> Array::push(n); n }
+let mut log = \n -> { trace !> Array::push(n); n }
 let result = log(1) + log(2) * log(3)  -- Evaluates log(1), then log(2), then log(3)
 -- trace is guaranteed to be [1, 2, 3]
 ```
@@ -63,8 +63,13 @@ Ril enforces a strict separation between domain recoverable errors and program d
 fn parse_id(s: str) -> Result<int, str> {
     if s == "" { Err("empty input") } else { Ok(42) }
 }
-let id = parse_id("10")?               -- OK: propagated via postfix '?'
--- parse_id("10")                       -- Error [E0720]: unused fallible Result must be handled
+
+fn init_session() -> Result<int, str> {
+    let id = parse_id("10")?           -- OK: propagated via postfix '?' within function frame
+    Ok(id)
+}
+-- let top_id = parse_id("10")?        -- Error [E0205]: TopLevelQuestionMarkProhibitedError: cannot evaluate postfix '?' in top-level declaration 'top_id'; no enclosing caller function frame exists to receive error
+-- parse_id("10")                       -- Error [E0720]: UnusedFallibleResultError: unused fallible Result must be handled via '?', 'match', or fallback '??'
 
 -- 2. Deterministic runtime panic on defect:
 let arr = [1, 2, 3]
@@ -156,7 +161,7 @@ Identifiers are strictly partitioned at the lexer and parser levels across gramm
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
 2. **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module path segments (`ril/array`, `math/geometry`).
 3. **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`) MUST use `snake_case`.
-4. **Wildcard & Suppression**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0301`). An identifier with a leading underscore `_snake_case` declares an intentionally unused variable or parameter, suppressing unused binding diagnostics (`E0527`).
+4. **Wildcard & Suppression**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore `_snake_case` declares an intentionally unused variable or parameter, suppressing unused binding diagnostics (`E0527`).
 
 ```ril
 -- 1. PascalCase: Types, Constructors, Effects, and Generic Parameters
@@ -181,15 +186,15 @@ let _ = user_count                     -- OK: wildcard discard
 fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' suppresses unused warning
 
 -- Static Lexical Violations:
--- type user_doc = { id: int }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
--- fn Calculate() -> () {}             -- Error [E0101]: function identifier must be snake_case, found 'Calculate'
--- let UserCount = 10                  -- Error [E0101]: variable identifier must be snake_case, found 'UserCount'
--- meta let max_size = 100             -- Error [E0101]: compile-time constant must be SCREAMING_SNAKE_CASE, found 'max_size'
--- var ACTIVE_FLAG = true              -- Error [E0101]: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
--- type HTTPServer = { port: int }     -- Error [E0102]: acronym in PascalCase must be title-cased, expected 'HttpServer'
--- let user__name = "Alice"            -- Error [E0102]: consecutive underscores are prohibited, found 'user__name'
--- let Some(USER_ID) = opt             -- Error [E0103]: pattern binding position cannot use uppercase identifier
--- let _ = 10; println(_)              -- Error [E0301]: wildcard '_' cannot be evaluated as an expression
+-- type user_doc = { id: int }         -- Error [E0101]: InvalidIdentifierCasingError: type identifier must be PascalCase, found 'user_doc'
+-- fn Calculate() -> () {}             -- Error [E0101]: InvalidIdentifierCasingError: function identifier must be snake_case, found 'Calculate'
+-- let UserCount = 10                  -- Error [E0101]: InvalidIdentifierCasingError: variable identifier must be snake_case, found 'UserCount'
+-- meta let max_size = 100             -- Error [E0101]: InvalidIdentifierCasingError: compile-time constant must be SCREAMING_SNAKE_CASE, found 'max_size'
+-- var ACTIVE_FLAG = true              -- Error [E0101]: InvalidIdentifierCasingError: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
+-- type HTTPServer = { port: int }     -- Error [E0102]: MalformedIdentifierSyntaxError: acronym in PascalCase must be title-cased, expected 'HttpServer', found 'HTTPServer'
+-- let user__name = "Alice"            -- Error [E0102]: MalformedIdentifierSyntaxError: consecutive underscores are prohibited, found 'user__name'
+-- let Some(USER_ID) = opt             -- Error [E0103]: PatternCasingCollisionError: pattern binding position cannot use uppercase identifier 'USER_ID'
+-- let _ = 10; println(_)              -- Error [E0322]: WildcardExpressionError: wildcard '_' cannot be evaluated as an expression
 ```
 
 ### 2.5 Keywords
@@ -213,9 +218,12 @@ meta let COMPILE_ID = 101              -- 'meta', 'let'
 eff Logger { log(str) -> () }          -- 'eff'
 use ril/array::{push}                  -- 'use'
 halt fn total_step() -> bool { true }  -- 'halt', 'true', 'fn'
-let scoped res = File::open("a.txt")?  -- 'scoped' in let binding
-let view v = res                       -- 'view' in handle binding
-with Logger::log(msg) -> resume ()     -- 'with', 'resume' (statement-level handler)
+fn manage_resource() -> Result<(), IoError> {
+    let scoped res = File::open("a.txt")?  -- 'scoped', '?' inside function frame
+    let view v = res                       -- 'view' in handle binding
+    with Logger::log(msg) -> resume ()     -- 'with', 'resume' (statement-level handler)
+    Ok(())
+}
 
 fn calculate(val: ?int) -> int {       -- 'fn'
     let bound = match val {            -- 'let', 'match'
@@ -223,8 +231,9 @@ fn calculate(val: ?int) -> int {       -- 'fn'
         _ -> 0,
     }
     let is_positive = bound is 1..=10  -- 'is'
+    let in_bounds = bound in 1..=10    -- 'in'
     var sum = 0                        -- 'var'
-    for n in [1, 2, 3] {               -- 'for', 'in'
+    for [1, 2, 3] as n {               -- 'for', 'as'
         if sum > 10 { last }           -- 'last'
         else { next }                  -- 'else', 'next'
     }
@@ -323,8 +332,8 @@ var b = a                              -- Independent copy; value types use 'var
 b += 1                                 -- Modifies 'b'; 'a' remains 42
 assert(a == 42 && b == 43)
 
--- let mut bad_scalar = a              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
--- fn bad_borrow(mut x: int) {}        -- Error [E0401]: value types cannot be borrowed as 'mut' parameters
+-- let mut bad_scalar = a              -- Error [E0402]: ValueTypePinnedMutError: value type 'int' has no interior mutability; use 'var'
+-- fn bad_borrow(mut x: int) {}        -- Error [E0401]: ValueTypeMutableBorrowError: value type 'int' cannot be borrowed as 'mut' parameter
 ```
 
 ### 3.2 Reference Types
@@ -340,12 +349,12 @@ n1.val = 99                            -- Mutate through 'n1'
 assert(n2.val == 99)                   -- OK: 'n2' observes mutation due to reference aliasing
 
 -- Mutating through read-only alias is strictly prohibited:
--- n2.val = 100                        -- Error [E0520]: cannot mutate through read-only view 'n2'
+-- n2.val = 100                        -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'val' through read-only view 'n2'
 ```
 
 ### 3.3 Record Types & Row Polymorphism
 
-Records are structural collections of named fields. Closed records do not support width subtyping. Field access on records is strictly compile-time identifier dot-access (`r.field`); dynamic string indexing (e.g. `r["key"]` or `r.("key")`) is prohibited. In symmetry, type-level field extraction uses dot projection (`User.id` or computed projection `T.(K)`); bracket indexing on record types (e.g. `User["id"]`) is prohibited (`E0301`).
+Records are structural collections of named fields. Closed records do not support width subtyping. Field access on records is strictly compile-time identifier dot-access (`r.field`); dynamic string indexing (e.g. `r["key"]` or `r.("key")`) is prohibited. In symmetry, type-level field extraction uses dot projection (`User.id` or computed projection `T.(K)`); bracket indexing on record types (e.g. `User["id"]`) is prohibited (`E0324`).
 
 Named row tail polymorphism (`..R`) allows generic functions to accept and preserve additional caller fields across pipelines. Pattern destructuring with `..rest` extracts a concrete, statically typed sub-record containing the remaining known fields.
 
@@ -361,16 +370,16 @@ type User = { id: int, name: str }
 let u: User = .{ id: 1, name: "Alice" } -- OK: exact closed record match
 
 -- 1. Closed record rejects unexpected fields (E0302):
--- let bad_u: User = .{ id: 1, name: "Alice", age: 30 } -- Error [E0302]: unexpected field 'age' in closed record 'User'
+-- let bad_u: User = .{ id: 1, name: "Alice", age: 30 } -- Error [E0302]: UnexpectedFieldError: unexpected field 'age' in closed record 'User'
 
 -- 2. Field access is strictly compile-time identifier dot-access:
 let user_id = u.id                     -- OK: direct static offset lookup
--- let bad_index = u["name"]           -- Error [E0301]: records do not support dynamic index lookup
--- let bad_accessor = u.("name")       -- Error [E0301]: dynamic string accessor prohibited
+-- let bad_index = u["name"]           -- Error [E0324]: DynamicRecordIndexProhibitedError: records do not support dynamic index lookup
+-- let bad_accessor = u.("name")       -- Error [E0324]: DynamicRecordIndexProhibitedError: dynamic string accessor prohibited
 
 -- 3. Type-level field projection:
 type IdType = User.id                  -- OK: direct static field type extraction (int)
--- type BadIndex = User["id"]          -- Error [E0301]: record types do not support bracket indexing, use User.id
+-- type BadIndex = User["id"]          -- Error [E0324]: DynamicRecordIndexProhibitedError: record types do not support bracket indexing, use User.id
 
 -- 4. Named row tail polymorphism (generic type preservation):
 fn with_timestamp<R>(r: { ..R }) -> { timestamp: int, ..R } {
@@ -390,29 +399,29 @@ assert(rest.email == "adm@ril.org")
 assert(rest.role == "root")
 ```
 
-### 3.4 Array, Map, Set & Tuple Types
+### 3.4 Array, Map & Tuple Types
 
-Bracket syntax (`[...]`) unifies all runtime dynamic collections: linear sequences (`[]T`), associative maps (`[K: V]`), and sets (`Set<T>`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`).
+Bracket syntax (`[...]`) unifies linear sequences (dynamic slices `[]T` and compile-time fixed-length arrays `[N]T`) and associative maps (`[K: V]`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`). The unique set type `Set<T>` is provided as a standard library collection type via the prelude `Set` module, rather than dedicated core language syntax.
 
 ```ebnf
-ArrayType   ::= "[]" TypeExpression
+ArrayType   ::= "[" [ Expression ] "]" TypeExpression
 MapType     ::= "[" TypeExpression ":" TypeExpression "]"
-SetType     ::= "Set" "<" TypeExpression ">"
 TupleType   ::= "(" TypeExpression "," { TypeExpression "," } [ TypeExpression ] ")"
 ```
 
 ```ril
--- 1. Linear Array ([]T):
-let numbers: []int = [1, 2, 3]         -- Type: []int
+-- 1. Linear Array ([]T dynamic slice, [N]T fixed-length array):
+let numbers: []int = [1, 2, 3]         -- Type: []int (dynamic slice)
+let buffer: [4]u8 = [0, 0, 0, 0]       -- Type: [4]u8 (fixed-length array)
 
 -- 2. Associative Map ([K: V]):
 let config: [str: str] = ["env": "prod", "host": "127.0.0.1"]
 let empty_map: [str: int] = [:]        -- Empty map literal
 let host = config["host"]              -- Evaluates to ?str (Some("127.0.0.1"))
 
--- 3. Unique Set (Set<T>):
-let visited: Set<int> = [10, 20, 30]    -- Contextual initialization from collection literal
-let roles = Set.["admin", "guest"]     -- Explicit Set.[...] constructor literal
+-- 3. Prelude Unique Set (Set<T>):
+let visited: Set<int> = Set::from([10, 20, 30]) -- Constructed via prelude Set module
+let roles = Set::of(["admin", "guest"])
 
 -- 4. Tuple ((T1, T2)):
 let coords: (int, str) = (10, "Alice") -- Type: (int, str)
@@ -420,7 +429,7 @@ let x = coords.0                       -- Value positional access: 10
 let name = coords.1                    -- Value positional access: "Alice"
 type CoordX = (typeof coords).0        -- Inferred tuple positional projection: int
 type First = (int, str).0              -- Static tuple positional projection: int
--- type OutOfBounds = (int, str).2      -- Error [E0301]: tuple index 2 out of bounds for (int, str)
+-- type OutOfBounds = (int, str).2      -- Error [E0312]: TupleIndexOutOfBoundsError: tuple index 2 out of bounds for (int, str)
 
 -- 5. Collection Type Parameter Extraction (modular, non-prelude):
 use ril/array::{Elem}
@@ -431,8 +440,8 @@ type HostKey = Key<[str: int]>         -- Resolves to str
 type PortVal = Value<[str: int]>       -- Resolves to int
 
 -- Collections are not product types; dot projection on collections is rejected:
--- type BadArrElem = ([]int).elem      -- Error [E0301]: collections do not have named fields; use ril/array::{Elem}
--- type BadMapKey = ([str: int]).key   -- Error [E0301]: collections do not have named fields; use ril/map::{Key}
+-- type BadArrElem = ([]int).elem      -- Error [E0301]: TypeMismatchError: collection type '[]int' has no named fields or member projections; use 'ril/array::{Elem}'
+-- type BadMapKey = ([str: int]).key   -- Error [E0301]: TypeMismatchError: collection type '[str: int]' has no named fields or member projections; use 'ril/map::{Key}'
 ```
 
 ### 3.5 Sum Types & GADTs
@@ -466,7 +475,7 @@ fn eval_int(e: Expr<int>) -> int {
     match e {
         LitInt(n) -> n,
         Add(a, b) -> eval_int(a) + eval_int(b),
-        -- LitBool(b) -> 0             -- Error [E0301]: unreachable match arm: constructor 'LitBool' binds T = bool, incompatible with Expr<int>
+        -- LitBool(b) -> 0             -- Error [E0304]: UnreachableMatchArmError: unreachable match arm: constructor 'LitBool' binds T = bool, incompatible with Expr<int>
     }
 }
 
@@ -499,7 +508,7 @@ Ril strictly possesses no 1-element tuples `(T,)` (`(x)` denotes parenthesized g
 -- 1. Result construction and matching with unit payload (n = 0):
 let unit_res: Result<(), str> = Ok()             -- OK: n = 0 constructs () payload directly
 let auto_unit = Ok()                             -- OK: synthesizes Result<(), _> (payload is ())
--- let bad_bare = Ok                             -- Error [E0301]: 'Ok' is a constructor function; write 'Ok()' to construct Result<(), _>
+-- let bad_bare = Ok                             -- Error [E0301]: TypeMismatchError: 'Ok' is a constructor function; write 'Ok()' to construct Result<(), _>
 
 match unit_res {
     Ok() -> println("success"),                  -- OK: n = 0 matches () unit payload
@@ -508,7 +517,7 @@ match unit_res {
 
 -- 2. Nullary variant tags vs. Data constructors:
 let opt: Option<int> = None                      -- OK: nullary tag without parentheses
--- let bad_none = None()                         -- Error [E0301]: variant 'None' has no payload; remove parentheses
+-- let bad_none = None()                         -- Error [E0301]: TypeMismatchError: variant 'None' has no payload; remove call parentheses
 
 -- 3. Result construction and matching with tuple payload:
 let res: Result<(int, str), str> = Ok(200, "OK") -- OK: n = 2 constructs (int, str) directly
@@ -535,14 +544,14 @@ let TwoPoints(raw_tuple) = p1                    -- OK: whole-tuple destructurin
 -- 5. Functions do NOT auto-tuple (Strict Scope Boundary):
 fn add(a: int, b: int) -> int { a + b }
 let sum1 = add(1, 2)                             -- OK: 2 arguments
--- let sum2 = add(pair)                          -- Error [E0301]: expected 2 arguments, found 1 tuple
+-- let sum2 = add(pair)                          -- Error [E0314]: ArityMismatchError: expected 2 arguments, found 1 tuple
 
 -- 6. Nested tuples: non-transitive boundary:
 type Node {
     Branch((int, int), str),                     -- Payload is 2-tuple: ((int, int), str)
 }
 let node = Branch((1, 2), "left")                -- OK: n = 2 arguments
--- let bad_node = Branch(1, 2, "left")           -- Error [E0301]: arity mismatch: expected 2 arguments, found 3
+-- let bad_node = Branch(1, 2, "left")           -- Error [E0314]: ArityMismatchError: arity mismatch: expected 2 arguments, found 3
 ```
 
 ### 3.6 Nominal Type Wrappers
@@ -568,7 +577,7 @@ type AdminToken
 let m: Marker = Marker                 -- OK: bare identifier value construction
 let raw_unit: () = inner(m)            -- OK: unwrap unit nominal wrapper evaluates to ()
 let _ = m                              -- OK: explicit wildcard discard
--- let Marker = m                      -- Error [E0309]: 'let' pattern must bind at least one variable; 'Marker' introduces zero bindings
+-- let Marker = m                      -- Error [E0309]: VacuousBindingError: 'let' pattern must bind at least one variable; nullary constructor 'Marker' introduces zero bindings
 
 -- 2. Value-Wrapped Nominal Types:
 type UserId(int)
@@ -582,7 +591,7 @@ let c = Coord(10, 20)                  -- OK: positional tuple expansion (n = 2)
 let c_compat = Coord((10, 20))         -- OK: explicit tuple literal (n = 1)
 let pt = Point2D(.{ x: 10.0, y: 20.0 })
 
--- uid == aid                          -- Error [E0305]: mismatched nominal types 'UserId' and 'AccountId'
+-- uid == aid                          -- Error [E0305]: NominalTypeMismatchError: mismatched nominal types 'UserId' and 'AccountId'
 let raw_id: int = inner(uid)           -- OK: unwrap nominal wrapper via prelude 'inner()' (1001)
 let raw_coord: (int, int) = inner(c)   -- OK: unwrap nominal wrapper to underlying tuple (10, 20)
 let raw_pt: { x: f64, y: f64 } = inner(pt) -- OK: unwrap underlying record via 'inner()'
@@ -590,7 +599,7 @@ let UserId(unwrapped_id) = uid         -- OK: pattern-matching unwrap
 let Point2D(.{ x, y }) = pt            -- OK: structural record pattern unwrap
 let Coord(cx, cy) = c                  -- OK: positional tuple pattern unwrap
 let Coord(pair) = c                    -- OK: whole-tuple pattern unwrap
--- let bad = UserId                    -- Error [E0301]: nominal wrapper 'UserId' requires 1 argument, found 0
+-- let bad = UserId                    -- Error [E0314]: ArityMismatchError: nominal wrapper 'UserId' requires 1 argument, found 0
 ```
 
 ### 3.7 Deep Immutability (`Immut<T>`)
@@ -604,11 +613,11 @@ let mut doc = Document.{ title: "Draft", tags: ["ril", "spec"] }
 let frozen: Immut<Document> = clone_immut(doc)
 
 -- Direct mutation on Immut<T> is rejected:
--- frozen.title = "Published"          -- Error [E0520]: cannot mutate fields of Immut<T>
+-- frozen.title = "Published"          -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'title' through permanently immutable 'Immut<Document>'
 
 -- Laundering Immut<T> into a mutable parameter is rejected:
 fn modify_doc(mut d: Document) { d.title = "Changed" }
--- modify_doc(mut frozen)              -- Error [E0520]: cannot borrow Immut<Document> as 'mut'
+-- modify_doc(mut frozen)              -- Error [E0520]: MutabilityLaunderingError: cannot borrow permanently immutable 'Immut<Document>' as 'mut'
 
 let mut independent_copy = clone(doc)  -- OK: deep mutable clone
 independent_copy.title = "Published"   -- OK: independent copy is mutable
@@ -642,20 +651,20 @@ type Counter = { mut count: int }
 let mut original = Counter.{ count: 0 }
 
 let view v = original                  -- Live view into pinned root 'original'
--- v.count = 5                         -- Error [E0520]: cannot mutate through read-only view 'v'
+-- v.count = 5                         -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'count' through read-only view 'v'
 
 original.count += 1
 let observed = v.count                 -- observed is 1 (live view reflects mutation)
 
 -- Pinned handle reassignment rejected:
--- original = Counter.{ count: 10 }    -- Error [E0502]: cannot reassign pinned mutable handle 'original'; use 'var'
+-- original = Counter.{ count: 10 }    -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned mutable handle 'original'; use 'var'
 
 -- Value type declared let mut rejected:
--- let mut bad_scalar = 42             -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
+-- let mut bad_scalar = 42             -- Error [E0402]: ValueTypePinnedMutError: value type 'int' has no interior mutability; use 'var'
 
 -- Definite Mutation Invariant:
--- let mut unused_mut = Counter.{ count: 0 } -- Error [E0527]: variable 'unused_mut' declared 'let mut' but never modified
--- var unused_var = 10                 -- Error [E0527]: variable 'unused_var' declared 'var' but never modified
+-- let mut unused_mut = Counter.{ count: 0 } -- Error [E0527]: UnusedMutableBindingError: variable 'unused_mut' declared 'let mut' but never modified in-place
+-- var unused_var = 10                 -- Error [E0527]: UnusedMutableBindingError: variable 'unused_var' declared 'var' but never modified or reassigned
 ```
 
 ### 3.10 Path-Wise Copy-on-Write Functional Updates (`derive`)
@@ -750,7 +759,7 @@ GenericArg            ::= TypeExpression | Expression
 1. **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list MUST declare default arguments.
 2. **Telescopic Left-to-Right Scoping Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
 3. **Const Generic Evaluation & Purity Invariant (`E0810`, `E0323`)**: Const generic arguments evaluate at compile time within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). Non-constant runtime expressions passed to const parameters trigger `E0810`. Arguments failing sort constraints trigger `E0323`.
-4. **No Untagged Literal Types (`E0301`)**: Concrete values (strings, integers, booleans) cannot serve as bare types. Discrete domain states MUST be modeled via tagged sum types (`type HttpMethod { Get, Post }`). Concrete values enter the type system strictly as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`).
+4. **No Untagged Literal Types (`E0318`)**: Concrete values (strings, integers, booleans) cannot serve as bare types. Discrete domain states MUST be modeled via tagged sum types (`type HttpMethod { Get, Post }`). Concrete values enter the type system strictly as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`).
 5. **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = int>` is rejected); function types are inferred bidirectionally at call sites.
 
 ```ril
@@ -789,25 +798,29 @@ let p1: Pair<int> = .{ first: 1, second: 2 }    -- OK: Second defaults to First 
 
 -- 4. Rejection: Non-trailing default generic parameter (E0316):
 -- type BadOrder<T = int, U> = { a: T, b: U }
--- Error [E0316]: generic parameter without default 'U' cannot follow generic parameter with default 'T'
+-- Error [E0316]: NonTrailingDefaultGenericParamError: generic parameter without default 'U' cannot follow generic parameter with default 'T'
 
 -- 5. Rejection: Forward reference in default argument (E0320):
 -- type BadForward<T = U, U = int> = { a: T }
--- Error [E0320]: default argument for 'T' contains forward reference to parameter 'U'
+-- Error [E0320]: ForwardTypeDefaultReferenceError: default argument for 'T' contains forward reference to parameter 'U'
 
 -- 6. Rejection: Function generic parameter with default (E0317):
 -- fn bad_fn<T = int>(x: T) -> T { x }
--- Error [E0317]: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
+-- Error [E0317]: FunctionDefaultGenericProhibitedError: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
 
--- 7. Rejection: Literal types and untagged unions prohibited (E0301):
+-- 7. Rejection: Literal types and untagged unions prohibited (E0318):
 -- type BadMethod = "GET" | "POST"
--- Error [E0301]: literal values cannot be used as types; declare a tagged sum type instead
+-- Error [E0318]: LiteralTypeProhibitedError: literal values cannot be used as types; declare a tagged sum type instead
 
 -- 8. Rejection: Runtime expression passed to const generic (E0810):
 fn check_buf(runtime_size: int) {
     -- let bad_b: Buffer<u8, runtime_size> = Buffer.{ data: [], len: 0 }
-    -- Error [E0810]: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
+    -- Error [E0810]: CallFamilyViolationError: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
 }
+
+-- 9. Rejection: Const generic sort mismatch (E0323):
+-- let bad_sort: Buffer<u8, "1024"> = Buffer.{ data: [], len: 0 }
+-- Error [E0323]: ConstGenericSortMismatchError: const generic parameter 'cap' of sort 'int' supplied with incompatible argument of sort 'str'
 ```
 
 ### 3.12 The Tripartite Ontology & Type Definition Boundaries
@@ -846,7 +859,7 @@ $$\text{Semantic Domains} = \langle \text{Shape (Type)}\ \mathcal{T},\ \text{Acc
    - **Syntactic Locus**: Values, expressions, variables, data structures, and function parameter/return types.
    - **Constituents**:
      - *Primitive Value Types*: `bool`, `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `int`, `bigint`, `f32`, `f64`, `str`, `bytes`, `()`, `never`.
-     - *Heap Reference Types*: Structural records `{...}`, linear arrays `[]T`, associative maps `[K: V]`, unique sets `Set<T>`, anonymous tuples `(...)`.
+     - *Heap Reference Types*: Structural records `{...}`, linear arrays `[]T`, associative maps `[K: V]`, anonymous tuples `(...)`, and standard prelude collections (such as `Set<T>`).
      - *Algebraic Sum Types & GADTs*: `type Option<T> { Some(T), None }`.
      - *Nominal Wrappers & Unit Nominals*: `type UserId(int)`, `type Marker`.
      - *Opaque Types*: `pub opaque type SessionToken = str`.
@@ -913,9 +926,9 @@ Ril statically rejects six structural anti-patterns that attempt to violate doma
 
 ```ril
 -- 1. Bare Effect Aliases (E0330) vs. 'eff' Declarations:
--- type BadEffect = @Io                         -- Error [E0330]: bare effect '@Io' cannot be aliased as a type; declare effects using 'eff'
--- type CombinedEffect = @Io + Async            -- Error [E0330]: bare effect row '@Io + Async' cannot be aliased as a type; combine effects via 'eff'
--- type DynamicEff = @Fiber                     -- Error [E0330]: bare effect '@Fiber' cannot be used in type definition
+-- type BadEffect = @Io                         -- Error [E0330]: BareEffectTypeAliasError: bare effect '@Io' cannot be aliased as a type; declare effects using 'eff'
+-- type CombinedEffect = @Io + Async            -- Error [E0330]: BareEffectTypeAliasError: bare effect row '@Io + Async' cannot be aliased as a type; combine effects via 'eff'
+-- type DynamicEff = @Fiber                     -- Error [E0330]: BareEffectTypeAliasError: bare effect '@Fiber' cannot be used in type definition
 
 eff Io {
     read_line() -> str,
@@ -927,10 +940,10 @@ type ReaderFn = fn() -> str @Io                -- OK: effect annotates callable 
 type AsyncWorker<T> = fn(T) -> () @AsyncIo     -- OK: effect annotates callable arrow
 
 -- 2. Bare Capability Aliases (E0331) vs. Interior Mutability Markers:
--- type BadMut = &mut                           -- Error [E0331]: bare capability '&mut' cannot be aliased as a type; capabilities belong to storage and callable domains
--- type BadShare = &^mut                        -- Error [E0331]: bare capability '&^mut' cannot be aliased as a type
--- type BadGlobal = &{mut app_cache}            -- Error [E0331]: bare capability '&{mut app_cache}' cannot be aliased as a type
--- type BadClosure = &closure                   -- Error [E0331]: bare capability '&closure' cannot be aliased as a type
+-- type BadMut = &mut                           -- Error [E0331]: BareCapabilityTypeAliasError: bare capability '&mut' cannot be aliased as a type; capabilities belong to storage and callable domains
+-- type BadShare = &^mut                        -- Error [E0331]: BareCapabilityTypeAliasError: bare capability '&^mut' cannot be aliased as a type
+-- type BadGlobal = &{mut app_cache}            -- Error [E0331]: BareCapabilityTypeAliasError: bare capability '&{mut app_cache}' cannot be aliased as a type
+-- type BadClosure = &closure                   -- Error [E0331]: BareCapabilityTypeAliasError: bare capability '&closure' cannot be aliased as a type
 
 type StateNode = {
     mut count: int,                            -- OK: field 'mut' is a structural layout marker, not a capability
@@ -942,9 +955,9 @@ type SharedLogger = fn(str) -> () &closure &^mut -- OK: capability annotates cal
 -- 3. Sum Variant Computation Annotations (E0332) vs. Callable Payloads:
 -- type TaskStatus {
 --     Pending,
---     Running @Async,                         -- Error [E0332]: sum variant 'Running' cannot declare algebraic effect '@Async'; variants are data constructors, not computations
---     Mutating &mut,                          -- Error [E0332]: sum variant 'Mutating' cannot declare state capability '&mut'; variants are data constructors, not computations
---     Suspended(int) @Fiber,                  -- Error [E0332]: sum variant 'Suspended' cannot declare algebraic effect '@Fiber'
+--     Running @Async,                         -- Error [E0332]: VariantComputationAnnotationError: sum variant 'Running' cannot declare algebraic effect '@Async'; variants are data constructors, not computations
+--     Mutating &mut,                          -- Error [E0332]: VariantComputationAnnotationError: sum variant 'Mutating' cannot declare state capability '&mut'; variants are data constructors, not computations
+--     Suspended(int) @Fiber,                  -- Error [E0332]: VariantComputationAnnotationError: sum variant 'Suspended' cannot declare algebraic effect '@Fiber'
 -- }
 
 type TaskStatus {
@@ -961,9 +974,9 @@ let status: TaskStatus = Running(\-> {
 
 -- 4. Record Field Computation Annotations (E0333) vs. Callable Fields:
 -- type BadChannel = {
---     stream: str @Io,                        -- Error [E0333]: record field 'stream' cannot declare algebraic effect '@Io'; fields store values or callables
---     buffer: []u8 &mut,                      -- Error [E0333]: record field 'buffer' cannot declare state capability '&mut'; use 'mut' prefix or callable arrow
---     sink: int &{mut app_cache},             -- Error [E0333]: record field 'sink' cannot declare external state capability
+--     stream: str @Io,                        -- Error [E0333]: FieldComputationAnnotationError: record field 'stream' cannot declare algebraic effect '@Io'; fields store values or callables
+--     buffer: []u8 &mut,                      -- Error [E0333]: FieldComputationAnnotationError: record field 'buffer' cannot declare state capability '&mut'; use 'mut' prefix or callable arrow
+--     sink: int &{mut app_cache},             -- Error [E0333]: FieldComputationAnnotationError: record field 'sink' cannot declare external state capability
 -- }
 
 type ValidChannel = {
@@ -980,9 +993,9 @@ let mut ch = ValidChannel.{
 ch.buffer !> Array::push(42)                   -- OK: mutate interior mutable field via 'let mut' root
 
 -- 5. Generic Computation Constraints (E0334) vs. Automatic Forwarding:
--- fn bad_exec<T: @Io>(task: T) -> () { task() } -- Error [E0334]: generic parameter 'T' cannot be constrained by algebraic effect '@Io'; generics parameterize types or values
--- type BadWrapper<T: &mut> = { item: T }      -- Error [E0334]: generic parameter 'T' cannot be constrained by state capability '&mut'
--- fn bad_pipe<T: @Async + Io>(x: T) -> T { x } -- Error [E0334]: generic parameter 'T' cannot be constrained by effect row '@Async + Io'
+-- fn bad_exec<T: @Io>(task: T) -> () { task() } -- Error [E0334]: GenericComputationConstraintError: generic parameter 'T' cannot be constrained by algebraic effect '@Io'; generics parameterize types or values
+-- type BadWrapper<T: &mut> = { item: T }      -- Error [E0334]: GenericComputationConstraintError: generic parameter 'T' cannot be constrained by state capability '&mut'
+-- fn bad_pipe<T: @Async + Io>(x: T) -> T { x } -- Error [E0334]: GenericComputationConstraintError: generic parameter 'T' cannot be constrained by effect row '@Async + Io'
 
 fn execute<T, R>(task: fn(T) -> R, arg: T) -> R {
     task(arg)                                  -- OK: automatically forwards callee's effects and capabilities
@@ -995,13 +1008,13 @@ fn get_field<T, K: keyof T>(record: T, key: K) -> T.(K) {
 }
 
 -- 6. Pure Type Function Computation Annotations (E0335) vs. Symbolic Purity:
--- halt type BadTransform<T> = \T -> type<T> @Io -- Error [E0335]: pure type function cannot declare algebraic effect '@Io'; type functions are axiomatically pure
--- type BadMapper<T> = \T -> type<T> &mut       -- Error [E0335]: pure type function cannot declare state capability '&mut'
--- halt type BadAsyncType<T> = \T -> type<T> @Async &closure -- Error [E0335]: pure type function cannot declare effects or capabilities
+-- halt type BadTransform<T> = \T -> type<T> @Io -- Error [E0335]: TypeFunctionComputationAnnotationError: pure type function cannot declare algebraic effect '@Io'; type functions are axiomatically pure
+-- type BadMapper<T> = \T -> type<T> &mut       -- Error [E0335]: TypeFunctionComputationAnnotationError: pure type function cannot declare state capability '&mut'
+-- halt type BadAsyncType<T> = \T -> type<T> @Async &closure -- Error [E0335]: TypeFunctionComputationAnnotationError: pure type function cannot declare effects or capabilities
 
 halt type MakeNullable = \T -> type<?T>        -- OK: pure type evaluation returning type<T>
 halt type SafeRecord = \T -> {
-    if typeof(T) == typeof(int) {
+    if type<T> == type<int> {
         type<{ val: int, valid: bool }>
     } else {
         type<{ val: T, valid: bool }>
@@ -1055,13 +1068,15 @@ TypeExpression   ::= PrimaryType
                    | TupleType
                    | ArrayType
                    | MapType
-                   | SetType
                    | CallableType
                    | TypeProjection
                    | TypeFunctionExpr
 
 PrimaryType      ::= PrimitiveType | NominalRef | "(" TypeExpression ")"
 NominalRef       ::= PascalCase [ GenericArgs ]
+ArrayType        ::= "[" [ Expression ] "]" TypeExpression
+MapType          ::= "[" TypeExpression ":" TypeExpression "]"
+TupleType        ::= "(" TypeExpression "," { TypeExpression "," } [ TypeExpression ] ")"
 
 (* Callable Type: THE COMPUTATION CONFLUENCE POINT *)
 CallableType     ::= "fn" "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ EffectAnnot ] [ StateAnnot ]
@@ -1137,14 +1152,14 @@ type UserDoc = { mut title: str, mut score: int }
 -- 1. Immutable Binding ('let'):
 let ro_val = 100
 let ro_doc = UserDoc.{ title: "Guide", score: 50 }
--- ro_val = 200                         -- Error [E0501]: cannot reassign immutable binding 'ro_val'
--- ro_doc.score = 51                    -- Error [E0520]: cannot mutate field through read-only handle 'ro_doc'
+-- ro_val = 200                         -- Error [E0501]: ImmutableReassignmentError: cannot reassign immutable binding 'ro_val'
+-- ro_doc.score = 51                    -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'score' through read-only handle 'ro_doc'
 
 -- 2. Pinned Mutable Handle ('let mut'):
 let mut pinned_doc = UserDoc.{ title: "Draft", score: 0 }
 pinned_doc.score = 10                  -- OK: in-place interior mutation permitted
 pinned_doc.title = "Published"         -- OK: in-place field write permitted
--- pinned_doc = UserDoc.{ title: "New", score: 0 } -- Error [E0502]: cannot reassign pinned mutable handle 'pinned_doc'; use 'var'
+-- pinned_doc = UserDoc.{ title: "New", score: 0 } -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned mutable handle 'pinned_doc'; use 'var'
 
 -- 3. Reassignable Mutable Variable ('var'):
 var counter = 0
@@ -1158,7 +1173,7 @@ let view observer = pinned_doc         -- OK: live view over pinned mutable root
 assert(observer.score == 15)           -- OK: reads current state
 pinned_doc.score = 20                  -- Mutate via root
 assert(observer.score == 20)           -- OK: live view dynamically observes mutation
--- observer.score = 25                 -- Error [E0520]: cannot mutate through read-only view 'observer'
+-- observer.score = 25                 -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'score' through read-only view 'observer'
 ```
 
 ### 4.1 Immutable Bindings (`let`)
@@ -1170,11 +1185,11 @@ LetDecl ::= "let" Pattern [ ":" TypeExpression ] "=" Expression
 ```ril
 let x = 10                             -- Immutable integer binding
 let (a, b) = (1, 2)                    -- Destructuring tuple binding
--- x = 20                              -- Error [E0501]: cannot reassign immutable binding 'x'
+-- x = 20                              -- Error [E0501]: ImmutableReassignmentError: cannot reassign immutable binding 'x'
 
 type Config = { capacity: int }
 let cfg = Config.{ capacity: 64 }
--- let .{ mut capacity } = cfg         -- Error [E0521]: cannot destructure read-only record into 'mut' binding
+-- let .{ mut capacity } = cfg         -- Error [E0521]: DestructureMutabilityLaunderingError: cannot destructure read-only record into 'mut' binding
 ```
 
 ### 4.2 Pinned Mutable Handles (`let mut`)
@@ -1198,20 +1213,20 @@ let mut buf = Buffer.{ items: [1, 2] }
 buf.items !> Array::push(3)            -- OK: in-place write to pinned buffer
 
 -- 2. Handle reassignment is statically rejected:
--- buf = Buffer.{ items: [] }          -- Error [E0502]: cannot reassign pinned mutable handle 'buf'; use 'var' if reassignment is intended
+-- buf = Buffer.{ items: [] }          -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned mutable handle 'buf'; use 'var' if reassignment is intended
 
 -- 3. Value types under let mut are rejected:
--- let mut count: int = 0              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
+-- let mut count: int = 0              -- Error [E0402]: ValueTypePinnedMutError: value type 'int' has no interior mutability; use 'var'
 
 -- 4. Pattern-level pinned mutable destructuring:
 type NodePair = { mut left: Buffer, mut right: Buffer }
 let mut pair = NodePair.{ left: Buffer.{ items: [] }, right: Buffer.{ items: [] } }
 let .{ mut left, mut right } = pair
 left.items !> Array::push(10)          -- OK: 'left' is a pinned mutable handle
--- left = Buffer.{ items: [] }        -- Error [E0502]: cannot reassign pinned handle 'left'
+-- left = Buffer.{ items: [] }        -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned handle 'left'
 
 -- 5. Definite Mutation Invariant:
--- let mut unused = Buffer.{ items: [] } -- Error [E0527]: variable 'unused' declared 'let mut' but never modified in-place
+-- let mut unused = Buffer.{ items: [] } -- Error [E0527]: UnusedMutableBindingError: variable 'unused' declared 'let mut' but never modified in-place
 ```
 
 ### 4.3 Reassignable Mutable Variables (`var`)
@@ -1250,14 +1265,14 @@ let ro_node1 = Node.{ val: 1, next: Some(ro_node2) }
 var cursor = ro_node1                  -- OK: 'cursor' is a reassignable ReadOnly handle
 assert(cursor.val == 1)
 cursor = ro_node2                      -- OK: reassignment permitted to matching ReadOnly type
--- cursor.val = 99                     -- Error [E0520]: cannot mutate field through read-only handle 'cursor'
+-- cursor.val = 99                     -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'val' through read-only handle 'cursor'
 
 -- 4. Pattern-level var destructuring:
 var (start_idx, end_idx) = (0, 10)
 start_idx += 1; end_idx -= 1           -- OK: both variables reassignable
 
 -- 5. Definite Mutation Invariant:
--- var unused_var = 100                -- Error [E0527]: variable 'unused_var' declared 'var' but never modified
+-- var unused_var = 100                -- Error [E0527]: UnusedMutableBindingError: variable 'unused_var' declared 'var' but never modified or reassigned
 ```
 
 ### 4.4 Scoped Resource Bindings (`let scoped`, `let scoped mut`)
@@ -1291,7 +1306,7 @@ let mut event_log: []str = []
         on_close: \-> event_log !> Array::push("closed_R2")
     }
     second.name = "R2_modified"        -- OK: 'second' is declared 'let scoped mut'
-    -- second = Resource.{ name: "R3", on_close: \-> () } -- Error [E0502]: cannot reassign pinned scoped handle 'second'
+    -- second = Resource.{ name: "R3", on_close: \-> () } -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned scoped handle 'second'
 
     -- Scope exit triggers cleanup in strict LIFO order:
     -- 'second' closes FIRST, 'first' closes SECOND
@@ -1300,7 +1315,7 @@ assert(event_log == ["closed_R2", "closed_R1"])
 
 -- 2. Iteration cleanup executes at the end of each iteration:
 let mut iter_log: []str = []
-for item in ["A", "B"] {
+for ["A", "B"] as item {
     let scoped res = Resource.{
         name: item,
         on_close: \-> iter_log !> Array::push("closed_" ++ item)
@@ -1310,7 +1325,9 @@ for item in ["A", "B"] {
 assert(iter_log == ["closed_A", "closed_B"])
 
 -- 3. Static violations:
--- var scoped bad_reassign = Resource.{ name: "Bad", on_close: \-> () } -- Error [E0532]: scoped bindings cannot be declared 'var'
+-- var scoped bad_reassign = Resource.{ name: "Bad", on_close: \-> () } -- Error [E0532]: ReassignableScopedResourceError: scoped resource bindings cannot be declared 'var'
+-- let scoped bad_eff = Resource.{ name: "BadEff", on_close: \-> Console::print("leak") } -- Error [E0616]: ScopedCleanupEffectError: scoped cleanup handler cannot declare or invoke unhandled algebraic effects
+-- let scoped bad_div = Resource.{ name: "BadDiv", on_close: \-> loop {} } -- Error [E0617]: ScopedCleanupDivergenceError: scoped cleanup handler cannot declare or invoke divergent operations
 ```
 
 ### 4.5 Live View Bindings (`let view`)
@@ -1332,7 +1349,7 @@ let view observer = original
 assert(observer.val == 10)
 
 -- Writing through a view is statically prohibited:
--- observer.val = 20                   -- Error [E0520]: cannot mutate through read-only view 'observer'
+-- observer.val = 20                   -- Error [E0520]: MutabilityLaunderingError: cannot mutate through read-only view 'observer'
 
 -- Mutations to the underlying object are dynamically observed through the view:
 original.val = 42
@@ -1340,10 +1357,10 @@ assert(observer.val == 42)             -- OK: live view reflects mutation
 
 -- 2. Target Constraint: source must be a pinned mutable root
 let immutable_node = Node.{ val: 100 }
--- let view bad_view = immutable_node   -- Error [E0531]: cannot create live view over immutable binding 'immutable_node' (source must be pinned mutable root)
+-- let view bad_view = immutable_node   -- Error [E0531]: ImmutableTargetViewError: cannot create live view over immutable binding 'immutable_node' (source must be pinned mutable root)
 
 var reassignable_node = Node.{ val: 200 }
--- let view bad_var_view = reassignable_node -- Error [E0531]: cannot create live view over reassignable variable 'reassignable_node' (source must be pinned mutable root)
+-- let view bad_var_view = reassignable_node -- Error [E0531]: ImmutableTargetViewError: cannot create live view over reassignable variable 'reassignable_node' (source must be pinned mutable root)
 
 -- Safe read-only sharing via ordinary let:
 let safe_alias = immutable_node        -- OK: immutable bindings safely share read-only access
@@ -1351,7 +1368,7 @@ assert(safe_alias.val == 100)
 
 -- 3. Concurrency Invariant:
 -- A live mutable view cannot escape across a concurrent task boundary:
--- scope.fork(\-> observer.val)        -- Error [E0601]: cannot pass live mutable view across task boundary
+-- scope.fork(\-> observer.val)        -- Error [E0601]: CrossThreadDataRaceHazardError: cannot pass live mutable view across task boundary
 ```
 
 ### 4.6 Type Declarations & Opaque Types
@@ -1363,8 +1380,12 @@ OpaqueTypeDecl ::= [ "pub" ] "opaque" "type" Identifier [ GenericParams ] [ Wher
 
 ```ril
 -- 1. Transparent Type Declarations:
-pub type UserId = int                  -- Direct type alias, transparent across module boundaries
+pub type AccountId = int              -- Direct type alias, transparent across module boundaries
 type Point = { x: int, y: int }        -- Local record type alias
+
+-- Cyclic structural type alias rejection (E0313):
+-- type BadCyclicA = { next: BadCyclicB }
+-- type BadCyclicB = { prev: BadCyclicA } -- Error [E0313]: CyclicTypeAliasError: structural type aliases 'BadCyclicA' and 'BadCyclicB' form a cyclic dependency without nominal or sum indirection
 
 -- 2. Opaque Type Declarations:
 -- In file: auth/session.ril
@@ -1393,24 +1414,30 @@ fn validate_token(token: SessionToken) -> bool {
 -- In file: app/main.ril
 use auth/session::{SessionToken, create_token, reveal_token}
 
-let token = create_token("secret_token_1234")?
+-- let bad_top_token = create_token("secret_token_1234")? -- Error [E0205]: TopLevelQuestionMarkProhibitedError: postfix '?' prohibited in top-level context; no enclosing function to receive early return
 
--- External boundary invariants:
--- let bad_assign: SessionToken = "raw" -- Error [E0301]: expected opaque 'SessionToken', found 'str'
--- let bad_unfold: str = token         -- Error [E0301]: cannot implicitly convert opaque 'SessionToken' to 'str'
--- let bad_inner = inner(token)        -- Error [E0308]: 'inner()' cannot penetrate opaque type 'SessionToken' (requires type W(T))
--- let SessionToken(s) = token         -- Error [E0308]: opaque type 'SessionToken' does not expose a pattern deconstructor
+fn authenticate_client() -> ?SessionToken {
+    let token = create_token("secret_token_1234")? -- OK: propagated via '?' inside function frame
 
--- Valid external operations:
-let same_eq = (token == token)         -- OK: same-type equality permitted when underlying type supports '=='
--- let cross_eq = (token == "raw")     -- Error [E0301]: cannot compare distinct types 'SessionToken' and 'str'
+    -- External boundary invariants:
+    -- let bad_assign: SessionToken = "raw" -- Error [E0301]: TypeMismatchError: expected opaque 'SessionToken', found 'str'
+    -- let bad_unfold: str = token         -- Error [E0301]: TypeMismatchError: cannot implicitly convert opaque 'SessionToken' to 'str'
+    -- let bad_inner = inner(token)        -- Error [E0308]: OpaqueBoundaryViolationError: 'inner()' cannot penetrate opaque type 'SessionToken' (requires type W(T))
+    -- let SessionToken(s) = token         -- Error [E0308]: OpaqueBoundaryViolationError: opaque type 'SessionToken' does not expose a pattern deconstructor
 
--- Operations via explicit exports & pipeline:
-let raw_str = token |> reveal_token()  -- OK: explicit deconstruction via exported function
+    -- Valid external operations:
+    let same_eq = (token == token)         -- OK: same-type equality permitted when underlying type supports '=='
+    -- let cross_eq = (token == "raw")     -- Error [E0301]: TypeMismatchError: cannot compare distinct types 'SessionToken' and 'str'
 
--- Zero runtime boxing: storage in collections carries zero wrapper allocation:
-let active_tokens: []SessionToken = [token]
-let token_map: [SessionToken: int] = [token: 42]
+    -- Operations via explicit exports & pipeline:
+    let raw_str = token |> reveal_token()  -- OK: explicit deconstruction via exported function
+
+    -- Zero runtime boxing: storage in collections carries zero wrapper allocation:
+    let active_tokens: []SessionToken = [token]
+    let token_map: [SessionToken: int] = [token: 42]
+
+    Some(token)
+}
 ```
 
 ### 4.7 Effect Declarations
@@ -1498,6 +1525,10 @@ where
 -- fn test_penetrate(elem: DomElement) {
 --     let id = elem.id                 -- Error [E0907]: ForeignStructuralFieldPenetrationError: cannot access field on opaque type 'DomElement'
 -- }
+
+-- 7. Missing body in standard .ril module (E0902):
+-- In file: platform/dom.ril (standard module)
+-- fn unimplemented_render(elem: DomElement) -> () -- Error [E0902]: MissingBodyInStandardModuleError: function 'unimplemented_render' declared in standard '.ril' module must have an implementation body
 ```
 
 ---
@@ -1588,7 +1619,7 @@ let matches = opt is Some(x) if x > 0  -- true; 'x' is scoped strictly to guard 
 
 ```ril
 let valid_and = (p != None) && (p.x > 0) -- Right side not evaluated if p == None
-let valid_or  = (items.len == 0) || (items[0] > 0) -- Right side not evaluated if items is empty
+let valid_or  = (len(items) == 0) || (items[0] > 0) -- Right side not evaluated if items is empty
 let negated   = !valid_and             -- Unary logical NOT
 ```
 
@@ -1620,7 +1651,8 @@ items !> Array::push(4)                -- In-place mutation: items is now [1, 2,
 
 ### 5.8 Error & Fallback Operators (`?`, `??`, `?.`, `?[`)
 
-1. **Postfix `?`**: Unwraps `Ok(v)` / `Some(v)`, or returns early with `Err(e)` / `None`.
+1. **Postfix `?`**: Unwraps `Ok(v)` / `Some(v)`, or returns early with `Err(e)` / `None` into the enclosing function frame.
+   - **Top-Level Prohibition Invariant (`E0205`)**: Postfix `?` performs an early return into an enclosing caller frame. Evaluating postfix `?` within top-level statements, module initializers, or constant expressions is statically rejected (`E0205: TopLevelQuestionMarkProhibitedError`), as no enclosing function frame exists to receive propagated errors.
 2. **Fallback `??`**:
    - For `Option<T>`: Evaluates to `T` using the fallback value or supplier closure.
    - For `Result<T, E>`: Right operand MUST be an error-consuming closure `\err -> T`.
@@ -1631,6 +1663,7 @@ fn find_record(id: int) -> Result<str, str> {
     let user = fetch_user(id)?         -- Early return Err if fetch_user fails
     Ok(user.name)
 }
+-- let bad_top_record = find_record(1)? -- Error [E0205]: TopLevelQuestionMarkProhibitedError: postfix '?' prohibited in top-level context; no enclosing function to receive error
 
 let opt: ?int = None
 let v1 = opt ?? 100                    -- 100 (Option fallback with default value)
@@ -1638,8 +1671,8 @@ let v2 = opt ?? \-> compute_default()  -- Option fallback with lazy supplier clo
 
 let res: Result<int, str> = Err("unavailable")
 let recovered = res ?? \err -> 0       -- 0: Result fallback MUST consume the error
--- let bad = res ?? 0                  -- Error [E0711]: Result fallback requires closure '\err -> ...'
--- let illegal = opt ?? return 0       -- Error [E0710]: illegal control transfer inside fallback operator '??'
+-- let bad = res ?? 0                  -- Error [E0711]: InvalidResultFallbackError: Result fallback requires closure '\err -> ...'
+-- let illegal = opt ?? return 0       -- Error [E0710]: IllegalControlTransferInFallbackError: illegal control transfer inside fallback operator '??'
 
 -- Safe navigation operators '?.' and '?[':
 let profile: ?UserProfile = None
@@ -1690,10 +1723,10 @@ flags >>= 2                            -- 0b00100
 type Buffer = { mut capacity: int }
 let mut pinned_buf = Buffer.{ capacity: 16 }
 pinned_buf.capacity = 32               -- OK: field assignment through pinned handle
--- pinned_buf = Buffer.{ capacity: 64 } -- Error [E0502]: cannot reassign pinned mutable handle 'pinned_buf'; use 'var'
+-- pinned_buf = Buffer.{ capacity: 64 } -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned mutable handle 'pinned_buf'; use 'var'
 
 -- Chained assignment is prohibited:
--- x = y = 10                          -- Error [E0701]: assignment chaining is prohibited
+-- x = y = 10                          -- Error [E0701]: ChainedAssignmentProhibitedError: assignment chaining is prohibited
 ```
 
 ---
@@ -1808,10 +1841,16 @@ if logging_enabled {
 }
 
 -- Incompatible branch types are statically rejected:
--- let bad = if true { 10 } else { "error" } -- Error [E0301]: type mismatch, expected int, found str
+-- let bad = if true { 10 } else { "error" } -- Error [E0301]: TypeMismatchError: if-else branches have incompatible types: expected 'int', found 'str'
 ```
 
 ### 6.3 Loop Expressions (`loop`, `while`, `for`)
+
+```ebnf
+LoopExpr  ::= "loop" Block
+WhileExpr ::= "while" Expression Block
+ForExpr   ::= "for" Expression "as" Pattern Block
+```
 
 ```ril
 -- 1. 'loop' with 'last' yielding a value:
@@ -1829,7 +1868,7 @@ while i > 0 {
 
 -- 3. 'for' loop over ranges and collections:
 var sum = 0
-for x in 1..=5 {
+for 1..=5 as x {
     if x % 2 == 0 { next }             -- 'next' skips even numbers
     sum += x
 }
@@ -1849,7 +1888,7 @@ ControlTransfer ::= ( "last" [ Expression ] )
 ```ril
 -- 1. 'last' terminates innermost loop (bare 'last' or 'last expr'):
 var total = 0
-for n in 1..=100 {
+for 1..=100 as n {
     if n > 10 { last }                 -- Bare 'last': terminates loop without value
     total += n
 }
@@ -1864,7 +1903,7 @@ assert(reached == 50)
 
 -- 2. 'next' advances innermost loop to next iteration:
 var odd_sum = 0
-for n in 1..=6 {
+for 1..=6 as n {
     if n % 2 == 0 { next }             -- Skips even iterations
     odd_sum += n
 }
@@ -1877,13 +1916,17 @@ fn log_positive(val: int) {
 }
 
 fn search(matrix: [][]int, target: int) -> bool {
-    for row in matrix {
-        for cell in row {
+    for matrix as row {
+        for row as cell {
             if cell == target { return true } -- 'return expr': early return with value
         }
     }
     false
 }
+
+-- 4. Rejection of Invalid Control Transfer (E0707):
+-- last 42                                  -- Error [E0707]: InvalidControlTransferContextError: 'last' statement used outside loop body
+-- next                                     -- Error [E0707]: InvalidControlTransferContextError: 'next' statement used outside loop body
 ```
 
 ### 6.5 Guarded Bindings (`let ... else`) & The Non-Vacuous Binding Invariant (`E0309`)
@@ -1902,12 +1945,12 @@ fn process_account(data: [str: str]) -> Result<str, str> {
 
     -- Non-diverging 'else' is statically rejected:
     -- let Some(name) = data["name"] else {
-    --     println("name missing")     -- Error [E0301]: 'else' branch of 'let ... else' must diverge
+    --     println("name missing")     -- Error [E0321]: NonDivergentElseError: 'else' branch of 'let ... else' must diverge
     -- }
 
     -- Prohibited: Vacuous guarded binding without variable bindings:
     -- let Ok() = save_profile(id) else {
-    --     return Err("save failed")   -- Error [E0309]: 'let ... else' pattern must bind at least one variable; use postfix '?' or 'if expr is ...' instead
+    --     return Err("save failed")   -- Error [E0309]: VacuousBindingError: 'let ... else' pattern must bind at least one variable; use postfix '?' or 'if expr is ...' instead
     -- }
 
     -- Compliant Alternative 1: Postfix '?'
@@ -1920,7 +1963,7 @@ fn process_account(data: [str: str]) -> Result<str, str> {
 }
 
 -- Divergence via 'next' and 'last' inside loops:
-for entry in records {
+for records as entry {
     let Ok(val) = parse_entry(entry) else {
         next                           -- OK: diverges out of this iteration, binds variable 'val'
     }
@@ -1977,7 +2020,7 @@ fn area(s: Shape) -> f64 {
 --     match s {
 --         Circle(r) -> 3.14159 * r * r,
 --         Rect(w, h) -> w * h,
---     }                               -- Error [E0301]: non-exhaustive match expression, missing variant 'Point'
+--     }                               -- Error [E0303]: NonExhaustiveMatchError: non-exhaustive match expression, missing variant 'Point'
 -- }
 ```
 
@@ -2005,7 +2048,7 @@ fn get_size(s: Shape) -> f64 {
 --     match n {
 --         x if x >= 0 -> "positive",
 --         x if x < 0  -> "negative",
---     }                               -- Error [E0301]: non-exhaustive match: pattern guards do not prove coverage of all inputs
+--     }                               -- Error [E0303]: NonExhaustiveMatchError: non-exhaustive match: pattern guards do not prove coverage of all inputs
 -- }
 
 -- Boolean pattern test via 'is':
@@ -2018,7 +2061,7 @@ match result_pair {
     Ok(code, msg) -> println(msg),       -- OK: positional tuple unpack (n = 2)
     Ok(p) -> println(p.1),               -- OK: whole-tuple binding (n = 1)
     Ok((code, msg)) -> println(msg),     -- OK: explicit tuple pattern unwrap
-    -- Ok(a, b, c) -> println(a),        -- Error [E0301]: arity mismatch: variant 'Ok' payload expects 2 elements of type (int, str), found 3
+    -- Ok(a, b, c) -> println(a),        -- Error [E0314]: ArityMismatchError: arity mismatch: variant 'Ok' payload expects 2 elements of type (int, str), found 3
     Err(err) -> println(err),
 }
 
@@ -2138,14 +2181,14 @@ fn test_invalidation() {
     if opt != None {
         let _ = opt + 1                        -- OK: opt is int
         opt = None                             -- Reassignment: refinement invalidated
-        -- let bad = opt + 2                   -- Error [E0310]: variable 'opt' was narrowed to 'int', but refinement was invalidated by reassignment; current flow type is '?int'
+        -- let bad = opt + 2                   -- Error [E0310]: InvalidatedNarrowingAccessError: variable 'opt' was narrowed to 'int', but refinement was invalidated by reassignment; current flow type is '?int'
     }
 }
 
 -- 7. Contradictory narrowing rejection (E0311):
 fn test_contradiction(g: Geometry) {
     if g is Geometry::Circle {
-        -- if g is Geometry::Rect {            -- Error [E0311]: condition 'g is Geometry::Rect' is statically unsatisfiable; target is already narrowed to 'Geometry::Circle'
+        -- if g is Geometry::Rect {            -- Error [E0311]: ContradictoryNarrowingError: condition 'g is Geometry::Rect' is statically unsatisfiable; target is already narrowed to 'Geometry::Circle'
         --     println("unreachable")
         -- }
     }
@@ -2155,7 +2198,7 @@ fn test_contradiction(g: Geometry) {
 fn test_aliased_hazard() {
     var raw: ?int = Some(10)
     let view v = raw                           -- Live view aliases 'raw'
-    -- if raw != None {                        -- Error [E0533]: cannot narrow mutable variable 'raw' because it is aliased by live view 'v'; bind to immutable 'let' before branching
+    -- if raw != None {                        -- Error [E0533]: AliasedNarrowingHazardError: cannot narrow mutable variable 'raw' because it is aliased by live view 'v'; bind to immutable 'let' before branching
     --     println(raw + 1)
     -- }
 }
@@ -2164,7 +2207,7 @@ fn test_aliased_hazard() {
 fn test_non_binding_predicate(g: Geometry) {
     if g is Geometry::Circle(r) if r > 5.0 {
         let radius = g.0                       -- OK: payload access via .0
-        -- let escaped = r                     -- Error [E0301]: unresolved identifier 'r'; pattern bindings in 'is' are strictly scoped to guard clause
+        -- let escaped = r                     -- Error [E0204]: UnresolvedIdentifierError: unresolved identifier 'r'; pattern bindings in 'is' are strictly scoped to guard clause
     }
 }
 
@@ -2174,20 +2217,20 @@ fn test_latent_havoc() {
     if count != None {
         let mut step = \-> &{mut count} { count = None }
         step()                                 -- Mutating call invalidates 'count'
-        -- let bad_use = count + 1             -- Error [E0310]: variable 'count' was narrowed to 'int', but refinement was invalidated by mutating call 'step()'; current flow type is '?int'
+        -- let bad_use = count + 1             -- Error [E0310]: InvalidatedNarrowingAccessError: variable 'count' was narrowed to 'int', but refinement was invalidated by mutating call 'step()'; current flow type is '?int'
     }
 }
 
 -- 11. Generic confinement: bare type parameter rejected:
 fn test_generic_confinement<T>(x: Geometry) {
-    -- if x is T {                             -- Error [E0301]: cannot test unconstrained generic type parameter 'T' in narrowing predicate
+    -- if x is T {                             -- Error [E0301]: TypeMismatchError: cannot test unconstrained generic type parameter 'T' in narrowing predicate
     --     println("invalid")
     -- }
 }
 
 -- 12. Dead-path mutation phase ordering:
 fn test_dead_write_phase_ordering() {
-    -- var unused: ?int = Some(10)            -- Error [E0527]: variable 'unused' declared 'var' is never modified along reachable paths
+    -- var unused: ?int = Some(10)            -- Error [E0527]: UnusedMutableBindingError: variable 'unused' declared 'var' is never modified along reachable paths
     -- if unused == None {
     --     unused = Some(20)                  -- Write in statically unreachable branch does not satisfy Definite Mutation Invariant
     -- }
@@ -2250,7 +2293,7 @@ where
     type TransformFn<In, Out, Err> = fn(In) -> Result<Out, Err> @Fiber + Async &mut
     type AuditSink<Item>           = fn(Item) -> () &{mut audit_log} &closure
 {
-    var out: []R = []
+    let mut out: []R = []
     for stream as item {
         let res = transform(item)?
         sink(res)
@@ -2330,13 +2373,13 @@ add_score(mut player, 5)               -- OK: explicit caller-site 'mut player'
 player !> add_score(5)                 -- OK: mutating pipeline desugars to add_score(mut player, 5)
 
 -- Static caller violations:
--- add_score(player, 5)                -- Error [E0520]: argument to 'mut' parameter must be passed with 'mut'
+-- add_score(player, 5)                -- Error [E0520]: MutabilityLaunderingError: argument to 'mut' parameter must be passed with 'mut'
 -- let frozen_player = player
--- add_score(mut frozen_player, 5)     -- Error [E0520]: cannot borrow read-only handle 'frozen_player' as 'mut'
--- fn bad_inc(mut count: int) &mut {}  -- Error [E0401]: value types (int) cannot be declared as 'mut' parameters
--- fn noop_mut(mut u: User) &mut {}    -- Error [E0527]: 'mut' parameter 'u' declared but never modified
--- fn bad_rebind(mut u: User) &mut { u = User.{ name: "B", score: 0 } } -- Error [E0502]: cannot reassign pinned parameter 'u'
--- fn bad_var(var x: int) {}           -- Error [E0403]: 'var' parameters are prohibited in function signatures
+-- add_score(mut frozen_player, 5)     -- Error [E0520]: MutabilityLaunderingError: cannot borrow read-only handle 'frozen_player' as 'mut'
+-- fn bad_inc(mut count: int) &mut {}  -- Error [E0401]: ValueTypeMutableBorrowError: value types (int) cannot be declared as 'mut' parameters
+-- fn noop_mut(mut u: User) &mut {}    -- Error [E0527]: UnusedMutableBindingError: 'mut' parameter 'u' declared but never modified
+-- fn bad_rebind(mut u: User) &mut { u = User.{ name: "B", score: 0 } } -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned parameter 'u'
+-- fn bad_var(var x: int) {}           -- Error [E0403]: VarParameterProhibitedError: 'var' parameters are prohibited in function signatures
 ```
 
 #### Default Parameters and Named Arguments
@@ -2366,9 +2409,9 @@ let s3 = create_server("10.0.0.1", enable_tls: false) -- Order-independent named
 let s4 = create_server(host: "api.internal", port: 9000, enable_tls: true)
 
 -- Rejections:
--- fn bad_def(mut u: User = User.{ name: "A", score: 0 }) {} -- Error [E0401]: mutable parameter cannot have default
--- create_server("127.0.0.1", host: "duplicate")            -- Error [E0301]: parameter 'host' supplied both positionally and by name
--- fn bad_fn_gen<T = int>(x: T) -> T { x }                  -- Error [E0317]: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
+-- fn bad_def(mut u: User = User.{ name: "A", score: 0 }) {} -- Error [E0404]: MutableParameterDefaultProhibitedError: mutable parameter cannot have default
+-- create_server("127.0.0.1", host: "duplicate")            -- Error [E0325]: DuplicateArgumentError: parameter 'host' supplied both positionally and by name
+-- fn bad_fn_gen<T = int>(x: T) -> T { x }                  -- Error [E0317]: FunctionDefaultGenericProhibitedError: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
 ```
 
 ### 7.3 Anonymous Functions, Trailing Closures & Projection Accessors
@@ -2394,7 +2437,7 @@ TupleIndex    ::= Digit { Digit }
 3. **Safe Navigation Propagation**:
    - If any navigation segment uses safe navigation `?.`, evaluation short-circuits to `None` when the intermediate receiver is `None`. The resulting accessor closure return type is automatically lifted into `?T`.
 4. **Collection Segregation**:
-   - Dynamic collections (`[]T`, `[K: V]`, `Set<T>`) are not product types and cannot be projected via dot/accessor syntax directly (`E0301`). Element and key extractions require explicit bracket indexing (`\arr -> arr?[i]`) or higher-order combinators (`Array::first`, `Map::get`).
+   - Collections (slices `[]T`, maps `[K: V]`, and prelude `Set<T>`) are not product types and cannot be projected via dot/accessor syntax directly (`E0301`). Element and key extractions require explicit bracket indexing (`\arr -> arr?[i]`) or higher-order combinators (`Array::first`, `Map::get`).
 
 ```ril
 -- 1. Standard Anonymous Functions:
@@ -2441,9 +2484,9 @@ let opt_depts: []?Department = [Some(Department.{ name: "Sales", leader: None })
 let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to [Some("Sales"), None]
 
 -- Rejections:
--- let bad_idx = pairs |> Array::map(\.2)                     -- Error [E0301]: tuple index 2 out of bounds for (int, str)
--- let bad_field = employees |> Array::map(\.age)             -- Error [E0301]: unknown field 'age' on type 'Employee'
--- let bad_arr = [[1, 2], [3]] |> Array::map(\.0)             -- Error [E0301]: collections do not have named fields or static tuple projections
+-- let bad_idx = pairs |> Array::map(\.2)                     -- Error [E0312]: TupleIndexOutOfBoundsError: tuple index 2 out of bounds for (int, str)
+-- let bad_field = employees |> Array::map(\.age)             -- Error [E0307]: MissingFieldError: unknown field 'age' on type 'Employee'
+-- let bad_arr = [[1, 2], [3]] |> Array::map(\.0)             -- Error [E0301]: TypeMismatchError: collections do not have named fields or static tuple projections
 ```
 
 ### 7.4 Closures, Factory Signatures & Lexical Environments
@@ -2475,7 +2518,7 @@ let mut acc = make_accumulator(100)    -- Requires 'let mut acc' (pinned mutable
 let a1 = acc(20)                       -- 120: valid invocation through 'let mut' handle
 
 let frozen_acc = make_accumulator(10)
--- frozen_acc(5)                       -- Error [E0520]: cannot invoke mutable-capturing closure via read-only handle 'frozen_acc'
+-- frozen_acc(5)                       -- Error [E0520]: MutabilityLaunderingError: cannot invoke mutable-capturing closure via read-only handle 'frozen_acc'
 
 -- Nested Closures and Flat Chain Elaboration:
 fn make_nested_multiplier(factor: int) -> (fn(int) -> (fn(int) -> int &closure) &closure) &capture {
@@ -2586,7 +2629,7 @@ fn clear_items(mut list: []int) &mut {
 }
 
 -- Missing capability annotation is statically rejected:
--- fn bad_clear(mut list: []int) {     -- Error [E0510]: missing state capability '&mut'
+-- fn bad_clear(mut list: []int) {     -- Error [E0510]: MissingCapabilityAnnotationError: mutating operation requires caller signature to declare '&mut'
 --     list !> Array::truncate(0)
 -- }
 ```
@@ -2662,7 +2705,7 @@ fn make_forwarded_ticker() -> (fn() -> int &{mut global_session}) &{^mut global_
     }                                  -- Tracks 'global_session' origin: MUST declare &{^mut global_session}
 }
 -- fn bad_forwarded_ticker() -> (fn() -> int &{mut global_session}) { ... }
--- Error [E0510]: missing capability '&{^mut global_session}'
+-- Error [E0510]: MissingCapabilityAnnotationError: mutating external state requires caller signature to declare capability '&{^mut global_session}'
 
 fn make_param_ticker(mut s: Session) -> (fn() -> int &closure) &^mut {
     let mut forwarded = s              -- Intermediate local handle
@@ -2683,7 +2726,7 @@ fn make_private_ticker() -> (fn() -> int &closure) &capture {
     }                                  -- OK: frame-confined origin; exactly 1 surviving write path
 }
 -- fn bad_over_annotated() -> (fn() -> int &closure) &^mut { ... }
--- Error [E0529]: excessive capability '&^mut', private allocation has no surviving aliases
+-- Error [E0529]: ExcessiveCapabilityAnnotationError: excessive capability '&^mut', private allocation has no surviving aliases
 
 -- Dual surviving write paths: both closure and reference escape (MUST declare &^mut)
 fn make_dual_ticker() -> ((fn() -> int &closure), Session) &^mut {
@@ -2717,11 +2760,11 @@ fn record_transaction() -> () &{mut transaction_count} {
 }
 
 -- 3. Static errors on missing annotations:
--- fn bad_read() -> str { APP_CONFIG_NAME }          -- Error [E0510]: missing capability '&{APP_CONFIG_NAME}'
--- fn bad_write() { transaction_count += 1 }        -- Error [E0510]: missing capability '&{mut transaction_count}'
+-- fn bad_read() -> str { APP_CONFIG_NAME }          -- Error [E0510]: MissingCapabilityAnnotationError: accessing external state requires caller signature to declare capability '&{APP_CONFIG_NAME}'
+-- fn bad_write() { transaction_count += 1 }        -- Error [E0510]: MissingCapabilityAnnotationError: mutating external state requires caller signature to declare capability '&{mut transaction_count}'
 
 -- 4. Prohibition of Anonymous Concealment:
--- fn conceal_write() &mut { transaction_count += 1 } -- Error [E0510]: cannot use anonymous '&mut' to conceal external 'transaction_count'
+-- fn conceal_write() &mut { transaction_count += 1 } -- Error [E0510]: MissingCapabilityAnnotationError: cannot use anonymous '&mut' to conceal external state 'transaction_count'
 ```
 
 ### 8.5 Closure Capabilities & Handle Invocation Permissions
@@ -2739,7 +2782,7 @@ let mut active_counter = create_counter(0)
 let v1 = active_counter()              -- OK: handle 'active_counter' is 'let mut'
 
 let read_only_counter = create_counter(0)
--- read_only_counter()                 -- Error [E0520]: cannot invoke mutable-capturing closure via read-only handle 'read_only_counter'
+-- read_only_counter()                 -- Error [E0520]: MutabilityLaunderingError: cannot invoke mutable-capturing closure via read-only handle 'read_only_counter'
 
 -- Read-only capturing closure:
 fn create_greeter(prefix: str) -> (fn(str) -> str &closure) &capture {
@@ -2757,11 +2800,14 @@ For every argument passed to a `mut` parameter, its memory path MUST be pairwise
 $$\forall i \in \mathrm{MutArgs},\quad \forall j \ne i,\quad \mathrm{Path}(a_i) \cap \mathrm{Path}(a_j) = \emptyset$$
 
 ```ril
-type Point = { mut x: int, mut y: int }
+type Node = { mut val: int }
+type Pair = { mut first: Node, mut second: Node }
 type Buffer = { mut size: int, mut data: []int }
 
-fn swap(mut a: int, mut b: int) &mut {
-    let tmp = a; a = b; b = tmp
+fn swap_nodes(mut a: Node, mut b: Node) &mut {
+    let tmp = a.val
+    a.val = b.val
+    b.val = tmp
 }
 fn append_buf(src: Buffer, mut dst: Buffer) &mut { ... }
 fn modify_with(mut b: Buffer, cb: fn() -> ()) &mut {
@@ -2770,19 +2816,19 @@ fn modify_with(mut b: Buffer, cb: fn() -> ()) &mut {
 }
 
 -- 1. Record Field Disjointness:
-let mut pt = Point.{ x: 1, y: 2 }
-swap(mut pt.x, mut pt.y)               -- OK: pt.x ∩ pt.y = ∅ (provably distinct fields)
--- swap(mut pt.x, mut pt.x)            -- Error [E0523]: MutMutAliasingConflictError: overlapping mutable borrow on 'pt.x'
+let mut pair = Pair.{ first: Node.{ val: 1 }, second: Node.{ val: 2 } }
+swap_nodes(mut pair.first, mut pair.second)   -- OK: pair.first ∩ pair.second = ∅ (provably distinct fields)
+-- swap_nodes(mut pair.first, mut pair.first) -- Error [E0523]: MutMutAliasingConflictError: overlapping mutable borrow on 'pair.first'
 
 -- 2. Read-Mut Cross-Argument Conflicts:
 let mut buf = Buffer.{ size: 0, data: [] }
 -- append_buf(buf, mut buf)            -- Error [E0524]: ReadMutAliasingHazardError: 'buf' borrowed as mut while read-only borrowed
 
 -- 3. Array Element Disjointness:
-let mut numbers = [10, 20, 30]
-swap(mut numbers[0], mut numbers[1])   -- OK: distinct constant indices 0 and 1
+let mut nodes = [Node.{ val: 10 }, Node.{ val: 20 }, Node.{ val: 30 }]
+swap_nodes(mut nodes[0], mut nodes[1])        -- OK: distinct constant indices 0 and 1
 let idx_a = 0; let idx_b = 0
--- swap(mut numbers[idx_a], mut numbers[idx_b]) -- Error [E0523]: dynamic indices may overlap
+-- swap_nodes(mut nodes[idx_a], mut nodes[idx_b]) -- Error [E0523]: MutMutAliasingConflictError: dynamic indices may overlap in multiple 'mut' arguments
 
 -- 4. Callback / Closure Aliasing Overlap:
 let mut target = Buffer.{ size: 10, data: [1, 2] }
@@ -2805,58 +2851,58 @@ type UserDoc = { mut title: str, mut score: int }
 
 -- E0520: MutabilityLaunderingError (binding/assigning read-only to let mut or mutable var, or mutating through view)
 let doc = UserDoc.{ title: "Draft", score: 0 }
--- doc.score = 10                      -- Error [E0520]: cannot mutate field through read-only handle 'doc'
--- let mut laundered = doc             -- Error [E0520]: cannot bind read-only handle to 'let mut'
+-- doc.score = 10                      -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'score' through read-only handle 'doc'
+-- let mut laundered = doc             -- Error [E0520]: MutabilityLaunderingError: cannot bind read-only handle 'doc' to 'let mut'
 let mut other_doc = UserDoc.{ title: "Active", score: 5 }
 other_doc.score = 10                  -- OK: mutable handle mutated
--- other_doc = doc                    -- Error [E0502]: cannot reassign pinned mutable handle 'other_doc'; use 'var'
+-- other_doc = doc                    -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned mutable handle 'other_doc'; use 'var'
 var reassignable_doc = UserDoc.{ title: "Active", score: 5 }
--- reassignable_doc = doc             -- Error [E0520]: cannot reassign read-only handle 'doc' to mutable handle 'reassignable_doc'
+-- reassignable_doc = doc             -- Error [E0520]: MutabilityLaunderingError: cannot reassign read-only handle 'doc' to mutable handle 'reassignable_doc'
 fn pass_to_mut(mut u: UserDoc) &mut { u.score += 1 }
--- pass_to_mut(mut doc)                -- Error [E0520]: cannot borrow read-only handle 'doc' as 'mut'
+-- pass_to_mut(mut doc)                -- Error [E0520]: MutabilityLaunderingError: cannot borrow read-only handle 'doc' as 'mut'
 
 -- E0521: DestructureMutabilityLaunderingError (destructuring read-only into mut fields)
--- let .{ mut score } = doc            -- Error [E0521]: cannot bind read-only field to 'mut' pattern
+-- let .{ mut score } = doc            -- Error [E0521]: DestructureMutabilityLaunderingError: cannot bind read-only field 'score' to 'mut' pattern
 
 -- E0522: ContainerMutabilityLaunderingError (injecting read-only reference into mutable container)
 let mut doc_list: []UserDoc = []
--- doc_list !> Array::push(doc)        -- Error [E0522]: cannot store read-only reference 'doc' into mutable array
+-- doc_list !> Array::push(doc)        -- Error [E0522]: ContainerMutabilityLaunderingError: cannot store read-only reference 'doc' into mutable array 'doc_list'
 let mut detached = doc |> clone        -- OK: clone() produces independent detached mutable duplicate
 doc_list !> Array::push(detached)      -- OK: detached mutable root stored into mutable container
 
 -- E0523 & E0524: Mut-Mut and Read-Mut aliasing hazards (see §8.6)
 
 -- E0525: SpreadLaunderingError (shallow-spreading read-only record into let mut root)
--- let mut spread_doc = UserDoc.{ ..doc, score: 99 } -- Error [E0525]: shallow spread of read-only record into 'let mut'
+-- let mut spread_doc = UserDoc.{ ..doc, score: 99 } -- Error [E0525]: SpreadLaunderingError: shallow spread of read-only record 'doc' into 'let mut'
 
 -- E0526: CollectionMutationDuringIterationError (mutating collection while iterating over it)
 let mut nums = [1, 2, 3]
-for item in nums {
-    -- nums !> Array::push(item)       -- Error [E0526]: cannot mutate 'nums' in place while iterating in 'for' loop
+for nums as item {
+    -- nums !> Array::push(item)       -- Error [E0526]: CollectionMutationDuringIterationError: cannot mutate collection 'nums' in place while iterating in 'for' loop
 }
 
 -- E0527: UnusedMutableBindingError (declared 'var', 'let mut', or 'mut' parameter but never modified)
--- var never_written = 42              -- Error [E0527]: variable 'never_written' declared 'var' but never modified
--- let mut unused_doc = UserDoc.{ title: "X", score: 0 } -- Error [E0527]: variable 'unused_doc' declared 'let mut' but never modified in place
--- fn noop_mut(mut u: UserDoc) &mut {} -- Error [E0527]: 'mut' parameter 'u' declared but never modified
+-- var never_written = 42              -- Error [E0527]: UnusedMutableBindingError: variable 'never_written' declared 'var' but never modified or reassigned
+-- let mut unused_doc = UserDoc.{ title: "X", score: 0 } -- Error [E0527]: UnusedMutableBindingError: variable 'unused_doc' declared 'let mut' but never modified in place
+-- fn noop_mut(mut u: UserDoc) &mut {} -- Error [E0527]: UnusedMutableBindingError: 'mut' parameter 'u' declared but never modified
 
 -- E0528: ReturnMutabilityLaunderingError (returning read-only parameter into caller let mut)
 fn inspect_user(u: UserDoc) -> UserDoc { u }
 let user_in = UserDoc.{ title: "Alice", score: 10 }
--- let mut stolen = inspect_user(user_in) -- Error [E0528]: cannot bind return value originating from read-only parameter to 'let mut'
+-- let mut stolen = inspect_user(user_in) -- Error [E0528]: ReturnMutabilityLaunderingError: cannot bind return value originating from read-only parameter 'user_in' to 'let mut'
 let inspected = inspect_user(user_in)     -- OK: caller receives as read-only handle
 
 -- E0529: ExcessiveCapabilityAnnotationError (over-annotating beyond minimal required capabilities)
--- fn pure_add(a: int, b: int) -> int &mut { a + b } -- Error [E0529]: function does not mutate parameters or state
+-- fn pure_add(a: int, b: int) -> int &mut { a + b } -- Error [E0529]: ExcessiveCapabilityAnnotationError: function does not mutate parameters or state; remove unnecessary '&mut'
 
 -- E0530: IllegalCapabilityCloneImmutError (target carries active capabilities: neither clonable nor freezable)
 let mut counter_handle = create_counter(0)
--- let bad_clone = clone(counter_handle)       -- Error [E0530]: cannot clone active capability or closure
--- let bad_immut = clone_immut(counter_handle) -- Error [E0530]: target carrying active capabilities is neither clonable nor freezable into Immut<T>
+-- let bad_clone = clone(counter_handle)       -- Error [E0530]: IllegalCapabilityCloneImmutError: cannot clone active capability or closure 'counter_handle'
+-- let bad_immut = clone_immut(counter_handle) -- Error [E0530]: IllegalCapabilityCloneImmutError: target carrying active capabilities is neither clonable nor freezable into Immut<T>
 
 -- E0531: ImmutableTargetViewError (creating a live view over an immutable binding)
 let immutable_doc = UserDoc.{ title: "Frozen", score: 100 }
--- let view bad_v = immutable_doc       -- Error [E0531]: cannot create live view over immutable binding 'immutable_doc' (source must be mutable root)
+-- let view bad_v = immutable_doc       -- Error [E0531]: ImmutableTargetViewError: cannot create live view over immutable binding 'immutable_doc' (source must be mutable root)
 let safe_alias = immutable_doc        -- OK: immutable binding safely shared across read-only handles
 ```
 
@@ -2886,8 +2932,8 @@ let abstract_stashing: StashingWorker = concrete_stashing -- OK: preserves &^mut
 
 -- 3. Illegal Hazard Erasure:
 -- type BadWorker = fn(Entry) -> () &closure
--- let illegal: BadWorker = concrete_stashing -- Error [E0510]: cannot erase '&^mut' hazard through abstraction
--- let pure_cast: fn(int) -> int = concrete_worker -- Error [E0301]: cannot erase '&closure' to pure function
+-- let illegal: BadWorker = concrete_stashing -- Error [E0534]: HazardErasureProhibitedError: cannot erase '&^mut' hazard through abstraction
+-- let pure_cast: fn(int) -> int = concrete_worker -- Error [E0534]: HazardErasureProhibitedError: cannot erase '&closure' to pure function
 ```
 
 ---
@@ -2996,7 +3042,7 @@ fn make_button() -> Button {
 fn bad_double_resume() -> int {
     with Op::query() -> {
         let first = resume 1
-        -- let second = resume 2        -- Error [E0610]: affine resumption 'resume' invoked more than once
+        -- let second = resume 2        -- Error [E0610]: DuplicateResumeInvocationError: affine resumption 'resume' invoked more than once
         first
     }
     Op::query()
@@ -3005,7 +3051,7 @@ fn bad_double_resume() -> int {
 -- 2. Escaping Resumption Violation: resume escaping the handler arm
 fn bad_escaping_resume() -> fn() -> int {
     with Op::query() -> {
-        let esc = \-> resume 42         -- Error [E0611]: affine resumption 'resume' cannot escape handler arm
+        let esc = \-> resume 42         -- Error [E0611]: EscapingResumeError: affine resumption 'resume' cannot escape handler arm lexical scope
         esc
     }
     Op::query()
@@ -3094,9 +3140,10 @@ fn fetch_pipeline(url: str) -> Result<str, TaskFault> @Async {
 }
 
 -- 3. Cooperative Fiber Yielding (@Fiber):
-fn cooperative_worker(mut count: int) -> () @Fiber {
-    while count > 0 {
-        count -= 1
+fn cooperative_worker(count: int) -> () @Fiber {
+    var c = count
+    while c > 0 {
+        c -= 1
         Fiber::yield()                  -- Yields execution quantum to runtime scheduler
     }
 }
@@ -3106,7 +3153,8 @@ eff Yield<T> {
     emit(value: T) -> ()
 }
 
-fn range_stream(mut cur: int, max: int) @Yield<int> {
+fn range_stream(start: int, max: int) @Yield<int> {
+    var cur = start
     while cur < max {
         Yield::emit(cur)
         cur += 1
@@ -3150,7 +3198,7 @@ fn collatz(n: int) -> int @Div {
 halt fn factorial(n: int) -> int {
     if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
--- halt fn bad_total(n: int) -> int {  -- Error [E0820]: 'halt fn' contains uncertified recursion or unbounded loop
+-- halt fn bad_total(n: int) -> int {  -- Error [E0820]: TotalityViolationError: 'halt fn' contains uncertified recursion or unbounded loop
 --     collatz(n)
 -- }
 ```
@@ -3173,9 +3221,25 @@ All concurrent child tasks must be forked within a structured `scope`. A parent 
    For any concurrent child task $c$ spawned via `s.fork(task)` or data-parallel combinator (`Parallel::map`, `Parallel::fold`), the task callable $task$ MUST be closed under all user-defined algebraic effects:
    $$\mathop{\mathrm{Effects}}(task) \subseteq \lbrace\text{Fiber}\rbrace \quad \text{(or } \emptyset \text{ for pure/parallel combinators)}$$
    Every algebraic effect operation invoked within the execution tree of a concurrent child task MUST be intercepted and discharged by a local `with` handler lexically enclosed within that child task. Handlers established in parent or ancestor tasks MUST NOT be captured across concurrent task boundaries (`&closure`). Passing a callable carrying unhandled algebraic effects or capturing external effect handlers across a concurrent task boundary is statically rejected at compile time under `E0615: CrossTaskUnhandledEffectError`. Runtime-managed cooperative fiber scheduling operations (`eff Fiber`) are exempt.
-
 ```ril
-use ril/concurrent::{scope, Scope, Task, TaskFault, PanicInfo, DoubleFaultInfo}
+use ril/concurrent::{scope, Scope, Task}
+
+-- Core Structured Concurrency Fault Contracts:
+pub type PanicInfo = {
+    message: str,
+    index: ?int,
+}
+
+pub type DoubleFaultInfo = {
+    primary: PanicInfo,
+    cleanup: PanicInfo,
+}
+
+pub type TaskFault {
+    Panicked(PanicInfo),
+    Cancelled,
+    DoubleFaultFatal(DoubleFaultInfo),
+}
 
 -- 1. Structured Concurrency and Task Panic Containment:
 fn run_isolated_workers() -> Result<(str, int), TaskFault> {
@@ -3214,7 +3278,7 @@ fn run_isolated_workers() -> Result<(str, int), TaskFault> {
 fn bad_concurrent_data_race() {
     let mut shared_data = [1, 2, 3]
     scope(\mut s -> {
-        -- s.fork(\-> {                -- Error [E0601]: cannot capture mutable handle 'shared_data' across concurrent task boundary
+        -- s.fork(\-> {                -- Error [E0601]: CrossThreadDataRaceHazardError: cannot capture mutable handle 'shared_data' across concurrent task boundary
         --     shared_data !> Array::push(4)
         -- })
         Ok()
@@ -3269,7 +3333,7 @@ Data parallelism in Ril provides deterministic, multi-core evaluation of pure ex
 
 #### 9.6.1 The Colorless Parallel Principle & Domain Boundary
 1. **Zero-Effect Purity ($\mathbf{Eff} = \emptyset$)**:
-   Data-parallel combinators (`Parallel::map`, `Parallel::fold`, `Parallel::join`, `Parallel::for_each_mut`) are evaluation strategies of the abstract machine, not control inversion protocols. Functions orchestrating pure data parallelism remain completely colorless and may be called within total certified functions (`halt fn`). Attaching `@Parallel` annotations is an ontological category error and is statically rejected under `E0612: UnhandledEffectError`.
+   Data-parallel combinators (`Parallel::map`, `Parallel::fold`, `Parallel::join`, `Parallel::for_each`) are evaluation strategies of the abstract machine, not control inversion protocols. Functions orchestrating pure data parallelism remain completely colorless and may be called within total certified functions (`halt fn`). Attaching `@Parallel` annotations is an ontological category error and is statically rejected under `E0620: PseudoEffectAnnotationError`.
 2. **Observational Equivalence Axiom**:
    For any data-parallel evaluation $\mathbf{Parallel}::op(S, f)$, the observed terminal state (normal return value or defect panic) MUST be 100% bit-for-bit equivalent to sequential left-to-right evaluation on a single core.
 
@@ -3313,7 +3377,7 @@ pub fn join3<A, B, C>(task_a: fn() -> A, task_b: fn() -> B, task_c: fn() -> C) -
 4. **Transparent Panic Unwinding**: Joined panics unwind child frames in LIFO order and re-throw the primary panic into the parent frame without `TaskFault` reification. If both branches panic, the primary panic is selected via deterministic left-biased resolution.
 
 #### 9.6.6 Declarative Data Parallelism & Concurrency Bounding
-1. **`Parallel::for_each`**: Applies an in-place mutation closure `fn(mut T) -> () &mut` across slice elements. Element mutations execute in-place under abstract machine chunk scheduling. Closures are strictly forbidden from capturing external mutable variables (`E0605`).
+1. **`Parallel::for_each`**: Applies an in-place mutation closure `fn(mut T) -> () &mut` across slice elements (where element type `T` is a record or reference type with internal mutable fields). Element mutations execute in-place under abstract machine chunk scheduling. Closures are strictly forbidden from capturing external mutable variables (`E0605`).
 2. **`Parallel::map_bounded`**: Evaluates data-parallel transformations with bounded active parallel worker concurrency (`max_concurrency: int`). Observational equivalence and Leftmost Index Supremacy remain 100% bit-exact and identical to unconstrained evaluation.
 
 #### 9.6.7 The Absolute Effect-Free Parallel Invariant
@@ -3333,7 +3397,7 @@ let numbers: []f64 = [1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7, 8.8]
 let total_sum = Parallel::fold(
     numbers,
     init_acc: \-> 0.0f64,
-    fold_local: \mut acc, x -> { acc += x },
+    fold_local: \acc, x -> acc + x,
     merge_acc: \a, b -> a + b
 )
 
@@ -3349,7 +3413,7 @@ let fault_result = scope(\mut s -> {
     t.join()
 })
 match fault_result {
-    Err(TaskFault::Panicked(info)) -> assert(info.index == 1), -- Strictly index 1
+    Err(TaskFault::Panicked(info)) -> assert(info.index == Some(1)), -- Strictly index 1
     _ -> panic("expected deterministic panic at index 1"),
 }
 
@@ -3370,9 +3434,10 @@ pub fn parallel_merge_sort(s: []int) -> []int {
 }
 
 -- 6. In-Place Element Mutation (Parallel::for_each):
-let mut matrix_row: []f64 = [1.0, 2.0, 3.0, 4.0]
-matrix_row !> Parallel::for_each(\mut item -> { item *= 2.0 })
-assert(matrix_row == [2.0, 4.0, 6.0, 8.0])
+type Cell = { mut val: f64 }
+let mut cells: []Cell = [Cell.{ val: 1.0 }, Cell.{ val: 2.0 }, Cell.{ val: 3.0 }, Cell.{ val: 4.0 }]
+cells !> Parallel::for_each(\mut item -> { item.val *= 2.0 })
+assert(cells[0].val == 2.0)
 
 -- 7. Concurrency-Bounded Execution (Parallel::map_bounded):
 let urls: []str = ["api/a", "api/b", "api/c", "api/d"]
@@ -3381,7 +3446,7 @@ let hashes = urls |> Parallel::map_bounded(max_concurrency: 2, \u -> Crypto::sha
 -- 8. Negative Examples: Parallel Capability and Effect Confinement
 var external_counter = 0
 -- let bad_capture = data |> Parallel::map(\x -> {
---     external_counter += 1            -- Error [E0605]: cannot capture external mutable variable 'external_counter' in parallel combinator
+--     external_counter += 1            -- Error [E0605]: InvalidParallelCapabilityError: cannot capture external mutable variable 'external_counter' in parallel combinator
 --     x * 2
 -- })
 
@@ -3389,6 +3454,8 @@ var external_counter = 0
 --     \-> { external_counter += 1 },   -- Error [E0619]: ParallelDisjointAccessConflictError: parallel branch captures mutable path 'external_counter' overlapping concurrent branch
 --     \-> { external_counter += 2 },
 -- )
+
+-- fn bad_parallel_effect() -> () @Parallel {} -- Error [E0620]: PseudoEffectAnnotationError: '@Parallel' is an evaluation strategy of the abstract machine, not an algebraic effect
 ```
 
 ### 9.7 Structured Concurrency Channels (`ril/concurrent/channel`)
@@ -3463,6 +3530,13 @@ type MutableState = { mut count: int }
 -- fn bad_receiver_clone(rx: Receiver<int>) {
 --     let rx_copy = clone(rx)          -- Error [E0530]: IllegalCapabilityCloneImmutError: 'Receiver<T>' is an affinely unique endpoint and cannot be cloned
 -- }
+
+-- fn bad_endpoint_aliasing(tx: Sender<int>) {
+--     scope(\mut s -> {
+--         s.fork(\-> { tx !> Channel::send(1) })
+--         s.fork(\-> { tx !> Channel::send(2) }) -- Error [E0603]: ChannelEndpointAliasingConflictError: un-cloned sender endpoint 'tx' aliased across concurrent tasks
+--     })
+-- }
 ```
 
 ### 9.8 The Arrow-Only Law of Effects (`E0613`)
@@ -3475,13 +3549,13 @@ Attaching `@Eff` annotations to value bindings, record fields, tuple elements, o
 -- -----------------------------------------------------------------------------
 -- Negative Examples: Prohibited Value Effect Annotations (E0613)
 -- -----------------------------------------------------------------------------
--- type BadField = { data: int @Io }            -- Error [E0613]: record field has value type 'int'; raw effects cannot reside on values
--- type BadTuple = (str @Io, int)               -- Error [E0613]: tuple component has value type 'str'; raw effects cannot reside on values
--- type BadArray = []int @Async                 -- Error [E0613]: array element has value type 'int'; raw effects cannot reside on values
+-- type BadField = { data: int @Io }            -- Error [E0613]: ValueEffectAnnotationError: record field 'data' has value type 'int'; raw effects cannot reside on values
+-- type BadTuple = (str @Io, int)               -- Error [E0613]: ValueEffectAnnotationError: tuple component has value type 'str'; raw effects cannot reside on values
+-- type BadArray = []int @Async                 -- Error [E0613]: ValueEffectAnnotationError: array element has value type 'int'; raw effects cannot reside on values
 
 -- fn test_binding_error() @Io {
---     let bad_bind: str @Io = "hello"          -- Error [E0613]: binding 'bad_bind' specifies effect '@Io'; values in normal form carry no latent effects
---     let @Io bad_prefix = "hello"             -- Error [E0613]: binding pattern specifies effect '@Io'; misplaced effect annotation
+--     let bad_bind: str @Io = "hello"          -- Error [E0613]: ValueEffectAnnotationError: binding 'bad_bind' specifies effect '@Io'; values in normal form carry no latent effects
+--     let @Io bad_prefix = "hello"             -- Error [E0613]: ValueEffectAnnotationError: binding pattern specifies effect '@Io'; misplaced effect annotation
 -- }
 
 -- -----------------------------------------------------------------------------
@@ -3517,8 +3591,8 @@ let b: typeof a = 20                   -- OK: direct 'typeof' in type annotation
 ```ril
 let t_int = type<int>                  -- OK: all types enclosed in type<...>
 let t_inferred = type<typeof (1 + 2)>  -- OK: 'typeof' enclosed in type<...> in expression position
--- let bad_t = int                     -- Error [E0301]: bare type in expression context
--- let bad_inferred = typeof (1 + 2)   -- Error [E0301]: bare 'typeof' in expression context
+-- let bad_t = int                     -- Error [E0319]: BareTypeInExpressionContextError: bare type 'int' used in expression context; wrap in 'type<int>'
+-- let bad_inferred = typeof (1 + 2)   -- Error [E0319]: BareTypeInExpressionContextError: bare 'typeof' operator used in expression context; wrap in 'type<typeof (1 + 2)>'
 ```
 
 3. **Type Functions & Invocation**: Unannotated type function parameters default to sort `Type` (`\T -> ...`). Type function application uses generic angle brackets `<...>`:
@@ -3569,11 +3643,12 @@ halt type PaddedBuffer = \raw_size: int, T -> {
 type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u8, len: int }
 
 -- Static Rejection of Violations:
--- meta fn bad_type_gen() -> type<int> {       -- Error [E0812]: 'meta fn' cannot return 'type<...>'; monopolized by type functions
+-- meta fn bad_type_gen() -> type<int> {       -- Error [E0812]: MetaTypeReturnProhibitedError: 'meta fn' cannot return 'type<...>'; monopolized by type functions
 --     type<int>
 -- }
--- halt type BadEffect = \T -> type<T> @Async  -- Error [E0335]: type functions cannot declare algebraic effects
--- meta fn bad_eff() -> int @Io { 0 }          -- Error [E0813]: 'meta fn' cannot declare algebraic effects
+-- halt type BadEffect = \T -> type<T> @Async  -- Error [E0335]: TypeFunctionComputationAnnotationError: type functions cannot declare algebraic effects
+-- meta fn bad_eff() -> int @Io { 0 }          -- Error [E0813]: MetaComputationAnnotationError: 'meta fn' cannot declare algebraic effects
+-- type BadInfinite<T> = BadInfinite<T>        -- Error [E0811]: CompileTimeBudgetExceededError: evaluation step budget exceeded in pure type function 'BadInfinite'
 ```
 
 ### 10.3 Disjoint Call Families, Evaluation Budgets & Pre-Effect Dead-Branch Pruning
@@ -3588,8 +3663,8 @@ fn pure_worker(x: int) -> int { x + 1 }
 fn effectful_worker(x: int) -> int @Console { Console::print("log"); x }
 
 fn dispatch_worker<F>(f: F, val: int) -> int {
-    meta let pure = is_pure(type<F>)
-    if pure {
+    meta let PURE = is_pure(type<F>)
+    if PURE {
         f(val)                                 -- For pure_worker, surviving branch has Eff = ∅
     } else {
         f(val)                                 -- For effectful_worker, surviving branch carries @Console
@@ -3684,6 +3759,11 @@ halt type ReverseTuple = \T -> {
     )>
 }
 type ReversedPair = ReverseTuple<Pair>         -- (str, int)
+
+-- 4. Rejection of Invalid Mapped Comprehensions:
+-- type BadRecordKeys = { [K in [0, 1]]: int } -- Error [E0341]: InvalidRecordKeySortError: mapped record comprehension requires '[]str' keys, found '[]int'
+-- type BadTupleKeys = ( [I in ["a", "b"]]: int ) -- Error [E0342]: InvalidTupleKeySortError: mapped tuple comprehension requires '[]int' keys, found '[]str'
+-- type Bad1Tuple = ( [I in [0]]: int )       -- Error [E0343]: SingleElementTupleProhibitedError: mapped tuple comprehension produced single-element tuple (Ril strictly has no 1-tuples)
 ```
 
 ### 10.5 Structural Type Pattern Matching (`match type<T>`)
@@ -3728,6 +3808,12 @@ type Nested = Option<Result<int, str>>
 type Unwrapped = UnwrapAll<Nested>             -- int
 type Elem = ElementOf<[]str>                   -- str
 type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) }
+
+-- 4. Rejection of Non-Rigid Type Patterns (E0306):
+-- type BadPattern = \T -> match type<T> {
+--     type<(let M)<let U>> -> type<U>,         -- Error [E0306]: KindMismatchError: rigid type pattern cannot bind constructor '(let M)' as a higher-kinded pattern variable
+--     _                    -> type<never>,
+-- }
 ```
 
 ### 10.6 Static Parameter Sorts & Adaptation Rules (`\param: Sort`)
@@ -3789,10 +3875,10 @@ meta fn primitive_size<T>(_t: type<T>) -> int {
 
 -- 2. Specialized packet layout generator:
 halt type AlignedPacket = \HeaderType, PayloadType, align_boundary: int = 8 -> {
-    meta let header_bytes = primitive_size(type<HeaderType>)
-    meta let pad_bytes = compute_padding(header_bytes, align_boundary)
+    meta let HEADER_BYTES = primitive_size(type<HeaderType>)
+    meta let PAD_BYTES = compute_padding(HEADER_BYTES, align_boundary)
     
-    if pad_bytes == 0 {
+    if PAD_BYTES == 0 {
         type<{
             header: HeaderType,
             payload: PayloadType,
@@ -3800,7 +3886,7 @@ halt type AlignedPacket = \HeaderType, PayloadType, align_boundary: int = 8 -> {
     } else {
         type<{
             header: HeaderType,
-            _pad: [pad_bytes]u8,
+            _pad: [PAD_BYTES]u8,
             payload: PayloadType,
         }>
     }
@@ -3808,10 +3894,10 @@ halt type AlignedPacket = \HeaderType, PayloadType, align_boundary: int = 8 -> {
 
 -- 3. Storage hierarchy specialization:
 halt type OptimizedStorage = \capacity_bytes: int -> {
-    meta let aligned_cap = align_to(capacity_bytes, 16)
-    if aligned_cap <= 128 {
+    meta let ALIGNED_CAP = align_to(capacity_bytes, 16)
+    if ALIGNED_CAP <= 128 {
         type<{
-            inline_buf: [aligned_cap]u8,
+            inline_buf: [ALIGNED_CAP]u8,
             len: int,
         }>
     } else {
@@ -3829,6 +3915,7 @@ type LargeBuffer = OptimizedStorage<1024>       -- { capacity: int, heap_ptr: in
 
 -- Static assertions:
 meta let _ = assert(align_to(4, 8) == 8, "alignment calculation verified")
+-- meta let _ = assert(align_to(4, 8) == 16, "fails") -- Error [E0830]: MetaAssertionFailedError: compile-time assertion 'align_to(4, 8) == 16' evaluated to false: fails
 ```
 
 ---
@@ -3860,7 +3947,7 @@ pub fn read_file(path: str) -> Result<[]u8, str> @Async -- OK: bodyless external
 -- In file: app/main.ril
 use math/geometry::{TAU, circle_area}   -- OK: importing from implementation unit
 use platform/fs::{FileHandle, read_file} -- OK: importing from declaration unit
--- use math/geometry::{PI}              -- Error [E0201]: symbol 'PI' is private to module 'math/geometry'
+-- use math/geometry::{PI}              -- Error [E0201]: PrivateItemAccessError: symbol 'PI' is private to module 'math/geometry'
 ```
 
 ### 11.2 Imports (`use`) & Visibility (`pub`)
@@ -3898,7 +3985,7 @@ let area = Geometry::circle_area(5.0)   -- OK: qualified static call
 -- 2. Explicit Namespace Aliasing:
 use ril/crypto as Hash                  -- OK: explicit alias override via 'as PascalCase'
 let digest = Hash::sha256("data")
--- use ril/crypto as hash               -- Error [E0101]: module namespace alias must be PascalCase, found 'hash'
+-- use ril/crypto as hash               -- Error [E0101]: InvalidIdentifierCasingError: module namespace alias must be PascalCase, found 'hash'
 
 -- 3. Selective Member Import with Optional Renaming:
 use ril/array::{push, pop as remove_last}
@@ -3914,21 +4001,22 @@ fn calculate() {
     use ril/crypto::{sha256}            -- Block-scoped import: visible strictly inside calculate()
     let d = sha256("data")
 }
--- let bad = sha256("data")              -- Error [E0301]: unresolved identifier 'sha256'
+-- let bad = sha256("data")              -- Error [E0204]: UnresolvedIdentifierError: unresolved identifier 'sha256'
 ```
 
 ### 11.3 Top-Level Initialization & Purity
 
-Top-level declarations MUST be free of observable runtime side effects. Top-level mutable variables must be initialized with constant expressions.
+Top-level declarations MUST be free of observable runtime side effects. Top-level mutable variables must be initialized with constant expressions. Furthermore, evaluating postfix `?` in top-level declarations or module-scope expressions is strictly prohibited (`E0205: TopLevelQuestionMarkProhibitedError`) because there is no enclosing caller function frame to receive propagated fallible outcomes.
 
 ```ril
 let MAX_CONNECTIONS: int = 100
 let DEFAULT_TITLE: str = "Ril Application"
 var active_workers: int = 0            -- OK: initialized with constant expression
 
--- Prohibited top-level runtime side effects:
--- let current_time = Clock::now()      -- Error [E0202]: top-level declaration must be a pure constant expression
--- let db = Database::connect("db.loc") -- Error [E0202]: top-level declaration cannot invoke runtime I/O or effects
+-- Prohibited top-level runtime side effects and error propagation:
+-- let current_time = Clock::now()      -- Error [E0202]: TopLevelSideEffectError: top-level declaration must be a pure constant expression
+-- let db = Database::connect("db.loc") -- Error [E0202]: TopLevelSideEffectError: top-level declaration cannot invoke runtime I/O or effects
+-- let top_parse = parse_id("10")?      -- Error [E0205]: TopLevelQuestionMarkProhibitedError: postfix '?' prohibited in top-level context; no enclosing function to receive error
 ```
 
 ### 11.4 Test Conventions & Execution Protocol
@@ -4047,7 +4135,7 @@ The following types, functions, and core modules are implicitly available in eve
 | :--- | :--- | :--- |
 | `Option<T>`, `?T` | Sum Type | Optional value: `Some(T)` or `None` |
 | `Result<T, E>` | Sum Type | Fallible operation outcome: `Ok(T)` or `Err(E)` |
-| `[K: V]`, `Set<T>` | Types | Built-in associative map and unique set |
+| `[K: V]` | Type | Built-in associative map |
 | `Array` | Module | Standard dynamic array combinators and mutation primitives (`push`, `pop`, `map`, `filter`, `fold`, `contains`, `reverse`) |
 | `Map` | Module | Standard associative map combinators and access primitives (`get`, `set`, `remove`, `contains`, `keys`, `values`) |
 | `Set` | Module | Standard unique set operations and algebraic combinators (`contains`, `insert`, `remove`, `union`, `intersect`, `diff`) |
@@ -4071,6 +4159,7 @@ let config_map: [str: int] = ["timeout": 5000, "retries": 3]
 let timeout_val = config_map |> Map::get("timeout") -- OK: 'Map' is ambiently available
 
 let words = "hello,world,ril" |> String::split(",") -- OK: 'String' is ambiently available
+let tags: Set<str> = Set::from(["system", "kernel"]) -- OK: 'Set' library module is ambiently available from prelude
 
 -- 2. Nominal Unwrapping via inner():
 type UserId(int)
@@ -4084,7 +4173,7 @@ detached !> Array::push(4)             -- Mutates 'detached'; 'original' remains
 
 -- 4. Permanent Immutability Freezing via clone_immut():
 let frozen: Immut<[]int> = clone_immut(original)
--- frozen !> Array::push(5)            -- Error [E0520]: cannot mutate permanently immutable Immut<T>
+-- frozen !> Array::push(5)            -- Error [E0520]: MutabilityLaunderingError: cannot mutate permanently immutable Immut<T>
 
 -- 5. Functional Derivation via derive():
 let base_cfg = .{ theme: "dark", retries: 3 }
@@ -4115,7 +4204,7 @@ fn save_profile(user_id: int) -> Result<(), str> {
 
 fn process_request(id: int) -> Result<(), str> {
     -- Prohibited: discarding fallible Result without inspection
-    -- save_profile(id)                 -- Error [E0720]: unused fallible Result must be handled
+    -- save_profile(id)                 -- Error [E0720]: UnusedFallibleResultError: unused fallible Result must be handled
 
     -- Compliant Alternative 1: Postfix '?' error propagation
     save_profile(id)?
@@ -4145,20 +4234,33 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0201`** | `PrivateItemAccessError` | Accessing or importing unexported private module symbol |
 | **`E0202`** | `TopLevelSideEffectError` | Top-level declaration contains non-constant runtime side effects |
 | **`E0203`** | `DuplicateDeclarationError` | Redeclaring an existing identifier in the same scope |
+| **`E0204`** | `UnresolvedIdentifierError` | Reference to an undeclared or unimported identifier in lexical scope |
+| **`E0205`** | `TopLevelQuestionMarkProhibitedError` | Using postfix '?' operator in top-level expression or declaration outside an enclosing function body |
 | **`E0301`** | `TypeMismatchError` | Expression type incompatible with expected type |
 | **`E0302`** | `UnexpectedFieldError` | Closed record supplied with undeclared fields |
+| **`E0303`** | `NonExhaustiveMatchError` | Pattern match expression does not cover all possible variant or structural cases |
+| **`E0304`** | `UnreachableMatchArmError` | Pattern match arm is statically unreachable due to preceding exhaustive patterns or GADT index constraints |
 | **`E0305`** | `NominalTypeMismatchError` | Mismatched nominal type wrapper identities |
 | **`E0306`** | `KindMismatchError` | Mismatched higher-kinded type constructor or sort constraint |
+| **`E0307`** | `MissingFieldError` | Record projection or construction expression lacks required declared field |
 | **`E0308`** | `OpaqueBoundaryViolationError` | Attempting to unpack, penetrate with `inner()`, or pattern deconstruct an opaque type externally |
 | **`E0309`** | `VacuousBindingError` | 'let' pattern binds zero variables (excluding explicit wildcard discard 'let _ = expr') |
 | **`E0310`** | `InvalidatedNarrowingAccessError` | Accessing identifier whose flow narrowing was invalidated by reassignment or mutation |
 | **`E0311`** | `ContradictoryNarrowingError` | Narrowing predicate is statically unsatisfiable under active flow environment |
+| **`E0312`** | `TupleIndexOutOfBoundsError` | Static tuple index projection exceeds bounds of tuple type |
 | **`E0313`** | `CyclicTypeAliasError` | Structural type aliases form a cyclic dependency without nominal or sum indirection |
+| **`E0314`** | `ArityMismatchError` | Mismatched number of arguments supplied to constructor, nominal wrapper, or tuple pattern |
 | **`E0315`** | `EscapingLocalNominalTypeError` | Local nominal wrapper or sum type escapes enclosing function boundary as return type |
 | **`E0316`** | `NonTrailingDefaultGenericParamError` | Generic parameter without default follows generic parameter with default |
 | **`E0317`** | `FunctionDefaultGenericProhibitedError` | Function generic parameter declares default type or value argument |
+| **`E0318`** | `LiteralTypeProhibitedError` | Value literal used directly as a type expression without singleton wrapper |
+| **`E0319`** | `BareTypeInExpressionContextError` | Bare type name used in expression context without enclosing `type<...>` wrapper |
 | **`E0320`** | `ForwardTypeDefaultReferenceError` | Generic default parameter expression contains forward reference or circular dependency |
+| **`E0321`** | `NonDivergentElseError` | 'let ... else' block does not diverge via control transfer ('return', 'panic', 'last') |
+| **`E0322`** | `WildcardExpressionError` | Standalone wildcard '_' used in expression position outside pattern binding or discard context |
 | **`E0323`** | `ConstGenericSortMismatchError` | Const generic argument does not match expected parameter sort |
+| **`E0324`** | `DynamicRecordIndexProhibitedError` | Dynamic expression indexing attempted on closed static record type |
+| **`E0325`** | `DuplicateArgumentError` | Duplicate named argument supplied in function or constructor call |
 | **`E0330`** | `BareEffectTypeAliasError` | Attempting to alias an effect ('@Eff') under 'type E = ...' instead of 'eff' declaration |
 | **`E0331`** | `BareCapabilityTypeAliasError` | Attempting to alias a capability ('&mut', '&^mut') under 'type C = ...' |
 | **`E0332`** | `VariantComputationAnnotationError` | Attaching '@Eff' or '&Cap' directly to a sum type variant constructor |
@@ -4171,6 +4273,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as `mut` parameter |
 | **`E0402`** | `ValueTypePinnedMutError` | Attempting to declare a value type as pinned mutable handle `let mut` |
 | **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
+| **`E0404`** | `MutableParameterDefaultProhibitedError` | Function parameter declared 'mut' specifies a default value argument |
 | **`E0501`** | `ImmutableReassignmentError` | Reassigning an immutable `let` binding |
 | **`E0502`** | `PinnedHandleReassignmentError` | Reassigning a pinned mutable handle `let mut` or borrowed `mut` parameter |
 | **`E0510`** | `MissingCapabilityAnnotationError` | Calling mutating operation without declaring `&mut` or `&^mut` |
@@ -4188,6 +4291,7 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0531`** | `ImmutableTargetViewError` | Attempting to create a live view (`let view`) over an immutable binding or non-pinned handle |
 | **`E0532`** | `ReassignableScopedResourceError` | Attempting to declare a scoped resource binding with `var scoped` |
 | **`E0533`** | `AliasedNarrowingHazardError` | Narrowing a `var` binding aliased by a live view or captured in a mutable closure |
+| **`E0534`** | `HazardErasureProhibitedError` | Callable abstraction attempting to erase '&^mut' hazard or convert stateful closure to pure function |
 | **`E0601`** | `CrossThreadDataRaceHazardError` | Passing live mutable view across concurrent task boundary |
 | **`E0602`** | `IllegalChannelPayloadCapabilityError` | Transmitting payload carrying active mutable capabilities, views, or unfrozen references across channel |
 | **`E0603`** | `ChannelEndpointAliasingConflictError` | Borrowing same un-cloned channel endpoint across concurrent tasks |
@@ -4203,12 +4307,14 @@ fn process_request(id: int) -> Result<(), str> {
 | **`E0617`** | `ScopedCleanupDivergenceError` | Resource cleanup handler (`on_close`) declares or invokes divergent operations (`@Div`) |
 | **`E0618`** | `UndischargedLocalEffectError` | Local algebraic effect declared in 'where' is not completely discharged within enclosing block |
 | **`E0619`** | `ParallelDisjointAccessConflictError` | Parallel branches in `Parallel::join` capture or access overlapping mutable memory paths (Bernstein violation) |
+| **`E0620`** | `PseudoEffectAnnotationError` | Attaching non-effect evaluation strategy (such as '@Parallel') as an algebraic effect annotation |
 | **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
 | **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
 | **`E0703`** | `IllegalSequentialDeclarationError` | Declaring 'fn', 'type', or 'eff' in sequential statement stream instead of 'where' clause |
 | **`E0704`** | `InvalidSignatureWhereItemError` | Declaring 'fn' or 'eff' in signature 'where' clause (signature where is restricted to 'type') |
 | **`E0705`** | `DownwardScopeReferenceError` | Signature 'where' clause references item declared in inner block 'where' clause |
 | **`E0706`** | `SignatureTypeNotInWaistWhereError` | Function signature references type declared in block 'where' clause instead of signature 'where' clause |
+| **`E0707`** | `InvalidControlTransferContextError` | Using 'last' outside loop or 'return' across prohibited boundary |
 | **`E0710`** | `IllegalControlTransferInFallbackError` | Embedding `return`/`last` in fallback operator `??` |
 | **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
 | **`E0720`** | `UnusedFallibleResultError` | Discarding fallible `Result` without inspection |
