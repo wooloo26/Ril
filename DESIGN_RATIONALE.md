@@ -14,6 +14,9 @@ Design choices and their tradeoffs. [SPECIFICATION.md](SPECIFICATION.md) defines
   - [Scoped Cleanup and Double Faults](#scoped-cleanup-and-double-faults)
 - [Aliasing, Mutability, and the Law of Exclusivity](#aliasing-mutability-and-the-law-of-exclusivity)
   - [Rejecting Mutability Laundering](#rejecting-mutability-laundering)
+  - [Complete Provenance Without Repeating It in Source](#complete-provenance-without-repeating-it-in-source)
+  - [Default Purity and Declared Concrete Obligations](#default-purity-and-declared-concrete-obligations)
+  - [Source Groups and Public Function Contracts](#source-groups-and-public-function-contracts)
   - [Call-Site Exclusivity Without Lifetime Annotations](#call-site-exclusivity-without-lifetime-annotations)
   - [Live Views Without a View Type Wrapper](#live-views-without-a-view-type-wrapper)
   - [Naming External Retained Sharing](#naming-external-retained-sharing)
@@ -100,10 +103,14 @@ Known invariants should not require optional unwrapping at every use. Uncertain 
 ```ril
 let ratio = 1.0 / 0.0                  -- Positive infinity
 let found = settings["theme"]         -- ?str
-let window = items[start..end]
+let items = [10, 20]
+let window = items[0..1]
+let empty = items[len(items)..len(items)] -- Valid empty half-open window
+-- items[2..1]                        -- Panics: reversed bounds
+-- items[0..3]                        -- Panics: upper bound exceeds the length
 ```
 
-Floating arithmetic retains IEEE special values rather than treating every zero divisor as an integer defect. Missing map keys are routine domain conditions. For slicing, the original design favors clamping bounds and empty windows when the interval collapses, so window selection need not assert that one particular element exists. Precise accepted behavior is governed by the [collection rules](SPECIFICATION.md#range-and-slicing-expressions).
+Floating arithmetic retains IEEE special values rather than treating every zero divisor as an integer defect. Missing map keys are routine domain conditions. Valid half-open slices permit equal bounds, including an empty window at the collection's end. Negative, reversed, or out-of-range bounds panic; slicing never clamps them. The [collection rules](SPECIFICATION.md#range-and-slicing-expressions) define the accepted bounds.
 
 ### Unit Success Without Implicit Wrapping
 
@@ -139,6 +146,78 @@ copy.count += 1
 
 Permission survives wrapping, destructuring, insertion, and return; changing syntax must not bypass a read-only API. A deep clone creates separate storage, while a writable container never upgrades its elements. Iteration forbids structural changes through aliases. Unused authority and excessive concrete annotations are checked separately from interface capability bounds.
 
+### Complete Provenance Without Repeating It in Source
+
+```ril
+fn identity(cell: Cell) -> Cell { cell }
+let immutable = Cell.{ count: 0 }
+-- let mut stolen = identity(immutable) -- Error [E0528]: return preserves the immutable origin
+
+fn invoke(action: fn() -> ()) { action() }
+-- Callback effects, state access, and captured origins remain attached.
+
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn check_choice(choose_write: bool) {
+    let action = if choose_write { advance } else { \-> () }
+    -- let closed: fn() -> () @{} &{} = action
+    -- Error [E0534]: a run-time alternative retains the possible external write
+}
+```
+
+Ordinary return types, compact callable types, and ordinary calls keep business code readable. They do not discard information: the machine retains the possible origins, permissions, immutable or live status, captured environments, existing sharing relations, and residual effects of each value. A simplified type is an abstraction of these facts, not evidence that they are absent. Unknown overlap is not a developer promise of disjointness.
+
+Complete inference preserves relevant facts and covers the specified conservative judgments. It does not promise exact prediction of arbitrary run-time behavior. Unknown facts cannot establish independence, purity, or absence of escape; the possible write in `check_choice` remains an obligation.
+
+Complete provenance is a machine obligation. The corresponding diagnostic can expand the relevant inferred facts and their causal chain: the original binding, aliases or aggregate paths, calls and returns, captured environments or handlers, and the conflicting use. This gives a programmer the reason for a rejection without requiring every intermediate fact in source or asking the programmer to verify its safety. Those explanations do not define another annotation language or weaken source-level checks.
+
+Machine-supplied annotations record a valid inferred contract. They cannot repair a semantic conflict by widening permission, silently inserting a clone, or changing an alias into independent data. Missing declarations and incompatible intentions therefore remain distinguishable: routine annotation work can be supplied mechanically, while correcting an invalid ownership or sharing choice requires a visible program change.
+
+### Default Purity and Declared Concrete Obligations
+
+```ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn declared() &{mut count} { invoke(advance) }
+-- fn hidden() { invoke(advance) }    -- Error [E0510]
+fn invoke_pure(action: fn() -> ()) @{} &{} { action() }
+-- invoke_pure(advance)               -- Error [E0534]
+```
+
+Default purity gives an ordinary named definition a useful meaning without extra syntax: it has no undeclared concrete outward state or residual effects. Calling another function does not make a known dependency disappear. Callback parameters are different: their actual obligations depend on the value supplied, so the language preserves that dependency until use rather than forcing repeated forwarding notation. The ordinary caller that supplies `advance` has a concrete obligation again.
+
+An explicit empty row constrains the whole domain, including forwarded obligations. It therefore has a stronger role in a higher-order definition than omission. Callable types retain their separate role as contracts over actual values; the empty state row cannot become merely a statement about absent global access. Local mutation and a callable's future latent operations remain separate from the enclosing invocation's outward obligations.
+
+### Source Groups and Public Function Contracts
+
+```ril
+type Step = fn() -> int &closure
+fn make_step(increment: int) -> Step &capture {
+    var count = 0
+    step
+    where
+        fn step() -> int &{closure, increment, mut count} {
+            count += increment
+            count
+        }
+}
+```
+
+The group records one capture layer while retaining each binding's mode. A farther named layer can be named explicitly; anonymous layers need no invented source names. Grouping cannot identify objects or prove independence: two declarations named `count`, two invocations of one factory, and two paths to one object remain different questions. Ordinary blocks do not add another function layer, but their bindings and lifetimes are not merged. Global groups, captured groups, and the independent creation and retention annotations keep those distinctions visible.
+
+```ril
+-- counter.ril
+var private_count = 0
+pub fn advance() &{mut private_count} { private_count += 1 }
+
+-- client.ril
+use counter
+fn wrapper() &Counter::advance { Counter::advance() }
+```
+
+Requiring a caller to declare known state must not require it to name private storage in another module. The public function already has a checked contract, so its named state can be referenced on a named wrapper without another declaration kind. This reference covers inherited named obligations, not direct access in the wrapper. It imports neither effects nor independent parameter, environment-creation, or retention obligations. Restricting this form to named definitions keeps callable-type budgets and anonymous inference unchanged.
+
 ### Call-Site Exclusivity Without Lifetime Annotations
 
 ```ril
@@ -158,6 +237,15 @@ let saved_title = observed.title
 
 A view keeps the data shape T instead of turning every API into a T/View<T> pair. Binding permissions and origins retain its live nature. The observer follows changes to the pinned object; the copied string does not. A view initializer runs once, cannot supply mutable arguments, and cannot cross a task boundary as ordinary immutable data.
 
+```ril
+var count = 0
+fn read_count() -> int &{count} { count }
+count += 1
+assert(read_count() == 1)
+```
+
+A bare item in either source-group kind means read-only access, whether the source is immutable or live. It does not create a view binding or establish deep immutability. Global `&{name}` and captured `&{closure, name}` distinguish lexical sources while using the same read mode; actual source facts still determine view eligibility, refinement stability, and task confinement.
+
 ### Naming External Retained Sharing
 
 ```ril
@@ -167,6 +255,18 @@ fn publish(^mut entry: Entry) &^mut &{mut global_hub} {
 ```
 
 `mut` permits temporary writes; `^mut` additionally permits retention. `&{^mut source}` names a source whose writable authority is published, not the container receiving it. Distinguishing source from destination prevents an intermediate local alias or helper call from concealing external sharing; purely local obligations can still be discharged.
+
+```ril
+let mut source = Cell.{ count: 0 }
+-- let mut hidden = source            -- Error [E0510]: local writable alias needs ^mut
+let mut alias = ^mut source
+alias.count += 1
+let mut pair = (^mut source, ^mut source)
+pair.0.count += 1
+assert(source.count == 2 && pair.1.count == 2)
+```
+
+Local discharge concerns a function's outward contract; it does not hide a second local writable authority. `^mut` marks an alias, store, or destructuring of an existing writable value, including an aggregate member, while preserving the source's permissions and identity. It cannot grant a view write access. Lexical capture and ordinary returns retain their inferred provenance and existing capability checks. Later writes through an existing shared authority do not create another publication merely because sharing already exists.
 
 ### Transactional Derivation and Structural Sharing
 
@@ -185,10 +285,21 @@ Confined mutation makes nested functional updates readable while immutable input
 | :--- | :--- | :--- |
 | `let` | Fixed | Immutable; sharing allowed |
 | `let mut` | Pinned | Writable with granted permissions |
-| `var` | Reassignable | Keeps the value's permissions |
+| `var` | Reassignable | Read-only access; no interior writes through this binding |
+| `var mut` | Reassignable | Writable only with granted origin permissions |
 | `let view` | Fixed observation | Read-only, possibly changing |
 
-Separating slot replacement from interior writes expresses stable mutable handles directly. Scalars use `var`; `mut` parameters cannot misleadingly rebind the caller's handle. Read-only access alone does not establish the stronger ordinary `let` guarantee.
+```ril
+var selected = Cell.{ count: 0 }
+selected = Cell.{ count: 1 }
+-- selected.count += 1                -- Error [E0520]: reassignable slot is not interior write authority
+
+var mut working = Cell.{ count: 0 }
+working.count += 1
+working = Cell.{ count: 2 }
+```
+
+Separating slot replacement from interior writes expresses stable mutable handles directly. Scalars use `var`; replaceable writable handles use `var mut`. Both of a `var mut` binding's authorities must be exercised: slot reassignment and its granted interior/environment write authority. A binding that only needs the latter uses `let mut`; unused authority is rejected under `E0527`. Neither spelling upgrades an immutable or live read-only origin. Mutable parameters remain pinned and cannot misleadingly rebind the caller's handle. Read-only access alone does not establish the stronger ordinary `let` guarantee.
 
 ```ril
 fn make_numbers() -> []int {
@@ -240,7 +351,7 @@ let task = s.fork(\-> snapshot.count)
 -- Capturing observed itself across this boundary is E0601.
 ```
 
-Task safety follows actual permissions, origins, and immutable data rather than a separate set of nominal marker traits. A simple visible type cannot hide live state in a closure or aggregate. Resource transfer and confined parallel writes have explicit contracts rather than weakening the general boundary rule.
+Task safety follows actual permissions, origins, and immutable data rather than a separate set of nominal marker traits. A simple visible type cannot hide a closure's or aggregate's live state from verification. Resource transfer and confined parallel writes have explicit contracts rather than weakening the general boundary rule.
 
 ### Effect Confinement at Task Boundaries
 
@@ -267,6 +378,8 @@ fn button_for(label: str) -> Button &capture {
 ```
 
 Escape is safe when each invocation has stable handling. Retaining a handler retains its definition and lawful environment, never an old continuation or return target. Every final arm value, including a tail after resume, must fit the new answer type. Creating a surviving environment still requires capture authority, even inside a returned record; handling its effects does not remove that duty.
+
+The concise closure syntax does not require a separate handler-capture list. Retained handler environments remain part of the machine's provenance and authority checks. Their reads, writes, sharing, and task restrictions survive effect handling and can be expanded in diagnostics just like an ordinary closure's captures.
 
 ### Effect-Free Data Parallelism
 
@@ -515,10 +628,16 @@ Data-type defaults reduce repeated arguments; callable generics instead use infe
 ```ril
 -- platform/dom.d.ril
 pub type DomElement
-pub fn set_text(mut element: DomElement, text: str) -> () @Fiber &mut
+pub type DomError {
+    ElementNotFound,
+    SecurityViolation(str),
+}
+pub fn read_attribute(elem: DomElement, key: str) -> Result<?str, DomError> @Fiber
 ```
 
 The Ril contract remains the source of typing, effect, permission, and failure guarantees at an external boundary. Declaration units reuse ordinary syntax instead of adding foreign-only keywords or untyped escape types. Opaque handles prevent structural penetration; host failures must respect typed domain-error or supervised-panic contracts rather than leak a second error model.
+
+A bodyless external declaration cannot establish that its host implementation tells the truth about that contract. This is an explicitly delimited trust boundary, not a general permission for application code to suppress provenance checks. Ordinary Ril code remains checked against the declared boundary contract and all origins and permissions that cross it.
 
 ## Tripartite Ontology and Asymmetric Scope of Influence
 
@@ -546,7 +665,15 @@ type Action = fn() -> ()               -- Inferred obligations remain attached
 type ClosedAction = fn() -> () @{} &{}
 ```
 
-A callable combines input/output shapes, access obligations, and control effects, and can itself be stored as data. Simplified types should not expose every captured variable, but must preserve its obligations. Concrete definitions declare direct state access; callback forwarding never changes parameter modes. Explicit empty rows express a closed contract rather than relying on omission.
+A callable combines input/output shapes, access obligations, and control effects, and can itself be stored as data. Simplified types should not expose every captured variable, but must preserve its obligations. Named definitions declare concrete invocation state and effects, including known dependencies from calls; symbolic callback forwarding never changes parameter modes. Explicit empty rows constrain the total domain, while omitted callable-type rows retain actual inferred obligations.
+
+```ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+let action = advance
+```
+
+A named function with external-state obligations need not own a mutable captured environment. Its function value can be immutable while invocation still writes the named external origin. Conversely, `&closure` can hide private environment names without hiding their actual permission facts from verification. Ordinary return types and calls keep source compact; expanded diagnostics provide the omitted detail.
 
 ### Why Access Governs Bindings but Effects Govern Calls
 
@@ -588,3 +715,18 @@ borrowed cell -> retained external reference      : &^mut
 ```
 
 This preserves the original surviving-write-path idea while counting independent authorities rather than repeated graph walks. Cycles or two fields in one fresh passive graph do not alone create extra external owners. Named sources remain identifiable through aliases, and local discharge cannot hide an origin that still has an outside writer.
+
+The table describes obligations surviving the enclosing frame. Local aliases, stores, and destructuring of existing writable handles still need their `^mut` markers. Lexical captures and ordinary returns remain inferred; an explicit `^mut` parameter/argument and matching retention capability already cover the corresponding boundary publication. A fresh ordinary clone may preserve repeated references inside its result graph: writable reception requires `^mut clone(value)` when internal writable aliases are possible (`E0510` if omitted), and exclusivity still checks those aliases. A factory's `&^mut` describes a new publication, not the mere presence of already shared state in a closure it invokes or forwards. Existing sharing remains tracked even when that invocation publishes nothing new.
+
+```ril
+type Step = fn() -> int &closure
+fn make_shared_step(^mut cell: Cell) -> Step &capture &^mut {
+    \-> { cell.count += 1; cell.count }
+}
+
+let mut cell = Cell.{ count: 0 }
+let mut step = make_shared_step(^mut cell)
+assert(step() == 1)
+cell.count += 1
+assert(step() == 3)
+```
