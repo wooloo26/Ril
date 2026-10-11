@@ -1,663 +1,590 @@
-﻿# Ril Language Design Rationale and Defensive Principles
+# Ril Language Design Rationale
 
-> **Status**: Informative / Non-Normative Companion to the Ril Language Specification.  
-> **Target Audience**: Language implementors, compiler engineers, runtime architects, and advanced language researchers.  
-> **Normative Companion**: For the authoritative, compiler-facing normative rules, consult [`SPECIFICATION.md`](SPECIFICATION.md).
+Design choices and their tradeoffs. [SPECIFICATION.md](SPECIFICATION.md) defines the authoritative rules; examples below use its independent-fixture convention. This document covers language semantics, not implementation design.
 
----
-
----
-
-## Table of Contents
+## Contents
 
 - [Failure Model and Error Semantics](#failure-model-and-error-semantics)
-  - [Midori Defect vs. Recoverable Error Delineation](#midori-defect-vs-recoverable-error-delineation)
-  - [Catastrophe of Panic and Java Checked Exceptions](#catastrophe-of-panic-and-java-checked-exceptions)
-  - [Omission of Synchronous Frame Catching](#omission-of-synchronous-frame-catching)
-  - [Dual-Track Partial Operations: Assertive vs. Safe Total](#dual-track-partial-operations-assertive-vs-safe-total)
-  - [Floating-Point and Collection Boundary Pragmatism](#floating-point-and-collection-boundary-pragmatism)
-  - [Ergonomics of Zero-Payload Success: Unit Constructor Ok() vs. Ok(())](#ergonomics-of-zero-payload-success-unit-constructor-ok-vs-ok)
-  - [Hermetic Scoped Cleanups and Double-Fault Containment](#hermetic-scoped-cleanups-and-double-fault-containment)
+  - [Defects and Recoverable Errors](#defects-and-recoverable-errors)
+  - [Panics Are Not Algebraic Effects](#panics-are-not-algebraic-effects)
+  - [No Synchronous Panic Catching](#no-synchronous-panic-catching)
+  - [Assertive and Safe Partial Operations](#assertive-and-safe-partial-operations)
+  - [Floating-Point and Collection Boundaries](#floating-point-and-collection-boundaries)
+  - [Unit Success Without Implicit Wrapping](#unit-success-without-implicit-wrapping)
+  - [Scoped Cleanup and Double Faults](#scoped-cleanup-and-double-faults)
 - [Aliasing, Mutability, and the Law of Exclusivity](#aliasing-mutability-and-the-law-of-exclusivity)
-  - [Zero-Tolerance Static Rejection of Mutability Laundering](#zero-tolerance-static-rejection-of-mutability-laundering)
-  - [Cross-Argument Disjointness vs. Borrow Checker Complexity](#cross-argument-disjointness-vs-borrow-checker-complexity)
-  - [Live Views: Heap Observability Without Type-Level Contagion](#live-views-heap-observability-without-type-level-contagion)
-  - [Named External Retained Sharing](#named-external-retained-sharing)
-  - [Transactional Derivation and Path-Wise Copy-on-Write](#transactional-derivation-and-path-wise-copy-on-write)
-  - [Three-Tier Mutability Architecture: Decoupling Reassignment and Interior Mutation](#three-tier-mutability-architecture-decoupling-reassignment-and-interior-mutation)
-  - [Dual Compound Nature of clone_immut](#dual-compound-nature-of-clone_immut)
+  - [Rejecting Mutability Laundering](#rejecting-mutability-laundering)
+  - [Call-Site Exclusivity Without Lifetime Annotations](#call-site-exclusivity-without-lifetime-annotations)
+  - [Live Views Without a View Type Wrapper](#live-views-without-a-view-type-wrapper)
+  - [Naming External Retained Sharing](#naming-external-retained-sharing)
+  - [Transactional Derivation and Structural Sharing](#transactional-derivation-and-structural-sharing)
+  - [Separating Reassignment and Interior Mutation](#separating-reassignment-and-interior-mutation)
+  - [The Two Guarantees of clone_immut](#the-two-guarantees-of-clone_immut)
 - [Algebraic Effects, Concurrency, and Function Colorlessness](#algebraic-effects-concurrency-and-function-colorlessness)
-  - [Red/Blue Function Problem and Effect Handlers](#redblue-function-problem-and-effect-handlers)
-  - [Structured Concurrency Scopes as Defect Containment Domains](#structured-concurrency-scopes-as-defect-containment-domains)
-  - [Concurrency Boundary Safety via Capability Tracking](#concurrency-boundary-safety-via-capability-tracking)
-  - [Effect Confinement at Concurrent Boundaries](#effect-confinement-at-concurrent-boundaries)
-  - [Colorless Parallelism Principle: Effect-Free Data Parallelism](#colorless-parallelism-principle-effect-free-data-parallelism)
-  - [Rejection of Bare Atomics and Weak Memory Models](#rejection-of-bare-atomics-and-weak-memory-models)
-  - [Declarative Data Parallelism vs. Low-Level Slice Partitioning](#declarative-data-parallelism-vs-low-level-slice-partitioning)
-  - [Observational Equivalence: Leftmost Index Supremacy and Panic Arbitration](#observational-equivalence-leftmost-index-supremacy-and-panic-arbitration)
-  - [Compiler Auto-Vectorization vs. Language-Level SIMD](#compiler-auto-vectorization-vs-language-level-simd)
+  - [Colorless Functions and Separated System Effects](#colorless-functions-and-separated-system-effects)
+  - [Structured Scopes as Defect Boundaries](#structured-scopes-as-defect-boundaries)
+  - [Capability-Based Concurrency Safety](#capability-based-concurrency-safety)
+  - [Effect Confinement at Task Boundaries](#effect-confinement-at-task-boundaries)
+  - [Persistent Handlers and Captured Environments](#persistent-handlers-and-captured-environments)
+  - [Effect-Free Data Parallelism](#effect-free-data-parallelism)
+  - [No Bare Atomics or Weak Memory Orderings](#no-bare-atomics-or-weak-memory-orderings)
+  - [Channels and Endpoint Authority](#channels-and-endpoint-authority)
+  - [Declarative Parallel Work Instead of Manual Slice Proofs](#declarative-parallel-work-instead-of-manual-slice-proofs)
+  - [Leftmost Results and Deterministic Fault Visibility](#leftmost-results-and-deterministic-fault-visibility)
+  - [Portable Collection Operations Instead of Core SIMD Types](#portable-collection-operations-instead-of-core-simd-types)
 - [Syntax Ergonomics and Deliberate Omissions](#syntax-ergonomics-and-deliberate-omissions)
-  - [File-as-Module by Default and Predictable Namespaces](#file-as-module-by-default-and-predictable-namespaces)
-  - [First-Class Operation Records vs. Ad-Hoc Typeclasses and Coherence](#first-class-operation-records-vs-ad-hoc-typeclasses-and-coherence)
-  - [Unified Lexical Scope vs. Dual-Namespace Complexity](#unified-lexical-scope-vs-dual-namespace-complexity)
-  - [Segregation of Static Records and Dynamic Collections](#segregation-of-static-records-and-dynamic-collections)
-  - [Necessity of Nominal Wrappers and Universal Single-Type Packaging](#necessity-of-nominal-wrappers-and-universal-single-type-packaging)
-  - [Opaque Types: Module-Bound Zero-Cost Abstraction](#opaque-types-module-bound-zero-cost-abstraction)
-  - [Unit Nominal Types as Zero-Sized Domain Witnesses](#unit-nominal-types-as-zero-sized-domain-witnesses)
-  - [Prohibition of Vacuous Bindings: Preventing Zero-Variable Destructuring Anti-Patterns](#prohibition-of-vacuous-bindings-preventing-zero-variable-destructuring-anti-patterns)
-  - [Compile-Time HKT Metaprogramming vs. Reified Runtime Generics](#compile-time-hkt-metaprogramming-vs-reified-runtime-generics)
-  - [Constructor-Tuple Equivalence vs. Function Parameter Isolation](#constructor-tuple-equivalence-vs-function-parameter-isolation)
-  - [Compiler-Enforced Identifier Casing](#compiler-enforced-identifier-casing)
-  - [Flow-Sensitive Type Narrowing: In-Place Refinement vs. Binding Ceremony](#flow-sensitive-type-narrowing-in-place-refinement-vs-binding-ceremony)
-  - [Dual-Tier Where Architecture: Interface Abstraction vs. Implementation Encapsulation](#dual-tier-where-architecture-interface-abstraction-vs-implementation-encapsulation)
-  - [Shorthand Projection Accessors: Product Types vs. Dynamic Collections](#shorthand-projection-accessors-product-types-vs-dynamic-collections)
-  - [Pure Type Functions and Zero-Dialect Schema Metaprogramming](#pure-type-functions-and-zero-dialect-schema-metaprogramming)
-  - [Default Generic Arguments and Const Generics vs. Literal Types](#default-generic-arguments-and-const-generics-vs-literal-types)
-  - [External Interoperability and the Sovereignty Axiom](#external-interoperability-and-the-sovereignty-axiom)
+  - [Files as Modules and Predictable Namespaces](#files-as-modules-and-predictable-namespaces)
+  - [Explicit Operation Records Instead of Implicit Instances](#explicit-operation-records-instead-of-implicit-instances)
+  - [One Lexical Namespace](#one-lexical-namespace)
+  - [Static Records and Dynamic Collections](#static-records-and-dynamic-collections)
+  - [Nominal Wrappers and Single-Payload Packaging](#nominal-wrappers-and-single-payload-packaging)
+  - [Opaque Types and Module Boundaries](#opaque-types-and-module-boundaries)
+  - [Unit Nominal Domain Witnesses](#unit-nominal-domain-witnesses)
+  - [Bindings Must Introduce Variables](#bindings-must-introduce-variables)
+  - [Static Higher-Kinded Type Functions](#static-higher-kinded-type-functions)
+  - [Constructor Tuples and Function Parameter Isolation](#constructor-tuples-and-function-parameter-isolation)
+  - [Identifier Casing as Language Syntax](#identifier-casing-as-language-syntax)
+  - [Flow Narrowing Without Rebinding](#flow-narrowing-without-rebinding)
+  - [Two Where Tiers for Interfaces and Local Declarations](#two-where-tiers-for-interfaces-and-local-declarations)
+  - [Projection Accessors for Product Types](#projection-accessors-for-product-types)
+  - [Pure Type Functions Without a Second Schema Dialect](#pure-type-functions-without-a-second-schema-dialect)
+  - [Generic Defaults and Const Values Instead of Literal Types](#generic-defaults-and-const-values-instead-of-literal-types)
+  - [External Interfaces and the Sovereignty Axiom](#external-interfaces-and-the-sovereignty-axiom)
 - [Tripartite Ontology and Asymmetric Scope of Influence](#tripartite-ontology-and-asymmetric-scope-of-influence)
-  - [Tripartite Ontology: Stratifying Shape, Access, and Control](#tripartite-ontology-stratifying-shape-access-and-control)
-  - [Computation Confluence Point: Why Callables Mediate All Three Domains](#computation-confluence-point-why-callables-mediate-all-three-domains)
-  - [Asymmetric Scope of Influence: Why Capabilities Govern Bindings and Effects Do Not](#asymmetric-scope-of-influence-why-capabilities-govern-bindings-and-effects-do-not)
-  - [Domain Isolation Invariants: Preventing Cross-Domain Laundering](#domain-isolation-invariants-preventing-cross-domain-laundering)
-  - [Write Path Counting: Deterministic Escape Analysis without Borrow Checkers](#write-path-counting-deterministic-escape-analysis-without-borrow-checkers)
-
----
+  - [Three Domains: Shape, Access, and Control](#three-domains-shape-access-and-control)
+  - [Callables Connect the Three Domains](#callables-connect-the-three-domains)
+  - [Why Access Governs Bindings but Effects Govern Calls](#why-access-governs-bindings-but-effects-govern-calls)
+  - [Domain Isolation Without Hidden Permission Changes](#domain-isolation-without-hidden-permission-changes)
+  - [Independent Surviving Write Authorities](#independent-surviving-write-authorities)
 
 ## Failure Model and Error Semantics
 
-### Midori Defect vs. Recoverable Error Delineation
+### Defects and Recoverable Errors
 
-A fundamental insight popularized by Joe Duffy's work on the Midori operating system error model—and reinforced by the development of modern systems like Rust and Swift—is the strict separation between two entirely different classes of failure:
+```ril
+let parsed: Result<int, str> = Err("invalid number")
+let quotient = 10 / 0                  -- Panics: violated integer precondition
+```
 
-- **Defects (Bugs / Invariant Violations)**: An assumption made by the programmer has failed. Examples include integer division by zero, indexing beyond array bounds, integer overflow on fixed-width types, failure of an internal assertion (`assert`), and explicit assertion of unreachability (`panic()`).
-- **Domain Recoverable Errors (Environmental Failures)**: An anticipated condition in the external world has failed. Examples include a network socket timing out, a configuration file missing from disk, or user input failing to parse as valid JSON.
+The original Midori-inspired distinction separates expected domain failures from broken program assumptions. `Result`/`Option` make recovery explicit; panic stops defective evaluation. A single exception category would let ordinary error handling accidentally conceal broken invariants.
 
-In many historical languages (such as Java, C++, and Python), these two categories are conflated into a single hierarchical mechanism: exceptions (`throw` / `try` / `catch`). This conflation is an architectural anti-pattern with catastrophic consequences:
-- Programmers attempt to "catch" runtime defects (such as `NullPointerException` or `IndexOutOfBoundsException`) midway through a complex operation, leaving heap objects in partially mutated, corrupted, or incoherent states.
-- System resources leak or become deadlock-prone because recovery logic cannot safely anticipate every intermediate state of a corrupted frame.
+### Panics Are Not Algebraic Effects
 
-Ril enforces an unbreachable wall between these domains:
-- **Domain Recoverable Errors** are represented as values of algebraic sum types (`Result<T, E>` and `Option<T>` / `?T`). They are visible, typed, checked by the compiler, and subject to Anti-Fault Masking rules that prohibit silently ignoring them.
-- **Defects** trigger **Deterministic Runtime Panics**. Panics immediately halt normal sequential evaluation, invoke LIFO cleanups for deterministic resource reclamation, and unwind the execution stack.
+```ril
+fn increment(n: int) -> int { n + 1 }  -- Can panic on overflow; no @Panic
+```
 
-### Catastrophe of Panic and Java Checked Exceptions
+Making every defect a checked effect would burden routine arithmetic and encourage blanket fault handlers. Ril keeps domain effects informative: handlers cannot intercept or resume a panic, and higher-order functions need no panic-specific variants.
 
-During the early design of Ril, an intuitive proposal arose: *Since Ril features an expressive algebraic effect system (`@Effect`), why not model panics as an effect—e.g., `@Panic`?*
+### No Synchronous Panic Catching
 
-Ril strictly and deliberately rejects this proposal. The justification rests on the lessons of Java's checked exceptions:
-- **Pervasive Signature Pollution**: Almost every basic programming construct is theoretically capable of panicking: integer addition `+` (overflow), array access `arr[i]` (out-of-bounds), division `/` (zero divisor), map access, or basic assertions. If panicking were an algebraic effect, virtually **every function in the entire language** would require `@Panic` in its signature.
-- **Erosion of Purity**: The distinction between pure functions and effectful functions would collapse. Higher-order functions like `map`, `filter`, and `fold` would either need duplicate variations or complex effect-polymorphic annotations just to account for possible arithmetic defects.
-- **Misaligned Incentives**: Faced with signature pollution, developers routinely resort to blanket swallowings (`try { ... } catch (Exception e) {}`), re-introducing fault masking and defeating the purpose of static type checking.
+```text
+child panic -> scope failure -> Result<T, TaskFault>
+parent panic -> child-exit barrier -> outward panic
+```
 
-Therefore, **Ril asserts as a foundational invariant that Bug Panics are not algebraic effects**. There is no `@Panic` effect. An algebraic effect handler cannot intercept or resume a panic. Panics represent defects in program logic that must be diagnosed and eliminated, not handled as business logic.
+A synchronous catch could continue with partially updated state. Supervision therefore belongs to a structured task boundary. Inspecting a child fault does not restore that scope to success; a parent's own panic is not converted into a catchable result by the same scope.
 
-### Omission of Synchronous Frame Catching
+### Assertive and Safe Partial Operations
 
-Ril provides **zero syntax for catching a panic within synchronous evaluation frames** (there is no `catch_panic` or `try/catch` construct).
+```ril
+let item = items[index]                -- Precondition is asserted
+let optional_item = items?[index]      -- Absence is a value
+let quotient = numerator /? divisor
+```
 
-When a bug occurs in synchronous code (for instance, an array index out of bounds inside an algorithm), the local frame's invariants are broken. Attempting to catch the panic inside the same synchronous thread and continue execution on corrupted data leads to:
-- **Incoherent State**: Records that were halfway through mutation remain in broken intermediate states.
-- **Security Vulnerabilities**: Undetected memory corruptions, infinite loops, and logic bypasses.
+Known invariants should not require optional unwrapping at every use. Uncertain input should not require provoking a defect. Paired assertive and safe operations express these intentions with panic or a fallible value; range-checked conversions motivate the same distinction.
 
-The only safe boundary for containing a defect panic is an **isolated concurrent execution domain**. In Ril, this boundary is the structured concurrency `scope`. A worker task forked inside a scope evaluates in isolation; if it panics, the scope catches the panic, unwinds the failed task's `let scoped` resources, cooperative-cancels sibling tasks, and reports `TaskFault::Panicked` to the supervising frame. The supervisor can then restart the subsystem, fail over, or reject the external request with an HTTP 500 status code, without corrupting the supervisor's own memory.
+### Floating-Point and Collection Boundaries
 
-### Dual-Track Partial Operations: Assertive vs. Safe Total
+```ril
+let ratio = 1.0 / 0.0                  -- Positive infinity
+let found = settings["theme"]         -- ?str
+let window = items[start..end]
+```
 
-Many elementary operations are mathematically *partial functions*—functions that are undefined for certain inputs. For example:
-- Indexing: $f(\text{array}, i)$ is undefined when $i \ge \text{len}(\text{array})$.
-- Division: $f(a, b)$ is undefined when $b = 0$.
-- Numeric downcasting: $f(n)$ is undefined when $n \gt 255$ for `u8`.
+Floating arithmetic retains IEEE special values rather than treating every zero divisor as an integer defect. Missing map keys are routine domain conditions. For slicing, the original design favors clamping bounds and empty windows when the interval collapses, so window selection need not assert that one particular element exists. Precise accepted behavior is governed by the [collection rules](SPECIFICATION.md#range-and-slicing-expressions).
 
-Instead of forcing a single awkward compromise across the language, Ril establishes a **Dual-Track Operational Architecture**:
+### Unit Success Without Implicit Wrapping
 
-| Track | Syntactic Form | Semantic Assumption | Failure Mode | Use Case |
-| :--- | :--- | :--- | :--- | :--- |
-| **Assertive Track** | `arr[i]`, `a / b`, `u8(n)` | Caller guarantees preconditions hold ($b \ne 0, i \lt \text{len}$). | Raises immediate Bug Panic upon breach. | Performance-critical inner loops, mathematically proven algorithms. |
-| **Safe Total Track** | `arr?[i]`, `a /? b`, `ril/conv::try_u8(n)` | Input validity is uncertain; environmental input. | Evaluates total result into `?T` or `Result<T, E>`. | Boundary input validation, configuration parsing, untrusted payloads. |
+```ril
+let saved: Result<(), str> = Ok()       -- Equivalent to Ok(())
+let absent: ?int = None                -- A tag, not None()
+let make_ok: fn(int) -> Result<int, str> = Ok
+```
 
-This dual-track model satisfies both ergonomics and safety: developers are never forced to unwrap safe optionals when an invariant has already been proven, yet they have first-class syntax (`/?`, `?[]`) to safely inspect uncertain domain values.
+`Ok()` removes redundant unit parentheses while keeping success construction explicit. Implicit return wrapping would obscure nested results. Nullary tags remain values; unapplied payload constructors remain first-class functions. Construction and matching use the same distinction.
 
-### Floating-Point and Collection Boundary Pragmatism
+### Scoped Cleanup and Double Faults
 
-- **Floating-Point Division by Zero**: Under IEEE 754 standards, floating-point division by zero is mathematically well-defined: $1.0 / 0.0 = +\infty$, $-1.0 / 0.0 = -\infty$, and $0.0 / 0.0 = \text{NaN}$. Panicking on floating-point zero division would break scientific computing libraries, graphics engines, and numerical convergence algorithms. Therefore, Ril conforms strictly to IEEE 754: floating-point `/` never panics.
-- **Collection Slicing (`c[start..end]`)**: Unlike single-element indexing `arr[i]` (which expects a specific element to exist and panics if absent), sub-slice extraction represents a sub-window. Clamping slicing bounds to $[0, \text{len}(c)]$ and yielding an empty slice `[]` when $\text{start} \ge \text{end}$ eliminates off-by-one fencepost panics in string parsing and stream buffer processing without masking single-element logic bugs.
-- **Map Key Lookup (`map[k]`)**: A map is conceptually an associative dictionary where absence of a key is a routine domain condition rather than a program bug. Hence, `map[k]` evaluates directly to `?V` (Option), requiring explicit unwrapping via `??` or `?`.
+```ril
+let scoped mut resource = Resource.{
+    name: "audit",
+    on_close: \-> { events !> Array::push("closed") },
+}
+```
 
-### Ergonomics of Zero-Payload Success: Unit Constructor Ok() vs. Ok(())
-
-In algebraic error systems (`Result<T, E>`), fallible operations performing pure side effects naturally inhabit `Result<(), E>`.
-
-Historically, treating `Ok` strictly as a unary constructor function (`fn(T) -> Result<T, E>`) forced developers into repetitive `Ok(())` boilerplate and semicolon statement hazards. Conversely, proposals for implicit return wrapping destroyed explicit local control-flow reasoning and introduced ambiguities with nested results (`Result<Result<T, E>, E>`).
-
-Ril resolves this tension through **Constructor-Tuple Equivalence at $n = 0$ (`Ok()`)**:
-- **Unit Product Absorption**: Under the equivalence $\text{Variant}(T_1, \dots, T_n) \equiv \text{Variant}((T_1, \dots, T_n))$, supplying zero arguments inside constructor parentheses $C()$ maps directly to the 0-element unit product `()`. Outer constructor parentheses absorb the inner unit tuple, producing `Ok()` with zero double-parentheses noise.
-- **Categorical Partition Between Tags and Constructors**:
-  - **Pure Nullary Tags**: Zero-field variants declared without payloads (`None`, `Active`, `Red`) denote pure constants and strictly prohibit parentheses (`None`).
-  - **Data Constructors**: Parameterized constructors always take parentheses: `Some(x)`, `Ok()`, `Ok(x)`. This preserves unapplied constructor identifiers as first-class constructor functions (`fn(T) -> Result<T, E>`) without expression ambiguity (`E0301`).
-- **Pattern Matching Symmetry**: Value construction and pattern deconstruction mirror each other symmetrically across all arities $n \ge 0$ (detailed in [Constructor-Tuple Equivalence vs. Function Parameter Isolation](#constructor-tuple-equivalence-vs-function-parameter-isolation)).
-
-### Hermetic Scoped Cleanups and Double-Fault Containment
-
-Resource management in modern systems programming faces a classic dilemma: how to guarantee reliable cleanup during unwinding without risking cascade failures.
-
-Ril addresses this through **Hermetic Scoped Cleanups and Double-Fault Escalation**:
-- **The Fallacy of "Pure" Destructors**: In languages with strict purity tracking, requiring cleanup handlers to be mathematically pure (`is_pure`) is unworkable: closing operating system handles, returning database connections to pools, and recording audit entries inherently require side effects and state mutations (`&mut`). Under Ril's Commit-on-Write memory model ([Affine Resumption and Delimited Early Abort](SPECIFICATION.md#affine-resumption-and-delimited-early-abort)), physical mutations performed by `on_close` remain permanently committed.
-- **Prohibition of Control Transfers and Divergence (`E0616`, `E0617`)**: While state mutations are permitted, algebraic effects (`@Effect`) and infinite loops (`@Div`) are strictly forbidden inside cleanup closures. Permitting unhandled algebraic effects during unwinding would require finding handlers on stack frames that are actively being destroyed or attempting resumption into dismantled activation records. Prohibiting `@Effect` and `@Div` guarantees that unwinding always proceeds deterministically to completion.
-- **Double-Fault Escalation**: If an unhandled panic occurs inside an `on_close` handler while the stack is already unwinding from a prior panic, attempting secondary unwinding would risk infinite recursion and deadlock. Ril enforces strict **Double-Fault Escalation**: inside structured scopes, the child task resolves immediately to `TaskFault::DoubleFaultFatal(DoubleFaultInfo)` carrying dual diagnostic payloads; in unsupervised frames, the process halts immediately to prevent data corruption.
-
----
+Cleanup needs state access, but cannot depend on unhandled effects or divergence while its context is leaving. Reverse registration order makes resource dependencies predictable. A second fault during panic, cancellation, or abort preserves both causes and stops that frame's remaining cleanup; it does not promise that every destructor succeeded. Pure parallel branches retain their separate fault-visibility contract.
 
 ## Aliasing, Mutability, and the Law of Exclusivity
 
-### Zero-Tolerance Static Rejection of Mutability Laundering
+### Rejecting Mutability Laundering
 
-In languages with reference semantics and mutable state, a notorious class of bugs stems from **mutability laundering**: taking a reference that was passed as read-only, and by means of reassignment, pattern matching, closure capture, or container injection, recovering write permissions to the underlying data.
+```ril
+let item = Cell.{ count: 0 }
+-- let mut alias = item                -- Error [E0520]
+let mut copy = clone(item)
+copy.count += 1
+```
 
-Ril's philosophy for professional developers mandates that **non-mut parameters and read-only handles can never be upgraded to mutable handles under any circumstances**. Rather than relying on dynamic runtime checks, the Ril compiler enforces **Monotonic Degradation**:
+Permission survives wrapping, destructuring, insertion, and return; changing syntax must not bypass a read-only API. A deep clone creates separate storage, while a writable container never upgrades its elements. Iteration forbids structural changes through aliases. Unused authority and excessive concrete annotations are checked separately from interface capability bounds.
 
-$$
-\text{Mut} \succ \text{ReadOnly} \succ \text{None}
-$$
+### Call-Site Exclusivity Without Lifetime Annotations
 
-Permissions can degrade, but never upgrade. The compiler provides a closed static diagnostic closure (`E0520` through `E0531`) covering:
-- Assigning read-only to `let mut`, passing read-only handles to `mut` parameters, or mutating through view (`E0520`).
-- Destructuring read-only records into `mut` fields (`E0521`).
-- Injecting read-only objects into mutable arrays or records (`E0522`).
-- Spreading read-only records into mutable variables (`E0525`).
-- Mutating a collection while iterating over it in `for` (`E0526`).
-- Declaring unused `let mut` bindings or unused `mut` parameters (`E0527`).
-- Returning read-only parameter references into caller `let mut` bindings (`E0528`).
-- Over-annotating declarations beyond minimal required capabilities (`E0529`).
-- Passing types with active capabilities or scoped handles to `clone` or `clone_immut` (`E0530`: neither clonable nor freezable).
-- Creating a live view over an immutable binding (`E0531`).
+```ril
+swap(mut cells[0], mut cells[1])        -- Requires disjoint reachable writes
+-- swap(mut cells[0], mut cells[0])    -- Error [E0523]
+```
 
-### Cross-Argument Disjointness vs. Borrow Checker Complexity
+The design places exclusivity obligations at calls rather than requiring user-written lifetime parameters. Different indices or names do not prove separation: independent arguments, ambient accesses, captures, and handlers all matter. Authorized use through the borrowed parameter is part of its loan; inactive aliases still permit sequential sharing.
 
-Rust achieves memory safety through affine types and lifetime annotations (`'a`, `'b`), demanding significant cognitive overhead from application developers. Swift enforces safety through the dynamic and static **Law of Exclusivity**.
+### Live Views Without a View Type Wrapper
 
-Ril targets high-level and mid-level application software. It eliminates the cognitive overhead of lifetime annotations while retaining mathematical aliasing safety by enforcing **Cross-Argument Disjointness at Call Sites**:
+```ril
+let view observed = working
+let view read_title = \-> observed.title
+let saved_title = observed.title
+```
 
-$$
-\forall i \in \mathop{\mathrm{MutArgs}},\quad \forall j \ne i,\quad \mathop{\mathrm{Path}}(a_i) \cap \mathop{\mathrm{Path}}(a_j) = \emptyset
-$$
+A view keeps the data shape T instead of turning every API into a T/View<T> pair. Binding permissions and origins retain its live nature. The observer follows changes to the pinned object; the copied string does not. A view initializer runs once, cannot supply mutable arguments, and cannot cross a task boundary as ordinary immutable data.
 
-If a function call passes `mut a` and `mut b`, or `mut a` and read-only `b`, the compiler statically inspects the origin root paths. If they alias the same memory location, compilation fails immediately with `E0523: MutMutAliasingConflictError` or `E0524: ReadMutAliasingHazardError`. This delivers aliasing safety without requiring developers to write complex lifetime bounds.
+### Naming External Retained Sharing
 
-The same checks include external captures of callees and callbacks. A variable's absence from the explicit argument list does not make its storage disjoint from a mutable argument.
+```ril
+fn publish(^mut entry: Entry) &^mut &{mut global_hub} {
+    global_hub.entries !> Array::push(^mut entry)
+}
+```
 
-### Live Views: Heap Observability Without Type-Level Contagion
+`mut` permits temporary writes; `^mut` additionally permits retention. `&{^mut source}` names a source whose writable authority is published, not the container receiving it. Distinguishing source from destination prevents an intermediate local alias or helper call from concealing external sharing; purely local obligations can still be discharged.
 
-Ril explicitly distinguishes between immutable bindings (`let`) and live read-only views (`let view`):
-- **Immutable Bindings (`let x = expr`)**: Bind an immutable value or standalone object handle. For scalar value types, `let` performs an independent copy; for fresh records or frozen structures, it establishes a detached, read-only binding.
-- **Live Views (`let view v = handle`)**: When a developer writes `let view v = handle` against an existing mutable heap reference:
-  - The handle `v` itself loses write permission. The developer cannot write `v.field = value` (`E0520`).
-  - However, `v` remains an active **Live View** into the underlying GC-managed heap object. If the holder of `mut handle` modifies the object, subsequent reads through `v` dynamically observe the updated values.
-  - **Mutable Root Invariant**: A live view can ONLY observe an active mutable root (`let mut` handle or `mut` parameter). Creating a `let view` over an immutable `let` binding is rejected under `E0531: ImmutableTargetViewError`. Because an immutable `let` has no mutations to observe, converting it into a `view` would counterproductively downgrade an unrestricted pure value into a concurrency-confined handle.
-  - **Concurrency Isolation**: Because a live view aliases an underlying mutable heap record, passing a live mutable view across a concurrent task boundary is strictly prohibited (`E0601: CrossThreadDataRaceHazardError`).
+### Transactional Derivation and Structural Sharing
 
-**Why Ril rejects "View Contagion" (Type-Level Contagion)**:
-If creating a view changed the type of `x: User` into `View<User>` or `&User`, then:
-- Every function in the language would need two versions: one accepting `User` and one accepting `View<User>`.
-- Standard collection types (`[]User`) could not store views without wrapper allocation.
-- Ergonomics would degrade severely.
+```ril
+let revised = base |> derive \mut draft -> {
+    draft.child = external_immutable
+    draft.child.count += 1
+}
+```
 
-In Ril, a view's static type remains $T$. The immutability constraint is enforced strictly at the **binding and handle level** via the keyword modifier `view`. If an application requires a permanently frozen, mathematically immutable object that is completely immune to concurrent or future mutations and safe to transfer across concurrency boundaries, it calls `clone_immut(x)`, which returns a deeply normalized `Immut<T>`. Conversely, if it requires an independent, mutable duplicate to modify without mutating the original, it calls `clone(x)`.
+Confined mutation makes nested functional updates readable while immutable input/output permits unchanged sharing. Each source object, including newly inserted references, has one draft counterpart, preserving aliases and cycles without modifying the source. Abort publishes no result; it does not roll back unrelated external writes. Only unaffected regions may remain shared.
 
-### Named External Retained Sharing
+### Separating Reassignment and Interior Mutation
 
-External state and retained sharing are separate concerns: `&{mut counter}` permits mutation of an external origin, while `&{^mut counter}` additionally discloses establishing another writable access path that survives a call or closure publication boundary. Copying an integer value does not share its variable cell; publishing a closure that mutates that cell can. Merely mutating already-shared state does not introduce a new sharing obligation.
+| Binding | Slot | Referenced ordinary data |
+| :--- | :--- | :--- |
+| `let` | Fixed | Immutable; sharing allowed |
+| `let mut` | Pinned | Writable with granted permissions |
+| `var` | Reassignable | Keeps the value's permissions |
+| `let view` | Fixed observation | Read-only, possibly changing |
 
-The name identifies shared source storage, not the container receiving it. Origin identities survive aliases and indirect calls. Hiding a private origin behind a callable interface retains both `&closure` and anonymous `&^mut`; the hazard cannot disappear through abstraction. Local discharge checks captured origins and retention destinations as well as explicit arguments, so local arguments cannot disguise retention of global state.
+Separating slot replacement from interior writes expresses stable mutable handles directly. Scalars use `var`; `mut` parameters cannot misleadingly rebind the caller's handle. Read-only access alone does not establish the stronger ordinary `let` guarantee.
 
-The definition of retained mutable sharing is strictly rooted in the count of persistent, independent surviving write paths ($\ge 2$):
-- **Encapsulated Private Allocation ($1$ Write Path)**: When a factory function constructs a fresh mutable record and exports it solely within an escaping closure, the factory stack frame terminates upon return. No other handle to that storage cell survives anywhere in the program. Because surviving write paths $= 1 < 2$, there is no aliasing conflict. The callable retains `&closure` and the factory declares `&capture` ([Closures, Factory Signatures, and Lexical Environments](SPECIFICATION.md#closures-factory-signatures-and-lexical-environments)), but annotating `&^mut` is statically rejected as excessive (`E0529`).
-- **Dual Escape ($\ge 2$ Write Paths)**: If the factory simultaneously returns both the closure and the object handle, the caller receives multiple independent write paths to the same underlying record. This constitutes retained mutable sharing and mandates `&^mut`.
-- **Storage Origin Invariance under Intermediate Forwarding**: Aliasing an external global or borrowed parameter inside an intermediate local binding (`let mut forwarded = external_origin`) before capturing it does not launder the capability obligation. Ril's escape analysis tracks transitive storage origins rather than local lexical variable names: the identity of `forwarded` resolves directly to `external_origin`. Because `external_origin` survives outside the frame, publishing the closure establishes $\ge 2$ surviving write paths. Omitting `&^mut` or `&{^mut ident}` triggers `E0510`.
+```ril
+fn make_numbers() -> []int {
+    let mut values: []int = []
+    values !> Array::push(1)
+    values
+}
+let numbers = make_numbers()
+```
 
-### Transactional Derivation and Path-Wise Copy-on-Write
+Construction-only writers end at return. With no surviving outside writer or active environment, the caller can receive immutable data without a second deep copy.
 
-Updating deeply nested records in purely functional paradigms incurs either $O(N)$ full deep copying or verbose lens/spreading boilerplate, while handing out mutable references breaches Monotonic Degradation ([Zero-Tolerance Static Rejection of Mutability Laundering](#zero-tolerance-static-rejection-of-mutability-laundering)). Ril resolves this via `derive(base, recipe)`: by synthesizing a local copy-on-write proxy `next`, developers write imperative in-place mutation syntax (`next.path.field = value`), while the abstract machine translates path access into path-wise copy-on-write with maximum structural sharing: unmodified subtrees preserve identical pointer addresses with `base`.
+### The Two Guarantees of clone_immut
 
-Unlike Software Transactional Memory (STM) with its heavy read/write sets, collision detection, and multi-version undo logs, `derive` delivers zero-cost **Transactional Abort-Safety**:
-- **Base Invariant**: `base` is permanently immutable; no write instruction ever touches `base`.
-- **Ephemeral Draft Proxy**: Mutations inside `recipe` operate on newly allocated path-copied nodes accessible only through `next`.
-- **All-or-Nothing Commit Point**: The derived object graph is committed and frozen into an immutable value strictly upon normal return of `derive`.
-- If execution unwinds early—whether via delimited algebraic effect abort ([Affine Resumption](SPECIFICATION.md#affine-resumption-and-delimited-early-abort)) or runtime panic ([Failure Model](SPECIFICATION.md#failure-model-and-error-categories))—the activation frame of `recipe` is popped. The proxy `next` loses its root, and partially allocated path nodes are reclaimed by the tracing GC.
+```ril
+let mut independent = clone(observed)
+let snapshot = clone_immut(observed)
+independent.count += 1
+```
 
-This reconciliation fully upholds the Commit-on-Write invariant ([Affine Resumption](SPECIFICATION.md#affine-resumption-and-delimited-early-abort), *physical memory mutations are never rolled back*):
-- Physical writes to newly allocated nodes on `next` *did* physically commit to heap memory; they simply become unrooted and dead when `next` is dropped upon unwinding.
-- Any physical mutations executed on external reachable state (such as appending to an audit log or updating an external mutable cell via `&mut`) remain permanently committed.
-- Because `E0607` (`DerivedProxyEscapeError`) statically forbids `next` from escaping or being stored in external containers, partial derivations cannot leak into surviving scopes.
-
-### Three-Tier Mutability Architecture: Decoupling Reassignment and Interior Mutation
-
-In programming language design, two historical paradigms dominated mutable variable declarations, both exhibiting fundamental semantic flaws:
-- **The Rust Conflation Trap (`let mut`)**: Merging slot reassignability and interior mutability into a single keyword `mut` leaves developers unable to express "pinned mutable handles"—variables intended to be mutated in-place whose identity must never be rebound.
-- **The Shallow Immutability Trap (`val` / `final`)**: In Java, Kotlin, and Swift, `val` / `final` / `let` only governs slot reassignment, leaving object contents freely mutable and defeating data-race freedom and deterministic sharing.
-
-Ril resolves both traps by establishing a clear three-tier capability hierarchy:
-
-| Binding Form | Variable Reassignment (`x = ...`) | In-Place Mutation (`x.f = ...`, `x !> ...`) | Semantic Classification | Mental Model |
-| :--- | :---: | :---: | :--- | :--- |
-| **`let`** | [Prohibited] (`E0501`) | [Prohibited] (`E0520`) | Immutable Binding | Constant value, frozen snapshot |
-| **`let mut`** | [Prohibited] (`E0502`) | [Permitted] | **Pinned Mutable Handle** | Fixed heap buffer, collection, closure handle |
-| **`var`** | [Permitted] | [Permitted] | **Reassignable Variable** | Loop counter, accumulator, dynamic cursor |
-
-An empirical audit of all reference objects, collections, and closures across the Ril specification confirmed that **100% of reference handles declared `let mut` behave strictly as pinned handles**. Developers almost never reassign a heap buffer or connection handle; they mutate its contents in place. Declaring `let mut` as a pinned handle aligns static compiler enforcement with real-world developer intent.
-
-This architecture delivers crucial static guarantees:
-- **Guaranteed Pointer Stability for Live Views (`let view`)**: Live views (`let view v = target`, [Live Views](SPECIFICATION.md#live-view-bindings)) allow live, read-only observation of an active mutable heap root without data races or wrapper boxing. Because `target` must be a pinned mutable root (`let mut` or borrowed `mut` parameter), reading through `v` is guaranteed absolute pointer stability without lifetime annotations or runtime borrow counting.
-- **Value Types Reject `let mut` (`E0402`)**: Value types have copy-by-value semantics and zero interior mutable fields. A pinned handle that rejects reassignment on a value type (`let mut i = 0`) has zero legal modifying operations, creating a dead-end binding. Ril catches this at declaration time via `E0402: ValueTypePinnedMutError`, guiding developers to declare mutable scalars as `var count = 0`.
-- **Borrowed Parameter Symmetry (`E0403`)**: A function parameter `mut p: T` borrows caller storage for in-place mutation. Reassigning `p = new_obj` inside the callee would merely overwrite the local register and mislead callers. Therefore, `mut p` is definitionally a pinned mutable handle, mirroring local `let mut`. Declaring `var` in function signatures is statically rejected (`E0403`).
-
-### Dual Compound Nature of clone_immut
-
-The standard prelude operation `clone_immut(x)` is a compound semantic primitive performing two simultaneous transitions:
-- **`clone` (Deep Duplication)**: Traverses the object graph and allocates an independent memory duplicate.
-- **`immut` (Deep Freezing)**: Recursively seals all mutable fields and handles into permanently immutable `Immut<T>`.
-
-When an entity carries active capabilities (`&mut`, `&^mut`), stateful closures, or scoped cleanup handles, passing it to `clone_immut` violates both semantic invariants simultaneously:
-- **Unclonable**: An active capability represents an exclusive or linear modification permit. Duplicating it would forge unauthorized concurrent access routes.
-- **Unfreezable**: Active capabilities and closures are executable effect vectors, not passive data values. They cannot be stripped of their mutating essence into static inert data.
-
-Therefore, `E0530: IllegalCapabilityCloneImmutError` reflects this dual impossibility: the target entity is neither clonable nor freezable into `Immut<T>`. Calling either `clone()` or `clone_immut()` on active capabilities is statically rejected.
-
----
+`clone_immut` combines isolation from the source with immutable result data. Merely removing a view's write permission would not provide either guarantee. Eligibility covers the whole ordinary graph: views and wrappers cannot hide a non-copyable environment or resource. Internal aliases remain internal aliases; `Immut<T>` records immutability without implying uniqueness.
 
 ## Algebraic Effects, Concurrency, and Function Colorlessness
 
-### Red/Blue Function Problem and Effect Handlers
+### Colorless Functions and Separated System Effects
 
-In languages with `async`/`await` (such as JavaScript, Python, C#, and Rust), functions become "colored": asynchronous functions return wrapper types (`Promise<T>`, `Future<T>`), cannot be called directly from synchronous code, and require duplicate higher-order combinators.
+```ril
+eff Yield<T> { emit(T) -> () }
+type Fetch = fn(str) -> Result<str, str> @Fiber
+-- @Async = {Fiber, Concurrent}
+```
 
-Ril eliminates function coloring through **Algebraic Effects**:
-- An asynchronous function returns uncolored type $T$, accompanied by an effect annotation `@Concurrent` or `@Fiber`.
-- Callers invoke the function with standard call syntax: `let data = fetch(url)`.
-- By the **Automatic Effect Forwarding Theorem**, higher-order functions transparently forward whatever effects their closure arguments invoke without specialized async variants.
+Suspension changes a computation's obligations, not its ordinary return shape or call syntax. Higher-order functions can forward those obligations without separate async combinators. Leaf I/O uses Fiber; task creation requires Concurrent. Typed Yield data is distinct from unit-valued Fiber scheduling, so a stream consumer cannot accidentally intercept scheduler operations. Affine resume supports push streams; pull state must be represented explicitly.
 
-This architecture enforces two crucial principles of least privilege and separation:
-- **Leaf `@Fiber` vs. Compound `@Async`**: `@Async` is formally defined as an effect alias:
-  $$\text{@}\text{Async} \equiv \lbrace\text{Fiber}, \text{Concurrent}\rbrace$$
-  Granting compound `@Async` to leaf I/O routines (such as socket readers or timer waits) would escalate privileges by permitting them to covertly fork background tasks. By restricting leaf I/O functions strictly to `@Fiber`, they retain cooperative suspension authority (`Fiber::park()`, `Fiber::yield()`) while lacking task-forking authority (`@Concurrent`). Because a `@Fiber`-only function cannot branch into concurrent tasks, local mutation handles (`&mut`) and live views remain strictly thread-confined and immune to cross-thread data race hazards (`E0601`).
-- **Decoupling Scheduling Quantum from Data Generation (Separation of Fiber and Yield)**: Rather than overloading `yield` for both generator streaming and CPU time-slicing (as in Python or JavaScript), Ril separates them strictly:
-  - **Eliminating Handler Hijacking**: If scheduling and data emission shared the same effect, an ambient stream consumer could inadvertently intercept scheduler yields, starving the runtime.
-  - **Untyped Scheduler vs. Typed Payload**: `@Fiber` operates at the untyped machine-state level (`yield() -> ()` in `eff Fiber`), whereas value streaming carries domain data of type $T$.
-  - **Freestanding Purity**: Streaming functions annotated with `eff Yield<T>` can compile and execute in freestanding embedded targets without dragging in a fiber runtime.
-  - **Push vs. Pull Semantics**: Under affine resumption and the no-escape invariant (`E0611`), `eff Yield<T>` evaluates as a zero-cost in-situ push stream, while pull iterators (`Iterator<T>`) are cleanly constructed via state machines or dedicated channels.
+### Structured Scopes as Defect Boundaries
 
-### Structured Concurrency Scopes as Defect Containment Domains
+```text
+Task<T>.join()           -> Result<T, TaskFault>
+Task<Result<T, E>>.join() -> Result<Result<T, E>, TaskFault>
+```
 
-Unstructured concurrency (`go func()`, background thread detached spawning, dangling Promises) is the leading source of resource leaks, orphan tasks, and race conditions. Ril unifies all concurrent execution under **Structured Concurrency**:
+Children cannot outlive their scope, so results and cleanup have an explicit rendezvous. Failure cancels descendant and body waits, blocks new forks, and remains failure after inspection. The exit barrier is a lifetime guarantee, not a promise to terminate arbitrary divergence. A business Result retains its own inspection obligation instead of disappearing inside Task.
 
-$$
-\forall c \in \text{Children}(S), \quad \mathop{\mathrm{Lifetime}}(c) \subseteq \mathop{\mathrm{Lifetime}}(S) \subset \mathop{\mathrm{Lifetime}}(\text{Frame}_{\text{parent}})
-$$
+### Capability-Based Concurrency Safety
 
-A parent scope cannot exit until all child tasks finish. If a child task panics, the scope guarantees defect containment:
-- Sibling tasks are immediately cancelled via delimited Early Abort.
-- All `let scoped` resource handles inside cancelled fibers execute their cleanup handlers in strict LIFO order.
-- No orphan tasks remain executing in the background.
+```ril
+let snapshot = clone_immut(observed)
+let task = s.fork(\-> snapshot.count)
+-- Capturing observed itself across this boundary is E0601.
+```
 
-Under Ril's structured lifetime invariant, task lifecycles are strictly bounded by their enclosing lexical scope:
-- **Hierarchical Lifetime Containment**: Child tasks are strictly scoped to the parent block, preventing detached background tasks from outliving their enclosing context.
-- **Synchronous Scope Unwind-Barrier**: If a panic occurs in the parent frame or a sibling task while child fibers are executing concurrently, the scope cancels all children and pauses at the frame boundary until all children reach a terminal state (`Completed`, `Panicked`, or `Cancelled`) and complete their `let scoped` LIFO cleanups.
-- **Deterministic Result Rendezvous**: Child return values remain encapsulated within the child task until transferred to the parent via `task.join()` or discarded during scope unwinding.
+Task safety follows actual permissions, origins, and immutable data rather than a separate set of nominal marker traits. A simple visible type cannot hide live state in a closure or aggregate. Resource transfer and confined parallel writes have explicit contracts rather than weakening the general boundary rule.
 
-### Concurrency Boundary Safety via Capability Tracking
+### Effect Confinement at Task Boundaries
 
-In mainstream languages such as Rust (`Send`/`Sync`) and Swift (`Sendable`), compilers rely on nominal marker traits or protocols to classify types that can safely cross concurrent boundaries. This necessity arises because their type systems lack first-class capability tracking on individual callables and values, requiring nominal markers to constrain generic parameters and type declarations.
+```ril
+let task = s.fork(\-> {
+    with WorkerLog::log(_message) -> resume ()
+    WorkerLog::log("started")
+    42
+})
+```
 
-Ril introduces no nominal marker traits, tags, or ad-hoc concurrency classifications. Concurrency safety—specifically Data-Race Freedom under Sequential Consistency (DRF-SC)—is governed directly by structural value semantics and the **Capability Tracking System**:
-- **Zero-Capability Invariant for Cross-Boundary Transfer**: Pure values, immutable records, and frozen `Immut<T>` values carry zero mutable capabilities. They are inherently data-race free and can safely cross concurrent task boundaries (`scope.fork`, `Parallel::map`) without wrapper types or marker trait implementations.
-- **Direct Static DRF-SC Enforcement**: Concurrency boundaries directly inspect capability requirements. Any closure or captured payload carrying active mutable capabilities (`&mut`, `&^mut`, `&{mut var}`) or live views over mutable roots is rejected at compile time under `E0601: CrossThreadDataRaceHazardError`.
-- **First-Class Effect Signatures**: Algebraic effect operations are ordinary callable signatures (`fn(Args) -> Ret @Effects &Capabilities`), tracking in-place mutation (`&mut`) directly where required without imposing artificial restrictions or marker trait requirements.
-- **Conceptual Minimality and Clean Separation**: Concurrency safety is an inherent static property derived from capability tracking and value immutability, rather than a nominal trait bolted onto type definitions. Type definitions remain lean, APIs avoid marker trait clutter, and developers reason about thread safety through familiar capability rules.
+A child must not resume or abort an ancestor's active computation. It installs local handlers, possibly using passed immutable handler data. Memory confinement and control confinement therefore reinforce each other; join and channels carry results between tasks instead of cross-task continuations.
 
-### Effect Confinement at Concurrent Boundaries
+### Persistent Handlers and Captured Environments
 
-Mainstream effect systems in single-threaded research languages (e.g., Koka, Eff) assume a single continuous execution stack. In a multi-core, systems-level language with structured concurrency like Ril, permitting algebraic effects to cross concurrent task boundaries introduces fundamental hazards:
+```ril
+type Button = { on_click: fn() -> () }
+fn button_for(label: str) -> Button &capture {
+    Button.{ on_click: \-> {
+        with Console::print(_message) -> resume ()
+        Console::print(label)
+    } }
+}
+```
 
-- **Stack Independence and Continuation Safety**: Concurrent child tasks execute on independent execution stacks. If a child task could invoke an effect intercepted by an ambient handler on the parent stack, cross-stack delimited continuations would be required, breaking thread stack isolation and creating unsafe cross-thread continuation dependencies.
-- **Delimited Early Abort Across Threads**: If an ambient parent handler intercepts an effect from a child task and executes an early abort (returning without `resume`), unwinding the parent stack while the child continues executing would violate the Synchronous Scope Unwind-Barrier. Conversely, attempting to asynchronously cancel the child from the parent handler introduces non-deterministic thread coordination.
-- **Symmetric Isolation Barrier with DRF-SC**: Just as Boundary Capability Confinement (`E0601`) guarantees that mutable memory handles cannot cross task boundaries to eliminate data races, Concurrent Task Effect Confinement (`E0615`) guarantees that control transfers cannot cross task boundaries to eliminate cross-thread continuation hazards. Child tasks communicate exclusively through structured value channels (`task.join()`, channels), never via synchronous ambient effect invocations.
+Escape is safe when each invocation has stable handling. Retaining a handler retains its definition and lawful environment, never an old continuation or return target. Every final arm value, including a tail after resume, must fit the new answer type. Creating a surviving environment still requires capture authority, even inside a returned record; handling its effects does not remove that duty.
 
-### Colorless Parallelism Principle: Effect-Free Data Parallelism
+### Effect-Free Data Parallelism
 
-In effect systems, an algebraic effect represents a control-inversion protocol: computation yields control to an ambient stack handler via operation requests, and the handler decides whether and how to resume the continuation.
+```ril
+halt fn squares(values: []f64) -> []f64 {
+    values |> Parallel::map(\x -> x * x)
+}
+```
 
-Data parallelism (`Parallel::map`, `Parallel::fold`, `Parallel::join`) differs fundamentally from algebraic effects:
-- **No Control Inversion**: An item mapping operation `x * 2` does not yield to a handler, make requests, or require delimited resumption. It is a pure mathematical calculation.
-- **Evaluation Strategy vs. Effect**: Parallelism is an abstract machine evaluation strategy for executing independent expressions across multiple physical CPU cores. Attaching an `@Parallel` effect to pure computations would reintroduce function coloring to mathematical functions and prevent them from being certified as total functions (`halt fn`).
-- **Preservation of Blelloch-Steele Determinism**: A pure data-parallel expression possesses observational equivalence to serial evaluation. By establishing that data-parallel combinators carry $\mathbf{Eff} = \emptyset$, Ril preserves function colorlessness while maximizing multi-core throughput.
+Independent evaluation does not require a new control-request effect named Parallel. The callback's residual effects, including Div, must be empty, though local handling and immutable captures remain useful. A fixed 64-element reduction tree supplies its own reference semantics; it is not ordinary left-fold equivalence or a claim that floating addition is associative.
 
-### Rejection of Bare Atomics and Weak Memory Models
+### No Bare Atomics or Weak Memory Orderings
 
-Mainstream systems languages (C++, Rust) expose atomic primitives (`std::atomic`, `AtomicI32`) parameterized by weak memory orderings (`Relaxed`, `Acquire`, `Release`, `SeqCst`).
+```text
+shared reading      -> immutable data
+task coordination   -> structured channels
+parallel mutation   -> explicit disjoint regions
+```
 
-Ril rejects bare atomic shared-memory primitives in safe code for critical architectural reasons:
-- **Preserving the Handle-Level Immutability Invariant**: In Ril, a binding declared with `let` establishes a strictly immutable handle ([Memory Model and Handle Invariants](SPECIFICATION.md#memory-model-and-handle-invariants)). Allowing `counter.fetch_add(1)` on a `let counter` handle would introduce an interior mutability backdoor (the `UnsafeCell` hazard). Conversely, requiring `let mut counter` would trigger `E0601`, preventing it from crossing task boundaries.
-- **Preventing Marker Trait Contagion**: To allow atomics across threads, languages must introduce nominal marker traits (`Send`, `Sync`). Ril derives DRF-SC directly from capability tracking and value immutability without marker traits ([Concurrency Boundary Safety via Capability Tracking](#concurrency-boundary-safety-via-capability-tracking)). Special-casing atomics would shatter this orthogonal model.
-- **Total Isolation via `Immut<T>` and MPSC Channels**: Multi-core reads are served with zero overhead and zero lock contention via deeply frozen `Immut<T>`. Inter-task state coordination is mediated exclusively via structured MPSC channels (`Sender<T>` / `Receiver<T>`), preserving memory safety and defect isolation.
+An ordinary immutable handle must not conceal an operation that changes its reachable data. Bare atomics and memory-order flags would add another shared-state model beside these permissions. Ril keeps communication under explicit resource/effect contracts rather than adding an interior-mutation exception to `let`.
 
-### Declarative Data Parallelism vs. Low-Level Slice Partitioning
+### Channels and Endpoint Authority
 
-In low-level systems languages without garbage collection (such as Rust), parallel algorithms over contiguous arrays require explicit, manual slice partitioning (`split_at_mut`) to prove disjointness to the borrow checker. While sound, this model forces application developers to calculate midpoint indices, manage off-by-one boundary cases, and contend with complex borrow states.
+```ril
+-- Inside a child task; tx is an immutable sender descriptor.
+let mut local_tx = clone(tx)
+(local_tx !> Channel::send(message))
+    ?? \_error -> panic("receiver closed")
+Channel::close(local_tx)
+```
 
-Ril targets modern mid-to-high-level applications, cloud services, and data processing systems. In this domain, manual slice arithmetic constitutes an ergonomic impedance mismatch:
-- **Topology-Agnostic Declarative Operations**: Developers think in terms of operations over elements (`Parallel::map`, `Parallel::fold`, `Parallel::for_each`), not pointer slices or partition arithmetic.
-- **Abstract Machine Chunk Scheduling**: The distribution of elements and partition boundaries is an internal scheduling concern of the abstract machine work-stealing engine. The runtime guarantees Data-Race Freedom under Sequential Consistency (DRF-SC) without exposing index arithmetic or manual partition boundaries to user code.
-- **Pure Divide-and-Conquer via `Parallel::join`**: When recursive divide-and-conquer is required (e.g., parallel merge sort), algorithms operate naturally over immutable slice partitions (`s[0..mid]` and `s[mid..len]`), returning new values without mutating shared buffers.
+Sender clones keep channel identity but gain independent endpoint authority, so this resource operation has Fiber rather than an ordinary deep-copy guarantee. Protocol state is effect-accessed external state, not a mutable child of an immutable descriptor. Detach/attach explicitly transfer unique authority; close and scope/task exit determine lifetime without depending on garbage collection.
 
-### Observational Equivalence: Leftmost Index Supremacy and Panic Arbitration
+### Declarative Parallel Work Instead of Manual Slice Proofs
 
-A central tenet of Ril is that abstract machine semantics must never depend on physical core count, CPU clock frequencies, or thread scheduling interleavings ([Abstract Machine and Memory Semantics](SPECIFICATION.md#abstract-machine-and-memory-semantics)).
+```ril
+cells !> Parallel::for_each(\mut cell -> { cell.count *= 2 })
+let (left, right) = Parallel::join(\-> sort(left_part), \-> sort(right_part))
+```
 
-When executing parallel operations across cores:
-- **Leftmost Index Supremacy in Short-Circuiting**: In operations like `Parallel::find`, an arbitrary core may find a match at index 60 before another core inspects index 20. If index 60 were returned, execution would become non-deterministic. Ril enforces the **Deterministic Horizon & Cancellation Protocol**: matches establish an upper bound to cancel higher partitions, but lower partitions must always be exhaustively verified. The observed result is guaranteed identical to serial evaluation.
-- **Canonical Leftmost Panic Precedence**: If index 1 and index 3 trigger panics simultaneously across two cores (e.g. division by zero), the abstract machine deterministically surfaces the panic at index 1 ($\pi_{\min(\mathcal{D})}$). Defective branches at higher indices are classified as Subsumed Defective Branches. This eliminates race conditions in test suites and defect handling.
+Element operations and divide-and-conquer describe the intended work without introducing low-level slice-borrow syntax. They still require actual disjoint access; different paths into shared objects do not suffice. Mutable join/for_each finish independent work and retain writes before reporting faults, rather than implying rollback or sequential short-circuit state.
 
-### Compiler Auto-Vectorization vs. Language-Level SIMD
+### Leftmost Results and Deterministic Fault Visibility
 
-Hardware vector extensions (SIMD: AVX, NEON, SVE) provide immense computational throughput. However, introducing raw fixed-width SIMD types (`simd[f32, 4]`) into the core language syntax creates significant design friction for application software:
-- **Domain Model Pollution**: Enterprise domain models (orders, user profiles, ledger entries, event streams) should not be burdened with hardware register lane counts, masks, and lane-count type errors.
-- **Auto-Vectorization of Pure Combinators**: In garbage-collected, functional-friendly languages, hardware vectorization is most effectively achieved via compiler optimization over pure, immutable slice combinators (`Parallel::map`, `Parallel::fold`), freeing developers from writing architecture-specific intrinsics or managing epilogue remainder loops.
-- **Library-Level Encapsulation**: Numerical and scientific workloads requiring specialized vector operations are addressed via standard library modules (e.g. `ril/std/numeric`), preserving the purity, elegance, and simplicity of Ril's core tripartite ontology.
+```ril
+let found = [0, 1] |> Parallel::find(\x -> {
+    if x == 0 { true } else { panic("right branch") }
+})
+assert(found == Some(0))
+```
 
----
+Pure reference evaluation, not arrival order, chooses the observable match or fault. A skipped rightward branch cannot preempt an earlier answer, even with a branch-local double fault. Branch state and cleanup obligations must therefore remain local; a selected double fault still keeps its fatal severity. Structured concurrency does not inherit this pure determinism promise.
+
+### Portable Collection Operations Instead of Core SIMD Types
+
+```ril
+let squares = values |> Array::map(\x -> x * x)
+```
+
+Core application types describe domain data, not hardware lane widths and masks. Ordinary collection operations keep that meaning portable; specialized numeric operations can live in libraries. This retains the original choice against core SIMD syntax without prescribing how an implementation evaluates the operation.
 
 ## Syntax Ergonomics and Deliberate Omissions
 
-### File-as-Module by Default and Predictable Namespaces
+### Files as Modules and Predictable Namespaces
 
-Modern developers spend significant time maintaining redundant boilerplate when languages require explicit module wrappers around every file.
+```ril
+use math/geometry                     -- Geometry namespace
+use ril/crypto as Hash
+let words = "a,b" |> String::split(",")
+```
 
-Ril establishes **File-as-Module by Default**:
-- Every `.ril` file is automatically an independent compilation unit named after its path stem.
-- Items marked `pub` at the file root constitute the module's public interface; unmarked declarations remain strictly private to the file (`E0201`).
-- Source files require zero wrapping boilerplate. Local, block-scoped helper imports (`use module::{item}`) allow localized scoping inside functions without global namespace pollution.
+A file already supplies a module boundary, so another wrapper adds little information. `pub` exposes its interface; local imports keep dependencies near use. Lowercase paths map to predictable PascalCase namespaces. Array/Map/Set/String are common enough for the prelude; specialized type extractors remain module exports.
 
-This model is reinforced by two namespace conveniences:
-- **Automatic PascalCase Derivation**: On disk, cross-platform file paths must be strictly `snake_case` to prevent casing mismatches across case-sensitive and case-insensitive filesystems. In code, static qualifiers left of `::` are strictly `PascalCase` (`Array::push`, `Channel::bounded`). Unqualified module imports automatically project the terminal path segment to its canonical `PascalCase` qualifier in lexical scope, eliminating renaming ceremony. Explicit aliases (`as PascalCase`) resolve segment collisions without weakening casing invariants (`E0101`).
-- **Ambient Core Collection Modules in the Standard Prelude**: Arrays `[]T`, maps `[K: V]`, sets `Set<T>`, and strings `str` are first-class lexical types. To eliminate repetitive import statements for pervasive operations, Ril promotes **`Array`**, **`Map`**, **`Set`**, and **`String`** directly into the **Standard Prelude** (`items !> Array::push(x)`, `s |> String::split(",")`). Modular type parameter extractions (`type Elem<[]T> = T`, `type Key<[K: V]> = K`) remain cleanly accessible via `Array::Elem` or `ril/array`.
+### Explicit Operation Records Instead of Implicit Instances
 
-### First-Class Operation Records vs. Ad-Hoc Typeclasses and Coherence
+```ril
+type Ordering<T> = { less: fn(T, T) -> bool }
+fn before<T>(ops: Ordering<T>, left: T, right: T) -> bool {
+    ops.less(left, right)
+}
+```
 
-Languages with implicit typeclass or trait instance resolution (Haskell, Scala, Rust) suffer from:
-- **Orphan Rule Restrictions**: Strict limits on where trait implementations may be declared.
-- **Coherence Conflicts**: Ambiguity when multiple libraries provide conflicting implementations for the same type.
-- **Hidden Execution**: Calling `x < y` can invoke arbitrary complex user code without visual indication at the call site.
+Passing operations explicitly makes the selected behavior visible and permits multiple choices for the same data type. It avoids implicit-instance coherence and orphan-rule questions, and does not turn built-in operators into hidden user calls. Actual callback effects and permissions still follow the supplied operations.
 
-Ril deliberately omits implicit typeclass or trait instance resolution in favor of **Explicit Operation Records**. Passing protocol implementations explicitly preserves total predictability at call sites, eliminates coherence conflicts and orphan rule restrictions, and prevents hidden non-local execution.
+### One Lexical Namespace
 
-### Unified Lexical Scope vs. Dual-Namespace Complexity
+```ril
+use math/geometry                     -- Binds Geometry
+-- type Geometry = int                -- Error [E0203]: same-scope name already exists
+```
 
-Programming languages diverge significantly in how they organize namespaces:
-- **TypeScript**: Values and types share names but inhabit dual namespaces (e.g., `class Foo` declares both a value constructor and an instance type; `import type` was introduced specifically to resolve ambiguous compiler emissions).
-- **Rust**: Types, values, and macros inhabit distinct namespaces (`struct Foo; fn Foo() {}` can legally coexist in the same module scope), requiring complex path disambiguation rules (`::Foo` as a type vs `Foo()` as a function) and complicated macro expansion hygiene.
+A name should identify one declaration without a second type/value import dialect. Nominal type and constructor uses are roles of the same declaration, not unrelated duplicate entities. This keeps references, imports, and renaming consistent; casing supplies additional grammatical role information.
 
-Ril rejects dual-namespace complexity in favor of a **Unified Lexical Identifier Namespace**:
-- In any lexical scope (module, block, or pattern), an identifier refers unambiguously to exactly one entity: a value, a type, a module, or an effect.
-- Declaring a type `type User = ...` and a function `fn User() ...` in the same scope triggers an immediate duplicate declaration error (`E0203: DuplicateDeclarationError`).
-- This design provides profound advantages:
-  - **Trivial Tooling and Refactoring**: Renaming an identifier never leaves a "shadow" type or function behind.
-  - **Predictable Import/Export**: `use module::Item` imports the symbol directly without needing `type` modifiers or disambiguators.
-  - **Zero Ambiguity in First-Class Types**: Because types are first-class values in static type computation, treating types and values under a single unified scope is mathematically necessary and syntactically consistent.
+### Static Records and Dynamic Collections
 
-### Segregation of Static Records and Dynamic Collections
+```ril
+type User = { id: int, name: str }
+type Id = User.id
+let settings: [str: str] = ["theme": "dark"]
+let theme = settings["theme"]          -- ?str
+use ril/array::{Elem}
+type Item = Elem<[]int>
+```
 
-Dynamic script languages (JavaScript, Lua, Python) historically conflated structural records with associative hash maps (`{}` serving as both struct and dictionary). This resulted in well-documented design failures: prototype pollution, lack of arbitrary key types, performance degradation requiring complex engine inline caches, and the eventual re-introduction of separate `Map` types.
+Records have known fields; maps and arrays have collection operations. `r.field` and a static `r.(key)` preserve this distinction, while run-time record keys remain invalid. Named rows preserve extra fields and `..rest` binds a typed remainder. Product projection uses dots; collection parameter extraction uses explicit helpers or type matching. Sets use ordinary `Set` constructors, not extra core literal syntax.
 
-Ril establishes strict syntactic and conceptual segregation between compile-time static records and runtime dynamic collections:
-- **Bracket Delimiters Enforce Absolute Clarity**:
-   - Curly braces `{}` denote **Compile-Time Structural Records**: fields are identifiers, memory is contiguous with zero-overhead offset lookup, and field access is strictly identifier dot-access `r.field`. Dynamic string indexing (`r["key"]` or `r.("key")`) is strictly prohibited.
-   - Brackets `[...]` denote **Runtime Dynamic Collections**: linear arrays `[]T` / `[1, 2, 3]` and associative maps `[K: V]` / `["k": v]` / `[:]`. Keys can be arbitrary hashable types, and map lookup `m[k]` evaluates to `?V` under the totality principle.
-   - `Set<T>` integrates seamlessly via `Set.[1, 2, 3]` and contextual `[1, 2, 3]`.
-- **Elimination of Anonymous Open Rows**:
-   - Anonymous open rows (`{ id: int, .. }`) created the false illusion of a runtime "rest" dictionary capture while disallowing field access.
-   - Ril replaces them with **Named Row Tail Polymorphism (`..R`)** strictly for generic pipeline type preservation (`fn with_ts<R>(r: { ..R }) -> { ts: int, ..R }`), and **Type-Precise Pattern Destructuring (`let .{ id, ..rest } = u`)** where `rest` is a fully typed, accessible static sub-record.
-- **Type-Level Symmetry via Dot Projection (`T.field`, `T.(K)`)**:
-   - In conformity with the strict segregation between compile-time records and dynamic collections, Ril prohibits bracket string indexing on record types (`User["id"]`). Record fields are identifiers, not strings.
-   - Field types of static records are extracted symmetrically via dot projection (`User.id`).
-   - For inferred anonymous record instances, direct value access `typeof expr.field` or parenthesized type projection `(typeof expr).field` maintains complete consistency.
-   - In mapped schema computations (`[K in keyof T]`), computed key projections use `T.(K)` to unambiguously distinguish evaluated type parameters from literal field names, preserving complete consistency across value and type spaces.
-- **Product Types vs. Generic Container Parameter Extraction**:
-   - **Product Types (Records & Tuples)**: Possess statically fixed shapes and physical memory offsets. Member extraction in both value and type space uniformly employs dot syntax (`u.id` / `User.id` for records; `coords.0` / `Coords.0` for tuples).
-   - **Generic Containers (Arrays & Maps)**: Are parameterized collections without named internal fields. Inventing magical pseudo-properties (`Arr.elem`, `Map.key`) would erroneously conflate product field offsets with generic type arguments.
-   - **Modular Extraction without Prelude Pollution**: Instead of magical dot properties or global prelude bloat, type extraction for collections is cleanly modularized: `ril/array` exports `type Elem<[]T> = T`, while `ril/map` exports `type Key<[K: V]> = K` and `type Value<[K: V]> = V`. Pure type functions can also directly deconstruct collection shapes via compile-time pattern matching (`match M { [K: V] -> type<V> }`).
+### Nominal Wrappers and Single-Payload Packaging
 
-### Necessity of Nominal Wrappers and Universal Single-Type Packaging
+```ril
+type UserId(int)
+type OrderId(int)
+type Point({ x: f64, y: f64 })
+let user_id = UserId(42)
+let raw = inner(user_id)
+```
 
-Structural typing provides maximum ergonomics for data-transfer objects (DTOs) and ad-hoc records, but pure structural typing introduces severe vulnerabilities in domain modeling:
-- **Primitive Obsession & ID Conflation**: Without nominal typing, distinct domain identifiers (`UserId`, `OrderId`, `ProductId`) share the same scalar type `int`, allowing disastrous call-site argument swaps that compile silently.
-- **Coincidental Shape Collision**: A 2D point (`Point2D { x, y }`), a direction vector (`Vector2D { x, y }`), and a complex number (`Complex { x, y }`) share identical field definitions. In pure structural systems, an operation expecting a spatial location can erroneously accept a displacement vector or complex number without static diagnostics.
+Equal representations need not denote interchangeable domains. Wrappers distinguish identifiers and coincidentally equal record shapes while retaining their underlying value/reference behavior. One payload can be a scalar, record, or tuple, avoiding a separate packaging model for every shape.
 
-Ril introduces **Nominal Type Wrappers** as zero-cost compile-time domain boundaries:
-- **Zero Runtime Overhead**: In native machine code, a nominal wrapper is completely transparent—it occupies the exact same memory layout and registers as its underlying type without wrapper allocation or pointer indirection.
-- **Universal Single-Type Packaging (`type Name(TypeExpr)`)**: Rather than inventing pseudo-parameter lists for multi-field wrappers, Ril strictly defines nominal wrappers as packaging a single underlying `TypeExpression`. A multi-field nominal wrapper is simply a wrapper over a structural record: `type Point2D({ x: f64, y: f64 })`, or an anonymous tuple: `type Coord(int, int)` (definitionally equivalent to `type Coord((int, int))` under [Constructor-Tuple Equivalence](#constructor-tuple-equivalence-vs-function-parameter-isolation)).
-- **Bidirectional Isomorphic Packaging**: Universal single-type packaging establishes an isomorphic, bidirectional mapping between domain brands and underlying representations, ensuring that nominal wrappers serve as zero-cost compile-time boundaries without memory indirection, wrapper allocation, or parameter list complexity.
+### Opaque Types and Module Boundaries
 
-### Opaque Types: Module-Bound Zero-Cost Abstraction
+```ril
+pub opaque type Token = str
+pub fn reveal(token: Token) -> str { token } -- Inside the defining module
+```
 
-While Nominal Type Wrappers (`type W(T)`) require explicit wrapping (`W(v)`) and unwrapping (`inner(w)`) everywhere, certain domain invariants (such as cryptographically validated session tokens, authenticated IDs, or parser state handles) require a different ergonomics profile:
+Opaque types allow direct representation use inside their module while preserving validation boundaries outside it. Public functions and pipelines expose deliberate operations; external `inner` or pattern penetration would bypass that choice (`E0308`). The distinction is module authority, not an additional application-visible wrapper payload.
 
-- **Internal Transparency vs. External Opacity**:
-   - Inside the defining module, implementing algorithms need direct, zero-ceremony access to the underlying representation (`str`, `int`, `[]u8`) without writing boilerplate unwrapping at every intermediate arithmetic or indexing step.
-   - Outside the module, client code must be strictly prohibited from forging instances or bypassing validation constructors.
+### Unit Nominal Domain Witnesses
 
-- **Explicit Operation Exposure via Functions and Pipelines**:
-   - In alignment with modern pragmatic languages (OCaml, Hack, Go), capabilities and transformations are exposed explicitly via ordinary functions (`pub fn reveal(t: Token) -> str`) and fluent pipeline operators (`token |> reveal()`). This maintains total predictability, eliminates implicit operator leaking, and leaves library authors in complete control of their public API surface.
+```ril
+type Marker
+let marker: Marker = Marker
+let result: Result<Marker, str> = Ok(Marker)
+```
 
-- **Zero Runtime Boxing and Preserved Invariant Security**:
-   - Unlike structural records that live on the managed GC heap, an `opaque type` over a scalar value type (`int`, `str`, `bool`) remains a zero-overhead scalar in memory. When stored in collections (`[]Token`, `[Token: User]`), it incurs zero heap wrapper allocations.
-   - External callers are strictly prohibited from penetrating the boundary via `inner()` or pattern deconstruction (`E0308`), ensuring invariants cannot be breached from client code.
+A zero-payload domain identity remains useful even without stored data. Marker is distinct from unit, so `Ok()` cannot silently replace `Ok(Marker)`. Visibility and opacity control who can create protected witnesses; a publicly constructible marker is simply a nominal value.
 
-### Unit Nominal Types as Zero-Sized Domain Witnesses
+### Bindings Must Introduce Variables
 
-In type-driven domain modeling, developers frequently require unforgeable compile-time witnesses (typestate markers, capability tokens, authorization witnesses) that carry zero runtime data:
-- Ril establishes **Unit Nominal Types (`type Marker`)** as first-class citizens. Omitting the parenthesized underlying type expression defines an isolated nominal identity with a 0-byte memory layout (zero-sized type / ZST).
-- In accordance with Ril's **Unified Lexical Identifier Namespace** ([Unified Lexical Scope vs. Dual-Namespace Complexity](#unified-lexical-scope-vs-dual-namespace-complexity)), `Marker` serves simultaneously as the type name in type contexts and the canonical zero-sized value in expressions (`let m = Marker`). In pattern matching, `Marker` serves as a nullary variant selector within multi-variant `match` expressions (`match event { Marker -> ... }`).
-- **Nominal Isolation**: Nominal markers are strictly distinct from structural `()`. A function returning `Result<Marker, E>` requires `Ok(Marker)` and rejects `Ok()`, preserving complete domain encapsulation and preventing accidental representation leakage.
+```ril
+let UserId(id) = user_id
+-- let Marker = marker                -- Error [E0309]: no variable introduced
+let _ = marker                        -- Explicit discard
+```
 
-### Prohibition of Vacuous Bindings: Preventing Zero-Variable Destructuring Anti-Patterns
+`let` should introduce a usable name, not disguise an assertion or branch. Non-vacuous patterns make this expectation consistent across ordinary and guarded bindings. Use `is`, `match`, or `?` when no binding is needed; `_` does not waive a Result's inspection obligation.
 
-A `let` statement universally signals the introduction of local variable bindings into the enclosing lexical scope. Applying `let` to patterns that introduce **zero variable bindings** represents a severe syntactic and cognitive anti-pattern:
-- **The Variable Naming Cognitive Trap**: In Ril, variables are strictly `snake_case`, while types and constructors are `PascalCase`. If `let Marker = m` were permitted, developers migrating from Python, JavaScript, or Go would naturally misread it as declaring a new local variable named `Marker`. Silently accepting the statement without binding any variable creates immediate downstream confusion when the developer attempts to reference `Marker` as a variable on subsequent lines.
-- **Semantic Nullity of Zero-Field Destructuring**: `type UserId(int)` destructures into `id`, extracting payload data. But `type Marker` has 0 fields and occupies 0 bytes; it carries zero data to extract. Furthermore, matching an irrefutable type performs no runtime check. Thus, `let Marker = m` extracts nothing, checks nothing, and binds nothing—it is pure dead ceremony.
-- **Abuse of Guarded Bindings for Jump Assertions**: Writing `let Ok() = flush_cache() else { return Err("aborted") }` or `let None = opt else { ... }` abuses the destructuring binding mechanism solely as a conditional jump without binding variables.
-- **Universal Static Rejection (`E0309: VacuousBindingError`)**:
-   Ril establishes the **Universal Non-Vacuous Binding Invariant**: all `let` statements (both simple `let Pattern = expr` and guarded `let Pattern = expr else { ... }`) MUST bind at least one variable into the enclosing lexical scope, with the sole exception of the explicit wildcard discard pattern `let _ = expr`. A declaration statement exists definitionally to introduce new bindings into lexical scope; permitting `let` with zero variables degrades declaration syntax into an ad-hoc conditional branch, introduces cognitive confusion between variable names and constructor tags, and undermines deterministic variable lifetime tracking.
+### Static Higher-Kinded Type Functions
 
-### Compile-Time HKT Metaprogramming vs. Reified Runtime Generics
+```ril
+type Wrap = \M: Type -> Type, T -> type<M<T>>
+type OptionalInt = Wrap<Option, int>
+```
 
-While languages such as C# opted for runtime reified generics, they deliberately rejected Higher-Kinded Types (HKTs) due to insurmountable runtime complexity: dynamic higher-order unification, unbounded JIT specialization cascades, and GC object layout unpredictability. Conversely, functional systems like Haskell and Scala support HKTs by completely erasing them prior to execution (lowering to dictionary passing or erased pointer references).
+Higher-kinded parameters support reusable shape transformations without introducing run-time type construction or type unification. Kinds and call families stay static; ordinary operation records provide value-level behavior. This preserves the original phase distinction without tying it to a representation strategy.
 
-Ril reconciles expressive abstraction with systems-grade performance through the **Phase Distinction Invariant** ($\text{Meta} \succ \text{Runtime}$):
-- **First-Class Static HKT Type Functions**: Higher-kinded constructors are fully supported as compile-time pure type functions (`\M: Type -> Type, T -> M<T>`). Kind arity checking (`E0306: KindMismatchError`) is performed entirely by the static type checker, providing complete mathematical abstraction for schema mapping and type transformations.
-- **Deterministic Phase Separation**: All generic parameters and pure type functions are fully resolved during compilation or evaluated via explicit operation records.
-- **Rejection of Runtime Reified HKTs**: The Ril abstract machine maintains zero dynamic higher-kinded type descriptors or runtime unification engines, preserving deterministic object layouts and ensuring compact, predictable GC headers.
+### Constructor Tuples and Function Parameter Isolation
 
-### Constructor-Tuple Equivalence vs. Function Parameter Isolation
+```ril
+let reply: Result<(int, str), str> = Ok(200, "ready")
+-- Ok((200, "ready")) constructs the same payload.
+fn add(left: int, right: int) -> int { left + right }
+-- add((1, 2))                         -- Error [E0314]
+```
 
-In algebraic languages, developers routinely suffer from visual friction when returning composite values: operations returning fallible pairs or coordinates require repetitive "parenthesis stuttering" `Ok((val, msg))` and `let Ok((val, msg)) = res`. Ril resolves this tension by formalizing **Constructor-Tuple Equivalence**:
-$$\text{Variant}(T_1, T_2, \dots, T_n) \equiv \text{Variant}((T_1, T_2, \dots, T_n)) \quad (n \ge 0)$$
+Constructor tuple equivalence removes redundant parentheses without merging ordinary function parameters, defaults, or modes. It applies once at the outer payload boundary, never recursively flattens nested tuples, and cannot deconstruct an unconstrained T as a tuple. Unit, scalar/whole-tuple, and multi-field cases remain distinct; one-element tuples are absent.
 
-Historical attempts to unify tuples with general function parameter lists (such as Swift 2 tuple splatting or Scala 2 auto-tupling) triggered catastrophic constraint-solving explosions and overload ambiguities. Ril confines equivalence strictly to data constructors:
-- **Strict Parameter Isolation for Functions (`fn`)**: Functions, methods, and mutating pipelines possess dedicated parameter lists with names, defaults, `mut` roots, and capability annotations. Ordinary functions never auto-tuple: calling `add(1, 2)` with a tuple `add(pair)` is statically rejected (`E0301`).
-- **Data Constructors as Pure Product Packaging**: Sum type variants and nominal wrappers have unique lexical identities rather than overloaded method signatures. They are pure injections into tagged sum spaces, meaning equivalence introduces zero constraint explosion.
+### Identifier Casing as Language Syntax
 
-Because Ril strictly possesses **no 1-element tuples `(T,)`** (`(x)` is parenthesized grouping, while tuples require $k \ge 2$ elements; `()` denotes the unit product), arity partitioning is strictly deterministic:
-- **$n = 0$**: Outer constructor parentheses absorb the 0-element unit product `()` (`Ok()`). Pure nullary tags without payloads (`None`, `Active`) strictly prohibit parentheses.
-- **$n = 1$**: Single scalar payload, or whole-tuple binding when passed/matched with a single identifier (`Ok(pair)`).
-- **$n \ge 2$**: Positional multi-element tuple payload (`Ok(code, msg)`), where outer constructor parentheses absorb inner tuple parentheses.
+```ril
+type HttpServer = { port: int }
+meta let DEFAULT_PORT = 8080
+var active_connections = 0
+```
 
-This equivalence is single-layer and zero-cost:
-- **Single-Layer Non-Transitivity**: `Variant((1, 2), 3)` requires $n = 2$ arguments; recursive auto-flattening (`Variant(1, 2, 3)`) is statically rejected (`E0301`). Matching against an unconstrained generic type parameter $T$ rejects tuple deconstruction without proof (`E0301`).
-- **Zero-Cost Memory Inlining**: A variant `Ok(10, "ready")` inlines tuple elements directly into contiguous payload slots in the variant allocation header (`[GC Header | Tag | Slot 0 | Slot 1]`) without auxiliary heap tuple allocations. Nominal wrappers (`type Coord(int, int)`) compile to pure compile-time type branding with the exact layout of `(int, int)`.
+Casing makes constructor tests, variable bindings, types, and constants distinguishable at their use sites. All-caps belongs to static/top-level immutable constants, not mutable state; acronyms use title casing and module paths use snake_case. Static-key binders and generated schema labels retain the specification's explicit exceptions rather than weakening ordinary variable rules.
 
-### Compiler-Enforced Identifier Casing
+### Flow Narrowing Without Rebinding
 
-In many languages, naming conventions are relegated to optional style linters. In Ril, identifier casing is elevated to a **first-class grammar and AST invariant** (`E0101`–`E0103`) for fundamental semantic reasons:
+```ril
+fn display_name(user: ?User) -> str {
+    if user != None { user.name } else { "Anonymous" }
+}
+```
 
-- **Deterministic Pattern-Matching Disambiguation**:
-   In algebraic pattern matching, unconstrained casing introduces an undecidable semantic ambiguity between variable binding patterns (which introduce fresh bindings) and nullary constructor patterns (which match existing tags). Enforcing `PascalCase` for constructors and `snake_case` for variable bindings at the parser level partitions binding introductions from constructor tests by lexical capitalization alone, eliminating scope-dependent shadowing hazards, scope speculation, and parser lookahead.
-- **Strict Scope of `SCREAMING_SNAKE_CASE`**:
-   Ril strictly confines `SCREAMING_SNAKE_CASE` to **compile-time constants (`meta let`)** and **top-level immutable constants (`let`)**.
-   - Top-level mutable bindings and variables (`let mut`, `var`) MUST use `snake_case`. All-caps signifies a permanent, compile-time or freeze-time invariant value. Requiring `snake_case` for all mutable handles and variables unifies local and global mutable state under the exact same visual and semantic rules.
-- **Acronym Title-Casing Regularization (`E0102`)**:
-   Acronyms embedded in `PascalCase` must be title-cased (`HttpServer`, `UserId`, `JsonParser`, rejecting `HTTPServer`, `UserID`, `JSONParser`). This guarantees unambiguous CamelHump word boundary segmentation without arbitrary lookahead.
-- **Cross-Platform Path Invariance**:
-   Module paths in `use` statements are strictly `snake_case` / lowercase (`use ril/concurrent::{Scope}`). This prevents silent file-resolution discrepancies between case-insensitive file systems (Windows, macOS APFS default) and case-sensitive file systems (Linux ext4).
+`match` decomposes alternatives, guarded let extracts a name or exits, and narrowing refines an existing name. Immutable data supports stable facts; reassignment and overlapping writes invalidate live ones. Three projections and three loop-refinement rounds bound the specified precision, without promising analysis timing or treating a view as immutable data.
 
-### Flow-Sensitive Type Narrowing: In-Place Refinement vs. Binding Ceremony
+### Two Where Tiers for Interfaces and Local Declarations
 
-In statically typed languages lacking flow-sensitive type refinement, inspecting optional or sum-type values forces continuous variable shadowing or synthetic rebindings, cluttering lexical scope. Flow-sensitive type narrowing completes the architectural symmetry with pattern matching:
-- **`match`**: Multi-way structural decomposition, introducing fresh pattern variables per arm.
-- **`let ... else`**: Linear early-exit extraction, mandating $\ge 1$ new bound variables under the Non-Vacuous Binding Invariant (`E0309`).
-- **Narrowing (`if` / `while`)**: In-place refinement of *existing* identifiers, introducing 0 new variables.
+```ril
+fn run(value: int, action: Action) -> int
+where
+    type Action = fn(int) -> int
+{
+    adjust(action(value))
+where
+    fn adjust(n: int) -> int { n + 1 }
+}
+```
 
-Soundness without expensive whole-program alias analysis rests directly on Ril's Three-Tier Mutability Architecture and State Capability system:
-- **Immutable Handles (`let`)**: Guarantee deep, permanent immutability. Narrowing on `let` is monotonic throughout its dominance region, completely impervious to external function calls or background tasks.
-- **Pinned Mutable Handles (`let mut`)**: Pointer addresses and constructor discriminants are permanently pinned (`E0502`). Variant identity cannot change; only mutable fields require invalidation upon direct writes.
-- **Reassignable Variables (`var`)**: Direct assignments immediately invalidate prior refinements (`E0310`).
-- **Transitive Latent Havoc**: If an external function call, higher-order callback (`list !> Array::for_each`), or active effect handler transitively holds mutable capability over a `var` binding (`&{mut v}`), the compiler conservatively Havocs all refinements prefixed by $v$.
-- **Anti-Aliasing Shield (`E0533`)**: If a `var` binding is aliased via a live view (`let view`) or captured in an escaping mutable closure, flow narrowing is statically forbidden, requiring developers to freeze the value into an immutable `let` handle before branching.
+Signature where keeps interface aliases beside the contract; block where keeps helpers, private types, and locally discharged effects beside the body. Downward references and duplicate tier names would make the public contract depend on hidden declarations. Separating declarations from sequential bindings also makes hoisting and evaluation order explicit.
 
-To prevent state-space explosion on deep structures and nested loop fixpoints, the type checker enforces two hard bounds:
-- **Path Depth Bound ($D_{\max} = 3$)**: Paths longer than 3 segments (`a.b.c.d`) evaluate normally, but their flow refinements are not tracked in $\Gamma$. Deep structures must be anchored to local `let` bindings.
-- **Widening Budget ($K = 3$)**: In loop fixpoint analysis, if a variable's flow type does not converge within 3 iterations, it is forcibly widened to its root declared type $T_{\text{root}}$.
+### Projection Accessors for Product Types
 
-This guarantees that type narrowing operates in strictly linear time $O(1)$ per branch, delivering instantaneous diagnostics and sub-millisecond IDE responsiveness.
+```ril
+let names = users |> Array::map(\.name)
+let ids = pairs |> Array::map(\.0)
+let leaders = departments |> Array::map(\.leader?.name)
+```
 
-### Dual-Tier Where Architecture: Interface Abstraction vs. Implementation Encapsulation
+Field and tuple projections need no repeated lambda parameter names. Safe navigation preserves optional access. Collections keep explicit indexing/combinators because an element may be absent; pretending that an array has a `.0` product field would hide that different contract.
 
-When higher-order functions declare generics, fallible closures, algebraic effects (`@Fiber + Async`), and explicit mutable capability sets (`&{mut log} &closure`), signatures expand into unreadable headers. Ril resolves this through the **Dual-Tier 'where' Architecture**, establishing an asymmetric, mathematically stratified division of responsibility:
+### Pure Type Functions Without a Second Schema Dialect
 
-| Tier | Syntactic Location | Permitted Declarations | Architectural Purpose |
-| :--- | :--- | :--- | :--- |
-| **Waist (`SignatureWhereClause`)** | Signature $\dots$ `{` | **`type` ONLY** | **Interface Specification**: Decomposing complex callable signatures, effects, and capability sets. |
-| **Tail (`BlockWhereClause`)** | End of Block `{ ... }` | **`fn`, `type`, `eff`** | **Implementation Mechanics**: Mutually recursive worker functions, local scratch types, and private delimited control effects. |
+```ril
+type Handlers = \T, R -> type<{ [K in keyof T]: fn(T.(K)) -> R }>
+halt type Element = \T -> match type<T> {
+    type<[]let E> -> type<E>,
+    _ -> type<never>,
+}
+```
 
-This architecture is governed by key structural invariants:
-- **Interface Locality vs. Buried Body**: Waist `where` establishes immediate visual locality for interface type contracts at the lexical transition between signature headers and function bodies. Placing types at the waist guarantees that interface contracts are verified before delving into implementation bodies. To prevent pushing the main body downward, procedural helpers (`fn`) and algebraic effects (`eff`) are strictly prohibited at the waist (`E0704`).
-- **Resolving the Escapability Paradox (`E0618`)**: Under Ril's Strict Local Discharge Invariant (`E0618`), any locally declared effect must be completely handled within the declaring function via an in-scope handler (`with`). If an effect were permitted at the waist, it would either be unnameable to external callers or falsely advertise private control flow in the public interface. Therefore, generative local `eff` declarations are strictly confined to the block where they are handled (`BlockWhereClause`).
-- **Strict Declarative Partitioning**: Sequential statement blocks contain strictly imperative code; interleaving `fn`, `type`, or `eff` is statically rejected (`E0703: IllegalSequentialDeclarationError`). Conversely, `where` clauses contain strictly hoisted, side-effect-free declarations; placing variable bindings (`let`, `var`) in `where` is statically rejected (`E0702: InvalidWhereItemError`).
-- **Soundness via Stratified Tarjan SCC & Downward Isolation (`E0705`, `E0706`)**: Types in `SignatureWhereClause` cannot reference declarations in `BlockWhereClause` (`E0705`), and type aliases used in the outer signature must reside in `SignatureWhereClause` or module scope (`E0706`). The dependency graph $\mathcal{G} = \mathcal{G}_ {\text{waist}} \ \vec{\sqcup}\ \mathcal{G}_ {\text{block}}$ contains zero bipartite cross-edges from Waist to Block ($E_{\text{waist} \to \text{block}} = \emptyset$). Tarjan's SCC algorithm runs independently per layer, guaranteeing that the combined graph is a strictly stratified DAG with provably zero cross-tier mutual recursion deadlocks.
+- Ordinary if/match and pure collection operations express schema transformations; a separate macro or remapping dialect is unnecessary.
+- Type functions synthesize shapes. Meta functions compute values and inspect known type tokens without gaining type-return authority.
+- `keyof` and projection share a coordinate model: sorted names for records/sums, ordered indices for tuples. A nullary tag's payload domain is unit, not never; equal types therefore expose equal coordinates.
+- Explicit `let U` type binders, linear patterns, and known constructor heads keep matching unambiguous. Static branch pruning prevents unreachable branches from imposing effect obligations.
 
-### Shorthand Projection Accessors: Product Types vs. Dynamic Collections
+```ril
+fn get_field<T, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
+```
 
-Higher-order pipelines rely heavily on property projections. Writing verbose lambda headers (`\x -> x.field`) introduces unneeded lexical overhead, resolved by shorthand projection accessors (`\.field`, `\.0`, `\.field?.subfield`, `\?.field`).
+The static-key form preserves common field-access syntax while requiring a known member of T. It does not promote arbitrary run-time strings into types.
 
-- **Categorical Product Duality**: Records ($\pi_{\text{field}}: R \to T$) and Tuples ($\pi_k: (T_0, \dots, T_{n-1}) \to T_k$) are categorical duals under finite product types ($\prod_{i=1}^n T_i$). Value extraction for both constructs uniformly employs the dot member operator (`val.field`, `val.0`), so shorthand accessors (`\.field`, `\.0`) mirror this mathematical symmetry. Tuple accessors are statically total morphisms: tuple arity $n$ is known at compile time, out-of-bounds access is rejected at compile time (`E0301`), and evaluation lowers directly to a zero-cost offset load.
-- **Safe Navigation Accessor Chaining (`?.`)**: Shorthand accessors support safe navigation (`\.field?.subfield` and `\?.field`), preserving total function semantics across optional boundaries: intermediate `None` short-circuits to `None` without evaluation, and the compiler automatically lifts the closure's inferred return type from $T$ to $?T$.
-- **Exclusion of Dynamic Collections (Arrays, Maps)**: Dynamic collections are strictly excluded from shorthand accessors. Array indexing `arr[i]` is a partial operation that panics when empty, whereas record/tuple projections are infallible total morphisms. Map lookups `map[key]` are associative queries evaluating to `?V`. Furthermore, prefix `\[...]` clashes with lambda pattern matching over array literals (`\[p] -> expr`), and dot projection on collections is statically rejected (`E0301`). Dynamic collections rely explicitly on first-class standard library combinators (`Array::first`, `Map::get`).
+### Generic Defaults and Const Values Instead of Literal Types
 
-### Pure Type Functions and Zero-Dialect Schema Metaprogramming
+```ril
+type Matrix<T, rows: int, cols: int = rows> = { data: []T }
+type HttpMethod { Get, Post }
+type Quantity<m: int, l: int, t: int>(f64)
+```
 
-Compile-time metaprogramming in Ril provides full schema transformation capabilities without inventing a secondary type-level dialect or compromising soundness. This architecture rests on five fundamental pillars:
+Data-type defaults reduce repeated arguments; callable generics instead use inference or explicit arguments. Defaults follow trailing and left-to-right dependency rules. Constants can parameterize shapes, dimensions, units, or route schemas without becoming bare literal types; tagged sums represent discrete domain states. Equal static argument values have the same type meaning, but a length parameter alone promises no inline layout.
 
-- **1. Ontological Distinction & Axiomatic Purity ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$)**:
-  Compile-time type abstractions are pure type functions in System $F_\omega$, not closures. A runtime closure pairs machine code with an environment record capturing mutable lexical state, governed by capabilities (`&closure`, `&capture`, `&{mut ident}`). In contrast, a type function ($\text{Type} \to \text{Type}$) maintains zero environment records, allocates zero runtime memory, and is completely erased during monomorphization. Because symbolic evaluation cannot perform hardware side effects or heap aliasing, algebraic effects and capabilities are axiomatically empty: $\mathbf{Eff}_{\text{meta}} \equiv \emptyset$ and $\mathbf{Cap}_{\text{meta}} \equiv \emptyset$. Annotating effects (`@Effect`) or capabilities (`&mut`) on a type function is statically rejected (`E0335: TypeFunctionComputationAnnotationError`). Within their bodies, type functions enjoy unrestricted pure functional computation: local immutable bindings (`let`), conditionals (`if`), pattern matching (`match`), collection combinators, and recursion bounded by totality (`halt type`) or step budgets (`E0811`).
+### External Interfaces and the Sovereignty Axiom
 
-- **2. The Zero-Dialect Principle**:
-  Languages lacking first-class compile-time execution often invent an ad-hoc secondary dialect inside their type system (e.g. TypeScript's distributive conditional types, `never`-filtering hacks, and template string manipulations). Ril achieves expressive schema manipulation with zero dialect bloat: in expression contexts, `keyof T` reifies directly to an immutable array of strings `[]str`. To construct a mapped schema, Ril provides the single comprehension form `{ [K in Expr]: TypeExpr }`, where `Expr` is any compile-time pure expression evaluating to `[]str`. By omitting dedicated remapping clauses (such as `as`), schema transformations are expressed via ordinary pure expressions and standard library string utilities, ensuring compile-time transformations feel identical to standard readable business logic.
+```ril
+-- platform/dom.d.ril
+pub type DomElement
+pub fn set_text(mut element: DomElement, text: str) -> () @Fiber &mut
+```
 
-- **3. Monopoly of Type Return Privilege ($\text{Term} \not\to \text{Type}$, `E0812`)**:
-  In Ril's Many-Sorted System $F_\omega$, types may depend on compile-time constant terms (Const Generics $\text{Sort} \to \text{Type}$, such as `[1024]u8`). However, terms cannot evaluate to types ($\text{Term} \not\to \text{Type}$). The type quotation operator `type<...>` produces a type shape in Domain I ($\mathcal{T}$). The privilege of returning `type<...>` is strictly monopolized by type declarations and pure type functions (`type`, `halt type`), and strictly prohibited in value-domain compile-time functions (`meta fn`, `E0812`). Permitting `meta fn` to return `type<...>` would grant value computations generative authority over types, collapsing Many-Sorted System $F_\omega$ into full Dependent Type Theory ($\lambda\Pi$) and destroying decidable, modular phase separation. Conversely, `meta fn` can freely consume `type<T>` as an input argument (`byte_size(type<T>) -> int`): here `type<T>` acts as an inert reflection token projecting properties of shapes into the value domain ($\mathcal{T} \to \mathcal{V}$), posing zero risk of type generation leakage.
-
-- **4. Categorical Duality of `keyof` & Universal Schema Mapping**:
-  In category theory, both limits (records, tuples) and colimits (sum types) are diagrams indexed by a discrete small category (index set) $I$:
-  $$D : I \to \mathcal{C}, \quad k \mapsto T_k$$
-  Categorically, `keyof T` extracts the index category $\text{Ob}(I) = \text{dom}(D)$ *prior to* limit or colimit formation:
-  - **Records (Finite Labeled Products)**: $\lim D = \prod_{k \in I} T_k$ where $I \subset \text{String}$. `keyof T` evaluates to `[]str` sorted in canonical UTF-8 byte order.
-  - **Sum Types (Finite Labeled Coproducts)**: $\text{colim } D = \coprod_{k \in I} T_k$ where $I \subset \text{String}$. `keyof T` evaluates to `[]str` sorted in canonical UTF-8 byte order.
-  - **Tuples (Finite Ordered Products)**: $\lim D = \prod_{i \in [n]} T_i$ where $[n] = \lbrace 0, 1, \dots, n-1\rbrace \subset \mathbb{N}_0$. `keyof T` evaluates to `[]int` in strictly monotonic ascending order $[0, 1, \dots, n-1]$.
-  
-  At the type level, `T.(K)` evaluates the diagram application $D(K)$ without ad-hoc suffixes:
-  - For records, $D(K)$ is the field type at key $K$.
-  - For tuples, $D(K)$ is the element type at index $K$.
-  - For sum types, $D(K)$ is the variant payload type at constructor tag $K$. Under Constructor-Tuple Equivalence, multi-field payloads are product tuples, single-field payloads are scalars, and nullary tags (like `None` in `Option<T>`) project to unit `()`. Categorically, a constant constructor is an arrow from the terminal object $c : \mathbf{1} \to S$, NOT the initial object $\mathbf{0}$ (`never`). Treating the injection domain as `()` guarantees that generic eliminators `fn(T.(K)) -> R` remain universally callable.
-  
-  By the universal property of coproducts ($\hom_{\mathcal{C}}(\coprod_{k \in I} T_k, R) \cong \prod_{k \in I} \hom_{\mathcal{C}}(T_k, R)$), the mapped comprehension `{ [K in keyof T]: fn(T.(K)) -> R }` is mathematically universal across records and sum types. For tuples, `( [I in keyof T]: T.(I) )` operates over integer keys (rejecting 1-tuples under `E0343`). Canonical lexicographical sorting guarantees **Leibniz's Indiscernibility of Identicals**:
-  $$\forall T_1, T_2. \quad T_1 \equiv T_2 \implies \text{keyof } T_1 \equiv \text{keyof } T_2 \land T_1.(K) \equiv T_2.(K)$$
-
-- **5. Structural Type Pattern Matching & Dead-Branch Pruning**:
-  Because `type<...>` is a first-class quotation and type functions possess pure pattern matching, structural type deconstruction is achieved directly through native `match type<T>` without secondary `infer` keywords:
-  - **Pattern Bindings (`let U`)**: Inside `type<Pattern>`, `let U` explicitly designates a scoped, fresh type variable binding, while bare in-scope identifiers match by type equality.
-  - **Linearity Invariant (`E0203: DuplicateDeclarationError`)**: Each `let U` appears at most once in a type pattern; multi-position equality is validated via pattern guards (`if type<A> == type<B>`).
-  - **Rigid Head Invariant (`E0306`)**: To prevent undecidable higher-order pattern unification (Huet's theorem), all type patterns must have a rigid, statically known nominal constructor head (e.g. `Option<let U>`), prohibiting variable constructor heads like `(let M)<let U>`.
-  - **Pre-Effect Dead-Branch Pruning**: In generic functions guarded by compile-time predicates (`if is_pure(type<F>)`), naive type checking would force callers to handle latent effects from both branches. During generic monomorphization, static `meta` guards are resolved and unselected branches are excised from the AST *prior to* latent effect row calculation ($\mathbf{Eff}$). Instantiating with a pure callable completely erases the effectful branch, resulting in $\mathbf{Eff}_{\text{specialized}} \equiv \emptyset$ and zero spurious effect pollution for callers.
-
-### Default Generic Arguments and Const Generics vs. Literal Types
-
-Ril formalizes generic parameters and compile-time constants through Many-Sorted System $F_\omega$, rejecting ad-hoc value-level types while providing expressive abstractions:
-
-- **Asymmetry of Default Generic Parameters (`E0317`)**: Type declarations (`type`, sum types, nominals, type functions) fully admit default type and const generic parameters, substituting unsupplied trailing arguments during elaboration. In contrast, function declarations (`fn`, `meta fn`, `eff`) strictly prohibit default generic parameters (`E0317`). Because function calls rely on bidirectional term-to-type unification, default function type parameters introduce fatal ambiguities when unconstrained, silently masking call-site type bugs and destroying principal type properties. Function generic parameters must be 100% determined by call-site argument inference or explicit turbofish instantiation.
-- **Rejection of Ad-Hoc Literal Types**: Web-oriented languages lift arbitrary string/number literals into types (`"GET" | "POST"`). In a compiled, strongly typed language, literal types trigger severe design defects: type widening dilemmas (`let x = "GET"` requiring awkward `as const` heuristics), $O(L)$ runtime string comparison overhead for untagged unions, and set absorption soundness leaks (`"GET" | string` collapsing to `string`). In Ril, discrete states are modeled exclusively via algebraic sum types, which compile to compact 1-byte integer tags with $O(1)$ jump table dispatch and complete compile-time exhaustiveness checking.
-- **Many-Sorted Const Generics**: Instead of promoting values to types, Ril adopts **Many-Sorted System $F_\omega$**:
-  $$\text{Kind } \kappa ::= \text{Type} \mid \kappa_1 \to \kappa_2 \mid s \to \kappa \quad (s \in \lbrace \text{int}, \text{str}, \text{bool}, \dots \rbrace)$$
-  Values remain values, but pure compile-time terms can parameterize type constructors:
-  - *Memory Layout Guidance*: `Buffer<u8, 1024>` allocates a flat contiguous 1024-byte payload inline with the object header.
-  - *Physical Unit Safety*: `Quantity<M: int, L: int, T: int>` models physical unit exponents at zero runtime cost.
-  - *Pure Schema Metaprogramming*: String constants serve as pure inputs to type functions (`RouteParams<"/users/:id">`), mapping into structural records without dedicated secondary dialects.
-  - *Leibniz Equivalence*: Const terms normalize to canonical normal forms in the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$), making equivalences like $\text{Matrix}\langle 2 + 2 \rangle \equiv \text{Matrix}\langle 4 \rangle$ soundly decidable.
-- **Telescopic Scoping and Substitution Rules**: Generic parameter lists form an incremental telescope $\Delta_0 \subset \Delta_1 \subset \dots \subset \Delta_n$, where default parameter $D_i$ can reference previously bound parameters $X_1, \dots, X_{i-1}$ (`Matrix<T, rows: int, cols: int = rows>`). Forward and circular defaults are statically rejected with `E0320`. Once a parameter declares a default, all subsequent parameters must declare defaults (`E0316`), ensuring argument omission is right-associative without positional gaps.
-
-### External Interoperability and the Sovereignty Axiom
-
-Programming languages often introduce dialect keywords (`extern "C"`, `foreign`, `unsafe`) and second-class compromise types (`void*`, `any`) to interface with foreign hosts. This introduces severe design defects: keyword pollution, type system erosion, and leaky foreign failure semantics.
-
-Ril resolves this via **The Sovereignty Axiom**: *"Only external targets adapt to Ril; Ril never adapts to them."*
-- **Zero Foreign Keywords**: External interfaces are declared in dedicated `.d.ril` contract units, reusing canonical syntax (`pub fn`, `pub type`) without introducing keywords like `extern` or `unsafe`.
-- **Zero Compromise Types**: All foreign signatures use first-class Ril types, algebraic effects (`@Effect`), and capabilities (`&mut`). Host handles are declared as uninterpreted opaque nominal types (`pub type DomWindow`), with field penetration statically forbidden (`E0907`).
-- **Hard Safety Membrane**: Boundary execution is hermetically sealed. External defects resolve deterministically into typed domain errors (`Result<T, E>`) or structured-concurrency-contained panics, strictly isolating host faults from caller evaluation invariants.
-
----
+The Ril contract remains the source of typing, effect, permission, and failure guarantees at an external boundary. Declaration units reuse ordinary syntax instead of adding foreign-only keywords or untyped escape types. Opaque handles prevent structural penetration; host failures must respect typed domain-error or supervised-panic contracts rather than leak a second error model.
 
 ## Tripartite Ontology and Asymmetric Scope of Influence
 
-### Tripartite Ontology: Stratifying Shape, Access, and Control
+### Three Domains: Shape, Access, and Control
 
-Programming languages historically struggle with the conflation of data layouts, mutability permissions, and computational side effects.
-- **The Rust Conflation**: Rust merges spatial memory layouts with temporal lifetime annotations (`&'a mut T`), causing function signatures to become encumbered with complex lifetime parameters and borrow checker friction.
-- **The Object-Oriented Conflation**: Java and TypeScript conflate identity, mutability, and effectful methods, allowing any object handle to perform hidden network I/O, throw unchecked exceptions, or mutate shared heap fields.
-- **The Effect System Conflation**: Early algebraic effect systems attempted to treat effects as general monadic types or decorated all values with effect rows, leading to pervasive function coloring and viral contagion across data structures.
+```ril
+type Buffer = { mut bytes: []u8 }       -- Shape and field declaration
+let mut buffer = Buffer.{ bytes: [] }  -- Binding authority
+buffer.bytes !> Array::push(0)
+```
 
-Ril resolves these conflations by establishing a stratified **Tripartite Ontology** across three disjoint semantic domains:
-$$\text{Semantic Domains} = \langle \text{Shape (Type)}\ \mathcal{T},\ \text{Access (Capability)}\ \mathcal{C},\ \text{Control (Effect)}\ \mathcal{E} \rangle$$
+| Domain | Question |
+| :--- | :--- |
+| Shape | What values and fields exist? |
+| Access | Which storage may this use read, write, retain, or rebind? |
+| Control | Which operations may transfer control to a handler? |
 
-- **Shape Domain ($\mathcal{T}$)**: Governs data at rest in normal form. It defines memory layout, bit alignment, structural fields, sum variants, and nominal boundaries. Passive data values cannot yield execution control, trigger side effects, or hold ambient access permissions.
-- **Access Domain ($\mathcal{C}$)**: Governs operational permissions over physical storage locations. It defines whether a binding can be rebound (`var`), whether heap fields can be mutated in place (`let mut`), and tracks surviving write paths (`&mut`, `&^mut`, `&closure`, `&capture`).
-- **Control Domain ($\mathcal{E}$)**: Governs dynamic, non-local control transfers during expression evaluation. It defines algebraic operations (`eff`), deep stack handlers (`with`), affine resumption (`resume`), and built-in fiber scheduling (`@Async`, `@Fiber`).
+Separating the questions prevents a field's mut marker from becoming an ambient capability or an effect annotation from becoming a property of passive data.
 
-### Computation Confluence Point: Why Callables Mediate All Three Domains
+### Callables Connect the Three Domains
 
-The three domains are mutually exclusive and never mix directly. They converge exclusively at the first-class callable arrow:
-$$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\mathbin{\And}\mathcal{C}]$$
+```ril
+type Reader = fn(mut []u8) -> int @Fiber &mut
+type Action = fn() -> ()               -- Inferred obligations remain attached
+type ClosedAction = fn() -> () @{} &{}
+```
 
-A function or closure is an unevaluated, suspendable computation. It takes input shapes ($P \in \mathcal{T}$), produces an output shape ($R \in \mathcal{T}$), performs ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and accesses or mutates storage locations ($\mathbin{\And}\mathcal{C} \subseteq \mathcal{C}$). Because $\tau_{\text{callable}}$ is itself a first-class type in the Shape Domain ($\tau_{\text{callable}} \in \mathcal{T}$), callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
+A callable combines input/output shapes, access obligations, and control effects, and can itself be stored as data. Simplified types should not expose every captured variable, but must preserve its obligations. Concrete definitions declare direct state access; callback forwarding never changes parameter modes. Explicit empty rows express a closed contract rather than relying on omission.
 
-### Asymmetric Scope of Influence: Why Capabilities Govern Bindings and Effects Do Not
+### Why Access Governs Bindings but Effects Govern Calls
 
-A fundamental architectural principle in Ril is the **Asymmetric Scope of Influence**:
-- **Capabilities CAN and MUST govern bindings**: A variable binding is an access portal to physical storage in registers, the stack frame, or the GC heap. Memory is spatial and persistent. Every binding introduces an aliasing relationship. Therefore, capability tracking governs reassignment privilege (`var`), interior write privilege (`let mut`), live observation (`let view`), and anti-laundering degradation across destructuring and containers (`E0520`–`E0528`).
-- **Algebraic Effects NEVER govern bindings**: Algebraic effects describe temporal processes that occur during expression evaluation. Once an expression reduces to normal form, its effects have already transpired and been handled. The resulting value is inert memory. Decorating variable bindings with effects (e.g., `let @Async x = 42`) represents an ontological category error: it confuses the process of evaluation with the properties of the resulting value, and would infect every record field and collection with viral effect colors. Values in Ril are 100% colorless.
+```ril
+fn read_line() -> str @Console {
+    let value = Console::read_line()
+    value
+}
+```
 
-### Domain Isolation Invariants: Preventing Cross-Domain Laundering
+The returned string does not need an effect-colored data type: its producing operation has already occurred. Binding permissions still matter because references can remain shared. A stored callable is different from an already evaluated passive result: its future invocation retains effects and state obligations. Immutable callable data therefore does not imply pure computation.
 
-To prevent domain blurring, Ril enforces nine static isolation barriers:
-- **`E0330: BareEffectTypeAliasError`**: Rejecting `type E = @Io`. Effects are stack protocols, not data shapes; they must be declared with `eff`.
-- **`E0331: BareCapabilityTypeAliasError`**: Rejecting `type C = &mut`. Capabilities are operational permissions, not data values.
-- **`E0332: VariantComputationAnnotationError`**: Rejecting `type S = Init @Async`. Sum variants are passive data constructors; computational behaviors must be typed as callable payloads.
-- **`E0333: FieldComputationAnnotationError`**: Rejecting `type C = { f: str @Io }`. Fields store data or callables; interior mutability uses the structural `mut` prefix.
-- **`E0334: GenericComputationConstraintError`**: Rejecting `<T: @Io>` and `<T: &mut>`. Generics parameterize types or const values; higher-order functions forward effects and capabilities automatically.
-- **`E0335: TypeFunctionComputationAnnotationError`**: Rejecting pure type functions with `@Eff` or `&Cap`. Type functions evaluate strictly in the compile-time symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
-- **`E0613: ValueEffectAnnotationError`**: Rejecting effect annotations on value bindings (`let x: int @Io = ...`). Effects reside exclusively on callable arrows.
-- **`E0812: MetaTypeReturnProhibitedError`**: Rejecting `meta fn` returning `type<...>` or sort `Type`. Value-domain terms cannot construct type-domain shapes; type generation is strictly monopolized by type declarations and type functions.
-- **`E0813: MetaComputationAnnotationError`**: Rejecting `@Eff` or `&Cap` annotations on `meta fn` signatures. All compile-time functions evaluate in the axiomatically pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$).
+### Domain Isolation Without Hidden Permission Changes
 
-### Write Path Counting: Deterministic Escape Analysis without Borrow Checkers
+```ril
+type Service = { fetch: fn() -> str @Io }
+-- type EffectAsData = @Io             -- Error [E0330]
+-- type PermissionAsData = &mut        -- Error [E0331]
+-- type Invalid = { value: str @Io }   -- Error [E0333]
+```
 
-Ril formalizes retained mutable sharing through **Surviving Write Path Counting**:
-$$\mathcal{W}_{\text{surviving}}(\text{origin}) \ge 2 \iff \mathbin{\And}\hat{~}\mathrm{mut}$$
-When a function allocates a fresh mutable record and exports it solely within an escaping closure, the activation frame terminates, leaving exactly one surviving write path ($\mathcal{W} = 1$). This is an encapsulated private cell requiring `&capture`, NOT `&^mut` (annotating `&^mut` triggers `E0529`). If both the closure and the record handle escape, or if a borrowed parameter is stashed into an external container, multiple write paths survive ($\mathcal{W} \ge 2$), requiring `&^mut`. This gives Ril deterministic escape analysis and aliasing safety with zero lifetime parameters.
+| Boundary | Diagnostic |
+| :--- | :--- |
+| Bare effect/capability aliases | E0330 / E0331 |
+| Computation annotations on variant tags or passive fields | E0332 / E0333 |
+| Effect/capability constraints on data type parameters | E0334 |
+| Effect/capability annotations on type computations | E0335 |
+| Effects on passive value bindings | E0613 |
+| Meta type return / meta computation annotations | E0812 / E0813 |
 
+These restrictions preserve the distinction between storing a callable and storing its permissions as ordinary data. Type-level abstraction must not erase an actual sharing hazard or create a write permission.
+
+### Independent Surviving Write Authorities
+
+```text
+private cell -> one escaped mutable closure       : &capture
+same cell -> closure plus direct reference        : &capture and &^mut
+borrowed cell -> retained external reference      : &^mut
+```
+
+This preserves the original surviving-write-path idea while counting independent authorities rather than repeated graph walks. Cycles or two fields in one fresh passive graph do not alone create extra external owners. Named sources remain identifiable through aliases, and local discharge cannot hide an origin that still has an outside writer.

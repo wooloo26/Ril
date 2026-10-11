@@ -1,79 +1,88 @@
 # Ril
 
-**Ril** is an expression-oriented, strongly typed programming language featuring algebraic effect handlers, capability-tracked state, and deterministic compilation to native machine code.
+**Ril** is an expression-oriented, strongly typed language with algebraic effects, immutable data, live read-only views, and explicit mutable-sharing capabilities.
 
-### Algebraic Effects (`@Effect`)
+The [specification](SPECIFICATION.md) defines the language. [Design rationale](DESIGN_RATIONALE.md) explains its choices.
+
+### Immutable values and live views
 
 ```ril
-pub eff Ask {
-    prompt(str) -> str,
+type Document = { mut title: str }
+
+pub fn test_views() {
+    let document = Document.{ title: "Guide" }
+    let alias = document
+    let mut working = clone(document)
+    let view observed = working
+    let view read_title = \-> observed.title
+    working.title = "Draft"
+    assert(alias.title == "Guide")
+    assert(read_title() == "Draft")
+
+    let snapshot = clone_immut(observed)
+    let revised = snapshot |> derive \mut draft -> {
+        draft.title = "Revised"
+    }
+    assert(snapshot.title == "Draft" && revised.title == "Revised")
 }
+```
+
+`let` guarantees immutable data, not unique ownership. `let view` can observe changes but cannot supply mutable authority. Deep cloning isolates ordinary data; `derive` shares only immutable data and confines its writable draft.
+
+### Effects and stable handlers
+
+```ril
+pub eff Ask { prompt(str) -> str }
 
 fn greet() -> str @Ask {
-    "Hello, " + Ask::prompt("Name:")
+    let name = Ask::prompt("Name:")
+    "Hello, {name}"
 }
 
--- Handled via one-shot delimited resumption
-let message = {
-    with Ask::prompt(_) -> resume "World"
-    greet() -- "Hello, World"
+pub fn greeting() -> str {
+    with Ask::prompt(_question) -> resume "World"
+    greet()
 }
 ```
 
-### Local Mutation Purity (`&mut`)
+Effects and closure obligations can flow through higher-order calls. Each invocation still needs a stable handler and the required access permissions; forwarding does not change parameter modes.
+
+### Local mutation and explicit retained sharing
 
 ```ril
--- In-place mutation via mutating pipeline (!>)
-fn append(mut list: []str, item: str) &mut {
-    list !> push(item)
+pub fn numbers() -> []int {
+    let mut result: []int = []
+    result !> Array::push(1)
+    result
 }
 
--- Frame-confined mutation is pure: &mut discharged locally
-fn extract_valid(tags: []{ name: str, is_valid: bool }) -> []str {
-    let mut result: []str = []
-    for tags |> filter(\.is_valid) as t {
-        append(mut result, t.name)
-    }
-    result -- pure signature: fn([]{ name: str, is_valid: bool }) -> []str
+type Entry = { mut id: int }
+type Hub = { mut entries: []Entry }
+
+fn register(mut hub: Hub, ^mut entry: Entry) &^mut {
+    hub.entries !> Array::push(^mut entry)
 }
 ```
 
-### State Capabilities & Read-Only Handles (`&^mut`, `&capture`)
+Locally constructed data can enter `let` when no external writer survives. `mut` grants temporary writes; `^mut` explicitly permits retaining a writable reference. Shared origins still participate in exclusivity checks.
+
+### Stateful closures
 
 ```ril
--- Retained mutable sharing: escaping aliased mutation requires &^mut
-fn register(mut hub: Hub, mut listener: Listener) &^mut {
-    hub.listeners !> push(listener)
+type Step = fn() -> int &closure
+
+pub fn make_step() -> Step &capture {
+    var count = 0
+    \-> { count += 1; count }
 }
 
--- External state access requires explicit capability annotation
-var counter = 0
-fn tick() -> int &{mut counter} {
-    counter += 1
-    counter
+fn invoke(mut step: Step) -> int &mut { step() }
+
+pub fn test_step() {
+    let mut step = make_step()
+    assert(invoke(mut step) == 1)
+    -- let immutable = step -- Error [E0535]: a mutable environment cannot become immutable data
 }
-
--- Publishing a writable capture of external state requires named sharing
-fn share_counter() -> (fn() -> int &{mut counter}) &{^mut counter} {
-    \-> { counter += 1; counter }
-}
--- The returned closure mutates existing shared state; creating it retains
--- another writable path. ^mut counter includes mut counter.
-
--- Escaping stateful closures require &capture; returned callable carries &closure
-pub fn make_step() -> (fn() -> int &closure) &capture {
-    var n = 0
-    \-> { n += 1; n }
-}
-
--- `let` is a read-only handle; mutation requires a mutable handle `let mut`
-let read_only = make_step()
--- read_only() -- STATIC ERROR [E0520]: cannot invoke mutable-capturing closure through read-only handle
-
-let mut active = make_step()
-active()       -- OK: 1
 ```
 
----
-
-See [SPECIFICATION.md](SPECIFICATION.md) for the authoritative, code-first language specification, and [DESIGN_RATIONALE.md](DESIGN_RATIONALE.md) for architectural design rationale.
+Callable types can abbreviate environment details while preserving inferred obligations. An explicit `fn() -> () @{} &{}` contract requires both rows to be closed.
