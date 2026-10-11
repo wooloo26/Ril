@@ -2,9 +2,7 @@
 
 **Ril** is an expression-oriented, strongly typed programming language featuring algebraic effect handlers, capability-tracked state, and deterministic compilation to native machine code.
 
----
-
-### 1. Algebraic Effects (`@Effect`)
+### Algebraic Effects (`@Effect`)
 
 ```ril
 pub eff Ask {
@@ -22,7 +20,7 @@ let message = {
 }
 ```
 
-### 2. Local Mutation Purity (`&mut`)
+### Local Mutation Purity (`&mut`)
 
 ```ril
 -- In-place mutation via mutating pipeline (!>)
@@ -40,7 +38,7 @@ fn extract_valid(tags: []{ name: str, is_valid: bool }) -> []str {
 }
 ```
 
-### 3. State Capabilities & Read-Only Handles (`&^mut`, `&capture`)
+### State Capabilities & Read-Only Handles (`&^mut`, `&capture`)
 
 ```ril
 -- Retained mutable sharing: escaping aliased mutation requires &^mut
