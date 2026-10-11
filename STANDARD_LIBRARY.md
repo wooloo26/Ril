@@ -30,14 +30,19 @@ Negative cases are checked separately with valid setup. Local fixture expression
 
 Signature blocks are interface extracts. Omitted bodies do not imply foreign calls. Opaque types use their stated data/resource classification. Listed signature families are closed library cases; user-defined overloading is not introduced. Unqualified names belong to the displayed module.
 
-Unless a section states otherwise:
+Unless an operation states an exception, every module uses these contracts:
 
-- Functions are ordinary run-time callables. Omitted effect/state rows introduce no concrete effects or external state; higher-order dependencies follow the actual callback. Read-only, `mut`, and `^mut` retain their language meanings.
-- A fresh collection supplies fresh **outer storage**, not deep copies of its constituents. Projections, lookups, removals, and combinators preserve the returned values' provenance and inspection duties. A result is immutable only when the language's immutable-publication rule is satisfied. No operation silently freezes a live reference or upgrades a read-only element.
-- Callbacks execute synchronously on the caller's task unless a concurrency contract says otherwise. Sequential combinators invoke them in source order, at most once per visited element; an abort stops subsequent invocations. They retain no callable after returning unless explicitly stated.
-- Finite-data operations terminate when their callbacks and constituent operations terminate. Sequential callback entries and iteration steps consume active Div allowances. Iterators and waits retain their stated termination conditions.
-- Invalid indexes or lengths supplied to assertive operations panic before mutation. Safe queries return `None`; domain failures return `Err`. Allocation exhaustion is an environmental limit, not a promise of a recoverable allocation API. No API guarantees a wall-clock bound.
-- Complexity counts visited elements or bytes and excludes callback cost; equality, key comparison, and bigint costs must also be included when nonconstant. Stated bounds are requirements on observable work growth, not storage-layout requirements.
+| Concern | Common contract |
+| :--- | :--- |
+| Invocation | Ordinary run-time callable; omitted rows add no concrete effect/state. Actual callback obligations are forwarded; read-only, `mut`, and `^mut` modes remain distinct |
+| Data | Fresh collections have fresh outer storage, not deep-copied elements. Projections, removals, and combinators preserve constituent provenance; nothing implicitly freezes a live reference or upgrades a read-only element |
+| Callbacks | Synchronous on the caller's task, in source order, at most once per visited element; abort stops later calls. No retention after return unless stated |
+| Callback authority | Ordinary handles grant no mutable-environment invocation; operations state any additional modes or confined invocation authority |
+| Results | Inspection duties survive aliases, copies, aggregates and transport; aliases share one obligation. An outer tag test does not inspect nested Results. Normal completion must inspect, propagate, or return outstanding results; abnormal unwinding follows its boundary contract |
+| Failure | Invalid assertive indexes/lengths panic before mutation; safe queries return None, domain failures Err. Prior observable writes remain committed unless an operation states otherwise |
+| Termination | Finite-data operations terminate when callbacks and constituent operations do. Sequential iterations/callback entries charge active Div allowances; iterators and waits retain their own conditions |
+| Complexity | Count visited elements/bytes, excluding callback cost; include nonconstant equality, key, and bigint costs. Bounds constrain observable work growth, not storage layout |
+| Environment limits | Allocation exhaustion has no recoverable allocation-API guarantee; no API promises a wall-clock bound |
 
 ## Contents
 
@@ -83,6 +88,7 @@ Every compilation unit has an enclosing prelude scope. Local declarations may sh
 | `Array`, `Map`, `String` | `ril/array`, `ril/map`, `ril/string` | Module namespaces |
 | `Set<T>`, `Set` | `ril/set` | One predefined declaration with type and namespace roles |
 | `inner`, `clone`, `clone_immut`, `derive`, `len` | `ril/prelude` | Foundational operations below |
+| `byte_size` | `ril/prelude` | Language-defined static query; ordinary lexical shadowing |
 | `panic`, `assert`, `print`, `println` | `ril/prelude` | Defect and output operations below |
 
 `Some`, `None`, `Ok`, and `Err` are available through the visible sum declarations and ordinary constructor abbreviation rules. Re-exporting the same sum does not create another variant candidate. `?T`, `[K: V]`, `[]T`, `[N]T`, primitive type spellings, operators, and the built-in effect identities `Fiber`, `Concurrent`, `Async`, and `Div` belong to the language; they are not extra imports supplied by this table.
@@ -140,6 +146,7 @@ assert(revised.theme == "light" && len(snapshot) == 4)
 | `clone_immut(value)` | Independent immutable `Immut<T>` under the same eligibility rules |
 | `derive(base, recipe)` | Confined mutable draft; recipe returns `()`; preserve input shape/qualifier and forward recipe effects/outside-state obligations |
 | `len(value) -> int` | `str`: Unicode scalars; `bytes`: bytes; arrays/windows: elements; maps/sets: entries |
+| `meta fn byte_size<T>(value: type<T>) -> int` | Static-only, finite; nonnegative size of T's value/handle on the selected abstract target, not its reachable graph |
 | `panic(message: str) -> never` | Finite panic initiation, not an algebraic effect |
 | `assert(condition: bool, message: str = "assertion failed") -> ()` | False condition panics; ordinary argument evaluation, including message, occurs before the call |
 | `print(text: str) -> () @Fiber` | Write UTF-8 to standard output; no added bytes |
@@ -148,6 +155,14 @@ assert(revised.theme == "light" && len(snapshot) == 4)
 `len` is O(n) or better on text and O(1) on the other admitted built-in collections. Copying and derivation cost O(the ordinary graph inspected/copied); no stronger storage-sharing or allocation promise is made. `clone` of a Sender follows the separate [channel resource contract](#structured-concurrency-channels), including `@Fiber`; it is not ordinary-data isolation.
 
 Output convenience functions panic on I/O failure; writes may interleave across tasks. [Fallible output](#input-and-output) returns errors as data. Panic unwinds synchronous frames and runs finite cleanup; cleanup failure during unwinding is a double fault. Assertions do not catch panics.
+
+```ril
+meta let BYTE_SIZE = byte_size(type<u8>)
+meta let _ = assert(BYTE_SIZE == 1)
+-- let runtime_size = byte_size(type<u8>) -- Error [E0810]: static-only query
+```
+
+The query's name is a prelude declaration, not reserved syntax. Its result may depend on the abstract target; it supplies no packed layout, field-offset, or external binary-layout contract.
 
 ## Optional and Fallible Values
 
@@ -169,9 +184,9 @@ pub fn recover<T, E>(value: Result<T, E>, handler: fn(E) -> T) -> T
 pub fn expect<T, E>(value: Result<T, E>, message: str) -> T
 ```
 
-`map`/`and_then` invoke the callback once only on `Some`/`Ok`; `map_err`/`recover` do so only on `Err`. `unwrap_or` evaluates its fallback argument eagerly; `unwrap_or_else` calls it only on `None`. `expect` returns the success payload or panics with the supplied message. Transformations preserve unvisited payloads without copying. Each callback parameter has a separately admitted `mut callback` form, with `&mut`, for invoking a mutable environment; the ordinary form supplies no such authority. These forms do not retain the callback.
+`map`/`and_then` call once only on Some/Ok; `map_err`/`recover` only on Err. `unwrap_or` evaluates fallback eagerly; `unwrap_or_else` calls it only on None. `expect` returns the success payload or panics with its message. Unvisited payloads are preserved without copying. Each callback admits a separate `mut callback` form with `&mut`, under the [common callback contract](#authority-and-contract-notation).
 
-All operations are O(1) excluding the invoked callback. They inspect the outer tag. A newly produced `Result`, a returned nested `Result`, or an unvisited nested payload retains its inspection duty under E0720. No `ignore_error` primitive is supplied.
+All operations are O(1) excluding callbacks and inspect the outer tag. New and nested Results retain inspection duties (E0720); no `ignore_error` primitive is supplied.
 
 ```ril
 fn checked_length(raw: Result<str, int>) -> Result<int, str> {
@@ -222,7 +237,7 @@ Read-only Array operations also accept fixed arrays `[N]T` with the same element
 | `find`, `any`, `all` | Stop at first match / true / false; empty outcomes `None`, false, true; O(n) worst case |
 | `for_each` | One invocation per element in order; O(n) |
 
-Active traversal forbids structural mutation of its source through any alias (`E0526`); a still-used live window retains `E0537`. Discarding removed values never discharges uninspected Results. A callback that modifies already visited external state and then panics does not roll back those writes.
+Active traversal forbids structural mutation through any source alias (`E0526`); a still-used live window retains `E0537`. Removal preserves the [common inspection duty](#authority-and-contract-notation).
 
 ```ril
 let mut items = [1, 2]
@@ -260,9 +275,8 @@ pub fn from<K, V>(entries: [](K, V)) -> [K: V]
 | `^mut value` | Retain the supplied writer under `&^mut` |
 | `keys` / `values` / `entries` | Fresh outer arrays in corresponding insertion order |
 | `from` duplicates | Last value, first position; scan left-to-right |
-| Values | Preserve provenance; no deep clone |
 
-Key equality is by value. Map equality compares membership, ignoring insertion order. Keys are copied; source reassignment cannot change them. No user equality/hash callback is invoked.
+Keys copy by value and cannot change through source reassignment; equality/hash invokes no user callback. Map equality compares membership, ignoring insertion order.
 
 Lookup/update/remove require expected O(1) key operations and O(n) worst case; enumeration/from require O(n) expected key operations. Hash randomization, if any, cannot affect specified order or become a public stable digest.
 
@@ -399,7 +413,7 @@ pub fn indexed<T>(items: []T) -> Source<int, T> &capture
 
 `cursor` starts with `ended = false`. `pull` calls the source once with the current state: Done sets ended and returns None; Yielded stores the successor and returns Some(item). An ended cursor never calls the source again. If a source aborts, no successor is installed; the source's outside writes are not rolled back. `collect`/`fold` repeat transitions from their supplied initial state until Done. Their returned collection/accumulator follows ordinary provenance rules.
 
-Adapters retain read-only sources/callbacks with their actual provenance and latent obligations.
+Adapters retain read-only sources/callbacks; their latent obligations remain attached.
 
 | Adapter | State and behavior |
 | :--- | :--- |
@@ -409,10 +423,13 @@ Adapters retain read-only sources/callbacks with their actual provenance and lat
 | `take` limit | At count, return Done without pulling; each yielded item increments consumed |
 | `take` invalid input | Negative count panics at construction; consumed outside `0..=count` panics before pulling |
 | `take` source Done | End immediately |
-| `indexed(items)` | State starts at zero; yield increasing indexes until length; negative state panics |
+| `indexed(items)` | Initial state is zero; the state is an index, and the yielded value is an element |
+| `indexed` state < 0 | Panic before element access |
+| `indexed` state < length | `Yielded(items[state], state + 1)` |
+| `indexed` state >= length | `Done` |
 | Retained items | Immutable data or a lawful live view with its stability obligations |
 
-Adapters do not invoke sources or transform callbacks during construction. Pulls forward their actual effects/state; all read-only step/callback handles must be callable with read-only authority. Mutable algorithms can put state in the explicit successor S; this version does not retain a mutable callback handle. `for` gains no user-defined iteration rule. A source retaining an affine `resume` is still `E0611`.
+Adapter construction invokes no callback. Pulls use the [common invocation contract](#authority-and-contract-notation), with read-only step/callback handles only; mutable state may be an explicit successor S. No mutable callback is retained, and `for` gains no user-defined protocol. Retaining an affine `resume` is `E0611`.
 
 Finite input plus finite callbacks establishes finite traversal. `take` bounds successful items, not time or a diverging source step. `pull` is one source-step cost; adapters add O(1) per inspected item; collect/fold are O(visited transitions). A failing Result item remains subject to inspection even when filtering or terminating early.
 
@@ -424,6 +441,10 @@ let limited = Iter::take(doubled, 2)
 assert(Iter::collect((0, 0), limited) == [20, 40])
 let mut cursor = Iter::cursor(0)
 assert(Iter::pull(mut cursor, source) == Some(10))
+let letters = Iter::indexed(["a"])
+let mut letter_cursor = Iter::cursor(0)
+assert(Iter::pull(mut letter_cursor, letters) == Some("a"))
+assert(Iter::pull(mut letter_cursor, letters) == None)
 ```
 
 ## Strings and Unicode
@@ -630,6 +651,19 @@ pub fn write_uleb128(mut output: []u8, value: u64) &mut
 
 Fixed-width read/write families also export `i8`, `i16`, `u16`, `i32`, `i64`, `f32`, `f64` suffixes with corresponding value types. Eight-bit functions omit `order`. Integers use their two's-complement bit representation; floats use IEEE bits with canonical NaN on both reading and writing. ByteOrder controls low-to-high versus high-to-low byte significance, independent of the target. Pointer-sized `int` is never serialized implicitly. All writers append; they do not expose spare capacity.
 
+```ril
+let mut encoded: []u8 = []
+Binary::write_f64(mut encoded, 0.0 / 0.0, Binary::ByteOrder::Big)
+assert(Bytes::from_array(encoded) == b"\x7F\xF8\x00\x00\x00\x00\x00\x00")
+```
+
+| Floating encoding | Canonical NaN bits |
+| :--- | :--- |
+| f32 | `0x7fc00000` |
+| f64 | `0x7ff8000000000000` |
+
+Every NaN input bit pattern decodes to the corresponding canonical value, and every NaN write emits these bits in the requested byte order. Input NaN sign and payload are not preserved. Finite values, infinities, subnormals, and signed zeros retain their IEEE representations.
+
 | Cursor / encoding condition | Outcome |
 | :--- | :--- |
 | New cursor | Offset zero |
@@ -794,7 +828,7 @@ pub fn write_stderr(text: str) -> Result<(), IoError> @Fiber
 pub fn error_text(error: IoError) -> str
 ```
 
-Operation records receive the caller's explicit mutable data handle. Their actual effect and state obligations are forwarded; a memory source need not have `@Fiber`, while a file source does. These records are ordinary Ril values, not implicit interface instances. Stream helpers do not retain a receiver or operation record after the call. Their excluded/covered computation and termination judgments depend on the selected operations.
+Operation records are ordinary values receiving the caller's explicit mutable data handle. Under the [common invocation contract](#authority-and-contract-notation), a memory source need not have Fiber while a file source does. Stream helpers retain neither receiver nor operation record; termination and budget coverage depend on the selected operations.
 
 For a positive `max_bytes`, successful read returns at most that many bytes, with nonempty data or `end = true`. `end` means EOF after these bytes; it may accompany the last nonempty chunk. A zero request on a valid open stream returns empty data with `end = false`, without waiting or consuming; handle/mode validation still applies. A negative request panics. A read that obtained bytes before encountering an error returns those bytes first and reports the error on the next positive request; `Err` never silently consumes unreported data. EOF is an ordinary success, not IoError. Invalid UTF-8 is a text-decoding failure, not a byte-read failure.
 
@@ -805,12 +839,34 @@ For a positive `max_bytes`, successful read returns at most that many bytes, wit
 | Nonempty input, zero written, no error | Contract violation |
 | Empty write | Validate handle/mode, then return zero without error |
 | `write_all` | Retry the suffix until completion or first error; no rollback |
+| `write_all` with empty data | Invoke one empty write for validation; return its validation error or Ok() |
 | `write_stdout` / `write_stderr` | UTF-8, write-all behavior |
 | `read_all` | Accumulate until EOF; error returns Err without accumulated data or position rollback |
 
 All OS interaction has `@Fiber`; waiting operations are cancellation points. Structured cancellation abandons the wait under the language rules, never fabricating EOF, an empty successful write, or an IoError. No wall-clock completion guarantee is made. The caller must process WriteProgress.error: it is an Option, so it has no automatic Result inspection obligation; `write_all` is the checked convenience interface.
 
 IoError.kind is portable. Message spelling, native-code presence and numeric values are explanatory/platform-specific. `error_text` returns message and is pure. OS errors without a portable classification map to Other. Invalid encodings map to InvalidData, invalid names/arguments to InvalidInput, and unavailable operations to Unsupported. Helpers perform O(transferred bytes) work plus selected operation costs.
+
+```ril
+type CountingSink = { mut attempts: int }
+fn invalid_write(mut sink: CountingSink, data: bytes) -> Io::WriteProgress &mut {
+    sink.attempts += 1
+    .{ written: 0, error: None }
+}
+let mut sink = CountingSink.{ attempts: 0 }
+Io::write_all(mut sink, b"x", .{ write: invalid_write })
+    ?? \_error -> panic("unexpected I/O error")
+-- Panics after the first callback: nonempty input made no progress and reported no error.
+```
+
+| Operation-record violation | Helper outcome |
+| :--- | :--- |
+| Read returns more than requested, or a positive request returns empty data without EOF | Panic before consuming the invalid result or calling the operation again |
+| Write returns a negative/excess count, or nonempty input makes no progress without an error | Same boundary panic |
+| Successful zero-request read has nonempty data or end = true | Same boundary panic; validation Err remains an ordinary error |
+| Callback committed writes before its invalid response | Preserve those writes; no rollback |
+
+All stream helpers, including buffered forms, validate the response before using it to update buffer/progress state or retrying. A contract panic is a defect, not a fabricated IoError. Callbacks retain responsibility for external behavior that their response cannot prove, including reporting already transferred bytes truthfully.
 
 ### Buffered Streams
 
@@ -832,14 +888,16 @@ pub fn flush<W>(mut buffer: WriteBuffer, mut writer: W,
 | :--- | :--- |
 | Capacity <= 0 | Panic before receiver access |
 | Read ahead | At most capacity; preserve stream byte/EOF/error behavior |
-| Unread data or deferred error | No direct-read interleaving or switching readers |
+| Unread data or deferred error | Reserve the reader's stream position; direct stream reads or switching reader/operation panic before another read |
 | WriteProgress.written | Bytes accepted from this call, including buffered bytes |
 | Flush | Send in order; remove confirmed prefixes; preserve the unwritten suffix after error |
-| Pending output | Switching destinations is a contract violation |
+| Pending output | Switching destination/operation panics before another write; pending bytes remain |
 | Mutable arguments | Buffer and receiver must be disjoint |
 | Bookkeeping | Finite O(bytes), excluding waits |
 
 Buffers never retain resource authority or auto-flush on scope exit. Discarding a nonempty write buffer abandons its bytes; callers requiring delivery must explicitly inspect flush. Stream closure does not imply a successful flush. Writing bytes and ensuring durable filesystem storage are separate operations.
+
+Association is with the receiver's actual identity and selected operation callable, not the variable name: another alias to the same receiver does not count as a switch. Empty buffers with no deferred input condition may be reused. The association check supplies no write permission, does not extend a resource lifetime, and introduces no new effect; calls still need their declared receiver modes and actual operation effects.
 
 ```ril
 use ril/io
@@ -912,7 +970,15 @@ The existing `File::read(path: str)` reads UTF-8 text and maps IoError through e
 | ReadWrite | Existing file, reads and writes, no truncation |
 | Append | Create if absent; each write appends at the then-current end; no cross-call atomicity promise |
 
-Handle is a task-local opaque resource with external position/open state. `open`, `open_path`, and temp_file grant a fresh operation authority that may enter `let scoped mut`. Cloning, immutable copying, derivation, child capture, and transfer have no file-resource exemption (`E0530`, `E0536`, `E0601`, or `E0908` as applicable). A plain read-only alias cannot perform mutable operations. All aliases observe closure; operations after close return Err(Closed) without touching the file. Repeated close succeeds as a no-op.
+Handle is a task-local opaque resource with external position/open state. `open`, `open_path`, and temp_file grant a fresh operation authority that may enter `let scoped mut`. Cloning, immutable copying, derivation, child capture, and transfer have no file-resource exemption (`E0530`, `E0536`, `E0601`, or `E0908` as applicable). A plain read-only alias cannot perform mutable operations. All aliases observe closure; the following closed-handle outcomes perform no file access.
+
+| Operation on a closed Handle | Outcome |
+| :--- | :--- |
+| `read_chunk`, `seek`, `sync` | `Err(error)` with kind Closed |
+| `write`, including an empty write | `WriteProgress` with written = 0 and error = Some(error), kind Closed |
+| `close` | `Ok()`; repeated close is a no-op |
+
+These outcomes retain the original operation's parameter mode and effect requirements. Negative read counts still panic under the stream argument contract.
 
 | File cleanup | Contract |
 | :--- | :--- |
@@ -933,6 +999,9 @@ Whole-file reads/writes close their internal handle on all exits; writes use Wri
 | Filesystem operation | Contract |
 | :--- | :--- |
 | `read_dir` | Immediate children except `.`/`..`; sort native names with `Os::compare` |
+| `Entry.name` | Native final component, without separators |
+| `Entry.path` | `Path::join(input_path, Path::from_native(name))`; no implicit absolute conversion or canonicalization |
+| `Entry.kind` | Kind of the directory entry itself; a symbolic link is Symlink, without following its target |
 | Enumeration consistency | Snapshot names/kinds, no transaction; disappearance may fail; Err returns no partial array |
 | `create_dir` / `create_dir_all` | Existing path fails / existing directories accepted |
 | `remove_file` | Remove the file or link itself |
@@ -942,6 +1011,13 @@ Whole-file reads/writes close their internal handle on all exits; writes use Wri
 | Unsupported/unrepresentable path | InvalidInput/Unsupported; no lossy conversion |
 
 Temp_file exclusively creates a new empty file in the given existing directory, returns its path and writable Handle, and does not delete the path on close. The filename spelling is unspecified; creation must not reuse an existing file. Cleanup of the directory entry is explicit. No helper silently deletes directory trees.
+
+```ril
+-- POSIX filesystem fixture: src contains only regular a.ril and symbolic link alias.ril.
+let entries = File::read_dir(Path::from_string("src"))?
+assert(entries[0].path == Path::from_string("src/a.ril"))
+assert(entries[1].kind == File::FileKind::Symlink)
+```
 
 ```ril
 use ril/file
@@ -956,6 +1032,17 @@ pub fn read_prefix(path: str) -> Result<bytes, Io::IoError> @Fiber {
     let chunk = File::read_chunk(mut file, 4)?
     File::close(mut file)?
     Ok(chunk.data)
+}
+pub fn check_closed_write(path: Path::Path) -> Result<(), Io::IoError> @Fiber {
+    let scoped mut file = File::open_path(path, File::OpenMode::ReadWrite)?
+    File::close(mut file)?
+    let progress = File::write(mut file, b"x")
+    assert(progress.written == 0)
+    match progress.error {
+        Some(error) -> assert(error.kind == Io::ErrorKind::Closed),
+        None -> panic("closed write succeeded"),
+    }
+    Ok()
 }
 ```
 
@@ -1024,11 +1111,38 @@ pub fn success(status: ExitStatus) -> bool
 | Argument encoding | Rule |
 | :--- | :--- |
 | POSIX | Native argv elements; program supplied separately as argv[0] |
-| Windows | Quote every argument; double backslashes before a quote, then escape the quote; double trailing backslashes before the closing quote |
+| Windows | Encode the program path as the first element and every argument with surrounding quotes; double backslashes before a quote, then escape the quote; double trailing backslashes before the closing quote |
 | Other Windows backslashes | Preserve unchanged |
 | Windows child parsing | Empty/space arguments round-trip under these quoting rules; another parser may interpret them differently |
-| Windows `Env::args` | Apply the inverse rules; omit executable-name element |
+| Windows `Env::args` | Parse the complete native command line under the rules below; omit its first element |
 | Shell syntax/scripts | Pass an explicit shell executable and argument vector |
+
+```text
+Native Windows command line       Env::args values (native strings shown as text)
+app.exe a b                      ["a", "b"]
+app.exe a" b"c                   ["a bc"]
+app.exe ""                       [""]
+app.exe "unfinished              ["unfinished"]
+app.exe "a""b"                   ["ab"]
+app.exe a\"b                     ["a\"b"]
+```
+
+| Windows parsing condition | Rule |
+| :--- | :--- |
+| Input units | Native UTF-16 units before the first terminating NUL; preserve unpaired surrogates |
+| Space or tab outside quotes | Separate elements; skip repeated/leading/trailing separators |
+| Unescaped double quote | Toggle quoted mode; emit no quote |
+| Quoted/unquoted segments without a separator | Concatenate into one element |
+| Empty quoted segment | Starts/preserves an element even when it emits no units |
+| 2*n backslashes immediately before a quote | Emit n backslashes, then treat the quote as unescaped |
+| 2*n+1 backslashes immediately before a quote | Emit n backslashes and one literal quote; do not change quoted mode |
+| Backslashes not immediately before a quote | Preserve all of them |
+| Consecutive unescaped quotes | Apply toggling to each; they do not emit a literal quote |
+| End while quoted | End the current element; no error or synthetic closing character |
+| Other units, including CR/LF | Ordinary data |
+| Executable-name element | Parse by the same rules and omit; if no element exists, return an empty argument array |
+
+This parsing contract applies even when another program supplied the command line. The displayed encoder round-trips every admitted argument under these rules. A non-Ril child may use a different parser.
 
 | `run` event | Outcome |
 | :--- | :--- |
@@ -1153,6 +1267,8 @@ assert(Random::next_u64(mut rng) == Random::next_u64(mut independent))
 
 Fiber::yield cooperatively yields without producing a user value.
 
+Handling Fiber::yield discharges only cooperative-yield requests. The file, stream, environment, process, time, entropy, and endpoint operations retain their specified Fiber obligations; their contracts provide no source handler replacing their external behavior. Scope/fork/join similarly retain Concurrent. These callables are not effect-operation arm targets.
+
 | Interface | Contract |
 | :--- | :--- |
 | `Div::budget(limit, action)` | Nonnegative limit; invoke covered computation under a fresh allowance; zero invokes no action |
@@ -1184,12 +1300,6 @@ pub fn scope<T>(body: fn(mut Scope) -> Result<T, TaskFault>) -> Result<T, TaskFa
 -- s.fork<T>(action: fn() -> T) -> Task<T> @Concurrent
 -- task.join() -> Result<T, TaskFault> @Concurrent
 ```
-
-| Structured operation | Result |
-| :--- | :--- |
-| `s.fork(fn() -> T)` | `Task<T>` |
-| `task.join()` | `Result<T, TaskFault>` |
-| `scope(body)` where body returns `Result<T, TaskFault>` | Same result shape, after children terminate |
 
 All three require `@Concurrent` and forward callback effects. No implicit join, result flattening, or conversion of business errors to panics occurs.
 - **Receivers**: `s.fork` borrows its `mut s` receiver. `Task.join` uses result-observation authority, not mutable data access. Ordinary function arguments do not inherit these built-in contracts.
@@ -1294,7 +1404,7 @@ assert(first == Some(30))
 
 #### The Colorless Parallel Principle and Domain Boundary
 
-Parallel callbacks have no residual effects and must independently be proved finite; empty effect rows alone do not suffice. Unhandled Div exhaustion is an effect violation; unresolved termination is a finite-computation violation (`E0820`). `@Parallel` is invalid (`E0620`). Allow immutable captures and locally handled operations, including a valid finite budget inside an individual callback. Reject outside mutable/live handlers and resource operations; apply each combinator's access contract.
+Check callbacks transitively through calls, handlers, and cleanup: no residual effects and independently finite computation. Unhandled Div is an effect violation; unproved termination is `E0820`; `@Parallel` is `E0620`. Immutable captures and local handling are allowed, including a valid per-callback budget with finite recovery/cleanup. Reject outside mutable/live handlers and resource operations. Only join/for_each grant the temporary outside writes below; no live authority escapes.
 
 Pure map/find/fold follow their reference evaluation. Disjoint-write join/for_each follow their [completion rule](#declarative-data-parallelism-and-concurrency-bounding); no universal left-fold equivalence applies.
 
@@ -1302,7 +1412,7 @@ Pure map/find/fold follow their reference evaluation. Disjoint-write join/for_ea
 
 `Parallel::fold(items, init_acc, fold_local, merge_acc)` has this reference evaluation:
 
-1. Partition the input by increasing index into consecutive groups of at most 64 elements.
+1. For nonempty input, group k contains source indexes from 64*k inclusive to min(64*(k+1), len(items)) exclusive, with k starting at zero. Every group except the last contains exactly 64 elements. These are mathematical index bounds, not potentially overflowing int expressions evaluated by the program.
 2. For each group in order, call `init_acc()` once and perform `fold_local` from left to right over that group. Finish all groups before starting merges.
 3. Merge adjacent group results from left to right at each level. An unpaired final result advances unchanged. Repeat levels until one result remains.
 4. Empty input calls `init_acc()` exactly once and returns it. No merge is performed for fewer than two groups.
@@ -1318,18 +1428,23 @@ let total = Parallel::fold(
     merge_acc: \left, right -> left + right,
 )
 assert(total == 6.0)
+let biased = Parallel::fold(
+    [1, 2], \-> 10, \acc, x -> acc + x, \left, right -> left + right,
+)
+assert(biased == 13)                  -- One group, not two one-element groups
+let mut zeros: []int = []
+for 0..65 as _index { zeros !> Array::push(0) }
+let snapshot = clone_immut(zeros)
+let grouped = Parallel::fold(
+    snapshot, \-> 10, \acc, x -> acc + x, \left, right -> left + right,
+)
+assert(grouped == 20)                 -- Exactly two initializations: 64 + 1 elements
+assert(Parallel::fold(
+    [], \-> 10, \acc: int, x: int -> acc + x, \left, right -> left + right,
+) == 10)                             -- Empty input initializes exactly once
 ```
 
-#### Observational Equivalence and Short-Circuit Determinism
-
-`map` follows element order. `find`, `first`, and `any` stop at the first decisive match or fault in that order. A match suppresses everything to its right; skipped branches may have no outside-observable effects.
-
-#### Canonical Leftmost Panic Precedence Rule
-
-- A pure branch's panic/double fault first becomes a local terminal outcome. Propagate only faults visible in reference evaluation; skipped rightward faults cannot fail the parent.
-- Branches own their mutable state and cleanup. Abandoned cleanup must not affect an outside-observable resource (`E0605`).
-
-Wait for all started branches. Propagate the selected panic; a selected double fault fatally fails the owning task or aborts an unsupervised program. Never resume a failed branch or restart abandoned cleanup.
+#### Reference Results and Faults
 
 ```ril
 let found = [0, 1] |> Parallel::find(\x -> {
@@ -1338,7 +1453,14 @@ let found = [0, 1] |> Parallel::find(\x -> {
 assert(found == Some(0))               -- Even if the right branch ran speculatively
 ```
 
-The same reference-visibility rule applies if the skipped right branch suffers a double fault in branch-local cleanup. There is no exception that lets speculative fatal outcomes change an otherwise successful leftmost result.
+| Pure reference evaluation | Visible outcome |
+| :--- | :--- |
+| map | Element order |
+| find / first / any | First decisive match or fault in element order; a match suppresses all rightward outcomes |
+| fold | Group/merge order defined above |
+| Speculative panic or double fault | Branch-local terminal outcome; propagate only if visible in reference evaluation |
+
+Wait for all started branches. Propagate the selected panic; a selected double fault fatally fails its owning task or an unsupervised program. Never resume a failed branch or restart abandoned cleanup. Branch state/cleanup must be local; abandoned cleanup cannot affect an outside-observable resource (E0605). These reference rules do not replace the separate disjoint-write completion rule below.
 
 #### Lightweight Divide-and-Conquer (Parallel::join)
 
@@ -1367,9 +1489,7 @@ let mut copy = ^mut clone(repeated)
 copy.0.count += 1                     -- Sequential access is valid
 ```
 
-#### The Absolute Effect-Free Parallel Invariant
 
-Apply effect, access, and termination checks transitively through calls and handlers. Handling Div exhaustion does not by itself prove termination; a valid finite budget certifies only its protected invocation, with finite cleanup and recovery still required. Resource endpoint operations are not pure parallel operations. Only join/for_each grant confined outside write authority; no live aliases escape.
 
 ### Structured Concurrency Channels
 
@@ -1508,17 +1628,11 @@ pub fn assert_some<T>(value: Option<T>, message: str = "expected Some") -> T
 pub fn assert_ok<T, E>(value: Result<T, E>, message: str = "expected Ok") -> T
 ```
 
-Equality helpers use the language's structural equality and preserve its unsupported-type diagnostics; they have no residual effect. Assert_some/assert_ok inspect the outer tag and return its payload, or panic with message. They do not deep-inspect nested Results. Comparisons are finite under the language's equality contract; tag assertions are O(1). These functions do not catch panics synchronously. Only the structured task boundary below contains a child panic as a value.
+Equality helpers use finite structural comparison and its unsupported-type diagnostics, with no residual effect. Assert_some/assert_ok inspect only the outer tag in O(1), returning its payload or panicking with message. Nested duties use the [common Result contract](#authority-and-contract-notation); panic containment uses [structured scopes](#structured-concurrency-and-panic-containment).
 
 ### Test Conventions and Execution Protocol
 
-Test entry points are ordinary public functions conforming to the naming prefix `test_*` and returning either `()` or `Result<(), E>`. Test functions evaluate within isolated activation frames and enforce domain invariants via standard assertions:
-
-- **Pure & Direct Tests**: Functions returning `()` verify invariants using deterministic runtime panics on breach (`assert`).
-- **Fallible Tests**: Functions returning `Result<(), E>` enable cascading error propagation via postfix `?`. Returning `Err(e)` indicates test assertion failure.
-- **Hermetic Scoped Mocking**: Environmental algebraic effects are mocked within standard lexical blocks `{ with HandlerSpec; logic }`. The handler is automatically popped upon exiting the block. Missing handlers are rejected statically; a mock handler may explicitly panic on an unexpected but handled request.
-- **Panic Isolation Assertion**: Asserting that defective operations trigger deterministic runtime panics is evaluated across structured concurrency task boundaries (`s.fork` inside `scope`), capturing faults into `TaskFault::Panicked` without violating synchronous frame panic isolation.
-- **Resource Lifecycle**: Ephemeral and in-memory test resources use `let scoped` bindings, guaranteeing strict LIFO destruction. Effectful I/O transactions utilize higher-order wrapper functions.
+Public `test_*` functions return () or Result<(), E> and execute in isolated activation frames. Assertions fail by panic; an Err return fails a fallible test. Tests use ordinary lexical handlers and cleanup contracts: missing handlers are static errors, a mock may panic on an unexpected request, and effectful I/O cleanup uses its wrappers. A child panic is inspected through a structured task boundary, never caught synchronously.
 
 ```ril
 use ril/array::{push}
@@ -1610,11 +1724,12 @@ meta let _ = assert(COUNT == 2 && SIZES == [1, 1])
 -- meta let NOW = Clock::now()          -- Error [E0810]: run-time-only call
 ```
 
-The table lists every dual-phase library operation in this version. An unlisted pure function remains run-time-only.
+The table lists the static availability of library operations in this version. An unlisted pure function remains run-time-only.
 
 | Entry | Static availability |
 | :--- | :--- |
 | `len`, `assert` | Both phases; failed static assertion is E0830 |
+| `byte_size` | Static only; finite value/handle layout query exposed by the prelude; ordinary invocation is E0810 |
 | Array `first`, `get`, `contains`, `reverse`, `concat`, `map`, `filter`, `fold`, `find`, `any`, `all`, `for_each` | Both phases with immutable symbolic data and statically admissible callbacks |
 | Map `get`, `contains`, `keys`, `values`, `entries`, `from` | Both phases with immutable symbolic data |
 | Every String function listed in this document | Both phases with immutable symbolic data |
@@ -1703,22 +1818,22 @@ For source `Aé🙂A`, positions are `(U+0041,0,0)`, `(U+00E9,1,1)`, `(U+1F642,2
 
 ## Conformance Cases
 
-Each row is a required behavioral fixture in addition to the code examples. Environmental fixtures supply controlled files, streams, child programs, or native platform values; message wording and wall-clock timing are not asserted.
+The code examples and following input/transition cases are required fixtures. Outcomes are defined in the linked contracts, not independently by this index. Environmental fixtures supply controlled files, streams, processes, or native values; message spelling and wall-clock timing are not asserted.
 
-| Area | Required cases |
+| Contract | Additional coverage |
 | :--- | :--- |
-| Prelude | Explicit import/re-export preserves declaration identity; local shadowing follows lexical scope; File/Clock/Test require imports |
-| Containers | Empty pop/find/fold; last duplicate map value at first position; remove/reinsert appends; Set algebra order; live references gain no writer |
-| Callbacks | Empty input invokes none; short circuit stops; mutable environment needs explicit mut; panic retains earlier outside writes |
-| Ordering | Stable equal keys; first duplicate search index; absent-key insertion position; NaN and signed-zero total order |
-| Iteration | Done is sticky in Cursor; take zero never pulls; filter can require multiple pulls; no escaped resume; nested Result cannot be discarded |
-| Text | Empty separator/pattern; supplementary scalars; combining sequences remain unnormalized; byte position inside multibyte scalar is None; CRLF/final LF behavior |
-| Encoding | Malformed UTF-8 and surrogate values; exact failure offsets; binary endianness; truncated/overflow/redundant ULEB128 leaves cursor unchanged; SHA-256 known vector |
-| Numbers | Every integer min/max and first out-of-range value; invalid radix; float negative zero/NaN/infinity; parse/format round trips |
-| I/O | Last bytes plus EOF; zero request; short reads; partial write plus error without duplicate prefix; buffered retry retains suffix; cancellation does not report success |
-| Files | Missing/denied file, exclusive creation collision, invalid UTF-8, seek failure, explicit close error, release after panic, sorted directory entries, no recursive deletion |
-| Paths/environment | Non-Unicode native names round-trip; NUL rejected only at OS boundary; drive-relative/rooted/UNC/verbatim paths; symlink-sensitive lexical normalization; absent versus empty env |
-| Processes | Empty/space/quote arguments; launch failure versus exit 7; independent captured streams; capture limit; explicit env/cwd; cancellation and owner cleanup |
-| Time/random | Timestamp normalization and overflow; negative sleep; monotonic domain mismatch; deterministic seeded vector; entropy failure |
-| Execution | Existing task barrier/fault precedence, endpoint transfers, Result payload obligations, fixed parallel fold tree, skipped rightward faults |
-| Static use | Listed pure combinators valid with symbolic inputs; new run-time-only functions remain E0810; static assertion E0830 and budget E0811 |
+| [Prelude](#prelude-and-module-index) | Import/re-export identity; shadowing; explicit File/Clock/Test imports |
+| [Containers](#arrays-maps-and-sets) | Empty pop/find/fold; duplicate map keys; replacement and remove/reinsert; set algebra; live element authority |
+| [Callbacks](#authority-and-contract-notation) | Empty traversal and empty parallel fold; short circuit; mutable environments; panic after outside writes |
+| [Ordering](#ordering-deques-and-heaps) | Equal-key stability; duplicate/absent search; NaN and both signed zeros |
+| [Iteration](#explicit-iteration) | Sticky Done; indexed element/state distinction; take zero; repeated filter pulls; escaped resume; nested Result discard |
+| [Text](#strings-and-unicode) | Empty patterns/separators; supplementary/combining scalars; interior UTF-8 byte offset; CRLF and final LF |
+| [Encoding](#bytes-binary-encoding-and-digests) | Invalid UTF-8/surrogates and offsets; endian/NaN bytes; truncated/overflow/redundant ULEB128 with unchanged cursor; SHA-256 vector |
+| [Numbers](#numbers-and-mathematics) | Integer extrema and adjacent out-of-range values; invalid radix; negative zero/NaN/infinity; parse/format round trips |
+| [I/O](#input-and-output) | Final bytes plus EOF; zero/short requests; partial progress with error; invalid callback response; buffered retry/switch; cancellation |
+| [Files](#files-and-directories) | Missing/denied/existing paths; invalid UTF-8; failed seek; closed write; repeated/failed close; panic release; directory order/path/link kind; nonrecursive deletion |
+| [Native paths](#native-strings-and-paths) and [environment](#environment-and-processes) | Non-Unicode round trips; NUL boundary; drive-relative/rooted/UNC/verbatim paths; symlink-sensitive normalization; absent/empty env |
+| [Processes](#environment-and-processes) | Empty/space/quote arguments; Windows mixed/unclosed quotes and backslash parity; start failure/exit 7; separate captures; capture limit; env/cwd; owner cancellation/cleanup |
+| [Time/random](#time-and-randomness) | Timestamp normalization/overflow; negative sleep; clock-domain mismatch; seeded vector; entropy failure |
+| [Execution](#execution-boundaries) | Task barrier/fault precedence; endpoint transfer; payload inspection; handled yield with residual resource effects; fold sizes 0/1/63/64/65/128/129; skipped rightward faults |
+| [Static use](#static-availability) | Listed combinators on symbolic inputs; run-time-only call E0810; static assertion E0830; budget E0811 |

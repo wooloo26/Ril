@@ -55,11 +55,10 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
   - [Nominal Type Wrappers](#nominal-type-wrappers)
   - [Deep Immutability](#deep-immutability)
   - [Type Identity and Subtyping](#type-identity-and-subtyping)
-  - [Memory Model and Handle Invariants](#memory-model-and-handle-invariants)
   - [Complete Provenance and Optional Annotations](#complete-provenance-and-optional-annotations)
   - [Functional Updates via Derive](#functional-updates-via-derive)
   - [Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)
-  - [Tripartite Ontology and Type Definition Boundaries](#tripartite-ontology-and-type-definition-boundaries)
+  - [Type Definition Boundaries](#type-definition-boundaries)
 - [Declarations and Bindings](#declarations-and-bindings)
   - [Binding Permissions and Storage Matrix](#binding-permissions-and-storage-matrix)
   - [Immutable Bindings](#immutable-bindings)
@@ -68,9 +67,9 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
   - [Scoped Resource Bindings](#scoped-resource-bindings)
   - [Live View Bindings](#live-view-bindings)
   - [Type Declarations and Opaque Types](#type-declarations-and-opaque-types)
-  - [Effect Declarations](#effect-declarations)
   - [External Interface Declarations](#external-interface-declarations)
 - [Expressions and Operators](#expressions-and-operators)
+  - [Expression Grammar](#expression-grammar)
   - [Operator Precedence and Associativity](#operator-precedence-and-associativity)
   - [Arithmetic and Wrapping Operators](#arithmetic-and-wrapping-operators)
   - [Bitwise and Shift Operators](#bitwise-and-shift-operators)
@@ -92,12 +91,14 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
   - [Flow-Sensitive Type Narrowing](#flow-sensitive-type-narrowing)
 - [Functions, Closures, and Callables](#functions-closures-and-callables)
   - [Named Function Declarations and Contrast Matrix](#named-function-declarations-and-contrast-matrix)
-  - [Default Purity and Callback Dependencies](#default-purity-and-callback-dependencies)
+  - [Callable Contracts](#callable-contracts)
+    - [Empty Rows on Higher-Order Signatures](#empty-rows-on-higher-order-signatures)
+    - [Callable Type Bounds](#callable-type-bounds)
+    - [Higher-Order Calls](#higher-order-calls)
   - [Termination and halt Contracts](#termination-and-halt-contracts)
   - [Parameter Modes, Caller Obligations, and Defaults](#parameter-modes-caller-obligations-and-defaults)
   - [Anonymous Functions, Trailing Closures, and Projection Accessors](#anonymous-functions-trailing-closures-and-projection-accessors)
   - [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments)
-  - [Higher-Order Functions and Capability Forwarding](#higher-order-functions-and-capability-forwarding)
 - [State and Capability Tracking](#state-and-capability-tracking)
   - [Local Mutation Purity and Local Capability Discharge](#local-mutation-purity-and-local-capability-discharge)
   - [Parameter Mutation](#parameter-mutation)
@@ -108,7 +109,6 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
   - [Closure Capabilities and Handle Permissions](#closure-capabilities-and-handle-permissions)
   - [Law of Exclusivity and Cross-Argument Disjointness](#law-of-exclusivity-and-cross-argument-disjointness)
   - [Monotonic Permission Degradation and Anti-Laundering Matrix](#monotonic-permission-degradation-and-anti-laundering-matrix)
-  - [Callable Signature Abstraction](#callable-signature-abstraction)
 - [Algebraic Effects and Concurrency](#algebraic-effects-and-concurrency)
   - [Effect Declarations and Operation Signatures](#effect-declarations-and-operation-signatures)
   - [Effect Handlers](#effect-handlers)
@@ -119,7 +119,6 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
   - [Structured Concurrency and Panic Containment](#structured-concurrency-and-panic-containment)
   - [Deterministic Data Parallelism and Divide-and-Conquer Primitives](#deterministic-data-parallelism-and-divide-and-conquer-primitives)
   - [Structured Concurrency Channels](#structured-concurrency-channels)
-  - [Arrow-Only Law of Effects](#arrow-only-law-of-effects)
 - [Compile-Time Computation and Totality](#compile-time-computation-and-totality)
   - [Static Type Values and Type Quotation](#static-type-values-and-type-quotation)
   - [Pure Type Functions and Type Return Privilege](#pure-type-functions-and-type-return-privilege)
@@ -140,13 +139,11 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
 - [Diagnostic Error Codes Summary](#diagnostic-error-codes-summary)
 - [Advisory Warnings](#advisory-warnings)
 
----
-
 ## Notation, Abstract Machine, and Conformance
 
 ### Grammar Notation
 
-Grammar productions are specified in Extended Backus-Naur Form (EBNF):
+Grammar productions use EBNF. Lexical character classes use regular-expression notation; other square brackets mean optional syntax. Character categories follow their literal sections and exclude unescaped closing delimiters. `Newline` and `EOF` mean line end and source end.
 
 ```ebnf
 Production  ::= Expression
@@ -162,7 +159,7 @@ Code examples throughout this specification use inline test annotations:
 
 ```ril
 let x = 42                             -- OK: valid declaration
-let y: str = 42                        -- Error [E0301]: TypeMismatchError: expected type 'str', found 'int'
+let y: str = 42                        -- Error [E0301]: expected type 'str', found 'int'
 let z = 10 / 0                         -- Panics: division by zero
 ```
 
@@ -185,7 +182,7 @@ meta let QUOTIENT = 1 / 0             -- Error [E0831]: panic during static eval
 
 An `E` diagnostic rejects a program under a specified syntactic or semantic rule. A `W` diagnostic is advisory and cannot change language validity. A panic is an execution outcome, not a static diagnostic or an algebraic effect. Recoverable `Result` and `Option` values are ordinary data, not diagnostic categories.
 
-For an isolated violation, the diagnostic assigned by its defining rule is required. A specific applicable condition takes precedence over a general condition such as `E0301`; for example, an absent record member is `E0336`, not an arbitrary type mismatch. Dedicated placement restrictions, such as declarations in the sequential statement stream, retain their specific codes instead of a general syntax diagnostic. Independent violations may produce multiple diagnostics; their reporting order and the number of secondary diagnostics are unspecified. These rules do not prescribe error recovery or permit an invalid program to be accepted.
+An expression incompatible with its required type is `E0301` when no more specific condition applies. For an isolated violation, the diagnostic assigned by its defining rule is required. A specific applicable condition takes precedence over a general condition such as `E0301`; for example, an absent record member is `E0336`, not an arbitrary type mismatch. Dedicated placement restrictions, such as declarations in the sequential statement stream, retain their specific codes instead of a general syntax diagnostic. Independent violations may produce multiple diagnostics; their reporting order and the number of secondary diagnostics are unspecified. These rules do not prescribe error recovery or permit an invalid program to be accepted.
 
 Diagnostic explanations should identify the violated requirement and the relevant source construct. When applicable, they should distinguish expected and actual types, identify the declaration or authority responsible for a restriction, or identify an uncovered case. Suggested changes are advisory and must not claim to preserve intent when they change effects, sharing, ownership of resources, or error handling. Exact wording and presentation are not conformance requirements.
 
@@ -203,13 +200,6 @@ let result = log(1) + log(2) * log(3)  -- Evaluates log(1), then log(2), then lo
 
 ### Failure Model and Error Categories
 
-Ril enforces a strict separation between domain recoverable errors and program defects:
-
-- **Recoverable Errors**: Represented as ordinary sum type values (`Result<T, E>` and `Option<T>` / `?T`). Unused `Result` values are statically rejected.
-- **Defects (Panics)**: Invariant violations (division by zero, out-of-bounds indexing, failed `assert`, integer overflow) raise **Deterministic Runtime Panics**.
-- **Synchronous Isolation**: Panics cannot be caught within synchronous evaluation frames.
-- **Boundary Containment**: In concurrent execution, child task panics are isolated at structured concurrency boundaries (`scope`), resolving to `Result<T, TaskFault>` (`TaskFault::Panicked`).
-
 ```ril
 -- Recoverable error handling via Result and '?':
 fn parse_id(s: str) -> Result<int, str> {
@@ -220,32 +210,54 @@ fn init_session() -> Result<int, str> {
     let id = parse_id("10")?           -- OK: propagated via postfix '?' within function frame
     Ok(id)
 }
--- let top_id = parse_id("10")?        -- Error [E0205]: QuestionMarkOutsideFunctionError: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
--- parse_id("10")                       -- Error [E0720]: UnusedFallibleResultError: unused fallible Result must be handled via '?', 'match', or fallback '??'
+assert(init_session() is Ok(42))
+assert(parse_id("") is Err("empty input"))
+-- let top_id = parse_id("10")?        -- Error [E0205]: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
+-- parse_id("10")                       -- Error [E0720]: unused fallible Result must be handled via '?', 'match', or fallback '??'
 
 -- Deterministic runtime panic on defect:
 let arr = [1, 2, 3]
-let item = arr[5]                      -- Panics: index out of bounds (index 5, length 3)
 let safe_item = arr?[5]                -- OK: safe index evaluates to Option<int> (None)
-
--- Synchronous Isolation: panics cannot be caught synchronously
-fn faulty_frame() -> int {
-    let _ = 10 / 0                     -- Panics: division by zero; aborts current stack frame immediately
-    100                                -- Unreachable
-}
-
--- Boundary Containment: child panics isolated at structured scope boundary
-use ril/concurrent::{scope, TaskFault}
-
-let scope_outcome: Result<int, TaskFault> = scope(\mut s -> {
-    s.fork(\-> { panic("worker failure") })
-    Ok(42)
-})
--- scope_outcome evaluates to Err(TaskFault::Panicked(...))
-assert(scope_outcome is Err(TaskFault::Panicked(_)))
+assert(safe_item == None)
+-- arr[5]                             -- Panics: index 5 is outside length 3
 ```
 
----
+```ril
+fn faulty_frame() -> int {
+    let _ = 10 / 0                    -- Panics: synchronous evaluation stops here
+    100                               -- Unreachable
+}
+faulty_frame()                        -- Panics; no Result is produced
+```
+
+```ril
+use ril/concurrent::{scope, TaskFault}
+let scope_outcome: Result<int, TaskFault> = scope(\mut s -> {
+    s.fork(\-> panic("worker failure"))
+    Ok(42)
+})
+assert(scope_outcome is Err(TaskFault::Panicked(_))) -- Child failure defeats Ok(42)
+```
+
+```ril
+use ril/concurrent::{scope, TaskFault}
+fn parent_fault() -> Result<int, TaskFault> @Concurrent {
+    scope \mut s -> {
+        let child = s.fork(\-> 42)
+        let value = child.join()?
+        assert(value == 42)
+        panic("parent failure")
+    }
+}
+parent_fault() ?? \_fault -> 0         -- Panics; the Result fallback cannot catch the parent
+```
+
+Each block is an independent fixture. Panic isolation and child faults follow [structured boundaries](#structured-concurrency-and-panic-containment).
+
+- **Recoverable Errors**: Ordinary `Result<T, E>` and `Option<T>` / `?T` values. Unused Results are statically rejected.
+- **Defects (Panics)**: Invariant violations raise deterministic run-time panics.
+- **Synchronous Isolation**: A synchronous frame cannot catch a panic.
+- **Boundary Containment**: A child panic fails its owning scope with `TaskFault::Panicked`; a panic in the scope body propagates outward.
 
 ### Run-Time Failure Conditions
 
@@ -400,6 +412,7 @@ SnakeCase          ::= [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
 ScreamingSnakeCase ::= [A-Z] [A-Z0-9]* { "_" [A-Z0-9]+ }
 SuppressedVar      ::= "_" [a-z] [a-z0-9]* { "_" [a-z0-9]+ }
 Wildcard           ::= "_"
+QualifiedName    ::= Identifier { "::" Identifier }
 ```
 
 Identifier grammatical roles obey the **Closed Casing Invariant**:
@@ -456,15 +469,15 @@ let _ = user_count                     -- OK: wildcard discard
 fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' is intentionally unused
 
 -- Static Lexical Violations:
--- type user_doc = { id: int }         -- Error [E0101]: InvalidIdentifierCasingError: type identifier must be PascalCase, found 'user_doc'
--- fn Calculate() -> () {}             -- Error [E0101]: InvalidIdentifierCasingError: function identifier must be snake_case, found 'Calculate'
--- let UserCount = 10                  -- Error [E0101]: InvalidIdentifierCasingError: variable identifier must be snake_case, found 'UserCount'
--- meta let max_size = 100             -- Error [E0101]: InvalidIdentifierCasingError: compile-time constant must be SCREAMING_SNAKE_CASE, found 'max_size'
--- var ACTIVE_FLAG = true              -- Error [E0101]: InvalidIdentifierCasingError: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
--- type HTTPServer = { port: int }     -- Error [E0102]: MalformedIdentifierSyntaxError: acronym in PascalCase must be title-cased, expected 'HttpServer', found 'HTTPServer'
--- let user__name = "Alice"            -- Error [E0102]: MalformedIdentifierSyntaxError: consecutive underscores are prohibited, found 'user__name'
--- let Some(USER_ID) = opt             -- Error [E0103]: PatternCasingCollisionError: pattern binding position cannot use uppercase identifier 'USER_ID'
--- let _ = 10; println(_)              -- Error [E0322]: WildcardExpressionError: wildcard '_' cannot be evaluated as an expression
+-- type user_doc = { id: int }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
+-- fn Calculate() -> () {}             -- Error [E0101]: function identifier must be snake_case, found 'Calculate'
+-- let UserCount = 10                  -- Error [E0101]: variable identifier must be snake_case, found 'UserCount'
+-- meta let max_size = 100             -- Error [E0101]: compile-time constant must be SCREAMING_SNAKE_CASE, found 'max_size'
+-- var ACTIVE_FLAG = true              -- Error [E0101]: top-level mutable variable must be snake_case, found 'ACTIVE_FLAG'
+-- type HTTPServer = { port: int }     -- Error [E0102]: acronym in PascalCase must be title-cased, expected 'HttpServer', found 'HTTPServer'
+-- let user__name = "Alice"            -- Error [E0102]: consecutive underscores are prohibited, found 'user__name'
+-- let Some(USER_ID) = opt             -- Error [E0103]: pattern binding position cannot use uppercase identifier 'USER_ID'
+-- let _ = 10; println(_)              -- Error [E0322]: wildcard '_' cannot be evaluated as an expression
 ```
 
 ### Keywords
@@ -542,6 +555,10 @@ IntSuffix      ::= "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" |
 FloatLiteral   ::= Digit { [ "_" ] Digit } "." Digit { [ "_" ] Digit } [ Exponent ] [ [ "_" ] FloatSuffix ]
 Exponent       ::= ( "e" | "E" ) [ "+" | "-" ] Digit { Digit }
 FloatSuffix    ::= "f32" | "f64"
+Digit           ::= [0-9]
+HexDigit        ::= [0-9a-fA-F]
+OctalDigit      ::= [0-7]
+BinaryDigit     ::= "0" | "1"
 ```
 
 ```ril
@@ -642,7 +659,47 @@ let binary_data = b"RIFF\x00\x01\xFF"  -- Type: bytes with byte hex escapes
 
 Combine strings and values with interpolation, such as `"Hello, {name}"`. Arithmetic operators do not perform string conversion or concatenation.
 
-A leading zero in a numeric format width, as in `04x`, selects zero padding. Otherwise the default fill is a space. Width counts Unicode scalars; precision for `f` is digits after the decimal point. A format specifier incompatible with the value type is `E0329`.
+```ril
+assert("{-42:05}" == "-0042")
+assert("{1.25:.1f}" == "1.2")          -- Decimal rounding: nearest, ties to even
+assert("{12.5:.2e}" == "1.25e1")
+assert("{1.0:.0f}" == "1")
+assert("{-0.0}" == "-0.0")
+assert("{true}" == "true")
+let text = "é🙂x"
+assert("{text:.2s}" == "é🙂")
+```
+
+| Value type | Admitted format | Precision |
+| :--- | :--- | :--- |
+| `str` | Omitted or `s`; unchanged scalar sequence | Maximum output scalars; truncate before padding |
+| `bool` | Omitted; `true` or `false` | Not admitted |
+| Integer | Omitted decimal, `b`, `o`, `x`, `X` | Not admitted |
+| `f32` / `f64` | Omitted, `e`, `f` | Only `e`/`f`; digits after the decimal point, default 6 |
+| Other types, including wrappers | None; unwrap or convert explicitly | `E0329` |
+
+| Floating conversion | Rule |
+| :--- | :--- |
+| Omitted type and precision | Shortest round-tripping decimal; among equally short candidates choose the closest value, then an even final digit |
+| Default notation | Fixed for decimal exponents -6 through 20, scientific otherwise; fixed integer-like output includes `.0` |
+| `f` | Round the exact represented value to the requested digits after the decimal point, nearest with ties to even |
+| `e` | Normalize to a coefficient with one integer digit; round its fractional digits nearest with ties to even; a carry to ten renormalizes and increases the exponent |
+| Precision zero | Omit the decimal point |
+| Scientific output | Lowercase `e`; exponent has no leading zeros or positive sign; zero has exponent zero |
+| Special values / sign | `nan`, `inf`, `-inf` independent of precision; preserve negative zero including after rounding |
+
+| Layout property | Rule |
+| :--- | :--- |
+| Width | Minimum Unicode scalar count after conversion/truncation; never truncates |
+| Default alignment / fill | Numbers right, other admitted values left; space fill |
+| `<` / `>` / `^` | Left / right / center; odd center padding puts the extra scalar on the right |
+| Explicit fill | One scalar other than a brace or line break; requires alignment |
+| Numeric width beginning with zero | Zero-pad after a minus sign, unless explicit fill/alignment is present; special floats use spaces |
+| Integer output | Sign plus magnitude, no prefix; `X` uses uppercase digits, other bases lowercase |
+| Width / precision bounds | Nonnegative decimal values representable as `int`; otherwise malformed format (`E0112`) |
+| Unsupported type/format/precision combination | `E0329`; formatting invokes no user conversion |
+
+Each interpolation expression evaluates once in source order. An empty format specifier is the default format. These conversions are available in both evaluation phases.
 
 ### Boolean and Unit Literals
 
@@ -658,6 +715,12 @@ let unit_val = ()                      -- Type: ()
 
 ### Value Types
 
+```ebnf
+PrimitiveType    ::= "bool" | "i8" | "i16" | "i32" | "i64" | "int"
+                  | "u8" | "u16" | "u32" | "u64" | "bigint"
+                  | "f32" | "f64" | "str" | "bytes" | "(" ")" | "never"
+```
+
 Value types have copy-by-value semantics. They cannot be borrowed as `mut` parameters.
 
 | Category | Types | Default Alignment / Size |
@@ -668,6 +731,7 @@ Value types have copy-by-value semantics. They cannot be borrowed as `mut` param
 | Arbitrary Precision | `bigint` | Managed heap integer |
 | Floating-Point | `f32`, `f64` | 4, 8 bytes (IEEE 754) |
 | Text & Data | `str` (UTF-8 immutable), `bytes` (byte slice) | Pointer + length |
+| Integer ranges | Range values such as `0..5`; type may be named using `typeof (0..0)` | Abstract-target value layout |
 | Unit & Bottom | `()` (unit, 1 value), `never` (empty, diverges) | 0 bytes |
 
 ```ril
@@ -677,8 +741,8 @@ var b = a                              -- Independent copy; value types use 'var
 b += 1                                 -- Modifies 'b'; 'a' remains 42
 assert(a == 42 && b == 43)
 
--- let mut bad_scalar = a              -- Error [E0402]: ValueTypePinnedMutError: value type 'int' has no interior mutability; use 'var'
--- fn bad_borrow(mut x: int) {}        -- Error [E0401]: ValueTypeMutableBorrowError: value type 'int' cannot be borrowed as 'mut' parameter
+-- let mut bad_scalar = a              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
+-- fn bad_borrow(mut x: int) {}        -- Error [E0401]: value type 'int' cannot be borrowed as 'mut' parameter
 ```
 
 ### Reference Types
@@ -694,7 +758,7 @@ n1.val = 99                            -- Mutate through 'n1'
 assert(n2.val == 99)                   -- OK: 'n2' observes mutation due to reference aliasing
 
 -- Mutating through read-only alias is strictly prohibited:
--- n2.val = 100                        -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'val' through read-only view 'n2'
+-- n2.val = 100                        -- Error [E0520]: cannot mutate field 'val' through read-only view 'n2'
 ```
 
 ### Record Types and Row Polymorphism
@@ -726,6 +790,8 @@ RecordType       ::= "{" [ RecordFieldList ] "}"
 RecordField      ::= [ "mut" ] FieldLabel ":" TypeExpression
 TypeProjection ::= PrimaryType "." ( Identifier | TupleIndex | "(" Expression ")" )
 TupleIndex     ::= Digit { Digit }
+RecordFieldList  ::= ".." PascalCase | RecordField { "," RecordField } [ "," [ ".." PascalCase ] ]
+FieldLabel       ::= SnakeCase | SuppressedVar | PascalCase
 ```
 
 ```ril
@@ -733,16 +799,16 @@ type User = { id: int, name: str }
 let u: User = .{ id: 1, name: "Alice" } -- OK: exact closed record match
 
 -- Closed record rejects unexpected fields (E0302):
--- let bad_u: User = .{ id: 1, name: "Alice", age: 30 } -- Error [E0302]: UnexpectedFieldError: unexpected field 'age' in closed record 'User'
+-- let bad_u: User = .{ id: 1, name: "Alice", age: 30 } -- Error [E0302]: unexpected field 'age' in closed record 'User'
 
 -- Field access is strictly compile-time identifier dot-access:
 let user_id = u.id                     -- OK: static field projection
--- let bad_index = u["name"]           -- Error [E0324]: DynamicRecordIndexProhibitedError: records do not support dynamic index lookup
+-- let bad_index = u["name"]           -- Error [E0324]: records do not support dynamic index lookup
 let static_accessor = u.("name")       -- OK: a statically known key, not a dynamic lookup
 
 -- Type-level field projection:
 type IdType = User.id                  -- OK: direct static field type extraction (int)
--- type BadIndex = User["id"]          -- Error [E0324]: DynamicRecordIndexProhibitedError: record types do not support bracket indexing, use User.id
+-- type BadIndex = User["id"]          -- Error [E0324]: record types do not support bracket indexing, use User.id
 
 -- Named row tail polymorphism (generic type preservation):
 fn with_timestamp<R>(r: { ..R }) -> { timestamp: int, ..R } {
@@ -770,6 +836,10 @@ Bracket syntax (`[...]`) unifies linear sequences (dynamic slices `[]T` and comp
 ArrayType   ::= "[" [ Expression ] "]" TypeExpression
 MapType     ::= "[" TypeExpression ":" TypeExpression "]"
 TupleType        ::= "(" TypeExpression "," TypeExpression { "," TypeExpression } [ "," ] ")"
+TupleExpr       ::= "(" Expression "," Expression { "," Expression } [ "," ] ")"
+ArrayExpr       ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
+MapExpr         ::= "[" ":" "]" | "[" MapEntry { "," MapEntry } [ "," ] "]"
+MapEntry        ::= Expression ":" Expression
 ```
 
 ```ril
@@ -797,11 +867,11 @@ let x = coords.0                       -- Value positional access: 10
 let name = coords.1                    -- Value positional access: "Alice"
 type CoordX = (typeof coords).0        -- Inferred tuple positional projection: int
 type First = (int, str).0              -- Static tuple positional projection: int
--- type OutOfBounds = (int, str).2      -- Error [E0312]: TupleIndexOutOfBoundsError: tuple index 2 out of bounds for (int, str)
+-- type OutOfBounds = (int, str).2      -- Error [E0312]: tuple index 2 out of bounds for (int, str)
 
 -- Collections are not product types; dot projection on collections is rejected:
--- type BadArrElem = ([]int).elem      -- Error [E0337]: NonProductProjectionError: collection type '[]int' has no named fields or member projections; use 'ril/array::{Elem}'
--- type BadMapKey = ([str: int]).key   -- Error [E0337]: NonProductProjectionError: collection type '[str: int]' has no named fields or member projections; use 'ril/map::{Key}'
+-- type BadArrElem = ([]int).elem      -- Error [E0337]: collection type '[]int' has no named fields or member projections; use 'ril/array::{Elem}'
+-- type BadMapKey = ([str: int]).key   -- Error [E0337]: collection type '[str: int]' has no named fields or member projections; use 'ril/map::{Key}'
 ```
 
 ### Sum Types and GADTs
@@ -815,6 +885,8 @@ VariantDecl      ::= PascalCase [ GenericParams ] [ VariantPayload ] [ "->" Type
 VariantFields       ::= VariantField { "," VariantField } [ "," ]
 VariantField        ::= [ Identifier ":" ] TypeExpression
 RecordVariantFields ::= RecordField { "," RecordField } [ "," ]
+VariantDeclList  ::= VariantDecl { "," VariantDecl } [ "," ]
+VariantPayload   ::= "(" [ VariantFields ] ")" | "{" [ RecordFieldList ] "}"
 ```
 
 ```ril
@@ -834,7 +906,7 @@ fn eval_int(e: Expr<int>) -> int {
     match e {
         LitInt(n) -> n,
         Add(a, b) -> eval_int(a) + eval_int(b),
-        -- LitBool(b) -> 0             -- Error [E0304]: UnreachableMatchArmError: unreachable match arm: constructor 'LitBool' binds T = bool, incompatible with Expr<int>
+        -- LitBool(b) -> 0             -- Error [E0304]: unreachable match arm: constructor 'LitBool' binds T = bool, incompatible with Expr<int>
     }
 }
 
@@ -847,6 +919,25 @@ fn eval<T>(e: Expr<T>) -> T {
     }
 }
 ```
+
+```ril
+type Box<T> { Item<U>(U) -> Box<U> }
+let boxed: Box<int> = Box::Item(1)
+type Payload = Box<int>.Item           -- int
+-- type Packed { Item<U>(U) }          -- Error [E0354]: U is not determined by the result
+-- type Wrong<T> { Item(T) -> bool }   -- Error [E0354]: result is not an instance of Wrong
+```
+
+| Variant contract | Requirement |
+| :--- | :--- |
+| Omitted result equation | The enclosing sum applied to its enclosing parameters |
+| Explicit result equation | An instance of that same sum declaration (`E0354` otherwise) |
+| Variant-local parameter | Recoverable from the result arguments; no hidden existential parameter (`E0354`) |
+| Recovery | After transparent expansion, the parameter occurs as a bare argument or beneath rigid nominal, sum, or structural type constructors |
+| Computed static argument / type-function inversion | Does not establish recovery of a parameter |
+| Matching | Result equations supply arm-local equalities; recovered parameters do not introduce escaping existential types |
+
+Substitution must satisfy every occurrence of a recovered parameter and its declared sort. These declaration checks do not perform inverse evaluation of arbitrary type functions.
 
 #### Constructor-Tuple Equivalence Invariant
 
@@ -877,7 +968,7 @@ match unit_res {
 
 -- Nullary variant tags vs. Data constructors:
 let opt: Option<int> = None                      -- OK: nullary tag without parentheses
--- let bad_none = None()                         -- Error [E0353]: NullaryVariantCallError: variant 'None' has no payload; remove call parentheses
+-- let bad_none = None()                         -- Error [E0353]: variant 'None' has no payload; remove call parentheses
 
 -- Result construction and matching with tuple payload:
 let res: Result<(int, str), str> = Ok(200, "OK") -- OK: n = 2 constructs (int, str) directly
@@ -906,14 +997,14 @@ let TwoPoints(raw_tuple) = p1                    -- OK: whole-tuple destructurin
 -- Functions do NOT auto-tuple (Strict Scope Boundary):
 fn add(a: int, b: int) -> int { a + b }
 let sum1 = add(1, 2)                             -- OK: 2 arguments
--- let sum2 = add(pair)                          -- Error [E0314]: ArityMismatchError: expected 2 arguments, found 1 tuple
+-- let sum2 = add(pair)                          -- Error [E0314]: expected 2 arguments, found 1 tuple
 
 -- Nested tuples: non-transitive boundary:
 type Node {
     Branch((int, int), str),                     -- Payload is 2-tuple: ((int, int), str)
 }
 let node = Branch((1, 2), "left")                -- OK: n = 2 arguments
--- let bad_node = Branch(1, 2, "left")           -- Error [E0314]: ArityMismatchError: arity mismatch: expected 2 arguments, found 3
+-- let bad_node = Branch(1, 2, "left")           -- Error [E0314]: arity mismatch: expected 2 arguments, found 3
 ```
 
 ### Nominal Type Wrappers
@@ -939,7 +1030,7 @@ type AdminToken
 let m: Marker = Marker                 -- OK: bare identifier value construction
 let raw_unit: () = inner(m)            -- OK: unwrap unit nominal wrapper evaluates to ()
 let _ = m                              -- OK: explicit wildcard discard
--- let Marker = m                      -- Error [E0309]: VacuousBindingError: 'let' pattern must bind at least one variable; nullary constructor 'Marker' introduces zero bindings
+-- let Marker = m                      -- Error [E0309]: 'let' pattern must bind at least one variable; nullary constructor 'Marker' introduces zero bindings
 
 -- Value-Wrapped Nominal Types:
 type UserId(int)
@@ -953,7 +1044,7 @@ let c = Coord(10, 20)                  -- OK: positional tuple expansion (n = 2)
 let c_compat = Coord((10, 20))         -- OK: explicit tuple literal (n = 1)
 let pt = Point2D(.{ x: 10.0, y: 20.0 })
 
--- uid == aid                          -- Error [E0305]: NominalTypeMismatchError: mismatched nominal types 'UserId' and 'AccountId'
+-- uid == aid                          -- Error [E0305]: mismatched nominal types 'UserId' and 'AccountId'
 let raw_id: int = inner(uid)           -- OK: unwrap nominal wrapper via prelude 'inner()' (1001)
 let raw_coord: (int, int) = inner(c)   -- OK: unwrap nominal wrapper to underlying tuple (10, 20)
 let raw_pt: { x: f64, y: f64 } = inner(pt) -- OK: unwrap underlying record via 'inner()'
@@ -1034,36 +1125,7 @@ let get_dog: Getter<Dog> = make_dog       -- OK
 
 Read-only access and Immut qualification add no container subtyping.
 
-### Memory Model and Handle Invariants
 
-```ril
-type Counter = { mut count: int }
-let mut source = Counter.{ count: 0 }
-let view observer = source
--- let bad = source                    -- Error [E0535]: a surviving writer prevents immutable publication
--- let hidden = .{ child: observer }   -- Error [E0535]: wrapping a live reference does not make it immutable
-source.count += 1
-let copied_count = observer.count      -- OK: independent scalar value
-assert(copied_count == 1)
-```
-
-- **Origins and Permissions**: Binding, projection, wrapping, calls, captures, and returns preserve origins, permissions, and immutable/live status. Alternatives retain all possible origins and only their common permissions. Visible types need not name these facts; [complete provenance](#complete-provenance-and-optional-annotations) remains mandatory.
-- **Binding to let (`E0535`)**: Accept immutable data or a fresh ordinary graph without surviving external writers. Reject live views, captured live cells, and mutable environments. Binding neither clones data nor revokes another writer.
-- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no external writer or active environment survives. A private fresh result may instead stay writable. Borrowed/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until their lexical scope ends; merely having no later textual use does not revoke it. Reassigning `var mut` replaces that binding's path but does not revoke other paths to the old value.
-- **Pinned Handles (`E0502`)**: `let mut` and mutable reference parameters cannot be rebound. Their allowed interior writes remain subject to field permissions and exclusivity. `var` may only rebind its slot; `var mut` additionally permits interior writes supplied by its current value. Neither upgrades source permissions.
-- **Views**: `let view` grants read-only live observation of stable pinned origins. Scalar projections copy values; reference projections retain live origins. See [Live View Bindings](#live-view-bindings).
-- **Authority Use (`E0527`)**: A mutable binding/parameter must perform a write, reassignment, mutable invocation, retention, or authorized transfer on a statically possible path. An annotation or ineffective forwarding alone does not count. This does not require a write on every execution.
-
-```ril
-fn make_items() -> []int {
-    let mut items: []int = []
-    items !> Array::push(1)
-    items
-}
-let items = make_items()               -- OK: construction authority ended; immutable publication
-let alias = items                     -- OK: multiple references to immutable data
--- let mut stolen = items             -- Error [E0520]: ordinary aliasing cannot recover write permission
-```
 
 ### Complete Provenance and Optional Annotations
 
@@ -1080,7 +1142,7 @@ assert(observed.count == 1)
 ```
 
 - **Complete Static Provenance**: Track possible origins, permissions, immutable/live facts, aliases, retention/escape dependencies, and scope/task ownership for all storage, references, environments, and resources. Conservative judgments may overapproximate execution; obligations cannot be erased.
-- **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
+- **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Existing-reference permissions may be preserved or reduced, never upgraded by these operations. Every handle in an access path and the stored constituent limit the resulting authority; a field's lack of slot-replacement permission does not itself reduce its child reference's permission. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
 - **No Semantic Erasure**: An omitted annotation, plain `-> T`, abbreviated callable type, or ordinary call spelling does not discard these facts. Private source names need not become public identifiers; their semantic dependencies still participate in every access and boundary check. Anonymous captures and symbolic callback obligations remain inferred. Named definitions must declare their concrete invocation obligations; no return modes, symbolic callback-forwarding notation, or call-site annotation is required.
 - **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize a loan, immutable publication, or task crossing that requires it.
 - **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. Apply the use's existing diagnostic when its required proof is absent.
@@ -1106,6 +1168,8 @@ let mut alias = ^mut first
 alias.count += 1
 -- swap(mut first, mut alias)         -- Error [E0523]: different names for the same writable object
 ```
+
+- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no external writer or active environment survives. A private fresh result may instead stay writable. Borrowed/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until their lexical scope ends; merely having no later textual use does not revoke it. Reassigning `var mut` replaces that binding's path but does not revoke other paths to the old value.
 
 - **Fresh Evaluation**: Each successful ordinary allocation creates new storage distinct from pre-existing storage. A newly constructed aggregate may still contain references to pre-existing objects; freshness of its outer slots does not establish disjointness of its reachable graph. Each ordinary deep clone creates new writable regions isolated from the source and all pre-existing writable regions, preserving aliases within that one copy. Repeated evaluations of one expression do not denote one shared allocation. Calling an arbitrary function twice does not establish freshness; the function's actual return relation must supply it.
 
@@ -1189,6 +1253,10 @@ assert(snapshot.count == 0 && version.count == 1)
 
 ### Generic Parameters, Defaults, and Value Sorts
 
+```ril
+fn log_id<T: { id: int, ..R }>(item: T) -> int { item.id }
+```
+
 Generics admit type, const-value, and [static-key](#static-key-parameters-and-computed-value-projection) parameters. They apply to data, wrapper, sum, and callable declarations.
 
 ```ebnf
@@ -1203,6 +1271,8 @@ RecordConstraintField ::= [ "mut" ] Identifier ":" TypeExpression
 KeyofConstraint       ::= "keyof" TypeExpression
 GenericArgs           ::= "<" GenericArg { "," GenericArg } [ "," ] ">"
 GenericArg            ::= TypeExpression | Expression
+StaticKeyParamDecl ::= PascalCase ":" KeyofConstraint [ "=" Expression ]
+ValueType        ::= TypeExpression
 ```
 
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list MUST declare default arguments.
@@ -1211,6 +1281,31 @@ GenericArg            ::= TypeExpression | Expression
 - **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
 - **No Untagged Literal Types (`E0318`)**: Concrete values (strings, integers, booleans) cannot serve as bare types. Discrete domain states MUST be modeled via tagged sum types (`type HttpMethod { Get, Post }`). Concrete values enter the type system strictly as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`).
 - **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = int>` is rejected); function types are inferred bidirectionally at call sites.
+
+```ril
+type Token<value: f64>(int)
+meta let _ = assert(type<Token<0.0>> != type<Token<-0.0>>)
+meta let _ = assert(type<Token<0.0 / 0.0>> == type<Token<0.0 / 0.0>>)
+
+type Choose = \entries: [str: int] ->
+    if Map::keys(entries)[0] == "a" { type<int> } else { type<str> }
+type FirstOrder = Choose<["a": 1, "b": 2]>  -- int
+type OtherOrder = Choose<["b": 2, "a": 1]>  -- str
+```
+
+Static argument equivalence determines type and effect instantiation identity. It is distinct from run-time `==`. Arguments must first have the same admitted sort.
+
+| Static value | Equivalence |
+| :--- | :--- |
+| Booleans, integers, strings, bytes, unit | Exact value; strings are exact scalar sequences |
+| Floating values | Canonical IEEE bit representation; signed zeros differ, canonical NaNs agree |
+| Records | Same labels and recursively equivalent fields; written field order is irrelevant |
+| Arrays / tuples | Same length and recursively equivalent positional values |
+| Maps / sets | Same insertion-ordered entries/members, recursively equivalent |
+| Sums / nominal or ordinary opaque values | Same declaration/instance identity and tag where present, then equivalent representation constituents |
+| Integer ranges | Same endpoint type, endpoints, and inclusive/exclusive flag |
+
+Sharing multiplicity and allocation identity do not distinguish static arguments. For eligible finite cyclic graphs, use the greatest relation satisfying the table's constituent rules. Live values, callable authority, and resources remain ineligible. Type equality compares these instantiation identities; it does not substitute ordinary collection or floating-point equality.
 
 ```ril
 -- type TooMany = Option<int, str>    -- Error [E0340]: Option has one generic parameter
@@ -1259,273 +1354,115 @@ let p1: Pair<int> = .{ first: 1, second: 2 }    -- OK: Second defaults to First 
 
 -- Rejection: Non-trailing default generic parameter (E0316):
 -- type BadOrder<T = int, U> = { a: T, b: U }
--- Error [E0316]: NonTrailingDefaultGenericParamError: generic parameter without default 'U' cannot follow generic parameter with default 'T'
+-- Error [E0316]: generic parameter without default 'U' cannot follow generic parameter with default 'T'
 
 -- Rejection: Forward reference in default argument (E0320):
 -- type BadForward<T = U, U = int> = { a: T }
--- Error [E0320]: ForwardTypeDefaultReferenceError: default argument for 'T' contains forward reference to parameter 'U'
+-- Error [E0320]: default argument for 'T' contains forward reference to parameter 'U'
 
 -- Rejection: Function generic parameter with default (E0317):
 -- fn bad_fn<T = int>(x: T) -> T { x }
--- Error [E0317]: FunctionDefaultGenericProhibitedError: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
+-- Error [E0317]: function generic parameter 'T' cannot declare default type; functions rely on caller-site bidirectional inference
 
 -- Rejection: Literal types and untagged unions prohibited (E0318):
 -- type BadMethod = "GET" | "POST"
--- Error [E0318]: LiteralTypeProhibitedError: literal values cannot be used as types; declare a tagged sum type instead
+-- Error [E0318]: literal values cannot be used as types; declare a tagged sum type instead
 
 -- Rejection: Runtime expression passed to const generic (E0814):
 fn check_buf(runtime_size: int) {
     -- let bad_b: Buffer<u8, runtime_size> = Buffer.{ data: [], len: 0 }
-    -- Error [E0814]: StaticValueRequiredError: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
+    -- Error [E0814]: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
 }
 
 -- Rejection: Const generic sort mismatch (E0323):
 -- let bad_sort: Buffer<u8, "1024"> = Buffer.{ data: [], len: 0 }
--- Error [E0323]: ConstGenericSortMismatchError: const generic parameter 'cap' of sort 'int' supplied with incompatible argument of sort 'str'
+-- Error [E0323]: const generic parameter 'cap' of sort 'int' supplied with incompatible argument of sort 'str'
 ```
 
-### Tripartite Ontology and Type Definition Boundaries
-
-Ril establishes a mathematically rigorous, stratified **Tripartite Ontology**, partitioning program semantics across three mutually exclusive domains that converge exclusively at the callable computation arrow:
-
-```
-+-----------------------------------------------------------------------------------------------------------------+
-|                                             THE TRIPARTITE ONTOLOGY                                             |
-+-------------------------------------+-------------------------------------+-------------------------------------+
-|  Domain I: Data & Shape (T)         |  Domain II: Storage & Access (C)    |  Domain III: Control & Transfer (E) |
-|  - Types at rest                    |  - Storage cell permissions         |  - Stack-delimited control flows    |
-|  - Value vs Reference types         |  - Explicit binding permissions     |  - Algebraic effects ('eff')        |
-|  - Records, Arrays, Tuples, Sums    |  - Parameter modes ('mut')          |  - Handlers ('with')                |
-|  - Nominals & Opaque types          |  - Capability tracking (&mut, &^mut)|  - Affine resumption ('resume')     |
-|  - Field 'mut' (interior marker)    |  - Aliasing exclusivity             |  - Built-ins (@Async, @Fiber, @Div) |
-+-------------------------------------+-------------------------------------+-------------------------------------+
-                                                         |
-                                                         v
-                                      +-------------------------------------+
-                                      |     COMPUTATION CONFLUENCE (fn)     |
-                                      |   fn(P) -> R  @Eff  &Cap            |
-                                      | - P in T (parameters at rest)       |
-                                      | - R in T (return shape at rest)     |
-                                      | - @Eff in E (latent control flow)   |
-                                      | - &Cap in C (latent access rights)  |
-                                      +-------------------------------------+
-```
-
-#### The Three Disjoint Semantic Domains
-
-$$\text{Semantic Domains} = \langle \text{Shape (Type)}\ \mathcal{T},\ \text{Access (Capability)}\ \mathcal{C},\ \text{Control (Effect)}\ \mathcal{E} \rangle$$
-
-- **Domain I: Data & Shape Domain ($\mathcal{T}$)**:
-   - **Meaning**: Memory representation, data alignment, structural topology, and nominal identity of values in *normal form* (quiescent data at rest).
-   - **Syntactic Locus**: Values, expressions, variables, data structures, and function parameter/return types.
-   - **Constituents**:
-     - *Primitive Value Types*: `bool`, `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `int`, `bigint`, `f32`, `f64`, `str`, `bytes`, `()`, `never`.
-     - *Heap Reference Types*: Structural records `{...}`, linear arrays `[]T`, associative maps `[K: V]`, anonymous tuples `(...)`, and standard prelude collections (such as `Set<T>`).
-     - *Algebraic Sum Types & GADTs*: `type Option<T> { Some(T), None }`.
-     - *Nominal Wrappers & Unit Nominals*: `type UserId(int)`, `type Marker`.
-     - *Opaque Types*: `pub opaque type SessionToken = str`.
-   - **Structural Field Modifier**: The record field modifier `mut` (e.g. `{ mut val: int }`) is strictly an interior mutability layout marker of a heap reference cell. It is **not** an operational capability.
-   - **Axiom of Inactivity**: Types are inert shapes. A type cannot perform computation, yield execution control, hold ambient access capabilities, or trigger algebraic side effects.
-
-- **Domain II: Storage & Access Domain ($\mathcal{C}$)**:
-   - **Meaning**: Static tracking of heap mutation authority, storage cell access rights, pointer stability, and aliasing exclusivity. It specifies what memory an activation frame or handle is permitted to mutate, reassign, or retain.
-   - **Syntactic Locus**: Variable bindings (`let`, `let mut`, `var`, `var mut`, `let view`), parameter/argument modes (`p: T`, `mut p: T`, `^mut p: T`), local `^mut` sharing expressions, and callable capability qualifiers (`&mut`, `&^mut`, `&closure`, `&capture`, global/captured source groups, and named-function state contract references).
-   - **Guarantees**: Governed by the Law of Exclusivity, Monotonic Permission Degradation, and Anti-Laundering theorems (`E0520`–`E0528`), preventing hidden aliasing, pointer invalidation, and data races without marker traits or lifetime annotations.
-   - **Axiom of Non-Reification**: Capabilities are operational permissions, not data values. A capability cannot be instantiated at runtime, bound to a variable, stored in a collection, or aliased as a standalone type.
-
-- **Domain III: Control & Transfer Domain ($\mathcal{E}$)**:
-   - **Meaning**: Dynamic control inversion, delimited continuation interception, stack unwinding protocols, and cooperative fiber scheduling. It specifies what non-local control transfers and ambient runtime requests can occur during expression reduction.
-   - **Syntactic Locus**: Exclusively confined to computation / arrow signatures (`fn(P) -> R @Eff &Cap`), effect declarations (`eff`), and handler blocks (`with`).
-   - **Constituents**:
-     - *Algebraic Effect Definitions*: `eff FileIo { read() -> str }`.
-     - *Stack Handlers*: `with Handler { op(args) -> ... }`.
-     - *Affine Resumptions*: `resume value`.
-     - *Built-in Effect Sub-Lattice*: `@Fiber` (cooperative leaf I/O quantum) $\subset$ `@Async` (compound concurrency alias) $\equiv \lbrace\text{Fiber}, \text{Concurrent}\rbrace$, disjoint from `@Div` (budget exhaustion). Possible non-termination is a separate inferred callable property, not an effect-row member.
-   - **Axiom of Delimited Execution**: Effects represent active computational protocols between code and ambient stack handlers. Once an expression is reduced to normal form, its effects have transpired; passive data has no effect annotation of its own; callable constituents retain their latent obligations.
-
-#### The Computation Confluence Point (fn)
-
-The three domains are mutually exclusive and never mix directly. They converge **exclusively** at the first-class callable arrow:
-
-$$\tau_{\text{callable}} = \mathbf{fn}(P_1, \dots, P_n) \to R \ [@\mathcal{E}] \ [\mathbin{\And}\mathcal{C}]$$
-
-Termination and finite-budget coverage are judgments about invoking a callable. They remain available independently of the two rows; they are not additional value types, capability values, or effect labels.
+### Type Definition Boundaries
 
 ```ril
--- The Computation Confluence in Action:
---   Parameters (Domain I: Shape)
---   Return Type (Domain I: Shape)
---   Latent Effects (Domain III: Control)
---   Latent Capabilities (Domain II: Access)
-type SocketHandler = fn(mut buffer: []u8, timeout_ms: int) -> Result<int, IoError> @Fiber &mut
-```
-
-- **Confluence Semantics**: A function, closure, or thunk is an unevaluated, suspendable computation mediating between input/output data shapes ($P \in \mathcal{T}, R \in \mathcal{T}$), ambient control transfers ($@\mathcal{E} \subseteq \mathcal{E}$), and storage access permissions ($\mathbin{\And}\mathcal{C} \subseteq \mathcal{C}$).
-- **First-Class Closure Property**: $\tau_{\text{callable}}$ is a first-class type in Domain I ($\tau_{\text{callable}} \in \mathcal{T}$); callable types can be stored in records, passed as variant payloads, nested in tuples, or aliased under `type T = ...`.
-
-#### Boundaries of Type Definitions
-
-##### Supported Constructs
-- **Structural Product Shapes & Interior Mutability**: Record definitions with field-level interior mutability `{ mut val: int, tag: str }`.
-- **First-Class Callable Signatures**: Nested function arrows carrying latent effects and capabilities `fn(In) -> Result<Out, Err> @Fiber + Async &mut`.
-- **Algebraic Sum Variants & GADTs**: Constructors with positional payloads `Some(T)`, record payloads `Record{ x: int }`, or constructor equations `Lit(int) -> Expr<int>`, including variants holding callable types `Handler(fn(Event) -> () @Io)`.
-- **Nominal Wrappers & Unit Nominals**: `type UserId(int)`, `type Marker`.
-- **Opaque Type Representations**: `pub opaque type SessionToken = str`.
-- **Pure Compile-Time Type Functions**: `halt type Transform<T> = ...` (strictly pure compile-time functions returning `type<T>`).
-
-##### Forbidden Anti-Patterns
-Ril statically rejects six structural anti-patterns that attempt to violate domain isolation:
-
-| # | Forbidden Anti-Pattern | Semantic Domain Violation | Diagnostic Code | Diagnostic Identifier |
-| :-: | :--- | :--- | :-: | :--- |
-| **1** | Bare effect aliases (`type E = @Io`) | Attempting to alias Domain III (Control) as Domain I (Data) | **`E0330`** | `BareEffectTypeAliasError` |
-| **2** | Bare capability aliases (`type C = &mut`) | Attempting to alias Domain II (Access) as Domain I (Data) | **`E0331`** | `BareCapabilityTypeAliasError` |
-| **3** | Direct variant computation annotations (`type S = Init @Async`) | Injecting Domain II/III onto Domain I data constructor tags | **`E0332`** | `VariantComputationAnnotationError` |
-| **4** | Direct field computation annotations (`type C = { f: str @Io }`) | Injecting Domain II/III onto Domain I passive storage slots | **`E0333`** | `FieldComputationAnnotationError` |
-| **5** | Generic computation constraints (`<T: @Io>`, `<T: &mut>`) | Constraining Domain I type parameters by Domain II/III | **`E0334`** | `GenericComputationConstraintError` |
-| **6** | Type function computation annotations (`halt type F<T> = ... @Io`) | Polluting compile-time symbolic evaluation with runtime effects/caps | **`E0335`** | `TypeFunctionComputationAnnotationError` |
-
-#### Code-First Normative Rules and Contrast Matrix
-
-```ril
--- Bare Effect Aliases (E0330) vs. 'eff' Declarations:
--- type BadEffect = @Io                         -- Error [E0330]: BareEffectTypeAliasError: bare effect '@Io' cannot be aliased as a type; declare effects using 'eff'
--- type CombinedEffect = @Io + Async            -- Error [E0330]: BareEffectTypeAliasError: bare effect row '@Io + Async' cannot be aliased as a type; combine effects via 'eff'
--- type DynamicEff = @Fiber                     -- Error [E0330]: BareEffectTypeAliasError: bare effect '@Fiber' cannot be used in type definition
-
-eff Io {
-    read_line() -> str,
-    write_line(str) -> (),
-}
-
-eff AsyncIo { Io, Fiber }                      -- OK: effect set combination declared via 'eff'
-type ReaderFn = fn() -> str @Io                -- OK: effect annotates callable arrow
-type AsyncWorker<T> = fn(T) -> () @AsyncIo     -- OK: effect annotates callable arrow
-
--- Bare Capability Aliases (E0331) vs. Interior Mutability Markers:
--- type BadMut = &mut                           -- Error [E0331]: BareCapabilityTypeAliasError: bare capability '&mut' cannot be aliased as a type; capabilities belong to storage and callable domains
--- type BadShare = &^mut                        -- Error [E0331]: BareCapabilityTypeAliasError: bare capability '&^mut' cannot be aliased as a type
--- type BadGlobal = &{mut app_cache}            -- Error [E0331]: BareCapabilityTypeAliasError: bare capability '&{mut app_cache}' cannot be aliased as a type
--- type BadClosure = &closure                   -- Error [E0331]: BareCapabilityTypeAliasError: bare capability '&closure' cannot be aliased as a type
-
-type StateNode = {
-    mut count: int,                            -- OK: field 'mut' is a structural layout marker, not a capability
-    tag: str,
-}
-type Mutator<T> = fn(mut target: T) -> () &mut -- OK: capability annotates callable arrow
-type SharedLogger = fn(str) -> () &closure &^mut -- OK: capability annotates callable arrow
-
--- Sum Variant Computation Annotations (E0332) vs. Callable Payloads:
--- type TaskStatus {
---     Pending,
---     Running @Async,                         -- Error [E0332]: VariantComputationAnnotationError: sum variant 'Running' cannot declare algebraic effect '@Async'; variants are data constructors, not computations
---     Mutating &mut,                          -- Error [E0332]: VariantComputationAnnotationError: sum variant 'Mutating' cannot declare state capability '&mut'; variants are data constructors, not computations
---     Suspended(int) @Fiber,                  -- Error [E0332]: VariantComputationAnnotationError: sum variant 'Suspended' cannot declare algebraic effect '@Fiber'
--- }
+use ril/io::{IoError}
+eff Io { read_line() -> str, write_line(str) -> () }
+eff AsyncIo { Io, Fiber }
+type StateNode = { mut count: int, tag: str }
+type ReaderFn = fn() -> str @Io
+type AsyncWorker<T> = fn(T) -> () @AsyncIo
+type Mutator<T> = fn(mut target: T) -> () &mut
+type SharedLogger = fn(str) -> () &closure &^mut
+type SocketHandler =
+    fn(mut buffer: []u8, timeout_ms: int) -> Result<int, IoError> @Fiber &mut
 
 type TaskStatus {
-    Pending,                                   -- OK: nullary data constructor tag
-    Running(fn() -> () @Async),                -- OK: payload is a callable arrow encapsulating computational effect
-    Mutating(fn(mut StateNode) -> () &mut),    -- OK: payload is a callable arrow encapsulating mutation capability
-    Suspended({ duration_ms: int }),           -- OK: pure record payload
-    Completed(int),                            -- OK: pure scalar payload
+    Pending,
+    Running(fn() -> () @Async),
+    Mutating(fn(mut StateNode) -> () &mut),
+    Suspended({ duration_ms: int }),
+    Completed(int),
 }
-
-let status: TaskStatus = Running(\-> {
-    Async::sleep(100)
-})                                             -- OK: constructs data variant holding callable thunk
-
--- Record Field Computation Annotations (E0333) vs. Callable Fields:
--- type BadChannel = {
---     stream: str @Io,                        -- Error [E0333]: FieldComputationAnnotationError: record field 'stream' cannot declare algebraic effect '@Io'; fields store values or callables
---     buffer: []u8 &mut,                      -- Error [E0333]: FieldComputationAnnotationError: record field 'buffer' cannot declare state capability '&mut'; use 'mut' prefix or callable arrow
---     sink: int &{mut app_cache},             -- Error [E0333]: FieldComputationAnnotationError: record field 'sink' cannot declare external state capability
--- }
+let status: TaskStatus = Running(\-> Fiber::yield())
+assert(status is Running)
 
 type ValidChannel = {
-    mut buffer: []u8,                          -- OK: 'mut' prefix marks heap interior mutability
-    stream: fn() -> str @Io,                   -- OK: field stores a callable arrow carrying algebraic effect
-    writer: fn(mut []u8) -> () &mut,           -- OK: field stores a callable arrow carrying state capability
+    mut buffer: []u8,
+    stream: fn() -> str @Io,
+    writer: fn(mut []u8) -> () &mut,
 }
-
+with {
+    Io::read_line() -> resume "ready",
+    Io::write_line(_text) -> resume (),
+}
 let mut ch = ValidChannel.{
     buffer: [],
     stream: \-> Io::read_line(),
     writer: \mut buf -> { buf !> Array::push(0) },
 }
-ch.buffer !> Array::push(42)                   -- OK: mutate interior mutable field via 'let mut' root
+ch.buffer !> Array::push(42)
+ch.writer(mut ch.buffer)              -- Callable field writes its explicit data argument
+assert(ch.buffer == [42, 0])
 
--- Generic Computation Constraints (E0334) vs. Automatic Forwarding:
--- fn bad_exec<T: @Io>(task: T) -> () { task() } -- Error [E0334]: GenericComputationConstraintError: generic parameter 'T' cannot be constrained by algebraic effect '@Io'; generics parameterize types or values
--- type BadWrapper<T: &mut> = { item: T }      -- Error [E0334]: GenericComputationConstraintError: generic parameter 'T' cannot be constrained by state capability '&mut'
--- fn bad_pipe<T: @Async + Io>(x: T) -> T { x } -- Error [E0334]: GenericComputationConstraintError: generic parameter 'T' cannot be constrained by effect row '@Async + Io'
+fn test_valid_binding() @Io {
+    let result: str = Io::read_line() -- The call has Io; the resulting str has no effect suffix
+    assert(result == "ready")
+}
+assert(ch.stream() == "ready")
+test_valid_binding()
 
-fn execute<T, R>(task: fn(T) -> R, arg: T) -> R {
-    task(arg)                                  -- OK: automatically forwards callee's effects and capabilities
-}
-fn log_id<T: { id: int, ..R }>(item: T) -> int {
-    item.id                                    -- OK: row constraint is a shape property
-}
-fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) {
-    record.(key)                               -- OK: keyof constraint is a shape property
-}
-
--- Pure Type Function Computation Annotations (E0335) vs. Symbolic Purity:
--- halt type BadTransform<T> = \T -> type<T> @Io -- Error [E0335]: TypeFunctionComputationAnnotationError: pure type function cannot declare algebraic effect '@Io'; type functions are axiomatically pure
--- type BadMapper<T> = \T -> type<T> &mut       -- Error [E0335]: TypeFunctionComputationAnnotationError: pure type function cannot declare state capability '&mut'
--- halt type BadAsyncType<T> = \T -> type<T> @Async &closure -- Error [E0335]: TypeFunctionComputationAnnotationError: pure type function cannot declare effects or capabilities
-
-halt type MakeNullable = \T -> type<?T>        -- OK: pure type evaluation returning type<T>
-halt type SafeRecord = \T -> {
-    if type<T> == type<int> {
-        type<{ val: int, valid: bool }>
-    } else {
-        type<{ val: T, valid: bool }>
-    }
-}
-type NullableInt = MakeNullable<int>           -- Resolves to ?int
-type IntRecord   = SafeRecord<int>             -- Resolves to { val: int, valid: bool }
+halt type MakeNullable = \T -> type<?T>
+type NullableInt = MakeNullable<int>
 ```
-
-#### The Asymmetric Scope of Influence
-
-##### Capabilities Govern Bindings
-Binding and origin permissions govern:
-- **Reassignment Privilege**: Whether a binding slot can be overwritten (`var` / `var mut` vs `let` / `let mut`).
-- **Interior Write Privilege**: Whether fields reachable through a handle can be mutated in place (`let mut` / `var mut` vs `let` / `let view` / plain `var`).
-- **Live Observation**: Whether a handle dynamically observes background mutations of an aliased heap object (`let view`).
-- **Anti-Laundering Degradation**: Enforcing monotonic permission degradation ($\text{Mut} \succ \text{ReadOnly} \succ \text{None}$) across destructuring patterns, container insertions, and returns (`E0520`–`E0528`).
-
-##### Algebraic Effects Never Govern Bindings (Function & Data Colorlessness)
-Algebraic effects govern dynamic, non-local control transfers during expression evaluation:
-- When an effectful operation is evaluated (`Console::print("hi")`, `Yield::emit(x)`), it traverses up the dynamic execution stack to find an active enclosing `with` handler.
-- Upon reduction to normal form, all effect operations have already been dispatched and handled.
-- The resulting passive data has no direct effect annotation. Any callable constituent retains the effects of its future invocation.
-- Value bindings, record fields, tuple components, and array elements are strictly colorless. Decorating value bindings with `@Eff` triggers `E0613: ValueEffectAnnotationError`.
-
-##### The Intersecting Boundary: Capability-Bearing Effect Operations
-The tripartite domains intersect cleanly in capability-bearing effect operations, where control routing and memory mutation rights are orthogonal:
 
 ```ril
-eff BufferIo {
-    read_into(mut buf: []u8) -> int &mut,       -- Operation demands in-place buffer mutation
-}
-```
-- The effect tag `BufferIo` governs **Control** (Domain III: who intercepts the operation up the call stack).
-- The capability annotation `&mut` governs **Access** (Domain II: the operation demands write authority into caller-supplied storage).
+-- Io has the preceding declaration. Module storage for the named-state cases:
+var app_cache = 0
+fn update_cache() &{mut app_cache} { app_cache += 1 }
 
-#### Tripartite EBNF Grammar Formalization
+-- type BadEffect = @Io               -- Error [E0330]: a single effect is not a data type
+-- type BadCombined = @Io + Async     -- Error [E0330]: neither is an effect set
+-- type BadMut = &mut                 -- Error [E0331]
+-- type BadShare = &^mut              -- Error [E0331]
+-- type BadGlobal = &{mut app_cache}   -- Error [E0331]
+-- type BadClosure = &closure         -- Error [E0331]
+
+-- type BadVariant { Running @Async } -- Error [E0332]: tag annotation
+-- type BadMutableVariant { Mutating &mut } -- Error [E0332]: capability on a tag
+-- type BadPayload { Suspended(int) @Fiber } -- Error [E0332]: payload does not permit a suffix
+-- type BadField = { value: str @Io } -- Error [E0333]
+-- type BadMutableField = { buffer: []u8 &mut } -- Error [E0333]: field type is not a callable
+-- type BadNamedField = { value: int &{mut app_cache} } -- Error [E0333]
+-- type BadTuple = (str @Io, int)     -- Error [E0333]
+-- type BadArray = []int @Async       -- Error [E0613]
+
+-- type BadEffectBound<T: @Io> = T    -- Error [E0334]
+-- type BadStateBound<T: &mut> = T    -- Error [E0334]
+-- halt type BadTypeFn = \T -> type<T> @Io -- Error [E0335]
+-- type BadTypeState = \T -> type<T> &mut  -- Error [E0335]
+-- halt type BadTypeBoth = \T -> type<T> @Async &closure -- Error [E0335]
+-- let bad: str @Io = "text"          -- Error [E0613]
+-- let @Io bad_prefix = "text"        -- Error [E0613]
+```
 
 ```ebnf
-(* ========================================================================= *)
-(* 1. TYPE EXPRESSIONS (Domain I: Data & Shape)                              *)
-(* ========================================================================= *)
-
-TypeDecl         ::= [ "pub" ] [ "halt" ] "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
-OpaqueTypeDecl   ::= [ "pub" ] "opaque" "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
-(* NominalDecl is defined in its earlier grammar production. *)
-(* SumTypeDecl is defined in its earlier grammar production. *)
-
 TypeExpression   ::= PrimaryType
                    | RecordType
                    | TupleType
@@ -1538,178 +1475,23 @@ TypeExpression   ::= PrimaryType
                    | "typeof" Expression
                    | "type" "<" TypeExpression ">"
                    | MappedRecordType | MappedTupleType
-
 PrimaryType      ::= PrimitiveType | NominalRef | "(" TypeExpression ")"
 NominalRef       ::= QualifiedName [ GenericArgs ]
-(* ArrayType is defined in its earlier grammar production. *)
-(* MapType is defined in its earlier grammar production. *)
-(* TupleType is defined in its earlier grammar production. *)
-
-(* Callable Type: THE COMPUTATION CONFLUENCE POINT *)
-CallableType     ::= "fn" "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ EffectAnnot ] [ StateAnnot ]
-ParameterTypeList::= ParameterTypeItem { "," ParameterTypeItem } [ "," ]
-ParameterTypeItem ::= [ ParameterMode ] [ SnakeCase ":" ] TypeExpression
-
-(* Records: 'mut' is exclusively an interior field layout marker *)
-(* RecordType is defined in its earlier grammar production. *)
-RecordFieldList  ::= ".." PascalCase | RecordField { "," RecordField } [ "," [ ".." PascalCase ] ]
-(* RecordField is defined in its earlier grammar production. *)
-
-(* Sum Types: Variants are pure data constructors *)
-VariantDeclList  ::= VariantDecl { "," VariantDecl } [ "," ]
-(* VariantDecl is defined in its earlier grammar production. *)
-VariantPayload   ::= "(" [ VariantFields ] ")" | "{" [ RecordFieldList ] "}"
-(* VariantFields is defined in its earlier grammar production. *)
-(* VariantField is defined in its earlier grammar production. *)
-
-(* Generic Parameters: Strictly Types or Const Values *)
-(* GenericParams is defined in its earlier grammar production. *)
-(* GenericParamDecl is defined in its earlier grammar production. *)
-(* TypeParamDecl is defined in its earlier grammar production. *)
-(* ConstParamDecl is defined in its earlier grammar production. *)
-(* TypeSort is defined in its earlier grammar production. *)
-(* KindSignature is defined in its earlier grammar production. *)
-(* RecordConstraint is defined in its earlier grammar production. *)
-(* RecordConstraintField is defined in its earlier grammar production. *)
-(* KeyofConstraint is defined in its earlier grammar production. *)
-
-(* ========================================================================= *)
-(* 2. CONTROL & TRANSFER DOMAIN (Domain III: Algebraic Effects)              *)
-(* ========================================================================= *)
-
-EffectDecl       ::= [ "pub" ] "eff" PascalCase [ GenericParams ] "{" EffectMemberList "}"
-EffectMemberList ::= EffectOpDecl { "," EffectOpDecl } [ "," ] | EffectIdentifier { "," EffectIdentifier } [ "," ]
-EffectOpDecl     ::= SnakeCase "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ StateAnnot ]
-EffectAnnot      ::= "@" ( EffectRow | "{" "}" )
-EffectRow        ::= EffectIdentifier { "+" EffectIdentifier }
-EffectIdentifier ::= QualifiedName [ GenericArgs ]
-
-(* ========================================================================= *)
-(* 3. STORAGE & ACCESS DOMAIN (Domain II: Capabilities)                      *)
-(* ========================================================================= *)
-
-StateAnnot       ::= StateCapability { StateCapability }
-StateCapability  ::= "&mut"
-                   | "&^mut"
-                   | "&closure"
-                   | "&capture"
-                   | "&{" "}"
-                   | GlobalStateGroup
-                   | CapturedStateGroup
-                   | StateContractRef
-GlobalStateGroup ::= "&{" StateItemList "}"
-CapturedStateGroup ::= "&{" "closure" [ CaptureOwner ] "," StateItemList "}"
-CaptureOwner     ::= SnakeCase
-StateItemList    ::= StateItem { "," StateItem } [ "," ]
-StateItem        ::= [ StateMode ] QualifiedName
-StateMode        ::= "mut" | "^mut"
-StateContractRef ::= "&" QualifiedName
 ```
 
-The contextual `closure` group header takes precedence over the global-list production. A captured group requires at least one item: `&{closure,}` is `E0538`, while `&{closure}` reads a global binding named `closure`. Built-in `&mut`, `&^mut`, `&capture`, and `&closure` retain their meanings ahead of the reference production. A state contract reference is permitted only on an ordinary named function definition, subject to [its reference rules](#named-function-state-contract-references); the common grammar does not authorize it in other annotation positions.
+| Position | Rule |
+| :--- | :--- |
+| Data types | Inert shapes: structural products/collections, sums and GADTs, nominal wrappers, opaque types, or pure type-function results |
+| Record field `mut` | Slot-replacement permission in the shape; no ambient capability |
+| Callable arrow | Carries latent effects and capabilities; callable values may be stored, passed, returned, and nested in data |
+| Bare `@Eff` / `&Cap` as a type | `E0330` / `E0331`; effects use `eff` declarations, capabilities are not standalone values or types |
+| Direct effect/capability suffix on a variant | `E0332`, with or without a payload |
+| Direct effect/capability suffix on a record field or tuple component | `E0333`; a callable constituent may carry its own suffix |
+| Effect/capability constraint on a generic parameter | `E0334`; shape, kind, const, and static-key constraints remain allowed |
+| Effect/capability annotation on a type function | `E0335` |
+| Effect annotation on a value binding or non-callable array expression | `E0613` |
 
-```ril
-type DeferredFactory = fn() -> fn() -> int @Io -- Io belongs to the returned callable
-type EffectfulFactory = fn() -> (fn() -> int) @Io -- Io belongs to the factory
-type CapturingFactory = fn() -> (fn() -> int &closure) &capture
-```
-
-Arrows associate right; effect/state suffixes bind to the nearest callable not closed by parentheses. Omitted returns mean `-> ()` on named functions, callable types, and effect operations. Anonymous results are inferred.
-
----
-
-The productions below supply shared declaration vocabulary. Omitted callable rows preserve inferred obligations; [empty rows](#empty-rows-on-higher-order-signatures) constrain higher-order signatures. `key: K` is a static-argument form only when K was declared with `keyof`.
-
-```ebnf
-ParameterMode    ::= "mut" | "^mut"
-StaticKeyParamDecl ::= PascalCase ":" KeyofConstraint [ "=" Expression ]
-ValueType        ::= TypeExpression
-TypeList         ::= TypeExpression { "," TypeExpression } [ "," ]
-FieldLabel       ::= SnakeCase | SuppressedVar | PascalCase
-LocalTypeDecl    ::= TypeDecl | OpaqueTypeDecl | NominalDecl | SumTypeDecl
-WhereClause      ::= SignatureWhereClause
-ReturnType       ::= "->" TypeExpression
-TypeReference    ::= QualifiedName [ GenericArgs ]
-QualifiedName    ::= Identifier { "::" Identifier }
-PrimitiveType    ::= "bool" | "i8" | "i16" | "i32" | "i64" | "int"
-                  | "u8" | "u16" | "u32" | "u64" | "bigint"
-                  | "f32" | "f64" | "str" | "bytes" | "(" ")" | "never"
-TypeFunctionExpr ::= "\" TypeFnParam { "," TypeFnParam } "->" Expression
-TypeFnParam      ::= StaticKeyParamDecl
-                  | PascalCase [ ":" TypeSort ] [ "=" TypeExpression ]
-                  | SnakeCase ":" TypeExpression [ "=" Expression ]
-MetaLetDecl      ::= "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpression ] "=" Expression
-MetaFnDecl       ::= [ "pub" ] "meta" "fn" SnakeCase [ GenericParams ] "(" [ ParameterList ] ")" ReturnType Block
-```
-
-The casing, static-sort and parameter-mode constraints apply in addition to these productions. In particular, PascalCase field labels require a mapped schema, effect names resolve to PascalCase effect declarations, and mutable modes do not apply to static key arguments.
-
----
-
-#### Shared Expression and Pattern Vocabulary
-
-Operator precedence resolves expression nesting. Lexical character classes use regular-expression notation; other square brackets mean optional syntax.
-
-Character categories follow their literal sections and exclude unescaped closing delimiters. `Newline` and `EOF` mean line end and source end.
-
-```ebnf
-Digit           ::= [0-9]
-HexDigit        ::= [0-9a-fA-F]
-OctalDigit      ::= [0-7]
-BinaryDigit     ::= "0" | "1"
-Literal         ::= IntLiteral | FloatLiteral | StringLiteral | RawStringLiteral
-                  | ByteStringLiteral | "true" | "false" | "(" ")"
-Expression      ::= Literal | QualifiedName [ GenericArgs ] | "(" Expression ")"
-                  | TupleExpr | RecordExpr | ArrayExpr | MapExpr | Block
-                  | CallExpr | AnonFnExpr | AccessorExpr | MatchExpr | TypeMatchExpr
-                  | IfExpr | LoopExpr | WhileExpr | ForExpr | ControlTransfer
-                  | ResumeExpr | AssignmentExpr | UnaryExpr | BinaryExpr | SharingExpr
-                  | MemberExpr | IndexExpr | RangeExpr | IsExpr
-                  | Expression "?" | "type" "<" TypeExpression ">" | "keyof" TypeExpression
-TupleExpr       ::= "(" Expression "," Expression { "," Expression } [ "," ] ")"
-RecordExpr      ::= [ TypeReference ] ".{" [ RecordValueField { "," RecordValueField } [ "," ] ] "}"
-RecordValueField ::= FieldLabel [ ":" Expression ] | ".." Expression
-ArrayExpr       ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
-MapExpr         ::= "[" ":" "]" | "[" MapEntry { "," MapEntry } [ "," ] "]"
-MapEntry        ::= Expression ":" Expression
-IfExpr          ::= "if" Expression Block [ "else" ( Block | IfExpr ) ]
-UnaryExpr       ::= ( "-" | "!" | "~" ) Expression
-SharingExpr     ::= "^mut" Expression
-BinaryExpr      ::= Expression BinaryOperator Expression
-BinaryOperator  ::= "*" | "/" | "%" | "/?" | "%?" | "*%" | "+" | "-" | "+%" | "-%"
-                  | "<<" | ">>" | "&" | "^" | "|" | "==" | "!=" | "<" | "<=" | ">" | ">="
-                  | "in" | "&&" | "||" | "??" | "|>" | "!>"
-MemberExpr      ::= Expression ( "." | "?." ) ( FieldLabel | TupleIndex )
-                  | Expression "." "(" Expression ")"
-IndexExpr       ::= Expression ( "[" | "?[" ) Expression "]"
-RangeExpr       ::= [ Expression ] ( ".." | "..=" ) [ Expression ]
-IsExpr          ::= Expression "is" OrPattern [ "if" Expression ]
-AssignmentExpr  ::= AssignTarget AssignmentOperator Expression
-AssignTarget    ::= QualifiedName | Expression "." ( FieldLabel | TupleIndex | "(" Expression ")" )
-                  | Expression "[" Expression "]"
-AssignmentOperator ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
-                     | "&=" | "|=" | "^=" | "<<=" | ">>="
-Separator       ::= ";" | Newline
-NumericPattern  ::= [ "-" ] ( IntLiteral | FloatLiteral )
-LiteralPattern  ::= Literal | NumericPattern
-WildcardPattern ::= "_"
-RangePattern    ::= NumericPattern ( ".." | "..=" ) NumericPattern
-RigidNominalPattern ::= QualifiedName [ "<" TypePatternInner { "," TypePatternInner } [ "," ] ">" ]
-PrimitivePattern ::= PrimitiveType
-ArrayPattern    ::= "[" [ Expression ] "]" TypePatternInner
-MapPattern      ::= "[" TypePatternInner ":" TypePatternInner "]"
-TypeRecordPattern ::= "{" [ TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ] ] "}"
-TypePatternField ::= [ "mut" ] FieldLabel ":" TypePatternInner
-TypeTuplePattern ::= "(" ")" | "(" TypePatternInner "," ( TypeRestPattern | TypePatternInner { "," TypePatternInner } [ "," TypeRestPattern ] [ "," ] ) ")"
-TypeRestPattern ::= ".." "let" PascalCase
-```
-
-- Only slices permit omitted range endpoints.
-- Assignment is non-associative; chained assignment is rejected.
-- `^mut` is a prefix sharing expression at unary precedence. It evaluates its operand once and preserves that value's identity and permissions; its permitted uses are defined under [Retained Mutable Sharing](#retained-mutable-sharing). It is not a first-class capability value.
-- Type patterns use type-specific products. Bare literals are allowed only in const-argument positions.
-- Comments and literal delimiters follow lexical rules.
-- Numeric patterns use the scrutinee's numeric type and the same representability rules as numeric expressions. Range patterns require integer endpoints of that type with `lower <= upper`; an equal-bound closed range matches one value and an equal-bound half-open range matches none. Arbitrary computed expressions are not literal patterns (`E0349`); a non-integer or reversed range pattern is `E0348`.
+Binding and origin permissions govern access. Effects govern evaluation and handler dispatch; completed passive values have no direct effect annotation. Stored callables retain invocation obligations. Termination and finite-budget coverage remain separate invocation judgments, not types, capabilities, or effect labels.
 
 ## Declarations and Bindings
 
@@ -1722,6 +1504,8 @@ TypeRestPattern ::= ".." "let" PascalCase
 | `var` | Yes | No interior/environment writes | Referenced data remains read-only; immutable/live facts are preserved |
 | `var mut` | Yes | Granted interior/environment writes | Each assigned value must supply write authority; no permission upgrade |
 | `let view` | No | No | Live observation of stable permitted origins; not immutable |
+
+- **Authority Use (`E0527`)**: A mutable binding/parameter must perform a write, reassignment, mutable invocation, retention, or authorized transfer on a statically possible path. An annotation or ineffective forwarding alone does not count. This does not require a write on every execution.
 
 ```ril
 type Document = { mut title: str }
@@ -1738,6 +1522,30 @@ selected = alias                      -- Rebinds an immutable reference; no inte
 
 ### Immutable Bindings
 
+```ril
+type Counter = { mut count: int }
+let mut source = Counter.{ count: 0 }
+let view observer = source
+-- let bad = source                    -- Error [E0535]: a surviving writer prevents immutable publication
+-- let hidden = .{ child: observer }   -- Error [E0535]: wrapping a live reference does not make it immutable
+source.count += 1
+let copied_count = observer.count      -- OK: independent scalar value
+assert(copied_count == 1)
+```
+
+- **Binding to let (`E0535`)**: Accept immutable data or a fresh ordinary graph without surviving external writers. Reject live views, captured live cells, and mutable environments. Binding neither clones data nor revokes another writer.
+
+```ril
+fn make_items() -> []int {
+    let mut items: []int = []
+    items !> Array::push(1)
+    items
+}
+let items = make_items()               -- OK: construction authority ended; immutable publication
+let alias = items                     -- OK: multiple references to immutable data
+-- let mut stolen = items             -- Error [E0520]: ordinary aliasing cannot recover write permission
+```
+
 ```ebnf
 LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
@@ -1745,7 +1553,7 @@ LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "els
 ```ril
 let x = 10                             -- Immutable integer binding
 let (a, b) = (1, 2)                    -- Destructuring tuple binding
--- x = 20                              -- Error [E0501]: ImmutableReassignmentError: cannot reassign immutable binding 'x'
+-- x = 20                              -- Error [E0501]: cannot reassign immutable binding 'x'
 
 type Config = { capacity: int, items: []int }
 let cfg = Config.{ capacity: 64, items: [] }
@@ -1756,7 +1564,7 @@ capacity += 1                         -- OK: independent scalar copy
 
 ### Pinned Mutable Handles
 
-A binding declared with `let mut` binds a reference-type heap object as a **pinned mutable handle**. It permits in-place mutation of fields and elements, but statically forbids handle reassignment (`E0502`).
+`let mut` supplies the pinned interior/environment authority in the [binding matrix](#binding-permissions-and-storage-matrix).
 
 #### Normative Rules for Pinned Handles
 - **Pinned Handle Invariant (`E0502`)**: A `let mut` handle is permanently pinned to its initial heap allocation. Reassigning the identifier (`handle = new_obj`) is statically rejected under `E0502: PinnedHandleReassignmentError`.
@@ -1775,10 +1583,10 @@ let mut buf = Buffer.{ items: [1, 2] }
 buf.items !> Array::push(3)            -- OK: in-place write to pinned buffer
 
 -- Handle reassignment is statically rejected:
--- buf = Buffer.{ items: [] }          -- Error [E0502]: PinnedHandleReassignmentError: use 'var mut' for both reassignment and interior writes
+-- buf = Buffer.{ items: [] }          -- Error [E0502]: use 'var mut' for both reassignment and interior writes
 
 -- Value types under let mut are rejected:
--- let mut count: int = 0              -- Error [E0402]: ValueTypePinnedMutError: value type 'int' has no interior mutability; use 'var'
+-- let mut count: int = 0              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
 
 -- Pattern-level pinned mutable destructuring:
 type NodePair = { mut left: Buffer, mut right: Buffer }
@@ -1786,22 +1594,21 @@ let mut pair = NodePair.{ left: Buffer.{ items: [] }, right: Buffer.{ items: [] 
 let .{ mut left, mut right } = ^mut pair
 left.items !> Array::push(10)          -- OK: pinned mutable handle
 right.items !> Array::push(20)         -- Both destructured authorities are exercised
--- left = Buffer.{ items: [] }        -- Error [E0502]: PinnedHandleReassignmentError: cannot reassign pinned handle 'left'
+-- left = Buffer.{ items: [] }        -- Error [E0502]: cannot reassign pinned handle 'left'
 
 -- Definite Mutation Invariant:
--- let mut unused = Buffer.{ items: [] } -- Error [E0527]: UnusedMutableBindingError: variable 'unused' declared 'let mut' but never modified in-place
+-- let mut unused = Buffer.{ items: [] } -- Error [E0527]: variable 'unused' declared 'let mut' but never modified in-place
 ```
 
 ### Reassignable Mutable Variables
 
-A binding declared with `var` establishes a **reassignable variable cell**. Plain `var` permits slot reassignment (`x = ...`), but grants only read-only access to referenced data. `var mut` additionally permits interior or callable-environment writes supported by the assigned value.
+`var` and `var mut` use the [binding matrix](#binding-permissions-and-storage-matrix); every replacement is checked against its actual origins.
 
 #### Normative Rules for Reassignable Variables
-- **Separate Permissions**: `var` controls its slot only. A reference in plain `var` cannot provide `mut`/`^mut` arguments or invoke a mutable environment (`E0520`). `var mut` controls both its slot and the granted interior permissions; field and constituent permissions still apply.
-- **Monotonic Anti-Laundering (`E0520`)**: Initializing or assigning `var mut` from a read-only reference is rejected. Adding `mut` never upgrades the value. Every assignment preserves its actual origin and is checked anew; a local additional writable alias requires `^mut`.
+- **Replacement (`E0520`)**: Every `var mut` assignment must supply writable authority under [provenance](#complete-provenance-and-optional-annotations); an additional local writable alias requires `^mut`.
 - **Value Types (`E0402`)**: Scalars use plain `var`; `var mut` requires reference data or a writable callable environment.
 - **Read-Only Live Values**: Plain `var` may hold a live read-only reference without making it immutable. Neither `var` nor `var mut` is a stable origin for `let view` (`E0531`), including through intermediate aliases.
-- **Authority Use (`E0527`)**: Plain `var` must exercise reassignment on a statically possible path. `var mut` must exercise both its reassignable slot and its interior/environment authority; use `let mut` when only pinned interior authority is needed. Uses are checked as specified in [Memory Model and Handle Invariants](#memory-model-and-handle-invariants).
+- **Authority Use (`E0527`)**: Plain `var` must exercise reassignment on a statically possible path. `var mut` must exercise both its reassignable slot and its interior/environment authority; use `let mut` when only pinned interior authority is needed. Uses follow the [binding authority rules](#binding-permissions-and-storage-matrix).
 
 ```ebnf
 VarDecl ::= [ "pub" ] "var" [ "mut" ] Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
@@ -1833,14 +1640,14 @@ let ro_node1 = Node.{ val: 1, following: Some(ro_node2) }
 var cursor = ro_node1                  -- OK: 'cursor' is a reassignable ReadOnly handle
 assert(cursor.val == 1)
 cursor = ro_node2                      -- OK: reassignment permitted to matching ReadOnly type
--- cursor.val = 99                     -- Error [E0520]: MutabilityLaunderingError: cannot mutate field 'val' through read-only handle 'cursor'
+-- cursor.val = 99                     -- Error [E0520]: cannot mutate field 'val' through read-only handle 'cursor'
 
 -- Pattern-level var destructuring:
 var (start_idx, end_idx) = (0, 10)
 start_idx += 1; end_idx -= 1           -- OK: both variables reassignable
 
 -- Definite Mutation Invariant:
--- var unused_var = 100                -- Error [E0527]: UnusedMutableBindingError: variable 'unused_var' declared 'var' but never modified or reassigned
+-- var unused_var = 100                -- Error [E0527]: variable 'unused_var' declared 'var' but never modified or reassigned
 ```
 
 ### Scoped Resource Bindings
@@ -1944,8 +1751,12 @@ assert(child.count == 1)                -- Keeps the original child, not a react
 ### Type Declarations and Opaque Types
 
 ```ebnf
-(* TypeDecl is defined in its earlier grammar production. *)
-(* OpaqueTypeDecl is defined in its earlier grammar production. *)
+TypeDecl         ::= [ "pub" ] [ "halt" ] "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
+OpaqueTypeDecl   ::= [ "pub" ] "opaque" "type" PascalCase [ GenericParams ] [ WhereClause ] "=" TypeExpression
+LocalTypeDecl    ::= TypeDecl | OpaqueTypeDecl | NominalDecl | SumTypeDecl
+WhereClause      ::= SignatureWhereClause
+TypeList         ::= TypeExpression { "," TypeExpression } [ "," ]
+TypeReference    ::= QualifiedName [ GenericArgs ]
 ```
 
 ```ril
@@ -1955,7 +1766,7 @@ type Point = { x: int, y: int }        -- Local record type alias
 
 -- Cyclic structural type alias rejection (E0313):
 -- type BadCyclicA = { following: BadCyclicB }
--- type BadCyclicB = { prev: BadCyclicA } -- Error [E0313]: CyclicTypeAliasError: structural type aliases 'BadCyclicA' and 'BadCyclicB' form a cyclic dependency without nominal or sum indirection
+-- type BadCyclicB = { prev: BadCyclicA } -- Error [E0313]: structural type aliases 'BadCyclicA' and 'BadCyclicB' form a cyclic dependency without nominal or sum indirection
 
 -- Opaque Type Declarations:
 -- In file: auth/session.ril
@@ -1984,20 +1795,20 @@ fn validate_token(token: SessionToken) -> bool {
 -- In file: app/main.ril
 use auth/session::{SessionToken, create_token, reveal_token}
 
--- let bad_top_token = create_token("secret_token_1234")? -- Error [E0205]: QuestionMarkOutsideFunctionError: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
+-- let bad_top_token = create_token("secret_token_1234")? -- Error [E0205]: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
 
 fn authenticate_client() -> ?SessionToken {
     let token = create_token("secret_token_1234")? -- OK: propagated via '?' inside function frame
 
     -- External boundary invariants:
-    -- let bad_assign: SessionToken = "raw" -- Error [E0301]: TypeMismatchError: expected opaque 'SessionToken', found 'str'
-    -- let bad_unfold: str = token         -- Error [E0301]: TypeMismatchError: cannot implicitly convert opaque 'SessionToken' to 'str'
-    -- let bad_inner = inner(token)        -- Error [E0308]: OpaqueBoundaryViolationError: 'inner()' cannot penetrate opaque type 'SessionToken' (requires type W(T))
-    -- let SessionToken(s) = token         -- Error [E0308]: OpaqueBoundaryViolationError: opaque type 'SessionToken' does not expose a pattern deconstructor
+    -- let bad_assign: SessionToken = "raw" -- Error [E0301]: expected opaque 'SessionToken', found 'str'
+    -- let bad_unfold: str = token         -- Error [E0301]: cannot implicitly convert opaque 'SessionToken' to 'str'
+    -- let bad_inner = inner(token)        -- Error [E0308]: 'inner()' cannot penetrate opaque type 'SessionToken' (requires type W(T))
+    -- let SessionToken(s) = token         -- Error [E0308]: opaque type 'SessionToken' does not expose a pattern deconstructor
 
     -- Valid external operations:
     let same_eq = (token == token)         -- OK: same-type equality permitted when underlying type supports '=='
-    -- let cross_eq = (token == "raw")     -- Error [E0301]: TypeMismatchError: cannot compare distinct types 'SessionToken' and 'str'
+    -- let cross_eq = (token == "raw")     -- Error [E0301]: cannot compare distinct types 'SessionToken' and 'str'
 
     -- Operations via explicit exports & pipeline:
     let raw_str = token |> reveal_token()  -- OK: explicit deconstruction via exported function
@@ -2010,26 +1821,7 @@ fn authenticate_client() -> ?SessionToken {
 }
 ```
 
-### Effect Declarations
 
-```ebnf
-(* EffectDecl is defined in its earlier grammar production. *)
-(* EffectOpDecl is defined in its earlier grammar production. *)
-```
-
-```ril
-eff Console {
-    print(str) -> (),
-    read_line() -> str,
-}
-
-eff State<S> {
-    get() -> S,
-    put(val: S) -> (),
-}
-
-eff AppEffects { Console, State<int> } -- Combined effect set
-```
 
 ### External Interface Declarations
 
@@ -2088,17 +1880,17 @@ pub fn query_selector(win: DomWindow, sel: str) -> Result<DomElement, DomError> 
 pub fn read_attribute(elem: DomElement, key: str) -> Result<?str, DomError> @Fiber
 
 -- Body prohibition in .d.ril (E0901):
--- pub fn bad_body() -> int { 42 }     -- Error [E0901]: BodyInDeclModuleError: functions in '.d.ril' cannot have an implementation body
--- pub let BAD_CONST: int = 100        -- Error [E0901]: BodyInDeclModuleError: constants in '.d.ril' cannot have an initializer expression
+-- pub fn bad_body() -> int { 42 }     -- Error [E0901]: functions in '.d.ril' cannot have an implementation body
+-- pub let BAD_CONST: int = 100        -- Error [E0901]: constants in '.d.ril' cannot have an initializer expression
 
 -- Opaque penetration prohibited (E0907):
 -- fn test_penetrate(elem: DomElement) {
---     let id = elem.id                 -- Error [E0907]: ForeignStructuralFieldPenetrationError: cannot access field on opaque type 'DomElement'
+--     let id = elem.id                 -- Error [E0907]: cannot access field on opaque type 'DomElement'
 -- }
 
 -- Missing body in standard .ril module (E0902):
 -- In file: platform/dom.ril (standard module)
--- fn unimplemented_render(elem: DomElement) -> () -- Error [E0902]: MissingBodyInStandardModuleError: function 'unimplemented_render' declared in standard '.ril' module must have an implementation body
+-- fn unimplemented_render(elem: DomElement) -> () -- Error [E0902]: function 'unimplemented_render' declared in standard '.ril' module must have an implementation body
 ```
 
 The DOM contract above admits read-only `DomWindow`/`DomElement` resource descriptors, the `WINDOW` constant, and the two displayed operations. Repeated queries may designate the same external object; a stable descriptor does not make that object immutable. These operations grant no ordinary write authority, clone/transfer permission, or permission to pass a descriptor to another task. Attribute results are ordinary immutable data. Mutation and retained listener registration have no contract in this list.
@@ -2134,6 +1926,28 @@ The spelling of a function name does not prove retention or any other behavior. 
 ---
 
 ## Expressions and Operators
+
+### Expression Grammar
+
+```ebnf
+Literal         ::= IntLiteral | FloatLiteral | StringLiteral | RawStringLiteral
+                  | ByteStringLiteral | "true" | "false" | "(" ")"
+Expression      ::= Literal | QualifiedName [ GenericArgs ] | EffectOperationRef | "(" Expression ")"
+                  | TupleExpr | RecordExpr | ArrayExpr | MapExpr | Block
+                  | CallExpr | AnonFnExpr | AccessorExpr | MatchExpr | TypeMatchExpr
+                  | IfExpr | LoopExpr | WhileExpr | ForExpr | ControlTransfer
+                  | ResumeExpr | AssignmentExpr | UnaryExpr | BinaryExpr | SharingExpr
+                  | MemberExpr | IndexExpr | RangeExpr | IsExpr
+                  | Expression "?" | "type" "<" TypeExpression ">" | "keyof" TypeExpression
+UnaryExpr       ::= ( "-" | "!" | "~" ) Expression
+BinaryExpr      ::= Expression BinaryOperator Expression
+BinaryOperator  ::= "*" | "/" | "%" | "/?" | "%?" | "*%" | "+" | "-" | "+%" | "-%"
+                  | "<<" | ">>" | "&" | "^" | "|" | "==" | "!=" | "<" | "<=" | ">" | ">="
+                  | "in" | "&&" | "||" | "??" | "|>" | "!>"
+MemberExpr      ::= Expression ( "." | "?." ) ( FieldLabel | TupleIndex )
+                  | Expression "." "(" Expression ")"
+IndexExpr       ::= Expression ( "[" | "?[" ) Expression "]"
+```
 
 ### Operator Precedence and Associativity
 
@@ -2194,13 +2008,20 @@ let wrap_mul: u8 = 128u8 *% 2u8        -- 0u8 (wrapping multiplication)
 | Floating-point property | Rule |
 | :--- | :--- |
 | Precision | IEEE 754 widths; round each operation to nearest, ties to even; no implicit fusion |
-| Special values | Preserve subnormals and signed zero; use canonical quiet NaNs |
+| Special values | Preserve subnormals and signed zero; every NaN result uses the canonical quiet-NaN bits below |
 | Overflow / division by zero | Infinity or NaN, without panic |
 | Decimal literals | Round once to the contextual floating type |
 | Safe division/remainder | `None` for a zero divisor; otherwise retain the IEEE result |
 | Remainder | Truncating remainder |
 
 The pointer-sized `int` has target-dependent range; fixed-width guarantees do not fix its overflow boundary.
+
+| Floating type | Canonical NaN bits |
+| :--- | :--- |
+| `f32` | `0x7fc00000` |
+| `f64` | `0x7ff8000000000000` |
+
+Arithmetic, unary operations, conversions, and binary decoding/encoding use these same positive-sign NaN patterns. NaN sign and payload from an input are not preserved. These bit rules do not change NaN equality or ordering.
 
 ### Bitwise and Shift Operators
 
@@ -2224,6 +2045,10 @@ let shr_val = 64 >> 2                  -- 16
 ```
 
 ### Relational, Equality, and Containment Operators
+
+```ebnf
+IsExpr          ::= Expression "is" OrPattern [ "if" Expression ]
+```
 
 ```ril
 let eq = (10 == 10)                    -- true
@@ -2262,6 +2087,7 @@ assert(Map::keys(ordered) == ["b", "a"]) -- Replacing a value preserves its key'
 | :--- | :--- |
 | Numbers | Same numeric type; IEEE NaN unequal to everything, signed zeros equal |
 | `bool`, `str`, `bytes`, `()` | Value, exact Unicode scalar sequence, byte sequence, unit |
+| Integer ranges | Same endpoint type, endpoint values, and inclusive/exclusive flag |
 | Records / tuples / arrays | Labels and values / positions and values / length and elements |
 | Sums / nominal wrappers | Constructor and payload / same nominal identity and underlying value (`E0305` for distinct wrappers) |
 | Maps / sets | Key-value membership / membership; insertion order ignored |
@@ -2308,9 +2134,25 @@ let negated   = !valid_and             -- Unary logical NOT
 
 ### Range and Slicing Expressions
 
+Only slices permit omitted range endpoints.
+
+```ebnf
+RangeExpr       ::= [ Expression ] ( ".." | "..=" ) [ Expression ]
+```
+
 ```ril
 let r1 = 0..5                          -- Half-open range [0, 5)
 let r2 = 0..=5                         -- Closed range [0, 5]
+
+type IntRange = typeof (0..0)
+let reversed: IntRange = 5..1
+assert(!(3 in reversed))              -- Reversed ranges are empty
+var visited = 0
+for 254u8..=255u8 as value {
+    assert(value >= 254u8)
+    visited += 1
+}
+assert(visited == 2)                  -- No increment beyond u8's maximum
 
 let arr = [10, 20, 30, 40, 50]
 let slice = arr[1..4]                  -- [20, 30, 40]
@@ -2321,6 +2163,21 @@ let empty = arr[len(arr)..len(arr)]   -- OK: empty window at the end
 -- arr[-1..2]                         -- Panics: negative lower bound
 -- arr[0..=len(arr)]                  -- Panics: a written inclusive upper bound must index an element
 ```
+
+| Standalone range | Rule |
+| :--- | :--- |
+| Endpoints | Same integer type, including `bigint`; ordinary contextual literal typing applies |
+| Non-integer / mismatched endpoint types | `E0327` / `E0301` |
+| Evaluation | Evaluate lower then upper once; retain both values and the inclusive/exclusive flag |
+| Value type | Immutable, copy-by-value integer range of the endpoint type; both spellings have the same type |
+| Public shape | Nameable via `typeof`; no product projections, mutable authority, or additional prelude name |
+| `lower > upper` | Empty for either spelling |
+| Equal endpoints | Half-open: empty; inclusive: one element |
+| Iteration | Ascending by one; stop after the last included value without an overflowing extra increment |
+| `value in range` | Value has the endpoint type; test the selected bounds, without iterating |
+| Other operations | Equality as specified above; no ordering, indexing, `len`, or map-key eligibility |
+
+Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Slice ranges instead use `int` endpoints (`E0301` for another type) and the window bounds below; a reversed slice still panics.
 
 ```ril
 let mut source = [1, 2, 3]
@@ -2359,7 +2216,7 @@ fn find_record(id: int) -> Result<str, str> {
     let user = fetch_user(id)?         -- Early return Err if fetch_user fails
     Ok(user.name)
 }
--- let bad_top_record = find_record(1)? -- Error [E0205]: QuestionMarkOutsideFunctionError: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
+-- let bad_top_record = find_record(1)? -- Error [E0205]: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
 
 let opt: ?int = None
 let v1 = opt ?? 100                    -- 100 (Option fallback with default value)
@@ -2370,8 +2227,8 @@ assert(action() == 7)
 
 let res: Result<int, str> = Err("unavailable")
 let recovered = res ?? \err -> 0       -- 0: Result fallback MUST consume the error
--- let bad = res ?? 0                  -- Error [E0711]: InvalidResultFallbackError: Result fallback requires closure '\err -> ...'
--- let illegal = opt ?? return 0       -- Error [E0710]: IllegalControlTransferInFallbackError: illegal control transfer inside fallback operator '??'
+-- let bad = res ?? 0                  -- Error [E0711]: Result fallback requires closure '\err -> ...'
+-- let illegal = opt ?? return 0       -- Error [E0710]: illegal control transfer inside fallback operator '??'
 
 -- Safe navigation operators '?.' and '?[':
 let profile: ?UserProfile = None
@@ -2426,6 +2283,11 @@ Inside a callable, a postfix `?` operand other than `Option` or `Result` is `E07
 
 ### Record Construction and Functional Update
 
+```ebnf
+RecordExpr      ::= [ TypeReference ] ".{" [ RecordValueField { "," RecordValueField } [ "," ] ] "}"
+RecordValueField ::= FieldLabel [ ":" Expression ] | ".." Expression
+```
+
 Explicit fields override equally named fields from a value spread, independent of their written position. Multiple explicit definitions of one field are `E0210`; conflicting spread sources without an explicit override are `E0211`. A spread copies values and references with their existing permissions; it does not deep-clone live data or make it immutable.
 
 ```ril
@@ -2445,6 +2307,14 @@ let p2 = Point.{ z: 10, ..p1 }         -- Functional record update: { x: 1, y: 2
 ```
 
 ### Assignments and Compound Assignments
+
+```ebnf
+AssignmentExpr  ::= AssignTarget AssignmentOperator Expression
+AssignTarget    ::= QualifiedName | Expression "." ( FieldLabel | TupleIndex | "(" Expression ")" )
+                  | Expression "[" Expression "]"
+AssignmentOperator ::= "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "+%=" | "-%=" | "*%="
+                     | "&=" | "|=" | "^=" | "<<=" | ">>="
+```
 
 Assignments require an addressable mutable lvalue target. Assignments are expressions evaluating to `()`.
 
@@ -2488,10 +2358,10 @@ type Buffer = { mut capacity: int }
 let mut pinned_buf = Buffer.{ capacity: 16 }
 pinned_buf.capacity = 32               -- OK: field assignment through pinned handle
 pinned_buf.("capacity") += 1           -- OK: same field permissions
--- pinned_buf = Buffer.{ capacity: 64 } -- Error [E0502]: PinnedHandleReassignmentError: use 'var mut' when reassignment and interior writes are both needed
+-- pinned_buf = Buffer.{ capacity: 64 } -- Error [E0502]: use 'var mut' when reassignment and interior writes are both needed
 
 -- Chained assignment is prohibited:
--- x = y = 10                          -- Error [E0701]: ChainedAssignmentProhibitedError: assignment chaining is prohibited
+-- x = y = 10                          -- Error [E0701]: assignment chaining is prohibited
 ```
 
 ---
@@ -2518,6 +2388,7 @@ Statement           ::= LetDecl
                       | Expression
 BlockWhereClause    ::= "where" BlockWhereItem { Separator BlockWhereItem } [ Separator ]
 BlockWhereItem      ::= FunctionDecl | LocalTypeDecl | EffectDecl | MetaFnDecl
+Separator       ::= ";" | Newline
 ```
 
 #### Block Expressions and Scope Invariants
@@ -2579,8 +2450,8 @@ where
 -- Prohibited: Declarations inside sequential statement stream (E0703):
 -- let bad_statement = {
 --     let x = 10
---     type Step = int                 -- Error [E0703]: IllegalSequentialDeclarationError: declarations of 'type' are prohibited in sequential statement stream; place in 'where' clause
---     eff Bail { exit() -> never }    -- Error [E0703]: IllegalSequentialDeclarationError: declarations of 'eff' are prohibited in sequential statement stream; place in 'where' clause
+--     type Step = int                 -- Error [E0703]: declarations of 'type' are prohibited in sequential statement stream; place in 'where' clause
+--     eff Bail { exit() -> never }    -- Error [E0703]: declarations of 'eff' are prohibited in sequential statement stream; place in 'where' clause
 --     x + 1
 -- }
 
@@ -2588,11 +2459,11 @@ where
 -- let bad_where = {
 --     base + 1
 -- where
---     let base = 10                   -- Error [E0702]: InvalidWhereItemError: variable bindings cannot be declared in 'where' clause
+--     let base = 10                   -- Error [E0702]: variable bindings cannot be declared in 'where' clause
 -- }
 
 -- Prohibited: Undischarged local effect escaping block boundary (E0618):
--- fn bad_effect_leak() -> int @LocalStep { -- Error [E0618]: UndischargedLocalEffectError: local effect 'LocalStep' cannot escape enclosing block to function signature
+-- fn bad_effect_leak() -> int @LocalStep { -- Error [E0618]: local effect 'LocalStep' cannot escape enclosing block to function signature
 --     LocalStep::tick()
 --     1
 -- where
@@ -2607,6 +2478,10 @@ where
 ```
 
 ### Conditional Expressions
+
+```ebnf
+IfExpr          ::= "if" Expression Block [ "else" ( Block | IfExpr ) ]
+```
 
 `if` requires a boolean condition (`E0350`). Its branches must have compatible types (`E0351`); a `never` branch imposes no returned-value constraint. An `if` without an `else` evaluates to `()` and requires its then branch to have type `()` or `never` (`E0301` otherwise).
 
@@ -2623,7 +2498,7 @@ if logging_enabled {
 }
 
 -- Incompatible branch types are statically rejected:
--- let bad = if true { 10 } else { "error" } -- Error [E0351]: IncompatibleBranchTypesError: if-else branches have incompatible types: expected 'int', found 'str'
+-- let bad = if true { 10 } else { "error" } -- Error [E0351]: if-else branches have incompatible types: expected 'int', found 'str'
 ```
 
 ### Loop Expressions
@@ -2664,6 +2539,26 @@ assert(sum == 9)                       -- 1 + 3 + 5
 | `loop` | Common type of reachable `last` values, or `never` if none |
 
 Body tails are discarded subject to Result inspection duties.
+
+```ril
+var total = 0
+for ["b": 2, "a": 1] as (key, value) {
+    assert(key == "b" || key == "a")
+    total += value
+}
+assert(total == 3)
+-- for "ab" as scalar {}               -- Error [E0355]: use String::scalars explicitly
+```
+
+| Built-in source | Element and traversal order |
+| :--- | :--- |
+| `[]T`, `[N]T`, array window | T, increasing element index |
+| `[K: V]` | (K, V), first-insertion order |
+| `Set<T>` | T, first-insertion order |
+| Integer range | Endpoint type, ascending bounds as specified for ranges |
+| Other values, including strings, bytes, and iterator Source records | No implicit iteration (`E0355`); use explicit conversion or operations |
+
+Evaluate the source once. Read each collection entry when visited; a later element replacement can be observed, but structural mutation during traversal remains `E0526`. Element patterns receive read-only access with the source's actual immutable/live facts. They do not publish live references as immutable data or grant element writers (`E0521`); independent scalar `var` pattern copies remain permitted. Existing source permissions and origins survive destructuring.
 
 ### Control Transfers
 
@@ -2715,8 +2610,8 @@ fn search(matrix: [][]int, target: int) -> bool {
 }
 
 -- Rejection of Invalid Control Transfer (E0707):
--- last 42                                  -- Error [E0707]: InvalidControlTransferContextError: 'last' statement used outside loop body
--- next                                     -- Error [E0707]: InvalidControlTransferContextError: 'next' statement used outside loop body
+-- last 42                                  -- Error [E0707]: 'last' statement used outside loop body
+-- next                                     -- Error [E0707]: 'next' statement used outside loop body
 ```
 
 ### Guarded Bindings and Non-Vacuous Invariant
@@ -2745,12 +2640,12 @@ fn process_account(data: [str: str]) -> Result<str, str> {
 
     -- Non-diverging 'else' is statically rejected:
     -- let Some(name) = data["name"] else {
-    --     println("name missing")     -- Error [E0321]: NonDivergentElseError: 'else' branch of 'let ... else' must diverge
+    --     println("name missing")     -- Error [E0321]: 'else' branch of 'let ... else' must diverge
     -- }
 
     -- Prohibited: Vacuous guarded binding without variable bindings:
     -- let Ok() = save_profile(id) else {
-    --     return Err("save failed")   -- Error [E0309]: VacuousBindingError: 'let ... else' pattern must bind at least one variable; use postfix '?' or 'if expr is ...' instead
+    --     return Err("save failed")   -- Error [E0309]: 'let ... else' pattern must bind at least one variable; use postfix '?' or 'if expr is ...' instead
     -- }
 
     -- Compliant Alternative 1: Postfix '?'
@@ -2795,6 +2690,10 @@ PatternList        ::= Pattern { "," Pattern } [ "," ]
 TuplePattern       ::= "(" Pattern "," Pattern { "," Pattern } [ "," ] ")" | "(" ")"
 RecordPattern      ::= [ TypeReference ] ".{" [ RecordPatternField { "," RecordPatternField } [ "," ] ] "}"
 RecordPatternField ::= [ BindingModifier ] FieldLabel [ ":" Pattern ] | ".." Identifier
+NumericPattern  ::= [ "-" ] ( IntLiteral | FloatLiteral )
+LiteralPattern  ::= Literal | NumericPattern
+WildcardPattern ::= "_"
+RangePattern    ::= NumericPattern ( ".." | "..=" ) NumericPattern
 ```
 
 Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once (`E0347`). A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
@@ -2842,9 +2741,11 @@ fn area(s: Shape) -> f64 {
 --     match s {
 --         Circle(r) -> 3.14159 * r * r,
 --         Rect(w, h) -> w * h,
---     }                               -- Error [E0303]: NonExhaustiveMatchError: non-exhaustive match expression, missing variant 'Point'
+--     }                               -- Error [E0303]: non-exhaustive match expression, missing variant 'Point'
 -- }
 ```
+
+Numeric patterns use the scrutinee's numeric type and the same representability rules as numeric expressions. Range patterns require integer endpoints of that type with `lower <= upper`; an equal-bound closed range matches one value and an equal-bound half-open range matches none. Arbitrary computed expressions are not literal patterns (`E0349`); a non-integer or reversed range pattern is `E0348`.
 
 ### Pattern Syntax, Or-Patterns, and Exhaustiveness
 
@@ -2870,7 +2771,7 @@ fn get_size(s: Shape) -> f64 {
 --     match n {
 --         x if x >= 0 -> "positive",
 --         x if x < 0  -> "negative",
---     }                               -- Error [E0303]: NonExhaustiveMatchError: non-exhaustive match: pattern guards do not prove coverage of all inputs
+--     }                               -- Error [E0303]: non-exhaustive match: pattern guards do not prove coverage of all inputs
 -- }
 
 -- Boolean pattern test via 'is':
@@ -2883,7 +2784,7 @@ match result_pair {
     Ok(code, msg) -> println(msg),       -- OK: positional tuple unpack (n = 2)
     -- Ok(p) -> println(p.1),            -- Error [E0304]: preceding arm covers every Ok
     -- Ok((code, msg)) -> println(msg),  -- Error [E0304]: equivalent pattern is unreachable here
-    -- Ok(a, b, c) -> println(a),        -- Error [E0314]: ArityMismatchError: arity mismatch: variant 'Ok' payload expects 2 elements of type (int, str), found 3
+    -- Ok(a, b, c) -> println(a),        -- Error [E0314]: arity mismatch: variant 'Ok' payload expects 2 elements of type (int, str), found 3
     Err(err) -> println(err),
 }
 
@@ -3004,14 +2905,14 @@ fn test_invalidation() {
     if opt != None {
         let _ = opt + 1                        -- OK: opt is int
         opt = None                             -- Reassignment: refinement invalidated
-        -- let bad = opt + 2                   -- Error [E0310]: InvalidatedNarrowingAccessError: variable 'opt' was narrowed to 'int', but refinement was invalidated by reassignment; current flow type is '?int'
+        -- let bad = opt + 2                   -- Error [E0310]: variable 'opt' was narrowed to 'int', but refinement was invalidated by reassignment; current flow type is '?int'
     }
 }
 
 -- Contradictory narrowing rejection (E0311):
 fn test_contradiction(g: Geometry) {
     if g is Geometry::Circle {
-        -- if g is Geometry::Rect {            -- Error [E0311]: ContradictoryNarrowingError: condition 'g is Geometry::Rect' is statically unsatisfiable; target is already narrowed to 'Geometry::Circle'
+        -- if g is Geometry::Rect {            -- Error [E0311]: condition 'g is Geometry::Rect' is statically unsatisfiable; target is already narrowed to 'Geometry::Circle'
         --     println("unreachable")
         -- }
     }
@@ -3028,7 +2929,7 @@ fn test_aliased_hazard() {
 fn test_non_binding_predicate(g: Geometry) {
     if g is Geometry::Circle(r) if r > 5.0 {
         let radius = g.0                       -- OK: payload access via .0
-        -- let escaped = r                     -- Error [E0204]: UnresolvedIdentifierError: unresolved identifier 'r'; pattern bindings in 'is' are strictly scoped to guard clause
+        -- let escaped = r                     -- Error [E0204]: unresolved identifier 'r'; pattern bindings in 'is' are strictly scoped to guard clause
     }
 }
 
@@ -3038,20 +2939,20 @@ fn test_latent_havoc() {
     if count != None {
         let mut step = \-> &{closure, mut count} { count = None }
         step()                                 -- Mutating call invalidates 'count'
-        -- let bad_use = count + 1             -- Error [E0310]: InvalidatedNarrowingAccessError: variable 'count' was narrowed to 'int', but refinement was invalidated by mutating call 'step()'; current flow type is '?int'
+        -- let bad_use = count + 1             -- Error [E0310]: variable 'count' was narrowed to 'int', but refinement was invalidated by mutating call 'step()'; current flow type is '?int'
     }
 }
 
 -- Generic confinement: bare type parameter rejected:
 fn test_generic_confinement<T>(x: Geometry) {
-    -- if x is T {                             -- Error [E0301]: TypeMismatchError: cannot test unconstrained generic type parameter 'T' in narrowing predicate
+    -- if x is T {                             -- Error [E0301]: cannot test unconstrained generic type parameter 'T' in narrowing predicate
     --     println("invalid")
     -- }
 }
 
 -- Dead-path mutation phase ordering:
 fn test_dead_write_phase_ordering() {
-    -- var unused: ?int = Some(10)            -- Error [E0527]: UnusedMutableBindingError: variable 'unused' declared 'var' is never modified along reachable paths
+    -- var unused: ?int = Some(10)            -- Error [E0527]: variable 'unused' declared 'var' is never modified along reachable paths
     -- if false {
     --     unused = Some(20)                  -- Write in statically unreachable branch does not satisfy Definite Mutation Invariant
     -- }
@@ -3087,9 +2988,21 @@ Argument             ::= [ Identifier ":" ] ( ParameterMode AssignTarget | Expre
 ArgumentList         ::= Argument { "," Argument } [ "," ]
 CallExpr             ::= Expression "(" [ ArgumentList ] ")" [ TrailingClosure ] | Expression TrailingClosure
 TrailingClosure      ::= AnonFnExpr
+CallableType     ::= "fn" "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ EffectAnnot ] [ StateAnnot ]
+ParameterTypeList::= ParameterTypeItem { "," ParameterTypeItem } [ "," ]
+ParameterTypeItem ::= [ ParameterMode ] [ SnakeCase ":" ] TypeExpression
+ReturnType       ::= "->" TypeExpression
 ```
 
 At an ordinary call, a leading `mut`/`^mut` is an argument mode and still requires an assignable target. The general expression production does not admit `f(^mut clone(x))` as a substitute: bind a writable result first. A parenthesized sharing expression is an ordinary read-only argument, cannot satisfy a mutable formal, and cannot authorize that formal to retain a writer. Constructor storage follows the aggregate sharing rules.
+
+```ril
+type DeferredFactory = fn() -> fn() -> int @Io -- Io belongs to the returned callable
+type EffectfulFactory = fn() -> (fn() -> int) @Io -- Io belongs to the factory
+type CapturingFactory = fn() -> (fn() -> int &closure) &capture
+```
+
+Arrows associate right; effect/state suffixes bind to the nearest callable not closed by parentheses. Omitted returns mean `-> ()` on named functions, callable types, and effect operations. Anonymous results are inferred.
 
 #### Dual-Tier Where Invariants
 
@@ -3129,8 +3042,8 @@ where
 -- Prohibited: Declaring 'fn' or 'eff' in SignatureWhereClause (E0704):
 -- fn bad_waist_fn(x: int) -> int
 -- where
---     fn helper(n: int) -> int { n * 2 }    -- Error [E0704]: InvalidSignatureWhereItemError: 'fn' cannot be declared in signature 'where' clause; place in block 'where' clause
---     eff Yield { emit(int) -> () }         -- Error [E0704]: InvalidSignatureWhereItemError: 'eff' cannot be declared in signature 'where' clause; place in block 'where' clause
+--     fn helper(n: int) -> int { n * 2 }    -- Error [E0704]: 'fn' cannot be declared in signature 'where' clause; place in block 'where' clause
+--     eff Yield { emit(int) -> () }         -- Error [E0704]: 'eff' cannot be declared in signature 'where' clause; place in block 'where' clause
 -- {
 --     helper(x)
 -- }
@@ -3138,7 +3051,7 @@ where
 -- Prohibited: Downward reference from waist to block where (E0705):
 -- fn bad_downward<T>(item: T) -> Wrapper
 -- where
---     type Wrapper = { state: InternalState } -- Error [E0705]: DownwardScopeReferenceError: signature 'where' clause cannot reference 'InternalState' declared in inner block 'where' clause
+--     type Wrapper = { state: InternalState } -- Error [E0705]: signature 'where' clause cannot reference 'InternalState' declared in inner block 'where' clause
 -- {
 --     Wrapper.{ state: .{ code: 0 } }
 -- where
@@ -3146,7 +3059,7 @@ where
 -- }
 
 -- Prohibited: Signature referencing type defined in block where (E0706):
--- fn bad_sig_target(cb: Callback) -> ()      -- Error [E0706]: SignatureTypeNotInWaistWhereError: type 'Callback' used in function signature must be declared in signature 'where' clause, not block 'where' clause
+-- fn bad_sig_target(cb: Callback) -> ()      -- Error [E0706]: type 'Callback' used in function signature must be declared in signature 'where' clause, not block 'where' clause
 -- {
 --     cb()
 -- where
@@ -3160,7 +3073,7 @@ where
 -- {
 --     ()
 -- where
---     type Handler = fn(int) -> ()           -- Error [E0203]: DuplicateDeclarationError: type 'Handler' is already declared in signature 'where' clause
+--     type Handler = fn(int) -> ()           -- Error [E0203]: type 'Handler' is already declared in signature 'where' clause
 -- }
 ```
 
@@ -3179,7 +3092,7 @@ let r1 = calculate_tax(100)            -- OK: direct call
 | **Type Representation** | Item identity / `fn(P) -> R` | `fn(P) -> R` | `fn(P) -> R &closure` |
 | **Handle Requirement** | Direct declaration call; stored values follow actual environment permissions | Callable via `let` handle | `let` (immutable), `let view` (live observer), or writable handle (mutable environment) |
 
-### Default Purity and Callback Dependencies
+### Callable Contracts
 
 ```ril
 fn next_value(n: int) -> int {
@@ -3208,6 +3121,8 @@ fn declared_state() &{mut global_count} { invoke(tick) }
 fn declared_effect() @Log { invoke(logged) }
 -- fn hidden_through_callback() { invoke(tick) } -- Error [E0510]: this caller's dependency is concrete
 -- fn hidden_through_alias() { let action = tick; action() } -- Error [E0510]
+-- fn fixed_conflict(action: fn() -> ()) &{} { tick(); action() }
+-- Error [E0534]: a closed definition already contains concrete state
 fn invoke_pure(action: fn() -> ()) @{} &{} { action() }
 fn nothing() {}
 invoke_pure(nothing)                  -- OK
@@ -3269,6 +3184,100 @@ fn give_logged() -> Action @{} &{} { logged } -- Returning an existing callable 
 -- fn hidden_returned_effect() { give_logged()() } -- Error [E0612]: the later invocation still requires Log
 -- both_closed(logged)                       -- Error [E0534]: valid higher-order constraint, incompatible callback
 ```
+
+#### Callable Type Bounds
+
+```ril
+type Action = fn() -> ()
+type PureInvoker = fn(Action) -> () @{} &{}
+eff Log { write(str) -> () }
+fn plain() {}
+fn logged() @Log { Log::write("event") }
+fn invoke(action: Action) { action() }
+fn closed(action: Action) @{} &{} { action() }
+let action: Action = logged           -- OK: first-order ascription keeps the actual Log obligation
+closed(plain)                        -- OK: no residual obligation
+-- closed(action)                    -- Error [E0534]: omitted rows did not erase Log
+let checked: PureInvoker = closed
+-- checked(logged)                    -- Error [E0534]: ascription preserves the closed constraint
+let selected: Action = if choose_log { plain } else { logged }
+-- closed(selected)                   -- Error [E0534]: a run-time alternative retains Log
+fn call_plain() { invoke(plain) }      -- Each Action value has its own dependencies
+fn call_logged() @Log { invoke(logged) }
+fn call_logged_alias() @Log {
+    let alias: Action = logged
+    invoke(alias)
+}
+-- fn missing_log() { let alias: Action = logged; invoke(alias) }
+-- Error [E0612]: a value alias cannot hide the named caller's effect obligation
+```
+
+| Callable contract | Rule |
+| :--- | :--- |
+| Omitted type rows | Preserve each actual value's effects, environment mode, named origins, and sharing obligations, including across modules and private abstractions |
+| Alternatives | Retain every possible obligation under [provenance](#complete-provenance-and-optional-annotations) |
+| Nonempty type rows | Total upper bounds; parameter modes and handle permissions do not change |
+| Higher-order empty rows | Constrain total invocation obligations, including concrete and symbolic callback dependencies |
+| Definition annotations | Declare concrete obligations; still-symbolic callback dependencies continue to forward |
+| Closed-constraint failure | Incompatible actual argument: E0534; fixed incompatible body: reject the definition |
+| Bodyless foreign declarations | Omitted effect/state rows are closed; no termination or budget-coverage guarantee |
+| `&closure` | Abstract capture details; cannot erase actual retained publication `&^mut` (E0534) |
+
+Invoking already shared storage does not itself publish another writer. Actual environment mode still determines whether a callable needs a writable handle. Termination and budget-coverage conditions remain separate from both rows; type ascription preserves them. Returns and symbolic forwarding require no extra source annotation. Provenance diagnostics retain facts omitted from source.
+
+```ril
+-- Action, plain, and logged have the preceding contracts.
+fn repeat(n: int, action: Action) {
+    if n > 0 { action(); repeat(n - 1, action) }
+}
+fn repeat_plain() { repeat(2, plain) }
+fn repeat_logged() @Log { repeat(2, logged) }
+-- fn erase_recursive() { repeat(2, logged) } -- Error [E0612]
+```
+
+Recursive descent does not discharge callback obligations. `repeat_plain` is finite; `repeat_logged` retains Log and the selected handler's termination condition. A possibly non-terminating callback adds no effect label.
+
+```ril
+type StashingWorker = fn(^mut Entry) -> () &closure &^mut
+type TemporaryWorker = fn(mut Entry) -> () &closure &mut
+-- Their retained and temporary parameter modes are not interchangeable.
+```
+
+#### Higher-Order Calls
+
+```ril
+fn apply<T, R>(value: T, f: fn(T) -> R) -> R { f(value) }
+eff Logger { log(str) -> () }
+fn logged_square(n: int) -> int @Logger {
+    Logger::log("calculating")
+    n * n
+}
+fn call_square() -> int @Logger { apply(5, logged_square) }
+-- fn hidden_square() -> int { apply(5, logged_square) } -- Error [E0612]
+
+let mut messages: []str = []
+with Logger::log(message) -> {
+    messages !> Array::push(message)
+    resume ()
+}
+assert(call_square() == 25)
+assert(messages == ["calculating"])
+```
+
+```ril
+fn invoke_mut(mut f: fn() -> int &closure) -> int &mut { f() }
+let mut counter = create_counter(0)
+let first = invoke_mut(mut counter)
+
+fn apply_to_cell(mut cell: Cell, f: fn(mut Cell) -> () &mut) &mut {
+    f(mut cell)
+}
+let mut cell = Cell.{ count: 0 }
+apply_to_cell(mut cell, bump)
+-- apply_to_cell(mut cell, \target -> ()) -- Error [E0407]: callback data mode differs
+```
+
+Forwarding preserves the contract above. Callback-handle authority and callback data-parameter modes remain distinct: an ordinary callback argument cannot invoke a mutable environment; that handle needs explicit `mut`.
 
 ### Termination and halt Contracts
 
@@ -3407,11 +3416,24 @@ bump(mut cell)                        -- OK
 
 A callback's parameter list and the mode of the callback handle are distinct. `f: fn(mut T) -> R` is a read-only function handle accepting a mutable *data argument*. `mut f: fn(T) -> R` grants permission to invoke a mutable *captured environment*. Both can be required by the same function. Mutable inline closures must first be bound to an appropriate writable handle before being passed with `mut`.
 
+```ebnf
+ParameterMode    ::= "mut" | "^mut"
+```
+
+Mutable modes do not apply to static key arguments.
+
 #### Default Parameters and Named Arguments
+
+```ril
+fn pair(a: int = 1, b: int = 2) -> (int, int) { (a, b) }
+assert(pair(b: 20, 10) == (10, 20))
+assert(pair(a: 10, 20) == (10, 20))
+-- pair(10, a: 20)                     -- Error [E0325]: a is already bound
+```
 
 - Defaults have no residual effects or state obligations. Mutable parameters cannot have defaults (`E0404`).
 - Explicit arguments evaluate in written left-to-right order; omitted defaults follow in parameter order. A default may use earlier parameters, not itself or later parameters.
-- Named arguments bind by parameter name. Supplying one parameter twice is `E0325`.
+- Bind arguments in written order: a positional argument selects the first unbound parameter in declaration order; a named argument selects its named parameter. Selecting an already bound parameter is `E0325`. Binding selection does not reorder evaluation.
 - Function generic defaults are prohibited (`E0317`).
 
 An unknown parameter label is `E0339`; a non-callable callee is `E0338`. Missing or excess ordinary arguments retain `E0314`, after accounting for supplied names and defaults. Nullary variant parentheses retain the specific `E0353`. These diagnostics introduce no new restriction on the relative order of positional and named arguments.
@@ -3440,6 +3462,30 @@ let address = create_server("localhost", enable_tls: false)
 -- create_server("localhost", host: "duplicate") -- Error [E0325]: duplicate argument
 ```
 
+```ril
+fn identity(value: int = 1) -> int { value }
+let direct_alias = identity
+assert(direct_alias() == 1)
+let renamed: fn(other: int) -> int = identity
+let unnamed: fn(int) -> int = identity
+assert(renamed(other: 2) == 2)
+-- renamed(value: 2)                   -- Error [E0339]: source label is not the call-site label
+-- renamed()                          -- Error [E0314]: callable types carry no default expressions
+-- unnamed(value: 2)                   -- Error [E0339]: unnamed parameter has no label
+-- unnamed()                          -- Error [E0314]
+assert(unnamed(2) == 2)
+```
+
+| Callable use | Labels and defaults |
+| :--- | :--- |
+| Direct named call / unannotated value alias | Preserve that declaration's labels and defaults |
+| Callable-type ascription or typed parameter/field/element/return position | Use the destination signature's labels by position; no source defaults are imported |
+| Unnamed type parameter position | Positional calls only; a supplied label is `E0339` |
+| Callable alternatives | Retain a label only when every alternative has it at that position; retain a default only when every alternative preserves the same declaration's default and environment |
+| Subtyping / type identity | Labels are call-site metadata, not additional type-identity constraints; parameter modes, types, and obligation bounds remain checked |
+
+Callable types admit no default-expression syntax. An ascription may rename labels by position, but never changes the called body, parameter order, permissions, effects, or provenance. A call that uses a preserved default retains that default's evaluation, termination, and dependency checks. Duplicate labels in one signature are `E0203`.
+
 ### Anonymous Functions, Trailing Closures, and Projection Accessors
 
 ```ebnf
@@ -3449,7 +3495,6 @@ AnonParam     ::= [ ParameterMode ] Identifier [ ":" TypeExpression ]
 AccessorExpr  ::= "\" AccessorNav AccessorField { AccessorNav AccessorField }
 AccessorNav   ::= "." | "?."
 AccessorField ::= Identifier | TupleIndex
-(* TupleIndex is defined in its earlier grammar production. *)
 ```
 
 - **Unary Desugaring Equivalence**: An `AccessorExpr` evaluates to a unary pure function projecting properties from its argument:
@@ -3510,9 +3555,9 @@ let opt_depts: []?Department = [Some(Department.{ name: "Sales", leader: None })
 let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to [Some("Sales"), None]
 
 -- Rejections:
--- let bad_idx = pairs |> Array::map(\.2)                     -- Error [E0312]: TupleIndexOutOfBoundsError: tuple index 2 out of bounds for (int, str)
--- let bad_field = employees |> Array::map(\.age)             -- Error [E0336]: UnknownFieldError: unknown field 'age' on type 'Employee'
--- let bad_arr = [[1, 2], [3]] |> Array::map(\.0)             -- Error [E0337]: NonProductProjectionError: collections do not have named fields or static tuple projections
+-- let bad_idx = pairs |> Array::map(\.2)                     -- Error [E0312]: tuple index 2 out of bounds for (int, str)
+-- let bad_field = employees |> Array::map(\.age)             -- Error [E0336]: unknown field 'age' on type 'Employee'
+-- let bad_arr = [[1, 2], [3]] |> Array::map(\.0)             -- Error [E0337]: collections do not have named fields or static tuple projections
 ```
 
 ### Closures, Factory Signatures, and Lexical Environments
@@ -3533,41 +3578,29 @@ assert(counter() == 1)
 -- let immutable_counter = create_counter(0) -- Error [E0535]: persistent mutable environment cannot become immutable
 ```
 
-- **Abstraction**: `&closure` abbreviates environment obligations. Actual origins, modes, sharing hazards, and effects survive type abstraction, branching, storage, and return.
-- **Definitions (`E0534`)**: A named definition states concrete invocation obligations under the default-purity rules. Direct capture access uses the appropriate source group, not a standalone `&closure` abbreviation. Parameter/return callable types may use that abbreviation. Anonymous captures are inferred; explicit annotations remain checked and cannot hide them.
+```ril
+type Cell = { mut count: int }
+type Step = fn() -> int &closure
+fn make_shared_step(^mut cell: Cell) -> Step &capture &^mut {
+    \-> { cell.count += 1; cell.count }
+}
+
+let mut cell = Cell.{ count: 0 }
+let mut step = make_shared_step(^mut cell)
+assert(step() == 1)
+cell.count += 1
+assert(step() == 3)                   -- Both authorities still reach the same cell
+-- let frozen = make_shared_step(^mut cell) -- Error [E0535]: retained mutable environment
+```
+
+- **Abstraction**: `&closure` follows [callable type bounds](#callable-type-bounds); direct named capture access still requires source groups.
+- **Definitions (`E0534`)**: Named definitions cannot replace direct source groups with standalone `&closure`. Parameter/return callable types may use it; anonymous captures remain inferred and explicit annotations remain checked.
 - **Creation**: New environments surviving the enclosing callable's return require `&capture`, including those nested in returned aggregates. Forwarding existing environments or using call-local ones does not.
 - Anonymous functions capture free value bindings, including module bindings. Module-level named functions use declared external access; escaping block-local functions retain their required lexical environments.
 - **Binding Choice**: A immutable environment can be bound with `let`. An environment that only observes live pinned roots can be bound with `let view`. A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&closure` spelling.
 - **Sharing**: A private cell exposed only through one new closure requires `&capture`. Exposing another authority to that cell also requires `&^mut`.
 
-### Higher-Order Functions and Capability Forwarding
 
-```ril
-fn apply<T, R>(value: T, f: fn(T) -> R) -> R { f(value) }
-eff Logger { log(str) -> () }
-fn logged_square(n: int) -> int @Logger {
-    Logger::log("calculating")
-    n * n
-}
-fn caller() -> int @Logger { apply(5, logged_square) }
-
-fn invoke_mut(mut f: fn() -> int &closure) -> int &mut { f() }
-let mut counter = create_counter(0)
-let first = invoke_mut(mut counter)    -- Explicit callback-handle authority
-```
-
-Higher-order calls forward actual effect and state obligations without changing permissions or parameter modes. Omitted callable rows preserve these dependencies separately for each actual argument. Only still-symbolic callable-parameter dependencies may remain implicit in a named definition; concrete invocation obligations require declaration after local discharge. An explicit closed row constrains the admitted arguments, as specified under [Callable Signature Abstraction](#callable-signature-abstraction).
-
-```ril
-fn apply_to_cell(mut cell: Cell, f: fn(mut Cell) -> () &mut) &mut {
-    f(mut cell)
-}
-let mut cell = Cell.{ count: 0 }
-apply_to_cell(mut cell, bump)           -- Both declaration and call specify the data mode
--- apply_to_cell(mut cell, \target -> ()) -- Error [E0407]: callback data parameter must use mut
-```
-
-An ordinary callback argument supplies no mutable-environment authority. A mutable callback requires the explicit `mut` call-site mode.
 
 ## State and Capability Tracking
 
@@ -3623,12 +3656,18 @@ fn clear_items(mut list: []int) &mut {
 }
 
 -- Missing capability annotation is statically rejected:
--- fn bad_clear(mut list: []int) {     -- Error [E0510]: MissingCapabilityAnnotationError: mutating operation requires caller signature to declare '&mut'
+-- fn bad_clear(mut list: []int) {     -- Error [E0510]: mutating operation requires caller signature to declare '&mut'
 --     list !> Array::truncate(0)
 -- }
 ```
 
 ### Retained Mutable Sharing
+
+`^mut` has unary prefix precedence; it evaluates its operand once and preserves identity and permissions under the contracts below.
+
+```ebnf
+SharingExpr     ::= "^mut" Expression
+```
 
 ```ril
 type Entry = { mut id: int }
@@ -3728,12 +3767,6 @@ A writable container never upgrades an immutable/view element (`E0522`). Retaini
 
 ### External State Tracking
 
-Accessing module-level or captured bindings requires the corresponding named source group. A named definition must also declare concrete named obligations inherited from calls, either with a matching source group or an admissible function state contract reference. Only genuine callable-parameter dependencies retain implicit symbolic forwarding.
-
-Within either kind of source group, a bare item permits read-only access, whether its actual data is immutable or live. It does not promise deep immutability or create a `let view` binding. `mut name` adds writes; `^mut name` additionally permits retained writable sharing. Each mode applies only to its own item.
-
-Direct access includes storage access in the named definition's lexical anonymous functions and handler arms when those operations contribute to its current invocation, and mutable argument permissions it supplies. Direct access requires its own declarations after local discharge; a contract reference cannot replace them. Referencing a named function declaration is not itself a read of storage; accessing a stored external callback is. Future operations of a returned callable remain latent, while its creation, capture, and retention obligations are checked separately.
-
 ```ril
 let APP_CONFIG_NAME = "Production"
 var transaction_count = 0
@@ -3753,30 +3786,63 @@ fn record_transaction() -> () &{mut transaction_count} {
 }
 
 -- Static errors on missing annotations:
--- fn bad_read() -> str { APP_CONFIG_NAME }          -- Error [E0510]: MissingCapabilityAnnotationError: accessing external state requires caller signature to declare capability '&{APP_CONFIG_NAME}'
--- fn bad_write() { transaction_count += 1 }        -- Error [E0510]: MissingCapabilityAnnotationError: mutating external state requires caller signature to declare capability '&{mut transaction_count}'
+-- fn bad_read() -> str { APP_CONFIG_NAME }          -- Error [E0510]: accessing external state requires caller signature to declare capability '&{APP_CONFIG_NAME}'
+-- fn bad_write() { transaction_count += 1 }        -- Error [E0510]: mutating external state requires caller signature to declare capability '&{mut transaction_count}'
 
 -- Prohibition of Anonymous Concealment:
--- fn conceal_write() &mut { transaction_count += 1 } -- Error [E0510]: MissingCapabilityAnnotationError: cannot use anonymous '&mut' to conceal external state 'transaction_count'
+-- fn conceal_write() &mut { transaction_count += 1 } -- Error [E0510]: cannot use anonymous '&mut' to conceal external state 'transaction_count'
 ```
 
 ```ril
--- Uses record_transaction and transaction_count from the preceding declarations.
+-- Use record_transaction, read_transaction_count, and transaction_count initialized above.
 fn direct_call() &{mut transaction_count} { record_transaction() }
 fn alias_call() &{mut transaction_count} {
-    let action = record_transaction
+    let action = record_transaction  -- Immutable callable descriptor; named state still applies
     action()
 }
 fn invoke_action(action: fn() -> ()) { action() }
 fn parameter_call() &{mut transaction_count} { invoke_action(record_transaction) }
--- All three concrete wrappers must declare the inherited access.
--- fn hidden_call() { record_transaction() } -- Error [E0510]: omission is not permission to inherit concrete state
--- fn hidden_write() { transaction_count += 1 } -- Error [E0510]: this is direct storage access
+
+direct_call()
+alias_call()
+parameter_call()
+assert(read_transaction_count() == 3)
+
+-- fn hidden_call() { record_transaction() } -- Error [E0510]
+-- fn hidden_alias() { let action = record_transaction; action() } -- Error [E0510]
+-- fn hidden_parameter() { invoke_action(record_transaction) } -- Error [E0510]
 -- fn falsely_closed(action: fn() -> ()) &{} { alias_call(); action() }
--- Error [E0534]: the higher-order function's total state includes the concrete callee access
+-- Error [E0534]: the closed signature cannot admit the concrete callee's state
 ```
 
+These forms use the same [callable contracts](#callable-contracts); spelling the call differently does not change its concrete origins.
+
+Accessing module-level or captured bindings requires the corresponding named source group. A named definition must also declare concrete named obligations inherited from calls, either with a matching source group or an admissible function state contract reference. Only genuine callable-parameter dependencies retain implicit symbolic forwarding.
+
+Within either kind of source group, a bare item permits read-only access, whether its actual data is immutable or live. It does not promise deep immutability or create a `let view` binding. `mut name` adds writes; `^mut name` additionally permits retained writable sharing. Each mode applies only to its own item.
+
+Direct access includes storage access in the named definition's lexical anonymous functions and handler arms when those operations contribute to its current invocation, and mutable argument permissions it supplies. Direct access requires its own declarations after local discharge; a contract reference cannot replace them. Referencing a named function declaration is not itself a read of storage; accessing a stored external callback is. Future operations of a returned callable remain latent, while its creation, capture, and retention obligations are checked separately.
+
 ### State Groups and Captured Layers
+
+```ebnf
+StateAnnot       ::= StateCapability { StateCapability }
+StateCapability  ::= "&mut"
+                   | "&^mut"
+                   | "&closure"
+                   | "&capture"
+                   | "&{" "}"
+                   | GlobalStateGroup
+                   | CapturedStateGroup
+                   | StateContractRef
+GlobalStateGroup ::= "&{" StateItemList "}"
+CapturedStateGroup ::= "&{" "closure" [ CaptureOwner ] "," StateItemList "}"
+CaptureOwner     ::= SnakeCase
+StateItemList    ::= StateItem { "," StateItem } [ "," ]
+StateItem        ::= [ StateMode ] QualifiedName
+StateMode        ::= "mut" | "^mut"
+StateContractRef ::= "&" QualifiedName
+```
 
 ```ril
 var global_count = 0
@@ -3861,6 +3927,8 @@ fn read_both() -> int &{x, closure} { x + closure }
 ```
 
 Standalone `&capture`, `&mut`, `&^mut`, and the callable-type abstraction `&closure` are not group entries. `&{}` follows the [higher-order empty-row rules](#empty-rows-on-higher-order-signatures). No group declares that storage is unique, consumes authority, or merges a retained handler definition; those obligations retain their existing checks.
+
+The contextual `closure` group header takes precedence over the global-list production. A captured group requires at least one item: `&{closure,}` is `E0538`, while `&{closure}` reads a global binding named `closure`. Built-in `&mut`, `&^mut`, `&capture`, and `&closure` retain their meanings ahead of the reference production. A state contract reference is permitted only on an ordinary named function definition, subject to [its reference rules](#named-function-state-contract-references); the common grammar does not authorize it in other annotation positions.
 
 ### Named Function State Contract References
 
@@ -4030,7 +4098,7 @@ An explicit `^mut` publication permits sequential sharing, not overlapping exclu
 
 ### Monotonic Permission Degradation and Anti-Laundering Matrix
 
-Permissions on an existing reference can be preserved or reduced, never upgraded by rebinding, wrapping, projection, abstraction, or return. Immutability is a separate guarantee; a live read-only view is not immutable. Deep clone and confined derive have their explicit fresh-data contracts.
+Apply [provenance propagation](#complete-provenance-and-optional-annotations) at every access path. The following cases distinguish permission failures from immutable-publication failures; clone and derive retain their explicit fresh-data contracts.
 
 ```ril
 type Cell = { mut count: int }
@@ -4045,7 +4113,7 @@ fn project(box: { child: Cell }) -> Cell { box.child }
 -- let mut stolen = project(box)      -- Error [E0528]: ordinary parameter and return preserve read-only access
 ```
 
-Effective permissions on a projection, index, destructured reference, or returned path are limited by every reference handle in that access path as well as the stored constituent's permissions. A field's lack of slot-replacement permission does not itself reduce its child reference's permission. Plain `var`, views, and ordinary read-only parameters restrict all data and environment paths reached through them. This does not freeze the object or revoke an independent writer. An immutable function value's separately checked named external-state obligations remain callable obligations, not writes through its data handle.
+Plain `var`, views, and read-only parameters restrict every data/environment path reached through them; they neither freeze the object nor revoke an independent writer. A callable's named external-state obligations are checked separately from access through its data handle.
 
 ```ril
 type Cell = { mut count: int }
@@ -4078,92 +4146,76 @@ for items as item {
 items !> Array::push(3)
 ```
 
-### Callable Signature Abstraction
 
-```ril
-type Action = fn() -> ()               -- Omitted rows preserve actual obligations
-type PureInvoker = fn(Action) -> () @{} &{} -- Only the higher-order arrow has empty rows
-eff Log { write(str) -> () }
-fn write_log() @Log { Log::write("event") }
-let action: Action = write_log         -- OK: @Log remains required on invocation
-fn require_pure(action: Action) @{} &{} { action() }
-let checked_invoker: PureInvoker = require_pure
--- checked_invoker(write_log)          -- Error [E0534]: the higher-order contract rejects @Log
-```
-
-- **Omission**: Callable types infer omitted rows and preserve actual effects, environment modes, named origins, and sharing obligations through every use.
-- **Termination**: Preserve actual termination facts and symbolic conditions separately from both rows. Neither higher-order empty-row constraints nor ascription to a nonempty effect-row upper bound changes a callable's termination judgment. A `halt` use checks the retained conditions, not the apparent absence of annotations.
-- **Row Bounds**: [Higher-order empty rows](#empty-rows-on-higher-order-signatures) require zero total residual obligations. Nonempty rows in callable types are total upper bounds; definition annotations follow the separate rules below. `&closure` abstracts capture details, but cannot erase an invocation's actual retained-publication obligation (`&^mut`, `E0534`). Already shared storage remains tracked even when invoking the callable creates no additional authority and therefore needs no new `&^mut`.
-- **Definitions**: All named functions declare their concrete state and unhandled effect obligations, including known obligations inherited from callees. They may infer and forward only still-symbolic callable-parameter dependencies in these domains. Anonymous definitions may infer their actual obligations. Bodyless foreign declarations have closed omitted effect/capability rows, but no termination or finite-budget-coverage guarantee. Concrete minimal annotations and callable upper bounds are separate checks; termination and coverage facts are always inferred independently.
-- **Handle Modes**: An abstract callable's inferred environment mode still controls binding and invocation. A mutable environment cannot become immutable or read-only-callable by changing its type annotation.
-- **Inference Is Mandatory**: Returns, call sites, and symbolic higher-order forwarding need no additional surface annotation. Their complete origin and obligation facts remain available for [provenance diagnostics](#complete-provenance-and-optional-annotations), including through private callable abstractions. A named definition's default-purity obligations are still enforced; neither diagnostic visibility nor a user's inspection substitutes for those checks.
-
-```ril
-type Action = fn() -> ()
-eff Log { write(str) -> () }
-fn plain() {}
-fn logged() @Log { Log::write("event") }
-fn invoke(action: Action) { action() }
-fn closed(action: Action) @{} &{} { action() }
-
-closed(plain)                         -- OK: the closed body constrains the admitted callback
--- closed(logged)                    -- Error [E0534]: argument violates the inferred closed callback constraint
-let selected: Action = if choose_log { plain } else { logged } -- choose_log is a run-time bool input
--- closed(selected)                  -- Error [E0534]: run-time choice retains the possible Log obligation
-fn call_plain() { invoke(plain) }      -- OK: another Action value does not acquire logged's effects
-fn call_logged() @Log { invoke(logged) }
--- fn missing_log() { let action = logged; invoke(action) }
--- Error [E0612]: a known effect does not become an unconstrained dependency through aliasing
-```
-
-- **Value-Specific Dependencies**: Omitted rows belong to each actual callable value and its uses, not one shared row attached to a type alias name. Callable values supplied through formal parameters, including their callable constituents, retain symbolic dependencies; actual arguments determine those dependencies at each use. A branch containing different callables retains every possible obligation. Such facts and constraints cross module boundaries with the callable's semantics even when private names cannot be written by the caller.
-- **Definition Constraints**: An empty row constrains the invocation's total obligations, including forwarded callback dependencies. Infer admitted arguments from the body; an incompatible argument is `E0534`, while a fixed incompatible body is rejected at its definition. Nonempty definition annotations declare concrete obligations and continue to forward symbolic callback dependencies.
-- **Concrete Obligations**: Current-invocation state and unhandled effects that no longer depend on a callable parameter require the enclosing named function's declarations (`E0510`/`E0612`). Latent body operations of a returned or stored callable belong to its future invocation; current creation and sharing obligations remain separate. Moving a known callee through an alias, aggregate, or higher-order helper does not make its obligations unknown. Named source groups or admissible state contract references may cover inherited named state; direct storage access requires its own group.
-
-```ril
--- Action, plain, and logged have the preceding contracts.
-fn repeat(n: int, action: Action) {
-    if n > 0 { action(); repeat(n - 1, action) }
-}
-fn repeat_plain() { repeat(2, plain) }
-fn repeat_logged() @Log { repeat(2, logged) }
--- fn erase_recursive() { repeat(2, logged) }
--- Error [E0612]: recursion preserves the callback's Log dependency
-```
-
-The recursive descent is finite, but does not discharge the callback's effect, state, or termination conditions. `repeat_plain` is finite; `repeat_logged` retains `Log` and the chosen handler's termination condition. Supplying a possibly non-terminating action makes the instantiated call possibly non-terminating without adding an effect label.
-
-```ril
-type StashingWorker = fn(^mut Entry) -> () &closure &^mut
-type TemporaryWorker = fn(mut Entry) -> () &closure &mut
--- A value satisfying StashingWorker cannot be called as TemporaryWorker:
--- retained and temporary argument permissions are distinct contracts.
-```
 
 ## Algebraic Effects and Concurrency
 
 ### Effect Declarations and Operation Signatures
 
-Effects define abstract operation tags intercepted by enclosing handlers. An effect operation signature is an ordinary callable signature declaring argument types, return types, and optional state capabilities (`&mut`, `&^mut`):
-- **Pure Operations**: Perform ambient control transfer without mutating caller storage.
-- **Capability-Bearing Operations**: Operations that mutate caller storage explicitly declare state capabilities (`&mut`, `&^mut`), which callers and handlers must track and discharge under standard capability rules ([State and Capability Tracking](#state-and-capability-tracking)).
-
 ```ril
--- Pure Effect Operations & Ambient Context:
 eff Console {
     print(str) -> (),
     read_line() -> str,
 }
 
-eff Context<T> {
-    ask() -> T,                        -- OK: Ambient context value
+eff BufferIo { read_into(mut buf: []u8) -> int &mut }
+
+eff State<S> {
+    get() -> S,
+    put(val: S) -> (),
 }
 
--- Effect Operations Declaring Mutation Capabilities:
-eff BufferIo {
-    read_into(mut buf: []u8) -> int &mut, -- OK: Operation declares in-place buffer mutation
-}
+eff Context<T> { ask() -> T }
 
+eff AppEffects { Console, State<int> } -- Combined effect set
+```
+
+```ril
+-- Context has the preceding declaration.
+fn read_context() -> int @Context<int> { Context::ask() }
+with Context<int>::ask() -> resume 7
+assert(read_context() == 7)            -- Generic instance inferred; no mutable argument is involved
+```
+
+```ril
+fn two_states() -> (int, str) {
+    with {
+        State<int>::get() -> resume 7,
+        State<int>::put(_value) -> resume (),
+        State<str>::get() -> resume "seven",
+        State<str>::put(_value) -> resume (),
+    }
+    (State<int>::get(), State<str>::get())
+}
+assert(two_states() == (7, "seven"))
+```
+
+| Generic effect operation | Identity / selection |
+| :--- | :--- |
+| `State<int>::get` | Effect declaration, static arguments under static argument equivalence, and operation declaration |
+| Distinct instances | Distinct operations, even with the same operation name |
+| Effect-set aliases | Expand to their member instances; aliases do not create new operation identities |
+| Operation selected through a set alias | Exactly one member instance must supply it; unresolved selection is `E0344` |
+| Omitted effect arguments | Infer from ordinary argument/result, arm, and protected-computation constraints only when one instance is determined (`E0344` otherwise) |
+| Generic arguments in source | Appear on the effect name; operations declare no independent generic parameter list |
+| Handler arm | Handles one determined instance; never implicitly handles every instantiation |
+
+Repeated arms for the same instantiated operation are `E0622`, including through aliases. A handler discharges only the instances it covers; uncovered instances remain residual. Effect instances containing still-symbolic enclosing static parameters retain those parameter identities until instantiation.
+
+```ebnf
+EffectDecl       ::= [ "pub" ] "eff" PascalCase [ GenericParams ] "{" EffectMemberList "}"
+EffectMemberList ::= EffectOpDecl { "," EffectOpDecl } [ "," ] | EffectIdentifier { "," EffectIdentifier } [ "," ]
+EffectOpDecl     ::= SnakeCase "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ StateAnnot ]
+EffectAnnot      ::= "@" ( EffectRow | "{" "}" )
+EffectRow        ::= EffectIdentifier { "+" EffectIdentifier }
+EffectIdentifier ::= QualifiedName [ GenericArgs ]
+EffectOperationRef ::= EffectIdentifier "::" SnakeCase
+```
+
+Effect identifiers resolve to PascalCase effect declarations. Operation signatures use the ordinary parameter-mode and capability rules; a declared operation may request read-only, temporary writable, or retained writable access.
+
+```ril
+-- Console and BufferIo have the declarations above.
 -- Effectful computation: invokes print twice and read_line once
 fn hello() -> () @Console {
     Console::print("Enter name:")      -- First intercepted operation
@@ -4227,10 +4279,14 @@ An operation-arm target (the form with `->`) must resolve to an effect operation
 ```ebnf
 WithStatement ::= "with" ( HandlerSpec | WithApplication )
 HandlerSpec   ::= "{" HandlerArm { "," HandlerArm } [ "," ] "}" | HandlerArm
-HandlerArm    ::= QualifiedName "(" [ PatternList ] ")" "->" Expression
+HandlerArm    ::= ( EffectOperationRef | QualifiedName ) "(" [ HandlerParameterList ] ")" "->" Expression
+HandlerParameterList ::= HandlerParameter { "," HandlerParameter } [ "," ]
+HandlerParameter ::= [ ParameterMode ] Pattern
 WithApplication ::= QualifiedName [ GenericArgs ] "(" [ ArgumentList ] ")"
 ResumeExpr    ::= "resume" Expression
 ```
+
+A leading `mut`/`^mut` on a handler parameter is its operation-parameter mode, before pattern interpretation. The remaining pattern must be irrefutable and contains no binding modifiers: `var` is `E0403`, and nested `mut`/`^mut` is `E0406`. The mode must exactly match the operation's declared parameter mode (`E0406`); omission does not infer writable or retained authority. Ordinary names in handler-target position remain grammatically admitted so non-operation targets receive `E0621`.
 
 ```ril
 eff ReadAt { get(int) -> int }
@@ -4261,10 +4317,33 @@ fn edit_once(mut cell: Cell) -> int &mut {
 | Handler dispatch | Rule |
 | :--- | :--- |
 | One `with` | At most one arm per operation (`E0622`) |
-| Parameters | Irrefutable patterns (`E0345`); mutable modes must match supplied authority |
+| Parameters | Irrefutable patterns (`E0345`); explicit modes match the operation declaration (`E0406`) |
 | Request-value branches | Ordinary `if`/`match` inside the arm |
 | Unlisted operation | Forward outward; retain unhandled effects (`E0612`) |
-| Discharge an effect family | Cover every operation |
+| Discharge a declared effect instance | Cover every operation of that instance; built-in resource/system obligations follow their separate contracts |
+
+```ril
+type Cell = { mut count: int }
+eff Store { keep(^mut cell: Cell) -> () &^mut }
+let mut cell = Cell.{ count: 0 }
+let mut held: []Cell = []
+with Store::keep(^mut value) -> {
+    held !> Array::push(^mut value)
+    resume ()
+}
+Store::keep(^mut cell)
+held[0].count += 1
+assert(cell.count == 1)
+-- with Store::keep(mut value) -> resume () -- Error [E0406]: temporary mode cannot replace retained mode
+```
+
+| Operation parameter | Handler binder | Granted authority |
+| :--- | :--- | :--- |
+| Read-only | Plain pattern | Read-only; scalars copy, references preserve immutable/live facts |
+| `mut` | `mut pattern` | Temporary operation loan, ending when resumption starts |
+| `^mut` | `^mut pattern` | Retained writable authority; actual retention remains tracked |
+
+Destructured reference bindings receive no more than the mode and every source path permit; scalar constituents remain independent read-only copies. A `^mut` handler parameter still must exercise its authority under `E0527`. Resumption does not revoke lawful retained authority, but neither the handler mode nor the operation declaration extends a scoped lifetime or suspends exclusivity checks on independent origins.
 
 | Operation's ordinary `mut` loan | Arm's permission |
 | :--- | :--- |
@@ -4472,7 +4551,7 @@ eff Op { query() -> int }
 fn bad_double_resume() -> int {
     with Op::query() -> {
         let first = resume 1
-        -- let second = resume 2        -- Error [E0610]: DuplicateResumeInvocationError: affine resumption 'resume' invoked more than once
+        -- let second = resume 2        -- Error [E0610]: affine resumption 'resume' invoked more than once
         first
     }
     Op::query()
@@ -4539,6 +4618,28 @@ $$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \tex
 - **Scheduling and Value Generators**: `Fiber::yield() -> ()` yields cooperatively without emitting a user value. Value-emitting streams use user-defined effects such as `eff Yield<T> { emit(T) -> () }`, with affine resumption. A resumption cannot escape its handler arm to become a pull iterator (`E0611`).
 
 ```ril
+use ril/file
+fn handled_yield() {
+    with Fiber::yield() -> resume ()
+    Fiber::yield()                     -- No residual Fiber request
+}
+fn read_name(path: str) -> Result<str, str> @Fiber {
+    with Fiber::yield() -> resume ()
+    File::read(path)                   -- Resource I/O still requires Fiber
+}
+-- Omitting @Fiber from read_name is E0612.
+```
+
+| System request | Source-handler discharge |
+| :--- | :--- |
+| `Fiber::yield` | A matching operation arm discharges this yield request |
+| Leaf I/O / environmental or endpoint operation | Retains its `Fiber` obligation unless its public contract explicitly provides a handler for its result and external behavior |
+| Scope / fork / join | Retains its `Concurrent` obligation; these callables are not operation-arm targets |
+| `Div::exhausted` | Handled by an ordinary abortive operation arm; resumption remains forbidden |
+
+The current resource I/O and structured-concurrency contracts provide no source-level handler that replaces their external behavior. Handling yield alone never covers these obligations. A user-defined effect may expose a mockable interface before any resource operation is invoked. Handling a request does not make an excluded operation eligible for `Div::budget` or remove its access, cleanup, or task-boundary restrictions.
+
+```ril
 -- Signature of the built-in yielding operation, not a redeclaration in user code:
 eff Fiber {
     yield() -> (),                     -- Relinquishes quantum to runtime scheduler
@@ -4551,7 +4652,7 @@ fn read_socket_chunk(fd: int) -> []u8 @Fiber {
 
 -- Functions declared @Fiber cannot invoke structured concurrency primitives:
 fn bad_leaf_fork(fd: int) -> []u8 @Fiber {
-    -- scope(\mut s -> {               -- Error [E0612]: UnhandledEffectError: function declares '@Fiber' but invokes unhandled '@Concurrent' primitive 'scope'
+    -- scope(\mut s -> {               -- Error [E0612]: function declares '@Fiber' but invokes unhandled '@Concurrent' primitive 'scope'
     --     s.fork(\-> Socket::read_chunk(fd))
     -- })
     read_socket_chunk(fd)
@@ -4626,7 +4727,7 @@ fn collatz(n: int) -> int {
 halt fn factorial(n: int) -> int {
     if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
--- halt fn bad_total(n: int) -> int {  -- Error [E0820]: TotalityViolationError: 'halt fn' contains uncertified recursion or unbounded loop
+-- halt fn bad_total(n: int) -> int {  -- Error [E0820]: 'halt fn' contains uncertified recursion or unbounded loop
 --     collatz(n)
 -- }
 ```
@@ -4859,44 +4960,18 @@ Channel payloads admit immutable ordinary data or explicitly detached resource d
 
 A resource contract must state endpoint creation, cloning, transfer, closure, and cancellation permissions. Endpoint-specific permissions do not authorize copying or transferring ordinary writable graphs or unrelated opaque resources.
 
-### Arrow-Only Law of Effects
 
-Completed evaluation leaves a value. Passive data carries no direct effect annotation; a stored callable still carries the obligations of a later invocation.
-
-Attaching effects directly to passive data is rejected. A record field or tuple component uses `E0333`; an ordinary value binding or non-callable array expression uses `E0613`. A callable stored in any of these positions can retain its own effect obligations:
-
-```ril
--- -----------------------------------------------------------------------------
--- Negative Examples: Prohibited Value Effect Annotations (E0613)
--- -----------------------------------------------------------------------------
--- type BadField = { data: int @Io }            -- Error [E0333]: FieldComputationAnnotationError: record field 'data' has value type 'int'; raw effects cannot reside on values
--- type BadTuple = (str @Io, int)               -- Error [E0333]: FieldComputationAnnotationError: tuple component has value type 'str'; raw effects cannot reside on values
--- type BadArray = []int @Async                 -- Error [E0613]: ValueEffectAnnotationError: array element has value type 'int'; raw effects cannot reside on values
-
--- fn test_binding_error() @Io {
---     let bad_bind: str @Io = "hello"          -- Error [E0613]: ValueEffectAnnotationError: binding 'bad_bind' specifies effect '@Io'; values in normal form carry no latent effects
---     let @Io bad_prefix = "hello"             -- Error [E0613]: ValueEffectAnnotationError: binding pattern specifies effect '@Io'; misplaced effect annotation
--- }
-
--- -----------------------------------------------------------------------------
--- Positive Examples: Arrow-Only Law
--- -----------------------------------------------------------------------------
-type ValidService = {
-    name: str,                                  -- Pure value at rest
-    fetch_data: fn() -> str @Io,                -- OK: callable arrow carrying latent effect
-}
-
-fn test_valid_binding() @Io {
-    let result: str = Io::read_line()           -- OK: expression executes @Io; resulting value is pure 'str'
-    assert(result != "")
-}
-```
-
----
 
 ## Compile-Time Computation and Totality
 
 ### Static Type Values and Type Quotation
+
+```ebnf
+TypeFunctionExpr ::= "\" TypeFnParam { "," TypeFnParam } "->" Expression
+TypeFnParam      ::= StaticKeyParamDecl
+                  | PascalCase [ ":" TypeSort ] [ "=" TypeExpression ]
+                  | SnakeCase ":" TypeExpression [ "=" Expression ]
+```
 
 - **Declarative Contexts**: Top-level type declarations and type annotations use direct type syntax without `type<...>`:
 
@@ -4913,8 +4988,8 @@ let b: typeof a = 20                   -- OK: direct 'typeof' in type annotation
 ```ril
 let t_int = type<int>                  -- OK: all types enclosed in type<...>
 let t_inferred = type<typeof (1 + 2)>  -- OK: 'typeof' enclosed in type<...> in expression position
--- let bad_t = int                     -- Error [E0319]: BareTypeInExpressionContextError: bare type 'int' used in expression context; wrap in 'type<int>'
--- let bad_inferred = typeof (1 + 2)   -- Error [E0319]: BareTypeInExpressionContextError: bare 'typeof' operator used in expression context; wrap in 'type<typeof (1 + 2)>'
+-- let bad_t = int                     -- Error [E0319]: bare type 'int' used in expression context; wrap in 'type<int>'
+-- let bad_inferred = typeof (1 + 2)   -- Error [E0319]: bare 'typeof' operator used in expression context; wrap in 'type<typeof (1 + 2)>'
 ```
 
 - **Type Functions & Invocation**: Unannotated type function parameters default to sort `Type` (`\T -> ...`). Type function application uses generic angle brackets `<...>`:
@@ -4932,6 +5007,13 @@ let pair: StringIntPair = .{ first: "id", second: 101 }
 ```
 
 ### Pure Type Functions and Type Return Privilege
+
+```ril
+halt type SafeRecord = \T ->
+    if type<T> == type<int> { type<{ val: int, valid: bool }> }
+    else { type<{ val: T, valid: bool }> }
+type IntRecord = SafeRecord<int>
+```
 
 ```ril
 halt type Identity = \T -> type<T>              -- OK: type-producing function
@@ -4987,11 +5069,11 @@ halt type PaddedBuffer = \raw_size: int, T -> {
 type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u8, len: int }
 
 -- Static Rejection of Violations:
--- meta fn bad_type_gen() -> type<int> {       -- Error [E0812]: MetaTypeReturnProhibitedError: 'meta fn' cannot return 'type<...>'; monopolized by type functions
+-- meta fn bad_type_gen() -> type<int> {       -- Error [E0812]: 'meta fn' cannot return 'type<...>'; monopolized by type functions
 --     type<int>
 -- }
--- halt type BadEffect = \T -> type<T> @Async  -- Error [E0335]: TypeFunctionComputationAnnotationError: type functions cannot declare algebraic effects
--- meta fn bad_eff() -> int @Io { 0 }          -- Error [E0813]: MetaComputationAnnotationError: 'meta fn' cannot declare algebraic effects
+-- halt type BadEffect = \T -> type<T> @Async  -- Error [E0335]: type functions cannot declare algebraic effects
+-- meta fn bad_eff() -> int @Io { 0 }          -- Error [E0813]: 'meta fn' cannot declare algebraic effects
 -- type BadInfinite<T> = BadInfinite<T>        -- Error [E0313]: cyclic alias without nominal or sum indirection
 -- type Spin = \T -> Spin<T>
 -- type NeverFinishes = Spin<int>             -- Error [E0811]: recursive type-function evaluation exhausts its budget
@@ -5045,8 +5127,6 @@ Both branches still obey syntax, name resolution, and ordinary type compatibilit
 Ril unifies compile-time introspection across all three composite data forms (Records, Sum Types, Tuples) under a single operator pair: `keyof T` and constituent projection `T.(K)`.
 
 ```ebnf
-(* TypeProjection is defined in its earlier grammar production. *)
-(* TupleIndex is defined in its earlier grammar production. *)
 MappedRecordType ::= "{" [ "mut" ] "[" PascalCase "in" Expression "]" ":" TypeExpression "}"
 MappedTupleType  ::= "(" "[" PascalCase "in" Expression "]" ":" TypeExpression ")"
 ```
@@ -5087,14 +5167,24 @@ fn dynamic_key(user: User, key: str) {
 An immutable run-time string is not a static key. Sum type keys describe possible payload shapes, not fields present in every value.
 
 #### Universal Constituent Projection
-For any composite type $T$ and coordinate key $K \in \text{keyof } T$, `T.(K)` statically projects the corresponding constituent shape:
+For a composite type $T$ and coordinate key $K \in \text{keyof } T$, `T.(K)` statically projects the corresponding constituent shape, subject to the GADT equation check below:
 - **Records**: `User.id` or `User.("id")` resolves to the declared field type.
 - **Sum Types**: `UiEvent.Click` or `UiEvent.("Click")` resolves to the variant payload type under Constructor-Tuple Equivalence:
   - Multi-field variants ($n \ge 2$): Resolves to anonymous product tuple `(T1, ..., Tn)`.
   - Single-field variants ($n = 1$): Resolves to scalar type $T_1$ (Ril strictly has no 1-tuples).
   - Unit constructors ($n = 0$, declared `Variant()`): Resolves to unit `()`.
-  - Nullary tags (declared `Variant`): Resolves to unit `()` as its injection domain, ensuring generic eliminators `fn(T.(K)) -> R` remain universally callable.
+   - Nullary tags (declared `Variant`): Resolves to unit `()` as its injection domain.
 - **Tuples**: `Pair.0` or `Pair.(0)` resolves to the component type at positional index $K$.
+
+```ril
+type Box<T> { Item<U>(U) -> Box<U> }
+type ItemType = Box<int>.Item          -- int: U is recovered from Box<int>
+type Expr<T> { Int(int) -> Expr<int>, Bool(bool) -> Expr<bool> }
+type IntPayload = Expr<int>.Int       -- int
+-- type WrongPayload = Expr<int>.Bool -- Error [E0301]: incompatible constructor result equation
+```
+
+Sum `keyof` lists declared variant names even when a supplied index excludes a variant. A GADT payload projection must satisfy the selected constructor's result equation under the existing constraints and recover each variant-local parameter. An incompatible or unresolved equation is `E0301`. Projection introduces no new ambient type equality; membership in `keyof` alone does not prove that a variant is possible.
 
 #### Symmetrical Mapped Comprehensions
 - **Mapped Records**: `{ [K in Expr]: TypeExpr }` requires static `[]str`; integer keys are `E0341`. Duplicate/invalid labels are `E0210`/`E0102`; ADT tables may use PascalCase constructor labels.
@@ -5154,14 +5244,14 @@ halt type ReverseTuple = \T -> {
 type ReversedPair = ReverseTuple<Pair>         -- (str, int)
 
 -- Rejection of Invalid Mapped Comprehensions:
--- type BadRecordKeys = { [K in [0, 1]]: int } -- Error [E0341]: InvalidRecordKeySortError: mapped record comprehension requires '[]str' keys, found '[]int'
--- type BadTupleKeys = ( [I in ["a", "b"]]: int ) -- Error [E0342]: InvalidTupleKeySortError: mapped tuple comprehension requires '[]int' keys, found '[]str'
--- type Bad1Tuple = ( [I in [0]]: int )       -- Error [E0343]: SingleElementTupleProhibitedError: mapped tuple comprehension produced single-element tuple (Ril strictly has no 1-tuples)
+-- type BadRecordKeys = { [K in [0, 1]]: int } -- Error [E0341]: mapped record comprehension requires '[]str' keys, found '[]int'
+-- type BadTupleKeys = ( [I in ["a", "b"]]: int ) -- Error [E0342]: mapped tuple comprehension requires '[]int' keys, found '[]str'
+-- type Bad1Tuple = ( [I in [0]]: int )       -- Error [E0343]: mapped tuple comprehension produced single-element tuple (Ril strictly has no 1-tuples)
 ```
 
 ### Structural Type Pattern Matching
 
-Type functions deconstruct types using standard `match` over quoted type expressions `type<T>` without dedicated macro dialects:
+Type functions match quoted types using type-specific products. Bare literals are permitted only in const-argument positions:
 
 ```ebnf
 TypeMatchExpr    ::= "match" "type" "<" TypeExpression ">" "{" [ TypeMatchArm { "," TypeMatchArm } [ "," ] ] "}"
@@ -5169,6 +5259,14 @@ TypeMatchArm     ::= TypePattern { "|" TypePattern } [ "if" Expression ] "->" Ex
 TypePattern      ::= "type" "<" TypePatternInner ">" | "_"
 TypePatternInner ::= RigidNominalPattern | TypeTuplePattern | TypeRecordPattern
                    | ArrayPattern | MapPattern | PrimitivePattern | LiteralPattern | Wildcard | "let" ( PascalCase | Wildcard )
+RigidNominalPattern ::= QualifiedName [ "<" TypePatternInner { "," TypePatternInner } [ "," ] ">" ]
+PrimitivePattern ::= PrimitiveType
+ArrayPattern    ::= "[" [ Expression ] "]" TypePatternInner
+MapPattern      ::= "[" TypePatternInner ":" TypePatternInner "]"
+TypeRecordPattern ::= "{" [ TypePatternField { "," TypePatternField } [ "," TypeRestPattern ] [ "," ] ] "}"
+TypePatternField ::= [ "mut" ] FieldLabel ":" TypePatternInner
+TypeTuplePattern ::= "(" ")" | "(" TypePatternInner "," ( TypeRestPattern | TypePatternInner { "," TypePatternInner } [ "," TypeRestPattern ] [ "," ] ) ")"
+TypeRestPattern ::= ".." "let" PascalCase
 ```
 
 - **Scoped Pattern Variables (`let U`)**: A `let U` binder inside `type<P>` introduces an immutable type variable scoped strictly to the arm's guard and RHS expression. `U` MUST be `PascalCase` (`E0101`).
@@ -5206,7 +5304,7 @@ type HeadTail = DeconstructTuple<(u8, i32, f64)>-- { head: u8, tail: (i32, f64) 
 
 -- Rejection of Non-Rigid Type Patterns (E0306):
 -- type BadPattern = \T -> match type<T> {
---     type<(let M)<let U>> -> type<U>,         -- Error [E0306]: KindMismatchError: rigid type pattern cannot bind constructor '(let M)' as a higher-kinded pattern variable
+--     type<(let M)<let U>> -> type<U>,         -- Error [E0306]: rigid type pattern cannot bind constructor '(let M)' as a higher-kinded pattern variable
 --     _                    -> type<never>,
 -- }
 ```
@@ -5242,6 +5340,11 @@ type OptInt = Wrapper<Option, int>             -- Option<int>
 
 ### Compile-Time Execution and Layout Cooperation
 
+```ebnf
+MetaLetDecl      ::= "meta" "let" ( ScreamingSnakeCase | "_" ) [ ":" TypeExpression ] "=" Expression
+MetaFnDecl       ::= [ "pub" ] "meta" "fn" SnakeCase [ GenericParams ] "(" [ ParameterList ] ")" ReturnType Block
+```
+
 `meta let` and `meta fn` evaluate in the pure static domain. Results can be used as immutable run-time constants. Type functions can consume these values to select shapes. Arithmetic on sizes follows the ordinary integer rules.
 
 ```ril
@@ -5262,7 +5365,21 @@ meta let _ = assert(CAPACITY == 64)
 
 An array field is a reference: `[4]u8` does not mean four inline padding bytes. Shape declarations promise no packed order, offsets, pointer size, or external binary layout.
 
-`byte_size(type<T>)` measures T's value/handle on the selected abstract target, not its reachable graph. Such static queries may be target-dependent.
+```ril
+-- Language-defined static declaration exposed by the prelude:
+-- meta fn byte_size<T>(value: type<T>) -> int
+meta let BYTE_SIZE = byte_size(type<u8>)
+meta let _ = assert(BYTE_SIZE == 1)
+-- let runtime_size = byte_size(type<u8>) -- Error [E0810]: query requires static evaluation
+```
+
+| `byte_size` contract | Rule |
+| :--- | :--- |
+| Result | Nonnegative `int` size of T's value/handle on the selected abstract target; not its reachable graph |
+| Phase | Static only; finite; usable by meta/type computations and other required static evaluations |
+| Ordinary execution | `E0810`; a `meta let` result may be used as an ordinary constant |
+| Visibility | Prelude declaration with ordinary lexical shadowing; not reserved syntax |
+| Layout | May depend on the abstract target; grants no packed layout or field-offset guarantee |
 
 ## Modules, Program Execution, and Prelude
 
@@ -5291,7 +5408,7 @@ pub fn read_file(path: str) -> Result<[]u8, str> @Fiber -- OK: bodyless leaf-I/O
 -- In file: app/main.ril
 use math/geometry::{TAU, circle_area}   -- OK: importing from implementation unit
 use platform/fs::{FileHandle, read_file} -- OK: importing from declaration unit
--- use math/geometry::{PI}              -- Error [E0201]: PrivateItemAccessError: symbol 'PI' is private to module 'math/geometry'
+-- use math/geometry::{PI}              -- Error [E0201]: symbol 'PI' is private to module 'math/geometry'
 ```
 
 ### Module Imports and Visibility
@@ -5338,7 +5455,7 @@ let area = Geometry::circle_area(5.0)   -- OK: qualified static call
 -- Explicit Namespace Aliasing:
 use ril/crypto as Hash                  -- OK: explicit alias override via 'as PascalCase'
 let digest = Hash::sha256("data")
--- use ril/crypto as hash               -- Error [E0101]: InvalidIdentifierCasingError: module namespace alias must be PascalCase, found 'hash'
+-- use ril/crypto as hash               -- Error [E0101]: module namespace alias must be PascalCase, found 'hash'
 
 -- Selective Member Import with Optional Renaming:
 use ril/array::{push, pop as remove_last}
@@ -5354,7 +5471,7 @@ fn calculate() {
     use ril/crypto::{sha256}            -- Block-scoped import: visible strictly inside calculate()
     let d = sha256("data")
 }
--- let bad = sha256("data")              -- Error [E0204]: UnresolvedIdentifierError: unresolved identifier 'sha256'
+-- let bad = sha256("data")              -- Error [E0204]: unresolved identifier 'sha256'
 ```
 
 ### Top-Level Initialization and Purity
@@ -5370,9 +5487,9 @@ var active_workers: int = 0            -- OK: initialized with constant expressi
 fn start_worker() &{mut active_workers} { active_workers += 1 }
 
 -- Prohibited top-level runtime side effects and error propagation:
--- let current_time = Clock::now()      -- Error [E0202]: TopLevelSideEffectError: top-level declaration must be a pure constant expression
--- let db = Database::connect("db.loc") -- Error [E0202]: TopLevelSideEffectError: top-level declaration cannot invoke runtime I/O or effects
--- let top_parse = parse_id("10")?      -- Error [E0205]: QuestionMarkOutsideFunctionError: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
+-- let current_time = Clock::now()      -- Error [E0202]: top-level declaration must be a pure constant expression
+-- let db = Database::connect("db.loc") -- Error [E0202]: top-level declaration cannot invoke runtime I/O or effects
+-- let top_parse = parse_id("10")?      -- Error [E0205]: postfix '?' operator used outside function or closure body; no enclosing activation frame to receive early return
 ```
 
 ### Test Conventions and Execution Protocol
@@ -5386,9 +5503,9 @@ Tests are ordinary functions. Their handlers, scoped bindings, Result inspection
 pub fn helper() {}                    -- Error [E0903]: executable program lacks its root main
 ```
 
-An executable program without its required root `main` function is `E0903`. An ordinary library module is not required to declare `main`. Duplicate declarations of root `main` retain `E0203`. This diagnostic does not impose parameter, visibility, or return-type restrictions beyond the entry-point rules below.
+An executable program without its required root `main` declaration is `E0903`. A present declaration that does not satisfy the entry contract is `E0904`. An ordinary library module is not required to declare `main`. Duplicate declarations of root `main` retain `E0203`.
 
-Executable programs define one root `main` function. Its declared built-in system effects are provided by the program environment; user-defined effects still require handlers. The examples below are alternatives, not two definitions in one program. Prelude print/println have `@Fiber`, and file-I/O examples use the corresponding leaf-I/O contract:
+Executable programs define one root `main` function. The examples below are alternatives, not two definitions in one program. Prelude print/println have `@Fiber`, and file-I/O examples use the corresponding leaf-I/O contract:
 
 ```ril
 pub fn main() -> () @Fiber {
@@ -5406,6 +5523,33 @@ pub fn main() -> Result<(), str> @Fiber {
     }
 }
 ```
+
+```ril
+-- Separate executable-root fixtures:
+-- fn main() {}                        -- Error [E0904]: entry must be public
+-- pub fn main(value: int) {}          -- Error [E0904]: entry has a parameter
+-- pub fn main<T>() {}                 -- Error [E0904]: entry has a generic parameter
+-- pub fn main() -> int { 0 }          -- Error [E0904]: unsupported entry result
+```
+
+| Entry property | Requirement |
+| :--- | :--- |
+| Declaration | Public ordinary named Ril function in the executable root; `halt` is allowed subject to its usual checks |
+| Value / generic parameters | None, including defaulted parameters |
+| Result | `()` or the language's `Result<(), str>`, after transparent alias expansion |
+| Effects / state | Ordinary declaration and provenance rules; undeclared residual effects remain `E0612` |
+| Residual user-defined effect | No program-environment handler; `E0612` even if listed on main |
+
+| Completed program outcome | Environment behavior |
+| :--- | :--- |
+| `()` or `Ok()` after required cleanup/barriers | Exit status 0 |
+| `Err(message)` | Inspect the result; write the message and one LF to standard error, then exit status 1 |
+| Reporting the error fails | Exit status 1; no successful outcome or further output guarantee |
+| Uncontained panic / double fault / cancellation | Exit status 1; explanatory diagnostics are not fixed text |
+| Declared `Fiber` / `Concurrent`, including `Async` | Supply their specified system operations |
+| Declared `Div` exhaustion without a source handler | Begin panic unwinding; never resume the exhausted action |
+
+Environment reporting occurs outside main's invocation and does not add a `Fiber` annotation requirement to a fallible pure main. An outward abortive source handler may produce a normal main result; it still follows the result table after cleanup. The program environment does not waive child-local effect confinement or guarantee termination.
 
 ### Prelude Scope
 
@@ -5428,7 +5572,7 @@ fn save_profile(user_id: int) -> Result<(), str> {
 
 fn process_request(id: int) -> Result<(), str> @Fiber {
     -- Prohibited: discarding fallible Result without inspection
-    -- save_profile(id)                 -- Error [E0720]: UnusedFallibleResultError: unused fallible Result must be handled
+    -- save_profile(id)                 -- Error [E0720]: unused fallible Result must be handled
 
     -- Compliant Alternative 1: Postfix '?' error propagation
     save_profile(id)?
@@ -5469,225 +5613,228 @@ Every Result must be inspected, propagated, unpacked, or returned with its oblig
 
 ## Diagnostic Error Codes Summary
 
-Each code identifies the condition defined in the corresponding language section. More specific conditions take precedence as specified under [Diagnostic Classification](#diagnostic-classification). Codes are not reused for unrelated conditions.
+This index assigns each code its diagnostic name and points to its defining rules; it introduces no additional rejection conditions. Codes are not reused for unrelated conditions. Specificity and multiple-error reporting follow [diagnostic classification](#diagnostic-classification).
 
 ### Source Text, Identifiers, and Syntax
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0101`** | `InvalidIdentifierCasingError` | Identifier casing style violates grammatical role requirement |
-| **`E0102`** | `MalformedIdentifierSyntaxError` | Malformed identifier casing/underscores or invalid generated field label |
-| **`E0103`** | `PatternCasingCollisionError` | Pattern binding position contains illegal casing causing semantic collision |
-| **`E0104`** | `InvalidSourceEncodingError` | Source bytes are not a well-formed UTF-8 sequence |
-| **`E0105`** | `InvalidSourceCharacterError` | Decoded source character is not admitted by any token at its position |
-| **`E0106`** | `UnterminatedCommentError` | Block comment remains open at end of source |
-| **`E0107`** | `UnterminatedStringLiteralError` | Ordinary, raw, or byte string lacks its closing delimiter |
-| **`E0108`** | `InvalidEscapeSequenceError` | Ordinary-string escape is unsupported or malformed |
-| **`E0109`** | `InvalidUnicodeScalarError` | Well-formed Unicode escape denotes a value outside the Unicode scalar range |
-| **`E0110`** | `InvalidByteLiteralError` | Byte literal contains non-ASCII content or an invalid byte escape |
-| **`E0111`** | `MalformedNumericLiteralError` | Numeric literal violates its base, digits, separators, exponent, or suffix grammar |
-| **`E0112`** | `MalformedInterpolationError` | Recognized interpolation has malformed braces, no expression, or malformed format syntax |
-| **`E0113`** | `ReservedKeywordIdentifierError` | Reserved keyword is used where an ordinary identifier or field label is required |
-| **`E0120`** | `UnexpectedTokenError` | Token cannot occur at its position and no more specific condition applies |
-| **`E0121`** | `UnexpectedEndOfSourceError` | Source ends before a required constituent with no unclosed delimiter |
-| **`E0122`** | `UnclosedDelimiterError` | Syntactic delimiter remains open at end of source |
-| **`E0123`** | `MismatchedDelimiterError` | Closing delimiter does not match its corresponding opener |
-| **`E0124`** | `MissingTokenError` | Required grammar token is absent between otherwise identifiable constituents |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0101`** | [`InvalidIdentifierCasingError`](#identifiers-and-casing-invariants) |
+| **`E0102`** | [`MalformedIdentifierSyntaxError`](#identifiers-and-casing-invariants) |
+| **`E0103`** | [`PatternCasingCollisionError`](#identifiers-and-casing-invariants) |
+| **`E0104`** | [`InvalidSourceEncodingError`](#character-set-and-encoding) |
+| **`E0105`** | [`InvalidSourceCharacterError`](#character-set-and-encoding) |
+| **`E0106`** | [`UnterminatedCommentError`](#comments) |
+| **`E0107`** | [`UnterminatedStringLiteralError`](#text-and-byte-literals) |
+| **`E0108`** | [`InvalidEscapeSequenceError`](#text-and-byte-literals) |
+| **`E0109`** | [`InvalidUnicodeScalarError`](#text-and-byte-literals) |
+| **`E0110`** | [`InvalidByteLiteralError`](#text-and-byte-literals) |
+| **`E0111`** | [`MalformedNumericLiteralError`](#numeric-literals) |
+| **`E0112`** | [`MalformedInterpolationError`](#text-and-byte-literals) |
+| **`E0113`** | [`ReservedKeywordIdentifierError`](#keywords) |
+| **`E0120`** | [`UnexpectedTokenError`](#syntactic-diagnostic-conditions) |
+| **`E0121`** | [`UnexpectedEndOfSourceError`](#syntactic-diagnostic-conditions) |
+| **`E0122`** | [`UnclosedDelimiterError`](#syntactic-diagnostic-conditions) |
+| **`E0123`** | [`MismatchedDelimiterError`](#syntactic-diagnostic-conditions) |
+| **`E0124`** | [`MissingTokenError`](#syntactic-diagnostic-conditions) |
 
 ### Names, Initialization, and Field Identity
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0201`** | `PrivateItemAccessError` | Accessing or importing unexported private module symbol |
-| **`E0202`** | `TopLevelSideEffectError` | Top-level declaration contains non-constant runtime side effects |
-| **`E0203`** | `DuplicateDeclarationError` | Duplicate same-scope declaration or import binding, including conflicting signature/block where declarations |
-| **`E0204`** | `UnresolvedIdentifierError` | Reference to an unavailable ordinary lexical identifier |
-| **`E0205`** | `QuestionMarkOutsideFunctionError` | Using postfix '?' operator outside an enclosing function or closure body (no enclosing activation frame to receive early return) |
-| **`E0206`** | `AmbiguousConstructorError` | Unqualified constructor abbreviation has multiple distinct visible variant candidates |
-| **`E0207`** | `UseBeforeInitializationError` | Invocation, publication, or passing of a hoisted helper requires a capture not yet initialized |
-| **`E0208`** | `ModuleNotFoundError` | Imported module path does not resolve to a module |
-| **`E0209`** | `UnresolvedModuleMemberError` | Import or qualified access names no member of the resolved module |
-| **`E0210`** | `DuplicateFieldError` | Field label appears more than once in declared, explicit, or generated fields |
-| **`E0211`** | `ConflictingSpreadFieldsError` | Multiple value spreads supply the same field without an explicit override |
-| **`E0212`** | `OverlappingRowFieldError` | Named row tail overlaps a field explicitly declared in the enclosing record type |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0201`** | [`PrivateItemAccessError`](#module-imports-and-visibility) |
+| **`E0202`** | [`TopLevelSideEffectError`](#top-level-initialization-and-purity) |
+| **`E0203`** | [`DuplicateDeclarationError`](#identifiers-and-casing-invariants) |
+| **`E0204`** | [`UnresolvedIdentifierError`](#identifiers-and-casing-invariants) |
+| **`E0205`** | [`QuestionMarkOutsideFunctionError`](#error-and-fallback-operators) |
+| **`E0206`** | [`AmbiguousConstructorError`](#identifiers-and-casing-invariants) |
+| **`E0207`** | [`UseBeforeInitializationError`](#block-expressions-tail-values-and-hoisted-declarations) |
+| **`E0208`** | [`ModuleNotFoundError`](#module-imports-and-visibility) |
+| **`E0209`** | [`UnresolvedModuleMemberError`](#module-imports-and-visibility) |
+| **`E0210`** | [`DuplicateFieldError`](#record-construction-and-functional-update); [Record Types and Row Polymorphism](#record-types-and-row-polymorphism) |
+| **`E0211`** | [`ConflictingSpreadFieldsError`](#record-construction-and-functional-update) |
+| **`E0212`** | [`OverlappingRowFieldError`](#record-types-and-row-polymorphism) |
 
 ### Types, Expressions, Generics, and Patterns
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0301`** | `TypeMismatchError` | Expression type incompatible with its required type, with no more specific diagnostic condition |
-| **`E0302`** | `UnexpectedFieldError` | Closed record supplied with undeclared fields |
-| **`E0303`** | `NonExhaustiveMatchError` | Match does not cover every possible subject value; guards do not establish exhaustive coverage |
-| **`E0304`** | `UnreachableMatchArmError` | Pattern match arm is statically unreachable due to preceding exhaustive patterns or GADT index constraints |
-| **`E0305`** | `NominalTypeMismatchError` | Mismatched nominal type wrapper identities |
-| **`E0306`** | `KindMismatchError` | Mismatched higher-kinded type constructor or sort constraint |
-| **`E0307`** | `MissingFieldError` | Record construction omits a required declared field |
-| **`E0308`** | `OpaqueBoundaryViolationError` | Attempting to unpack, penetrate with `inner()`, or pattern deconstruct an opaque type externally |
-| **`E0309`** | `VacuousBindingError` | 'let' pattern binds zero variables (excluding explicit wildcard discard 'let _ = expr') |
-| **`E0310`** | `InvalidatedNarrowingAccessError` | Accessing identifier whose flow narrowing was invalidated by reassignment or mutation |
-| **`E0311`** | `ContradictoryNarrowingError` | Narrowing predicate contradicts an already active refinement |
-| **`E0312`** | `TupleIndexOutOfBoundsError` | Static tuple index projection exceeds bounds of tuple type |
-| **`E0313`** | `CyclicTypeAliasError` | Structural type aliases form a cyclic dependency without nominal or sum indirection |
-| **`E0314`** | `ArityMismatchError` | Argument count differs from the ordinary function or constructor/pattern arity |
-| **`E0315`** | `EscapingLocalNominalTypeError` | An in-scope function-local nominal, opaque, or sum identity escapes through a returned value or callable's type |
-| **`E0316`** | `NonTrailingDefaultGenericParamError` | Generic parameter without default follows generic parameter with default |
-| **`E0317`** | `FunctionDefaultGenericProhibitedError` | Function generic parameter declares default type or value argument |
-| **`E0318`** | `LiteralTypeProhibitedError` | Value literal used as a type instead of a const argument or a tagged sum state |
-| **`E0319`** | `BareTypeInExpressionContextError` | Bare type name used in expression context without enclosing `type<...>` wrapper |
-| **`E0320`** | `ForwardTypeDefaultReferenceError` | Generic default parameter expression contains forward reference or circular dependency |
-| **`E0321`** | `NonDivergentElseError` | A guarded binding's else block can complete normally instead of having type never |
-| **`E0322`** | `WildcardExpressionError` | Standalone wildcard '_' used in expression position outside pattern binding or discard context |
-| **`E0323`** | `ConstGenericSortMismatchError` | Const/static-key argument has the wrong sort or is not a member of its keyof constraint |
-| **`E0324`** | `DynamicRecordIndexProhibitedError` | A record is accessed with bracket indexing or a non-static computed key |
-| **`E0325`** | `DuplicateArgumentError` | Duplicate named argument supplied in function or constructor call |
-| **`E0326`** | `LiteralOutOfRangeError` | Well-formed integer literal, including its immediately applied minus, does not fit the selected type |
-| **`E0327`** | `UnsupportedOperandTypeError` | Operator is not defined for an operand type or a required constituent type |
-| **`E0328`** | `InvalidCollectionKeyTypeError` | Map key or set element type does not satisfy the specified value-key eligibility rules |
-| **`E0329`** | `IncompatibleFormatSpecifierError` | Well-formed interpolation format is incompatible with the value type |
-| **`E0330`** | `BareEffectTypeAliasError` | Attempting to alias an effect ('@Eff') under 'type E = ...' instead of 'eff' declaration |
-| **`E0331`** | `BareCapabilityTypeAliasError` | Attempting to alias a capability ('&mut', '&^mut') under 'type C = ...' |
-| **`E0332`** | `VariantComputationAnnotationError` | Attaching '@Eff' or '&Cap' directly to a sum type variant constructor |
-| **`E0333`** | `FieldComputationAnnotationError` | Attaching '@Eff' or '&Cap' directly to a record field or tuple component |
-| **`E0334`** | `GenericComputationConstraintError` | Constraining a generic parameter with an effect ('<T: @Io>') or capability ('<T: &mut>') |
-| **`E0335`** | `TypeFunctionComputationAnnotationError` | Declaring '@Eff' or '&Cap' on a pure compile-time type function ('type', 'halt type') |
-| **`E0336`** | `UnknownFieldError` | Projection or product pattern names a field absent from the known product schema |
-| **`E0337`** | `NonProductProjectionError` | Receiver type does not admit the requested named-field or positional product projection |
-| **`E0338`** | `NonCallableInvocationError` | Call expression attempts to invoke a value that is not callable |
-| **`E0339`** | `UnknownNamedArgumentError` | Named argument label does not name a parameter of the selected callable |
-| **`E0340`** | `GenericArityMismatchError` | Explicit generic arguments cannot fit the declaration's generic parameter list |
-| **`E0341`** | `InvalidRecordKeySortError` | Supplying integer keys to mapped record comprehension '{ [K in Expr]: ... }' (requires '[]str') |
-| **`E0342`** | `InvalidTupleKeySortError` | Supplying string keys to mapped tuple comprehension '( [I in Expr]: ... )' (requires '[]int') |
-| **`E0343`** | `SingleElementTupleProhibitedError` | Mapped tuple comprehension evaluated over an index array of length 1 (Ril strictly has no 1-tuples) |
-| **`E0344`** | `InsufficientTypeInformationError` | Required type or static argument is undetermined after available context, defaults, and inference |
-| **`E0345`** | `RefutablePatternError` | Binding, for element, or handler parameter requires an irrefutable pattern but the supplied pattern may fail |
-| **`E0346`** | `OrPatternBindingMismatchError` | Alternatives bind different names or incompatible binding types or modes |
-| **`E0347`** | `DuplicatePatternBindingError` | An identifier is bound more than once within one value- or type-pattern alternative |
-| **`E0348`** | `InvalidRangePatternError` | Numeric range pattern has non-integer endpoints or reversed bounds |
-| **`E0349`** | `InvalidPatternExpressionError` | Computed expression is used where a literal pattern is required |
-| **`E0350`** | `NonBooleanConditionError` | Condition, pattern guard, or logical operand is not bool |
-| **`E0351`** | `IncompatibleBranchTypesError` | Otherwise valid if branches or reachable match arms have incompatible result types |
-| **`E0352`** | `InvalidIndexTargetError` | Receiver does not support the requested ordinary or safe element lookup |
-| **`E0353`** | `NullaryVariantCallError` | Parentheses are supplied to a payload-free variant tag |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0301`** | [`TypeMismatchError`](#diagnostic-classification) |
+| **`E0302`** | [`UnexpectedFieldError`](#record-types-and-row-polymorphism) |
+| **`E0303`** | [`NonExhaustiveMatchError`](#pattern-matching) |
+| **`E0304`** | [`UnreachableMatchArmError`](#pattern-matching); [Sum Types and GADTs](#sum-types-and-gadts) |
+| **`E0305`** | [`NominalTypeMismatchError`](#nominal-type-wrappers) |
+| **`E0306`** | [`KindMismatchError`](#structural-type-pattern-matching) |
+| **`E0307`** | [`MissingFieldError`](#record-types-and-row-polymorphism) |
+| **`E0308`** | [`OpaqueBoundaryViolationError`](#type-declarations-and-opaque-types) |
+| **`E0309`** | [`VacuousBindingError`](#guarded-bindings-and-non-vacuous-invariant) |
+| **`E0310`** | [`InvalidatedNarrowingAccessError`](#flow-sensitive-type-narrowing) |
+| **`E0311`** | [`ContradictoryNarrowingError`](#flow-sensitive-type-narrowing) |
+| **`E0312`** | [`TupleIndexOutOfBoundsError`](#array-map-and-tuple-types) |
+| **`E0313`** | [`CyclicTypeAliasError`](#type-declarations-and-opaque-types) |
+| **`E0314`** | [`ArityMismatchError`](#pattern-matching); [Default Parameters and Named Arguments](#default-parameters-and-named-arguments) |
+| **`E0315`** | [`EscapingLocalNominalTypeError`](#block-expressions-tail-values-and-hoisted-declarations) |
+| **`E0316`** | [`NonTrailingDefaultGenericParamError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0317`** | [`FunctionDefaultGenericProhibitedError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0318`** | [`LiteralTypeProhibitedError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0319`** | [`BareTypeInExpressionContextError`](#static-type-values-and-type-quotation) |
+| **`E0320`** | [`ForwardTypeDefaultReferenceError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0321`** | [`NonDivergentElseError`](#guarded-bindings-and-non-vacuous-invariant) |
+| **`E0322`** | [`WildcardExpressionError`](#identifiers-and-casing-invariants) |
+| **`E0323`** | [`ConstGenericSortMismatchError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0324`** | [`DynamicRecordIndexProhibitedError`](#record-types-and-row-polymorphism) |
+| **`E0325`** | [`DuplicateArgumentError`](#default-parameters-and-named-arguments) |
+| **`E0326`** | [`LiteralOutOfRangeError`](#numeric-literals) |
+| **`E0327`** | [`UnsupportedOperandTypeError`](#bitwise-and-shift-operators) |
+| **`E0328`** | [`InvalidCollectionKeyTypeError`](#relational-equality-and-containment-operators) |
+| **`E0329`** | [`IncompatibleFormatSpecifierError`](#text-and-byte-literals) |
+| **`E0330`** | [`BareEffectTypeAliasError`](#type-definition-boundaries) |
+| **`E0331`** | [`BareCapabilityTypeAliasError`](#type-definition-boundaries) |
+| **`E0332`** | [`VariantComputationAnnotationError`](#type-definition-boundaries) |
+| **`E0333`** | [`FieldComputationAnnotationError`](#type-definition-boundaries) |
+| **`E0334`** | [`GenericComputationConstraintError`](#type-definition-boundaries) |
+| **`E0335`** | [`TypeFunctionComputationAnnotationError`](#type-definition-boundaries) |
+| **`E0336`** | [`UnknownFieldError`](#record-types-and-row-polymorphism) |
+| **`E0337`** | [`NonProductProjectionError`](#record-types-and-row-polymorphism); [Anonymous Functions, Trailing Closures, and Projection Accessors](#anonymous-functions-trailing-closures-and-projection-accessors) |
+| **`E0338`** | [`NonCallableInvocationError`](#default-parameters-and-named-arguments) |
+| **`E0339`** | [`UnknownNamedArgumentError`](#default-parameters-and-named-arguments) |
+| **`E0340`** | [`GenericArityMismatchError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0341`** | [`InvalidRecordKeySortError`](#symmetrical-mapped-comprehensions) |
+| **`E0342`** | [`InvalidTupleKeySortError`](#symmetrical-mapped-comprehensions) |
+| **`E0343`** | [`SingleElementTupleProhibitedError`](#symmetrical-mapped-comprehensions) |
+| **`E0344`** | [`InsufficientTypeInformationError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0345`** | [`RefutablePatternError`](#pattern-matching) |
+| **`E0346`** | [`OrPatternBindingMismatchError`](#pattern-matching) |
+| **`E0347`** | [`DuplicatePatternBindingError`](#pattern-matching) |
+| **`E0348`** | [`InvalidRangePatternError`](#pattern-matching) |
+| **`E0349`** | [`InvalidPatternExpressionError`](#pattern-matching) |
+| **`E0350`** | [`NonBooleanConditionError`](#conditional-expressions); [Logical Operators](#logical-operators) |
+| **`E0351`** | [`IncompatibleBranchTypesError`](#conditional-expressions); [Pattern Matching](#pattern-matching) |
+| **`E0352`** | [`InvalidIndexTargetError`](#array-map-and-tuple-types) |
+| **`E0353`** | [`NullaryVariantCallError`](#constructor-tuple-equivalence-invariant) |
+| **`E0354`** | [`InvalidVariantContractError`](#sum-types-and-gadts) |
+| **`E0355`** | [`NonIterableValueError`](#loop-expressions) |
 
 ### Parameters, Argument Modes, and Defaults
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0401`** | `ValueTypeMutableBorrowError` | Attempt to declare or pass a value type as a mut/^mut parameter |
-| **`E0402`** | `ValueTypePinnedMutError` | Attempting to give a value type interior authority with `let mut` or `var mut` |
-| **`E0403`** | `VarParameterProhibitedError` | Attempting to declare a function parameter with `var` |
-| **`E0404`** | `MutableParameterDefaultProhibitedError` | A mut/^mut parameter specifies a default value argument |
-| **`E0405`** | `MissingMutableArgumentMarkerError` | Ordinary argument is supplied instead of the required explicit mut or ^mut argument mode |
-| **`E0406`** | `InvalidArgumentModeError` | Explicit argument mode does not match the declared parameter mode |
-| **`E0407`** | `CallableParameterModeMismatchError` | Callable's data-parameter modes are incompatible with the required callable type |
-| **`E0408`** | `InvalidDefaultParameterReferenceError` | Ordinary parameter default refers to itself or a later parameter |
-| **`E0409`** | `ImpureParameterDefaultError` | Ordinary parameter default has residual effect or state obligations |
-| **`E0410`** | `InvalidMutableArgumentTargetError` | Explicitly mutable argument does not designate an addressable target |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0401`** | [`ValueTypeMutableBorrowError`](#parameter-modes-caller-obligations-and-defaults) |
+| **`E0402`** | [`ValueTypePinnedMutError`](#value-types) |
+| **`E0403`** | [`VarParameterProhibitedError`](#parameter-modes-caller-obligations-and-defaults); [Effect Handlers](#effect-handlers) |
+| **`E0404`** | [`MutableParameterDefaultProhibitedError`](#default-parameters-and-named-arguments) |
+| **`E0405`** | [`MissingMutableArgumentMarkerError`](#parameter-modes-caller-obligations-and-defaults) |
+| **`E0406`** | [`InvalidArgumentModeError`](#parameter-modes-caller-obligations-and-defaults); [Effect Handlers](#effect-handlers) |
+| **`E0407`** | [`CallableParameterModeMismatchError`](#parameter-modes-caller-obligations-and-defaults) |
+| **`E0408`** | [`InvalidDefaultParameterReferenceError`](#default-parameters-and-named-arguments) |
+| **`E0409`** | [`ImpureParameterDefaultError`](#default-parameters-and-named-arguments) |
+| **`E0410`** | [`InvalidMutableArgumentTargetError`](#parameter-modes-caller-obligations-and-defaults) |
 
 ### Bindings, State, Permissions, and Resource Contracts
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0501`** | `ImmutableReassignmentError` | Reassigning an immutable `let` binding |
-| **`E0502`** | `PinnedHandleReassignmentError` | Reassigning a pinned mutable handle `let mut` or borrowed `mut` parameter |
-| **`E0503`** | `InvalidAssignmentTargetError` | Assignment target is not an addressable lvalue |
-| **`E0510`** | `MissingCapabilityAnnotationError` | Missing required concrete invocation capability or local writable-sharing marker, including known inherited state, direct reads, creation, or retention |
-| **`E0520`** | `MutabilityLaunderingError` | Attempt to acquire or exercise interior/environment write permission not supplied by the source or access path |
-| **`E0521`** | `DestructureMutabilityLaunderingError` | Pattern binding attempts to upgrade a referenced constituent; independent scalar copies are exempt |
-| **`E0522`** | `ContainerMutabilityLaunderingError` | A container operation attempts to grant write permission to an immutable or view constituent |
-| **`E0523`** | `MutMutAliasingConflictError` | Overlapping mutable arguments passed to `mut` parameters |
-| **`E0524`** | `ReadMutAliasingHazardError` | Mutable argument aliases simultaneous read-only argument |
-| **`E0525`** | `SpreadLaunderingError` | Spread attempts to grant write permission to a referenced immutable/view constituent |
-| **`E0526`** | `CollectionMutationDuringIterationError` | Structurally changing a collection through any alias during an active `for` iteration |
-| **`E0527`** | `UnusedMutableBindingError` | Declared mutable authority is never exercised by a reachable write, invocation, retention, or explicit transfer |
-| **`E0528`** | `ReturnMutabilityLaunderingError` | A returned borrowed/external reference is received with permissions not supplied by its source |
-| **`E0529`** | `ExcessiveCapabilityAnnotationError` | Concrete definition declares unnecessary capabilities; callable contract upper bounds are exempt |
-| **`E0530`** | `IllegalCapabilityCloneImmutError` | Ordinary graph contains a constituent ineligible for cloning or immutable copying, or a resource clone violates its contract |
-| **`E0531`** | `ImmutableTargetViewError` | View initializer lacks an admissible stable live origin or conceals a forbidden reassignable origin |
-| **`E0532`** | `ReassignableScopedResourceError` | Attempting to declare a scoped resource with reassignable `var`/`var mut` authority |
-| **`E0533`** | `AliasedNarrowingHazardError` | A live refinement can be invalidated by an overlapping writer during its use |
-| **`E0534`** | `HazardErasureProhibitedError` | Callable contract erases actual obligations or a concrete definition uses &closure to conceal direct state |
-| **`E0535`** | `NonImmutableBindingError` | Live data, an active environment, or surviving writers prevent immutable publication |
-| **`E0536`** | `NonImmutableDeriveInputError` | derive input is live, writable, or an opaque resource rather than immutable ordinary data |
-| **`E0537`** | `LiveSliceInvalidationError` | Changing a backing collection's structure while a live slice window or alias may still be used |
-| **`E0538`** | `InvalidStateSourceGroupError` | A source group has no capture item, a wrong global/capture kind or owner, an omitted required named ancestor, or bindings from different capture layers |
-| **`E0539`** | `InvalidStateContractReferenceError` | A function state reference is used outside an ordinary named definition or does not name a visible ordinary named Ril function provider |
-| **`E0540`** | `EndedOperationLoanAccessError` | Handler accesses an operation's temporary mut loan or a derived alias after resumption begins |
-| **`E0541`** | `InvalidScopedCleanupContractError` | Scoped binding lacks an accessible, shape-compatible cleanup contract |
-| **`E0542`** | `NonHigherOrderEmptyRowError` | Explicit @{} or &{} on a first-order callable signature |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0501`** | [`ImmutableReassignmentError`](#immutable-bindings) |
+| **`E0502`** | [`PinnedHandleReassignmentError`](#pinned-mutable-handles) |
+| **`E0503`** | [`InvalidAssignmentTargetError`](#assignments-and-compound-assignments) |
+| **`E0510`** | [`MissingCapabilityAnnotationError`](#callable-contracts); [Retained Mutable Sharing](#retained-mutable-sharing) |
+| **`E0520`** | [`MutabilityLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
+| **`E0521`** | [`DestructureMutabilityLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
+| **`E0522`** | [`ContainerMutabilityLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
+| **`E0523`** | [`MutMutAliasingConflictError`](#law-of-exclusivity-and-cross-argument-disjointness) |
+| **`E0524`** | [`ReadMutAliasingHazardError`](#law-of-exclusivity-and-cross-argument-disjointness) |
+| **`E0525`** | [`SpreadLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
+| **`E0526`** | [`CollectionMutationDuringIterationError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
+| **`E0527`** | [`UnusedMutableBindingError`](#binding-permissions-and-storage-matrix) |
+| **`E0528`** | [`ReturnMutabilityLaunderingError`](#monotonic-permission-degradation-and-anti-laundering-matrix) |
+| **`E0529`** | [`ExcessiveCapabilityAnnotationError`](#retained-mutable-sharing); [Named Function State Contract References](#named-function-state-contract-references) |
+| **`E0530`** | [`IllegalCapabilityCloneImmutError`](#deep-immutability) |
+| **`E0531`** | [`ImmutableTargetViewError`](#live-view-bindings) |
+| **`E0532`** | [`ReassignableScopedResourceError`](#scoped-resource-bindings) |
+| **`E0533`** | [`AliasedNarrowingHazardError`](#flow-sensitive-type-narrowing) |
+| **`E0534`** | [`HazardErasureProhibitedError`](#callable-contracts); [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments) |
+| **`E0535`** | [`NonImmutableBindingError`](#immutable-bindings) |
+| **`E0536`** | [`NonImmutableDeriveInputError`](#functional-updates-via-derive) |
+| **`E0537`** | [`LiveSliceInvalidationError`](#range-and-slicing-expressions) |
+| **`E0538`** | [`InvalidStateSourceGroupError`](#state-groups-and-captured-layers) |
+| **`E0539`** | [`InvalidStateContractReferenceError`](#named-function-state-contract-references) |
+| **`E0540`** | [`EndedOperationLoanAccessError`](#effect-handlers) |
+| **`E0541`** | [`InvalidScopedCleanupContractError`](#scoped-resource-bindings) |
+| **`E0542`** | [`NonHigherOrderEmptyRowError`](#callable-contracts) |
 
 ### Effects, Resumption, Concurrency, and Escape
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0601`** | `CrossThreadDataRaceHazardError` | Mutable/live ordinary data or a non-transferable active resource crosses a task boundary |
-| **`E0602`** | `IllegalChannelPayloadCapabilityError` | Channel payload is neither immutable ordinary data nor an explicitly detached resource descriptor |
-| **`E0603`** | `ChannelEndpointAliasingConflictError` | Endpoint/ticket authority is aliased across tasks, duplicated, or used after close/transfer |
-| **`E0604`** | `ScopedResourceEscapeError` | Scoped resource authority escapes its owning lexical block |
-| **`E0605`** | `InvalidParallelCapabilityError` | Pure parallel callback has outside mutable/live/resource access or non-local cleanup obligations |
-| **`E0606`** | `ScopedTaskEscapeError` | Scope/task/channel authority escapes its owner or violates task confinement |
-| **`E0607`** | `DerivedProxyEscapeError` | Draft or draft-derived reference escapes its recipe before immutable publication |
-| **`E0610`** | `DuplicateResumeInvocationError` | Invoking affine one-shot resumption `resume` more than once |
-| **`E0611`** | `EscapingResumeError` | Escaping resumption handle beyond handler arm lexical scope |
-| **`E0612`** | `UnhandledEffectError` | Invoking effect operation without in-scope handler or declaring effect in callable signature |
-| **`E0613`** | `ValueEffectAnnotationError` | Attaching algebraic effect annotation ('@Eff') to a non-callable type expression or value binding |
-| **`E0614`** | `UnstableHandlerCaptureError` | Retained handler cannot provide a stable legal environment, compatible answer type, or fresh boundary |
-| **`E0615`** | `CrossTaskUnhandledEffectError` | Residual effects violate a boundary contract, or an ancestor active handler crosses a task boundary |
-| **`E0616`** | `ScopedCleanupEffectError` | Resource cleanup handler (`on_close`) declares or invokes unhandled algebraic effects |
-| **`E0617`** | `ScopedCleanupDivergenceError` | Resource cleanup handler (`on_close`), including its transitive calls and recovery, cannot be independently proved finite |
-| **`E0618`** | `UndischargedLocalEffectError` | Local algebraic effect declared in 'where' is not completely discharged within enclosing block |
-| **`E0619`** | `ParallelDisjointAccessConflictError` | Parallel write/read or write/write regions overlap or cannot be proved disjoint |
-| **`E0620`** | `PseudoEffectAnnotationError` | Attaching non-effect evaluation strategy (such as '@Parallel') as an algebraic effect annotation |
-| **`E0621`** | `InvalidHandlerTargetError` | Target of a with operation arm (`->` form) is not an effect operation; parameterized applications use ordinary call checking |
-| **`E0622`** | `DuplicateHandlerOperationError` | One with supplies multiple arms for the same effect operation |
-| **`E0623`** | `ResumeOutsideHandlerError` | Resume has no enclosing effect-operation arm |
-| **`E0624`** | `ResumeValueTypeMismatchError` | Resume operand is incompatible with the handled operation's result type |
-| **`E0625`** | `HandlerAnswerTypeMismatchError` | Handler arm's answer is incompatible with its delimited block's answer type |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0601`** | [`CrossThreadDataRaceHazardError`](#structured-concurrency-and-panic-containment) |
+| **`E0602`** | [`IllegalChannelPayloadCapabilityError`](#structured-concurrency-channels) |
+| **`E0603`** | [`ChannelEndpointAliasingConflictError`](#structured-concurrency-channels) |
+| **`E0604`** | [`ScopedResourceEscapeError`](#scoped-resource-bindings) |
+| **`E0605`** | [`InvalidParallelCapabilityError`](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
+| **`E0606`** | [`ScopedTaskEscapeError`](#structured-concurrency-and-panic-containment) |
+| **`E0607`** | [`DerivedProxyEscapeError`](#functional-updates-via-derive) |
+| **`E0610`** | [`DuplicateResumeInvocationError`](#affine-resumption-and-delimited-early-abort) |
+| **`E0611`** | [`EscapingResumeError`](#affine-resumption-and-delimited-early-abort) |
+| **`E0612`** | [`UnhandledEffectError`](#callable-contracts); [Built-in System Effects](#built-in-system-effects) |
+| **`E0613`** | [`ValueEffectAnnotationError`](#type-definition-boundaries) |
+| **`E0614`** | [`UnstableHandlerCaptureError`](#effect-handlers) |
+| **`E0615`** | [`CrossTaskUnhandledEffectError`](#structured-concurrency-and-panic-containment); [Effect Handlers](#effect-handlers) |
+| **`E0616`** | [`ScopedCleanupEffectError`](#scoped-resource-bindings) |
+| **`E0617`** | [`ScopedCleanupDivergenceError`](#scoped-resource-bindings) |
+| **`E0618`** | [`UndischargedLocalEffectError`](#block-expressions-tail-values-and-hoisted-declarations) |
+| **`E0619`** | [`ParallelDisjointAccessConflictError`](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
+| **`E0620`** | [`PseudoEffectAnnotationError`](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
+| **`E0621`** | [`InvalidHandlerTargetError`](#effect-handlers) |
+| **`E0622`** | [`DuplicateHandlerOperationError`](#effect-handlers) |
+| **`E0623`** | [`ResumeOutsideHandlerError`](#affine-resumption-and-delimited-early-abort) |
+| **`E0624`** | [`ResumeValueTypeMismatchError`](#effect-handlers) |
+| **`E0625`** | [`HandlerAnswerTypeMismatchError`](#effect-handlers) |
 
 ### Declaration Contexts, Control Flow, and Fallible Values
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0701`** | `ChainedAssignmentProhibitedError` | Chaining assignments (`a = b = c`) |
-| **`E0702`** | `InvalidWhereItemError` | Declaring variable binding or non-hoistable item in `where` clause |
-| **`E0703`** | `IllegalSequentialDeclarationError` | Declaring 'fn', 'type', or 'eff' in sequential statement stream instead of 'where' clause |
-| **`E0704`** | `InvalidSignatureWhereItemError` | Declaring 'fn' or 'eff' in signature 'where' clause (signature where is restricted to 'type') |
-| **`E0705`** | `DownwardScopeReferenceError` | Signature 'where' clause references item declared in inner block 'where' clause |
-| **`E0706`** | `SignatureTypeNotInWaistWhereError` | Function signature references type declared in block 'where' clause instead of signature 'where' clause |
-| **`E0707`** | `InvalidControlTransferContextError` | Using last/next without an enclosing loop or return across a prohibited boundary |
-| **`E0710`** | `IllegalControlTransferInFallbackError` | Direct return/last/next transfer out of a fallback expression |
-| **`E0711`** | `InvalidResultFallbackError` | Supplying raw value fallback for `Result` without error closure |
-| **`E0712`** | `InvalidPropagationOperandError` | Postfix ? operand inside a callable is neither Option nor Result |
-| **`E0713`** | `IncompatiblePropagationTargetError` | Enclosing callable cannot return the failure of an otherwise valid ? operand |
-| **`E0714`** | `InvalidFallbackOperandError` | Left operand of ?? is neither Option nor Result |
-| **`E0715`** | `InvalidSafeAccessReceiverError` | Safe field access uses a non-optional receiver |
-| **`E0720`** | `UnusedFallibleResultError` | A fallible result is abandoned without inspection, including through aggregates, tasks, or channel queues |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0701`** | [`ChainedAssignmentProhibitedError`](#assignments-and-compound-assignments) |
+| **`E0702`** | [`InvalidWhereItemError`](#block-expressions-tail-values-and-hoisted-declarations); [Dual-Tier Where Invariants](#dual-tier-where-invariants) |
+| **`E0703`** | [`IllegalSequentialDeclarationError`](#block-expressions-tail-values-and-hoisted-declarations) |
+| **`E0704`** | [`InvalidSignatureWhereItemError`](#dual-tier-where-invariants) |
+| **`E0705`** | [`DownwardScopeReferenceError`](#dual-tier-where-invariants) |
+| **`E0706`** | [`SignatureTypeNotInWaistWhereError`](#dual-tier-where-invariants) |
+| **`E0707`** | [`InvalidControlTransferContextError`](#control-transfers) |
+| **`E0710`** | [`IllegalControlTransferInFallbackError`](#error-and-fallback-operators) |
+| **`E0711`** | [`InvalidResultFallbackError`](#error-and-fallback-operators) |
+| **`E0712`** | [`InvalidPropagationOperandError`](#error-and-fallback-operators) |
+| **`E0713`** | [`IncompatiblePropagationTargetError`](#error-and-fallback-operators) |
+| **`E0714`** | [`InvalidFallbackOperandError`](#error-and-fallback-operators) |
+| **`E0715`** | [`InvalidSafeAccessReceiverError`](#error-and-fallback-operators) |
+| **`E0720`** | [`UnusedFallibleResultError`](#mandatory-inspection-of-fallible-results) |
 
 ### Static Computation and Totality
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0810`** | `CallFamilyViolationError` | Invocation crosses the disjoint run-time fn and compile-time meta/type call families |
-| **`E0811`** | `CompileTimeBudgetExceededError` | Exhausting evaluation step budget in meta/type functions |
-| **`E0812`** | `MetaTypeReturnProhibitedError` | 'meta fn' attempting to return 'type<...>' or sort 'Type'; type construction is monopolized by type functions |
-| **`E0813`** | `MetaComputationAnnotationError` | Declaring algebraic effects ('@Eff') or state capabilities ('&Cap') on a 'meta fn' signature |
-| **`E0814`** | `StaticValueRequiredError` | Run-time value is supplied where a static value is required |
-| **`E0815`** | `InvalidArrayLengthError` | Statically known int fixed-array length is negative |
-| **`E0820`** | `TotalityViolationError` | A halt function/type body or pure parallel callback cannot be proved finite, including transitive callable, handler, cleanup, or recovery computation |
-| **`E0821`** | `HaltPurityViolationError` | A halt fn retains outward effects or capabilities after lawful handling and local discharge, or declares a nonempty outward row |
-| **`E0822`** | `InvalidBudgetBoundaryError` | Div::budget computation fails purity or coverage requirements, a required actual callable's coverage is unresolved, or a Div::exhausted arm attempts resumption |
-| **`E0830`** | `MetaAssertionFailedError` | An assert condition evaluates to false during meta/type evaluation |
-| **`E0831`** | `StaticEvaluationPanicError` | A non-assertion panic occurs during meta/type evaluation |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0810`** | [`CallFamilyViolationError`](#disjoint-call-families-evaluation-budgets-and-branch-pruning) |
+| **`E0811`** | [`CompileTimeBudgetExceededError`](#pure-type-functions-and-type-return-privilege) |
+| **`E0812`** | [`MetaTypeReturnProhibitedError`](#pure-type-functions-and-type-return-privilege) |
+| **`E0813`** | [`MetaComputationAnnotationError`](#pure-type-functions-and-type-return-privilege) |
+| **`E0814`** | [`StaticValueRequiredError`](#disjoint-call-families-evaluation-budgets-and-branch-pruning) |
+| **`E0815`** | [`InvalidArrayLengthError`](#array-map-and-tuple-types) |
+| **`E0820`** | [`TotalityViolationError`](#termination-and-halt-contracts); [Deterministic Data Parallelism and Divide-and-Conquer Primitives](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
+| **`E0821`** | [`HaltPurityViolationError`](#termination-and-halt-contracts) |
+| **`E0822`** | [`InvalidBudgetBoundaryError`](#finite-evaluation-with-div) |
+| **`E0830`** | [`MetaAssertionFailedError`](#pure-type-functions-and-type-return-privilege) |
+| **`E0831`** | [`StaticEvaluationPanicError`](#pure-type-functions-and-type-return-privilege) |
 
 ### Module Forms, Entry Points, and External Contracts
 
-| Code | Diagnostic Name | Normative Condition |
-| :---: | :--- | :--- |
-| **`E0901`** | `BodyInDeclModuleError` | Supplying an implementation body, variable initializer, or mutable binding in a '.d.ril' declaration unit |
-| **`E0902`** | `MissingBodyInStandardModuleError` | Omitting an implementation body from a function declared in a standard '.ril' module |
-| **`E0903`** | `MissingEntryPointError` | Executable program lacks its required root main function |
-| **`E0907`** | `ForeignStructuralFieldPenetrationError` | Attempting to access fields, mutate, index, deconstruct, or instantiate an opaque external type |
-| **`E0908`** | `UnsupportedExternalAuthorityContractError` | External declaration or use requests authority outside ordinary exchange, temporary callbacks, and explicitly listed resource contracts |
+| Code | Diagnostic and defining rule |
+| :---: | :--- |
+| **`E0901`** | [`BodyInDeclModuleError`](#external-interface-declarations) |
+| **`E0902`** | [`MissingBodyInStandardModuleError`](#external-interface-declarations) |
+| **`E0903`** | [`MissingEntryPointError`](#program-entry-point) |
+| **`E0904`** | [`InvalidEntryPointError`](#program-entry-point) |
+| **`E0907`** | [`ForeignStructuralFieldPenetrationError`](#external-interface-declarations) |
+| **`E0908`** | [`UnsupportedExternalAuthorityContractError`](#external-interface-declarations) |
 
 ## Advisory Warnings
 
