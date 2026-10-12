@@ -1,0 +1,15 @@
+[package]
+name = "ril-codegen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ril-compiler-core.workspace = true
+ril-ir.workspace = true
+serde.workspace = true
+thiserror.workspace = true

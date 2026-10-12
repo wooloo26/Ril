@@ -1,0 +1,18 @@
+--@ case: both-ends
+--@ mode: run-pass
+--@ spec: STD#ordering-deques-and-heaps
+--@ entry: test_both_ends
+--@ file: both-ends.ril
+use ril/deque
+
+pub fn test_both_ends() {
+    let mut queue = Deque::new<int>()
+    assert(Deque::pop_front(mut queue) == None && Deque::pop_back(mut queue) == None)
+    Deque::push_back(mut queue, 2)
+    Deque::push_front(mut queue, 1)
+    Deque::push_back(mut queue, 3)
+    assert(Deque::values(queue) == [1, 2, 3] && Deque::len(queue) == 3)
+    assert(Deque::pop_back(mut queue) == Some(3) && Deque::pop_front(mut queue) == Some(1))
+}
+--@ end-file
+--@ end-case

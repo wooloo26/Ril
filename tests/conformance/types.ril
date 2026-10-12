@@ -1,0 +1,206 @@
+--@ case: accept-closed-record-width
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: reject-closed-record-width
+--@ file: accept-closed-record-width.ril
+fn make() -> { name: str, extra: int } { .{ name: "a", extra: 1 } }
+
+fn example() {
+    let getter: fn() -> { name: str, extra: int } = make
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-closed-record-width
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: accept-closed-record-width
+-- Error [E0301]: reject closed record width
+--@ file: reject-closed-record-width.ril
+fn make() -> { name: str, extra: int } { .{ name: "a", extra: 1 } }
+
+fn example() {
+    let getter: fn() -> { name: str } = make
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-incompatible-binding
+--@ mode: check-pass
+--@ spec: SPEC#diagnostic-classification
+--@ companion: reject-incompatible-binding
+--@ file: accept-incompatible-binding.ril
+fn example() {
+    let value: str = "one"
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-incompatible-binding
+--@ mode: check-fail
+--@ spec: SPEC#diagnostic-classification
+--@ companion: accept-incompatible-binding
+-- Error [E0301]: reject incompatible binding
+--@ file: reject-incompatible-binding.ril
+fn example() {
+    let value: str = 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-nominal-identity
+--@ mode: check-pass
+--@ spec: SPEC#nominal-type-wrappers
+--@ companion: reject-nominal-identity
+--@ file: accept-nominal-identity.ril
+type UserId(int)
+type AccountId(int)
+
+fn example() {
+    let same = UserId(1) == UserId(1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-nominal-identity
+--@ mode: check-fail
+--@ spec: SPEC#nominal-type-wrappers
+--@ companion: accept-nominal-identity
+-- Error [E0305]: reject nominal identity
+--@ file: reject-nominal-identity.ril
+type UserId(int)
+type AccountId(int)
+
+fn example() {
+    let same = UserId(1) == AccountId(1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-pinned-scalar
+--@ mode: check-pass
+--@ spec: SPEC#value-types
+--@ companion: reject-pinned-scalar
+--@ file: accept-pinned-scalar.ril
+fn example() {
+    var value = 1
+    value += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-pinned-scalar
+--@ mode: check-fail
+--@ spec: SPEC#value-types
+--@ companion: accept-pinned-scalar
+-- Error [E0402]: reject pinned scalar
+--@ file: reject-pinned-scalar.ril
+fn example() {
+    let mut value = 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-sum-argument-invariance
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: reject-sum-argument-invariance
+--@ file: accept-sum-argument-invariance.ril
+fn example() {
+    let value: ?int = Some(1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-sum-argument-invariance
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: accept-sum-argument-invariance
+-- Error [E0301]: reject sum argument invariance
+--@ file: reject-sum-argument-invariance.ril
+fn example() {
+    let value: ?int = Some("a")
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-value-borrow
+--@ mode: check-pass
+--@ spec: SPEC#value-types
+--@ companion: reject-value-borrow
+--@ file: accept-value-borrow.ril
+fn example(value: int) {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-value-borrow
+--@ mode: check-fail
+--@ spec: SPEC#value-types
+--@ companion: accept-value-borrow
+-- Error [E0401]: reject value borrow
+--@ file: reject-value-borrow.ril
+fn example(mut value: int) {}
+--@ end-file
+--@ end-case
+
+--@ case: boolean-unit
+--@ mode: run-pass
+--@ spec: SPEC#boolean-and-unit-literals
+--@ entry: test_boolean_unit
+--@ file: boolean-unit.ril
+pub fn test_boolean_unit() {
+    let yes: bool = true
+    let no: bool = false
+    let unit: () = ()
+    assert(yes != no && unit == ())
+}
+--@ end-file
+--@ end-case
+
+--@ case: copy-by-value
+--@ mode: run-pass
+--@ spec: SPEC#value-types
+--@ entry: test_copy_by_value
+--@ file: copy-by-value.ril
+pub fn test_copy_by_value() {
+    let original = 42
+    var changed = original
+    changed += 1
+    assert(original == 42 && changed == 43)
+}
+--@ end-file
+--@ end-case
+
+--@ case: nominal-unwrapping
+--@ mode: run-pass
+--@ spec: SPEC#nominal-type-wrappers
+--@ entry: test_nominal_unwrapping
+--@ file: nominal-unwrapping.ril
+type UserId(int)
+type Coord(int, int)
+type Marker
+
+pub fn test_nominal_unwrapping() {
+    assert(inner(UserId(7)) == 7)
+    let Coord(x, y) = Coord(1, 2)
+    assert(x == 1 && y == 2)
+    assert(inner(Marker) == ())
+}
+--@ end-file
+--@ end-case
+
+--@ case: reference-identity
+--@ mode: run-pass
+--@ spec: SPEC#reference-types
+--@ entry: test_reference_identity
+--@ file: reference-identity.ril
+type Cell = { mut count: int }
+
+pub fn test_reference_identity() {
+    let mut value = Cell.{ count: 1 }
+    let view alias = value
+    value.count = 2
+    assert(alias.count == 2)
+}
+--@ end-file
+--@ end-case

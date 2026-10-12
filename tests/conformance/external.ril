@@ -1,0 +1,303 @@
+--@ case: accept-budget-excludes-foreign
+--@ mode: check-pass
+--@ spec: SPEC#finite-evaluation-with-div
+--@ companion: reject-budget-excludes-foreign
+--@ file: root.ril
+use foreign
+fn example() -> int { Foreign::value() }
+--@ end-file
+--@ file: foreign.d.ril
+pub fn value() -> int
+--@ end-file
+--@ end-case
+
+--@ case: reject-budget-excludes-foreign
+--@ mode: check-fail
+--@ spec: SPEC#finite-evaluation-with-div
+--@ companion: accept-budget-excludes-foreign
+-- Error [E0822]: reject budget excludes foreign
+--@ file: root.ril
+use foreign
+fn example() -> int { with Div::exhausted() -> 0; with Div::budget(10); Foreign::value() }
+--@ end-file
+--@ file: foreign.d.ril
+pub fn value() -> int
+--@ end-file
+--@ end-case
+
+--@ case: accept-declaration-body
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-declaration-body
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub fn value() -> int
+--@ end-file
+--@ end-case
+
+--@ case: reject-declaration-body
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-declaration-body
+-- Error [E0901]: reject declaration body
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub fn value() -> int { 1 }
+--@ end-file
+--@ end-case
+
+--@ case: accept-declaration-initializer
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-declaration-initializer
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub let VALUE: int
+--@ end-file
+--@ end-case
+
+--@ case: reject-declaration-initializer
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-declaration-initializer
+-- Error [E0901]: reject declaration initializer
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub let VALUE: int = 1
+--@ end-file
+--@ end-case
+
+--@ case: accept-declaration-variable
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-declaration-variable
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub let VALUE: int
+--@ end-file
+--@ end-case
+
+--@ case: reject-declaration-variable
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-declaration-variable
+-- Error [E0901]: reject declaration variable
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub var value: int
+--@ end-file
+--@ end-case
+
+--@ case: accept-foreign-hidden-callback
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-foreign-hidden-callback
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub fn value() -> { value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-foreign-hidden-callback
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-foreign-hidden-callback
+-- Error [E0908]: reject foreign hidden callback
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub fn action() -> { callback: fn() -> () }
+--@ end-file
+--@ end-case
+
+--@ case: accept-foreign-mutable-data
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-foreign-mutable-data
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub fn inspect(items: []int)
+--@ end-file
+--@ end-case
+
+--@ case: reject-foreign-mutable-data
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-foreign-mutable-data
+-- Error [E0908]: reject foreign mutable data
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub fn edit(mut items: []int) &mut
+--@ end-file
+--@ end-case
+
+--@ case: accept-foreign-retained-callback
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-foreign-retained-callback
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub fn call(callback: fn() -> ())
+--@ end-file
+--@ end-case
+
+--@ case: reject-foreign-retained-callback
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-foreign-retained-callback
+-- Error [E0908]: reject foreign retained callback
+--@ file: root.ril
+use foreign
+--@ end-file
+--@ file: foreign.d.ril
+pub fn keep(^mut callback: fn() -> () &closure) &^mut
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-implementation-body
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-missing-implementation-body
+--@ file: accept-missing-implementation-body.ril
+fn value() -> int { 1 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-implementation-body
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-missing-implementation-body
+-- Error [E0902]: reject missing implementation body
+--@ file: reject-missing-implementation-body.ril
+fn value() -> int
+--@ end-file
+--@ end-case
+
+--@ case: accept-opaque-field
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-opaque-field
+--@ file: root.ril
+use foreign
+fn example(value: Foreign::Object) { let _ = value }
+--@ end-file
+--@ file: foreign.d.ril
+pub type Object
+--@ end-file
+--@ end-case
+
+--@ case: reject-opaque-field
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-opaque-field
+-- Error [E0907]: reject opaque field
+--@ file: root.ril
+use foreign
+fn example(value: Foreign::Object) { let _ = value.id }
+--@ end-file
+--@ file: foreign.d.ril
+pub type Object
+--@ end-file
+--@ end-case
+
+--@ case: accept-opaque-index
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-opaque-index
+--@ file: root.ril
+use foreign
+fn example(value: Foreign::Object) { let _ = value }
+--@ end-file
+--@ file: foreign.d.ril
+pub type Object
+--@ end-file
+--@ end-case
+
+--@ case: reject-opaque-index
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-opaque-index
+-- Error [E0907]: reject opaque index
+--@ file: root.ril
+use foreign
+fn example(value: Foreign::Object) { let _ = value[0] }
+--@ end-file
+--@ file: foreign.d.ril
+pub type Object
+--@ end-file
+--@ end-case
+
+--@ case: accept-opaque-inner
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-opaque-inner
+--@ file: root.ril
+use foreign
+fn example(value: Foreign::Object) { let _ = value }
+--@ end-file
+--@ file: foreign.d.ril
+pub type Object
+--@ end-file
+--@ end-case
+
+--@ case: reject-opaque-inner
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-opaque-inner
+-- Error [E0907]: reject opaque inner
+--@ file: root.ril
+use foreign
+fn example(value: Foreign::Object) { let _ = inner(value) }
+--@ end-file
+--@ file: foreign.d.ril
+pub type Object
+--@ end-file
+--@ end-case
+
+--@ case: accept-return-is-not-fresh
+--@ mode: check-pass
+--@ spec: SPEC#external-interface-declarations
+--@ companion: reject-return-is-not-fresh
+--@ file: root.ril
+use foreign
+fn example() { let mut values = clone(Foreign::values()); values !> Array::push(1) }
+--@ end-file
+--@ file: foreign.d.ril
+pub fn values() -> []int
+--@ end-file
+--@ end-case
+
+--@ case: reject-return-is-not-fresh
+--@ mode: check-fail
+--@ spec: SPEC#external-interface-declarations
+--@ companion: accept-return-is-not-fresh
+-- Error [E0528]: reject return is not fresh
+--@ file: root.ril
+use foreign
+fn example() { let mut values = Foreign::values(); values !> Array::push(1) }
+--@ end-file
+--@ file: foreign.d.ril
+pub fn values() -> []int
+--@ end-file
+--@ end-case

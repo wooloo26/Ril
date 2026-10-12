@@ -1,0 +1,19 @@
+--@ case: snapshot-and-failed-append
+--@ mode: run-pass
+--@ spec: STD#unicode-and-stringbuilder
+--@ entry: test_snapshot_and_failed_append
+--@ file: snapshot-and-failed-append.ril
+use ril/string_builder
+
+pub fn test_snapshot_and_failed_append() {
+    let mut builder = StringBuilder::new()
+    StringBuilder::append(mut builder, "hello")
+    let snapshot = StringBuilder::to_string(builder)
+    assert(StringBuilder::append_scalar(mut builder, 33u32) is Ok())
+    assert(StringBuilder::append_scalar(mut builder, 0xD800u32) is Err(_))
+    assert(snapshot == "hello" && StringBuilder::to_string(builder) == "hello!")
+    StringBuilder::clear(mut builder)
+    assert(StringBuilder::to_string(builder) == "")
+}
+--@ end-file
+--@ end-case

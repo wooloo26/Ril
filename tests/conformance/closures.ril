@@ -1,0 +1,167 @@
+--@ case: accept-clone-environment
+--@ mode: check-pass
+--@ spec: SPEC#deep-immutability
+--@ companion: reject-clone-environment
+--@ file: accept-clone-environment.ril
+type Step = fn() -> int &closure
+fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
+
+fn example() {
+    let mut step = make_step()
+    let value = step()
+    let _ = clone(value)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-clone-environment
+--@ mode: check-fail
+--@ spec: SPEC#deep-immutability
+--@ companion: accept-clone-environment
+-- Error [E0530]: reject clone environment
+--@ file: reject-clone-environment.ril
+type Step = fn() -> int &closure
+fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
+
+fn example() {
+    let mut step = make_step()
+    let _ = step()
+    let _ = clone(step)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-immutable-environment
+--@ mode: check-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: reject-immutable-environment
+--@ file: accept-immutable-environment.ril
+type Step = fn() -> int &closure
+fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
+
+fn example() {
+    let mut step = make_step()
+    let _ = step()
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-immutable-environment
+--@ mode: check-fail
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: accept-immutable-environment
+-- Error [E0535]: reject immutable environment
+--@ file: reject-immutable-environment.ril
+type Step = fn() -> int &closure
+fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
+
+fn example() {
+    let step = make_step()
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-capture
+--@ mode: check-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: reject-missing-capture
+--@ file: accept-missing-capture.ril
+type Adder = fn(int) -> int &closure
+fn make(base: int) -> Adder &capture { \value -> base + value }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-capture
+--@ mode: check-fail
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: accept-missing-capture
+-- Error [E0510]: reject missing capture
+--@ file: reject-missing-capture.ril
+type Adder = fn(int) -> int &closure
+fn make(base: int) -> Adder { \value -> base + value }
+--@ end-file
+--@ end-case
+
+--@ case: accept-readonly-environment-handle
+--@ mode: check-pass
+--@ spec: SPEC#closure-capabilities-and-handle-permissions
+--@ companion: reject-readonly-environment-handle
+--@ file: accept-readonly-environment-handle.ril
+type Step = fn() -> int &closure
+fn make() -> Step &capture { var count = 0; \-> { count += 1; count } }
+
+fn example() {
+    let mut step = make()
+    let _ = step()
+    let _ = step()
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-readonly-environment-handle
+--@ mode: check-fail
+--@ spec: SPEC#closure-capabilities-and-handle-permissions
+--@ companion: accept-readonly-environment-handle
+-- Error [E0520]: reject readonly environment handle
+--@ file: reject-readonly-environment-handle.ril
+type Step = fn() -> int &closure
+fn make() -> Step &capture { var count = 0; \-> { count += 1; count } }
+
+fn example() {
+    let mut step = make()
+    let _ = step()
+    let view observed = step
+    let _ = observed()
+}
+--@ end-file
+--@ end-case
+
+--@ case: projection-accessors
+--@ mode: run-pass
+--@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+--@ entry: test_projection_accessors
+--@ file: projection-accessors.ril
+pub fn test_projection_accessors() {
+    let values = [.{ id: 1, name: "a" }, .{ id: 2, name: "b" }]
+    assert(Array::map(values, \.name) == ["a", "b"])
+    assert(Array::map([(1, "a"), (2, "b")], \.0) == [1, 2])
+    let optional: []?{ name: str } = [Some(.{ name: "a" }), None]
+    assert(Array::map(optional, \?.name) == [Some("a"), None])
+    let doubled = [1, 2] |> Array::map \n -> n * 2
+    assert(doubled == [2, 4])
+}
+--@ end-file
+--@ end-case
+
+--@ case: shared-capture-origin
+--@ mode: run-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ spec: SPEC#closure-capabilities-and-handle-permissions
+--@ entry: test_shared_capture_origin
+--@ file: shared-capture-origin.ril
+type Cell = { mut count: int }
+
+pub fn test_shared_capture_origin() {
+    let mut cell = Cell.{ count: 0 }
+    let mut step = \-> { cell.count += 1; cell.count }
+    assert(step() == 1)
+    cell.count += 1
+    assert(step() == 3)
+}
+--@ end-file
+--@ end-case
+
+--@ case: stateful-closure
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_stateful_closure
+--@ file: stateful-closure.ril
+type Step = fn() -> int &closure
+fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
+
+pub fn test_stateful_closure() {
+    let mut step = make_step()
+    assert(step() == 1 && step() == 2)
+}
+--@ end-file
+--@ end-case

@@ -1,0 +1,110 @@
+--@ case: entropy-empty
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ entry: test_entropy_empty
+--@ requires: entropy
+--@ file: entropy-empty.ril
+use ril/random
+
+pub fn test_entropy_empty() @Fiber {
+    assert(Random::entropy(0) is Ok(b""))
+}
+--@ end-file
+--@ end-case
+
+--@ case: entropy-nonempty
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ entry: test_entropy_nonempty
+--@ requires: entropy
+--@ file: entropy-nonempty.ril
+use ril/random
+
+pub fn test_entropy_nonempty() @Fiber {
+    match Random::entropy(16) {
+        Ok(data) -> assert(len(data) == 16),
+        Err(error) -> { let _ = error.kind },
+    }
+}
+--@ end-file
+--@ end-case
+
+--@ case: negative-entropy-safe
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ companion: negative-entropy
+--@ entry: test_negative_entropy_safe
+--@ requires: entropy
+--@ file: negative-entropy-safe.ril
+use ril/random
+
+pub fn test_negative_entropy_safe() @Fiber {
+    assert(Random::entropy(0) is Ok(b""))
+}
+--@ end-file
+--@ end-case
+
+--@ case: negative-entropy
+--@ mode: run-panic
+--@ spec: STD#time-and-randomness
+--@ companion: negative-entropy-safe
+--@ entry: test_negative_entropy
+--@ requires: entropy
+-- Panics: negative entropy
+--@ file: negative-entropy.ril
+use ril/random
+
+pub fn test_negative_entropy() @Fiber {
+    let _ = Random::entropy(-1) ?? \_error -> b""
+}
+--@ end-file
+--@ end-case
+
+--@ case: seed-and-clone
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ entry: test_seed_and_clone
+--@ seed: 0
+--@ file: seed-and-clone.ril
+use ril/random
+
+pub fn test_seed_and_clone() {
+    let mut rng = Random::seeded(0u64)
+    assert(Random::next_u64(mut rng) == 0xe220a8397b1dcdafu64)
+    let mut independent = clone(rng)
+    assert(Random::next_u64(mut rng) == Random::next_u64(mut independent))
+    for 0..100 as _index { assert(Random::below(mut rng, 7u64) < 7u64) }
+}
+--@ end-file
+--@ end-case
+
+--@ case: zero-upper-safe
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ companion: zero-upper
+--@ entry: test_zero_upper_safe
+--@ file: zero-upper-safe.ril
+use ril/random
+
+pub fn test_zero_upper_safe() {
+    let mut rng = Random::seeded(0u64)
+    assert(Random::below(mut rng, 1u64) == 0u64)
+}
+--@ end-file
+--@ end-case
+
+--@ case: zero-upper
+--@ mode: run-panic
+--@ spec: STD#time-and-randomness
+--@ companion: zero-upper-safe
+--@ entry: test_zero_upper
+-- Panics: zero upper
+--@ file: zero-upper.ril
+use ril/random
+
+pub fn test_zero_upper() {
+    let mut rng = Random::seeded(0u64)
+    let _ = Random::below(mut rng, 0u64)
+}
+--@ end-file
+--@ end-case

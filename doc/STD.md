@@ -36,6 +36,7 @@ Unless an operation states an exception, every module uses these contracts:
 | :--- | :--- |
 | Invocation | Ordinary run-time callable; omitted rows add no concrete effect/state. Actual callback obligations are forwarded; read-only, `mut`, and `^mut` modes remain distinct |
 | Data | Changing a new collection's structure does not change its input collections. Elements retain their original sharing and permissions; returning or inserting an element does not freeze a live reference or grant write access |
+| Fresh storage input | Designated inputs receive unpublished construction authority; existing read-only paths retain their permissions |
 | Callbacks | Synchronous on the caller's task, in source order, at most once per visited element; abort stops later calls. No retention after return unless stated |
 | Callback authority | Ordinary handles grant no mutable-environment invocation; operations state any additional modes or confined invocation authority |
 | Results | Inspection duties survive aliases, copies, aggregates and transport; aliases share one obligation. An outer tag test does not inspect nested Results. Normal completion must inspect, propagate, or return outstanding results; abnormal unwinding follows its boundary contract |
@@ -242,7 +243,26 @@ pub fn all<T>(items: []T, predicate: fn(T) -> bool) -> bool
 pub fn for_each<T>(items: []T, action: fn(T) -> ())
 ```
 
-Read-only Array operations also accept fixed arrays `[N]T` with the same element behavior; length-changing operations require `[]T`. No call grants writes through a slice window. `push` and `insert` additionally admit `^mut value` when retaining an existing writer is requested; that family has `&^mut` and obeys retained sharing. Ordinary insertion preserves only its supplied read permission. All callback operations also admit `mut callback` with `&mut`; both `fold`'s accumulator and returned elements retain their original sharing and permissions.
+```ril
+type Cell = { mut count: int }
+let base = Cell.{ count: 1 }
+let mut cells: []Cell = []
+cells !> Array::push(clone(base))       -- OK: fresh writable element
+cells !> Array::insert(0, Cell.{ count: 2 })
+cells[0].count += 1
+cells[1].count += 1
+assert(base.count == 1 && cells[0].count == 3 && cells[1].count == 2)
+cells !> Array::push(base)             -- OK: existing immutable element
+-- cells[2].count += 1                -- Error [E0522]: insertion does not upgrade base
+```
+
+| `push` / `insert` value | Stored access / capability |
+| :--- | :--- |
+| Eligible fresh construction, clone or factory result | Initial writes under `&mut`; source must retain unpublished construction authority |
+| Other ordinary argument | Read-only |
+| `^mut target` | Retained writer under `&^mut` |
+
+Read-only Array operations also accept `[N]T`; length changes require `[]T`. Slice windows grant no writes. Callback operations also admit `mut callback` with `&mut`. Fold accumulators and returned elements preserve their original sharing and permissions.
 
 | Operation | Behavior and complexity |
 | :--- | :--- |
@@ -292,11 +312,14 @@ pub fn from<K, V>(entries: [](K, V)) -> [K: V]
 | Other key types | `E0328`; equality support alone is insufficient |
 | `get` / `remove` | None on absence |
 | `set` | Insert or replace; preserve existing position; old Result obligations are not discharged |
+| Ordinary `set` value | [Same reception as Array insertion](#array), under `&mut`; other ordinary arguments retain read-only permissions |
 | `^mut value` | Retain the supplied writer under `&^mut` |
 | `keys` / `values` / `entries` | Fresh outer arrays in corresponding insertion order |
 | `from` duplicates | Last value, first position; scan left-to-right |
 
 Keys copy by value and cannot change through source reassignment; key comparison invokes no user callback. Map equality compares membership, ignoring insertion order.
+
+Only `set`'s value has this initialization contract; keys and `from` follow ordinary rules.
 
 Lookup/update/remove require expected O(1) key operations and O(n) worst case; enumeration/from require O(n) expected key operations. Maps expose insertion order and membership, with no public hash value.
 
@@ -816,10 +839,16 @@ let path = Path::from_string("src/main.ril")
 assert(Path::extension(path) == Some(Os::from_string("ril")))
 assert(Path::file_name(Path::from_string(".profile")) == Some(Os::from_string(".profile")))
 assert(Path::extension(Path::from_string(".profile")) == None)
+let result: Result<?Os::NativeString, str> = Ok(Some(Os::from_string("")))
+assert(result is Ok(Some(Os::from_string("")))) -- Expected-value expression, no binding
 if Os::platform() == Os::Platform::Posix {
     let raw = Os::from_posix_bytes(b"a\xFF") ?? \_error -> panic("wrong platform")
     assert(Os::to_string(raw) is Err(Os::NativeError::InvalidEncoding))
     assert(Os::posix_bytes(raw) is Ok(b"a\xFF"))
+}
+if Os::platform() == Os::Platform::Windows {
+    let raw = Os::from_windows_units([0xD800u16]) ?? \_error -> panic("wrong platform")
+    assert(Os::windows_units(raw) is Ok([0xD800u16])) -- Whole-array equality
 }
 ```
 

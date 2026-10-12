@@ -1,0 +1,166 @@
+--@ case: accept-branch-type
+--@ mode: check-pass
+--@ spec: SPEC#conditional-expressions
+--@ companion: reject-branch-type
+--@ file: accept-branch-type.ril
+fn example(choose: bool) {
+    let value = if choose { 1 } else { 2 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-branch-type
+--@ mode: check-fail
+--@ spec: SPEC#conditional-expressions
+--@ companion: accept-branch-type
+-- Error [E0351]: reject branch type
+--@ file: reject-branch-type.ril
+fn example(choose: bool) {
+    let value = if choose { 1 } else { "a" }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-last-outside-loop
+--@ mode: check-pass
+--@ spec: SPEC#control-transfers
+--@ companion: reject-last-outside-loop
+--@ file: accept-last-outside-loop.ril
+fn example() {
+    loop { last }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-last-outside-loop
+--@ mode: check-fail
+--@ spec: SPEC#control-transfers
+--@ companion: accept-last-outside-loop
+-- Error [E0707]: reject last outside loop
+--@ file: reject-last-outside-loop.ril
+fn example() {
+    last
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-next-outside-loop
+--@ mode: check-pass
+--@ spec: SPEC#control-transfers
+--@ companion: reject-next-outside-loop
+--@ file: accept-next-outside-loop.ril
+fn example() {
+    loop { last }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-next-outside-loop
+--@ mode: check-fail
+--@ spec: SPEC#control-transfers
+--@ companion: accept-next-outside-loop
+-- Error [E0707]: reject next outside loop
+--@ file: reject-next-outside-loop.ril
+fn example() {
+    next
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-nonboolean-condition
+--@ mode: check-pass
+--@ spec: SPEC#conditional-expressions
+--@ companion: reject-nonboolean-condition
+--@ file: accept-nonboolean-condition.ril
+fn example() {
+    if true {}
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-nonboolean-condition
+--@ mode: check-fail
+--@ spec: SPEC#conditional-expressions
+--@ companion: accept-nonboolean-condition
+-- Error [E0350]: reject nonboolean condition
+--@ file: reject-nonboolean-condition.ril
+fn example() {
+    if 1 {}
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-nonboolean-logical
+--@ mode: check-pass
+--@ spec: SPEC#logical-operators
+--@ companion: reject-nonboolean-logical
+--@ file: accept-nonboolean-logical.ril
+fn example() {
+    let value = true && false
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-nonboolean-logical
+--@ mode: check-fail
+--@ spec: SPEC#logical-operators
+--@ companion: accept-nonboolean-logical
+-- Error [E0350]: reject nonboolean logical
+--@ file: reject-nonboolean-logical.ril
+fn example() {
+    let value = true && 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-noniterable-string
+--@ mode: check-pass
+--@ spec: SPEC#loop-expressions
+--@ companion: reject-noniterable-string
+--@ file: accept-noniterable-string.ril
+fn example() {
+    for String::scalars("abc") as value {}
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-noniterable-string
+--@ mode: check-fail
+--@ spec: SPEC#loop-expressions
+--@ companion: accept-noniterable-string
+-- Error [E0355]: reject noniterable string
+--@ file: reject-noniterable-string.ril
+fn example() {
+    for "abc" as value {}
+}
+--@ end-file
+--@ end-case
+
+--@ case: loop-last-next
+--@ mode: run-pass
+--@ spec: SPEC#control-transfers
+--@ entry: test_loop_last_next
+--@ file: loop-last-next.ril
+pub fn test_loop_last_next() {
+    var sum = 0
+    for 1..=10 as value { if value > 6 { last }; if value % 2 == 0 { next }; sum += value }
+    assert(sum == 9)
+    var count = 0
+    let result = loop { count += 1; if count == 3 { last count * 2 } }
+    assert(result == 6)
+}
+--@ end-file
+--@ end-case
+
+--@ case: short-circuit
+--@ mode: run-pass
+--@ spec: SPEC#logical-operators
+--@ entry: test_short_circuit
+--@ file: short-circuit.ril
+pub fn test_short_circuit() {
+    assert(!(false && panic("rhs must not execute")))
+    assert(true || panic("rhs must not execute"))
+    assert(!false && !(!true))
+}
+--@ end-file
+--@ end-case

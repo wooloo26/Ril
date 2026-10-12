@@ -1,0 +1,171 @@
+--@ case: accept-declaration-unit-shape
+--@ mode: check-pass
+--@ spec: SPEC#modules-and-compilation-units
+--@ companion: reject-declaration-unit-shape
+--@ file: accept-declaration-unit-shape.ril
+pub fn answer() -> int { 7 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-declaration-unit-shape
+--@ mode: check-fail
+--@ spec: SPEC#modules-and-compilation-units
+--@ companion: accept-declaration-unit-shape
+-- Error [E0902]: reject declaration unit shape
+--@ file: reject-declaration-unit-shape.ril
+pub fn answer() -> int
+--@ end-file
+--@ end-case
+
+--@ case: accept-effectful-initializer
+--@ mode: check-pass
+--@ spec: SPEC#top-level-initialization-and-purity
+--@ companion: reject-effectful-initializer
+--@ file: accept-effectful-initializer.ril
+let VALUE = 1
+--@ end-file
+--@ end-case
+
+--@ case: reject-effectful-initializer
+--@ mode: check-fail
+--@ spec: SPEC#top-level-initialization-and-purity
+--@ companion: accept-effectful-initializer
+-- Error [E0202]: reject effectful initializer
+--@ file: reject-effectful-initializer.ril
+use ril/clock
+let VALUE = Clock::now()
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-member
+--@ mode: check-pass
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: reject-missing-member
+--@ file: root.ril
+use helper::{answer}
+--@ end-file
+--@ file: helper.ril
+pub fn answer() -> int { 7 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-member
+--@ mode: check-fail
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: accept-missing-member
+-- Error [E0209]: reject missing member
+--@ file: root.ril
+use helper::{missing}
+--@ end-file
+--@ file: helper.ril
+pub fn answer() -> int { 7 }
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-module
+--@ mode: check-pass
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: reject-missing-module
+--@ file: root.ril
+use helper
+--@ end-file
+--@ file: helper.ril
+pub fn answer() -> int { 7 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-module
+--@ mode: check-fail
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: accept-missing-module
+-- Error [E0208]: reject missing module
+--@ file: root.ril
+use absent
+--@ end-file
+--@ file: helper.ril
+pub fn answer() -> int { 7 }
+--@ end-file
+--@ end-case
+
+--@ case: accept-opaque-unwrapping
+--@ mode: check-pass
+--@ spec: SPEC#type-declarations-and-opaque-types
+--@ companion: reject-opaque-unwrapping
+--@ file: root.ril
+use token
+fn example(value: Token::Value) { let _ = Token::reveal(value) }
+--@ end-file
+--@ file: token.ril
+pub opaque type Value = int
+pub fn reveal(value: Value) -> int { value }
+--@ end-file
+--@ end-case
+
+--@ case: reject-opaque-unwrapping
+--@ mode: check-fail
+--@ spec: SPEC#type-declarations-and-opaque-types
+--@ companion: accept-opaque-unwrapping
+-- Error [E0308]: reject opaque unwrapping
+--@ file: root.ril
+use token
+fn example(value: Token::Value) { let _ = inner(value) }
+--@ end-file
+--@ file: token.ril
+pub opaque type Value = int
+pub fn reveal(value: Value) -> int { value }
+--@ end-file
+--@ end-case
+
+--@ case: accept-private-member
+--@ mode: check-pass
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: reject-private-member
+--@ file: root.ril
+use helper::{answer}
+--@ end-file
+--@ file: helper.ril
+pub fn answer() -> int { 7 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-private-member
+--@ mode: check-fail
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: accept-private-member
+-- Error [E0201]: reject private member
+--@ file: root.ril
+use helper::{answer}
+--@ end-file
+--@ file: helper.ril
+fn answer() -> int { 7 }
+--@ end-file
+--@ end-case
+
+--@ case: accept-state-reference
+--@ mode: check-pass
+--@ spec: SPEC#named-function-state-contract-references
+--@ companion: reject-state-reference
+--@ file: root.ril
+use counter
+fn example() &Counter::advance { Counter::advance() }
+--@ end-file
+--@ file: counter.ril
+var count = 0
+pub fn advance() &{mut count} { count += 1 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-state-reference
+--@ mode: check-fail
+--@ spec: SPEC#named-function-state-contract-references
+--@ companion: accept-state-reference
+-- Error [E0510]: reject state reference
+--@ file: root.ril
+use counter
+fn example() { Counter::advance() }
+--@ end-file
+--@ file: counter.ril
+var count = 0
+pub fn advance() &{mut count} { count += 1 }
+--@ end-file
+--@ end-case

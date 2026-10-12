@@ -1,0 +1,90 @@
+--@ case: child-clone-source
+--@ mode: run-pass
+--@ spec: STD#structured-concurrency-channels
+--@ entry: test_child_clone_source
+--@ file: child-clone-source.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+
+pub fn test_child_clone_source() @Async {
+    let result = scope \mut s -> {
+        let (tx, mut rx) = Channel::bounded<int>(1)
+        let producer = s.fork(\-> { let mut local = clone(tx); assert((local !> Channel::send(7)) is Ok()); Channel::close(local) })
+        assert((rx !> Channel::recv()) is Ok(7))
+        producer.join()?
+        Channel::close(tx)
+        assert((rx !> Channel::recv()) is Err(Channel::ChannelError::Closed))
+        Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-case
+
+--@ case: detach-attach
+--@ mode: run-pass
+--@ spec: STD#structured-concurrency-channels
+--@ entry: test_detach_attach
+--@ file: detach-attach.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+
+pub fn test_detach_attach() @Async {
+    let result = scope \mut s -> {
+        let (mut tx, mut rx) = Channel::bounded<int>(1)
+        let ticket = Channel::detach(mut rx)
+        let task = s.fork(\-> { let mut local = Channel::attach(ticket); (local !> Channel::recv()) ?? \_error -> -1 })
+        assert((tx !> Channel::send(8)) is Ok())
+        assert(task.join()? == 8)
+        Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-case
+
+--@ case: failed-producer-cancels-wait
+--@ mode: run-pass
+--@ spec: STD#structured-concurrency-channels
+--@ entry: test_failed_producer_cancels_wait
+--@ file: failed-producer-cancels-wait.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+
+pub fn test_failed_producer_cancels_wait() @Async {
+    let result: Result<(), TaskFault> = scope \mut s -> {
+        let (tx, mut rx) = Channel::bounded<int>(1)
+        s.fork(\-> { let local = clone(tx); Channel::close(local); panic("producer") })
+        let _ = (rx !> Channel::recv()) ?? \_error -> panic("cancelled wait resumed")
+        panic("cancelled body resumed")
+    }
+    assert(result is Err(TaskFault::Panicked(_)))
+}
+--@ end-file
+--@ end-case
+
+--@ case: fifo-and-closed
+--@ mode: run-pass
+--@ spec: STD#structured-concurrency-channels
+--@ entry: test_fifo_and_closed
+--@ file: fifo-and-closed.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+
+pub fn test_fifo_and_closed() @Async {
+    let result = scope \mut s -> {
+        let task = s.fork(\-> ())
+        let (mut tx, mut rx) = Channel::bounded<int>(2)
+        assert((tx !> Channel::send(1)) is Ok())
+        assert((tx !> Channel::send(2)) is Ok())
+        Channel::close(tx)
+        assert((rx !> Channel::recv()) is Ok(1))
+        assert((rx !> Channel::recv()) is Ok(2))
+        assert((rx !> Channel::recv()) is Err(Channel::ChannelError::Closed))
+        task.join()?
+        Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-case

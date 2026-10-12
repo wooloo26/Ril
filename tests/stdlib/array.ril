@@ -1,0 +1,207 @@
+--@ case: constructive-operations
+--@ mode: run-pass
+--@ spec: STD#array
+--@ entry: test_constructive_operations
+--@ file: constructive-operations.ril
+pub fn test_constructive_operations() {
+    let empty: []int = []
+    assert(Array::reverse([1, 2]) == [2, 1])
+    assert(Array::concat([1], [2]) == [1, 2])
+    assert(Array::map([1, 2], \n -> n * 2) == [2, 4])
+    assert(Array::filter([1, 2], \n -> n > 1) == [2])
+    assert(Array::fold([1, 2], 0, \sum, n -> sum + n) == 3)
+}
+--@ end-file
+--@ end-case
+
+--@ case: insert-negative-safe
+--@ mode: run-pass
+--@ spec: STD#array
+--@ companion: insert-negative
+--@ entry: test_insert_negative_safe
+--@ file: insert-negative-safe.ril
+pub fn test_insert_negative_safe() {
+    let mut values = [0]
+    Array::insert(mut values, 0, 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: insert-negative
+--@ mode: run-panic
+--@ spec: STD#array
+--@ companion: insert-negative-safe
+--@ entry: test_insert_negative
+-- Panics: insert negative
+--@ file: insert-negative.ril
+pub fn test_insert_negative() {
+    let mut values = [0]
+    Array::insert(mut values, -1, 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: insert-past-end-safe
+--@ mode: run-pass
+--@ spec: STD#array
+--@ companion: insert-past-end
+--@ entry: test_insert_past_end_safe
+--@ file: insert-past-end-safe.ril
+pub fn test_insert_past_end_safe() {
+    let mut values = [0]
+    Array::insert(mut values, 1, 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: insert-past-end
+--@ mode: run-panic
+--@ spec: STD#array
+--@ companion: insert-past-end-safe
+--@ entry: test_insert_past_end
+-- Panics: insert past end
+--@ file: insert-past-end.ril
+pub fn test_insert_past_end() {
+    let mut values = [0]
+    Array::insert(mut values, 2, 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: mutable-callback
+--@ mode: run-pass
+--@ spec: STD#array
+--@ entry: test_mutable_callback
+--@ file: mutable-callback.ril
+pub fn test_mutable_callback() {
+    let empty: []int = []
+    var total = 0
+    let mut visit = \n -> { total += n }
+    Array::for_each([1, 2, 3], mut visit)
+    assert(total == 6)
+}
+--@ end-file
+--@ end-case
+
+--@ case: mutation
+--@ mode: run-pass
+--@ spec: STD#array
+--@ entry: test_mutation
+--@ file: mutation.ril
+pub fn test_mutation() {
+    let empty: []int = []
+    let mut values: []int = []
+    values !> Array::push(2)
+    values !> Array::insert(0, 1)
+    values !> Array::insert(2, 3)
+    assert(values == [1, 2, 3])
+    assert(Array::remove(mut values, 1) == 2)
+    assert(Array::pop(mut values) == Some(3))
+    values !> Array::truncate(10)
+    assert(values == [1])
+    values !> Array::truncate(0)
+    assert(Array::pop(mut values) == None)
+}
+--@ end-file
+--@ end-case
+
+--@ case: queries
+--@ mode: run-pass
+--@ spec: STD#array
+--@ entry: test_queries
+--@ file: queries.ril
+pub fn test_queries() {
+    let empty: []int = []
+    assert(Array::first([1, 2]) == Some(1))
+    assert(Array::first(empty) == None)
+    assert(Array::get([1], -1) == None && Array::get([1], 1) == None)
+    assert(Array::get([1], 0) == Some(1))
+    assert(Array::contains([1, 2], 2) && !Array::contains(empty, 1))
+}
+--@ end-file
+--@ end-case
+
+--@ case: remove-end-safe
+--@ mode: run-pass
+--@ spec: STD#array
+--@ companion: remove-end
+--@ entry: test_remove_end_safe
+--@ file: remove-end-safe.ril
+pub fn test_remove_end_safe() {
+    let mut values = [0]
+    let _ = Array::remove(mut values, 0)
+}
+--@ end-file
+--@ end-case
+
+--@ case: remove-end
+--@ mode: run-panic
+--@ spec: STD#array
+--@ companion: remove-end-safe
+--@ entry: test_remove_end
+-- Panics: remove end
+--@ file: remove-end.ril
+pub fn test_remove_end() {
+    let mut values = [0]
+    let _ = Array::remove(mut values, 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: short-circuit
+--@ mode: run-pass
+--@ spec: STD#array
+--@ entry: test_short_circuit
+--@ file: short-circuit.ril
+pub fn test_short_circuit() {
+    let empty: []int = []
+    assert(Array::find([1, 2], \n -> n == 2) == Some(2))
+    assert(Array::any([1, 2], \n -> n == 1))
+    assert(Array::all([1, 2], \n -> n > 0))
+    assert(!Array::any(empty, \n -> true) && Array::all(empty, \n -> false))
+    assert(Array::fold(empty, 7, \sum, n -> sum + n) == 7)
+}
+--@ end-file
+--@ end-case
+
+--@ case: short-circuit-call-count
+--@ mode: run-pass
+--@ spec: STD#array
+--@ entry: test_short_circuit_call_count
+--@ file: short-circuit-call-count.ril
+pub fn test_short_circuit_call_count() {
+    var calls = 0
+    let mut predicate = \value: int -> { calls += 1; value == 2 }
+    assert(Array::any([1, 2, 3], mut predicate) && calls == 2)
+    calls = 0
+    assert(Array::find([1, 2, 3], mut predicate) == Some(2) && calls == 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: truncate-negative-safe
+--@ mode: run-pass
+--@ spec: STD#array
+--@ companion: truncate-negative
+--@ entry: test_truncate_negative_safe
+--@ file: truncate-negative-safe.ril
+pub fn test_truncate_negative_safe() {
+    let mut values = [0]
+    Array::truncate(mut values, 0)
+}
+--@ end-file
+--@ end-case
+
+--@ case: truncate-negative
+--@ mode: run-panic
+--@ spec: STD#array
+--@ companion: truncate-negative-safe
+--@ entry: test_truncate_negative
+-- Panics: truncate negative
+--@ file: truncate-negative.ril
+pub fn test_truncate_negative() {
+    let mut values = [0]
+    Array::truncate(mut values, -1)
+}
+--@ end-file
+--@ end-case

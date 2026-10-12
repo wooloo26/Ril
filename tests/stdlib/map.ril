@@ -1,0 +1,19 @@
+--@ case: insertion-order
+--@ mode: run-pass
+--@ spec: STD#map
+--@ entry: test_insertion_order
+--@ file: insertion-order.ril
+pub fn test_insertion_order() {
+    let mut values: [str: int] = ["b": 1, "a": 2, "b": 3]
+    assert(Map::keys(values) == ["b", "a"] && Map::values(values) == [3, 2])
+    values !> Map::set("b", 4)
+    assert(Map::entries(values) == [("b", 4), ("a", 2)])
+    assert(Map::remove(mut values, "b") == Some(4))
+    values !> Map::set("b", 5)
+    assert(Map::keys(values) == ["a", "b"])
+    assert(Map::get(values, "absent") == None && !Map::contains(values, "absent"))
+    assert(Map::remove(mut values, "absent") == None)
+    assert(Map::from([("b", 1), ("a", 2), ("b", 3)]) == ["b": 3, "a": 2])
+}
+--@ end-file
+--@ end-case

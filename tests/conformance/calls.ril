@@ -1,0 +1,393 @@
+--@ case: accept-callback-parameter-mode
+--@ mode: check-pass
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: reject-callback-parameter-mode
+--@ file: accept-callback-parameter-mode.ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+
+fn example() {
+    let action: fn(mut Cell) -> () &mut = bump
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-callback-parameter-mode
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: accept-callback-parameter-mode
+-- Error [E0407]: reject callback parameter mode
+--@ file: reject-callback-parameter-mode.ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+
+fn example() {
+    let action: fn(Cell) -> () &mut = bump
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-duplicate-argument
+--@ mode: check-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: reject-duplicate-argument
+--@ file: accept-duplicate-argument.ril
+fn item(a: int = 0, b: int = 0) -> int { a + b }
+
+fn example() {
+    let value = item(b: 2, 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-duplicate-argument
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: accept-duplicate-argument
+-- Error [E0325]: reject duplicate argument
+--@ file: reject-duplicate-argument.ril
+fn item(a: int = 0, b: int = 0) -> int { a + b }
+
+fn example() {
+    let value = item(1, a: 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-effectful-default
+--@ mode: check-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: reject-effectful-default
+--@ file: accept-effectful-default.ril
+eff Read { get() -> int }
+fn value(a: int = 1) -> int { a }
+--@ end-file
+--@ end-case
+
+--@ case: reject-effectful-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: accept-effectful-default
+-- Error [E0409]: reject effectful default
+--@ file: reject-effectful-default.ril
+eff Read { get() -> int }
+fn value(a: int = Read::get()) -> int @Read { a }
+--@ end-file
+--@ end-case
+
+--@ case: accept-forward-default
+--@ mode: check-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: reject-forward-default
+--@ file: accept-forward-default.ril
+fn value(a: int = 1, b: int = a) -> int { a + b }
+--@ end-file
+--@ end-case
+
+--@ case: reject-forward-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: accept-forward-default
+-- Error [E0408]: reject forward default
+--@ file: reject-forward-default.ril
+fn value(a: int = b, b: int = 1) -> int { a + b }
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-mut-marker
+--@ mode: check-pass
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: reject-missing-mut-marker
+--@ file: accept-missing-mut-marker.ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+
+fn example() {
+    let mut cell = Cell.{ count: 0 }
+    bump(mut cell)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-mut-marker
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: accept-missing-mut-marker
+-- Error [E0405]: reject missing mut marker
+--@ file: reject-missing-mut-marker.ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+
+fn example() {
+    let mut cell = Cell.{ count: 0 }
+    bump(cell)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-parameter-capability
+--@ mode: check-pass
+--@ spec: SPEC#parameter-mutation
+--@ companion: reject-missing-parameter-capability
+--@ file: accept-missing-parameter-capability.ril
+type Cell = { mut count: int }
+fn change(mut cell: Cell) &mut { cell.count += 1 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-parameter-capability
+--@ mode: check-fail
+--@ spec: SPEC#parameter-mutation
+--@ companion: accept-missing-parameter-capability
+-- Error [E0510]: reject missing parameter capability
+--@ file: reject-missing-parameter-capability.ril
+type Cell = { mut count: int }
+fn change(mut cell: Cell) { cell.count += 1 }
+--@ end-file
+--@ end-case
+
+--@ case: accept-mutable-default
+--@ mode: check-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: reject-mutable-default
+--@ file: accept-mutable-default.ril
+fn change(mut items: []int) &mut { items !> Array::push(1) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-mutable-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: accept-mutable-default
+-- Error [E0404]: reject mutable default
+--@ file: reject-mutable-default.ril
+fn change(mut items: []int = []) &mut { items !> Array::push(1) }
+--@ end-file
+--@ end-case
+
+--@ case: accept-nonaddressable-mut
+--@ mode: check-pass
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: reject-nonaddressable-mut
+--@ file: accept-nonaddressable-mut.ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+
+fn example() {
+    let mut cell = Cell.{ count: 0 }
+    bump(mut cell)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-nonaddressable-mut
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: accept-nonaddressable-mut
+-- Error [E0410]: reject nonaddressable mut
+--@ file: reject-nonaddressable-mut.ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+
+fn example() {
+    bump(mut Cell.{ count: 0 })
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-noncallable
+--@ mode: check-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: reject-noncallable
+--@ file: accept-noncallable.ril
+fn example() {
+    let action = \-> 42
+    let value = action()
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-noncallable
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: accept-noncallable
+-- Error [E0338]: reject noncallable
+--@ file: reject-noncallable.ril
+fn example() {
+    let value = 42()
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-unknown-argument
+--@ mode: check-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: reject-unknown-argument
+--@ file: accept-unknown-argument.ril
+fn item(value: int) -> int { value }
+
+fn example() {
+    let value = item(value: 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unknown-argument
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: accept-unknown-argument
+-- Error [E0339]: reject unknown argument
+--@ file: reject-unknown-argument.ril
+fn item(value: int) -> int { value }
+
+fn example() {
+    let value = item(unknown: 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-var-parameter
+--@ mode: check-pass
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: reject-var-parameter
+--@ file: accept-var-parameter.ril
+fn example(value: int) { var local = value; local += 1 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-var-parameter
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: accept-var-parameter
+-- Error [E0403]: reject var parameter
+--@ file: reject-var-parameter.ril
+fn example(var value: int) { value += 1 }
+--@ end-file
+--@ end-case
+
+--@ case: accept-wrong-mut-mode
+--@ mode: check-pass
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: reject-wrong-mut-mode
+--@ file: accept-wrong-mut-mode.ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+
+fn example() {
+    let mut cell = Cell.{ count: 0 }
+    bump(mut cell)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-wrong-mut-mode
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ companion: accept-wrong-mut-mode
+-- Error [E0406]: reject wrong mut mode
+--@ file: reject-wrong-mut-mode.ril
+type Cell = { mut count: int }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+
+fn example() {
+    let mut cell = Cell.{ count: 0 }
+    bump(^mut cell)
+}
+--@ end-file
+--@ end-case
+
+--@ case: default-binding-order
+--@ mode: run-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ entry: test_default_binding_order
+--@ file: default-binding-order.ril
+fn pair(a: int = 1, b: int = 2) -> (int, int) { (a, b) }
+
+pub fn test_default_binding_order() {
+    assert(pair(b: 20, 10) == (10, 20))
+    assert(pair(a: 10, 20) == (10, 20))
+    assert(pair() == (1, 2))
+    let alias = pair
+    assert(alias() == (1, 2))
+}
+--@ end-file
+--@ end-case
+
+--@ case: callable-ascription-labels-and-defaults
+--@ mode: run-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: reject-ascribed-source-label
+--@ entry: test_callable_ascription_labels_and_defaults
+--@ file: callable-ascription-labels-and-defaults.ril
+fn identity(value: int = 1) -> int { value }
+
+pub fn test_callable_ascription_labels_and_defaults() {
+    let direct_alias = identity
+    let renamed: fn(other: int) -> int = identity
+    let unnamed: fn(int) -> int = identity
+    assert(direct_alias() == 1 && direct_alias(value: 2) == 2)
+    assert(renamed(other: 3) == 3 && renamed(4) == 4)
+    assert(unnamed(5) == 5)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-ascribed-source-label
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: callable-ascription-labels-and-defaults
+-- Error [E0339]: The destination callable signature replaces the source parameter label
+--@ file: reject-ascribed-source-label.ril
+fn identity(value: int = 1) -> int { value }
+
+fn example() {
+    let renamed: fn(other: int) -> int = identity
+    let value = renamed(value: 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-ascribed-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: callable-ascription-labels-and-defaults
+-- Error [E0314]: Callable-type ascription does not import the declaration's default
+--@ file: reject-ascribed-default.ril
+fn identity(value: int = 1) -> int { value }
+
+fn example() {
+    let renamed: fn(other: int) -> int = identity
+    let value = renamed()
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unnamed-callable-label
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: callable-ascription-labels-and-defaults
+-- Error [E0339]: An unnamed callable parameter permits only positional arguments
+--@ file: reject-unnamed-callable-label.ril
+fn identity(value: int = 1) -> int { value }
+
+fn example() {
+    let unnamed: fn(int) -> int = identity
+    let value = unnamed(value: 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unnamed-callable-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: callable-ascription-labels-and-defaults
+-- Error [E0314]: An unnamed callable type also discards the source default
+--@ file: reject-unnamed-callable-default.ril
+fn identity(value: int = 1) -> int { value }
+
+fn example() {
+    let unnamed: fn(int) -> int = identity
+    let value = unnamed()
+}
+--@ end-file
+--@ end-case

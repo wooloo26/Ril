@@ -1,0 +1,98 @@
+--@ case: accept-live-payload
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ companion: reject-live-payload
+--@ file: accept-live-payload.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+type Cell = { mut count: int }
+
+fn example() @Async {
+    let result = scope \mut s -> {
+        let task = s.fork(\-> ())
+        let (mut tx, mut rx) = Channel::bounded<Cell>(1)
+        let mut cell = Cell.{ count: 0 }
+        assert((tx !> Channel::send(clone_immut(cell))) is Ok())
+        assert((rx !> Channel::recv()) is Ok(_))
+        cell.count += 1
+        task.join()?
+        Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-live-payload
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+--@ companion: accept-live-payload
+-- Error [E0602]: reject live payload
+--@ file: reject-live-payload.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+type Cell = { mut count: int }
+
+fn example() @Async {
+    let result = scope \mut s -> {
+        let task = s.fork(\-> ())
+        let (mut tx, mut rx) = Channel::bounded<Cell>(1)
+        let mut cell = Cell.{ count: 0 }
+        assert((tx !> Channel::send(cell)) is Ok())
+        assert((rx !> Channel::recv()) is Ok(_))
+        cell.count += 1
+        task.join()?
+        Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-use-after-detach
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ companion: reject-use-after-detach
+--@ file: accept-use-after-detach.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+
+fn example() @Async {
+    let result = scope \mut s -> {
+        let task = s.fork(\-> ())
+        let (tx, mut rx) = Channel::bounded<int>(1)
+        let ticket = Channel::detach(mut rx)
+        let local = Channel::attach(ticket)
+        Channel::close(local)
+        Channel::close(tx)
+        task.join()?; Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-use-after-detach
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+--@ companion: accept-use-after-detach
+-- Error [E0603]: reject use after detach
+--@ file: reject-use-after-detach.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+
+fn example() @Async {
+    let result = scope \mut s -> {
+        let task = s.fork(\-> ())
+        let (tx, mut rx) = Channel::bounded<int>(1)
+        let ticket = Channel::detach(mut rx)
+        Channel::close(rx)
+        let local = Channel::attach(ticket)
+        Channel::close(local)
+        Channel::close(tx)
+        task.join()?; Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-case

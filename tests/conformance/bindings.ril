@@ -1,0 +1,109 @@
+--@ case: accept-assignment-target
+--@ mode: check-pass
+--@ spec: SPEC#assignments-and-compound-assignments
+--@ companion: reject-assignment-target
+--@ file: accept-assignment-target.ril
+fn example() {
+    var value = 1
+    value = 3
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-assignment-target
+--@ mode: check-fail
+--@ spec: SPEC#assignments-and-compound-assignments
+--@ companion: accept-assignment-target
+-- Error [E0503]: reject assignment target
+--@ file: reject-assignment-target.ril
+fn example() {
+    (1 + 2) = 3
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-chained-assignment
+--@ mode: check-pass
+--@ spec: SPEC#assignments-and-compound-assignments
+--@ companion: reject-chained-assignment
+--@ file: accept-chained-assignment.ril
+fn example() {
+    var first = 0
+    var second = 0
+    second = 1
+    first = second
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-chained-assignment
+--@ mode: check-fail
+--@ spec: SPEC#assignments-and-compound-assignments
+--@ companion: accept-chained-assignment
+-- Error [E0701]: reject chained assignment
+--@ file: reject-chained-assignment.ril
+fn example() {
+    var first = 0
+    var second = 0
+    first = second = 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-immutable-reassignment
+--@ mode: check-pass
+--@ spec: SPEC#immutable-bindings
+--@ companion: reject-immutable-reassignment
+--@ file: accept-immutable-reassignment.ril
+fn example() {
+    var value = 1
+    value = 2
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-immutable-reassignment
+--@ mode: check-fail
+--@ spec: SPEC#immutable-bindings
+--@ companion: accept-immutable-reassignment
+-- Error [E0501]: reject immutable reassignment
+--@ file: reject-immutable-reassignment.ril
+fn example() {
+    let value = 1
+    value = 2
+}
+--@ end-file
+--@ end-case
+
+--@ case: compound-assignment
+--@ mode: run-pass
+--@ spec: SPEC#assignments-and-compound-assignments
+--@ entry: test_compound_assignment
+--@ file: compound-assignment.ril
+pub fn test_compound_assignment() {
+    var value = 10
+    value += 5; value -= 2; value *= 2; value /= 2; value %= 5
+    assert(value == 3)
+    var byte_value = 250u8
+    byte_value +%= 10u8; byte_value -%= 10u8; byte_value *%= 2u8
+    assert(byte_value == 244u8)
+    var flags = 3
+    flags |= 12; flags &= 10; flags ^= 3; flags <<= 1; flags >>= 2
+    assert(flags == 4)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reassignable-and-interior
+--@ mode: run-pass
+--@ spec: SPEC#reassignable-mutable-variables
+--@ entry: test_reassignable_and_interior
+--@ file: reassignable-and-interior.ril
+pub fn test_reassignable_and_interior() {
+    var mut values = [1]
+    values !> Array::push(2)
+    values = [3]
+    assert(values == [3])
+}
+--@ end-file
+--@ end-case

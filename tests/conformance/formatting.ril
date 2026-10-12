@@ -1,0 +1,101 @@
+--@ case: accept-boolean-precision
+--@ mode: check-pass
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: reject-boolean-precision
+--@ file: accept-boolean-precision.ril
+type Token(int)
+
+fn example() {
+    let value = "{1}"
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-boolean-precision
+--@ mode: check-fail
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: accept-boolean-precision
+-- Error [E0329]: reject boolean precision
+--@ file: reject-boolean-precision.ril
+type Token(int)
+
+fn example() {
+    let value = "{true:.2}"
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-integer-precision
+--@ mode: check-pass
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: reject-integer-precision
+--@ file: accept-integer-precision.ril
+type Token(int)
+
+fn example() {
+    let value = "{1}"
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-integer-precision
+--@ mode: check-fail
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: accept-integer-precision
+-- Error [E0329]: reject integer precision
+--@ file: reject-integer-precision.ril
+type Token(int)
+
+fn example() {
+    let value = "{1:.2}"
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-wrapper-format
+--@ mode: check-pass
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: reject-wrapper-format
+--@ file: accept-wrapper-format.ril
+type Token(int)
+
+fn example() {
+    let value = "{1}"
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-wrapper-format
+--@ mode: check-fail
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: accept-wrapper-format
+-- Error [E0329]: reject wrapper format
+--@ file: reject-wrapper-format.ril
+type Token(int)
+
+fn example() {
+    let value = "{Token(1)}"
+}
+--@ end-file
+--@ end-case
+
+--@ case: numeric-and-layout
+--@ mode: run-pass
+--@ spec: SPEC#text-and-byte-literals
+--@ entry: test_numeric_and_layout
+--@ file: numeric-and-layout.ril
+pub fn test_numeric_and_layout() {
+    assert("{-42:05}" == "-0042")
+    assert("{1.25:.1f}" == "1.2")
+    assert("{12.5:.2e}" == "1.25e1")
+    assert("{1.0:.0f}" == "1")
+    assert("{-0.0}" == "-0.0")
+    assert("{true}" == "true")
+    let text = "é🙂x"
+    assert("{text:.2s}" == "é🙂")
+    let one = "x"
+    assert("{one:^4}" == " x  ")
+    assert("{42:X}" == "2A" && "{42:b}" == "101010" && "{42:o}" == "52")
+}
+--@ end-file
+--@ end-case

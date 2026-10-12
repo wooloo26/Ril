@@ -1,0 +1,189 @@
+--@ case: accept-const-sort
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-const-sort
+--@ file: accept-const-sort.ril
+type Token<size: int>(int)
+
+fn example() {
+    let value: Token<1> = Token(1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-const-sort
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: accept-const-sort
+-- Error [E0323]: reject const sort
+--@ file: reject-const-sort.ril
+type Token<size: int>(int)
+
+fn example() {
+    let value: Token<"1"> = Token(1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-forward-default
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-forward-default
+--@ file: accept-forward-default.ril
+type Pair<T = int, U = T> = (T, U)
+--@ end-file
+--@ end-case
+
+--@ case: reject-forward-default
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: accept-forward-default
+-- Error [E0320]: reject forward default
+--@ file: reject-forward-default.ril
+type Pair<T = U, U = int> = (T, U)
+--@ end-file
+--@ end-case
+
+--@ case: accept-function-default
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-function-default
+--@ file: accept-function-default.ril
+fn echo<T>(value: T) -> T { value }
+--@ end-file
+--@ end-case
+
+--@ case: reject-function-default
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: accept-function-default
+-- Error [E0317]: reject function default
+--@ file: reject-function-default.ril
+fn echo<T = int>(value: T) -> T { value }
+--@ end-file
+--@ end-case
+
+--@ case: accept-generic-arity
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-generic-arity
+--@ file: accept-generic-arity.ril
+type Item = Option<int>
+--@ end-file
+--@ end-case
+
+--@ case: reject-generic-arity
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: accept-generic-arity
+-- Error [E0340]: reject generic arity
+--@ file: reject-generic-arity.ril
+type Item = Option<int, str>
+--@ end-file
+--@ end-case
+
+--@ case: accept-literal-type
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-literal-type
+--@ file: accept-literal-type.ril
+type Method { Get }
+--@ end-file
+--@ end-case
+
+--@ case: reject-literal-type
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: accept-literal-type
+-- Error [E0318]: reject literal type
+--@ file: reject-literal-type.ril
+type Method = "GET"
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-inference
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-missing-inference
+--@ file: accept-missing-inference.ril
+fn empty<T>() -> []T { [] }
+
+fn example() {
+    let values: []int = empty()
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-inference
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: accept-missing-inference
+-- Error [E0344]: reject missing inference
+--@ file: reject-missing-inference.ril
+fn empty<T>() -> []T { [] }
+
+fn example() {
+    let values = empty()
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-nontrailing-default
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-nontrailing-default
+--@ file: accept-nontrailing-default.ril
+type Pair<T = int, U = int> = (T, U)
+--@ end-file
+--@ end-case
+
+--@ case: reject-nontrailing-default
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: accept-nontrailing-default
+-- Error [E0316]: reject nontrailing default
+--@ file: reject-nontrailing-default.ril
+type Pair<T = int, U> = (T, U)
+--@ end-file
+--@ end-case
+
+--@ case: accept-runtime-const
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-runtime-const
+--@ file: accept-runtime-const.ril
+type Token<size: int>(int)
+
+fn example(size: int) {
+    let value: Token<1> = Token(1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-runtime-const
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: accept-runtime-const
+-- Error [E0814]: reject runtime const
+--@ file: reject-runtime-const.ril
+type Token<size: int>(int)
+
+fn example(size: int) {
+    let value: Token<size> = Token(1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: static-argument-identity
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ file: static-argument-identity.ril
+type Token<value: f64>(int)
+type Point<value: { x: int, y: int }>(int)
+type Order<value: [str: int]>(int)
+meta let _ = assert(type<Token<0.0>> != type<Token<-0.0>>)
+meta let _ = assert(type<Token<0.0 / 0.0>> == type<Token<0.0 / 0.0>>)
+meta let _ = assert(type<Point<.{ x: 1, y: 2 }>> == type<Point<.{ y: 2, x: 1 }>>)
+meta let _ = assert(type<Order<["a": 1, "b": 2]>> != type<Order<["b": 2, "a": 1]>>)
+--@ end-file
+--@ end-case

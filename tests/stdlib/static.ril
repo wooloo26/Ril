@@ -1,0 +1,35 @@
+--@ case: array-and-map-operations
+--@ mode: check-pass
+--@ spec: STD#static-availability
+--@ file: array-and-map-operations.ril
+meta let _ = assert(Array::first([1]) == Some(1))
+meta let _ = assert(Array::get([1], 1) == None)
+meta let _ = assert(Array::contains([1], 1))
+meta let _ = assert(Array::reverse([1, 2]) == [2, 1])
+meta let _ = assert(Array::concat([1], [2]) == [1, 2])
+meta let _ = assert(Array::filter([1, 2], \n -> n > 1) == [2])
+meta let _ = assert(Array::fold([1, 2], 0, \a, b -> a + b) == 3)
+meta let _ = assert(Array::find([1, 2], \n -> n == 2) == Some(2))
+meta let _ = assert(Array::any([1], \n -> n == 1))
+meta let _ = assert(Array::all([1], \n -> n == 1))
+meta let _ = Array::for_each([1], \n -> assert(n == 1))
+meta let _ = assert(Map::get(["a": 1], "a") == Some(1))
+meta let _ = assert(Map::contains(["a": 1], "a"))
+meta let _ = assert(Map::values(["a": 1]) == [1])
+meta let _ = assert(Map::entries(["a": 1]) == [("a", 1)])
+meta let _ = assert(Map::from([("a", 1)]) == ["a": 1])
+--@ end-file
+--@ end-case
+
+--@ case: dual-phase-values
+--@ mode: check-pass
+--@ spec: STD#static-availability
+--@ file: dual-phase-values.ril
+meta let COUNT = len("é🙂")
+meta let WORDS = String::split("a,b", ",")
+meta let SIZES = Array::map(WORDS, \word -> len(word))
+meta let _ = assert(COUNT == 2 && SIZES == [1, 1])
+meta let _ = assert(Map::keys(["b": 1, "a": 2]) == ["b", "a"])
+meta let _ = assert(String::utf8("é") == b"\xC3\xA9")
+--@ end-file
+--@ end-case

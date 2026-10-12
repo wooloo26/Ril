@@ -83,6 +83,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Arithmetic and Wrapping Operators](#arithmetic-and-wrapping-operators)
     - [Bitwise and Shift Operators](#bitwise-and-shift-operators)
     - [Relational, Equality, and Containment Operators](#relational-equality-and-containment-operators)
+      - [Value Tests with is](#value-tests-with-is)
     - [Logical Operators](#logical-operators)
     - [Range and Slicing Expressions](#range-and-slicing-expressions)
     - [Pipeline Operators](#pipeline-operators)
@@ -109,6 +110,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
       - [Higher-Order Calls](#higher-order-calls)
     - [Termination and halt Contracts](#termination-and-halt-contracts)
     - [Parameter Modes, Caller Obligations, and Defaults](#parameter-modes-caller-obligations-and-defaults)
+      - [Fresh Values in Storage Calls](#fresh-values-in-storage-calls)
       - [Default Parameters and Named Arguments](#default-parameters-and-named-arguments)
     - [Anonymous Functions, Trailing Closures, and Projection Accessors](#anonymous-functions-trailing-closures-and-projection-accessors)
     - [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments)
@@ -1101,7 +1103,7 @@ assert(immutable.count == 1)
 ```
 
 - **Immutable Data**: `let` guarantees an immutable ordinary reachable graph, with sharing allowed. `Immut<T>` records this guarantee in the type; `Immut<Immut<T>> = Immut<T>`. Field declarations remain unchanged.
-- **Ordinary Clone**: `clone` separates the copy's writable storage from its source, preserving internal aliases and cycles. The receiver may choose immutable publication, read-only `var`, or writable `let mut`/`var mut`. A writable copy with possible internal writable aliases requires the local `^mut` sharing marker; distinct paths inside the copy are not necessarily disjoint.
+- **Ordinary Clone**: `clone` separates the copy's writable storage from its source, preserving internal aliases and cycles. The receiver may choose immutable publication, read-only `var`, writable `let mut`/`var mut`, or a declared [fresh-value storage input](#fresh-values-in-storage-calls). A writable copy with possible internal writable aliases requires the local `^mut` sharing marker; distinct paths inside the copy are not necessarily disjoint.
 | Operation | Input | Result |
 | :--- | :--- | :--- |
 | `clone_immut` | `T` or `Immut<T>` | Independent immutable `Immut<T>` |
@@ -1201,6 +1203,8 @@ alias.count += 1
 - **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no external writer or active environment survives. A private fresh result may instead stay writable. Borrowed/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until their lexical scope ends; merely having no later textual use does not revoke it. Reassigning `var mut` replaces that binding's path but does not revoke other paths to the old value.
 
 - **Fresh Evaluation**: Each successful ordinary allocation creates new storage distinct from pre-existing storage. A newly constructed aggregate may still contain references to pre-existing objects; freshness of its outer slots does not establish disjointness of its reachable graph. Each ordinary deep clone creates new writable regions isolated from the source and all pre-existing writable regions, preserving aliases within that one copy. Repeated evaluations of one expression do not denote one shared allocation. Calling an arbitrary function twice does not establish freshness; the function's actual return relation must supply it.
+
+- **Initial Writable Reception**: [Fresh storage inputs](#fresh-values-in-storage-calls) may receive unpublished construction authority. Read-only bindings and parameters end this eligibility; allocation identity or last use cannot restore it.
 
 ```ril
 -- Cell and swap have the preceding contracts; choose_order is a run-time bool input.
@@ -2075,10 +2079,6 @@ let shr_val = 64 >> 2                  -- 16
 
 ### Relational, Equality, and Containment Operators
 
-```ebnf
-IsExpr          ::= Expression "is" OrPattern [ "if" Expression ]
-```
-
 ```ril
 let eq = (10 == 10)                    -- true
 let ne = (10 != 20)                    -- true
@@ -2093,9 +2093,10 @@ let in_range = 5 in 1..=10             -- true
 let in_map   = "key" in user_map       -- true (checks key containment)
 let in_set   = 42 in visited_set       -- true
 
--- Pattern matching test via 'is' (evaluated as bool, bindings scoped to guard):
+-- Value test via 'is' (bool result, no bindings):
 let opt: ?int = Some(42)
-let matches = opt is Some(x) if x > 0  -- true; 'x' is scoped strictly to guard expression
+let expected = 40
+let matches = opt is Some(expected + 2) -- true; expected is an existing value
 ```
 
 ```ril
@@ -2143,6 +2144,94 @@ Eligibility depends on the concrete type, not equality support alone. Keys are c
 | Replace map value / reinsert present set member | Keep position |
 | Remove, then insert | Append |
 | Duplicate map literal key | Last value, first position; operands still evaluate left-to-right |
+
+#### Value Tests with is
+
+```ril
+fn expected() -> int { 40 + 2 }
+let answer: Result<int, str> = Ok(42)
+assert(answer is Ok)                  -- Tag only
+assert(answer is Ok(_))               -- Tag only; no payload equality required
+assert(answer is Ok(expected()))      -- Compare payload with the call's result
+let wanted = 42
+assert(answer is Ok(wanted))          -- Read wanted; never bind a new variable
+
+let nested: Result<?int, str> = Ok(Some(42))
+assert(nested is Ok(Some(wanted + 0))) -- Nested constructor tests
+let array: Result<[]int, str> = Ok([1, 2])
+assert(array is Ok([1, 1 + 1]))        -- Array expression, then whole-array equality
+assert((1, 2) is (wanted - 41, _))
+assert((.{ id: 1, name: "Ada" }) is .{ id: wanted - 41 })
+```
+
+```ril
+use ril/os
+let result: Result<?Os::NativeString, str> = Ok(Some(Os::from_string("")))
+assert(result is Ok(Some(Os::from_string("")))) -- Ordinary call at the value leaf
+
+-- No trailing guard or implicit binding:
+-- let bad = result is Ok(Some(text)) -- Error [E0204]: no existing text binding
+-- let bad = result is Ok(_) if true -- Error [E0120]: is has no trailing guard
+let empty = match result {
+    Ok(Some(text)) -> text == Os::from_string(""), -- match still binds text
+    _ -> false,
+}
+assert(empty)
+```
+
+```ril
+type Pair { Item(int, int) }
+let mut trace: []int = []
+let mut mark = \n -> { trace !> Array::push(n); n }
+let value = Pair::Item(1, 2)
+assert(value is Item(mark(1), mark(2)))
+assert(trace == [1, 2])
+assert(!(value is Item(mark(0), mark(99))))
+assert(trace == [1, 2, 0])             -- First mismatch skips the remaining test
+let failed: Result<int, str> = Err("failed")
+assert(!(failed is Ok(panic("skipped")))) -- Tag mismatch skips expected-value evaluation
+```
+
+```ebnf
+IsExpr          ::= Expression "is" IsTest
+IsTest          ::= IsAlternative { "|" IsAlternative }
+IsAlternative   ::= "_" | IsConstructor | IsTuple | IsRecord | RangePattern | IsValueExpr
+IsConstructor   ::= QualifiedName [ "(" [ IsTestList ] ")" ]
+IsTestList      ::= IsTest { "," IsTest } [ "," ]
+IsTuple         ::= "(" ")" | "(" IsTest "," IsTest { "," IsTest } [ "," ] ")"
+IsRecord        ::= [ TypeReference ] ".{" [ IsField { "," IsField } [ "," ] ] "}"
+IsField         ::= FieldLabel [ ":" IsTest ]
+IsValueExpr     ::= Expression
+```
+
+| Form / boundary | Meaning |
+| :--- | :--- |
+| Resolved constructor head | Structural test; tag first, then payload. Ordinary callable heads are value expressions. Constructor arity, tuple equivalence and opacity rules apply |
+| Existing name / other expression | Evaluate and compare with `==`; E0301/E0305 for incompatible types, E0327 for unsupported equality. No binders or binding modifiers |
+| Tuple / record test | Test components / listed known fields in written order; omitted record fields are unconstrained. Shorthand `.{ field }` means `.{ field: field }`, reading the outer name |
+| Arrays / maps | Ordinary value expressions, including their normal evaluation order; no array-pattern rest or wildcard syntax is added |
+| `_` / literal range / `\|` | Ignore constituent / existing integer range-pattern rules / try alternatives left-to-right until one succeeds |
+| Parse boundary | Structural test forms take precedence over value expressions. A parenthesized single expression selects whole-value equality; tuples keep their structural form. At test level `\|` separates alternatives; use `(a \| b)` for bitwise OR |
+| Outer operators | Undelimited value expressions bind more tightly than `is`; `&&`, `\|\|`, and lower-precedence operators follow the completed test. Parentheses or argument/field delimiters admit a full value expression |
+| Execution | Evaluate subject once. At each reached leaf, obtain that constituent, evaluate the expected expression once, then compare. Shape/tag mismatch or an earlier failed component skips later tests; no snapshot or rollback |
+| Static checks | Check every test's names, types, modes and ordinary effects/state, including potentially skipped expressions. Expressions inherit ordinary phase, provenance and exclusivity rules |
+| Removed / binding syntax | A trailing `if` or a binding modifier in a test is E0120. Binding patterns and guards remain available in `match` |
+| Flow / Results | Preserve only refinements still valid after expected-expression evaluation. Constructor tests inspect the reached Result tags; wildcard and value-equality tests alone do not discharge an outstanding Result |
+
+```ril
+let number = 3
+assert(number is 1 + 2)
+assert(number is 1 | 3)               -- Alternatives
+assert(number is (1 | 2))             -- One expected value: bitwise OR
+assert(number is 3 && number > 0)     -- Logical continuation outside the test
+fn check(value: Result<int, str>) -> bool {
+    match value {
+        -- Ok(expected()) -> true,   -- Error [E0349]: match retains literal/binding patterns
+        Ok(n) if n == expected() -> true,
+        _ -> false,
+    }
+}
+```
 
 ### Logical Operators
 
@@ -2727,6 +2816,8 @@ RangePattern    ::= NumericPattern ( ".." | "..=" ) NumericPattern
 
 Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once (`E0347`). A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
 
+These binding patterns govern `match`, bindings, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
+
 ```ril
 type Choice { Left(int), Right(int) }
 fn invalid_alternative(value: Choice) -> int {
@@ -2803,9 +2894,9 @@ fn get_size(s: Shape) -> f64 {
 --     }                               -- Error [E0303]: non-exhaustive match: pattern guards do not prove coverage of all inputs
 -- }
 
--- Boolean pattern test via 'is':
+-- Nonbinding value tests and short-circuit narrowing:
 let is_origin = s is Shape::Point
-let is_large_circle = s is Shape::Circle(r) if r > 100.0
+let is_large_circle = s is Shape::Circle && s.0 > 100.0
 
 -- Constructor and tuple pattern destructuring (Constructor-Tuple Equivalence):
 let result_pair: Result<(int, str), str> = Ok(200, "OK")
@@ -2833,7 +2924,7 @@ Flow-sensitive type narrowing refines the static type of existing bindings in-pl
 NarrowingTarget    ::= Identifier | NarrowingFieldPath
 NarrowingFieldPath ::= Identifier "." Identifier [ "." Identifier [ "." Identifier ] ]
 NarrowingOp        ::= "is" | "==" | "!="
-NarrowingPredicate ::= NarrowingTarget "is" QualifiedName
+NarrowingPredicate ::= NarrowingTarget "is" IsTest
                      | NarrowingTarget "!=" "None"
                      | NarrowingTarget "==" "None"
                      | NarrowingTarget "==" Literal
@@ -2848,7 +2939,8 @@ NarrowingExpr      ::= NarrowingPredicate
 
 - **Environment Splitting**: Predicate $P$ splits context $\Gamma$ into true/false environments: $\Gamma \vdash P \rightsquigarrow (\Gamma_t, \Gamma_f)$.
 - **Zero-Binding Refinement**: Narrowing refines existing bindings in-place across conditional branches without introducing new variable bindings (contrasting with `match` and `let ... else` which introduce new bindings).
-- **Non-Binding Predicates**: Pattern variables in `x is Variant(p)` are scoped strictly to trailing guards (`if guard`) and cannot escape to branch blocks (`E0204`).
+- **Non-Binding Predicates**: `x is Variant(expected)` reads an existing expected value; an unresolved name is `E0204`. Use `match` or guarded bindings to introduce payload variables. `is` has no trailing guard.
+- **Value-Test Refinement**: A successful constructor test refines the tested stable path to that variant. Failure excludes the variant only when the payload test covers every payload (for example, a bare tag or all wildcards); a failed value comparison alone excludes no variant. Alternatives join their proven facts. Expected-expression writes invalidate affected facts (`E0310`, or `E0533` for unproved independence); completing the test does not restore them.
 - **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ ([Sum Types and GADTs](#sum-types-and-gadts)):
    - $n = 0$: No payload; value projection raises `E0337`.
    - $n = 1$: Projected via `.0` (`p.0`). `?T != None` directly unboxes to `T`.
@@ -2859,7 +2951,7 @@ NarrowingExpr      ::= NarrowingPredicate
    - `var` / `var mut`: Slot assignment, including compound assignment, invalidates that slot's narrowing (`E0310`). Interior writes through `var mut`, including `!>` calls, invalidate overlapping facts according to their actual write origins; `!>` does not reassign the slot.
    - `let mut`: Tag identity is pinned (`E0502`); `mut` fields invalidate upon write.
 - **Transitive Latent Havoc**: Invoking a callable whose effective writes reach v, through a global or captured group, a contract reference, a callback, or an active handler, resets the affected refinement to $T_{\text{root}}$. Group spelling does not change the actual write origin.
-- **Anti-Aliasing (`E0533`)**: Narrowing an unstable live origin whose overlapping writers can act during the refinement is rejected (`E0533`). Views do not make mutable data stable. A known write invalidates affected facts (`E0310`). Copy a scalar or use an independent immutable snapshot to obtain stable refinement.
+- **Anti-Aliasing (`E0533`)**: Preserving a live-origin refinement across a call requires proof that the call's possible writes are independent of that origin. Unknown overlap uses `E0533`; a known write invalidating an established refinement uses `E0310`. A view does not supply independence. The examples below contrast both failures with an immutable snapshot.
 - **Generic Confinement**:
    - Testing bare type parameters (`x is T`) is rejected (`E0301`).
    - GADT equations on $x$ are local to $x$ and do not rebind $T$ elsewhere in scope.
@@ -2871,6 +2963,40 @@ NarrowingExpr      ::= NarrowingPredicate
 - **Bounded Analysis**:
     - **Path Bound**: Field paths are tracked through at most three projections after the root (`a.b.c.d`); deeper paths default to $T_{\text{root}}$.
     - **Loop Widening**: Unconverged loop variables widen to $T_{\text{root}}$ after $K = 3$ iterations.
+
+```ril
+type Cell = { mut value: ?int }
+
+-- E0533: the callback's possible writes are not known to be independent.
+-- An omitted state row on fn() -> () preserves actual obligations; it does not promise purity.
+fn unknown_writer(mut cell: Cell, action: fn() -> ()) &mut {
+    if cell.value != None {
+        let before = cell.value + 1           -- OK: narrowed to int
+        action()                              -- Cannot prove that cell.value stays unchanged
+        -- let after = cell.value + 1         -- Error [E0533]: unknown overlap with the live origin
+    }
+    cell.value = None
+}
+
+-- E0310: this callee is known to write the very field that was narrowed.
+fn clear(mut cell: Cell) &mut { cell.value = None }
+fn known_writer(mut cell: Cell) &mut {
+    if cell.value != None {
+        clear(mut cell)                       -- Known write invalidates cell.value's refinement
+        -- let after = cell.value + 1         -- Error [E0310]: the earlier narrowing no longer applies
+    }
+}
+
+-- OK: the same unknown callback cannot change an independent immutable snapshot.
+fn snapshot_before_callback(mut cell: Cell, action: fn() -> ()) &mut {
+    let snapshot = clone_immut(cell)
+    if snapshot.value != None {
+        action()
+        let after = snapshot.value + 1        -- OK: snapshot.value remains narrowed to int
+    }
+    cell.value = None
+}
+```
 
 ```ril
 -- In-place optional unwrapping (?T -> T):
@@ -2954,11 +3080,11 @@ fn test_aliased_hazard() {
     raw = None                                -- Exercises the reassignable slot
 }
 
--- Pattern bindings in 'is' cannot escape guard clause:
+-- is reads existing names and narrows the subject without binding payload names:
 fn test_non_binding_predicate(g: Geometry) {
-    if g is Geometry::Circle(r) if r > 5.0 {
+    if g is Geometry::Circle && g.0 > 5.0 {
         let radius = g.0                       -- OK: payload access via .0
-        -- let escaped = r                     -- Error [E0204]: unresolved identifier 'r'; pattern bindings in 'is' are strictly scoped to guard clause
+        -- let escaped = r                     -- Error [E0204]: is introduced no r
     }
 }
 
@@ -3023,7 +3149,7 @@ ParameterTypeItem ::= [ ParameterMode ] [ SnakeCase ":" ] TypeExpression
 ReturnType       ::= "->" TypeExpression
 ```
 
-At an ordinary call, a leading `mut`/`^mut` is an argument mode and still requires an assignable target. The general expression production does not admit `f(^mut clone(x))` as a substitute: bind a writable result first. A parenthesized sharing expression is an ordinary read-only argument, cannot satisfy a mutable formal, and cannot authorize that formal to retain a writer. Constructor storage follows the aggregate sharing rules.
+Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`). A parenthesized sharing expression is an ordinary argument: it cannot satisfy a mutable formal (`E0405`) or retain an existing writer. [Fresh storage inputs](#fresh-values-in-storage-calls) may receive its initial construction authority; other ordinary parameters remain read-only. Constructors follow the aggregate sharing rules.
 
 ```ril
 type DeferredFactory = fn() -> fn() -> int @Io -- Io belongs to the returned callable
@@ -3429,7 +3555,7 @@ let view observed = cell
 | `^mut p: T` | `^mut target` | Write access plus permission to retain a writable path beyond the call |
 
 - Mutable parameters require reference data or a mutable callable environment (`E0401`), remain pinned (`E0502`), and cannot use `var` (`E0403`).
-- Annotations, forwarding, and subtyping do not infer parameter modes. Retention requires `^mut` and its capability (`E0510`); `!>` supplies only `mut`.
+- Annotations, forwarding, and subtyping do not infer parameter modes. Retaining an existing writer requires `^mut` and its capability (`E0510`); `!>` supplies only `mut`. A declared [fresh-value storage input](#fresh-values-in-storage-calls) may receive new construction authority without retaining an existing writer.
 
 When a known parameter requires `mut` or `^mut`, supplying an ordinary argument without the required argument marker is `E0405`. An explicitly supplied argument mode that does not match the declared parameter mode is `E0406`. An explicitly mutable argument must designate an addressable target (`E0410`). A correct marker cannot grant missing authority (`E0520`). Callable types with incompatible data-parameter modes use `E0407`; callback-handle authority remains a separate requirement.
 
@@ -3450,6 +3576,94 @@ ParameterMode    ::= "mut" | "^mut"
 ```
 
 Mutable modes do not apply to static key arguments.
+
+#### Fresh Values in Storage Calls
+
+```ril
+type Cell = { mut count: int }
+fn copy_cell(cell: Cell) -> Cell { clone(cell) }
+fn build_cell() -> Cell {
+    let mut cell = Cell.{ count: 0 }
+    cell.count += 1
+    cell                               -- OK: private construction authority ends on return
+}
+let original = Cell.{ count: 1 }
+let mut cells: []Cell = []
+cells !> Array::push(clone(original))   -- OK: initial writable reception
+cells !> Array::insert(0, Cell.{ count: 2 }) -- OK: constructor
+cells !> Array::push(copy_cell(original))   -- OK: verified fresh return
+cells !> Array::push(build_cell())
+cells[0].count += 1
+cells[1].count += 1
+cells[2].count += 1
+cells[3].count += 1
+assert(original.count == 1 && cells[0].count == 3 && cells[3].count == 2)
+```
+
+Only `value` in `Array::push`, `Array::insert`, and `Map::set` has this initialization contract. It adds no parameter mode; ordinary formals remain read-only.
+
+```ril
+-- Cell, original, and copy_cell have the preceding declarations/contracts.
+fn identity(cell: Cell) -> Cell { cell }
+fn frozen_cell() -> Cell { let cell = Cell.{ count: 1 }; cell }
+fn append(mut target: []Cell, cell: Cell) &mut { target !> Array::push(cell) }
+
+let frozen_copy = clone(original)
+let mut cells: []Cell = []
+cells !> Array::push(frozen_copy)       -- OK: stores a read-only element
+-- cells[0].count += 1                -- Error [E0522]: let already published immutable data
+cells !> Array::push(identity(clone(original)))
+-- cells[1].count += 1                -- Error [E0522]: read-only parameter path
+cells !> Array::push(frozen_cell())
+-- cells[2].count += 1                -- Error [E0522]: fresh allocation, but already immutable
+append(mut cells, clone(original))
+-- cells[3].count += 1                -- Error [E0522]: wrapper's parameter is read-only
+
+fn append_copy(mut target: []Cell, source: Cell) &mut {
+    target !> Array::push(copy_cell(source)) -- OK: constructs a new result; &mut suffices
+}
+let push: fn(mut []Cell, Cell) -> () &mut = Array::push
+push(mut cells, clone(original))       -- OK: alias preserves the operation's contract
+cells[4].count += 1
+```
+
+```ril
+type Cell = { mut count: int }
+type Holder = { child: Immut<Cell> }
+let mut shared = Cell.{ count: 1 }
+let mut cells: []Cell = []
+cells !> Array::push(shared)            -- OK: ordinary read-only insertion
+-- cells[0].count += 1                -- Error [E0522]: existing writer needs an argument marker
+cells !> Array::push(^mut shared)      -- OK: explicit retained writer
+cells[1].count += 1
+assert(shared.count == 2)
+
+let mut holders: []Holder = []
+holders !> Array::push(Holder.{ child: clone_immut(shared) })
+-- let mut child = ^mut holders[0].child -- Error [E0520]: fresh outer data preserves nested Immut
+```
+
+```ril
+type Cell = { mut count: int }
+let original = Cell.{ count: 1 }
+let repeated = (original, original)
+let mut pairs: [](Cell, Cell) = []
+pairs !> Array::push((^mut clone(repeated))) -- OK: marks internal sharing, not an argument mode
+pairs[0].0.count += 1
+assert(pairs[0].1.count == 2 && original.count == 1)
+-- pairs !> Array::push(clone(repeated)) -- Error [E0510]: internal writable sharing is unmarked
+-- pairs !> Array::push(^mut clone(repeated)) -- Error [E0410]: argument mode requires a target
+```
+
+| Check | Requirement |
+| :--- | :--- |
+| Eligible regions | Newly constructed ordinary writable storage, isolated from pre-existing writable regions, with no surviving outside observer, writer, or active environment |
+| Established paths | Bindings select permissions; `let`, plain `var`, views, and read-only parameters end eligibility. Existing writers, including retained returns, need `^mut` arguments |
+| Expressions / returns | Parentheses, blocks, and verified returns preserve actual provenance. Joins require eligibility in every possible alternative; unknown facts prove none |
+| Constituents | Preserve field declarations, nested Immut and nonfresh permissions. Immutable children may be shared; fresh outer data cannot retain concealed existing writers |
+| Operation identity | Imports, aliases and type ascriptions preserve contracts; matching names/signatures do not create them |
+| Reception | Evaluate once in ordinary order. Success installs initial authority; failure installs no path. No additional standalone &^mut; other effects/state and access checks still apply |
+| Other obligations | Internal aliases obey exclusivity; traversal/window stability and Result inspection remain checked. Foreign exchange, resources and retained callable environments gain no exemption |
 
 #### Default Parameters and Named Arguments
 
@@ -3743,7 +3957,7 @@ assert(copied.1.count == 1)             -- Internal aliases survive the isolated
 
 - **Local Sharing Marker (`E0510`)**: A new local writable path to existing ordinary storage or an existing callable environment requires `^mut expression` at its binding, assignment, aggregate insertion, or destructuring site. The marker may cover one constituent or a whole construction/destructuring source; every constituent retains its own permissions. A writable reception of a deep copy with possible internal writable aliases also requires this marker. Proven immutable sharing needs none.
 - **Checked Meaning**: The marker evaluates its operand once and preserves identity. It neither clones nor freezes, transfers ownership, grants missing permissions, revives invalid resources, or extends a temporary loan. Missing markers and invalid authority are distinct errors; adding a marker cannot repair `E0520`–`E0528` violations. Possible internal aliases need not be resolved to one exact graph, but remain subject to all overlap checks.
-- **No Duplicate Boundary Spelling**: Receiving an authority already produced under a checked callable retention contract does not require another local marker. Callable return/tail expressions, inferred lexical captures, and handler environments keep their existing rules; no new return or capture syntax is required. A plain block is not a callable retention boundary. Aliasing an already created mutable closure locally still requires the marker. A `clone` source/copy isolation contract does not itself mark the copy's possible internal writable aliases.
+- **No Duplicate Boundary Spelling**: Receiving an authority already produced under a checked callable retention contract does not require another local marker. Callable return/tail expressions, inferred lexical captures, and handler environments keep their existing rules; no new return or capture syntax is required. A plain block is not a callable retention boundary. Aliasing an already created mutable closure locally still requires the marker. A `clone` source/copy isolation contract does not itself mark the copy's possible internal writable aliases, including at a [fresh-value storage input](#fresh-values-in-storage-calls).
 - **Confinement**: Local `^mut` does not by itself add external `&^mut` to the enclosing function. Conversely, local discharge does not remove required markers at local data-sharing sites. Captured and returned sharing still contributes its actual authority roots whether or not its facts are written explicitly.
 
 ```ril
@@ -3792,7 +4006,7 @@ fn share_connections() -> Ticker &capture &{^mut active_connections} {
 }
 ```
 
-A writable container never upgrades an immutable/view element (`E0522`). Retaining an inserted writer requires `^mut` and the corresponding retention capability.
+A writable container never upgrades an immutable/view element (`E0522`). Retaining an inserted existing writer requires `^mut` and the corresponding retention capability. Receiving an unpublished fresh value under its storage contract supplies initial construction authority, subject to the same internal-alias checks.
 
 ### External State Tracking
 
@@ -4143,6 +4357,8 @@ fn project(box: { child: Cell }) -> Cell { box.child }
 ```
 
 Plain `var`, views, and read-only parameters restrict every data/environment path reached through them; they neither freeze the object nor revoke an independent writer. A callable's named external-state obligations are checked separately from access through its data handle.
+
+[Fresh storage reception](#fresh-values-in-storage-calls) precedes read-only binding or parameter passage; it cannot recover authority after either boundary.
 
 ```ril
 type Cell = { mut count: int }
@@ -5630,6 +5846,7 @@ Every Result must be inspected, propagated, unpacked, or returned with its oblig
 | Operation / exit | Inspection duty |
 | :--- | :--- |
 | Actual success/error tag test | Inspected; any alias discharges the same produced Result |
+| `is` wildcard / expected-value equality | No Result inspection by itself; only reached constructor/tag tests discharge their Results |
 | Binding, alias, wrapping, aggregate, Task | Preserve one obligation, not one per name |
 | Deep copy | Preserve copied Results' obligations; copying is not inspection |
 | `_`, overwrite, removal, lost last path | Do not discharge |

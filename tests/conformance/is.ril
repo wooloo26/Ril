@@ -1,0 +1,438 @@
+--@ case: expected-expressions
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ companion: reject-unresolved-expected-name
+--@ entry: test_expected_expressions
+--@ file: expected-expressions.ril
+fn expected() -> int { 40 + 2 }
+fn guarded(result: Result<int, str>) -> bool {
+    match result { Ok(value) if value == expected() -> true, _ -> false }
+}
+
+pub fn test_expected_expressions() {
+    let result: Result<int, str> = Ok(42)
+    let wanted = 42
+    assert(result is Ok && result is Ok(_))
+    assert(result is Ok(expected()) && result is Ok(wanted))
+    assert(result is Ok(40 + 2))
+    assert(!(result is Ok(wanted + 1)))
+    assert(wanted == 42)
+    assert(42 is expected())
+    assert(guarded(Ok(42)) && !guarded(Err("failed")))
+}
+--@ end-file
+--@ end-case
+
+--@ case: nested-and-product-tests
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ entry: test_nested_and_product_tests
+--@ file: nested-and-product-tests.ril
+type UserId(int)
+type Pair { Item(int, int) }
+
+pub fn test_nested_and_product_tests() {
+    let id = 7
+    let nested: Result<?UserId, str> = Ok(Some(UserId(7)))
+    assert(nested is Ok(Some(UserId(id))))
+    let pair = Pair::Item(7, 7)
+    assert(pair is Item(id, id))
+    assert(pair is Item((id, id)))
+    let expected_pair = (7, 7)
+    assert(pair is Item(expected_pair))
+    assert((7, 8) is (id, id + 1))
+    assert((7, 8) is (_, id + 1))
+    let record: Result<{ id: int, name: str }, str> = Ok(.{ id: 7, name: "Ada" })
+    assert(record is Ok(.{ id }))
+    assert(record is Ok(.{ name: String::concat("A", "da"), id: id }))
+    assert(!(record is Ok(.{ id: id + 1 })))
+}
+--@ end-file
+--@ end-case
+
+--@ case: collection-expressions
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ companion: reject-array-wildcard
+--@ entry: test_collection_expressions
+--@ file: collection-expressions.ril
+pub fn test_collection_expressions() {
+    let array: Result<[]int, str> = Ok([1, 2])
+    assert(array is Ok([1, 1 + 1]))
+    assert(array is Ok(Array::reverse([2, 1])))
+    assert(!(array is Ok([1])))
+    let mapping: Result<[str: int], str> = Ok(["a": 1, "b": 2])
+    assert(mapping is Ok(["b": 1 + 1, "a": 1]))
+    let empty: Result<[]int, str> = Ok([])
+    assert(empty is Ok([]))
+}
+--@ end-file
+--@ end-case
+
+--@ case: subject-once-and-component-short-circuit
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ entry: test_subject_once_and_component_short_circuit
+--@ file: subject-once-and-component-short-circuit.ril
+pub fn test_subject_once_and_component_short_circuit() {
+    let mut trace: []int = []
+    let mut subject = \-> {
+        trace !> Array::push(0)
+        let result: Result<(int, int), str> = Ok(1, 2)
+        result
+    }
+    let mut mark = \n -> { trace !> Array::push(n); n }
+    assert(subject() is Ok(mark(1), mark(2)))
+    assert(trace == [0, 1, 2])
+    trace !> Array::truncate(0)
+    assert(!(subject() is Ok(mark(9), mark(2))))
+    assert(trace == [0, 9])
+}
+--@ end-file
+--@ end-case
+
+--@ case: array-expression-is-eager
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ entry: test_array_expression_is_eager
+--@ file: array-expression-is-eager.ril
+pub fn test_array_expression_is_eager() {
+    let mut trace: []int = []
+    let mut mark = \n -> { trace !> Array::push(n); n }
+    let result: Result<[]int, str> = Ok([1])
+    assert(!(result is Ok([mark(1), mark(2)])))
+    assert(trace == [1, 2])
+}
+--@ end-file
+--@ end-case
+
+--@ case: tag-mismatch-skips-expressions
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ companion: reached-expression-panic
+--@ entry: test_tag_mismatch_skips_expressions
+--@ file: tag-mismatch-skips-expressions.ril
+pub fn test_tag_mismatch_skips_expressions() {
+    let failed: Result<int, str> = Err("failed")
+    assert(!(failed is Ok(panic("unreached expected value"))))
+    let nested: Result<?int, str> = Ok(None)
+    assert(!(nested is Ok(Some(panic("unreached nested value")))))
+}
+--@ end-file
+--@ end-case
+
+--@ case: alternative-short-circuit
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ entry: test_alternative_short_circuit
+--@ file: alternative-short-circuit.ril
+pub fn test_alternative_short_circuit() {
+    let mut trace: []int = []
+    let mut mark = \n -> { trace !> Array::push(n); n }
+    let result: Result<int, str> = Ok(1)
+    assert(result is Ok(mark(0)) | Ok(mark(1)) | Ok(mark(2)))
+    assert(trace == [0, 1])
+}
+--@ end-file
+--@ end-case
+
+--@ case: precedence-and-literal-ranges
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ entry: test_precedence_and_literal_ranges
+--@ file: precedence-and-literal-ranges.ril
+pub fn test_precedence_and_literal_ranges() {
+    assert(3 is 1 + 2)
+    assert(3 is 1 | 3)
+    assert(3 is (1 | 2))
+    assert(3 is 3 && 3 > 0)
+    assert(!(3 is 3 && false))
+    assert(3 is 4 || true)
+    assert(3 is 1..=3)
+    assert(!(3 is 1..3))
+    assert(Some(true) is Some(1 < 2))
+}
+--@ end-file
+--@ end-case
+
+--@ case: wildcard-skips-payload-equality
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ companion: reject-callable-equality
+--@ entry: test_wildcard_skips_payload_equality
+--@ file: wildcard-skips-payload-equality.ril
+fn action() -> int { 1 }
+
+pub fn test_wildcard_skips_payload_equality() {
+    let result: Result<fn() -> int, str> = Ok(action)
+    assert(result is Ok && result is Ok(_))
+}
+--@ end-file
+--@ end-case
+
+--@ case: payload-test-narrowing
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: reject-trailing-guard
+--@ entry: test_payload_test_narrowing
+--@ file: payload-test-narrowing.ril
+fn inspect(result: Result<int, str>, wanted: int) -> int {
+    if result is Ok(wanted + 1) {
+        result.0
+    } else {
+        result ?? \_error -> -1
+    }
+}
+
+pub fn test_payload_test_narrowing() {
+    assert(inspect(Ok(2), 1) == 2)
+    assert(inspect(Ok(5), 1) == 5)
+    assert(inspect(Err("failed"), 1) == -1)
+    let result: Result<int, str> = Ok(7)
+    assert(result is Ok && result.0 > 5)
+}
+--@ end-file
+--@ end-case
+
+--@ case: expected-expression-effects
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ companion: reject-unhandled-expected-effect
+--@ entry: test_expected_expression_effects
+--@ file: expected-expression-effects.ril
+eff Read { get() -> int }
+fn check(result: Result<int, str>) -> bool @Read { result is Ok(Read::get()) }
+
+pub fn test_expected_expression_effects() {
+    var calls = 0
+    with Read::get() -> { calls += 1; resume 42 }
+    assert(check(Ok(42)))
+    assert(!check(Err("failed")))
+    assert(calls == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: subject-captured-before-expected-write
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: reject-refinement-after-expected-write
+--@ entry: test_subject_captured_before_expected_write
+--@ file: subject-captured-before-expected-write.ril
+pub fn test_subject_captured_before_expected_write() {
+    var value: ?int = Some(1)
+    let mut expected = \-> { value = None; 1 }
+    let matched = value is Some(expected())
+    assert(matched && value == None)
+}
+--@ end-file
+--@ end-case
+
+--@ case: static-expected-expressions
+--@ mode: check-pass
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
+--@ file: static-expected-expressions.ril
+meta fn expected() -> int { 2 }
+meta let _ = assert(Some(2) is Some(expected()))
+meta let _ = assert(3 is 1 + 2)
+meta let _ = assert([1, 2] is Array::reverse([2, 1]))
+--@ end-file
+--@ end-case
+
+--@ case: reached-expression-panic
+--@ mode: run-panic
+--@ spec: SPEC#value-tests-with-is
+--@ companion: tag-mismatch-skips-expressions
+--@ entry: test_reached_expression_panic
+-- Panics: The matching tag reaches the expected-value expression
+--@ file: reached-expression-panic.ril
+pub fn test_reached_expression_panic() {
+    let result: Result<int, str> = Ok(1)
+    let matched = result is Ok(panic("expected value reached"))
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-trailing-guard
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: payload-test-narrowing
+-- Error [E0120]: is no longer admits a trailing guard
+--@ file: reject-trailing-guard.ril
+fn example(result: Result<int, str>) -> bool { result is Ok(_) if true }
+--@ end-file
+--@ end-case
+
+--@ case: reject-unresolved-expected-name
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: expected-expressions
+-- Error [E0204]: A name in a value test is a reference, not a new binder
+--@ file: reject-unresolved-expected-name.ril
+fn example(result: Result<int, str>) -> bool { result is Ok(missing) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-binding-modifier
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: expected-expressions
+-- Error [E0120]: is does not introduce mutable pattern bindings
+--@ file: reject-binding-modifier.ril
+fn example(result: Result<int, str>) -> bool { result is Ok(mut value) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-expected-type
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: expected-expressions
+-- Error [E0301]: The expected expression has a different type from the payload
+--@ file: reject-expected-type.ril
+fn expected() -> str { "42" }
+fn example(result: Result<int, str>) -> bool { result is Ok(expected()) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-callable-equality
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: wildcard-skips-payload-equality
+-- Error [E0327]: Expected-value comparison cannot compare function values
+--@ file: reject-callable-equality.ril
+fn action() -> int { 1 }
+fn example(result: Result<fn() -> int, str>) -> bool { result is Ok(action) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-skipped-unresolved-name
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: tag-mismatch-skips-expressions
+-- Error [E0204]: A skipped expected expression still undergoes name resolution
+--@ file: reject-skipped-unresolved-name.ril
+fn example() {
+    let result: Result<int, str> = Err("failed")
+    let matched = result is Ok(missing)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unhandled-expected-effect
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#callable-contracts
+--@ companion: expected-expression-effects
+-- Error [E0612]: Expected-value evaluation retains its ordinary effect obligation
+--@ file: reject-unhandled-expected-effect.ril
+eff Read { get() -> int }
+fn example(result: Result<int, str>) -> bool { result is Ok(Read::get()) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-unknown-record-field
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: nested-and-product-tests
+-- Error [E0336]: Record tests cannot name a field absent from the subject schema
+--@ file: reject-unknown-record-field.ril
+fn example(value: { id: int }) -> bool { value is .{ missing: 1 } }
+--@ end-file
+--@ end-case
+
+--@ case: reject-nullary-parentheses
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: tag-mismatch-skips-expressions
+-- Error [E0353]: A nullary tag still does not admit argument parentheses
+--@ file: reject-nullary-parentheses.ril
+fn example(value: ?int) -> bool { value is None() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-wildcard
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ companion: collection-expressions
+-- Error [E0322]: The array is an ordinary expression and cannot evaluate a wildcard
+--@ file: reject-array-wildcard.ril
+fn example(result: Result<[]int, str>) -> bool { result is Ok([_]) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-nested-result-uninspected
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#mandatory-inspection-of-fallible-results
+--@ companion: nested-and-product-tests
+-- Error [E0720]: The outer constructor test does not inspect the nested Result
+--@ file: reject-nested-result-uninspected.ril
+fn example() {
+    let result: Result<Result<int, str>, str> = Ok(Err("nested"))
+    assert(result is Ok(_))
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-wildcard-result-uninspected
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#mandatory-inspection-of-fallible-results
+--@ companion: expected-expressions
+-- Error [E0720]: A wildcard test does not inspect a Result tag
+--@ file: reject-wildcard-result-uninspected.ril
+fn example() {
+    let result: Result<int, str> = Ok(1)
+    assert(result is _)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-value-comparison-result-uninspected
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#mandatory-inspection-of-fallible-results
+--@ companion: expected-expressions
+-- Error [E0720]: Whole-value equality is not a constructor test for Result inspection
+--@ file: reject-value-comparison-result-uninspected.ril
+fn example() {
+    let result: Result<int, str> = Ok(1)
+    let expected: Result<int, str> = Ok(1)
+    assert(result is expected)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-computed-match-pattern
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#pattern-matching
+--@ companion: expected-expressions
+-- Error [E0349]: match does not adopt is expected-expression syntax
+--@ file: reject-computed-match-pattern.ril
+fn expected() -> int { 42 }
+fn example(result: Result<int, str>) -> bool {
+    match result { Ok(expected()) -> true, Err(_) -> false, Ok(_) -> false }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-refinement-after-expected-write
+--@ mode: check-fail
+--@ spec: SPEC#value-tests-with-is
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: subject-captured-before-expected-write
+-- Error [E0310]: Completing is does not restore a refinement invalidated by expected-value evaluation
+--@ file: reject-refinement-after-expected-write.ril
+fn example() {
+    var value: ?int = Some(1)
+    let mut expected = \-> { value = None; 1 }
+    if value is Some(expected()) {
+        let after = value.0
+    }
+}
+--@ end-file
+--@ end-case

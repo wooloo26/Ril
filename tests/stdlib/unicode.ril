@@ -1,0 +1,73 @@
+--@ case: reject-continuation
+--@ mode: run-pass
+--@ spec: STD#unicode-and-stringbuilder
+--@ entry: test_reject_continuation
+--@ file: reject-continuation.ril
+use ril/unicode
+
+pub fn test_reject_continuation() {
+    assert(Unicode::decode_utf8(b"a\x80") is Err(.{ offset: 1 }))
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-overlong
+--@ mode: run-pass
+--@ spec: STD#unicode-and-stringbuilder
+--@ entry: test_reject_overlong
+--@ file: reject-overlong.ril
+use ril/unicode
+
+pub fn test_reject_overlong() {
+    assert(Unicode::decode_utf8(b"\xC0\xAF") is Err(.{ offset: 0 }))
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-surrogate
+--@ mode: run-pass
+--@ spec: STD#unicode-and-stringbuilder
+--@ entry: test_reject_surrogate
+--@ file: reject-surrogate.ril
+use ril/unicode
+
+pub fn test_reject_surrogate() {
+    assert(Unicode::decode_utf8(b"a\xED\xA0\x80") is Err(.{ offset: 1 }))
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-truncated
+--@ mode: run-pass
+--@ spec: STD#unicode-and-stringbuilder
+--@ entry: test_reject_truncated
+--@ file: reject-truncated.ril
+use ril/unicode
+
+pub fn test_reject_truncated() {
+    assert(Unicode::decode_utf8(b"\xE2\x82") is Err(.{ offset: 0 }))
+}
+--@ end-file
+--@ end-case
+
+--@ case: scalar-and-properties
+--@ mode: run-pass
+--@ spec: STD#unicode-and-stringbuilder
+--@ entry: test_scalar_and_properties
+--@ file: scalar-and-properties.ril
+use ril/unicode
+
+pub fn test_scalar_and_properties() {
+    assert(Unicode::decode_utf8(b"Ril") is Ok("Ril"))
+    assert(Unicode::from_scalar(65u32) is Ok("A"))
+    assert(Unicode::from_scalar(0xD800u32) is Err(_))
+    assert(Unicode::from_scalar(0x110000u32) is Err(_))
+    assert(Unicode::is_white_space(32u32))
+    assert(Unicode::is_alphabetic(65u32))
+    assert(Unicode::is_decimal_digit(48u32))
+    assert(Unicode::is_xid_start(65u32) && Unicode::is_xid_continue(48u32))
+    assert(!Unicode::is_alphabetic(0xD800u32))
+    assert(Unicode::lowercase("ABC") == "abc" && Unicode::uppercase("ß") == "SS")
+}
+--@ end-file
+--@ end-case

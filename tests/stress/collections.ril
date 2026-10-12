@@ -1,0 +1,16 @@
+--@ case: large-array-alias-integrity
+--@ mode: run-pass
+--@ spec: SPEC#reference-types
+--@ spec: STD#array
+--@ entry: test_large_array_alias_integrity
+--@ file: large-array-alias-integrity.ril
+pub fn test_large_array_alias_integrity() {
+    let mut values: []int = []
+    for 0..10000 as n { values !> Array::push(n) }
+    let snapshot = clone_immut(values)
+    for 0..10000 as n { values[n] = -n }
+    assert(snapshot[9999] == 9999 && values[9999] == -9999)
+    assert(len(snapshot) == 10000)
+}
+--@ end-file
+--@ end-case

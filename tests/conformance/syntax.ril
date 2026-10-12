@@ -1,0 +1,34 @@
+--@ case: nested-comments
+--@ mode: run-pass
+--@ spec: SPEC#comments
+--@ entry: test_nested_comments
+--@ file: nested-comments.ril
+pub fn test_nested_comments() {
+    {- outer {- nested -} still outer -}
+    let value = 1 -- end of line
+    assert(value == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: newline-continuation
+--@ mode: run-pass
+--@ spec: SPEC#whitespace-and-layout-rules
+--@ entry: test_newline_continuation
+--@ file: newline-continuation.ril
+pub fn test_newline_continuation() {
+    let a = 1; let b = 2
+    let sum = a +
+        b
+    let values = [1, 2]
+        |> Array::map(\n -> n * 2)
+    assert(sum == 3 && values == [2, 4])
+    let value = {
+        let first = 4
+        first + 1
+    }
+    let discarded = { 5; }
+    assert(value == 5 && discarded == ())
+}
+--@ end-file
+--@ end-case

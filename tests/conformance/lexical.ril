@@ -1,0 +1,991 @@
+--@ case: accept-above-unicode-limit
+--@ mode: check-pass
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: reject-above-unicode-limit
+--@ file: input.ril
+--@ end-file
+--@ end-case
+
+--@ case: reject-above-unicode-limit
+--@ mode: check-fail
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: accept-above-unicode-limit
+-- Error [E0104]: reject above unicode limit
+--@ file: input.ril hex
+f4 90 80 80
+--@ end-file
+--@ end-case
+
+--@ case: accept-illegal-character
+--@ mode: check-pass
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: reject-illegal-character
+--@ file: accept-illegal-character.ril
+fn example() {
+    let value = "$"
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-illegal-character
+--@ mode: check-fail
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: accept-illegal-character
+-- Error [E0105]: reject illegal character
+--@ file: reject-illegal-character.ril
+fn example() {
+    let value = $
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-invalid-leading-byte
+--@ mode: check-pass
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: reject-invalid-leading-byte
+--@ file: input.ril
+--@ end-file
+--@ end-case
+
+--@ case: reject-invalid-leading-byte
+--@ mode: check-fail
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: accept-invalid-leading-byte
+-- Error [E0104]: reject invalid leading byte
+--@ file: input.ril hex
+ff
+--@ end-file
+--@ end-case
+
+--@ case: accept-keyword-field
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-keyword-field
+--@ file: accept-keyword-field.ril
+type Record = { if_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-keyword-field
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-keyword-field
+-- Error [E0113]: reject keyword field
+--@ file: reject-keyword-field.ril
+type Record = { if: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-mismatched-delimiter
+--@ mode: check-pass
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: reject-mismatched-delimiter
+--@ file: input.ril hex
+6c 65 74 20 50 41 49 52 20 3d 20 28 31 2c 20 32 29
+--@ end-file
+--@ end-case
+
+--@ case: reject-mismatched-delimiter
+--@ mode: check-fail
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: accept-mismatched-delimiter
+-- Error [E0123]: reject mismatched delimiter
+--@ file: input.ril hex
+6c 65 74 20 50 41 49 52 20 3d 20 28 31 2c 20 32 5d
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-comma
+--@ mode: check-pass
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: reject-missing-comma
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 53 20 3d 20 5b 31 2c 20 32 5d
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-comma
+--@ mode: check-fail
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: accept-missing-comma
+-- Error [E0124]: reject missing comma
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 53 20 3d 20 5b 31 20 32 5d
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-initializer
+--@ mode: check-pass
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: reject-missing-initializer
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 20 3d 20 31
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-initializer
+--@ mode: check-fail
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: accept-missing-initializer
+-- Error [E0121]: reject missing initializer
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 20 3d
+--@ end-file
+--@ end-case
+
+--@ case: accept-overlong-utf8
+--@ mode: check-pass
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: reject-overlong-utf8
+--@ file: input.ril
+--@ end-file
+--@ end-case
+
+--@ case: reject-overlong-utf8
+--@ mode: check-fail
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: accept-overlong-utf8
+-- Error [E0104]: reject overlong utf8
+--@ file: input.ril hex
+c0 af
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-as
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-as
+--@ file: accept-reserved-as.ril
+type Record = { as_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-as
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-as
+-- Error [E0113]: reject reserved as
+--@ file: reject-reserved-as.ril
+type Record = { as: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-capture
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-capture
+--@ file: accept-reserved-capture.ril
+type Record = { capture_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-capture
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-capture
+-- Error [E0113]: reject reserved capture
+--@ file: reject-reserved-capture.ril
+type Record = { capture: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-eff
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-eff
+--@ file: accept-reserved-eff.ril
+type Record = { eff_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-eff
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-eff
+-- Error [E0113]: reject reserved eff
+--@ file: reject-reserved-eff.ril
+type Record = { eff: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-else
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-else
+--@ file: accept-reserved-else.ril
+type Record = { else_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-else
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-else
+-- Error [E0113]: reject reserved else
+--@ file: reject-reserved-else.ril
+type Record = { else: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-false
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-false
+--@ file: accept-reserved-false.ril
+type Record = { false_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-false
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-false
+-- Error [E0113]: reject reserved false
+--@ file: reject-reserved-false.ril
+type Record = { false: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-fn
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-fn
+--@ file: accept-reserved-fn.ril
+type Record = { fn_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-fn
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-fn
+-- Error [E0113]: reject reserved fn
+--@ file: reject-reserved-fn.ril
+type Record = { fn: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-for
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-for
+--@ file: accept-reserved-for.ril
+type Record = { for_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-for
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-for
+-- Error [E0113]: reject reserved for
+--@ file: reject-reserved-for.ril
+type Record = { for: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-halt
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-halt
+--@ file: accept-reserved-halt.ril
+type Record = { halt_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-halt
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-halt
+-- Error [E0113]: reject reserved halt
+--@ file: reject-reserved-halt.ril
+type Record = { halt: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-if
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-if
+--@ file: accept-reserved-if.ril
+type Record = { if_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-if
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-if
+-- Error [E0113]: reject reserved if
+--@ file: reject-reserved-if.ril
+type Record = { if: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-in
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-in
+--@ file: accept-reserved-in.ril
+type Record = { in_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-in
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-in
+-- Error [E0113]: reject reserved in
+--@ file: reject-reserved-in.ril
+type Record = { in: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-is
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-is
+--@ file: accept-reserved-is.ril
+type Record = { is_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-is
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-is
+-- Error [E0113]: reject reserved is
+--@ file: reject-reserved-is.ril
+type Record = { is: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-keyof
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-keyof
+--@ file: accept-reserved-keyof.ril
+type Record = { keyof_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-keyof
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-keyof
+-- Error [E0113]: reject reserved keyof
+--@ file: reject-reserved-keyof.ril
+type Record = { keyof: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-last
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-last
+--@ file: accept-reserved-last.ril
+type Record = { last_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-last
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-last
+-- Error [E0113]: reject reserved last
+--@ file: reject-reserved-last.ril
+type Record = { last: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-let
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-let
+--@ file: accept-reserved-let.ril
+type Record = { let_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-let
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-let
+-- Error [E0113]: reject reserved let
+--@ file: reject-reserved-let.ril
+type Record = { let: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-loop
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-loop
+--@ file: accept-reserved-loop.ril
+type Record = { loop_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-loop
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-loop
+-- Error [E0113]: reject reserved loop
+--@ file: reject-reserved-loop.ril
+type Record = { loop: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-match
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-match
+--@ file: accept-reserved-match.ril
+type Record = { match_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-match
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-match
+-- Error [E0113]: reject reserved match
+--@ file: reject-reserved-match.ril
+type Record = { match: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-meta
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-meta
+--@ file: accept-reserved-meta.ril
+type Record = { meta_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-meta
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-meta
+-- Error [E0113]: reject reserved meta
+--@ file: reject-reserved-meta.ril
+type Record = { meta: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-module
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-module
+--@ file: accept-reserved-module.ril
+type Record = { module_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-module
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-module
+-- Error [E0113]: reject reserved module
+--@ file: reject-reserved-module.ril
+type Record = { module: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-mut
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-mut
+--@ file: accept-reserved-mut.ril
+type Record = { mut_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-mut
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-mut
+-- Error [E0113]: reject reserved mut
+--@ file: reject-reserved-mut.ril
+type Record = { mut: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-never
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-never
+--@ file: accept-reserved-never.ril
+type Record = { never_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-never
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-never
+-- Error [E0113]: reject reserved never
+--@ file: reject-reserved-never.ril
+type Record = { never: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-next
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-next
+--@ file: accept-reserved-next.ril
+type Record = { next_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-next
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-next
+-- Error [E0113]: reject reserved next
+--@ file: reject-reserved-next.ril
+type Record = { next: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-opaque
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-opaque
+--@ file: accept-reserved-opaque.ril
+type Record = { opaque_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-opaque
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-opaque
+-- Error [E0113]: reject reserved opaque
+--@ file: reject-reserved-opaque.ril
+type Record = { opaque: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-pub
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-pub
+--@ file: accept-reserved-pub.ril
+type Record = { pub_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-pub
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-pub
+-- Error [E0113]: reject reserved pub
+--@ file: reject-reserved-pub.ril
+type Record = { pub: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-resume
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-resume
+--@ file: accept-reserved-resume.ril
+type Record = { resume_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-resume
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-resume
+-- Error [E0113]: reject reserved resume
+--@ file: reject-reserved-resume.ril
+type Record = { resume: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-return
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-return
+--@ file: accept-reserved-return.ril
+type Record = { return_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-return
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-return
+-- Error [E0113]: reject reserved return
+--@ file: reject-reserved-return.ril
+type Record = { return: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-scoped
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-scoped
+--@ file: accept-reserved-scoped.ril
+type Record = { scoped_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-scoped
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-scoped
+-- Error [E0113]: reject reserved scoped
+--@ file: reject-reserved-scoped.ril
+type Record = { scoped: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-true
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-true
+--@ file: accept-reserved-true.ril
+type Record = { true_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-true
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-true
+-- Error [E0113]: reject reserved true
+--@ file: reject-reserved-true.ril
+type Record = { true: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-type
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-type
+--@ file: accept-reserved-type.ril
+type Record = { type_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-type
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-type
+-- Error [E0113]: reject reserved type
+--@ file: reject-reserved-type.ril
+type Record = { type: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-typeof
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-typeof
+--@ file: accept-reserved-typeof.ril
+type Record = { typeof_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-typeof
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-typeof
+-- Error [E0113]: reject reserved typeof
+--@ file: reject-reserved-typeof.ril
+type Record = { typeof: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-use
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-use
+--@ file: accept-reserved-use.ril
+type Record = { use_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-use
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-use
+-- Error [E0113]: reject reserved use
+--@ file: reject-reserved-use.ril
+type Record = { use: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-var
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-var
+--@ file: accept-reserved-var.ril
+type Record = { var_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-var
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-var
+-- Error [E0113]: reject reserved var
+--@ file: reject-reserved-var.ril
+type Record = { var: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-view
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-view
+--@ file: accept-reserved-view.ril
+type Record = { view_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-view
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-view
+-- Error [E0113]: reject reserved view
+--@ file: reject-reserved-view.ril
+type Record = { view: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-where
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-where
+--@ file: accept-reserved-where.ril
+type Record = { where_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-where
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-where
+-- Error [E0113]: reject reserved where
+--@ file: reject-reserved-where.ril
+type Record = { where: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-while
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-while
+--@ file: accept-reserved-while.ril
+type Record = { while_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-while
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-while
+-- Error [E0113]: reject reserved while
+--@ file: reject-reserved-while.ril
+type Record = { while: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-reserved-with
+--@ mode: check-pass
+--@ spec: SPEC#keywords
+--@ companion: reject-reserved-with
+--@ file: accept-reserved-with.ril
+type Record = { with_value: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-reserved-with
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+--@ companion: accept-reserved-with
+-- Error [E0113]: reject reserved with
+--@ file: reject-reserved-with.ril
+type Record = { with: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-surrogate-utf8
+--@ mode: check-pass
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: reject-surrogate-utf8
+--@ file: input.ril
+--@ end-file
+--@ end-case
+
+--@ case: reject-surrogate-utf8
+--@ mode: check-fail
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: accept-surrogate-utf8
+-- Error [E0104]: reject surrogate utf8
+--@ file: input.ril hex
+ed a0 80
+--@ end-file
+--@ end-case
+
+--@ case: accept-truncated-utf8
+--@ mode: check-pass
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: reject-truncated-utf8
+--@ file: input.ril
+--@ end-file
+--@ end-case
+
+--@ case: reject-truncated-utf8
+--@ mode: check-fail
+--@ spec: SPEC#character-set-and-encoding
+--@ companion: accept-truncated-utf8
+-- Error [E0104]: reject truncated utf8
+--@ file: input.ril hex
+e2 82
+--@ end-file
+--@ end-case
+
+--@ case: accept-unclosed-array
+--@ mode: check-pass
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: reject-unclosed-array
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 53 20 3d 20 5b 31 2c 20 32 5d
+--@ end-file
+--@ end-case
+
+--@ case: reject-unclosed-array
+--@ mode: check-fail
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: accept-unclosed-array
+-- Error [E0122]: reject unclosed array
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 53 20 3d 20 5b 31 2c 20 32
+--@ end-file
+--@ end-case
+
+--@ case: accept-unclosed-byte-string
+--@ mode: check-pass
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: reject-unclosed-byte-string
+--@ file: input.ril hex
+6c 65 74 20 44 41 54 41 20 3d 20 62 22 63 6c 6f 73 65 64 22
+--@ end-file
+--@ end-case
+
+--@ case: reject-unclosed-byte-string
+--@ mode: check-fail
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: accept-unclosed-byte-string
+-- Error [E0107]: reject unclosed byte string
+--@ file: input.ril hex
+6c 65 74 20 44 41 54 41 20 3d 20 62 22 6f 70 65 6e
+--@ end-file
+--@ end-case
+
+--@ case: accept-unclosed-nested-comment
+--@ mode: check-pass
+--@ spec: SPEC#comments
+--@ companion: reject-unclosed-nested-comment
+--@ file: input.ril hex
+7b 2d 20 6f 75 74 65 72 20 7b 2d 20 69 6e 6e 65 72 20 2d 7d 20 2d 7d
+--@ end-file
+--@ end-case
+
+--@ case: reject-unclosed-nested-comment
+--@ mode: check-fail
+--@ spec: SPEC#comments
+--@ companion: accept-unclosed-nested-comment
+-- Error [E0106]: reject unclosed nested comment
+--@ file: input.ril hex
+7b 2d 20 6f 75 74 65 72 20 7b 2d 20 69 6e 6e 65 72 20 2d 7d
+--@ end-file
+--@ end-case
+
+--@ case: accept-unclosed-raw-string
+--@ mode: check-pass
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: reject-unclosed-raw-string
+--@ file: input.ril hex
+6c 65 74 20 54 45 58 54 20 3d 20 60 63 6c 6f 73 65 64 60
+--@ end-file
+--@ end-case
+
+--@ case: reject-unclosed-raw-string
+--@ mode: check-fail
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: accept-unclosed-raw-string
+-- Error [E0107]: reject unclosed raw string
+--@ file: input.ril hex
+6c 65 74 20 54 45 58 54 20 3d 20 60 6f 70 65 6e
+--@ end-file
+--@ end-case
+
+--@ case: accept-unclosed-string
+--@ mode: check-pass
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: reject-unclosed-string
+--@ file: input.ril hex
+6c 65 74 20 54 45 58 54 20 3d 20 22 63 6c 6f 73 65 64 22
+--@ end-file
+--@ end-case
+
+--@ case: reject-unclosed-string
+--@ mode: check-fail
+--@ spec: SPEC#text-and-byte-literals
+--@ companion: accept-unclosed-string
+-- Error [E0107]: reject unclosed string
+--@ file: input.ril hex
+6c 65 74 20 54 45 58 54 20 3d 20 22 6f 70 65 6e
+--@ end-file
+--@ end-case
+
+--@ case: accept-unexpected-closing-token
+--@ mode: check-pass
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: reject-unexpected-closing-token
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 20 3d 20 31
+--@ end-file
+--@ end-case
+
+--@ case: reject-unexpected-closing-token
+--@ mode: check-fail
+--@ spec: SPEC#syntactic-diagnostic-conditions
+--@ companion: accept-unexpected-closing-token
+-- Error [E0120]: reject unexpected closing token
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 20 3d 20 29
+--@ end-file
+--@ end-case
+
+--@ case: line-ending-crlf
+--@ mode: check-pass
+--@ spec: SPEC#whitespace-and-layout-rules
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 20 3d 20 31 0d 0a
+--@ end-file
+--@ end-case
+
+--@ case: line-ending-lf
+--@ mode: check-pass
+--@ spec: SPEC#whitespace-and-layout-rules
+--@ file: input.ril
+let VALUE = 1
+--@ end-file
+--@ end-case
+
+--@ case: line-ending-no-final-newline
+--@ mode: check-pass
+--@ spec: SPEC#whitespace-and-layout-rules
+--@ file: input.ril hex
+6c 65 74 20 56 41 4c 55 45 20 3d 20 31
+--@ end-file
+--@ end-case

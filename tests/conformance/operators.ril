@@ -1,0 +1,456 @@
+--@ case: accept-bigint-wrap
+--@ mode: check-pass
+--@ spec: SPEC#bitwise-and-shift-operators
+--@ companion: reject-bigint-wrap
+--@ file: accept-bigint-wrap.ril
+fn example() {
+    let value = 1bigint + 2bigint
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-bigint-wrap
+--@ mode: check-fail
+--@ spec: SPEC#bitwise-and-shift-operators
+--@ companion: accept-bigint-wrap
+-- Error [E0327]: reject bigint wrap
+--@ file: reject-bigint-wrap.ril
+fn example() {
+    let value = 1bigint +% 2bigint
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-callable-equality
+--@ mode: check-pass
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ companion: reject-callable-equality
+--@ file: accept-callable-equality.ril
+fn action() -> int { 1 }
+
+fn example() {
+    let same = action() == action()
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-callable-equality
+--@ mode: check-fail
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ companion: accept-callable-equality
+-- Error [E0327]: reject callable equality
+--@ file: reject-callable-equality.ril
+fn action() -> int { 1 }
+
+fn example() {
+    let same = action == action
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-float-wrap
+--@ mode: check-pass
+--@ spec: SPEC#bitwise-and-shift-operators
+--@ companion: reject-float-wrap
+--@ file: accept-float-wrap.ril
+fn example() {
+    let value = 1.0 + 2.0
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-float-wrap
+--@ mode: check-fail
+--@ spec: SPEC#bitwise-and-shift-operators
+--@ companion: accept-float-wrap
+-- Error [E0327]: reject float wrap
+--@ file: reject-float-wrap.ril
+fn example() {
+    let value = 1.0 +% 2.0
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-string-add
+--@ mode: check-pass
+--@ spec: SPEC#bitwise-and-shift-operators
+--@ companion: reject-string-add
+--@ file: accept-string-add.ril
+fn example() {
+    let value = String::concat("a", "b")
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-string-add
+--@ mode: check-fail
+--@ spec: SPEC#bitwise-and-shift-operators
+--@ companion: accept-string-add
+-- Error [E0327]: reject string add
+--@ file: reject-string-add.ril
+fn example() {
+    let value = "a" + "b"
+}
+--@ end-file
+--@ end-case
+
+--@ case: bigint-negative-shift-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: bigint-negative-shift
+--@ entry: test_bigint_negative_shift_safe
+--@ file: bigint-negative-shift-safe.ril
+pub fn test_bigint_negative_shift_safe() {
+    assert(1bigint >> 0 == 1bigint)
+}
+--@ end-file
+--@ end-case
+
+--@ case: bigint-negative-shift
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: bigint-negative-shift-safe
+--@ entry: test_bigint_negative_shift
+-- Panics: bigint negative shift
+--@ file: bigint-negative-shift.ril
+pub fn test_bigint_negative_shift() {
+    let _ = 1bigint >> -1
+}
+--@ end-file
+--@ end-case
+
+--@ case: bitwise-and-shift
+--@ mode: run-pass
+--@ spec: SPEC#bitwise-and-shift-operators
+--@ entry: test_bitwise_and_shift
+--@ file: bitwise-and-shift.ril
+pub fn test_bitwise_and_shift() {
+    assert((12 & 10) == 8 && (12 | 10) == 14 && (12 ^ 10) == 6)
+    assert(~0u8 == 255u8)
+    assert(-8i8 >> 2 == -2i8 && 128u8 >> 7 == 1u8)
+    assert(128u8 << 1 == 0u8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: checked-add-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: checked-add
+--@ entry: test_checked_add_safe
+--@ file: checked-add-safe.ril
+pub fn test_checked_add_safe() {
+    assert(126i8 + 1i8 == 127i8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: checked-add
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: checked-add-safe
+--@ entry: test_checked_add
+-- Panics: checked add
+--@ file: checked-add.ril
+pub fn test_checked_add() {
+    let _ = 127i8 + 1i8
+}
+--@ end-file
+--@ end-case
+
+--@ case: checked-multiply-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: checked-multiply
+--@ entry: test_checked_multiply_safe
+--@ file: checked-multiply-safe.ril
+pub fn test_checked_multiply_safe() {
+    assert(127u8 * 2u8 == 254u8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: checked-multiply
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: checked-multiply-safe
+--@ entry: test_checked_multiply
+-- Panics: checked multiply
+--@ file: checked-multiply.ril
+pub fn test_checked_multiply() {
+    let _ = 128u8 * 2u8
+}
+--@ end-file
+--@ end-case
+
+--@ case: checked-subtract-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: checked-subtract
+--@ entry: test_checked_subtract_safe
+--@ file: checked-subtract-safe.ril
+pub fn test_checked_subtract_safe() {
+    assert(1u8 - 1u8 == 0u8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: checked-subtract
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: checked-subtract-safe
+--@ entry: test_checked_subtract
+-- Panics: checked subtract
+--@ file: checked-subtract.ril
+pub fn test_checked_subtract() {
+    let _ = 0u8 - 1u8
+}
+--@ end-file
+--@ end-case
+
+--@ case: division-zero-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: division-zero
+--@ entry: test_division_zero_safe
+--@ file: division-zero-safe.ril
+pub fn test_division_zero_safe() {
+    assert(1 / 1 == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: division-zero
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: division-zero-safe
+--@ entry: test_division_zero
+-- Panics: division zero
+--@ file: division-zero.ril
+pub fn test_division_zero() {
+    let _ = 1 / 0
+}
+--@ end-file
+--@ end-case
+
+--@ case: evaluation-order
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_evaluation_order
+--@ file: evaluation-order.ril
+pub fn test_evaluation_order() {
+    let mut trace: []int = []
+    let mut log = \value -> { trace !> Array::push(value); value }
+    let result = log(1) + log(2) * log(3)
+    assert(result == 7 && trace == [1, 2, 3])
+}
+--@ end-file
+--@ end-case
+
+--@ case: ieee-comparison
+--@ mode: run-pass
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ entry: test_ieee_comparison
+--@ file: ieee-comparison.ril
+pub fn test_ieee_comparison() {
+    let nan = 0.0 / 0.0
+    assert(nan != nan && !(nan == nan))
+    assert(!(nan < 1.0) && !(nan <= 1.0) && !(nan > 1.0) && !(nan >= 1.0))
+    assert(0.0 == -0.0)
+    assert(1.0 / 0.0 > 1.0 && 1.0 / -0.0 < -1.0)
+}
+--@ end-file
+--@ end-case
+
+--@ case: integer-arithmetic
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ entry: test_integer_arithmetic
+--@ file: integer-arithmetic.ril
+pub fn test_integer_arithmetic() {
+    assert(-7 / 3 == -2 && -7 % 3 == -1)
+    assert(7 / -3 == -2 && 7 % -3 == 1)
+    assert(-128i8 % -1i8 == 0i8)
+    assert(10 /? 0 == None && 10 %? 0 == None)
+    assert(-128i8 /? -1i8 == None)
+    assert(10 /? 2 == Some(5))
+    assert(255u8 +% 1u8 == 0u8)
+    assert(0u8 -% 1u8 == 255u8)
+    assert(128u8 *% 2u8 == 0u8)
+    assert(1bigint << 100 > 1bigint << 99)
+}
+--@ end-file
+--@ end-case
+
+--@ case: minimum-division-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: minimum-division
+--@ entry: test_minimum_division_safe
+--@ file: minimum-division-safe.ril
+pub fn test_minimum_division_safe() {
+    assert(-127i8 / -1i8 == 127i8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: minimum-division
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: minimum-division-safe
+--@ entry: test_minimum_division
+-- Panics: minimum division
+--@ file: minimum-division.ril
+pub fn test_minimum_division() {
+    let _ = -128i8 / -1i8
+}
+--@ end-file
+--@ end-case
+
+--@ case: minimum-negation-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: minimum-negation
+--@ entry: test_minimum_negation_safe
+--@ file: minimum-negation-safe.ril
+pub fn test_minimum_negation_safe() {
+    let value = -127i8
+    assert(-value == 127i8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: minimum-negation
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: minimum-negation-safe
+--@ entry: test_minimum_negation
+-- Panics: minimum negation
+--@ file: minimum-negation.ril
+pub fn test_minimum_negation() {
+    let value = -128i8
+    let _ = -value
+}
+--@ end-file
+--@ end-case
+
+--@ case: negative-shift-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: negative-shift
+--@ entry: test_negative_shift_safe
+--@ file: negative-shift-safe.ril
+pub fn test_negative_shift_safe() {
+    assert(1u8 << 0 == 1u8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: negative-shift
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: negative-shift-safe
+--@ entry: test_negative_shift
+-- Panics: negative shift
+--@ file: negative-shift.ril
+pub fn test_negative_shift() {
+    let _ = 1u8 << -1
+}
+--@ end-file
+--@ end-case
+
+--@ case: pipeline
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline
+--@ file: pipeline.ril
+pub fn test_pipeline() {
+    let values = [1, 2, 3] |> Array::map(\value -> value * 2) |> Array::filter(\value -> value > 2)
+    assert(values == [4, 6])
+    let mut changed: []int = []
+    changed !> Array::push(3)
+    assert(changed == [3])
+}
+--@ end-file
+--@ end-case
+
+--@ case: precedence
+--@ mode: run-pass
+--@ spec: SPEC#operator-precedence-and-associativity
+--@ entry: test_precedence
+--@ file: precedence.ril
+pub fn test_precedence() {
+    assert(1 + 2 * 3 == 7)
+    assert((1 + 2) * 3 == 9)
+    assert(8 - 3 - 2 == 3)
+    assert(16 / 2 / 2 == 4)
+    assert(!false && true || false)
+}
+--@ end-file
+--@ end-case
+
+--@ case: remainder-zero-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: remainder-zero
+--@ entry: test_remainder_zero_safe
+--@ file: remainder-zero-safe.ril
+pub fn test_remainder_zero_safe() {
+    assert(1 % 1 == 0)
+}
+--@ end-file
+--@ end-case
+
+--@ case: remainder-zero
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: remainder-zero-safe
+--@ entry: test_remainder_zero
+-- Panics: remainder zero
+--@ file: remainder-zero.ril
+pub fn test_remainder_zero() {
+    let _ = 1 % 0
+}
+--@ end-file
+--@ end-case
+
+--@ case: structural-equality
+--@ mode: run-pass
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ entry: test_structural_equality
+--@ file: structural-equality.ril
+pub fn test_structural_equality() {
+    assert(.{ x: 1, y: 2 } == .{ y: 2, x: 1 })
+    assert(["a": 1, "b": 2] == ["b": 2, "a": 1])
+    assert(Set::from([1, 2]) == Set::from([2, 1]))
+    let callback: ?fn() -> () = None
+    assert(callback == None)
+    assert(2 in [1, 2] && "a" in ["a": 1] && 2 in 1..=2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: wide-shift-safe
+--@ mode: run-pass
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: wide-shift
+--@ entry: test_wide_shift_safe
+--@ file: wide-shift-safe.ril
+pub fn test_wide_shift_safe() {
+    assert(1u8 << 7 == 128u8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: wide-shift
+--@ mode: run-panic
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: wide-shift-safe
+--@ entry: test_wide_shift
+-- Panics: wide shift
+--@ file: wide-shift.ril
+pub fn test_wide_shift() {
+    let _ = 1u8 << 8
+}
+--@ end-file
+--@ end-case

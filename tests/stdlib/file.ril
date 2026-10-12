@@ -1,0 +1,183 @@
+--@ case: closed-handle
+--@ mode: run-pass
+--@ spec: STD#files-and-directories
+--@ entry: test_closed_handle
+--@ requires: filesystem
+--@ file: closed-handle.ril
+use ril/file
+use ril/path
+use ril/io
+use ril/os
+
+pub fn test_closed_handle() -> Result<(), Io::IoError> @Fiber {
+    let path = Path::from_string("closed.bin")
+    File::write_bytes(path, b"abc")?
+    let scoped mut handle = File::open_path(path, File::OpenMode::ReadWrite)?
+    File::close(mut handle)?
+    assert(File::close(mut handle) is Ok())
+    match File::read_chunk(mut handle, 1) { Err(error) -> assert(error.kind == Io::ErrorKind::Closed), Ok(_) -> panic("closed read") }
+    match File::seek(mut handle, File::SeekFrom::Start(0i64)) { Err(error) -> assert(error.kind == Io::ErrorKind::Closed), Ok(_) -> panic("closed seek") }
+    match File::sync(mut handle) { Err(error) -> assert(error.kind == Io::ErrorKind::Closed), Ok(_) -> panic("closed sync") }
+    let progress = File::write(mut handle, b"")
+    assert(progress.written == 0)
+    match progress.error { Some(error) -> assert(error.kind == Io::ErrorKind::Closed), None -> panic("closed write") }
+    File::remove_file(path)?
+    Ok()
+}
+--@ end-file
+--@ end-case
+
+--@ case: invalid-utf8-and-temp-file
+--@ mode: run-pass
+--@ spec: STD#files-and-directories
+--@ entry: test_invalid_utf8_and_temp_file
+--@ requires: filesystem
+--@ file: invalid-utf8-and-temp-file.ril
+use ril/file
+use ril/path
+use ril/io
+use ril/os
+
+pub fn test_invalid_utf8_and_temp_file() -> Result<(), Io::IoError> @Fiber {
+    File::write_bytes(Path::from_string("invalid.txt"), b"\xFF")?
+    match File::read_text(Path::from_string("invalid.txt")) { Err(error) -> assert(error.kind == Io::ErrorKind::InvalidData), Ok(_) -> panic("invalid utf8 accepted") }
+    File::remove_file(Path::from_string("invalid.txt"))?
+    let (path, mut handle) = File::temp_file(Path::from_string("."))?
+    File::close(mut handle)?
+    assert(File::metadata(path)?.size == 0u64)
+    File::remove_file(path)?
+    Ok()
+}
+--@ end-file
+--@ end-case
+
+--@ case: open-modes
+--@ mode: run-pass
+--@ spec: STD#files-and-directories
+--@ entry: test_open_modes
+--@ requires: filesystem
+--@ file: open-modes.ril
+use ril/file
+use ril/path
+use ril/io
+use ril/os
+
+pub fn test_open_modes() -> Result<(), Io::IoError> @Fiber {
+    let path = Path::from_string("modes.bin")
+    File::write_bytes(path, b"abc")?
+    match File::open_path(path, File::OpenMode::WriteNew) {
+        Err(error) -> assert(error.kind == Io::ErrorKind::AlreadyExists),
+        Ok(mut unexpected) -> { File::close(mut unexpected)?; panic("exclusive create") },
+    }
+    {
+        let scoped mut handle = File::open_path(path, File::OpenMode::Append)?
+        let progress = File::write(mut handle, b"d")
+        assert(progress.written == 1 && progress.error == None)
+        File::sync(mut handle)?
+    }
+    assert(File::read_bytes(path)? == b"abcd")
+    {
+        let scoped mut handle = File::open_path(path, File::OpenMode::WriteTruncate)?
+        File::close(mut handle)?
+    }
+    assert(File::read_bytes(path)? == b"")
+    File::remove_file(path)?
+    Ok()
+}
+--@ end-file
+--@ end-case
+
+--@ case: stream-position-and-eof
+--@ mode: run-pass
+--@ spec: STD#files-and-directories
+--@ entry: test_stream_position_and_eof
+--@ requires: filesystem
+--@ file: stream-position-and-eof.ril
+use ril/file
+use ril/path
+use ril/io
+use ril/os
+use ril/bytes
+
+pub fn test_stream_position_and_eof() -> Result<(), Io::IoError> @Fiber {
+    let path = Path::from_string("stream.bin")
+    File::write_bytes(path, b"abc")?
+    {
+        let scoped mut handle = File::open("stream.bin")?
+        let zero = File::read_chunk(mut handle, 0)?
+        assert(zero.data == b"" && !zero.end)
+        assert(File::seek(mut handle, File::SeekFrom::Start(1i64))? == 1u64)
+        var received = b""
+        loop {
+            let chunk = File::read_chunk(mut handle, 10)?
+            assert(len(chunk.data) <= 10)
+            received = Bytes::concat(received, chunk.data)
+            if chunk.end { last }
+        }
+        assert(received == b"bc")
+        let eof = File::read_chunk(mut handle, 1)?
+        assert(eof.data == b"" && eof.end)
+        assert(File::seek(mut handle, File::SeekFrom::End(3i64))? == 6u64)
+    }
+    assert(File::metadata(path)?.size == 3u64)
+    assert(File::read("stream.bin") is Ok("abc"))
+    File::remove_file(path)?
+    Ok()
+}
+--@ end-file
+--@ end-case
+
+--@ case: whole-file-and-directories
+--@ mode: run-pass
+--@ spec: STD#files-and-directories
+--@ entry: test_whole_file_and_directories
+--@ requires: filesystem
+--@ file: whole-file-and-directories.ril
+use ril/file
+use ril/path
+use ril/io
+use ril/os
+
+pub fn test_whole_file_and_directories() -> Result<(), Io::IoError> @Fiber {
+    let directory = Path::from_string("data")
+    File::create_dir(directory)?
+    File::create_dir_all(directory)?
+    let source = Path::join(directory, Path::from_string("a.ril"))
+    let target = Path::join(directory, Path::from_string("b.ril"))
+    File::write_text(source, "Aé\r\n")?
+    assert(File::read_text(source)? == "Aé\r\n")
+    assert(File::read_bytes(source)? == String::utf8("Aé\r\n"))
+    assert(File::metadata(source)?.size == 5u64)
+    let entries = File::read_dir(directory)?
+    assert(len(entries) == 1 && entries[0].name == Os::from_string("a.ril"))
+    assert(entries[0].path == source && entries[0].kind == File::FileKind::Regular)
+    assert(Path::is_absolute(File::canonicalize(source)?))
+    File::rename(source, target)?
+    File::remove_file(target)?
+    File::remove_dir(directory)?
+    Ok()
+}
+--@ end-file
+--@ end-case
+
+--@ case: with-file
+--@ mode: run-pass
+--@ spec: STD#files-and-directories
+--@ entry: test_with_file
+--@ requires: filesystem
+--@ file: with-file.ril
+use ril/file
+use ril/path
+use ril/io
+use ril/os
+
+pub fn test_with_file() -> Result<(), Io::IoError> @Fiber {
+    let path = Path::from_string("wrapped.bin")
+    File::write_bytes(path, b"x")?
+    let chunk = File::with_file(path, File::OpenMode::Read, \mut handle -> File::read_chunk(mut handle, 1))?
+    assert(chunk.data == b"x")
+    File::remove_file(path)?
+    Ok()
+}
+--@ end-file
+--@ end-case

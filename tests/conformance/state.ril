@@ -1,0 +1,438 @@
+--@ case: accept-callable-type-contract-reference
+--@ mode: check-pass
+--@ spec: SPEC#named-function-state-contract-references
+--@ companion: reject-callable-type-contract-reference
+--@ file: accept-callable-type-contract-reference.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+type Action = fn() -> () &{mut count}
+--@ end-file
+--@ end-case
+
+--@ case: reject-callable-type-contract-reference
+--@ mode: check-fail
+--@ spec: SPEC#named-function-state-contract-references
+--@ companion: accept-callable-type-contract-reference
+-- Error [E0539]: reject callable type contract reference
+--@ file: reject-callable-type-contract-reference.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+type Action = fn() -> () &advance
+--@ end-file
+--@ end-case
+
+--@ case: accept-closed-row-hazard
+--@ mode: check-pass
+--@ spec: SPEC#callable-contracts
+--@ companion: reject-closed-row-hazard
+--@ file: accept-closed-row-hazard.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example(action: fn() -> ()) &{mut count} { advance(); action() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-closed-row-hazard
+--@ mode: check-fail
+--@ spec: SPEC#callable-contracts
+--@ companion: accept-closed-row-hazard
+-- Error [E0534]: reject closed row hazard
+--@ file: reject-closed-row-hazard.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example(action: fn() -> ()) &{} { advance(); action() }
+--@ end-file
+--@ end-case
+
+--@ case: accept-empty-capture-group
+--@ mode: check-pass
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: reject-empty-capture-group
+--@ file: accept-empty-capture-group.ril
+fn example() {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-empty-capture-group
+--@ mode: check-fail
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: accept-empty-capture-group
+-- Error [E0538]: reject empty capture group
+--@ file: reject-empty-capture-group.ril
+fn example() &{closure,} {}
+--@ end-file
+--@ end-case
+
+--@ case: accept-empty-provider-reference
+--@ mode: check-pass
+--@ spec: SPEC#named-function-state-contract-references
+--@ companion: reject-empty-provider-reference
+--@ file: accept-empty-provider-reference.ril
+fn nothing() {}
+fn example() { nothing() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-empty-provider-reference
+--@ mode: check-fail
+--@ spec: SPEC#named-function-state-contract-references
+--@ companion: accept-empty-provider-reference
+-- Error [E0529]: reject empty provider reference
+--@ file: reject-empty-provider-reference.ril
+fn nothing() {}
+fn example() &nothing { nothing() }
+--@ end-file
+--@ end-case
+
+--@ case: accept-excess-capability
+--@ mode: check-pass
+--@ spec: SPEC#retained-mutable-sharing
+--@ companion: reject-excess-capability
+--@ file: accept-excess-capability.ril
+fn example() {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-excess-capability
+--@ mode: check-fail
+--@ spec: SPEC#retained-mutable-sharing
+--@ companion: accept-excess-capability
+-- Error [E0529]: reject excess capability
+--@ file: reject-excess-capability.ril
+fn example() &mut {}
+--@ end-file
+--@ end-case
+
+--@ case: accept-first-order-empty-both
+--@ mode: check-pass
+--@ spec: SPEC#empty-rows-on-higher-order-signatures
+--@ companion: reject-first-order-empty-both
+--@ file: accept-first-order-empty-both.ril
+fn example(action: fn() -> ()) @{} &{} { action() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-first-order-empty-both
+--@ mode: check-fail
+--@ spec: SPEC#empty-rows-on-higher-order-signatures
+--@ companion: accept-first-order-empty-both
+-- Error [E0542]: reject first order empty both
+--@ file: reject-first-order-empty-both.ril
+fn example() @{} &{} {}
+--@ end-file
+--@ end-case
+
+--@ case: accept-first-order-empty-effect
+--@ mode: check-pass
+--@ spec: SPEC#empty-rows-on-higher-order-signatures
+--@ companion: reject-first-order-empty-effect
+--@ file: accept-first-order-empty-effect.ril
+fn example(action: fn() -> ()) @{} { action() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-first-order-empty-effect
+--@ mode: check-fail
+--@ spec: SPEC#empty-rows-on-higher-order-signatures
+--@ companion: accept-first-order-empty-effect
+-- Error [E0542]: reject first order empty effect
+--@ file: reject-first-order-empty-effect.ril
+fn example() @{} {}
+--@ end-file
+--@ end-case
+
+--@ case: accept-first-order-empty-state
+--@ mode: check-pass
+--@ spec: SPEC#empty-rows-on-higher-order-signatures
+--@ companion: reject-first-order-empty-state
+--@ file: accept-first-order-empty-state.ril
+fn example(action: fn() -> ()) &{} { action() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-first-order-empty-state
+--@ mode: check-fail
+--@ spec: SPEC#empty-rows-on-higher-order-signatures
+--@ companion: accept-first-order-empty-state
+-- Error [E0542]: reject first order empty state
+--@ file: reject-first-order-empty-state.ril
+fn example() &{} {}
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-alias
+--@ mode: check-pass
+--@ spec: SPEC#external-state-tracking
+--@ companion: reject-missing-alias
+--@ file: accept-missing-alias.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() &{mut count} { let action = advance; action() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-alias
+--@ mode: check-fail
+--@ spec: SPEC#external-state-tracking
+--@ companion: accept-missing-alias
+-- Error [E0510]: reject missing alias
+--@ file: reject-missing-alias.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() { let action = advance; action() }
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-callback
+--@ mode: check-pass
+--@ spec: SPEC#external-state-tracking
+--@ companion: reject-missing-callback
+--@ file: accept-missing-callback.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() &{mut count} { invoke(advance) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-callback
+--@ mode: check-fail
+--@ spec: SPEC#external-state-tracking
+--@ companion: accept-missing-callback
+-- Error [E0510]: reject missing callback
+--@ file: reject-missing-callback.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() { invoke(advance) }
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-callee
+--@ mode: check-pass
+--@ spec: SPEC#external-state-tracking
+--@ companion: reject-missing-callee
+--@ file: accept-missing-callee.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() &{mut count} { advance() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-callee
+--@ mode: check-fail
+--@ spec: SPEC#external-state-tracking
+--@ companion: accept-missing-callee
+-- Error [E0510]: reject missing callee
+--@ file: reject-missing-callee.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() { advance() }
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-direct
+--@ mode: check-pass
+--@ spec: SPEC#external-state-tracking
+--@ companion: reject-missing-direct
+--@ file: accept-missing-direct.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() &{mut count} { count += 1 }
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-direct
+--@ mode: check-fail
+--@ spec: SPEC#external-state-tracking
+--@ companion: accept-missing-direct
+-- Error [E0510]: reject missing direct
+--@ file: reject-missing-direct.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() { count += 1 }
+--@ end-file
+--@ end-case
+
+--@ case: accept-value-contract-provider
+--@ mode: check-pass
+--@ spec: SPEC#named-function-state-contract-references
+--@ companion: reject-value-contract-provider
+--@ file: accept-value-contract-provider.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+fn example() &advance { advance() }
+--@ end-file
+--@ end-case
+
+--@ case: reject-value-contract-provider
+--@ mode: check-fail
+--@ spec: SPEC#named-function-state-contract-references
+--@ companion: accept-value-contract-provider
+-- Error [E0539]: reject value contract provider
+--@ file: reject-value-contract-provider.ril
+var count = 0
+fn advance() &{mut count} { count += 1 }
+fn invoke(action: fn() -> ()) { action() }
+let ACTION = advance
+fn example() &ACTION { advance() }
+--@ end-file
+--@ end-case
+
+--@ case: accept-wrong-capture-group
+--@ mode: check-pass
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: reject-wrong-capture-group
+--@ file: accept-wrong-capture-group.ril
+fn outer() { var count = 0; inner()
+where
+    fn inner() &{closure, mut count} { count += 1 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-wrong-capture-group
+--@ mode: check-fail
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: accept-wrong-capture-group
+-- Error [E0538]: reject wrong capture group
+--@ file: reject-wrong-capture-group.ril
+fn outer() { var count = 0; inner()
+where
+    fn inner() &{mut count} { count += 1 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: farther-named-capture-owner
+--@ mode: run-pass
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: reject-missing-farther-capture-owner
+--@ entry: test_farther_named_capture_owner
+--@ file: farther-named-capture-owner.ril
+fn outer_layer() -> int {
+    var count = 0
+    middle()
+    where
+        fn middle() -> int &{closure, mut count} {
+            inner()
+            where
+                fn inner() -> int &{closure outer_layer, mut count} {
+                    count += 1
+                    count
+                }
+        }
+}
+
+pub fn test_farther_named_capture_owner() {
+    assert(outer_layer() == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-farther-capture-owner
+--@ mode: check-fail
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: farther-named-capture-owner
+-- Error [E0538]: A capture from a farther named callable must name its owner
+--@ file: reject-missing-farther-capture-owner.ril
+fn outer_layer() -> int {
+    var count = 0
+    middle()
+    where
+        fn middle() -> int &{closure, mut count} {
+            inner()
+            where
+                fn inner() -> int &{closure, mut count} {
+                    count += 1
+                    count
+                }
+        }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-wrong-farther-capture-owner
+--@ mode: check-fail
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: farther-named-capture-owner
+-- Error [E0538]: An explicit owner must match the resolved binding's declaring layer
+--@ file: reject-wrong-farther-capture-owner.ril
+fn outer_layer() -> int {
+    var count = 0
+    middle()
+    where
+        fn middle() -> int &{closure, mut count} {
+            inner()
+            where
+                fn inner() -> int &{closure middle, mut count} {
+                    count += 1
+                    count
+                }
+        }
+}
+--@ end-file
+--@ end-case
+
+--@ case: separate-anonymous-capture-layers
+--@ mode: run-pass
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: reject-merged-anonymous-capture-layers
+--@ entry: test_separate_anonymous_capture_layers
+--@ file: separate-anonymous-capture-layers.ril
+pub fn test_separate_anonymous_capture_layers() {
+    let run = \-> {
+        var x = 0
+        let mut nested = \-> {
+            var y = 0
+            leaf()
+            where
+                fn leaf() -> int &{closure, mut x} &{closure, mut y} {
+                    x += 1
+                    y += 1
+                    x + y
+                }
+        }
+        nested()
+    }
+    assert(run() == 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-merged-anonymous-capture-layers
+--@ mode: check-fail
+--@ spec: SPEC#state-groups-and-captured-layers
+--@ companion: separate-anonymous-capture-layers
+-- Error [E0538]: Different anonymous callable layers cannot share one capture group
+--@ file: reject-merged-anonymous-capture-layers.ril
+fn example() {
+    let run = \-> {
+        var x = 0
+        let mut nested = \-> {
+            var y = 0
+            leaf()
+            where
+                fn leaf() -> int &{closure, mut x, mut y} {
+                    x += 1
+                    y += 1
+                    x + y
+                }
+        }
+        nested()
+    }
+    assert(run() == 2)
+}
+--@ end-file
+--@ end-case

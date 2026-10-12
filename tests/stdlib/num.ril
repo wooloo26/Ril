@@ -1,0 +1,211 @@
+--@ case: bigint-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_bigint_parse_format
+--@ file: bigint-parse-format.ril
+use ril/num
+
+pub fn test_bigint_parse_format() {
+    assert(Num::parse_bigint("2a", 16) is Ok(42bigint))
+    assert(Num::format_bigint(42bigint, 16) is Ok("2a"))
+    assert(Num::parse_bigint("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_bigint(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: conversion-boundaries
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_conversion_boundaries
+--@ file: conversion-boundaries.ril
+use ril/num
+
+pub fn test_conversion_boundaries() {
+    assert(Num::parse_u8("256") is Err(Num::NumError::OutOfRange))
+    assert(Num::parse_u8("-0") is Ok(0u8))
+    assert(Num::parse_u8("-1") is Err(Num::NumError::OutOfRange))
+    assert(Num::convert<f64, int>(1.5) is Err(Num::NumError::OutOfRange))
+    assert(Num::convert<int, u8>(255) is Ok(255u8))
+    assert(Num::convert<int, u8>(256) is Err(Num::NumError::OutOfRange))
+    assert(Num::format_f64(0.000001) == "0.000001")
+    assert(Num::format_f64(0.0000001) == "1e-7")
+}
+--@ end-file
+--@ end-case
+
+--@ case: f32-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_f32_parse_format
+--@ file: f32-parse-format.ril
+use ril/num
+
+pub fn test_f32_parse_format() {
+    assert(Num::parse_f32(".5") is Ok(0.5f32))
+    assert(Num::format_f32(1.0f32) == "1.0")
+    assert(Num::format_f32(-0.0f32) == "-0.0")
+    assert(Num::parse_f32("1e9999") is Err(Num::NumError::OutOfRange))
+}
+--@ end-file
+--@ end-case
+
+--@ case: f64-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_f64_parse_format
+--@ file: f64-parse-format.ril
+use ril/num
+
+pub fn test_f64_parse_format() {
+    assert(Num::parse_f64(".5") is Ok(0.5f64))
+    assert(Num::format_f64(1.0f64) == "1.0")
+    assert(Num::format_f64(-0.0f64) == "-0.0")
+    assert(Num::parse_f64("1e9999") is Err(Num::NumError::OutOfRange))
+}
+--@ end-file
+--@ end-case
+
+--@ case: i16-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_i16_parse_format
+--@ file: i16-parse-format.ril
+use ril/num
+
+pub fn test_i16_parse_format() {
+    assert(Num::parse_i16("2a", 16) is Ok(42i16))
+    assert(Num::format_i16(42i16, 16) is Ok("2a"))
+    assert(Num::parse_i16("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_i16(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: i32-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_i32_parse_format
+--@ file: i32-parse-format.ril
+use ril/num
+
+pub fn test_i32_parse_format() {
+    assert(Num::parse_i32("2a", 16) is Ok(42i32))
+    assert(Num::format_i32(42i32, 16) is Ok("2a"))
+    assert(Num::parse_i32("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_i32(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: i64-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_i64_parse_format
+--@ file: i64-parse-format.ril
+use ril/num
+
+pub fn test_i64_parse_format() {
+    assert(Num::parse_i64("2a", 16) is Ok(42i64))
+    assert(Num::format_i64(42i64, 16) is Ok("2a"))
+    assert(Num::parse_i64("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_i64(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: i8-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_i8_parse_format
+--@ file: i8-parse-format.ril
+use ril/num
+
+pub fn test_i8_parse_format() {
+    assert(Num::parse_i8("2a", 16) is Ok(42i8))
+    assert(Num::format_i8(42i8, 16) is Ok("2a"))
+    assert(Num::parse_i8("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_i8(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: int-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_int_parse_format
+--@ file: int-parse-format.ril
+use ril/num
+
+pub fn test_int_parse_format() {
+    assert(Num::parse_int("2a", 16) is Ok(42))
+    assert(Num::format_int(42, 16) is Ok("2a"))
+    assert(Num::parse_int("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_int(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: u16-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_u16_parse_format
+--@ file: u16-parse-format.ril
+use ril/num
+
+pub fn test_u16_parse_format() {
+    assert(Num::parse_u16("2a", 16) is Ok(42u16))
+    assert(Num::format_u16(42u16, 16) is Ok("2a"))
+    assert(Num::parse_u16("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_u16(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: u32-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_u32_parse_format
+--@ file: u32-parse-format.ril
+use ril/num
+
+pub fn test_u32_parse_format() {
+    assert(Num::parse_u32("2a", 16) is Ok(42u32))
+    assert(Num::format_u32(42u32, 16) is Ok("2a"))
+    assert(Num::parse_u32("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_u32(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: u64-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_u64_parse_format
+--@ file: u64-parse-format.ril
+use ril/num
+
+pub fn test_u64_parse_format() {
+    assert(Num::parse_u64("2a", 16) is Ok(42u64))
+    assert(Num::format_u64(42u64, 16) is Ok("2a"))
+    assert(Num::parse_u64("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_u64(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case
+
+--@ case: u8-parse-format
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_u8_parse_format
+--@ file: u8-parse-format.ril
+use ril/num
+
+pub fn test_u8_parse_format() {
+    assert(Num::parse_u8("2a", 16) is Ok(42u8))
+    assert(Num::format_u8(42u8, 16) is Ok("2a"))
+    assert(Num::parse_u8("", 1) is Err(Num::NumError::InvalidRadix))
+    assert(Num::parse_u8(" 1") is Err(Num::NumError::InvalidSyntax))
+}
+--@ end-file
+--@ end-case

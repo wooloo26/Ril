@@ -1,0 +1,103 @@
+--@ case: accept-last-use-does-not-freeze
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: reject-last-use-does-not-freeze
+--@ file: accept-last-use-does-not-freeze.ril
+type Cell = { mut value: int }
+
+fn example() {
+    let frozen = { let mut value = Cell.{ value: 0 }; value.value += 1; value }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-last-use-does-not-freeze
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: accept-last-use-does-not-freeze
+-- Error [E0535]: reject last use does not freeze
+--@ file: reject-last-use-does-not-freeze.ril
+type Cell = { mut value: int }
+
+fn example() {
+    let mut value = Cell.{ value: 0 }
+    value.value += 1
+    let frozen = value
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-runtime-index-overlap
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: reject-runtime-index-overlap
+--@ file: accept-runtime-index-overlap.ril
+type Cell = { mut value: int }
+fn swap(mut a: Cell, mut b: Cell) &mut { let value = a.value; a.value = b.value; b.value = value }
+
+fn example(i: int, j: int) {
+    let mut cells = [Cell.{ value: 1 }, Cell.{ value: 2 }]
+    swap(mut cells[0], mut cells[1])
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-runtime-index-overlap
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: accept-runtime-index-overlap
+-- Error [E0523]: reject runtime index overlap
+--@ file: reject-runtime-index-overlap.ril
+type Cell = { mut value: int }
+fn swap(mut a: Cell, mut b: Cell) &mut { let value = a.value; a.value = b.value; b.value = value }
+
+fn example(i: int, j: int) {
+    let mut cells = [Cell.{ value: 1 }, Cell.{ value: 2 }]
+    swap(mut cells[i], mut cells[j])
+}
+--@ end-file
+--@ end-case
+
+--@ case: branch-preserves-disjoint-relation
+--@ mode: run-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ entry: test_branch_preserves_disjoint_relation
+--@ file: branch-preserves-disjoint-relation.ril
+type Cell = { mut value: int }
+fn swap(mut a: Cell, mut b: Cell) &mut { let value = a.value; a.value = b.value; b.value = value }
+fn permute(flag: bool, ^mut a: Cell, ^mut b: Cell) -> (Cell, Cell) &^mut {
+    if flag { (^mut a, ^mut b) } else { (^mut b, ^mut a) }
+}
+
+pub fn test_branch_preserves_disjoint_relation() {
+    for [false, true] as choose {
+        let mut left = Cell.{ value: 1 }
+        let mut right = Cell.{ value: 2 }
+        let mut pair = permute(choose, ^mut left, ^mut right)
+        swap(mut pair.0, mut pair.1)
+        assert(left.value == 2 && right.value == 1)
+    }
+}
+--@ end-file
+--@ end-case
+
+--@ case: clone-cyclic-graph
+--@ mode: run-pass
+--@ spec: SPEC#deep-immutability
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ entry: test_clone_cyclic_graph
+--@ file: clone-cyclic-graph.ril
+type Node = { mut value: int, mut following: ?Node }
+
+pub fn test_clone_cyclic_graph() {
+    let mut original = Node.{ value: 1, following: None }
+    original.following = Some(^mut original)
+    let mut copied = ^mut clone(original)
+    let view back = copied.following ?? panic("cycle missing")
+    copied.value = 2
+    assert(back.value == 2 && original.value == 1)
+    let frozen = clone_immut(copied)
+    assert(frozen == clone_immut(copied))
+}
+--@ end-file
+--@ end-case

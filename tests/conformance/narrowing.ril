@@ -1,0 +1,153 @@
+--@ case: accept-contradictory-refinement
+--@ mode: check-pass
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: reject-contradictory-refinement
+--@ file: accept-contradictory-refinement.ril
+type Shape { Circle(int), Point }
+
+fn example(shape: Shape) {
+    if shape is Circle {} else if shape is Point {}
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-contradictory-refinement
+--@ mode: check-fail
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: accept-contradictory-refinement
+-- Error [E0311]: reject contradictory refinement
+--@ file: reject-contradictory-refinement.ril
+type Shape { Circle(int), Point }
+
+fn example(shape: Shape) {
+    if shape is Circle { if shape is Point {} }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-reassigned-refinement
+--@ mode: check-pass
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: reject-reassigned-refinement
+--@ file: accept-reassigned-refinement.ril
+fn example() {
+    var item: ?int = Some(1)
+    if item != None { let value = item + 1; item = None }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-reassigned-refinement
+--@ mode: check-fail
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: accept-reassigned-refinement
+-- Error [E0310]: reject reassigned refinement
+--@ file: reject-reassigned-refinement.ril
+fn example() {
+    var item: ?int = Some(1)
+    if item != None { item = None; let value = item + 1 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-unknown-callback-independence
+--@ mode: check-pass
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: reject-unknown-callback-independence
+--@ file: accept-unknown-callback-independence.ril
+type Cell = { mut value: ?int }
+fn example(mut cell: Cell, action: fn() -> ()) &mut {
+    let snapshot = clone_immut(cell)
+    if snapshot.value != None {
+        action()
+        let _ = snapshot.value + 1
+    }
+    cell.value = None
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unknown-callback-independence
+--@ mode: check-fail
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: accept-unknown-callback-independence
+-- Error [E0533]: Unknown callback writes cannot establish independence for a live refinement; snapshot remains stable
+--@ file: reject-unknown-callback-independence.ril
+type Cell = { mut value: ?int }
+fn example(mut cell: Cell, action: fn() -> ()) &mut {
+    if cell.value != None {
+        action()
+        let _ = cell.value + 1
+    }
+    cell.value = None
+}
+--@ end-file
+--@ end-case
+
+--@ case: guard-clause
+--@ mode: run-pass
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ entry: test_guard_clause
+--@ file: guard-clause.ril
+fn read(item: ?{ id: int }) -> int { if item == None { return -1 }; item.id }
+
+pub fn test_guard_clause() {
+    assert(read(Some(.{ id: 7 })) == 7 && read(None) == -1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-known-write-refinement
+--@ mode: check-pass
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: reject-known-write-refinement
+--@ file: accept-known-write-refinement.ril
+type Cell = { mut value: ?int }
+fn clear(mut cell: Cell) &mut { cell.value = None }
+
+fn example(mut cell: Cell) &mut {
+    if cell.value != None {
+        let before = cell.value + 1
+        clear(mut cell)
+    }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-known-write-refinement
+--@ mode: check-fail
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: accept-known-write-refinement
+-- Error [E0310]: A known callee write invalidates the previously narrowed field
+--@ file: reject-known-write-refinement.ril
+type Cell = { mut value: ?int }
+fn clear(mut cell: Cell) &mut { cell.value = None }
+
+fn example(mut cell: Cell) &mut {
+    if cell.value != None {
+        clear(mut cell)
+        let after = cell.value + 1
+    }
+}
+--@ end-file
+--@ end-case
+
+--@ case: known-write-and-renarrowing
+--@ mode: run-pass
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ entry: test_known_write_and_renarrowing
+--@ file: known-write-and-renarrowing.ril
+type Cell = { mut value: ?int }
+fn clear(mut cell: Cell) &mut { cell.value = None }
+
+pub fn test_known_write_and_renarrowing() {
+    let mut cell = Cell.{ value: Some(7) }
+    if cell.value != None {
+        assert(cell.value + 1 == 8)
+        clear(mut cell)
+        if cell.value != None { panic("clear did not invalidate the value") }
+    }
+    assert(cell.value == None)
+}
+--@ end-file
+--@ end-case

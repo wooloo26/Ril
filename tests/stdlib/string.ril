@@ -1,0 +1,197 @@
+--@ case: byte-length
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_byte_length
+--@ file: byte-length.ril
+pub fn test_byte_length() {
+    assert(len("Aé🙂") == 3 && String::byte_len("Aé🙂") == 7)
+}
+--@ end-file
+--@ end-case
+
+--@ case: concat-join
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_concat_join
+--@ file: concat-join.ril
+pub fn test_concat_join() {
+    assert(String::concat("a", "b") == "ab" && String::join(["a", "b"], "-") == "a-b")
+}
+--@ end-file
+--@ end-case
+
+--@ case: contains
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_contains
+--@ file: contains.ril
+pub fn test_contains() {
+    assert(String::contains("abc", "") && String::contains("abc", "bc"))
+}
+--@ end-file
+--@ end-case
+
+--@ case: find
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_find
+--@ file: find.ril
+pub fn test_find() {
+    assert(String::find("é🙂é", "🙂") == Some(1) && String::find("abc", "") == Some(0))
+}
+--@ end-file
+--@ end-case
+
+--@ case: lines
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_lines
+--@ file: lines.ril
+pub fn test_lines() {
+    assert(String::lines("a\r\nb\n") == ["a", "b"] && String::lines("") == [])
+}
+--@ end-file
+--@ end-case
+
+--@ case: offsets
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_offsets
+--@ file: offsets.ril
+pub fn test_offsets() {
+    assert(String::byte_offset("Aé🙂", 2) == Some(3) && String::scalar_offset("Aé🙂", 2) == None && String::scalar_offset("Aé🙂", 7) == Some(3))
+}
+--@ end-file
+--@ end-case
+
+--@ case: prefix-suffix
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_prefix_suffix
+--@ file: prefix-suffix.ril
+pub fn test_prefix_suffix() {
+    assert(String::starts_with("abc", "") && String::ends_with("abc", "bc"))
+}
+--@ end-file
+--@ end-case
+
+--@ case: replace-boundaries
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_replace_boundaries
+--@ file: replace-boundaries.ril
+pub fn test_replace_boundaries() {
+    assert(String::replace("ab", "", "-") == "-a-b-")
+}
+--@ end-file
+--@ end-case
+
+--@ case: replace-nonoverlap
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_replace_nonoverlap
+--@ file: replace-nonoverlap.ril
+pub fn test_replace_nonoverlap() {
+    assert(String::replace("aaa", "aa", "x") == "xa")
+}
+--@ end-file
+--@ end-case
+
+--@ case: scalar-at
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_scalar_at
+--@ file: scalar-at.ril
+pub fn test_scalar_at() {
+    assert(String::scalar_at("Aé🙂", 1) == Some(233u32) && String::scalar_at("a", -1) == None)
+}
+--@ end-file
+--@ end-case
+
+--@ case: scalars
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_scalars
+--@ file: scalars.ril
+pub fn test_scalars() {
+    assert(String::scalars("Aé") == [65u32, 233u32])
+}
+--@ end-file
+--@ end-case
+
+--@ case: slice
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_slice
+--@ file: slice.ril
+pub fn test_slice() {
+    assert(String::slice("abc", 2, 1) == None && String::slice("abc", 3, 3) == Some(""))
+}
+--@ end-file
+--@ end-case
+
+--@ case: split-empty
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_split_empty
+--@ file: split-empty.ril
+pub fn test_split_empty() {
+    assert(String::split("", "") == [])
+}
+--@ end-file
+--@ end-case
+
+--@ case: split-empty-fields
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_split_empty_fields
+--@ file: split-empty-fields.ril
+pub fn test_split_empty_fields() {
+    assert(String::split("a,,", ",") == ["a", "", ""])
+}
+--@ end-file
+--@ end-case
+
+--@ case: split-scalars
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_split_scalars
+--@ file: split-scalars.ril
+pub fn test_split_scalars() {
+    assert(String::split("é🙂", "") == ["é", "🙂"])
+}
+--@ end-file
+--@ end-case
+
+--@ case: standalone-cr
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_standalone_cr
+--@ file: standalone-cr.ril
+pub fn test_standalone_cr() {
+    assert(String::lines("a\rb") == ["a\rb"])
+}
+--@ end-file
+--@ end-case
+
+--@ case: trim
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_trim
+--@ file: trim.ril
+pub fn test_trim() {
+    assert(String::trim(" \tvalue\n") == "value")
+}
+--@ end-file
+--@ end-case
+
+--@ case: utf8
+--@ mode: run-pass
+--@ spec: STD#string
+--@ entry: test_utf8
+--@ file: utf8.ril
+pub fn test_utf8() {
+    assert(String::utf8("é") == b"\xC3\xA9")
+}
+--@ end-file
+--@ end-case

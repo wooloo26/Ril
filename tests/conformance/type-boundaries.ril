@@ -1,0 +1,257 @@
+--@ case: accept-bare-effect
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-bare-effect
+--@ file: accept-bare-effect.ril
+eff Io { read() -> int }
+type Reader = fn() -> int @Io
+--@ end-file
+--@ end-case
+
+--@ case: reject-bare-effect
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-bare-effect
+-- Error [E0330]: reject bare effect
+--@ file: reject-bare-effect.ril
+eff Io { read() -> int }
+type Invalid = @Io
+--@ end-file
+--@ end-case
+
+--@ case: accept-bare-mut
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-bare-mut
+--@ file: accept-bare-mut.ril
+eff Io { read() -> int }
+type Writer = fn(mut []int) -> () &mut
+--@ end-file
+--@ end-case
+
+--@ case: reject-bare-mut
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-bare-mut
+-- Error [E0331]: reject bare mut
+--@ file: reject-bare-mut.ril
+eff Io { read() -> int }
+type Invalid = &mut
+--@ end-file
+--@ end-case
+
+--@ case: accept-bare-sharing
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-bare-sharing
+--@ file: accept-bare-sharing.ril
+eff Io { read() -> int }
+type Writer = fn(^mut []int) -> () &^mut
+--@ end-file
+--@ end-case
+
+--@ case: reject-bare-sharing
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-bare-sharing
+-- Error [E0331]: reject bare sharing
+--@ file: reject-bare-sharing.ril
+eff Io { read() -> int }
+type Invalid = &^mut
+--@ end-file
+--@ end-case
+
+--@ case: accept-field-effect
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-field-effect
+--@ file: accept-field-effect.ril
+eff Io { read() -> int }
+type Item = { value: fn() -> int @Io }
+--@ end-file
+--@ end-case
+
+--@ case: reject-field-effect
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-field-effect
+-- Error [E0333]: reject field effect
+--@ file: reject-field-effect.ril
+eff Io { read() -> int }
+type Item = { value: int @Io }
+--@ end-file
+--@ end-case
+
+--@ case: accept-generic-capability
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-generic-capability
+--@ file: accept-generic-capability.ril
+eff Io { read() -> int }
+type Item<T> = T
+--@ end-file
+--@ end-case
+
+--@ case: reject-generic-capability
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-generic-capability
+-- Error [E0334]: reject generic capability
+--@ file: reject-generic-capability.ril
+eff Io { read() -> int }
+type Item<T: &mut> = T
+--@ end-file
+--@ end-case
+
+--@ case: accept-generic-effect
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-generic-effect
+--@ file: accept-generic-effect.ril
+eff Io { read() -> int }
+type Item<T> = T
+--@ end-file
+--@ end-case
+
+--@ case: reject-generic-effect
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-generic-effect
+-- Error [E0334]: reject generic effect
+--@ file: reject-generic-effect.ril
+eff Io { read() -> int }
+type Item<T: @Io> = T
+--@ end-file
+--@ end-case
+
+--@ case: accept-tuple-effect
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-tuple-effect
+--@ file: accept-tuple-effect.ril
+eff Io { read() -> int }
+type Item = (fn() -> int @Io, int)
+--@ end-file
+--@ end-case
+
+--@ case: reject-tuple-effect
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-tuple-effect
+-- Error [E0333]: reject tuple effect
+--@ file: reject-tuple-effect.ril
+eff Io { read() -> int }
+type Item = (int @Io, int)
+--@ end-file
+--@ end-case
+
+--@ case: accept-type-function-effect
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-type-function-effect
+--@ file: accept-type-function-effect.ril
+eff Io { read() -> int }
+type Item = \T -> type<T>
+--@ end-file
+--@ end-case
+
+--@ case: reject-type-function-effect
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-type-function-effect
+-- Error [E0335]: reject type function effect
+--@ file: reject-type-function-effect.ril
+eff Io { read() -> int }
+type Item = \T -> type<T> @Io
+--@ end-file
+--@ end-case
+
+--@ case: accept-type-function-state
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-type-function-state
+--@ file: accept-type-function-state.ril
+eff Io { read() -> int }
+type Item = \T -> type<T>
+--@ end-file
+--@ end-case
+
+--@ case: reject-type-function-state
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-type-function-state
+-- Error [E0335]: reject type function state
+--@ file: reject-type-function-state.ril
+eff Io { read() -> int }
+type Item = \T -> type<T> &mut
+--@ end-file
+--@ end-case
+
+--@ case: accept-value-effect
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-value-effect
+--@ file: accept-value-effect.ril
+eff Io { read() -> int }
+
+fn example() {
+    let value: str = "text"
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-value-effect
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-value-effect
+-- Error [E0613]: reject value effect
+--@ file: reject-value-effect.ril
+eff Io { read() -> int }
+
+fn example() {
+    let value: str @Io = "text"
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-variant-capability
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-variant-capability
+--@ file: accept-variant-capability.ril
+eff Io { read() -> int }
+type Task { Running(fn(mut []int) -> () &mut) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-variant-capability
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-variant-capability
+-- Error [E0332]: reject variant capability
+--@ file: reject-variant-capability.ril
+eff Io { read() -> int }
+type Task { Running &mut }
+--@ end-file
+--@ end-case
+
+--@ case: accept-variant-effect
+--@ mode: check-pass
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: reject-variant-effect
+--@ file: accept-variant-effect.ril
+eff Io { read() -> int }
+type Task { Running(fn() -> int @Io) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-variant-effect
+--@ mode: check-fail
+--@ spec: SPEC#type-definition-boundaries
+--@ companion: accept-variant-effect
+-- Error [E0332]: reject variant effect
+--@ file: reject-variant-effect.ril
+eff Io { read() -> int }
+type Task { Running @Io }
+--@ end-file
+--@ end-case

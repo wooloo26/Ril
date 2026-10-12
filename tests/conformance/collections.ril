@@ -1,0 +1,243 @@
+--@ case: accept-collection-projection
+--@ mode: check-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: reject-collection-projection
+--@ file: accept-collection-projection.ril
+use ril/array::{Elem}
+type Item = Elem<[]int>
+--@ end-file
+--@ end-case
+
+--@ case: reject-collection-projection
+--@ mode: check-fail
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: accept-collection-projection
+-- Error [E0337]: reject collection projection
+--@ file: reject-collection-projection.ril
+type Item = ([]int).elem
+--@ end-file
+--@ end-case
+
+--@ case: accept-fixed-length
+--@ mode: check-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: reject-fixed-length
+--@ file: accept-fixed-length.ril
+fn example() {
+    let items: [2]int = [1, 2]
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-fixed-length
+--@ mode: check-fail
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: accept-fixed-length
+-- Error [E0301]: reject fixed length
+--@ file: reject-fixed-length.ril
+fn example() {
+    let items: [2]int = [1]
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-float-key
+--@ mode: check-pass
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ companion: reject-float-key
+--@ file: accept-float-key.ril
+fn example() {
+    let values = [1: 1]
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-float-key
+--@ mode: check-fail
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ companion: accept-float-key
+-- Error [E0328]: reject float key
+--@ file: reject-float-key.ril
+fn example() {
+    let values = [1.0: 1]
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-float-set
+--@ mode: check-pass
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ companion: reject-float-set
+--@ file: accept-float-set.ril
+fn example() {
+    let values = Set::from([1])
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-float-set
+--@ mode: check-fail
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ companion: accept-float-set
+-- Error [E0328]: reject float set
+--@ file: reject-float-set.ril
+fn example() {
+    let values = Set::from([1.0])
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-invalid-index-target
+--@ mode: check-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: reject-invalid-index-target
+--@ file: accept-invalid-index-target.ril
+fn example() {
+    let item = [42][0]
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-invalid-index-target
+--@ mode: check-fail
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: accept-invalid-index-target
+-- Error [E0352]: reject invalid index target
+--@ file: reject-invalid-index-target.ril
+fn example() {
+    let item = 42[0]
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-invalid-index-type
+--@ mode: check-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: reject-invalid-index-type
+--@ file: accept-invalid-index-type.ril
+fn example() {
+    let item = [42][0]
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-invalid-index-type
+--@ mode: check-fail
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: accept-invalid-index-type
+-- Error [E0301]: reject invalid index type
+--@ file: reject-invalid-index-type.ril
+fn example() {
+    let item = [42]["0"]
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-length-sort
+--@ mode: check-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: reject-length-sort
+--@ file: accept-length-sort.ril
+fn example() {
+    let items: [0]int = []
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-length-sort
+--@ mode: check-fail
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: accept-length-sort
+-- Error [E0323]: reject length sort
+--@ file: reject-length-sort.ril
+fn example() {
+    let items: ["0"]int = []
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-negative-length
+--@ mode: check-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: reject-negative-length
+--@ file: accept-negative-length.ril
+fn example() {
+    let items: [0]int = []
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-negative-length
+--@ mode: check-fail
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: accept-negative-length
+-- Error [E0815]: reject negative length
+--@ file: reject-negative-length.ril
+fn example() {
+    let items: [-1]int = []
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-record-key
+--@ mode: check-pass
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ companion: reject-record-key
+--@ file: accept-record-key.ril
+fn example() {
+    let values = [1: 1]
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-record-key
+--@ mode: check-fail
+--@ spec: SPEC#relational-equality-and-containment-operators
+--@ companion: accept-record-key
+-- Error [E0328]: reject record key
+--@ file: reject-record-key.ril
+fn example() {
+    let values = [.{ id: 1 }: 1]
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-tuple-index
+--@ mode: check-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: reject-tuple-index
+--@ file: accept-tuple-index.ril
+fn example() {
+    let item = (1, "a").1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-tuple-index
+--@ mode: check-fail
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: accept-tuple-index
+-- Error [E0312]: reject tuple index
+--@ file: reject-tuple-index.ril
+fn example() {
+    let item = (1, "a").2
+}
+--@ end-file
+--@ end-case
+
+--@ case: literal-and-lookup
+--@ mode: run-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ entry: test_literal_and_lookup
+--@ file: literal-and-lookup.ril
+pub fn test_literal_and_lookup() {
+    let fixed: [2]u8 = [1, 2]
+    let dynamic: []int = [3, 4]
+    let values: [str: int] = ["a": 1]
+    let empty: [str: int] = [:]
+    assert(fixed[1] == 2u8 && dynamic[0] == 3)
+    assert(values["a"] == Some(1) && values["b"] == None)
+    assert(len(empty) == 0 && (7, "a").0 == 7)
+}
+--@ end-file
+--@ end-case

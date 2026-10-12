@@ -1,0 +1,23 @@
+[package]
+name = "ril-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ril-compiler.workspace = true
+ril-codegen.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "ril"
+path = "src/main.rs"

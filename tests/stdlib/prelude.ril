@@ -1,0 +1,21 @@
+--@ case: foundational-operations
+--@ mode: run-pass
+--@ spec: STD#foundational-operations
+--@ entry: test_foundational_operations
+--@ file: foundational-operations.ril
+type UserId(int)
+
+pub fn test_foundational_operations() {
+    let value = UserId(7)
+    assert(inner(value) == 7)
+    let original = [1, 2]
+    let mut detached = clone(original)
+    detached !> Array::push(3)
+    let snapshot = clone_immut(detached)
+    detached !> Array::push(4)
+    assert(original == [1, 2] && snapshot == [1, 2, 3])
+    let revised = .{ theme: "dark" } |> derive \mut draft -> { draft.theme = "light" }
+    assert(revised.theme == "light")
+}
+--@ end-file
+--@ end-case

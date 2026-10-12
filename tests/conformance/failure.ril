@@ -1,0 +1,49 @@
+--@ case: explicit-panic-safe
+--@ mode: run-pass
+--@ spec: SPEC#run-time-failure-conditions
+--@ companion: explicit-panic
+--@ entry: test_explicit_panic_safe
+--@ file: explicit-panic-safe.ril
+pub fn test_explicit_panic_safe() {
+    assert(true)
+}
+--@ end-file
+--@ end-case
+
+--@ case: explicit-panic
+--@ mode: run-panic
+--@ spec: SPEC#run-time-failure-conditions
+--@ companion: explicit-panic-safe
+--@ entry: test_explicit_panic
+-- Panics: explicit panic
+--@ file: explicit-panic.ril
+pub fn test_explicit_panic() {
+    panic("defect")
+}
+--@ end-file
+--@ end-case
+
+--@ case: failed-assert-safe
+--@ mode: run-pass
+--@ spec: SPEC#run-time-failure-conditions
+--@ companion: failed-assert
+--@ entry: test_failed_assert_safe
+--@ file: failed-assert-safe.ril
+pub fn test_failed_assert_safe() {
+    assert(true)
+}
+--@ end-file
+--@ end-case
+
+--@ case: failed-assert
+--@ mode: run-panic
+--@ spec: SPEC#run-time-failure-conditions
+--@ companion: failed-assert-safe
+--@ entry: test_failed_assert
+-- Panics: failed assert
+--@ file: failed-assert.ril
+pub fn test_failed_assert() {
+    assert(false)
+}
+--@ end-file
+--@ end-case

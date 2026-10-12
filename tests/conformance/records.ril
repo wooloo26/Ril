@@ -1,0 +1,250 @@
+--@ case: accept-conflicting-spreads
+--@ mode: check-pass
+--@ spec: SPEC#record-construction-and-functional-update
+--@ companion: reject-conflicting-spreads
+--@ file: accept-conflicting-spreads.ril
+fn example(left: { id: int }, right: { id: int }) {
+    let value = .{ ..left, ..right, id: 3 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-conflicting-spreads
+--@ mode: check-fail
+--@ spec: SPEC#record-construction-and-functional-update
+--@ companion: accept-conflicting-spreads
+-- Error [E0211]: reject conflicting spreads
+--@ file: reject-conflicting-spreads.ril
+fn example(left: { id: int }, right: { id: int }) {
+    let value = .{ ..left, ..right }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-duplicate-type-field
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: reject-duplicate-type-field
+--@ file: accept-duplicate-type-field.ril
+type Item = { id: int, other: int }
+--@ end-file
+--@ end-case
+
+--@ case: reject-duplicate-type-field
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: accept-duplicate-type-field
+-- Error [E0210]: reject duplicate type field
+--@ file: reject-duplicate-type-field.ril
+type Item = { id: int, id: int }
+--@ end-file
+--@ end-case
+
+--@ case: accept-duplicate-value-field
+--@ mode: check-pass
+--@ spec: SPEC#record-construction-and-functional-update
+--@ companion: reject-duplicate-value-field
+--@ file: accept-duplicate-value-field.ril
+fn example() {
+    let value = .{ id: 1, other: 2 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-duplicate-value-field
+--@ mode: check-fail
+--@ spec: SPEC#record-construction-and-functional-update
+--@ companion: accept-duplicate-value-field
+-- Error [E0210]: reject duplicate value field
+--@ file: reject-duplicate-value-field.ril
+fn example() {
+    let value = .{ id: 1, id: 2 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-extra-field
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: reject-extra-field
+--@ file: accept-extra-field.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value: User = .{ id: 1, name: "Ada" }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-extra-field
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: accept-extra-field
+-- Error [E0302]: reject extra field
+--@ file: reject-extra-field.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value: User = .{ id: 1, name: "Ada", age: 3 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-field
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: reject-missing-field
+--@ file: accept-missing-field.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value: User = .{ id: 1, name: "Ada" }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-field
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: accept-missing-field
+-- Error [E0307]: reject missing field
+--@ file: reject-missing-field.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value: User = .{ id: 1 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-overlapping-row
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: reject-overlapping-row
+--@ file: accept-overlapping-row.ril
+type WithId<R> = { id: int, ..R }
+type Item = WithId<{ name: str }>
+--@ end-file
+--@ end-case
+
+--@ case: reject-overlapping-row
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: accept-overlapping-row
+-- Error [E0212]: reject overlapping row
+--@ file: reject-overlapping-row.ril
+type WithId<R> = { id: int, ..R }
+type Item = WithId<{ id: int }>
+--@ end-file
+--@ end-case
+
+--@ case: accept-record-bracket
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: reject-record-bracket
+--@ file: accept-record-bracket.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value = item.("name")
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-record-bracket
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: accept-record-bracket
+-- Error [E0324]: reject record bracket
+--@ file: reject-record-bracket.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value = item["name"]
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-runtime-record-key
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: reject-runtime-record-key
+--@ file: accept-runtime-record-key.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value = item.("name")
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-runtime-record-key
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: accept-runtime-record-key
+-- Error [E0324]: reject runtime record key
+--@ file: reject-runtime-record-key.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value = item.(key)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-unknown-field
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: reject-unknown-field
+--@ file: accept-unknown-field.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value = item.name
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unknown-field
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: accept-unknown-field
+-- Error [E0336]: reject unknown field
+--@ file: reject-unknown-field.ril
+type User = { id: int, name: str }
+
+fn example(item: User, key: str) {
+    let value = item.age
+}
+--@ end-file
+--@ end-case
+
+--@ case: row-preservation
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_row_preservation
+--@ file: row-preservation.ril
+fn with_stamp<R>(item: { ..R }) -> { stamp: int, ..R } { .{ stamp: 7, ..item } }
+
+pub fn test_row_preservation() {
+    let item = with_stamp(.{ id: 1, name: "Ada" })
+    assert(item.id == 1 && item.name == "Ada" && item.stamp == 7)
+    let .{ id, ..rest } = item
+    assert(id == 1 && rest.stamp == 7)
+}
+--@ end-file
+--@ end-case
+
+--@ case: spread-override-position
+--@ mode: run-pass
+--@ spec: SPEC#record-construction-and-functional-update
+--@ entry: test_spread_override_position
+--@ file: spread-override-position.ril
+pub fn test_spread_override_position() {
+    let base = .{ id: 1, name: "a" }
+    assert((.{ id: 2, ..base }).id == 2)
+    assert((.{ ..base, id: 2 }).id == 2)
+    assert(base.id == 1)
+}
+--@ end-file
+--@ end-case

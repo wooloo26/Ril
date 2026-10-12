@@ -1,0 +1,87 @@
+--@ case: clock-observations
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ entry: test_clock_observations
+--@ requires: clock
+--@ file: clock-observations.ril
+use ril/time
+use ril/clock
+
+pub fn test_clock_observations() @Fiber {
+    let first = Time::monotonic()
+    Time::sleep(Time::duration_nanos(0i64))
+    let second = Time::monotonic()
+    let elapsed = Time::elapsed(first, second) ?? \_error -> panic("elapsed")
+    assert(inner(elapsed) >= 0i64)
+    assert(Clock::now().nanos < 1000000000u32)
+}
+--@ end-file
+--@ end-case
+
+--@ case: negative-sleep-safe
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ companion: negative-sleep
+--@ entry: test_negative_sleep_safe
+--@ requires: clock
+--@ file: negative-sleep-safe.ril
+use ril/time
+use ril/clock
+
+pub fn test_negative_sleep_safe() @Fiber {
+    Time::sleep(Time::duration_nanos(0i64))
+}
+--@ end-file
+--@ end-case
+
+--@ case: negative-sleep
+--@ mode: run-panic
+--@ spec: STD#time-and-randomness
+--@ companion: negative-sleep-safe
+--@ entry: test_negative_sleep
+--@ requires: clock
+-- Panics: negative sleep
+--@ file: negative-sleep.ril
+use ril/time
+use ril/clock
+
+pub fn test_negative_sleep() @Fiber {
+    Time::sleep(Time::duration_nanos(-1i64))
+}
+--@ end-file
+--@ end-case
+
+--@ case: positive-sleep-lower-bound
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ entry: test_positive_sleep_lower_bound
+--@ requires: clock
+--@ file: positive-sleep-lower-bound.ril
+use ril/time
+
+pub fn test_positive_sleep_lower_bound() @Fiber {
+    let start = Time::monotonic()
+    Time::sleep(Time::duration_nanos(1000000i64))
+    let end = Time::monotonic()
+    let elapsed = Time::elapsed(start, end) ?? \_error -> panic("elapsed")
+    assert(inner(elapsed) >= 1000000i64)
+}
+--@ end-file
+--@ end-case
+
+--@ case: timestamp-arithmetic
+--@ mode: run-pass
+--@ spec: STD#time-and-randomness
+--@ entry: test_timestamp_arithmetic
+--@ file: timestamp-arithmetic.ril
+use ril/time
+use ril/clock
+
+pub fn test_timestamp_arithmetic() {
+    assert(Time::timestamp(1i64, 1000000000u32) is Err(Time::TimeError::OutOfRange))
+    let start = Time::timestamp(1i64, 0u32) ?? \_error -> panic("fixture")
+    assert(Time::add(start, Time::duration_nanos(-1i64)) is Ok(.{ seconds: 0i64, nanos: 999999999u32 }))
+    assert(Time::add(.{ seconds: 9223372036854775807i64, nanos: 999999999u32 }, Time::duration_nanos(1i64)) is Err(Time::TimeError::OutOfRange))
+}
+--@ end-file
+--@ end-case

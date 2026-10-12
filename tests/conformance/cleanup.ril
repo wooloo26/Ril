@@ -1,0 +1,225 @@
+--@ case: abort-commits-writes
+--@ mode: run-pass
+--@ spec: SPEC#affine-resumption-and-delimited-early-abort
+--@ entry: test_abort_commits_writes
+--@ file: abort-commits-writes.ril
+type Resource = { mut on_close: fn() -> () }
+eff Abort { stop() -> int }
+
+pub fn test_abort_commits_writes() {
+    let mut events: []int = []
+    let result = {
+        with Abort::stop() -> 9
+        let scoped mut first = Resource.{ on_close: \-> events !> Array::push(1) }
+        let scoped mut second = Resource.{ on_close: \-> events !> Array::push(2) }
+        events !> Array::push(0)
+        Abort::stop()
+    }
+    assert(result == 9 && events == [0, 2, 1])
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-divergent-cleanup
+--@ mode: check-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: reject-divergent-cleanup
+--@ file: accept-divergent-cleanup.ril
+type Guard = { on_close: fn() -> () }
+
+fn example() {
+    let scoped item = Guard.{ on_close: \-> () }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-divergent-cleanup
+--@ mode: check-fail
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: accept-divergent-cleanup
+-- Error [E0617]: reject divergent cleanup
+--@ file: reject-divergent-cleanup.ril
+type Guard = { on_close: fn() -> () }
+
+fn example() {
+    let scoped item = Guard.{ on_close: \-> { loop {} } }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-effectful-cleanup
+--@ mode: check-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: reject-effectful-cleanup
+--@ file: accept-effectful-cleanup.ril
+type Guard = { on_close: fn() -> () }
+
+fn example() @Fiber {
+    let scoped item = Guard.{ on_close: \-> () }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-effectful-cleanup
+--@ mode: check-fail
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: accept-effectful-cleanup
+-- Error [E0616]: reject effectful cleanup
+--@ file: reject-effectful-cleanup.ril
+type Guard = { on_close: fn() -> () }
+
+fn example() @Fiber {
+    let scoped item = Guard.{ on_close: \-> Fiber::yield() }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-contract
+--@ mode: check-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: reject-missing-contract
+--@ file: accept-missing-contract.ril
+type Guard = { on_close: fn() -> () }
+
+fn example() {
+    let scoped item = Guard.{ on_close: \-> () }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-contract
+--@ mode: check-fail
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: accept-missing-contract
+-- Error [E0541]: reject missing contract
+--@ file: reject-missing-contract.ril
+type Guard = { on_close: fn() -> () }
+
+fn example() {
+    let scoped item = 42
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-reassignable-scoped
+--@ mode: check-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: reject-reassignable-scoped
+--@ file: accept-reassignable-scoped.ril
+type Guard = { on_close: fn() -> () }
+
+fn example() {
+    let scoped item = Guard.{ on_close: \-> () }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-reassignable-scoped
+--@ mode: check-fail
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: accept-reassignable-scoped
+-- Error [E0532]: reject reassignable scoped
+--@ file: reject-reassignable-scoped.ril
+type Guard = { on_close: fn() -> () }
+
+fn example() {
+    var scoped item = Guard.{ on_close: \-> () }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-resource-escape
+--@ mode: check-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: reject-resource-escape
+--@ file: accept-resource-escape.ril
+type Guard = { on_close: fn() -> () }
+fn make() -> () { let scoped item = Guard.{ on_close: \-> () } }
+--@ end-file
+--@ end-case
+
+--@ case: reject-resource-escape
+--@ mode: check-fail
+--@ spec: SPEC#scoped-resource-bindings
+--@ companion: accept-resource-escape
+-- Error [E0604]: reject resource escape
+--@ file: reject-resource-escape.ril
+type Guard = { on_close: fn() -> () }
+fn make() -> Guard { let scoped item = Guard.{ on_close: \-> () }; item }
+--@ end-file
+--@ end-case
+
+--@ case: loop-registration
+--@ mode: run-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ entry: test_loop_registration
+--@ file: loop-registration.ril
+type Resource = { mut on_close: fn() -> () }
+
+pub fn test_loop_registration() {
+    let mut events: []int = []
+    for 0..3 as index {
+        let scoped mut resource = Resource.{ on_close: \-> events !> Array::push(index) }
+        if index == 0 { next }
+        if index == 2 { last }
+    }
+    assert(events == [0, 1, 2])
+}
+--@ end-file
+--@ end-case
+
+--@ case: normal-lifo
+--@ mode: run-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ entry: test_normal_lifo
+--@ file: normal-lifo.ril
+type Resource = { mut on_close: fn() -> () }
+
+pub fn test_normal_lifo() {
+    let mut events: []int = []
+    {
+        let scoped mut first = Resource.{ on_close: \-> events !> Array::push(1) }
+        let scoped mut second = Resource.{ on_close: \-> events !> Array::push(2) }
+        events !> Array::push(0)
+    }
+    assert(events == [0, 2, 1])
+}
+--@ end-file
+--@ end-case
+
+--@ case: replacement-callback
+--@ mode: run-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ entry: test_replacement_callback
+--@ file: replacement-callback.ril
+type Resource = { mut on_close: fn() -> () }
+
+pub fn test_replacement_callback() {
+    let mut events: []int = []
+    {
+        let scoped mut resource = Resource.{ on_close: \-> events !> Array::push(1) }
+        resource.on_close = \-> events !> Array::push(2)
+    }
+    assert(events == [2])
+}
+--@ end-file
+--@ end-case
+
+--@ case: return-runs-cleanup
+--@ mode: run-pass
+--@ spec: SPEC#scoped-resource-bindings
+--@ entry: test_return_runs_cleanup
+--@ file: return-runs-cleanup.ril
+type Resource = { mut on_close: fn() -> () }
+fn finish(mut events: []int) &mut {
+    let scoped mut resource = Resource.{ on_close: \-> events !> Array::push(1) }
+    return
+}
+
+pub fn test_return_runs_cleanup() {
+    let mut events: []int = []
+    finish(mut events)
+    assert(events == [1])
+}
+--@ end-file
+--@ end-case

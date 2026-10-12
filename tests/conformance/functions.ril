@@ -1,0 +1,18 @@
+--@ case: hoisting-and-local-purity
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ spec: SPEC#local-mutation-purity-and-local-capability-discharge
+--@ entry: test_hoisting_and_local_purity
+--@ file: hoisting-and-local-purity.ril
+fn build(count: int) -> []int {
+    let mut values: []int = []
+    for 0..count as n { append(mut values, n) }
+    values
+}
+fn append(mut values: []int, n: int) &mut { values !> Array::push(n) }
+
+pub fn test_hoisting_and_local_purity() {
+    assert(build(3) == [0, 1, 2])
+}
+--@ end-file
+--@ end-case

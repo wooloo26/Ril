@@ -1,0 +1,61 @@
+--@ case: posix-bytes
+--@ mode: run-pass
+--@ spec: STD#native-strings-and-paths
+--@ entry: test_posix_bytes
+--@ requires: posix
+--@ file: posix-bytes.ril
+use ril/os
+use ril/path
+use ril/order
+
+pub fn test_posix_bytes() {
+    assert(Os::platform() == Os::Platform::Posix)
+    let value = Os::from_posix_bytes(b"a\xFF") ?? \_error -> panic("platform")
+    assert(Os::posix_bytes(value) is Ok(b"a\xFF"))
+    assert(Os::to_string(value) is Err(Os::NativeError::InvalidEncoding))
+    assert(Os::from_windows_units([65u16]) is Err(Os::NativeError::WrongPlatform))
+    assert(Os::windows_units(Os::from_string("a")) is Err(Os::NativeError::WrongPlatform))
+}
+--@ end-file
+--@ end-case
+
+--@ case: unicode-round-trip
+--@ mode: run-pass
+--@ spec: STD#native-strings-and-paths
+--@ entry: test_unicode_round_trip
+--@ file: unicode-round-trip.ril
+use ril/os
+use ril/path
+use ril/order
+
+pub fn test_unicode_round_trip() {
+    let name = Os::from_string("Aé🙂")
+    assert(Os::to_string(name) is Ok("Aé🙂"))
+    assert(Os::compare(Os::from_string("a"), Os::from_string("b")) == Order::Ordering::Less)
+    assert(Path::native(Path::from_native(name)) == name)
+    assert(Path::to_string(Path::from_string("a")) is Ok("a"))
+    assert(Path::compare(Path::from_string("a"), Path::from_string("A")) != Order::Ordering::Equal)
+}
+--@ end-file
+--@ end-case
+
+--@ case: windows-units
+--@ mode: run-pass
+--@ spec: STD#native-strings-and-paths
+--@ entry: test_windows_units
+--@ requires: windows
+--@ file: windows-units.ril
+use ril/os
+use ril/path
+use ril/order
+
+pub fn test_windows_units() {
+    assert(Os::platform() == Os::Platform::Windows)
+    let value = Os::from_windows_units([0xD800u16]) ?? \_error -> panic("platform")
+    assert(Os::windows_units(value) is Ok([0xD800u16]))
+    assert(Os::to_string(value) is Err(Os::NativeError::InvalidEncoding))
+    assert(Os::from_posix_bytes(b"a") is Err(Os::NativeError::WrongPlatform))
+    assert(Os::posix_bytes(Os::from_string("a")) is Err(Os::NativeError::WrongPlatform))
+}
+--@ end-file
+--@ end-case

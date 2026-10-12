@@ -1,0 +1,151 @@
+--@ case: assert-eq-safe
+--@ mode: run-pass
+--@ spec: STD#testing
+--@ companion: assert-eq
+--@ entry: test_assert_eq_safe
+--@ file: assert-eq-safe.ril
+use ril/test
+
+pub fn test_assert_eq_safe() {
+    Test::assert_eq(1, 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: assert-eq
+--@ mode: run-panic
+--@ spec: STD#testing
+--@ companion: assert-eq-safe
+--@ entry: test_assert_eq
+-- Panics: assert eq
+--@ file: assert-eq.ril
+use ril/test
+
+pub fn test_assert_eq() {
+    Test::assert_eq(1, 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: assert-ne-safe
+--@ mode: run-pass
+--@ spec: STD#testing
+--@ companion: assert-ne
+--@ entry: test_assert_ne_safe
+--@ file: assert-ne-safe.ril
+use ril/test
+
+pub fn test_assert_ne_safe() {
+    Test::assert_ne(1, 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: assert-ne
+--@ mode: run-panic
+--@ spec: STD#testing
+--@ companion: assert-ne-safe
+--@ entry: test_assert_ne
+-- Panics: assert ne
+--@ file: assert-ne.ril
+use ril/test
+
+pub fn test_assert_ne() {
+    Test::assert_ne(1, 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: assert-ok-safe
+--@ mode: run-pass
+--@ spec: STD#testing
+--@ companion: assert-ok
+--@ entry: test_assert_ok_safe
+--@ file: assert-ok-safe.ril
+use ril/test
+
+pub fn test_assert_ok_safe() {
+    let value: Result<int, str> = Ok(1)
+    let _ = Test::assert_ok(value)
+}
+--@ end-file
+--@ end-case
+
+--@ case: assert-ok
+--@ mode: run-panic
+--@ spec: STD#testing
+--@ companion: assert-ok-safe
+--@ entry: test_assert_ok
+-- Panics: assert ok
+--@ file: assert-ok.ril
+use ril/test
+
+pub fn test_assert_ok() {
+    let value: Result<int, str> = Err("bad")
+    let _ = Test::assert_ok(value)
+}
+--@ end-file
+--@ end-case
+
+--@ case: assert-some-safe
+--@ mode: run-pass
+--@ spec: STD#testing
+--@ companion: assert-some
+--@ entry: test_assert_some_safe
+--@ file: assert-some-safe.ril
+use ril/test
+
+pub fn test_assert_some_safe() {
+    let _ = Test::assert_some(Some(1))
+}
+--@ end-file
+--@ end-case
+
+--@ case: assert-some
+--@ mode: run-panic
+--@ spec: STD#testing
+--@ companion: assert-some-safe
+--@ entry: test_assert_some
+-- Panics: assert some
+--@ file: assert-some.ril
+use ril/test
+
+pub fn test_assert_some() {
+    let value: ?int = None
+    let _ = Test::assert_some(value)
+}
+--@ end-file
+--@ end-case
+
+--@ case: assertion-helpers
+--@ mode: run-pass
+--@ spec: STD#testing
+--@ entry: test_assertion_helpers
+--@ file: assertion-helpers.ril
+use ril/test
+
+pub fn test_assertion_helpers() {
+    Test::assert_eq([1, 2], [1, 2])
+    Test::assert_ne(1, 2)
+    assert(Test::assert_some(Some(3)) == 3)
+    let value: Result<int, str> = Ok(4)
+    assert(Test::assert_ok(value) == 4)
+}
+--@ end-file
+--@ end-case
+
+--@ case: fallible-test-entry
+--@ mode: run-pass
+--@ spec: SPEC#test-conventions-and-execution-protocol
+--@ spec: STD#testing-examples
+--@ entry: test_fallible_test_entry
+--@ file: fallible-test-entry.ril
+use ril/num
+
+pub fn test_fallible_test_entry() -> Result<(), Num::NumError> {
+    let value = Num::parse_int("42")?
+    assert(value == 42)
+    Ok()
+}
+--@ end-file
+--@ end-case

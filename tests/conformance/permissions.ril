@@ -1,0 +1,780 @@
+--@ case: accept-clone-internal-sharing-marker
+--@ mode: check-pass
+--@ spec: SPEC#retained-mutable-sharing
+--@ companion: reject-clone-internal-sharing-marker
+--@ file: accept-clone-internal-sharing-marker.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let item = Cell.{ count: 0 }
+    let mut copied = ^mut clone((item, item))
+    copied.0.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-clone-internal-sharing-marker
+--@ mode: check-fail
+--@ spec: SPEC#retained-mutable-sharing
+--@ companion: accept-clone-internal-sharing-marker
+-- Error [E0510]: reject clone internal sharing marker
+--@ file: reject-clone-internal-sharing-marker.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let item = Cell.{ count: 0 }
+    let mut copied = clone((item, item))
+    copied.0.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-container-upgrade
+--@ mode: check-pass
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ spec: SPEC#fresh-values-in-storage-calls
+--@ companion: reject-container-upgrade
+--@ file: accept-container-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let item = Cell.{ count: 0 }
+    let mut values: []Cell = []
+    values !> Array::push(clone(item))
+    values[0].count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-container-upgrade
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: accept-container-upgrade
+-- Error [E0522]: reject container upgrade
+--@ file: reject-container-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let item = Cell.{ count: 0 }
+    let mut values: []Cell = []
+    values !> Array::push(item)
+    values[0].count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-readonly-clone-insertion
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ spec: SPEC#fresh-values-in-storage-calls
+--@ spec: STD#array
+--@ companion: accept-container-upgrade
+-- Error [E0522]: A clone published through let no longer supplies initial write authority
+--@ file: reject-readonly-clone-insertion.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let item = Cell.{ count: 0 }
+    let copied = clone(item)
+    let mut values: []Cell = []
+    values !> Array::push(copied)
+    values[0].count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-dead-write
+--@ mode: check-pass
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: reject-dead-write
+--@ file: accept-dead-write.ril
+fn example(choose: bool) {
+    var value = 1
+    if choose { value += 1 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-dead-write
+--@ mode: check-fail
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: accept-dead-write
+-- Error [E0527]: reject dead write
+--@ file: reject-dead-write.ril
+fn example(choose: bool) {
+    var value = 1
+    if false { value += 1 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-derive-draft-escape
+--@ mode: check-pass
+--@ spec: SPEC#functional-updates-via-derive
+--@ companion: reject-derive-draft-escape
+--@ file: accept-derive-draft-escape.ril
+type Cell = { mut count: int }
+
+fn example() {
+    var saved = Cell.{ count: 0 }
+    let base = Cell.{ count: 1 }
+    let result = base |> derive \mut draft -> { draft.count += 1; saved = clone_immut(draft) }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-derive-draft-escape
+--@ mode: check-fail
+--@ spec: SPEC#functional-updates-via-derive
+--@ companion: accept-derive-draft-escape
+-- Error [E0607]: reject derive draft escape
+--@ file: reject-derive-draft-escape.ril
+type Cell = { mut count: int }
+
+fn example() {
+    var saved = Cell.{ count: 0 }
+    let base = Cell.{ count: 1 }
+    let result = base |> derive \mut draft -> { draft.count += 1; saved = draft }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-derive-live-input
+--@ mode: check-pass
+--@ spec: SPEC#functional-updates-via-derive
+--@ companion: reject-derive-live-input
+--@ file: accept-derive-live-input.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut item = Cell.{ count: 0 }
+    let view seen = item
+    let result = clone_immut(seen) |> derive \mut draft -> { draft.count += 1 }
+    item.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-derive-live-input
+--@ mode: check-fail
+--@ spec: SPEC#functional-updates-via-derive
+--@ companion: accept-derive-live-input
+-- Error [E0536]: reject derive live input
+--@ file: reject-derive-live-input.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut item = Cell.{ count: 0 }
+    let view seen = item
+    let result = seen |> derive \mut draft -> { draft.count += 1 }
+    item.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-destructure-upgrade
+--@ mode: check-pass
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: reject-destructure-upgrade
+--@ file: accept-destructure-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let parent = .{ child: Cell.{ count: 0 } }
+    let .{ mut child } = clone(parent)
+    child.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-destructure-upgrade
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: accept-destructure-upgrade
+-- Error [E0521]: reject destructure upgrade
+--@ file: reject-destructure-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let parent = .{ child: Cell.{ count: 0 } }
+    let .{ mut child } = parent
+    child.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-immutable-upgrade
+--@ mode: check-pass
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: reject-immutable-upgrade
+--@ file: accept-immutable-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let source = Cell.{ count: 0 }
+    let mut value = clone(source)
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-immutable-upgrade
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: accept-immutable-upgrade
+-- Error [E0520]: reject immutable upgrade
+--@ file: reject-immutable-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let source = Cell.{ count: 0 }
+    let mut value = source
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-live-immutable-publication
+--@ mode: check-pass
+--@ spec: SPEC#immutable-bindings
+--@ companion: reject-live-immutable-publication
+--@ file: accept-live-immutable-publication.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut value = Cell.{ count: 0 }
+    let frozen = clone_immut(value)
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-live-immutable-publication
+--@ mode: check-fail
+--@ spec: SPEC#immutable-bindings
+--@ companion: accept-live-immutable-publication
+-- Error [E0535]: reject live immutable publication
+--@ file: reject-live-immutable-publication.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut value = Cell.{ count: 0 }
+    let frozen = value
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-local-sharing-marker
+--@ mode: check-pass
+--@ spec: SPEC#retained-mutable-sharing
+--@ companion: reject-local-sharing-marker
+--@ file: accept-local-sharing-marker.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut original = Cell.{ count: 0 }
+    let mut alias = ^mut original
+    alias.count += 1
+    original.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-local-sharing-marker
+--@ mode: check-fail
+--@ spec: SPEC#retained-mutable-sharing
+--@ companion: accept-local-sharing-marker
+-- Error [E0510]: reject local sharing marker
+--@ file: reject-local-sharing-marker.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut original = Cell.{ count: 0 }
+    let mut alias = original
+    alias.count += 1
+    original.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-mutation-during-iteration
+--@ mode: check-pass
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: reject-mutation-during-iteration
+--@ file: accept-mutation-during-iteration.ril
+fn example() {
+    let mut items = [1, 2]
+    for clone_immut(items) as item { items !> Array::push(item) }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-mutation-during-iteration
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: accept-mutation-during-iteration
+-- Error [E0526]: reject mutation during iteration
+--@ file: reject-mutation-during-iteration.ril
+fn example() {
+    let mut items = [1, 2]
+    for items as item { items !> Array::push(item) }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-pinned-reassignment
+--@ mode: check-pass
+--@ spec: SPEC#pinned-mutable-handles
+--@ companion: reject-pinned-reassignment
+--@ file: accept-pinned-reassignment.ril
+type Cell = { mut count: int }
+
+fn example() {
+    var mut value = Cell.{ count: 0 }
+    value.count += 1
+    value = Cell.{ count: 2 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-pinned-reassignment
+--@ mode: check-fail
+--@ spec: SPEC#pinned-mutable-handles
+--@ companion: accept-pinned-reassignment
+-- Error [E0502]: reject pinned reassignment
+--@ file: reject-pinned-reassignment.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut value = Cell.{ count: 0 }
+    value.count += 1
+    value = Cell.{ count: 2 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-plain-var-write
+--@ mode: check-pass
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: reject-plain-var-write
+--@ file: accept-plain-var-write.ril
+type Cell = { mut count: int }
+
+fn example() {
+    var mut value = Cell.{ count: 0 }
+    value = Cell.{ count: 1 }
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-plain-var-write
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: accept-plain-var-write
+-- Error [E0520]: reject plain var write
+--@ file: reject-plain-var-write.ril
+type Cell = { mut count: int }
+
+fn example() {
+    var value = Cell.{ count: 0 }
+    value = Cell.{ count: 1 }
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-read-write-origin
+--@ mode: check-pass
+--@ spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
+--@ companion: reject-read-write-origin
+--@ file: accept-read-write-origin.ril
+type Cell = { mut count: int }
+fn copy_count(source: Cell, mut target: Cell) &mut { target.count = source.count }
+
+fn example() {
+    let source = Cell.{ count: 1 }
+    let mut value = Cell.{ count: 0 }
+    copy_count(source, mut value)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-read-write-origin
+--@ mode: check-fail
+--@ spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
+--@ companion: accept-read-write-origin
+-- Error [E0524]: reject read write origin
+--@ file: reject-read-write-origin.ril
+type Cell = { mut count: int }
+fn copy_count(source: Cell, mut target: Cell) &mut { target.count = source.count }
+
+fn example() {
+    let mut value = Cell.{ count: 0 }
+    copy_count(value, mut value)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-readonly-return
+--@ mode: check-pass
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: reject-readonly-return
+--@ file: accept-readonly-return.ril
+type Cell = { mut count: int }
+fn identity(cell: Cell) -> Cell { cell }
+
+fn example() {
+    let item = Cell.{ count: 0 }
+    let mut value = clone(identity(item))
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-readonly-return
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: accept-readonly-return
+-- Error [E0528]: reject readonly return
+--@ file: reject-readonly-return.ril
+type Cell = { mut count: int }
+fn identity(cell: Cell) -> Cell { cell }
+
+fn example() {
+    let item = Cell.{ count: 0 }
+    let mut value = identity(item)
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-same-write-origin
+--@ mode: check-pass
+--@ spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
+--@ companion: reject-same-write-origin
+--@ file: accept-same-write-origin.ril
+type Cell = { mut count: int }
+fn swap(mut a: Cell, mut b: Cell) &mut { let saved = a.count; a.count = b.count; b.count = saved }
+
+fn example() {
+    let mut values = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+    swap(mut values[0], mut values[1])
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-same-write-origin
+--@ mode: check-fail
+--@ spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
+--@ companion: accept-same-write-origin
+-- Error [E0523]: reject same write origin
+--@ file: reject-same-write-origin.ril
+type Cell = { mut count: int }
+fn swap(mut a: Cell, mut b: Cell) &mut { let saved = a.count; a.count = b.count; b.count = saved }
+
+fn example() {
+    let mut values = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+    swap(mut values[0], mut values[0])
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-spread-upgrade
+--@ mode: check-pass
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: reject-spread-upgrade
+--@ file: accept-spread-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let source = .{ child: Cell.{ count: 0 } }
+    let mut value = clone(source)
+    value.child.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-spread-upgrade
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: accept-spread-upgrade
+-- Error [E0525]: reject spread upgrade
+--@ file: reject-spread-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let source = .{ child: Cell.{ count: 0 } }
+    let mut value = .{ ..source }
+    value.child.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-unused-mut
+--@ mode: check-pass
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: reject-unused-mut
+--@ file: accept-unused-mut.ril
+fn example(choose: bool) {
+    let mut value = [1]
+    value !> Array::push(2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unused-mut
+--@ mode: check-fail
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: accept-unused-mut
+-- Error [E0527]: reject unused mut
+--@ file: reject-unused-mut.ril
+fn example(choose: bool) {
+    let mut value = [1]
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-unused-var
+--@ mode: check-pass
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: reject-unused-var
+--@ file: accept-unused-var.ril
+fn example(choose: bool) {
+    var value = 1
+    value += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unused-var
+--@ mode: check-fail
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: accept-unused-var
+-- Error [E0527]: reject unused var
+--@ file: reject-unused-var.ril
+fn example(choose: bool) {
+    var value = 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-var-mut-interior-unused
+--@ mode: check-pass
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: reject-var-mut-interior-unused
+--@ file: accept-var-mut-interior-unused.ril
+fn example(choose: bool) {
+    var mut value = [1]
+    value = [2]
+    value !> Array::push(3)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-var-mut-interior-unused
+--@ mode: check-fail
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: accept-var-mut-interior-unused
+-- Error [E0527]: reject var mut interior unused
+--@ file: reject-var-mut-interior-unused.ril
+fn example(choose: bool) {
+    var mut value = [1]
+    value = [2]
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-var-mut-slot-unused
+--@ mode: check-pass
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: reject-var-mut-slot-unused
+--@ file: accept-var-mut-slot-unused.ril
+fn example(choose: bool) {
+    var mut value = [1]
+    value !> Array::push(2)
+    value = [3]
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-var-mut-slot-unused
+--@ mode: check-fail
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: accept-var-mut-slot-unused
+-- Error [E0527]: reject var mut slot unused
+--@ file: reject-var-mut-slot-unused.ril
+fn example(choose: bool) {
+    var mut value = [1]
+    value !> Array::push(2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-view-of-immutable
+--@ mode: check-pass
+--@ spec: SPEC#live-view-bindings
+--@ companion: reject-view-of-immutable
+--@ file: accept-view-of-immutable.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut value = Cell.{ count: 0 }
+    let view seen = value
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-view-of-immutable
+--@ mode: check-fail
+--@ spec: SPEC#live-view-bindings
+--@ companion: accept-view-of-immutable
+-- Error [E0531]: reject view of immutable
+--@ file: reject-view-of-immutable.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let value = Cell.{ count: 0 }
+    let view seen = value
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-view-of-reassignable
+--@ mode: check-pass
+--@ spec: SPEC#live-view-bindings
+--@ companion: reject-view-of-reassignable
+--@ file: accept-view-of-reassignable.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut value = Cell.{ count: 0 }
+    let view seen = value
+    value.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-view-of-reassignable
+--@ mode: check-fail
+--@ spec: SPEC#live-view-bindings
+--@ companion: accept-view-of-reassignable
+-- Error [E0531]: reject view of reassignable
+--@ file: reject-view-of-reassignable.ril
+type Cell = { mut count: int }
+
+fn example() {
+    var mut value = Cell.{ count: 0 }
+    let view seen = value
+    value.count += 1
+    value = Cell.{ count: 2 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: accept-view-upgrade
+--@ mode: check-pass
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: reject-view-upgrade
+--@ file: accept-view-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut source = Cell.{ count: 0 }
+    let view seen = source
+    let mut value = clone(seen)
+    value.count += 1
+    source.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-view-upgrade
+--@ mode: check-fail
+--@ spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+--@ companion: accept-view-upgrade
+-- Error [E0520]: reject view upgrade
+--@ file: reject-view-upgrade.ril
+type Cell = { mut count: int }
+
+fn example() {
+    let mut source = Cell.{ count: 0 }
+    let view seen = source
+    let mut value = ^mut seen
+    value.count += 1
+    source.count += 1
+}
+--@ end-file
+--@ end-case
+
+--@ case: clone-isolation
+--@ mode: run-pass
+--@ spec: SPEC#deep-immutability
+--@ entry: test_clone_isolation
+--@ file: clone-isolation.ril
+type Cell = { mut count: int }
+
+pub fn test_clone_isolation() {
+    let mut source = Cell.{ count: 1 }
+    let view seen = source
+    let mut detached = clone(seen)
+    let frozen = clone_immut(seen)
+    source.count = 3
+    detached.count = 2
+    assert(seen.count == 3 && detached.count == 2 && frozen.count == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: clone-preserves-aliases
+--@ mode: run-pass
+--@ spec: SPEC#deep-immutability
+--@ entry: test_clone_preserves_aliases
+--@ file: clone-preserves-aliases.ril
+type Cell = { mut count: int }
+
+pub fn test_clone_preserves_aliases() {
+    let shared = Cell.{ count: 1 }
+    let original = (shared, shared)
+    let mut copied = ^mut clone(original)
+    copied.0.count += 1
+    assert(copied.1.count == 2 && original.0.count == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: derive-preserves-input-and-aliases
+--@ mode: run-pass
+--@ spec: SPEC#functional-updates-via-derive
+--@ entry: test_derive_preserves_input_and_aliases
+--@ file: derive-preserves-input-and-aliases.ril
+type Cell = { mut count: int }
+
+pub fn test_derive_preserves_input_and_aliases() {
+    let child = Cell.{ count: 1 }
+    let base = .{ left: child, right: child }
+    let revised = base |> derive \mut draft -> { draft.left.count += 1 }
+    assert(base.left.count == 1 && child.count == 1)
+    assert(revised.left.count == 2 && revised.right.count == 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: view-keeps-initial-child
+--@ mode: run-pass
+--@ spec: SPEC#live-view-bindings
+--@ entry: test_view_keeps_initial_child
+--@ file: view-keeps-initial-child.ril
+type Cell = { mut count: int }
+type Parent = { mut child: Cell }
+
+pub fn test_view_keeps_initial_child() {
+    let mut parent = Parent.{ child: Cell.{ count: 1 } }
+    let view child = parent.child
+    parent.child = Cell.{ count: 9 }
+    assert(child.count == 1 && parent.child.count == 9)
+}
+--@ end-file
+--@ end-case

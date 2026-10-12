@@ -1,0 +1,27 @@
+--@ case: unreachable
+--@ mode: check-pass
+--@ spec: SPEC#advisory-warnings
+-- Warning [W0003]: unreachable
+--@ file: unreachable.ril
+fn example() { return; let value = 1 }
+--@ end-file
+--@ end-case
+
+--@ case: unused-binding
+--@ mode: check-pass
+--@ spec: SPEC#advisory-warnings
+-- Warning [W0001]: unused binding
+--@ file: unused-binding.ril
+fn example() { let value = 1 }
+--@ end-file
+--@ end-case
+
+--@ case: unused-import
+--@ mode: check-pass
+--@ spec: SPEC#advisory-warnings
+-- Warning [W0002]: unused import
+--@ file: unused-import.ril
+use ril/array::{push}
+pub fn answer() -> int { 42 }
+--@ end-file
+--@ end-case

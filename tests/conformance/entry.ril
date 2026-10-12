@@ -1,0 +1,104 @@
+--@ case: accept-main-argument
+--@ mode: check-pass
+--@ spec: SPEC#program-entry-point
+--@ companion: reject-main-argument
+--@ unit: executable
+--@ file: accept-main-argument.ril
+pub fn main() {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-main-argument
+--@ mode: check-fail
+--@ spec: SPEC#program-entry-point
+--@ companion: accept-main-argument
+--@ unit: executable
+-- Error [E0904]: reject main argument
+--@ file: reject-main-argument.ril
+pub fn main(value: int) {}
+--@ end-file
+--@ end-case
+
+--@ case: accept-main-generic
+--@ mode: check-pass
+--@ spec: SPEC#program-entry-point
+--@ companion: reject-main-generic
+--@ unit: executable
+--@ file: accept-main-generic.ril
+pub fn main() {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-main-generic
+--@ mode: check-fail
+--@ spec: SPEC#program-entry-point
+--@ companion: accept-main-generic
+--@ unit: executable
+-- Error [E0904]: reject main generic
+--@ file: reject-main-generic.ril
+pub fn main<T>() {}
+--@ end-file
+--@ end-case
+
+--@ case: accept-main-private
+--@ mode: check-pass
+--@ spec: SPEC#program-entry-point
+--@ companion: reject-main-private
+--@ unit: executable
+--@ file: accept-main-private.ril
+pub fn main() {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-main-private
+--@ mode: check-fail
+--@ spec: SPEC#program-entry-point
+--@ companion: accept-main-private
+--@ unit: executable
+-- Error [E0904]: reject main private
+--@ file: reject-main-private.ril
+fn main() {}
+--@ end-file
+--@ end-case
+
+--@ case: accept-main-result
+--@ mode: check-pass
+--@ spec: SPEC#program-entry-point
+--@ companion: reject-main-result
+--@ unit: executable
+--@ file: accept-main-result.ril
+pub fn main() {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-main-result
+--@ mode: check-fail
+--@ spec: SPEC#program-entry-point
+--@ companion: accept-main-result
+--@ unit: executable
+-- Error [E0904]: reject main result
+--@ file: reject-main-result.ril
+pub fn main() -> int { 1 }
+--@ end-file
+--@ end-case
+
+--@ case: accept-missing-main
+--@ mode: check-pass
+--@ spec: SPEC#program-entry-point
+--@ companion: reject-missing-main
+--@ unit: executable
+--@ file: accept-missing-main.ril
+pub fn main() {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-missing-main
+--@ mode: check-fail
+--@ spec: SPEC#program-entry-point
+--@ companion: accept-missing-main
+--@ unit: executable
+-- Error [E0903]: reject missing main
+--@ file: reject-missing-main.ril
+pub fn helper() {}
+--@ end-file
+--@ end-case

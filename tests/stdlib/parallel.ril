@@ -1,0 +1,113 @@
+--@ case: decisive-result-suppresses-right-fault
+--@ mode: run-pass
+--@ spec: STD#result-order-and-failures
+--@ entry: test_decisive_result_suppresses_right_fault
+--@ file: decisive-result-suppresses-right-fault.ril
+use ril/parallel
+
+pub fn test_decisive_result_suppresses_right_fault() {
+    let found = Parallel::find([0, 1], \n -> { if n == 0 { true } else { panic("right") } })
+    assert(found == Some(0))
+}
+--@ end-file
+--@ end-case
+
+--@ case: disjoint-writes
+--@ mode: run-pass
+--@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ entry: test_disjoint_writes
+--@ file: disjoint-writes.ril
+use ril/parallel
+type Cell = { mut count: int }
+
+pub fn test_disjoint_writes() {
+    let mut cells = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+    cells !> Parallel::for_each(\mut cell -> { cell.count *= 2 })
+    assert(cells[0].count == 2 && cells[1].count == 4)
+}
+--@ end-file
+--@ end-case
+
+--@ case: empty-combinators
+--@ mode: run-pass
+--@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ entry: test_empty_combinators
+--@ file: empty-combinators.ril
+use ril/parallel
+
+pub fn test_empty_combinators() {
+    let empty: []int = []
+    assert(Parallel::map(empty, \n -> n + 1) == [])
+    assert(Parallel::find(empty, \n -> true) == None)
+    assert(Parallel::first(empty, \n -> true) == None)
+    assert(!Parallel::any(empty, \n -> true))
+}
+--@ end-file
+--@ end-case
+
+--@ case: fold-group-boundaries
+--@ mode: run-pass
+--@ spec: STD#fold-results
+--@ entry: test_fold_group_boundaries
+--@ file: fold-group-boundaries.ril
+use ril/parallel
+
+pub fn test_fold_group_boundaries() {
+    for [0, 1, 63, 64, 65, 128, 129] as size {
+        let mut data: []int = []
+        for 0..size as _index { data !> Array::push(0) }
+        let value = Parallel::fold(clone_immut(data), \-> 10, \sum, item -> sum + item, \left, right -> left + right)
+        let groups = if size == 0 { 1 } else { (size + 63) / 64 }
+        assert(value == groups * 10)
+    }
+}
+--@ end-file
+--@ end-case
+
+--@ case: nonpositive-bound-safe
+--@ mode: run-pass
+--@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ companion: nonpositive-bound
+--@ entry: test_nonpositive_bound_safe
+--@ file: nonpositive-bound-safe.ril
+use ril/parallel
+
+pub fn test_nonpositive_bound_safe() {
+    assert(Parallel::map_bounded([1], 1, \n -> n) == [1])
+}
+--@ end-file
+--@ end-case
+
+--@ case: nonpositive-bound
+--@ mode: run-panic
+--@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ companion: nonpositive-bound-safe
+--@ entry: test_nonpositive_bound
+-- Panics: nonpositive bound
+--@ file: nonpositive-bound.ril
+use ril/parallel
+
+pub fn test_nonpositive_bound() {
+    let _ = Parallel::map_bounded([1], 0, \n -> n)
+}
+--@ end-file
+--@ end-case
+
+--@ case: pure-combinators
+--@ mode: run-pass
+--@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ entry: test_pure_combinators
+--@ file: pure-combinators.ril
+use ril/parallel
+
+pub fn test_pure_combinators() {
+    assert(Parallel::map([1, 2], \n -> n * 2) == [2, 4])
+    assert(Parallel::map_bounded([1, 2], 1, \n -> n + 1) == [2, 3])
+    assert(Parallel::find([3, 1, 2], \n -> n < 3) == Some(1))
+    assert(Parallel::first([3, 1, 2], \n -> n < 3) == Some(1))
+    assert(Parallel::any([1, 2], \n -> n == 2))
+    assert(Parallel::join(\-> 1, \-> "a") == (1, "a"))
+    assert(Parallel::join3(\-> 1, \-> 2, \-> 3) == (1, 2, 3))
+}
+--@ end-file
+--@ end-case

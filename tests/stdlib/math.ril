@@ -1,0 +1,41 @@
+--@ case: f32-operations
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_f32_operations
+--@ file: f32-operations.ril
+use ril/math
+
+pub fn test_f32_operations() {
+    assert(Math::sqrt_f32(4.0f32) == 2.0f32)
+    assert(Math::floor_f32(-1.5f32) == -2.0f32)
+    assert(Math::ceil_f32(-1.5f32) == -1.0f32)
+    assert(Math::round_f32(2.5f32) == 2.0f32 && Math::round_f32(3.5f32) == 4.0f32)
+    assert(Math::abs_f32(-2.0f32) == 2.0f32)
+    assert(Math::is_nan_f32(Math::sqrt_f32(-1.0f32)))
+    assert(Math::is_finite_f32(1.0f32))
+    assert(Math::min_f32(1.0f32, 2.0f32) == 1.0f32)
+    assert(Math::max_f32(1.0f32, 2.0f32) == 2.0f32)
+}
+--@ end-file
+--@ end-case
+
+--@ case: f64-operations
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_f64_operations
+--@ file: f64-operations.ril
+use ril/math
+
+pub fn test_f64_operations() {
+    assert(Math::sqrt(4.0f64) == 2.0f64)
+    assert(Math::floor(-1.5f64) == -2.0f64)
+    assert(Math::ceil(-1.5f64) == -1.0f64)
+    assert(Math::round(2.5f64) == 2.0f64 && Math::round(3.5f64) == 4.0f64)
+    assert(Math::abs(-2.0f64) == 2.0f64)
+    assert(Math::is_nan(Math::sqrt(-1.0f64)))
+    assert(Math::is_finite(1.0f64))
+    assert(Math::min(1.0f64, 2.0f64) == 1.0f64)
+    assert(Math::max(1.0f64, 2.0f64) == 2.0f64)
+}
+--@ end-file
+--@ end-case
