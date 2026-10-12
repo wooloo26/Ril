@@ -6,7 +6,7 @@
 
 **Format:** Code-First Normative Document
 
-## Authority and Contract Notation
+## Interfaces, Behavior, and Examples
 
 ```ril
 let words = "one,two" |> String::split(",")
@@ -15,9 +15,9 @@ use ril/array::{Elem}
 type Word = Elem<[]str>
 ```
 
-This document defines the public types, functions, effects, permissions, and observable behavior of the `ril/*` standard library.
+This document presents the public interfaces, functional behavior, and usage examples of the `ril/*` standard library. Signatures state parameter, return, effect, and permission requirements; descriptions state results, errors, ordering, and resource lifetimes visible to callers.
 
-Examples are independent fixtures unless marked complete. Local statements run inside an enclosing callable; free names are typed fixture inputs, not library exports. Complete programs include non-prelude imports.
+Examples are independent unless marked complete. Local statements run inside an enclosing callable; free names are supplied inputs. Complete programs include non-prelude imports.
 
 | Annotation | Required outcome |
 | :--- | :--- |
@@ -26,45 +26,65 @@ Examples are independent fixtures unless marked complete. Local statements run i
 | `-- Warning [WXXXX]` | Valid program; warning is advisory |
 | `-- Panics` | Run-time panic when evaluated |
 
-Negative cases are checked separately with valid setup. Local fixture expressions have their required handlers; named functions obey their declared effects. Blocks containing `...` are schematic. Diagnostic message text is illustrative.
+Each invalid example assumes otherwise valid surrounding code. Local expressions have their required handlers; named functions obey their declared effects. Blocks containing `...` are schematic. Diagnostic message text is illustrative.
 
-Signature blocks are interface extracts. Omitted bodies do not imply foreign calls. Opaque types use their stated data/resource classification. Listed signature families are closed library cases; user-defined overloading is not introduced. Unqualified names belong to the displayed module.
+Signature blocks list public declarations without bodies. Opaque types expose only their stated operations and data/resource classification. Listed signature families are closed library cases; user-defined overloading is not introduced. Unqualified names belong to the displayed module.
 
 Unless an operation states an exception, every module uses these contracts:
 
 | Concern | Common contract |
 | :--- | :--- |
 | Invocation | Ordinary run-time callable; omitted rows add no concrete effect/state. Actual callback obligations are forwarded; read-only, `mut`, and `^mut` modes remain distinct |
-| Data | Fresh collections have fresh outer storage, not deep-copied elements. Projections, removals, and combinators preserve constituent provenance; nothing implicitly freezes a live reference or upgrades a read-only element |
+| Data | Changing a new collection's structure does not change its input collections. Elements retain their original sharing and permissions; returning or inserting an element does not freeze a live reference or grant write access |
 | Callbacks | Synchronous on the caller's task, in source order, at most once per visited element; abort stops later calls. No retention after return unless stated |
 | Callback authority | Ordinary handles grant no mutable-environment invocation; operations state any additional modes or confined invocation authority |
 | Results | Inspection duties survive aliases, copies, aggregates and transport; aliases share one obligation. An outer tag test does not inspect nested Results. Normal completion must inspect, propagate, or return outstanding results; abnormal unwinding follows its boundary contract |
 | Failure | Invalid assertive indexes/lengths panic before mutation; safe queries return None, domain failures Err. Prior observable writes remain committed unless an operation states otherwise |
 | Termination | Finite-data operations terminate when callbacks and constituent operations do. Sequential iterations/callback entries charge active Div allowances; iterators and waits retain their own conditions |
-| Complexity | Count visited elements/bytes, excluding callback cost; include nonconstant equality, key, and bigint costs. Bounds constrain observable work growth, not storage layout |
+| Complexity | Bounds describe work growth in elements/bytes, excluding callback cost; include nonconstant equality, key, and bigint costs |
 | Environment limits | Allocation exhaustion has no recoverable allocation-API guarantee; no API promises a wall-clock bound |
 
 ## Contents
 
-- [Prelude and Module Index](#prelude-and-module-index)
-- [Foundational Operations](#foundational-operations)
-- [Optional and Fallible Values](#optional-and-fallible-values)
-- [Arrays, Maps, and Sets](#arrays-maps-and-sets)
-- [Ordering, Deques, and Heaps](#ordering-deques-and-heaps)
-- [Explicit Iteration](#explicit-iteration)
-- [Strings and Unicode](#strings-and-unicode)
-- [Numbers and Mathematics](#numbers-and-mathematics)
-- [Bytes, Binary Encoding, and Digests](#bytes-binary-encoding-and-digests)
-- [Native Strings and Paths](#native-strings-and-paths)
-- [Input and Output](#input-and-output)
-- [Files and Directories](#files-and-directories)
-- [Environment and Processes](#environment-and-processes)
-- [Time and Randomness](#time-and-randomness)
-- [Execution Boundaries](#execution-boundaries)
-- [Testing](#testing)
-- [Static Availability](#static-availability)
-- [Local Tooling Composition](#local-tooling-composition)
-- [Conformance Cases](#conformance-cases)
+- [The Ril Standard Library Specification](#the-ril-standard-library-specification)
+  - [Interfaces, Behavior, and Examples](#interfaces-behavior-and-examples)
+  - [Contents](#contents)
+  - [Prelude and Module Index](#prelude-and-module-index)
+  - [Foundational Operations](#foundational-operations)
+  - [Optional and Fallible Values](#optional-and-fallible-values)
+  - [Arrays, Maps, and Sets](#arrays-maps-and-sets)
+    - [Array](#array)
+    - [Map](#map)
+    - [Set](#set)
+  - [Ordering, Deques, and Heaps](#ordering-deques-and-heaps)
+  - [Explicit Iteration](#explicit-iteration)
+  - [Strings and Unicode](#strings-and-unicode)
+    - [String](#string)
+    - [Unicode and StringBuilder](#unicode-and-stringbuilder)
+  - [Numbers and Mathematics](#numbers-and-mathematics)
+  - [Bytes, Binary Encoding, and Digests](#bytes-binary-encoding-and-digests)
+  - [Native Strings and Paths](#native-strings-and-paths)
+  - [Input and Output](#input-and-output)
+    - [Error and Stream Contracts](#error-and-stream-contracts)
+    - [Buffered Streams](#buffered-streams)
+  - [Files and Directories](#files-and-directories)
+  - [Environment and Processes](#environment-and-processes)
+  - [Time and Randomness](#time-and-randomness)
+  - [Execution Boundaries](#execution-boundaries)
+    - [Structured Concurrency and Panic Containment](#structured-concurrency-and-panic-containment)
+      - [Interfaces and Scope Behavior](#interfaces-and-scope-behavior)
+    - [Deterministic Data Parallelism and Divide-and-Conquer Primitives](#deterministic-data-parallelism-and-divide-and-conquer-primitives)
+      - [Callback Requirements](#callback-requirements)
+      - [Fold Results](#fold-results)
+      - [Result Order and Failures](#result-order-and-failures)
+      - [Joining Independent Operations](#joining-independent-operations)
+      - [Mutation and Concurrency Limits](#mutation-and-concurrency-limits)
+    - [Structured Concurrency Channels](#structured-concurrency-channels)
+      - [Interfaces and Endpoint Use](#interfaces-and-endpoint-use)
+  - [Testing](#testing)
+    - [Testing Examples](#testing-examples)
+  - [Static Availability](#static-availability)
+  - [Complete Usage Example](#complete-usage-example)
 
 ## Prelude and Module Index
 
@@ -77,7 +97,7 @@ assert(found == Some(1) && len(tags) == 1)
 assert(accepted is Ok())
 ```
 
-Every compilation unit has an enclosing prelude scope. Local declarations may shadow its names; same-scope duplicates are `E0203`. `ril/prelude` re-exports exactly the following declarations.
+The following names are available without imports. Local declarations may shadow them; same-scope duplicates are `E0203`. `ril/prelude` re-exports exactly these declarations.
 
 | Implicit name | Owning module / identity | Contract |
 | :--- | :--- | :--- |
@@ -184,7 +204,7 @@ pub fn recover<T, E>(value: Result<T, E>, handler: fn(E) -> T) -> T
 pub fn expect<T, E>(value: Result<T, E>, message: str) -> T
 ```
 
-`map`/`and_then` call once only on Some/Ok; `map_err`/`recover` only on Err. `unwrap_or` evaluates fallback eagerly; `unwrap_or_else` calls it only on None. `expect` returns the success payload or panics with its message. Unvisited payloads are preserved without copying. Each callback admits a separate `mut callback` form with `&mut`, under the [common callback contract](#authority-and-contract-notation).
+`map`/`and_then` call once only on Some/Ok; `map_err`/`recover` only on Err. `unwrap_or` evaluates fallback eagerly; `unwrap_or_else` calls it only on None. `expect` returns the success payload or panics with its message. Unvisited payloads are preserved without copying. Each callback admits a separate `mut callback` form with `&mut`, under the [common callback contract](#interfaces-behavior-and-examples).
 
 All operations are O(1) excluding callbacks and inspect the outer tag. New and nested Results retain inspection duties (E0720); no `ignore_error` primitive is supplied.
 
@@ -222,7 +242,7 @@ pub fn all<T>(items: []T, predicate: fn(T) -> bool) -> bool
 pub fn for_each<T>(items: []T, action: fn(T) -> ())
 ```
 
-Read-only Array operations also accept fixed arrays `[N]T` with the same element behavior; length-changing operations require `[]T`. No call grants writes through a slice window. `push` and `insert` additionally admit `^mut value` when retaining an existing writer is requested; that family has `&^mut` and obeys retained sharing. Ordinary insertion preserves only its supplied read permission. All callback operations also admit `mut callback` with `&mut`; both `fold`'s accumulator and returned elements preserve actual provenance.
+Read-only Array operations also accept fixed arrays `[N]T` with the same element behavior; length-changing operations require `[]T`. No call grants writes through a slice window. `push` and `insert` additionally admit `^mut value` when retaining an existing writer is requested; that family has `&^mut` and obeys retained sharing. Ordinary insertion preserves only its supplied read permission. All callback operations also admit `mut callback` with `&mut`; both `fold`'s accumulator and returned elements retain their original sharing and permissions.
 
 | Operation | Behavior and complexity |
 | :--- | :--- |
@@ -237,7 +257,7 @@ Read-only Array operations also accept fixed arrays `[N]T` with the same element
 | `find`, `any`, `all` | Stop at first match / true / false; empty outcomes `None`, false, true; O(n) worst case |
 | `for_each` | One invocation per element in order; O(n) |
 
-Active traversal forbids structural mutation through any source alias (`E0526`); a still-used live window retains `E0537`. Removal preserves the [common inspection duty](#authority-and-contract-notation).
+Active traversal forbids structural mutation through any source alias (`E0526`); a still-used live window retains `E0537`. Removal preserves the [common inspection duty](#interfaces-behavior-and-examples).
 
 ```ril
 let mut items = [1, 2]
@@ -276,9 +296,9 @@ pub fn from<K, V>(entries: [](K, V)) -> [K: V]
 | `keys` / `values` / `entries` | Fresh outer arrays in corresponding insertion order |
 | `from` duplicates | Last value, first position; scan left-to-right |
 
-Keys copy by value and cannot change through source reassignment; equality/hash invokes no user callback. Map equality compares membership, ignoring insertion order.
+Keys copy by value and cannot change through source reassignment; key comparison invokes no user callback. Map equality compares membership, ignoring insertion order.
 
-Lookup/update/remove require expected O(1) key operations and O(n) worst case; enumeration/from require O(n) expected key operations. Hash randomization, if any, cannot affect specified order or become a public stable digest.
+Lookup/update/remove require expected O(1) key operations and O(n) worst case; enumeration/from require O(n) expected key operations. Maps expose insertion order and membership, with no public hash value.
 
 ```ril
 let mut settings: [str: int] = ["b": 1, "a": 2]
@@ -350,7 +370,7 @@ pub fn total_f64(left: f64, right: f64) -> Ordering
 | :--- | :--- |
 | `ops.compare` | Explicit, finite, effect/state-free; operands are read-only |
 | Comparator relation | Total preorder: reflexive Equal, reversed Less/Greater, transitive comparison and equivalence |
-| `sorted` | Fresh outer storage; equal elements retain source order; O(n log n) comparisons |
+| `sorted` | New collection; equal elements retain source order; O(n log n) comparisons |
 | Comparison schedule | Unspecified within the stated bound |
 | `binary_search` | Sorted input; `Ok(first equal index)` or `Err(lower-bound insertion index)`; O(log n) comparisons |
 | Search Result | Must be inspected |
@@ -392,7 +412,7 @@ pub fn pop<T>(mut heap: Heap<T>) -> ?T &mut
 
 Deque pushes/pops are amortized O(1), length O(1), and `values` O(n), ordered front to back. Empty pops return `None`. Heap creation retains an immutable, environment-free comparator with Order's finite/pure contract; captured mutable/live environments are inadmissible (`E0534`). Heap `peek`/`pop` select the least element; comparator ties select the earliest inserted surviving element. `peek` and length are O(1), push/pop O(log n) comparisons. Heap elements must be immutable ordinary data so comparison keys cannot change through another path; a live element fails immutable publication (`E0535`).
 
-Deque insertions preserve read-only constituent permissions, with no retained-writer form in this version. Heap/Deque receive fresh writable outer storage from `new`; read-only binding does not confer writes. Ordinary clone rules inspect all stored constituents, including the retained comparator. Neither type gets structural projection or a new `for` protocol; use Deque values or explicit pop loops.
+Deque insertions preserve read-only constituent permissions, with no retained-writer form in this version. Heap/Deque `new` returns a new writable collection; read-only binding does not confer writes. Cloning requires all elements and any retained comparator to be eligible for ordinary cloning. Neither type exposes fields or supports direct `for` traversal; use Deque values or explicit pop loops.
 
 ## Explicit Iteration
 
@@ -411,7 +431,7 @@ pub fn filter<S, T>(source: Source<S, T>, predicate: fn(T) -> bool) -> Source<S,
 pub fn indexed<T>(items: []T) -> Source<int, T> &capture
 ```
 
-`cursor` starts with `ended = false`. `pull` calls the source once with the current state: Done sets ended and returns None; Yielded stores the successor and returns Some(item). An ended cursor never calls the source again. If a source aborts, no successor is installed; the source's outside writes are not rolled back. `collect`/`fold` repeat transitions from their supplied initial state until Done. Their returned collection/accumulator follows ordinary provenance rules.
+`cursor` starts with `ended = false`. `pull` calls the source once with the current state: Done sets ended and returns None; Yielded stores the successor and returns Some(item). An ended cursor never calls the source again. If a source aborts, no successor is installed; the source's outside writes are not rolled back. `collect`/`fold` repeat transitions from their supplied initial state until Done. Their returned elements and accumulator retain their original sharing and permissions.
 
 Adapters retain read-only sources/callbacks; their latent obligations remain attached.
 
@@ -429,7 +449,7 @@ Adapters retain read-only sources/callbacks; their latent obligations remain att
 | `indexed` state >= length | `Done` |
 | Retained items | Immutable data or a lawful live view with its stability obligations |
 
-Adapter construction invokes no callback. Pulls use the [common invocation contract](#authority-and-contract-notation), with read-only step/callback handles only; mutable state may be an explicit successor S. No mutable callback is retained, and `for` gains no user-defined protocol. Retaining an affine `resume` is `E0611`.
+Adapter construction invokes no callback. Pulls use the [common invocation contract](#interfaces-behavior-and-examples), with read-only step/callback handles only; mutable state may be an explicit successor S. No mutable callback is retained, and `for` gains no user-defined protocol. Retaining an affine `resume` is `E0611`.
 
 Finite input plus finite callbacks establishes finite traversal. `take` bounds successful items, not time or a diverging source step. `pull` is one source-step cost; adapters add O(1) per inspected item; collect/fold are O(visited transitions). A failing Result item remains subject to inspection even when filtering or terminating early.
 
@@ -628,7 +648,7 @@ pub fn find(data: bytes, needle: bytes) -> ?int
 pub fn at(data: bytes, index: int) -> ?u8
 ```
 
-`bytes` is immutable value data. `from_array` snapshots bytes; `to_array` produces fresh writable outer storage. Later array mutation cannot affect the byte value. Slice uses half-open byte offsets and returns None on invalid bounds. Find returns the first byte offset; empty needle returns Some(0). At returns None out of bounds. Copy/concat is O(input+output), at O(1), slice O(selected length) or better, find O(n*m) or better. No encoding is implied.
+`bytes` is immutable value data. `from_array` snapshots bytes; `to_array` produces a new writable collection. Later array mutation cannot affect the byte value. Slice uses half-open byte offsets and returns None on invalid bounds. Find returns the first byte offset; empty needle returns Some(0). At returns None out of bounds. Copy/concat is O(input+output), at O(1), slice O(selected length) or better, find O(n*m) or better. No encoding is implied.
 
 ```ril
 -- ril/encoding/binary
@@ -828,7 +848,7 @@ pub fn write_stderr(text: str) -> Result<(), IoError> @Fiber
 pub fn error_text(error: IoError) -> str
 ```
 
-Operation records are ordinary values receiving the caller's explicit mutable data handle. Under the [common invocation contract](#authority-and-contract-notation), a memory source need not have Fiber while a file source does. Stream helpers retain neither receiver nor operation record; termination and budget coverage depend on the selected operations.
+Operation records are ordinary values receiving the caller's explicit mutable data handle. Under the [common invocation contract](#interfaces-behavior-and-examples), a memory source need not have Fiber while a file source does. Stream helpers retain neither receiver nor operation record; termination and budget coverage depend on the selected operations.
 
 For a positive `max_bytes`, successful read returns at most that many bytes, with nonempty data or `end = true`. `end` means EOF after these bytes; it may accompany the last nonempty chunk. A zero request on a valid open stream returns empty data with `end = false`, without waiting or consuming; handle/mode validation still applies. A negative request panics. A read that obtained bytes before encountering an error returns those bytes first and reports the error on the next positive request; `Err` never silently consumes unreported data. EOF is an ordinary success, not IoError. Invalid UTF-8 is a text-decoding failure, not a byte-read failure.
 
@@ -866,7 +886,7 @@ Io::write_all(mut sink, b"x", .{ write: invalid_write })
 | Successful zero-request read has nonempty data or end = true | Same boundary panic; validation Err remains an ordinary error |
 | Callback committed writes before its invalid response | Preserve those writes; no rollback |
 
-All stream helpers, including buffered forms, validate the response before using it to update buffer/progress state or retrying. A contract panic is a defect, not a fabricated IoError. Callbacks retain responsibility for external behavior that their response cannot prove, including reporting already transferred bytes truthfully.
+An invalid callback response causes a panic without advancing the helper's buffered data or reported progress, or invoking the callback again. This applies to buffered and unbuffered helpers. Callbacks must report already transferred bytes truthfully; a contract panic does not undo their external writes.
 
 ### Buffered Streams
 
@@ -893,11 +913,11 @@ pub fn flush<W>(mut buffer: WriteBuffer, mut writer: W,
 | Flush | Send in order; remove confirmed prefixes; preserve the unwritten suffix after error |
 | Pending output | Switching destination/operation panics before another write; pending bytes remain |
 | Mutable arguments | Buffer and receiver must be disjoint |
-| Bookkeeping | Finite O(bytes), excluding waits |
+| Complexity | Finite O(bytes), excluding waits |
 
 Buffers never retain resource authority or auto-flush on scope exit. Discarding a nonempty write buffer abandons its bytes; callers requiring delivery must explicitly inspect flush. Stream closure does not imply a successful flush. Writing bytes and ensuring durable filesystem storage are separate operations.
 
-Association is with the receiver's actual identity and selected operation callable, not the variable name: another alias to the same receiver does not count as a switch. Empty buffers with no deferred input condition may be reused. The association check supplies no write permission, does not extend a resource lifetime, and introduces no new effect; calls still need their declared receiver modes and actual operation effects.
+Another alias to the same receiver with the same operation callable does not count as a switch. Empty buffers with no deferred input condition may be reused. Buffered calls require the declared receiver permissions and operation effects; a buffer does not keep its receiver open.
 
 ```ril
 use ril/io
@@ -983,18 +1003,18 @@ These outcomes retain the original operation's parameter mode and effect require
 | File cleanup | Contract |
 | :--- | :--- |
 | `let scoped mut` exit | Release once; finite, non-suspending, no residual effect or panic |
-| Implicit release | Abandon descriptor; report no host error; perform no flush/sync |
+| Implicit release | Close the handle without reporting host errors or flushing/syncing |
 | Explicit `close` | Mark closed before reporting an error; suppress later release |
 | `on_close` callbacks | Still require finite computation and no residual effects |
-| Unregistered handle | Explicit close required; GC gives no timely-close guarantee |
+| Handle outside `let scoped` or `with_file` | Explicit close required; losing the last reference does not guarantee timely closure |
 
 Implicit release is a separate operation from effectful `close`.
 
-`with_file` opens, invokes action once with a temporary writable Handle, and closes before returning. It forwards actual callback effects/state; the borrowed handle and its aliases cannot escape (`E0604`). If action returns Err, that error takes precedence over a close error; on Ok, a close error replaces success. On abnormal unwinding, perform the finite release action without replacing the original cause. The wrapper does not use an effectful scoped destructor.
+`with_file` opens, invokes action once with a temporary writable Handle, and closes before returning. It forwards actual callback effects/state; the borrowed handle and its aliases cannot escape (`E0604`). If action returns Err, that error takes precedence over a close error; on Ok, a close error replaces success. On panic, cancellation, or effect abort, the handle is released without replacing the original cause.
 
 Read_chunk/write obey Io progress rules and change the handle's position by transferred bytes. An operation unsupported by the handle's OpenMode returns InvalidInput without accessing data; an underlying host access denial is PermissionDenied. Seek computes a nonnegative representable offset; otherwise InvalidInput, without changing position. Non-seekable resources report Unsupported. Seeking beyond EOF does not itself extend a file. `sync` requests that prior file writes reach the host's stable-storage boundary; it does not sync an enclosing directory or promise crash-atomic replacement.
 
-Whole-file reads/writes close their internal handle on all exits; writes use WriteTruncate and write-all behavior. They are not atomic replacement and may leave a written prefix on error. Text uses strict UTF-8 with no BOM stripping or newline translation. Read_text maps an invalid encoding to InvalidData. Metadata.size counts bytes for regular files; other kinds have size zero. Missing timestamp precision is represented by the supplied timestamp's documented precision, or None if unavailable. Metadata follows links by default; false reports the link itself.
+Whole-file reads/writes leave no open file handle on any exit; writes use WriteTruncate and write-all behavior. They are not atomic replacement and may leave a written prefix on error. Text uses strict UTF-8 with no BOM stripping or newline translation. Read_text maps an invalid encoding to InvalidData. Metadata.size counts bytes for regular files; other kinds have size zero. Missing timestamp precision is represented by the supplied timestamp's documented precision, or None if unavailable. Metadata follows links by default; false reports the link itself.
 
 | Filesystem operation | Contract |
 | :--- | :--- |
@@ -1155,7 +1175,7 @@ This parsing contract applies even when another program supplied the command lin
 | Nonzero exit | `Ok(Output)` containing Exited(nonzero) |
 | Signaled | POSIX only; Windows returns its unsigned exit code |
 
-Spawn accepts only Inherit/Null for all streams; Data/Capture is InvalidCommand. It returns a task-local opaque Child with fresh wait/terminate authority. Child is not ordinary data, not clonable/derivable/transferable, and has **no** `let scoped` cleanup contract (`E0541`). Wait caches the observed status so repeated waits return it. Terminate requests forced termination of this child and then waits for/reaps it; an already exited child succeeds. It does not promise to kill arbitrary descendants started by that external process. A failed termination returns WaitFailed without pretending the process was reaped.
+Spawn accepts only Inherit/Null for all streams; Data/Capture is InvalidCommand. It returns a task-local opaque Child with fresh wait/terminate authority. Child is not ordinary data, not clonable/derivable/transferable, and has **no** `let scoped` cleanup contract (`E0541`). Repeated waits return the same observed exit status. Terminate requests forced termination of this child and then waits for/reaps it; an already exited child succeeds. It does not promise to kill arbitrary descendants started by that external process. A failed termination returns WaitFailed without pretending the process was reaped.
 
 | Process ownership / exit | Rule |
 | :--- | :--- |
@@ -1164,7 +1184,7 @@ Spawn accepts only Inherit/Null for all streams; Data/Capture is InvalidCommand.
 | Action Ok / Err | Return cleanup failure / preserve action error |
 | Panic, cancellation, abort | Complete required child cleanup before propagating; no wall-clock bound |
 | Cancel `run` or owning `with_child` | Cancel transfers, terminate/reap, continue non-resumable cancellation |
-| Standalone spawn | Explicit wait/terminate required; aliases and GC do not ensure cleanup |
+| Standalone spawn | Explicit wait/terminate required; losing references does not ensure cleanup |
 | Cancel `wait` | Cleanup authority remains with the owner |
 
 `with_child` is effectful. Child has no `on_close` contract.
@@ -1232,17 +1252,19 @@ pub fn entropy(count: int) -> Result<bytes, Io::IoError> @Fiber
 | Cancellation | Non-resumable exit; never successful early completion |
 | Arithmetic / observations | Finite O(1) / `@Fiber`, run-time only |
 
-Seeded generation uses this exact 64-bit sequence. All additions/multiplications below are modulo 2^64 and right shifts are logical; this mathematical recurrence is the observable contract, not an exposed state layout:
+The nth draw from `seeded(seed)`, starting at n = 1, has the value defined below. Arithmetic is modulo 2^64 and right shifts are logical.
 
-1. Start `s = seed`. For each next_u64, set `s = s + 0x9e3779b97f4a7c15`.
-2. Set `z = (s xor (s >> 30)) * 0xbf58476d1ce4e5b9`.
-3. Set `z = (z xor (z >> 27)) * 0x94d049bb133111eb`.
-4. Return `z xor (z >> 31)`.
+| Sequence value | Definition |
+| :--- | :--- |
+| `s_n` | `seed + n * 0x9e3779b97f4a7c15` |
+| `z_n` | `(s_n xor (s_n >> 30)) * 0xbf58476d1ce4e5b9` |
+| `w_n` | `(z_n xor (z_n >> 27)) * 0x94d049bb133111eb` |
+| nth draw | `w_n xor (w_n >> 31)` |
 
 | Random operation | Rule |
 | :--- | :--- |
 | `below(upper = 0)` | Panic without drawing |
-| `below(upper > 0)` | Threshold `2^64 mod upper`; draw until value >= threshold; return value mod upper |
+| `below(upper > 0)` | Consume through the first subsequent draw >= `2^64 mod upper`; return that draw modulo upper |
 | `next_u64` / `below` cost | O(1) / expected constant draws, finite full-cycle bound; no fixed small worst-case draw count |
 | Clone Rng | Copy sequence state; isolate future mutation |
 | Seeded generator | Reproducible, non-cryptographic |
@@ -1289,7 +1311,7 @@ fn isolated_value() -> Result<int, TaskFault> @Concurrent {
 }
 ```
 
-#### Normative Rules for Structured Concurrency
+#### Interfaces and Scope Behavior
 
 ```ril
 -- ril/concurrent; Scope and Task are scope-owned opaque resources.
@@ -1301,24 +1323,37 @@ pub fn scope<T>(body: fn(mut Scope) -> Result<T, TaskFault>) -> Result<T, TaskFa
 -- task.join() -> Result<T, TaskFault> @Concurrent
 ```
 
-All three require `@Concurrent` and forward callback effects. No implicit join, result flattening, or conversion of business errors to panics occurs.
-- **Receivers**: `s.fork` borrows its `mut s` receiver. `Task.join` uses result-observation authority, not mutable data access. Ordinary function arguments do not inherit these built-in contracts.
-- **Lifetime (`E0606`)**: Children and their Scope/Task handles stay in their owning scope. Handles cannot be cloned, moved to another task, or hidden in escaping aggregates/closures.
-- Join a result once. Task control state is external to its stable descriptor; ordinary returned data must satisfy immutable publication. Resources follow explicit transfer contracts.
-- **Failure**: Child panic/double fault permanently fails the scope, even after inspection by `join`. Cancel unfinished descendants and active body waits. Any later `fork` cancels the body; returning `Ok` cannot restore success.
-- **Cancellation**: Channel and leaf-I/O waits, pending joins, and nested scope waits must wake. Transfer to the scope boundary without resumption; user `with` cannot absorb cancellation.
-- A join of the failed task may deliver its fault for inspection, without clearing failure. Other cancelled waits cannot complete successfully.
+All three require `@Concurrent` and forward callback effects. A scope waits for children but does not implicitly inspect their results; joining preserves nested Results and business errors.
+
+| Operation or condition | Caller-visible contract |
+| :--- | :--- |
+| `s.fork(action)` | Start one child; borrow the writable Scope for this call |
+| `task.join()` | Wait for and observe the task result once; no mutable-data permission is required |
+| Returned data | Immutable ordinary data, or a resource admitted by an explicit transfer contract |
+| Scope/Task lifetime | Stay in their owning scope; no cloning, cross-task transfer, or escape through aggregates/closures (`E0606`) |
+| Child panic or double fault | Permanently fail the scope; unfinished descendants and active body waits are cancelled |
+| Join after child failure | May return the failed child's fault for inspection; inspecting it or returning `Ok` does not restore scope success |
+| Fork after child failure | Cancel the body |
+| Cancellation | Interrupt channel/I/O waits, joins, and nested scope waits; leave the scope without resuming the cancelled operation |
+| Cancellation handlers | User `with` handlers cannot absorb cancellation; cancelled waits do not report success |
+
 | Body exit | Before leaving |
 | :--- | :--- |
 | `Ok` | Wait for all children |
 | `Err(TaskFault)`, panic, cancellation, or delimited abort | Cancel children and wait |
 
-Run child cleanups except those abandoned by double fault. A parent panic/abort continues outward after the barrier; this scope does not catch it as a Result.
-- **Termination**: The barrier forbids premature exit, not divergence. Preserve the body's and every required child's termination conditions independently of effects. Built-in waits respond to cancellation; divergence outside cancellation points may prevent exit. No finite completion bound is promised. A child's local finite budget may bound eligible child computation, but an enclosing budget cannot contain structured concurrency.
-- **Fault Order**: Among actual faults: double fault, then panic, then cancellation. Ties use task creation order, with an explicit body fault first. Cancellation never replaces its cause; different runs may produce different fault sets.
-- **Confinement**: Share immutable ordinary data; reject live/mutable data and non-transferable resources (`E0601`). The listed resource exceptions are detached endpoint transfer and the limited immutable Sender clone-source borrow. Child system effects may include Fiber/Concurrent; Div exhaustion and user effects need child-local handlers (`E0615`). Possible divergence is a separate termination condition, not a child effect.
-- **Transitive Access (`E0601`)**: Check every possible access through named external state, callees, callbacks, handlers, and cleanup. An immutable callable descriptor does not make its dependencies immutable. Outside live reads and ordinary writes are rejected even when no captured value crosses the boundary. Apply the separately listed resource permissions without extending them to ordinary data.
-- **Results (`E0720`)**: `Task<Result<U, E>>` retains inner inspection duties. Normal success must inspect, propagate, or return them; join checks only the outer result. Abnormal unwinding may discard inaccessible/unfinished results, but cannot report success while losing an error.
+Child cleanup completes except where abandoned by a double fault. A parent panic or effect abort continues outward after the children finish; `scope` does not turn it into a Result. A diverging body or child can prevent scope exit even after cancellation. There is no finite completion bound. Structured concurrency cannot run inside `Div::budget`; an eligible child-local computation may use its own budget.
+
+| Child requirement or outcome | Contract |
+| :--- | :--- |
+| Ordinary shared data | Immutable only; outside live reads, writes, and non-transferable resources are invalid (`E0601`) |
+| Indirect dependencies | The same restrictions apply through named state, callees, callbacks, handlers, and cleanup |
+| Resource exceptions | Detached endpoint transfer and the limited immutable Sender clone-source borrow described below |
+| Child effects | Fiber/Concurrent are permitted; user effects and Div exhaustion require child-local handlers (`E0615`) |
+| Multiple faults | Double fault before panic before cancellation; ties use task creation order, with an explicit body fault first |
+| Fault cause | Cancellation does not replace its cause; different runs may encounter different faults |
+| `Task<Result<U, E>>` | Joining inspects only the transport Result; normal completion must inspect, propagate, or return the inner Result (`E0720`) |
+| Abnormal exit | May discard inaccessible or unfinished results; successful completion cannot lose an uninspected Result |
 
 ```ril
 -- Module declarations and an invocation fixture inside an owning scope:
@@ -1391,7 +1426,7 @@ pub fn join3<A, B, C>(first: fn() -> A, second: fn() -> B, third: fn() -> C) -> 
 pub fn for_each<T>(mut items: []T, action: fn(mut T) -> ()) &mut
 ```
 
-`first` is an alias of predicate-based `find`. Pure collection calls create fresh result storage as appropriate, retain no callbacks, and admit immutable input; `for_each` instead grants the explicitly listed temporary writes. Empty map returns `[]`, empty find/first returns None, empty any returns false, and empty for_each invokes no callback. Work is O(n) invocations plus callbacks, except find/first/any may stop earlier in reference order; join variants have a fixed branch count. Actual scheduling may evaluate additional unobservable speculative branches. No operation provides a wall-clock speedup guarantee.
+`first` is an alias of predicate-based `find`. Pure collection calls return independent result collections where applicable, retain no callbacks, and require immutable input. `for_each` permits the temporary writes described below. Empty map returns `[]`, empty find/first returns None, empty any returns false, and empty for_each invokes no callback. Work is O(n) invocations plus callbacks; find/first/any need not stop invoking predicates as soon as a match is found. Join variants have a fixed branch count. No operation provides a wall-clock speedup guarantee.
 
 ```ril
 use ril/parallel
@@ -1402,23 +1437,28 @@ let first = [10, 20, 30, 40] |> Parallel::find(\x -> x > 25)
 assert(first == Some(30))
 ```
 
-#### The Colorless Parallel Principle and Domain Boundary
+#### Callback Requirements
 
-Check callbacks transitively through calls, handlers, and cleanup: no residual effects and independently finite computation. Unhandled Div is an effect violation; unproved termination is `E0820`; `@Parallel` is `E0620`. Immutable captures and local handling are allowed, including a valid per-callback budget with finite recovery/cleanup. Reject outside mutable/live handlers and resource operations. Only join/for_each grant the temporary outside writes below; no live authority escapes.
+Callbacks, including their callees, handlers, and cleanup, must have no residual effects and must be finite. Unhandled Div is an effect violation; unproved termination is `E0820`; `@Parallel` is `E0620`. Immutable captures and local handling are allowed, including a valid per-callback budget with finite recovery and cleanup. Outside mutable/live handlers and resource operations are invalid (`E0605`). Only join/for_each permit the temporary outside writes below; no live authority may escape.
 
-Pure map/find/fold follow their reference evaluation. Disjoint-write join/for_each follow their [completion rule](#declarative-data-parallelism-and-concurrency-bounding); no universal left-fold equivalence applies.
+Pure map/find/fold follow their specified result and fault order. Disjoint-write join/for_each follow their [completion rule](#mutation-and-concurrency-limits).
 
-#### Deterministic Reductions and Bit-Exact Floating-Point Trees
+#### Fold Results
 
-`Parallel::fold(items, init_acc, fold_local, merge_acc)` has this reference evaluation:
+`Parallel::fold(items, init_acc, fold_local, merge_acc)` returns the value defined by this grouping and parenthesization:
 
-1. For nonempty input, group k contains source indexes from 64*k inclusive to min(64*(k+1), len(items)) exclusive, with k starting at zero. Every group except the last contains exactly 64 elements. These are mathematical index bounds, not potentially overflowing int expressions evaluated by the program.
-2. For each group in order, call `init_acc()` once and perform `fold_local` from left to right over that group. Finish all groups before starting merges.
-3. Merge adjacent group results from left to right at each level. An unpaired final result advances unchanged. Repeat levels until one result remains.
-4. Empty input calls `init_acc()` exactly once and returns it. No merge is performed for fewer than two groups.
-5. The first fault in this reference order is the visible fault; later reference operations need not be evaluated. A dependent operation is not evaluated after its input failed. A fold-local fault records the source element index; initialization and merge faults use `PanicInfo.index = None`.
+| Input or stage | Result definition |
+| :--- | :--- |
+| Empty input | One `init_acc()` result; no fold or merge |
+| Nonempty input | Consecutive groups of 64 elements; only the final group may be shorter |
+| Group result | One `init_acc()` followed by a left fold with `fold_local` over that group's elements |
+| Merge level | Adjacent results paired left to right with `merge_acc`; an unpaired final result is unchanged |
+| Final result | Repeat merge levels until one result remains; fewer than two groups require no merge |
+| Visible fault | First fault in group order, then merge-level order; within each group, initialization precedes its elements |
+| Failed input to an operation | No dependent fold/merge call |
+| `PanicInfo.index` | Source index for a fold-local fault; None for initialization or merge faults |
 
-This rule applies to non-associative operations as well. Floating-point addition is permitted but is not claimed to be associative or equal to ordinary sequential left folding. Given fixed primitive numeric semantics, the tree and result do not change with scheduling or worker count.
+These rules define results and visible faults for non-associative operations, including floating-point addition. The result is reproducible for the same inputs and callbacks and may differ from an ordinary sequential left fold.
 
 ```ril
 let total = Parallel::fold(
@@ -1444,32 +1484,32 @@ assert(Parallel::fold(
 ) == 10)                             -- Empty input initializes exactly once
 ```
 
-#### Reference Results and Faults
+#### Result Order and Failures
 
 ```ril
 let found = [0, 1] |> Parallel::find(\x -> {
     if x == 0 { true } else { panic("right branch") }
 })
-assert(found == Some(0))               -- Even if the right branch ran speculatively
+assert(found == Some(0))               -- A later element's panic cannot replace the earlier match
 ```
 
-| Pure reference evaluation | Visible outcome |
+| Operation or condition | Visible outcome |
 | :--- | :--- |
 | map | Element order |
 | find / first / any | First decisive match or fault in element order; a match suppresses all rightward outcomes |
 | fold | Group/merge order defined above |
-| Speculative panic or double fault | Branch-local terminal outcome; propagate only if visible in reference evaluation |
+| Panic or double fault after the decisive outcome | Does not replace the selected result or fault |
 
-Wait for all started branches. Propagate the selected panic; a selected double fault fatally fails its owning task or an unsupervised program. Never resume a failed branch or restart abandoned cleanup. Branch state/cleanup must be local; abandoned cleanup cannot affect an outside-observable resource (E0605). These reference rules do not replace the separate disjoint-write completion rule below.
+The call completes only after all started branches finish. A selected panic propagates; a selected double fault fatally fails its owning task or an unsupervised program. Failed callbacks are not resumed and abandoned cleanup is not retried. Branch state and cleanup must be local; outside resources are invalid (`E0605`). Operations with disjoint writes follow the separate completion rule below.
 
-#### Lightweight Divide-and-Conquer (Parallel::join)
+#### Joining Independent Operations
 
 `Parallel::join(a, b)` returns `(a(), b())`; `join3` returns three results. Invoke each branch once and wait for all branches.
 
-- Share immutable reads. Temporary parent-data writes require disjoint write/read and write/write regions (`E0619`). Check actual captures; distinct names/indices do not prove separation.
+- Share immutable reads. Temporary parent-data writes require disjoint write/read and write/write regions (`E0619`); aliases to the same data still overlap.
 - The parent suspends access to lent regions until completion; other tasks cannot access them. Branch invocation authority is confined and does not create a lasting owner.
 
-#### Declarative Data Parallelism and Concurrency Bounding
+#### Mutation and Concurrency Limits
 
 - **for_each**: `cells !> Parallel::for_each(\mut cell -> { ... })` explicitly lends each writable element to one invocation. Every element's writable reachable region must be disjoint from every other invocation's reads/writes (`E0619`). Immutable elements or unknown overlapping aliases are rejected; outside mutable captures are rejected (`E0605`).
 - **Completion**: join/join3/for_each finish every independent invocation and retain its writes. Then report double fault before panic, breaking ties by branch/index order. There is no rollback or sequential-short-circuit partial-state guarantee.
@@ -1517,10 +1557,7 @@ fn one_message() -> Result<int, TaskFault> @Async {
 }
 ```
 
-#### Normative Rules for Structured Channels
-
-
-The following declarations describe the channel module's contracts (opaque declaration-unit forms):
+#### Interfaces and Endpoint Use
 
 ```ril
 -- ril/concurrent/channel
@@ -1536,17 +1573,17 @@ pub fn attach<E>(ticket: Detached<E>) -> E @Fiber
 pub fn close<E>(endpoint: E) -> () @Fiber
 ```
 
-In these three generic interface extracts, E is exactly Sender<T> or Receiver<T>; other resource types have no matching contract (`E0908`). Attach returns the transferred writable endpoint authority. Close consumes the named descriptor's existing owner authority, despite its ordinary argument spelling; this is the existing channel-specific contract, not a general consuming parameter mode. Queue bookkeeping is amortized O(1) per message, excluding payload processing and potentially unbounded waits. Detach/attach/close perform finite descriptor transitions, with closure of queued detached payloads proportional to those payloads.
+For `detach`, `attach`, and `close`, E is exactly Sender<T> or Receiver<T>; other resource types are invalid (`E0908`). `attach` returns a writable endpoint. `close` consumes the endpoint's existing owner authority despite its ordinary argument spelling. Sending and receiving cost amortized O(1) per message, excluding payload processing and waits. Detach/attach/close are finite; closing unreceived detached payloads takes work proportional to those payloads.
 
-Sender/Receiver/Detached are scope-owned opaque resources. Immutable descriptors may enter `let`; protocol state is external and effect-accessed. These resource contracts do not apply to ordinary data.
+Sender/Receiver/Detached are scope-owned opaque resources that may enter `let`. Binding an endpoint with `let` does not freeze the channel or grant writable endpoint access. Their operations retain the displayed effects and permission requirements.
 
 | Access or copy | Contract |
 | :--- | :--- |
 | Send/receive | Writable endpoint, `@Fiber &mut`; one owning task (`E0603`) |
-| `clone(Sender<T>)` | `@Fiber`; independent task-local endpoint authority, same channel; no resource-graph isolation guarantee |
+| `clone(Sender<T>)` | `@Fiber`; new task-local sending authority for the same channel; closing one Sender leaves the others open |
 | Immutable Sender captured by a child | Clone-source only; no send/close/detach or acquisition of owner authority (`E0603`), even through aggregates/closures |
 | Owner close/detach while borrowed | Suspended until every borrowing task's terminal join or the scope's child barrier (`E0603`) |
-| Scheduling progress, dropped Task, last textual use | Do not end a clone-source borrow |
+| Child progress, discarded Task, or last use of Sender | Do not end a clone-source borrow |
 | Clone Receiver/Detached; endpoint `clone_immut` | `E0530`, including inside containers |
 | Endpoint `derive` | `E0536`, including inside containers |
 
@@ -1570,12 +1607,12 @@ match sent { Ok() -> {}, Err(_error) -> {} }
 | :--- | :--- |
 | `detach(mut endpoint)` | Consume exclusive endpoint; return non-clonable `Detached<Endpoint>` |
 | `attach(ticket)` | Consume once; obtain writable endpoint in receiving task |
-| Enter `send(ticket)` after argument evaluation | Consume ticket on every outcome; pending send owns it |
-| Enqueue / successful receive | Ownership passes to queue / receiver |
-| `Err(Closed)` or cancellation before enqueue | Close submitted endpoint once; never restore ticket |
-| Receiver close | Close unreceived queued detached endpoints once |
+| Call `send(ticket)` after argument evaluation | Consume ticket on every outcome; sender cannot reuse it |
+| Successful send / receive | Endpoint is in transit / receiver obtains its ticket |
+| `Err(Closed)` or cancellation before acceptance | Submitted endpoint closes once; ticket is not returned |
+| Receiver close | Unreceived detached endpoints close once |
 
-Detach rejects other usable aliases/views/captures and invalidates old paths (`E0603`). Only detached descriptors are transferable resource payloads; `mut`/`^mut` alone never transfer. Transfers and cross-task clones stay within the owning scope's descendants (`E0606`), independently of GC.
+`detach` requires exclusive endpoint access; other usable aliases, views, or captures are invalid (`E0603`). After detach, the original endpoint can no longer be used. Only detached endpoints are transferable resource payloads; `mut`/`^mut` alone never transfer ownership. Transfers and cross-task clones stay within the owning scope's descendants (`E0606`).
 
 Payloads may be scalars, immutable ordinary data (even with field `mut` markers), or one-use detached descriptors. Live data, mutable environments, ordinary write authority, and hidden non-transferable resources are `E0602`.
 
@@ -1591,12 +1628,12 @@ match (rx !> Channel::recv()) {
 
 | Fallible payload event | Outstanding inspection obligation |
 | :--- | :--- |
-| Successful send / receive | Passes to queue / received value |
+| Successful send / receive | Remains with the message in transit / received value |
 | Send returns `Err(Closed)` | Stays with sender's original value/aliases; no implicit payload return |
 | Inspect send/recv's outer Result | Does not inspect a payload Result |
 | Normal completion, including another business `Err` | Must preserve or discharge the obligation (`E0720`) |
-| Normal receiver close / scope exit | Cannot discard possibly uninspected queued Results (`E0720`) |
-| Receive returns `Err(Closed)` | Queue is empty |
+| Normal receiver close / scope exit | Cannot discard possibly uninspected Results in unread messages (`E0720`) |
+| Receive returns `Err(Closed)` | No messages remain |
 | Panic, cancellation, effect abort | Ordinary abnormal-unwinding exemption |
 
 Aliases share one obligation; transmission does not create an independent copy.
@@ -1604,8 +1641,8 @@ Aliases share one obligation; transmission does not create an independent copy.
 | Operation | Result and ordering |
 | :--- | :--- |
 | `send` | `Result<(), ChannelError>`; closed receiver gives `Err(Closed)` |
-| `recv` | `Result<T, ChannelError>`; drain queue, then `Err(Closed)` after all senders close |
-| `bounded` | Positive capacity limits queued messages; invalid capacity panics before creation |
+| `recv` | `Result<T, ChannelError>`; receive pending messages, then `Err(Closed)` after all senders close |
+| `bounded` | Positive capacity limits pending messages; invalid capacity panics before creation |
 
 Successful sends retain each sender's order; different senders have no global order.
 
@@ -1613,9 +1650,9 @@ Successful sends retain each sender's order; different senders have no global or
 | :--- | :--- |
 | `Channel::close` | `@Fiber`; consumes the descriptor's authority and invalidates its aliases |
 | Task termination | Close writable local endpoints |
-| Scope exit | Close remaining descriptors after the child barrier |
+| Scope exit | Close remaining endpoints after all children finish |
 | Automatic close | Structured boundary's `@Fiber` contract; not `on_close` or a separate `let scoped` contract |
-| Immutable clone-source Sender | Open until close/scope exit; EOF never depends on GC |
+| Immutable clone-source Sender | Open until close/scope exit; losing references does not produce EOF |
 | Cancel blocked send/recv | Non-resumable scope exit; no fabricated message/error. Producer failure wakes a body blocked on recv |
 
 ## Testing
@@ -1628,11 +1665,11 @@ pub fn assert_some<T>(value: Option<T>, message: str = "expected Some") -> T
 pub fn assert_ok<T, E>(value: Result<T, E>, message: str = "expected Ok") -> T
 ```
 
-Equality helpers use finite structural comparison and its unsupported-type diagnostics, with no residual effect. Assert_some/assert_ok inspect only the outer tag in O(1), returning its payload or panicking with message. Nested duties use the [common Result contract](#authority-and-contract-notation); panic containment uses [structured scopes](#structured-concurrency-and-panic-containment).
+Equality helpers use finite structural comparison and its unsupported-type diagnostics, with no residual effect. Assert_some/assert_ok inspect only the outer tag in O(1), returning its payload or panicking with message. Nested duties use the [common Result contract](#interfaces-behavior-and-examples); panic containment uses [structured scopes](#structured-concurrency-and-panic-containment).
 
-### Test Conventions and Execution Protocol
+### Testing Examples
 
-Public `test_*` functions return () or Result<(), E> and execute in isolated activation frames. Assertions fail by panic; an Err return fails a fallible test. Tests use ordinary lexical handlers and cleanup contracts: missing handlers are static errors, a mock may panic on an unexpected request, and effectful I/O cleanup uses its wrappers. A child panic is inspected through a structured task boundary, never caught synchronously.
+Public `test_*` functions return () or Result<(), E>. A panic or returned Err fails the test. Tests use ordinary lexical handlers and cleanup contracts: missing handlers are static errors, a mock may panic on an unexpected request, and effectful I/O cleanup uses its wrappers. A child panic can be inspected through a structured task boundary.
 
 ```ril
 use ril/array::{push}
@@ -1653,7 +1690,7 @@ pub fn test_parse_pipeline() -> Result<(), Num::NumError> {
     Ok()
 }
 
--- Hermetic sandbox mock testing via scoped handler block:
+-- Mock a database request with a local effect handler:
 eff Database {
     query(sql: str) -> Result<str, str>,
 }
@@ -1664,7 +1701,7 @@ pub fn test_user_query() -> Result<(), str> {
             if sql == "SELECT user FROM users WHERE id = 1" {
                 resume Ok("Alice")
             } else {
-                -- Hermetic Sandbox: unexpected calls trigger deterministic defect panic
+                -- Unexpected requests fail the test.
                 panic("Unexpected mock query: {sql}")
             }
         }
@@ -1705,7 +1742,7 @@ pub fn test_out_of_bounds_defect() -> Result<(), str> @Concurrent {
 
     match outcome {
         Err(TaskFault::Panicked(info)) -> {
-            let _ = info              -- Payload text is explanatory, not a conformance assertion
+            let _ = info              -- Message spelling is not part of the assertion
             Ok()
         },
         _ -> panic("expected operation to panic, but completed normally"),
@@ -1738,9 +1775,9 @@ The table lists the static availability of library operations in this version. A
 
 The ordinary constructor/type uses of Option, Result, Immut, and nominal types retain the language's phase rules; they are not new function exceptions. Static callbacks cannot invoke arbitrary run-time functions, capture live storage, or install run-time handlers. Static evaluation has its own budget and E0811, independent of Div. Static and run-time instances of a dual-phase function have the same data/order behavior on the same admissible inputs.
 
-## Local Tooling Composition
+## Complete Usage Example
 
-This complete program uses only the public library surface. Its three arguments are a UTF-8 source path, binary output path, and an explicit executable path. It records Unicode scalar positions and byte offsets, stores a frequency index, serializes and checks fixed-width data, writes it, and passes the output path as one child argument. These are ordinary data-processing operations; no compiler-specific structures or execution machinery are prescribed.
+This program takes a UTF-8 source path, binary output path, and explicit executable path. It records Unicode scalar positions and byte offsets, counts repeated scalars, writes and reads back binary data, and passes the output path as one child argument.
 
 ```ril
 use ril/env
@@ -1815,25 +1852,3 @@ pub fn main() -> Result<(), str> @Fiber {
 ```
 
 For source `Aé🙂A`, positions are `(U+0041,0,0)`, `(U+00E9,1,1)`, `(U+1F642,2,3)`, `(U+0041,3,7)`; the final byte length is 8 and counts are 2, 1, 1 in first-insertion order. Empty source produces the header with count zero. Invalid UTF-8 fails before writing output; a write failure prevents child invocation. A child nonzero exit produces the final Err branch. Output replacement and earlier writes are not rolled back after a later failure.
-
-## Conformance Cases
-
-The code examples and following input/transition cases are required fixtures. Outcomes are defined in the linked contracts, not independently by this index. Environmental fixtures supply controlled files, streams, processes, or native values; message spelling and wall-clock timing are not asserted.
-
-| Contract | Additional coverage |
-| :--- | :--- |
-| [Prelude](#prelude-and-module-index) | Import/re-export identity; shadowing; explicit File/Clock/Test imports |
-| [Containers](#arrays-maps-and-sets) | Empty pop/find/fold; duplicate map keys; replacement and remove/reinsert; set algebra; live element authority |
-| [Callbacks](#authority-and-contract-notation) | Empty traversal and empty parallel fold; short circuit; mutable environments; panic after outside writes |
-| [Ordering](#ordering-deques-and-heaps) | Equal-key stability; duplicate/absent search; NaN and both signed zeros |
-| [Iteration](#explicit-iteration) | Sticky Done; indexed element/state distinction; take zero; repeated filter pulls; escaped resume; nested Result discard |
-| [Text](#strings-and-unicode) | Empty patterns/separators; supplementary/combining scalars; interior UTF-8 byte offset; CRLF and final LF |
-| [Encoding](#bytes-binary-encoding-and-digests) | Invalid UTF-8/surrogates and offsets; endian/NaN bytes; truncated/overflow/redundant ULEB128 with unchanged cursor; SHA-256 vector |
-| [Numbers](#numbers-and-mathematics) | Integer extrema and adjacent out-of-range values; invalid radix; negative zero/NaN/infinity; parse/format round trips |
-| [I/O](#input-and-output) | Final bytes plus EOF; zero/short requests; partial progress with error; invalid callback response; buffered retry/switch; cancellation |
-| [Files](#files-and-directories) | Missing/denied/existing paths; invalid UTF-8; failed seek; closed write; repeated/failed close; panic release; directory order/path/link kind; nonrecursive deletion |
-| [Native paths](#native-strings-and-paths) and [environment](#environment-and-processes) | Non-Unicode round trips; NUL boundary; drive-relative/rooted/UNC/verbatim paths; symlink-sensitive normalization; absent/empty env |
-| [Processes](#environment-and-processes) | Empty/space/quote arguments; Windows mixed/unclosed quotes and backslash parity; start failure/exit 7; separate captures; capture limit; env/cwd; owner cancellation/cleanup |
-| [Time/random](#time-and-randomness) | Timestamp normalization/overflow; negative sleep; clock-domain mismatch; seeded vector; entropy failure |
-| [Execution](#execution-boundaries) | Task barrier/fault precedence; endpoint transfer; payload inspection; handled yield with residual resource effects; fold sizes 0/1/63/64/65/128/129; skipped rightward faults |
-| [Static use](#static-availability) | Listed combinators on symbolic inputs; run-time-only call E0810; static assertion E0830; budget E0811 |
