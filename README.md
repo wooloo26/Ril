@@ -1,188 +1,361 @@
 # Ril
 
-**Ril** is an expression-oriented, strongly typed language with algebraic effects, immutable data, live read-only views, and explicit mutable-sharing capabilities.
+Ril is an expression-oriented, strongly typed language with algebraic effects,
+tracing garbage collection, immutable values, live views and explicit mutable
+sharing. Native compilation targets x86_64 Windows MSVC and Linux GNU.
 
-### Immutable values and live views
+[SPEC](doc/SPEC.md) and [STD](doc/STD.md) are the normative language contracts.
+This README is the single implementation and contributor guide.
+It describes implementation boundaries, not additional language rules.
+Source-level explanations belong beside the relevant implementation.
 
-```ril
-type Document = { mut title: str }
+## Development status
 
-pub fn test_views() {
-    let document = Document.{ title: "Guide" }
-    let alias = document
-    let mut working = clone(document)
-    let view observed = working
-    let view read_title = \-> observed.title
-    working.title = "Draft"
-    assert(alias.title == "Guide")
-    assert(read_title() == "Draft")
+Native compilation, linking and execution are implemented.
+Semantic integration and the architectural migration below are unfinished.
+Work proceeds in this order:
 
-    let snapshot = clone_immut(observed)
-    let revised = snapshot |> derive \mut draft -> {
-        draft.title = "Revised"
-    }
-    assert(snapshot.title == "Draft" && revised.title == "Revised")
-}
+1. Preserve the implementation and its known failures.
+2. Consolidate tests and documentation; refactor the semantic core.
+3. Complete missing semantics and run the full acceptance matrix.
+4. Implement LSP and VS Code support on the analysis API.
+
+Commit `f7ebaf7` preserves the unfinished implementation before this migration.
+Its last completed source gate is v51: on each Windows and Linux host,
+42 Rust test targets report **811 passed, 20 failed and 1 ignored**.
+Subsequent storage integration was interrupted and initially did not compile.
+This checkpoint is not a full-workspace or full-corpus success.
+
+The original corpus has 84 theme bundles and 1,067 case identities.
+An earlier frozen native checkpoint passed 1,065 applicable cases per host,
+including 354 native builds/executions; the host union covered all 1,067.
+That result predates the current source-type and fact-validation work.
+Do not reuse it as evidence for a newer compiler.
+
+Detailed development reports remain under `target/`, including
+`source-receiving-v51-checkpoint.json` and the matching compile/full-source logs.
+Git preserves removed design documents and implementation history.
+New checkpoints identify the source revision, selected cases and platform.
+
+## Build and run
+
+Use the toolchain pinned in `rust-toolchain.toml` (Rust 1.99, edition 2024),
+with rustfmt and Clippy. Windows needs the MSVC x64 linker and SDK.
+Linux needs the GNU x64 toolchain. Install cargo-nextest for `cargo xtask ci`.
+
+```text
+cargo build --locked -p ril-cli -p ril-runtime
+cargo run --locked -p ril-cli -- targets --json
+cargo run --locked -p ril-cli -- check example.ril --explain
+cargo run --locked -p ril-cli -- build example.ril --unit executable --output example
+cargo run --locked -p ril-cli -- test example.ril --entry test_example
 ```
 
-`let` guarantees immutable data, not unique ownership. `let view` can observe changes but cannot supply mutable authority. Deep cloning isolates ordinary data; `derive` shares only immutable data and confines its writable draft.
+Check mode supports `--target pointer32` and `--target pointer64`.
+Native builds use `x86_64-pc-windows-msvc` or `x86_64-unknown-linux-gnu`.
+Static computation uses the selected layout, never the host's `usize`.
+Override the static language-event budget with `--static-budget`.
 
-### Effects and stable handlers
+The runtime static library is `ril_runtime.lib` on Windows and
+`libril_runtime.a` on Linux. The CLI normally locates it beside the executable.
+Use `--runtime-library PATH` or `RIL_RUNTIME_LIBRARY` for explicit selection.
+Compiler and runtime builds must agree on the runtime ABI version.
 
-```ril
-pub eff Ask { prompt(str) -> str }
+Reuse one Cargo target directory per host for repeated local verification.
+Set `CARGO_INCREMENTAL=0` to avoid accumulating incremental artifacts.
+Use `-j2` on memory-constrained development machines.
+Keep reports and minimal reproductions separate from disposable build caches.
+Do not run Cargo against binaries used by a frozen native test batch.
 
-fn greet() -> str @Ask {
-    let name = Ask::prompt("Name:")
-    "Hello, {name}"
-}
+## Tests
 
-pub fn greeting() -> str {
-    with Ask::prompt(_question) -> resume "World"
-    greet()
-}
+```text
+cargo xtask corpus validate
+cargo xtask corpus list --json
+cargo xtask corpus extract tests/conformance/storage.ril::fresh-values-array --out target/example
+cargo xtask corpus run --filter source --applicable-only --json
+cargo xtask corpus run --compiler PATH_TO_RIL --case CASE_ID --json
+cargo xtask ci
 ```
 
-Effects and closure obligations can flow through higher-order calls. Each invocation still needs a stable handler and the required access permissions; forwarding does not change parameter modes.
+`validate` checks container structure and normative references.
+It does not execute Ril semantics.
+`run` checks or builds and executes cases through real CLI subprocesses.
+`--timeout-ms` bounds each whole case.
+Empty selection, timeout, crash, missing tools, unsupported environments and
+unimplemented stages are never passes. OS exclusions remain explicit.
 
-### Reassignment and interior writes
-
-```ril
-type Cell = { mut count: int }
-
-pub fn test_slots() {
-    var selected = Cell.{ count: 0 }
-    selected = Cell.{ count: 1 }
-    -- selected.count += 1             -- Error [E0520]: var alone grants no interior write authority
-
-    var mut working = Cell.{ count: 0 }
-    working.count += 1
-    working = Cell.{ count: 2 }
-    assert(working.count == 2)
-}
-```
-
-`var` permits slot reassignment. `var mut` also permits interior writes when the value's origins grant them; it cannot turn an immutable value or live view into writable data. Both the reassignable slot and interior/environment authority must be exercised; use `let mut` when only pinned interior authority is needed.
-
-### Local mutation and explicit retained sharing
+Fixed language-test sources belong under `tests/`, grouped by behavior.
+Keep original bundle paths and case names stable.
+Place positive controls next to their rejection cases; use `companion` links.
+Every case has its own compilation state even in a shared theme file.
 
 ```ril
-pub fn numbers() -> []int {
-    let mut result: []int = []
-    result !> Array::push(1)
-    result
+--@ case: empty-inner-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+-- Error [E0301]: Stored inner dimensions do not match.
+--@ file: input.ril
+fn example() {
+    let source: [0][3]int = []
+    let destination: [0][2]int = source
 }
-
-type Entry = { mut id: int }
-type Hub = { mut entries: []Entry }
-
-fn register(mut hub: Hub, ^mut entry: Entry) &^mut {
-    hub.entries !> Array::push(^mut entry)
-}
-
-pub fn test_local_sharing() {
-    let mut entry = Entry.{ id: 1 }
-    -- let mut hidden = entry          -- Error [E0510]: another writable authority needs ^mut
-    let mut alias = ^mut entry
-    alias.id = 2
-    entry.id = 3
-    assert(alias.id == 3)
-
-    let mut pair = (^mut entry, ^mut entry)
-    pair.0.id = 4
-    assert(pair.1.id == 4)
-}
+--@ end-file
+--@ end-case
 ```
 
-Locally constructed data can enter `let` when no external writer survives. `mut` grants temporary writes; `^mut` explicitly marks retention or another writable authority to an existing value, including local aliases and aggregate members. It preserves existing permissions and never manufactures them. Shared origins still participate in exclusivity checks; different names or tuple positions do not prove independence.
+Use exact existing SPEC/STD heading anchors; validation checks them.
+Modes are `check-pass`, `check-fail`, `run-pass`, `run-panic` and `run-program`.
+Run-pass/run-panic select a public zero-argument `test_*` function.
+Run-program declares exit/output expectations and optional arguments,
+environment and helper builds. Cases can contain multiple virtual files,
+including `.d.ril` declarations and provider/helper sources.
 
-### Stateful closures
+The consolidation moves compiler/CLI fixtures into these bundles.
+Rust tests load cases by ID for HIR, Core and fact-mutation checks.
+Do not maintain a second copy of a fixed Ril source in a Rust test.
+Pure Rust models, randomized generators and invalid byte inputs remain Rust.
+Migration preserves source bytes, expectations, entries and execution counts.
+Grouping files must not weaken individual expectations or isolation.
 
-```ril
-type Step = fn() -> int &closure
+The expensive ignored concrete-graph oracle needs an explicit bounded run.
+Its ignored status is not evidence of a passed oracle.
+CI runs applicable cases on both supported platforms; their union must cover
+all original IDs and new language regressions.
 
-pub fn make_step() -> Step &capture {
-    var count = 0
-    \-> { count += 1; count }
-}
+## Architecture
 
-fn invoke(mut step: Step) -> int &mut { step() }
+The workspace retains Rust, Rowan, Salsa, Cranelift and a tracing GC runtime.
+Crates define dependency boundaries; related compiler phases remain modules.
 
-pub fn test_step() {
-    let mut step = make_step()
-    assert(invoke(mut step) == 1)
-    -- let immutable = step -- Error [E0535]: a mutable environment cannot become immutable data
-}
+| Package | Responsibility |
+| --- | --- |
+| `ril-compiler-core` | Source locations, typed identities, diagnostics and phase outcomes |
+| `ril-syntax` | Lexer, recovery parser, Rowan CST and owned source AST |
+| `ril-compiler` | Modules, static evaluation, semantic HIR, analysis and HIR-to-Core lowering |
+| `ril-ir` | Data-only Core/native IR and retained semantic evidence |
+| `ril-codegen` | Backend/linker interfaces, targets and Core-to-native lowering |
+| `ril-codegen-cranelift` | Native AOT object emission |
+| `ril-runtime-api` | Versioned execution, heap and ABI contracts |
+| `ril-runtime` | GC, continuations, resources, scheduling and standard operations |
+| `ril-text-format` | Shared scalar formatting with explicit layout/output limits |
+| `ril-cli` | Commands, backend injection and provider configuration |
+| `ril-test` | Bundles, extraction and expected/observed outcome contracts |
+| `xtask` | Corpus execution and repository checks |
 
-pub fn test_shared_step() {
-    let mut cell = Cell.{ count: 0 }
-    let mut step = \-> { cell.count += 1; cell.count }
-    assert(step() == 1)
-    cell.count += 1
-    assert(step() == 3)
-
-    let view observed = cell
-    -- let mut forged = ^mut observed  -- Error [E0520]: the marker cannot supply missing write authority
-}
+```text
+source -> CST/AST -> resolution/static evaluation -> semantic HIR
+                                                        |
+                                        analysis + solved obligations
+                                                        |
+                                               VerifiedProgram
+                                                        |
+                                                structured Core
+                                                        |
+                                      native IR -> COFF/ELF -> executable
 ```
 
-Callable types abbreviate environment details while preserving inferred obligations.
+The compiler uses abstract code-generation interfaces, not Cranelift.
+IR depends on shared core data, not frontend, query engine or runtime.
+Runtime crates never depend on compiler or syntax crates.
+The corpus runner is compiler-independent and communicates through the CLI.
+Architecture checks include transitive production/build dependencies with
+all features enabled; development dependencies are checked separately.
 
-Lexical capture is inferred, and the machine tracks the sharing between `cell` and `step`. Escaping captures still obey the factory's `&capture`, `&^mut`, and parameter contracts. Calling an existing shared closure again does not create another sharing event.
+Compiler crates forbid unsafe code. The runtime denies it by default.
+Exceptions are narrowly scoped to reviewed ABI/platform modules.
+Backend representations cannot become semantic authorization.
+Salsa queries own revision dependencies; filesystem I/O stays in the driver.
 
-### Captured source groups
+### Semantic core migration
 
-```ril
-fn make_named_step(increment: int) -> Step &capture {
-    var count = 0
-    step
-    where
-        fn step() -> int &{closure, increment, mut count} {
-            count += increment
-            count
-        }
-}
+The existing checker still has coupled state and source-location lookups.
+Migrate one ownership boundary at a time and remove superseded implementations.
+Keep structural migration and behavior corrections separately reviewable.
+A completed interface is not proof of complete language conformance.
+
+The target contracts are:
+
+- Typed expression, statement, pattern, declaration and generic-parameter IDs
+  identify HIR nodes. Spans locate source; they do not identify dynamic execution.
+  Generated nodes retain their actual origin operation and generation kind.
+- An immutable type/source store retains dimensions, parameter modes, generic
+  identities, member restrictions and qualified rows' lexical environments.
+  Ordinary types, storage identities and access permissions have distinct roles.
+- A frozen typing environment owns names, substitutions, complete witnesses,
+  static keys, row selections and lexical contract bindings.
+  Functions and closures capture this environment at declaration/creation.
+- Evaluation records identify operand occurrences and allocation epochs.
+  Calls, pipelines, defaults and generated callbacks retain their real order
+  and normal/interrupted completion, even when one AST executes repeatedly.
+- Declaration views freeze before binding. Writes check every possible
+  destination and install only its declared view. A current mutable value
+  cannot redefine its declaration or restore lost authority.
+- Checker orchestration delegates to type/source, heap/capability, loan,
+  effect, resource/Result and control-flow domains with owned state.
+  Shared work queues use explicit lattices and finite graph representations.
+
+`Session::analyze()` is the editor-facing migration entry point.
+Its immutable `AnalysisSnapshot` retains diagnostics and available facts for
+failed or incomplete programs. `check` and `verify` retain their distinctions.
+Only complete analysis plus independent validation can construct the private
+`VerifiedProgram` required by normal lowering.
+
+Independent validators read original HIR and actual evaluation records.
+They may share pure normalization and relations, but cannot substitute a
+producer cache, flag or self-consistent descriptor for original source proof.
+Every relevant actual occurrence needs coverage, including repeated execution.
+Deleting a ledger cannot remove the obligation it was intended to discharge.
+
+### Capability and source invariants
+
+- Slot reassignment, interior writes, closure writes and retained sharing
+  are separate. Read, view and Immut restrictions never recover writes.
+- Original source coordinates survive empty/nested containers, records,
+  tuples, optional/Result payloads, callable views and module forwarding.
+  Backing length never proves a declared fixed array type.
+- Fresh shells do not imply independent reachable graphs. Deep clone preserves
+  internal aliasing and cycles while isolating the copied ordinary graph.
+- Formal loans are separate from captured or ambient permission roots.
+  Reborrowing suspends the parent; ending a loan does not erase retention.
+- Allocation recency transports retained temporaries and observations through
+  actual recent-to-older transitions. Final heap state cannot rewrite history.
+- Joins retain all possible origins, conditional relations and obligations.
+  Unknown overlap or exhausted work cannot authorize independence.
+- Result inspection, optional tags, resources, effects, termination and cleanup
+  remain independent from source-type compatibility.
+- Charge work before cloning, expanding DAGs or enqueueing edges.
+  Implementation-work limits are separate from static language-event budgets.
+- CauseId traces sources, projections, joins, calls, lost authority and failures.
+  Diagnostics and future editor queries must preserve unknown evidence.
+
+### Native execution
+
+Core retains structured control, instances, provenance, effects and cleanup.
+Native lowering owns representation, environments, roots and calling conventions.
+Suspension uses native steps, selective CPS and a trampoline.
+Callers inherit the actual suspension needs of their callees.
+
+Language panic, abort, cancellation and LIFO cleanup use explicit outcomes.
+Unexpected Rust panic is separate. Cleanup preserves pending outcomes and roots.
+Handles are generation-bearing 64-bit identities over nonmoving mark-sweep GC.
+Precise descriptors and roots cover globals, tasks, queues and continuations.
+Multi-worker collection uses safepoints.
+
+CPU tasks and blocking host work use separate execution paths.
+Waits must be wakeable or cancellable; cancelled processes are terminated/reaped.
+Pure divergence has no promised time slice. Cancellation checkpoints observe
+requested cancellation; they do not manufacture scheduling fairness.
+Default Fiber::yield yields the logical task; user handlers follow effect rules.
+Parallel result and failure ordering follows the specific STD operation.
+
+External providers are chosen only by explicit `--bindings` manifests.
+Version-1 manifests contain provider ID, executable, argument vector,
+declaration-to-export bindings and optional frame limit.
+Relative executables resolve against the manifest directory; no shell is used.
+Declaration identities use logical module/name paths, not resolver aliases.
+
+Provider protocol version 1 uses UTF-8 JSON frames prefixed by a little-endian
+u64 byte length; the default frame limit is 64 MiB, checked before allocation.
+Ready, Invoke, callback and completion messages have checked order/identities.
+The typed contracts live in `ril-ir::foreign`, `ril-runtime-api::foreign` and
+runtime codecs. Temporary callbacks cannot escape their invocation.
+Cancellation retains roots until provider and callback work have drained.
+
+Big integers, SHA-256 and float formatting use num-bigint, sha2 and ryu,
+wrapped in Ril's rules. Unicode is pinned to 17.0.0.
+
+## Changing behavior
+
+1. Find the SPEC/STD rule and add adjacent positive and negative cases.
+2. Extend the owning typed representation and exhaustive traversal.
+3. Implement its domain transfer and required fixed-point operation.
+4. Record observations where they happen, including interrupted paths.
+5. Add independent validation and missing/misbound-evidence counterexamples.
+6. Update Core/native/runtime consumers when execution changes.
+7. Run focused checks, then the required broader matrix.
+
+New receiving boundaries register operands, target view and origin, reusing
+projection/substitution/reception operations. Do not add another span scan
+or reconstruct complete schemas from erased runtime types.
+Builtins need signatures and semantic/runtime contracts for effects, writes,
+callbacks, resources and Result duties.
+
+Use one write owner per module. Agree public contracts before parallel edits.
+Integration owns builds and frozen native runs to avoid artifact races/caches.
+Commit subjects are one descriptive line without a type/scope prefix.
+Save an explicitly unfinished checkpoint when changing development phase.
+
+Acceptance includes fresh versus edited Sessions; renaming, wrapping, module
+forwarding and helper extraction; concrete graph models; joins and permission
+monotonicity; and native alias/clone/GC/suspension/cleanup/cancellation checks.
+A component gate is reported with its scope. Full acceptance needs the entire
+applicable matrix, including both pointer layouts for static semantics.
+
+## Current work and coverage gaps
+
+These are implementation gaps, not waived language requirements:
+
+- Finish HIR, explicit environments and domain ownership migration.
+  Remove old source reconstruction as each consumer moves.
+- Finish storage source/replay checks for variable, record-member, array-element
+  and Array::push replacement of `[0][2]int` by stored `[0][3]int`.
+- Preserve open generic/row and callable sources through arguments, returns,
+  captures, constructors, annotations and containers.
+- Record actual pipeline and generated I/O callback invocations.
+  An enclosing ordinary call cannot supply their missing observations.
+- Complete generated iterator capture validation and successor-state handling.
+- Resolve the preserved nine-scope channel replay-state case with finite work.
+  Unknown guard/history relationships remain obligations.
+- Complete outstanding static extent/sort contexts and shared-constant audits.
+  Object identity and each reference's declared view remain separate.
+- Rerun engineering, corpus and native checks on both platforms.
+  Remove obsolete pending adapters only after their cases are migrated.
+- Implement LSP and VS Code support after analysis contracts stabilize.
+
+Hover must show required annotations and full inferred capability information:
+sources, access, sharing, loans, captures, effects, escape/ownership duties and
+proof/unknown chains. Symbols are an editor presentation choice.
+Failed programs still expose available symbol information via an uncertified
+snapshot. The editor must not implement a separate inference engine.
+
+## Specification questions
+
+No confirmed contradictory normative requirements are currently recorded.
+Record contradictions here with exact SPEC/STD sections, a minimal example,
+conservative interim behavior and the decision needed.
+Do not classify implementation defects as specification conflicts.
+
+**Runtime meta constants.** Compile-Time Computation permits immutable meta
+results at runtime; External State Tracking still requires named sources.
+The current interpretation keeps `&{ANSWER}` for a module-level meta constant.
+An exemption needs agreement; static evaluation cannot erase state duties.
+
+**Immutable Parallel inputs.** Parallel rules require immutable data, while
+STD's square_all example accepts an ordinary read `[]f64` formal.
+Read access can denote a live view. The current interpretation requires
+`Immut<[]f64>` or `clone_immut(numbers)`. Clarify the example or define an explicit
+immutable-input contract; read permission alone is insufficient.
+
+**Buffered custom readers.** Buffered Streams reserves position while unread
+data or deferred errors remain. An arbitrary ReadOps signature cannot establish
+whether another user callback touches that cursor. Tracking covers selected
+callbacks and delegated file endpoints; unselected custom readers remain a gap.
+Clarify stream-position identity and File::seek during unread buffering.
+Neither uncertainty permits a silent safe assumption.
+
+## Unicode regeneration
+
+Preserve `crates/ril-runtime/src/unicode_generated/LICENSE.txt`.
+Use UnicodeData.txt, SpecialCasing.txt, DerivedCoreProperties.txt and PropList.txt
+from the versioned Unicode 17.0.0 UCD directory, plus LICENSE.txt, in an offline
+input directory. The generator checks four pinned SHA-256 digests before writing.
+
+```text
+cargo run --locked -p xtask --bin unicode-data -- INPUT_DIRECTORY crates/ril-runtime/src/unicode_generated
 ```
 
-Each captured group names bindings from one enclosing function or lambda layer. The immediate layer can omit its name; a farther named layer uses a header such as `closure make_outer`. Farther anonymous layers still use `closure`, with separate groups for different layers. A nonempty group without that header, such as `&{config, mut cache}`, names module storage. The grouping never merges binding identities, dynamic environments, or aliased objects. `&capture` and standalone `&^mut` stay separate.
-
-### Public state contracts
-
-```ril
--- counter.ril
-var private_count = 0
-pub fn advance() &{mut private_count} { private_count += 1 }
-
--- client.ril
-use counter
-fn wrapper() &Counter::advance { Counter::advance() }
--- fn hidden() { Counter::advance() } -- Error [E0510]: concrete inherited state is undeclared
-```
-
-`&Counter::advance` references that function's verified concrete named state without exporting its private variables. It is available on ordinary named function definitions; it does not replace direct storage annotations or include effects, parameter permissions, `&capture`, or standalone `&^mut`. Anonymous functions and callable types keep their existing inference and contract forms.
-
-### Complete tracking, compact source
-
-```ril
-var count = 0
-fn read_count() -> int &{count} { count }
-fn advance() &{mut count} { count += 1 }
-
-fn invoke_action(action: fn() -> ()) { action() }
-fn explicit_wrapper() &advance { invoke_action(advance) }
--- fn hidden_wrapper() { invoke_action(advance) } -- Error [E0510]: this callback is already known
-fn invoke_pure(action: fn() -> ()) @{} &{} { action() }
--- invoke_pure(advance)              -- Error [E0534]: the total state is not empty
-
-fn check_choice(choose_write: bool) {
-    let action = if choose_write { advance } else { \-> () }
-    -- invoke_pure(action)
-    -- Error [E0534]: the possible external write survives the run-time branch
-}
-```
-
-`&{count}` grants read-only access to the module binding; it does not claim that `count` is immutable. The machine tracks actual origins, permissions, live observations, captured environments, sharing, and effects through ordinary returns and higher-order calls. Source annotations may omit inferred details without weakening the concrete declarations required by named definitions.
-
-Complete tracking preserves those facts under the specified conservative judgments; it does not predict arbitrary run-time behavior exactly. Unknown facts cannot establish independence, purity, or absence of escape.
-
-The machine must retain complete traceable facts; diagnostics can display them on demand and show the source-to-use chain that caused a conflict, including aliases, captures, handlers, and retained references. They distinguish missing annotations from semantic conflicts: adding an annotation cannot authorize a forbidden write, hide overlapping access, or make a live reference immutable.
+indices.bin holds little-endian u16 page numbers; pages.bin holds interned
+256-scalar property pages. case.rs holds full unconditional mappings;
+unicode.rs implements contextual Final_Sigma. Regeneration preserves the pinned
+version and must pass the string/Unicode corpus.
