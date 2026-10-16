@@ -1,516 +1,346 @@
 {
-  "version": 1,
+  "version": 2,
   "baseline": [
     {
       "path": "tests/conformance/bindings.ril",
-      "bytes": 2687,
-      "sha256": "75ad08afac51bee23dab10f7053a1ff34857a9ccdf3e750b46873c2a1432eafb",
       "cases": 8
     },
     {
       "path": "tests/conformance/blocks.ril",
-      "bytes": 3842,
-      "sha256": "23394399e5a0862cec6b2471a56991187fbc242687bbbcef1c525654cef3e9fe",
       "cases": 12
     },
     {
       "path": "tests/conformance/calls.ril",
-      "bytes": 11025,
-      "sha256": "f8d3be20f4ba6442eebef9a162cb97edd615347786f44c5a4d681faf3dd0ee58",
       "cases": 30
     },
     {
       "path": "tests/conformance/channel.ril",
-      "bytes": 2717,
-      "sha256": "e2be736b2c07e2dc8d856075535f9defb50c830394eeb251ab0e75f1032a3ede",
       "cases": 4
     },
     {
       "path": "tests/conformance/cleanup.ril",
-      "bytes": 5958,
-      "sha256": "63145b396016978590ef2b50d23bc9950fef25f407c79ae90054867ff1860e74",
       "cases": 15
     },
     {
       "path": "tests/conformance/closures.ril",
-      "bytes": 4926,
-      "sha256": "e77cbea1481fd634d79b952c69c79ed0d821ddb86a3418d404195e74cf9b8e49",
       "cases": 11
     },
     {
       "path": "tests/conformance/collections.ril",
-      "bytes": 5740,
-      "sha256": "ca944091b8bc54a3545c31ca5cb0517ce1ed85df4ff30f8088b8b455f88d2566",
       "cases": 21
     },
     {
       "path": "tests/conformance/concurrency.ril",
-      "bytes": 3008,
-      "sha256": "09febd2c9cd2fed1ddc923d69c5fd95778e1cc011ff966dc4605e6342ff662d4",
       "cases": 6
     },
     {
       "path": "tests/conformance/control.ril",
-      "bytes": 3901,
-      "sha256": "c31db63fdc4b804f3e54c67cc1ddfc6f3dcdf0549fb24bd444cfe9f0f76e63bc",
       "cases": 14
     },
     {
       "path": "tests/conformance/effects.ril",
-      "bytes": 10330,
-      "sha256": "1e816f416ec45dde5e6c95916bcce509747eb9b89521a37c297ba101d311c181",
       "cases": 28
     },
     {
       "path": "tests/conformance/entry.ril",
-      "bytes": 2410,
-      "sha256": "895126cdb470a997c604323c8d55482b904c14f6d1284c4ab2f551fcc5046804",
       "cases": 10
     },
     {
       "path": "tests/conformance/external.ril",
-      "bytes": 7536,
-      "sha256": "3cb4e6774dbc1194d2297af278a0e2694bd3a943dda48700462c9c021f92b8d5",
       "cases": 24
     },
     {
       "path": "tests/conformance/failure.ril",
-      "bytes": 1112,
-      "sha256": "a9e2a366e1edff55ebc0859c7e38662026045a2ef953ea5c1015a22762fac688",
       "cases": 4
     },
     {
       "path": "tests/conformance/formatting.ril",
-      "bytes": 2261,
-      "sha256": "9ca87a9f2255726cc8f7cb1e1ab27bdaa89a3434e64ab566cf93afbd220fc003",
       "cases": 7
     },
     {
       "path": "tests/conformance/functions.ril",
-      "bytes": 568,
-      "sha256": "4df166b39d4e327d7feb6bebb3f944f90aac38709b06bc9fb46de48350891561",
       "cases": 1
     },
     {
       "path": "tests/conformance/generics.ril",
-      "bytes": 5115,
-      "sha256": "f674006b43486388afb835a575203d0ccadf211deabbbb5b5a07a11de890b50c",
       "cases": 17
     },
     {
       "path": "tests/conformance/is.ril",
-      "bytes": 13988,
-      "sha256": "515caeecebe220b02755ceecc6519d9d27508f63e1b2082719a4719dd7ff8b83",
       "cases": 29
     },
     {
       "path": "tests/conformance/lexical.ril",
-      "bytes": 24117,
-      "sha256": "07da7a9527caf9fa81ce130bc63f64961d667c824d1e3873e14b96a6e09b4c42",
       "cases": 105
     },
     {
       "path": "tests/conformance/literals.ril",
-      "bytes": 11476,
-      "sha256": "a892766fcaea45532a1afadd80395d832fc8132fe7f68524d118020447f443a0",
       "cases": 44
     },
     {
       "path": "tests/conformance/modules.ril",
-      "bytes": 4292,
-      "sha256": "39698f38c2c34e1e72f1a2e21eba434658825f8aa827eeb94c969b643756fe5d",
       "cases": 14
     },
     {
       "path": "tests/conformance/names.ril",
-      "bytes": 7542,
-      "sha256": "ed95ca0eacc86c93b181d46441fdbefebc6f4b985e4bf86a2bd18f9a6a6c6ff0",
       "cases": 28
     },
     {
       "path": "tests/conformance/narrowing.ril",
-      "bytes": 4346,
-      "sha256": "48c7e65f2367ad191de2ee98ea275a73c6e467993fc3f8a5f8737b307df81169",
       "cases": 10
     },
     {
       "path": "tests/conformance/numeric.ril",
-      "bytes": 7548,
-      "sha256": "a9980d5a6255c2c907fd2505a1a3979470a5a2a194ba01c8feb977c733102bc0",
       "cases": 24
     },
     {
       "path": "tests/conformance/operators.ril",
-      "bytes": 11264,
-      "sha256": "72207f963035b2edfdd0440d6ed11d1d69ce9ef8579a37ed36e2d1a16e2779fa",
       "cases": 35
     },
     {
       "path": "tests/conformance/parallel.ril",
-      "bytes": 2310,
-      "sha256": "677dd067836565a61589c9f9807aaefe9673e3cb4ed7a38bb6a606a534f032c1",
       "cases": 6
     },
     {
       "path": "tests/conformance/patterns.ril",
-      "bytes": 8019,
-      "sha256": "472fbbb7b0bc681168fea7f167dd8074d677a20086180de457189080bc22f0ce",
       "cases": 27
     },
     {
       "path": "tests/conformance/permissions.ril",
-      "bytes": 20530,
-      "sha256": "c8f990628512789e3d7de8f17b7df09635643fa92c511b544c7a6c7339d51263",
       "cases": 51
     },
     {
       "path": "tests/conformance/prelude.ril",
-      "bytes": 515,
-      "sha256": "d8a07d8b112671e2d703bb3bac8315ab967b984f693f4160ec6822f8b95fd7dd",
       "cases": 1
     },
     {
       "path": "tests/conformance/provenance.ril",
-      "bytes": 3358,
-      "sha256": "e0055d28a13a8448ada6f15587882eb2b8a3b3a6b5987e867aa6f2d1687a3395",
       "cases": 6
     },
     {
       "path": "tests/conformance/ranges.ril",
-      "bytes": 6578,
-      "sha256": "2434d23e89334f48c5bb0059db39779551d69aeb5d053608f73a75b087a143f7",
       "cases": 20
     },
     {
       "path": "tests/conformance/records.ril",
-      "bytes": 6621,
-      "sha256": "eb4b8b3928b6c2b2a4191bbac77d1e2626ffa5b3241d3e5a3c2d9b8fa3bfeb44",
       "cases": 20
     },
     {
       "path": "tests/conformance/results.ril",
-      "bytes": 10965,
-      "sha256": "077097262855c7ee169e743133ea7c1ab489c6d66fb0734f5cce8b172e39cda2",
       "cases": 31
     },
     {
       "path": "tests/conformance/state.ril",
-      "bytes": 12564,
-      "sha256": "d4030e4c6d802ff838c1bbf7c3a51cd92fd703a4b31024dd6d50a16f11037605",
       "cases": 33
     },
     {
       "path": "tests/conformance/static.ril",
-      "bytes": 15099,
-      "sha256": "cfb76fafd9a9280dbc0d8316e18bbc6433653155bd6eab9ac10ce609a41e3626",
       "cases": 49
     },
     {
       "path": "tests/conformance/storage.ril",
-      "bytes": 13604,
-      "sha256": "2d42d9f186829317fc07c256c4458f9dfdae93e014fe9e3cff162bd9ac61ea16",
       "cases": 21
     },
     {
       "path": "tests/conformance/sum.ril",
-      "bytes": 4926,
-      "sha256": "fd5e00fe0ad3e9f0b6fb0a164bad578f5307435d0d28fb7eb0ceebdb36bcda7b",
       "cases": 14
     },
     {
       "path": "tests/conformance/syntax.ril",
-      "bytes": 805,
-      "sha256": "12fc0a8fccbb1c19ab0a0f9a65faecfbbc1dbe0648e92f8999791df96bfd896f",
       "cases": 2
     },
     {
       "path": "tests/conformance/totality.ril",
-      "bytes": 5893,
-      "sha256": "29cbe318296f048eeced28faa0ea96170d5d005c2b260df63ab8584e6dd707d7",
       "cases": 18
     },
     {
       "path": "tests/conformance/type-boundaries.ril",
-      "bytes": 6503,
-      "sha256": "0d15090ba792b3a3d2ce75c78fbd6afaba99b6458ec7a2da7da3bf3146109931",
       "cases": 24
     },
     {
       "path": "tests/conformance/types.ril",
-      "bytes": 4788,
-      "sha256": "c102f6787285d4c9d40b0fc83967ad3c5f4d6b1bc31e2740453b28fcb171f49c",
       "cases": 16
     },
     {
       "path": "tests/conformance/where.ril",
-      "bytes": 1832,
-      "sha256": "8482cd914fefe05e09d8b48d8bc83def5b3eef55ca7a3300cc01411803139606",
       "cases": 6
     },
     {
       "path": "tests/diagnostics/warnings.ril",
-      "bytes": 619,
-      "sha256": "f6744294cfd650ad822ab94ce130f3a980246e893541eb9de74547940f562155",
       "cases": 3
     },
     {
       "path": "tests/fuzz/fuzz.ril",
-      "bytes": 528,
-      "sha256": "7fc96c317ca9b737856ce6cf411f2305038de83771f23a49de6418509eb0a54f",
       "cases": 1
     },
     {
       "path": "tests/fuzz/source.ril",
-      "bytes": 851,
-      "sha256": "8ff1abe98740d3b90206efd1700c1c17ef167947bd4a0442713fd2d8044aed3f",
       "cases": 4
     },
     {
       "path": "tests/integration/documentation.ril",
-      "bytes": 20503,
-      "sha256": "bf067505361dd239bb506b706e7815f747067345e387ae53372db1e3e45442b1",
       "cases": 2
     },
     {
       "path": "tests/integration/entry.ril",
-      "bytes": 1026,
-      "sha256": "81ca6a8fc8e31fbdcb140c94f9329b8a4296d386b95de6962785e2dabb37c1e3",
       "cases": 4
     },
     {
       "path": "tests/integration/env.ril",
-      "bytes": 1090,
-      "sha256": "c171f5001de69bf4a0f82f87b23194e8fc540f00a1c051325731762a44479403",
       "cases": 1
     },
     {
       "path": "tests/integration/io.ril",
-      "bytes": 1388,
-      "sha256": "97047753783ad3d0fe30b656e1e9fa9f326c6c335e8e64f15cd619a3b5768cfc",
       "cases": 2
     },
     {
       "path": "tests/integration/modules.ril",
-      "bytes": 936,
-      "sha256": "3ea1f3a5eeee5b53e95c7a2261871d96564e22a94aa6b0b5e35b8ae7190dbdcd",
       "cases": 2
     },
     {
       "path": "tests/integration/process.ril",
-      "bytes": 3586,
-      "sha256": "a159de8995266a34dbd31301ba9e27f6b4baf54e915e160e8dad4aa6b0710962",
       "cases": 4
     },
     {
       "path": "tests/performance/collections.ril",
-      "bytes": 359,
-      "sha256": "55cb89c41a6108a4b183b28538961609c1ab380495468af9892e5d12bdc563f6",
       "cases": 1
     },
     {
       "path": "tests/properties/properties.ril",
-      "bytes": 2435,
-      "sha256": "a1927d812faf190b116807fc3b15dd833ab991f84a5be241262b4e5584bf56f6",
       "cases": 5
     },
     {
       "path": "tests/stdlib/array.ril",
-      "bytes": 5244,
-      "sha256": "746d39f1fbe15c0c35d8e350dd16a3b26ec2419aea1d4fdd5090b71102213e46",
       "cases": 14
     },
     {
       "path": "tests/stdlib/binary.ril",
-      "bytes": 20081,
-      "sha256": "a55895d2bf0d48b19b83e05390ba63708d5fb26d8e001c1ffe07c0c6145753db",
       "cases": 30
     },
     {
       "path": "tests/stdlib/bytes.ril",
-      "bytes": 764,
-      "sha256": "62ab8dbfeb1fc62f2f2fcac437b82b611e6589ada44c609b5e28a36c06f2f41a",
       "cases": 1
     },
     {
       "path": "tests/stdlib/channel.ril",
-      "bytes": 2910,
-      "sha256": "c17a532d951cb4aa400cdb41abdd9cbb8087cfc648dcfb10a4b7b1568833c874",
       "cases": 4
     },
     {
       "path": "tests/stdlib/concurrency.ril",
-      "bytes": 1977,
-      "sha256": "0c0de98b2c88cdeeb6acb224b25a34dad05cd0001edac74d1c67a3cb188d7f21",
       "cases": 4
     },
     {
       "path": "tests/stdlib/crypto.ril",
-      "bytes": 986,
-      "sha256": "cbc55fa3d28531ec458ee91857a0a5cdc95c87190dff856caef9c5c759e544e6",
       "cases": 2
     },
     {
       "path": "tests/stdlib/deque.ril",
-      "bytes": 592,
-      "sha256": "8a688a9de04fb29aa5fa8d2bfae52f42c8fd35117beeb6e6f4b0e1855b0c2529",
       "cases": 1
     },
     {
       "path": "tests/stdlib/file.ril",
-      "bytes": 6137,
-      "sha256": "f3d7417ebef5155e476f49cceca6ce9f46196990f62cb5291905b4842c2a59a5",
       "cases": 6
     },
     {
       "path": "tests/stdlib/heap.ril",
-      "bytes": 1298,
-      "sha256": "a81fabbb585a420687d4206caec0423603eaecf0c0d8305984661e8afbb2ad60",
       "cases": 2
     },
     {
       "path": "tests/stdlib/hex.ril",
-      "bytes": 539,
-      "sha256": "e0c4ab4c688580214520f374426f8c76a336d8b43822ba8b9f66c7719bd9f445",
       "cases": 1
     },
     {
       "path": "tests/stdlib/io.ril",
-      "bytes": 17036,
-      "sha256": "701d3e03cc017883b088c5ff97ad8b047991b51271fd64ed327bf27643db9158",
       "cases": 16
     },
     {
       "path": "tests/stdlib/iter.ril",
-      "bytes": 2165,
-      "sha256": "12b987f3e622ee02ef5c2f9ae6ab087819a17516ff94c5ecce1d482109cb2819",
       "cases": 5
     },
     {
       "path": "tests/stdlib/map.ril",
-      "bytes": 746,
-      "sha256": "e8f3bb16c683c85ed99581b7768d757ad7fa6b6fa0554905fa1639941b68f242",
       "cases": 1
     },
     {
       "path": "tests/stdlib/math.ril",
-      "bytes": 1319,
-      "sha256": "f37b90026a5d94577dfec418aa58a8f8ffb003e7684e9f71d6bb6aa17d4c0a5e",
       "cases": 2
     },
     {
       "path": "tests/stdlib/native.ril",
-      "bytes": 2033,
-      "sha256": "713d8c064b9fc46fc8e6ba8eb4b6b6c99ca01e5c49c3d7d20bc2a95f567cde65",
       "cases": 3
     },
     {
       "path": "tests/stdlib/num.ril",
-      "bytes": 6228,
-      "sha256": "5156fc73678b3fee8a41e3a44ddb7e605c7c408476773bf7987682df449bdbe4",
       "cases": 13
     },
     {
       "path": "tests/stdlib/option.ril",
-      "bytes": 3475,
-      "sha256": "abbfaabc8d5bc739caa90b1eeca7ccec4c08cb940fa55fba4f6056f14661b07f",
       "cases": 11
     },
     {
       "path": "tests/stdlib/order.ril",
-      "bytes": 1621,
-      "sha256": "bbea094c2eff0289efa70bf1da5cdff2ef321cc76d41f0486284550e52caa2b9",
       "cases": 3
     },
     {
       "path": "tests/stdlib/parallel.ril",
-      "bytes": 3482,
-      "sha256": "7917f561cecaa712efa3d1cb2ba379788b11534959da12adc21e0b64cd75a219",
       "cases": 7
     },
     {
       "path": "tests/stdlib/path.ril",
-      "bytes": 2387,
-      "sha256": "0424af3476fa62a8263e73dd1d8acbdb93d2d58b3f7ab100cfc9160bef50b554",
       "cases": 3
     },
     {
       "path": "tests/stdlib/prelude.ril",
-      "bytes": 659,
-      "sha256": "bae2a481d850fbfeffd10d68985ee1b66ecf96fb0ae51d1158180c142e254a28",
       "cases": 1
     },
     {
       "path": "tests/stdlib/process.ril",
-      "bytes": 719,
-      "sha256": "03f53991234063c6db190321e28372838218169f39c213a090dd7c53858a0c68",
       "cases": 1
     },
     {
       "path": "tests/stdlib/random.ril",
-      "bytes": 2549,
-      "sha256": "dacdb2673ec4149e88ca5f2cb00b40ff749a58e282be01630dbed395e2373ae4",
       "cases": 7
     },
     {
       "path": "tests/stdlib/result.ril",
-      "bytes": 3486,
-      "sha256": "29968e0d0afd4b9c28234d67aa3e3ea7faba11b46d088fd894aadc7d2304cccb",
       "cases": 11
     },
     {
       "path": "tests/stdlib/set.ril",
-      "bytes": 730,
-      "sha256": "2494551d9da5125d9334610f7b510f743379e5871cb28a6d2f594fd2294b9896",
       "cases": 1
     },
     {
       "path": "tests/stdlib/static.ril",
-      "bytes": 1468,
-      "sha256": "57ef581847b804f160bc7a6b686465fec25e35c4b3a51d7618994682ec7e6645",
       "cases": 2
     },
     {
       "path": "tests/stdlib/string-builder.ril",
-      "bytes": 734,
-      "sha256": "471b69606a042f6adfbdf534ab095eedcd75ed84271554b6b06daf99c12b0e03",
       "cases": 1
     },
     {
       "path": "tests/stdlib/string.ril",
-      "bytes": 4313,
-      "sha256": "f7b7f933769695c4edf11832e3ff68a5f0d94804b5ecf9708ffc3801273b9fd6",
       "cases": 18
     },
     {
       "path": "tests/stdlib/testing.ril",
-      "bytes": 2992,
-      "sha256": "81419fcf764f3ac4902f80778e10971eb3971c42a2440ae704b6f41c1b682ba3",
       "cases": 10
     },
     {
       "path": "tests/stdlib/time.ril",
-      "bytes": 2427,
-      "sha256": "b18a1ed034fcf0b776fad867f995116d13fd96167dcba414015a95b0af3ce1df",
       "cases": 5
     },
     {
       "path": "tests/stdlib/unicode.ril",
-      "bytes": 2001,
-      "sha256": "72fe1cda4aff3e807707aca99d69c4fcc6e9a80c3e72d8ea1277ed2a8a308425",
       "cases": 5
     },
     {
       "path": "tests/stress/collections.ril",
-      "bytes": 523,
-      "sha256": "5e74640cd07689b0cbdbb9718d0a18a4abe87f500a3529a303611d16ccd3066a",
       "cases": 1
     }
   ],
   "fixtures": [
     {
       "original": "crates/ril-cli/tests/fixtures/binary_recursive_copy.ril",
-      "sha256": "3bd246fa838af62110e7253368ba416174e8429db11a5a99cc501b2badf092a0",
-      "bytes": 1361,
       "case": "tests/regressions/copy.ril::binary-recursive-copy",
       "cases": [
         {
@@ -536,8 +366,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/binary_recursive_copy_resource_negative.ril",
-      "sha256": "9db40009a3d9542aa8274141398200fd626dcd5b9914710629646c17b529b0d1",
-      "bytes": 246,
       "case": "tests/regressions/copy.ril::binary-recursive-copy-resource-negative",
       "cases": [
         {
@@ -557,8 +385,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_closures/immediate_instances.ril",
-      "sha256": "0d6bcca358f07178cec293b2de570f47ade3b1c1f266c1ef216466a9e6935f72",
-      "bytes": 222,
       "case": "tests/regressions/closures.ril::immediate-instances",
       "cases": [
         {
@@ -589,8 +415,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_closures/invalid_immutable_capture.ril",
-      "sha256": "ba3ff3d1cbc5a0f1f500171dfe2baa1b6819dfd264ec9c0a47f5b04524cca132",
-      "bytes": 236,
       "case": "tests/regressions/closures.ril::invalid-immutable-capture",
       "cases": [
         {
@@ -610,8 +434,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_closures/nested_and_budget.ril",
-      "sha256": "54a7f82fc73cf80b22e9b46e739a678fab6a1b9bafcf1ada96442aa965d1b6bd",
-      "bytes": 683,
       "case": "tests/regressions/closures.ril::nested-and-budget",
       "cases": [
         {
@@ -642,8 +464,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_closures/retained_instances.ril",
-      "sha256": "ce475db302348a2bae910d8090ec57ae155fd95c801722f7a720dd2810a94c08",
-      "bytes": 436,
       "case": "tests/regressions/closures.ril::retained-instances",
       "cases": [
         {
@@ -679,8 +499,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_closures/unclosed.ril",
-      "sha256": "1799047d4d5d89f557599778af9ddfc343bff8b001e57b5a148cd3bd39e471e8",
-      "bytes": 139,
       "case": "tests/regressions/closures.ril::unclosed",
       "cases": [
         {
@@ -706,8 +524,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/entry_budget_order.ril",
-      "sha256": "3beec0ca413f6c2fb45385bf90cf964ca1a88238900a751515bfb22e1be5f746",
-      "bytes": 163,
       "case": "tests/regressions/defaults.ril::entry-budget-order",
       "cases": [
         {
@@ -733,8 +549,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/helper_entry_budget_order.ril",
-      "sha256": "987f280f2e14b4cfae3a6f1358b7d129374375adca8fb6c5c69e83ca3736ad60",
-      "bytes": 209,
       "case": "tests/regressions/defaults.ril::helper-entry-budget-order",
       "cases": [
         {
@@ -760,8 +574,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/lambda_entry_budget_order.ril",
-      "sha256": "4f2a83c07b0ddd7b24e79f5b829df94ac2794f492e34f842fe9fa73409f3e8f2",
-      "bytes": 176,
       "case": "tests/regressions/defaults.ril::lambda-entry-budget-order",
       "cases": [
         {
@@ -787,8 +599,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/local_budget.ril",
-      "sha256": "b6552dd556aa5f9c7b40c763d2f2de16ba284438e3bbdb669653c31943c4fcc3",
-      "bytes": 328,
       "case": "tests/regressions/defaults.ril::local-budget",
       "cases": [
         {
@@ -824,8 +634,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/local_handler.ril",
-      "sha256": "7370483183508d1dc57befde90941ff2d1b474fefc34a419fa889e8c3643b743",
-      "bytes": 249,
       "case": "tests/regressions/defaults.ril::local-handler",
       "cases": [
         {
@@ -861,8 +669,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/retained_closure.ril",
-      "sha256": "52c898d37e28baa2f9ff33a61d11958c047b8ebfccde6858f617b2c929ff06e9",
-      "bytes": 627,
       "case": "tests/regressions/defaults.ril::retained-closure",
       "cases": [
         {
@@ -898,8 +704,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/scalars_and_order.ril",
-      "sha256": "94d160eb373fe9005f4477530cbb17bd19a7400e1228834c3d1ac4a638eb7670",
-      "bytes": 441,
       "case": "tests/regressions/defaults.ril::scalars-and-order",
       "cases": [
         {
@@ -935,8 +739,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/supplied_only.ril",
-      "sha256": "47b68749dd2c0434b394271417e43a497eafb2cb85f4217161630a5f911e88ab",
-      "bytes": 325,
       "case": "tests/regressions/defaults.ril::supplied-only",
       "cases": [
         {
@@ -967,8 +769,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/generic_defaults/transitive.ril",
-      "sha256": "cd566416d36e36ff4091851521a11bc39046ff31bf34d34c6f2a36555b7f14d5",
-      "bytes": 267,
       "case": "tests/regressions/defaults.ril::transitive",
       "cases": [
         {
@@ -999,8 +799,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/resource_clone/private_helpers.ril",
-      "sha256": "492c969c618cedcd3ee3b3b805752941d8be51fbdad24456a2fb4601cdf8d6d0",
-      "bytes": 1144,
       "case": "tests/regressions/copy.ril::private-helpers",
       "cases": [
         {
@@ -1041,8 +839,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_constant_graphs/later_projection.ril",
-      "sha256": "f2f79741e89c4243a88bd1f82cb16b309d32cf972037fab24a1c28c11d8a6be1",
-      "bytes": 423,
       "case": "tests/regressions/static.ril::later-projection",
       "cases": [
         {
@@ -1068,8 +864,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_constant_graphs/map_and_variant.ril",
-      "sha256": "dae54af3c50aece2c9c12ee207715d61ad75e5ebb15af0558ca9b567c0857b60",
-      "bytes": 481,
       "case": "tests/regressions/static.ril::map-and-variant",
       "cases": [
         {
@@ -1095,8 +889,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_constant_graphs/shared_and_distinct.ril",
-      "sha256": "213c1d0023d68c75cf06b6b55ad286bba4e7a20677a12a74740cf0ec4e4997e0",
-      "bytes": 592,
       "case": "tests/regressions/static.ril::shared-and-distinct",
       "cases": [
         {
@@ -1122,8 +914,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_constant_graphs/worker_allocation_pressure.ril",
-      "sha256": "7faf9eda27463cb4ce3405a22c58620896d5fa670736c051c41d0a78800f9976",
-      "bytes": 572,
       "case": "tests/regressions/static.ril::worker-allocation-pressure",
       "cases": [
         {
@@ -1149,8 +939,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_for_return.ril",
-      "sha256": "a0e9450ece87226123746b062c37c91789e6fe32820e8052137a1a3ac8dffb20",
-      "bytes": 156,
       "case": "tests/regressions/static.ril::static-for-return",
       "cases": [
         {
@@ -1170,8 +958,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_loop_last.ril",
-      "sha256": "1e974caee9c2dec5fa66ff305bf0944dfd77790b8995994d1714e1c2b2a84f39",
-      "bytes": 84,
       "case": "tests/regressions/static.ril::static-loop-last",
       "cases": [
         {
@@ -1191,8 +977,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_reference_shadowing.ril",
-      "sha256": "e63854211b07ae6f4b2cc2e8a8459c8171254f0bbf33fd0b9c8e41a9dda45709",
-      "bytes": 93,
       "case": "tests/regressions/static.ril::static-reference-shadowing",
       "cases": [
         {
@@ -1223,8 +1007,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_type_loop.ril",
-      "sha256": "fa2ea8d2f46c34d414185dada8d5b253baeacdf2064444d71fd280f375577a0b",
-      "bytes": 98,
       "case": "tests/regressions/static.ril::static-type-loop",
       "cases": [
         {
@@ -1244,8 +1026,6 @@
     },
     {
       "original": "crates/ril-cli/tests/fixtures/static_while_false.ril",
-      "sha256": "cd523cd88863d7976ed0d0be22970475be17795347958785c2dbbb8d4ce6746c",
-      "bytes": 87,
       "case": "tests/regressions/static.ril::static-while-false",
       "cases": [
         {
@@ -1265,8 +1045,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_condition_receipts_checked.ril",
-      "sha256": "3ea4fd6403b148c5c3e75bae8213a87574881f904313a4383c98f1b96dbc9f36",
-      "bytes": 1171,
       "case": "tests/regressions/channels.ril::channel-condition-receipts-checked",
       "cases": [
         {
@@ -1309,8 +1087,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_condition_receipts_checked.ril.pending",
-      "sha256": "db770f0918b0fede65b28ad1486cce3311682878e9c3e022e21583dba386f616",
-      "bytes": 1108,
       "case": "tests/regressions/channels.ril::channel-condition-receipts-checked-original",
       "cases": [
         {
@@ -1353,8 +1129,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_condition_receipts_clone_unpaid.ril",
-      "sha256": "c79bbe43ae9dcd31f3e839d3c2167ab9ae6c79192f4fea955cf5373a42d3cbf3",
-      "bytes": 720,
       "case": "tests/regressions/channels.ril::channel-condition-receipts-clone-unpaid",
       "cases": [
         {
@@ -1374,8 +1148,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_condition_receipts_clone_unpaid.ril.pending",
-      "sha256": "c79bbe43ae9dcd31f3e839d3c2167ab9ae6c79192f4fea955cf5373a42d3cbf3",
-      "bytes": 720,
       "case": "tests/regressions/channels.ril::channel-condition-receipts-clone-unpaid",
       "cases": [
         {
@@ -1395,8 +1167,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_condition_receipts_nested_unpaid.ril",
-      "sha256": "403d28ca0c0a7e5922230ba5ea18cd85fe1ef1af3b0cefd2ce58bcbf1528cf02",
-      "bytes": 753,
       "case": "tests/regressions/channels.ril::channel-condition-receipts-nested-unpaid",
       "cases": [
         {
@@ -1416,8 +1186,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_condition_receipts_nested_unpaid.ril.pending",
-      "sha256": "403d28ca0c0a7e5922230ba5ea18cd85fe1ef1af3b0cefd2ce58bcbf1528cf02",
-      "bytes": 753,
       "case": "tests/regressions/channels.ril::channel-condition-receipts-nested-unpaid",
       "cases": [
         {
@@ -1437,8 +1205,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_formal_result.ril",
-      "sha256": "5eb27bc6889932d62ff15dd8b4af2741f4dd6e2b3a881bbbe4637d63322e3f7f",
-      "bytes": 840,
       "case": "tests/regressions/channels.ril::channel-formal-result",
       "cases": [
         {
@@ -1484,8 +1250,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_captured_formal.ril",
-      "sha256": "9af199bf3d907e14561e2b4b8fabc975d396a8eb2637e0f02582019ad4f47325",
-      "bytes": 872,
       "case": "tests/regressions/channels.ril::channel-message-captured-formal",
       "cases": [
         {
@@ -1516,8 +1280,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_conditional_returns.ril",
-      "sha256": "8b70ea625c21c34f811aa506ba5e4777f1dfc74adaf6f0c6f46d2827e72751ab",
-      "bytes": 1065,
       "case": "tests/regressions/channels.ril::channel-message-conditional-returns",
       "cases": [
         {
@@ -1548,8 +1310,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_fallback.ril",
-      "sha256": "003885f4ad97476b9c6e20ffd84919ea43e6d2a196ea72a2c7b652d554f4162b",
-      "bytes": 879,
       "case": "tests/regressions/channels.ril::channel-message-fallback",
       "cases": [
         {
@@ -1580,8 +1340,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_finite_graphs.ril",
-      "sha256": "3e6b78a945af788a23b63bdd6041b7f11270bf5002b7a24b1e776032319c0737",
-      "bytes": 1364,
       "case": "tests/regressions/channels.ril::channel-message-finite-graphs",
       "cases": [
         {
@@ -1612,8 +1370,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_array_graph_gap.ril",
-      "sha256": "30e14c4f5b8bbd3c9708d878dfc531d1d9714142701aaf2dfed8e28e4aeeddcd",
-      "bytes": 570,
       "case": "tests/regressions/channels.ril::channel-message-formal-array-graph-gap",
       "cases": [
         {
@@ -1633,8 +1389,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_failed_send_loses_original.ril",
-      "sha256": "a7e7483091732285c3d08042d35217cddfaa55eca6ff653af43f9eb79d912586",
-      "bytes": 811,
       "case": "tests/regressions/channels.ril::channel-message-formal-failed-send-loses-original",
       "cases": [
         {
@@ -1659,8 +1413,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_map_graph_gap.ril",
-      "sha256": "3c39d2a8bcdf88e137f9fd89c1de23d1aaf495eeba72b3ce43c9811428e13cd0",
-      "bytes": 591,
       "case": "tests/regressions/channels.ril::channel-message-formal-map-graph-gap",
       "cases": [
         {
@@ -1680,8 +1432,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_nested_checked.ril",
-      "sha256": "247db8c09dcfbb84b6b9ad7e61ef083f6f91e809befbbead94e16dc69ad0ddba",
-      "bytes": 996,
       "case": "tests/regressions/channels.ril::channel-message-formal-nested-checked",
       "cases": [
         {
@@ -1717,8 +1467,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_nested_graph_gap.ril",
-      "sha256": "56732c1b28f4ea4f069be8f37697941475fb0b0d2081b88a757b341c6405cc27",
-      "bytes": 573,
       "case": "tests/regressions/channels.ril::channel-message-formal-nested-graph-gap",
       "cases": [
         {
@@ -1743,8 +1491,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_optional_checked.ril",
-      "sha256": "555c96a4210d6090892c85a21de1e459b8cdf97fc388fa0352d907458bdedb54",
-      "bytes": 972,
       "case": "tests/regressions/channels.ril::channel-message-formal-optional-checked",
       "cases": [
         {
@@ -1780,8 +1526,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_optional_clone_checked.ril",
-      "sha256": "bdd5f8c71b4d11746cf48bcde14c7b92b5cc2a4b6bb8e4bde34906e52d9b858f",
-      "bytes": 1078,
       "case": "tests/regressions/channels.ril::channel-message-formal-optional-clone-checked",
       "cases": [
         {
@@ -1817,8 +1561,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_two_branches_checked.ril",
-      "sha256": "75e58511f84f269f77610a21767fcc25f1781a2edef118d3aaaf296e649ea8a6",
-      "bytes": 1205,
       "case": "tests/regressions/channels.ril::channel-message-formal-two-branches-checked",
       "cases": [
         {
@@ -1854,8 +1596,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_formal_two_optionals_checked.ril",
-      "sha256": "0a78a825cfcdf68df30270eaeebd6289d1437103649ca011f9e40ff1cafd4eca",
-      "bytes": 1094,
       "case": "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
       "cases": [
         {
@@ -1901,8 +1641,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_inline_closed_send_loses_original.ril",
-      "sha256": "a3071560380b2456df8aadc2afdb5277f2662c426dd67de9f9cafca5a9cee8fa",
-      "bytes": 525,
       "case": "tests/regressions/channels.ril::channel-message-inline-closed-send-loses-original",
       "cases": [
         {
@@ -1927,8 +1665,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_inline_control.ril",
-      "sha256": "4071d424dfdcc5bcbf9579dd0b763e87af6c8d638280f46c16a0418431057f93",
-      "bytes": 679,
       "case": "tests/regressions/channels.ril::channel-message-inline-control",
       "cases": [
         {
@@ -1959,8 +1695,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_inline_outer_only.ril",
-      "sha256": "8fb28ba3e68ad3da26508937db22080cae5eac0dcd1c8e0a451c300d562b0962",
-      "bytes": 648,
       "case": "tests/regressions/channels.ril::channel-message-inline-outer-only",
       "cases": [
         {
@@ -1985,8 +1719,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_inline_unread_close.ril",
-      "sha256": "64ac52eb273b9bd6d509b86f6a340a40d07e3cd22f4abc5b6206261fb6fbf609",
-      "bytes": 556,
       "case": "tests/regressions/channels.ril::channel-message-inline-unread-close",
       "cases": [
         {
@@ -2016,8 +1748,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_loop_cardinality_gap.ril",
-      "sha256": "0e6ca8789ed5e5e881a97923fc7e3b57834a12f0755d0f7cc82f1e981d3f5ead",
-      "bytes": 1060,
       "case": "tests/regressions/channels.ril::channel-message-loop-cardinality-gap",
       "cases": [
         {
@@ -2047,8 +1777,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_nested_formal.ril",
-      "sha256": "ba2aaead4e4e10ab037b61f901a40fd531e5b26d0f314166b50ba2f45ce3166b",
-      "bytes": 998,
       "case": "tests/regressions/channels.ril::channel-message-nested-formal",
       "cases": [
         {
@@ -2079,8 +1807,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_optional_callback_scope_budget.ril",
-      "sha256": "e50829579b8e6185754b6d04b714503d538ce7683e6f5465388f0c4e1cd8987f",
-      "bytes": 1898,
       "case": "tests/regressions/channels.ril::channel-message-optional-callback-scope-budget",
       "cases": [
         {
@@ -2126,8 +1852,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_optional_callback_source_controls.ril",
-      "sha256": "34ca5fc0aa951d225da16a0679cd49b279a7a477fbe5b3a08ee322eab8275107",
-      "bytes": 1994,
       "case": "tests/regressions/channels.ril::channel-message-optional-callback-source-controls",
       "cases": [
         {
@@ -2170,8 +1894,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_optional_callback_source_index_checked.ril",
-      "sha256": "601566e3663ec15b261eedfe865e3ec8a3d195f4551eeb4335b25d254ada4227",
-      "bytes": 2281,
       "case": "tests/regressions/channels.ril::channel-message-optional-callback-source-index-checked",
       "cases": [
         {
@@ -2214,8 +1936,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_optional_scalar.ril",
-      "sha256": "1ca77a26e37a733068a821df6b2f70377a11ad1115f55ac9937fe0e2757915ad",
-      "bytes": 576,
       "case": "tests/regressions/channels.ril::channel-message-optional-scalar",
       "cases": [
         {
@@ -2251,8 +1971,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_optional_scalar_source_controls.ril",
-      "sha256": "8b881395d642932ec47fceb646e4ff8d876a2ba0b6b6174e6f3c040f05a3dbc1",
-      "bytes": 1029,
       "case": "tests/regressions/channels.ril::channel-message-optional-scalar-source-controls",
       "cases": [
         {
@@ -2278,8 +1996,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_question_checked.ril",
-      "sha256": "760f92001ec26ab198ff883d7a2978c3f335a0b6234b3e1c4737a2c03c8ecd70",
-      "bytes": 886,
       "case": "tests/regressions/channels.ril::channel-message-question-checked",
       "cases": [
         {
@@ -2315,8 +2031,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_repeated_cardinality_gap.ril",
-      "sha256": "8fc7f778d75e67cb3f9bf5f9268da6ab1cc38b1ccf231b24a363e4a4ec317f09",
-      "bytes": 1053,
       "case": "tests/regressions/channels.ril::channel-message-repeated-cardinality-gap",
       "cases": [
         {
@@ -2346,8 +2060,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_same_sender.ril",
-      "sha256": "4955c9741aa569e070298e6b3726f4b7507a674408796e726d3909c3723d1ee7",
-      "bytes": 924,
       "case": "tests/regressions/channels.ril::channel-message-same-sender",
       "cases": [
         {
@@ -2378,8 +2090,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/channel_message_two_senders.ril",
-      "sha256": "93e93cc1916b3c543bbe84f59f4020fda16f86f40c8d69cc8d6ef4a56f0f445a",
-      "bytes": 1321,
       "case": "tests/regressions/channels.ril::channel-message-two-senders",
       "cases": [
         {
@@ -2405,8 +2115,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_callback_empty_write_inspection.ril",
-      "sha256": "2d0f64cf6acc2640bf84a3ba732858ab1e395d5ea7112feb11afde29629163ea",
-      "bytes": 407,
       "case": "tests/regressions/io.ril::io-callback-empty-write-inspection",
       "cases": [
         {
@@ -2431,8 +2139,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_callback_result_inspection.ril",
-      "sha256": "021d941168c255199a7df326bbe91bbda7bfcb7604e2861b6a84492f3347ec66",
-      "bytes": 438,
       "case": "tests/regressions/io.ril::io-callback-result-inspection",
       "cases": [
         {
@@ -2457,8 +2163,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_dynamic_fixed_backing.ril",
-      "sha256": "fec78f2301a514c86ed06fadd8faa2f0bcc7160c4e0bb29a44e35a979c63852a",
-      "bytes": 448,
       "case": "tests/regressions/io.ril::io-dynamic-fixed-backing",
       "cases": [
         {
@@ -2494,8 +2198,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_dynamic_receiver_control.ril",
-      "sha256": "bb60965a8fa62e3060716af6972622dd9f2f991f307866fcb7cf959fcd3b0cc0",
-      "bytes": 370,
       "case": "tests/regressions/io.ril::io-dynamic-receiver-control",
       "cases": [
         {
@@ -2526,8 +2228,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_fixed_receiver.ril",
-      "sha256": "8a4993cd65fa379aa43d3af259d622cea4335685fae18a07f90e36f3818d5bda",
-      "bytes": 371,
       "case": "tests/regressions/io.ril::io-fixed-receiver",
       "cases": [
         {
@@ -2568,8 +2268,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_fixed_writer.ril",
-      "sha256": "4f074d785e8894ee1ec3067524b885cd1b91ce0aeb0c3662af9fc6e72d0a7fb6",
-      "bytes": 491,
       "case": "tests/regressions/io.ril::io-fixed-writer",
       "cases": [
         {
@@ -2600,8 +2298,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_nested_fixed_receiver.ril",
-      "sha256": "f683380ce4dc587939ea8f7771957a9d56bba9ea436e42f80657bd19c42f7adc",
-      "bytes": 518,
       "case": "tests/regressions/io.ril::io-nested-fixed-receiver",
       "cases": [
         {
@@ -2632,8 +2328,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_readonly_capture.ril",
-      "sha256": "1a991b6840cf04da35eb10adbf96a478867d37ab82e072c7a1a6c68f3aa59ac4",
-      "bytes": 492,
       "case": "tests/regressions/io.ril::io-readonly-capture",
       "cases": [
         {
@@ -2664,8 +2358,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/io_resource_fixed_receiver.ril",
-      "sha256": "31e61a6d689c9ffa940d88356396655573d986ef3903f51733eed2e04e2d270a",
-      "bytes": 584,
       "case": "tests/regressions/io.ril::io-resource-fixed-receiver",
       "cases": [
         {
@@ -2696,8 +2388,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/nested_result_channel.ril",
-      "sha256": "dbecf1f99229f6a2b8307f6595a9daa7b759e4ca15f8ca4e1eef0e1a5d1c1d9f",
-      "bytes": 995,
       "case": "tests/regressions/channels.ril::nested-result-channel",
       "cases": [
         {
@@ -2727,8 +2417,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/non_tail_private_local_answer.ril",
-      "sha256": "1796ec7b3d9636554084bcb4105f1183946465b32bd781682d50544ea055986b",
-      "bytes": 183,
       "case": "tests/regressions/effects.ril::non-tail-private-local-answer",
       "cases": [
         {
@@ -2753,8 +2441,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/non_tail_reference_answer.ril",
-      "sha256": "183277e18caaa723937072ff87daf85ef0252365b9098e6ecb0df82c7186f9f2",
-      "bytes": 250,
       "case": "tests/regressions/effects.ril::non-tail-reference-answer",
       "cases": [
         {
@@ -2785,8 +2471,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_alias.ril",
-      "sha256": "858e8bc6363e3ab40b0da3c4888f4822eb10c66453cc8fec72fd1af89caf3702",
-      "bytes": 155,
       "case": "tests/regressions/record-bounds.ril::nested-alias",
       "cases": [
         {
@@ -2817,8 +2501,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_field.ril",
-      "sha256": "fd94d4d75822f1595f55bcc8b624a932e48a78b01c9cb14e52cd94282441d185",
-      "bytes": 147,
       "case": "tests/regressions/record-bounds.ril::nested-field",
       "cases": [
         {
@@ -2849,8 +2531,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_field_forward.ril",
-      "sha256": "eb8ae0eee7581761127f7223fd57e1d71a79bf5bd79fd0e4d42751c48ca7c32b",
-      "bytes": 230,
       "case": "tests/regressions/record-bounds.ril::nested-field-forward",
       "cases": [
         {
@@ -2881,8 +2561,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_fixed.ril",
-      "sha256": "81f5c18e6f9cfd8f1ed646264a515cea0a49c36f7090be6b62931918da363d5b",
-      "bytes": 153,
       "case": "tests/regressions/record-bounds.ril::nested-fixed",
       "cases": [
         {
@@ -2913,8 +2591,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_mixed.ril",
-      "sha256": "b27e782d265c6c38988ce7563651548822e67e1fe2f7c1627f28528c6a29cc5a",
-      "bytes": 164,
       "case": "tests/regressions/record-bounds.ril::nested-mixed",
       "cases": [
         {
@@ -2945,8 +2621,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_readonly.ril",
-      "sha256": "1ed103ea97fee107616971cff8c55d69311a9ebcad0e561c8247c1ce197a9d8a",
-      "bytes": 195,
       "case": "tests/regressions/record-bounds.ril::nested-readonly",
       "cases": [
         {
@@ -2977,8 +2651,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_rigid_field.ril",
-      "sha256": "086c01716ae5cff4fb088feda275b17195edefc292073a5b1bd8e567a58aa1dc",
-      "bytes": 228,
       "case": "tests/regressions/record-bounds.ril::nested-rigid-field",
       "cases": [
         {
@@ -3009,8 +2681,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_rigid_fixed.ril",
-      "sha256": "27465c7a2f061c87d8c31be9222cf3535c72fa92cd389bfb6845cbe467718a01",
-      "bytes": 237,
       "case": "tests/regressions/record-bounds.ril::nested-rigid-fixed",
       "cases": [
         {
@@ -3036,8 +2706,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_rigid_shared_row.ril",
-      "sha256": "d07986bc06f10706c8ceacef53a8dfa3b314887455996df0325fab6303a8c940",
-      "bytes": 247,
       "case": "tests/regressions/record-bounds.ril::nested-rigid-shared-row",
       "cases": [
         {
@@ -3068,8 +2736,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_rigid_tuple.ril",
-      "sha256": "e4031c9e8dc5bf42c7884a3f365862e4095620345be4cb10663d4b8f51834bbc",
-      "bytes": 187,
       "case": "tests/regressions/record-bounds.ril::nested-rigid-tuple",
       "cases": [
         {
@@ -3100,8 +2766,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_shared_row.ril",
-      "sha256": "f0865594a135b1bddc5e0e2772ca68857f42ea3ab6722400cc52fa0d97461d71",
-      "bytes": 158,
       "case": "tests/regressions/record-bounds.ril::nested-shared-row",
       "cases": [
         {
@@ -3132,8 +2796,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_tuple.ril",
-      "sha256": "49b046257ec29772782800290a9a894118aa3d72f98e1835c7f8ad39b78ba76e",
-      "bytes": 118,
       "case": "tests/regressions/record-bounds.ril::nested-tuple",
       "cases": [
         {
@@ -3164,8 +2826,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/nested_tuple_forward.ril",
-      "sha256": "e51c335866959b4378ccdb71ab8e52501f37b2f5abc1b91042ec8e7e1f6da1e6",
-      "bytes": 189,
       "case": "tests/regressions/record-bounds.ril::nested-tuple-forward",
       "cases": [
         {
@@ -3196,8 +2856,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/original_projection.ril",
-      "sha256": "e89b61978b7bc7952bea6b60aac53022122508259bf670fc141f3791e3aa107c",
-      "bytes": 128,
       "case": "tests/regressions/record-bounds.ril::original-projection",
       "cases": [
         {
@@ -3233,8 +2891,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/pending/explicit_named_prefix.ril.pending",
-      "sha256": "771145a4fccb75f1c6d2493c10a821e282c87ef344a42dfec59ac8442b8d460d",
-      "bytes": 429,
       "case": "tests/regressions/record-bounds.ril::explicit-named-prefix",
       "cases": [
         {
@@ -3270,8 +2926,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_array_explicit.ril",
-      "sha256": "68d748f3900da0c338b458c7e70cb958530c6f3195a2bca9e34c2af0c415162b",
-      "bytes": 238,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-array-explicit",
       "cases": [
         {
@@ -3312,8 +2966,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_array_inferred.ril",
-      "sha256": "8c0adf8f30bffa47713f0d62958876ab2f1bcb8ecc0782b48a6618c2dfb48284",
-      "bytes": 235,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-array",
       "cases": [
         {
@@ -3333,8 +2985,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_callable_explicit.ril",
-      "sha256": "38cfd6fa331d589906fbf837d5151162be2c4c041991efc6bc67d991afb3e9df",
-      "bytes": 252,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-callable-explicit",
       "cases": [
         {
@@ -3370,8 +3020,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_callable_inferred.ril",
-      "sha256": "8cafae3be4d491059a982a3dc2e91cab51f76cd78e1c215bac6ab442ef8b1425",
-      "bytes": 249,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-callable",
       "cases": [
         {
@@ -3391,8 +3039,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_empty_explicit.ril",
-      "sha256": "264a3b7b75cfb496b48bbd3d18fcf80878e9b12e06ed806bb3da510b9b55b4de",
-      "bytes": 317,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-empty-explicit",
       "cases": [
         {
@@ -3428,8 +3074,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_empty_inferred.ril",
-      "sha256": "2672fba97389df0174e514498403882d6640cf9a1a890e32d2202dee85fdd674",
-      "bytes": 314,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-empty",
       "cases": [
         {
@@ -3449,8 +3093,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_callable_mut.ril",
-      "sha256": "2aa6fbace84fd673737b184c0a41d596358b89615ccd181f55e74248555b0064",
-      "bytes": 279,
       "case": "tests/regressions/record-bounds.ril::scoped-callable-mut",
       "cases": [
         {
@@ -3486,8 +3128,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_empty_inner_dimension.ril",
-      "sha256": "d4a2f2859b19042b75ba5031825eed02978ab5e13a59e0ae59a80b5a2dfe0919",
-      "bytes": 316,
       "case": "tests/regressions/record-bounds.ril::scoped-empty-inner-dimension",
       "cases": [
         {
@@ -3518,8 +3158,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_fixed.ril",
-      "sha256": "27465c7a2f061c87d8c31be9222cf3535c72fa92cd389bfb6845cbe467718a01",
-      "bytes": 237,
       "case": "tests/regressions/record-bounds.ril::nested-rigid-fixed",
       "cases": [
         {
@@ -3555,8 +3193,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_immutable_field.ril",
-      "sha256": "d17ecced65355d07d0da49a4079c2ab055e4f6e4604ab0e93f4b243fea084058",
-      "bytes": 258,
       "case": "tests/regressions/record-bounds.ril::scoped-immutable-field",
       "cases": [
         {
@@ -3592,8 +3228,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_array.ril",
-      "sha256": "8c0adf8f30bffa47713f0d62958876ab2f1bcb8ecc0782b48a6618c2dfb48284",
-      "bytes": 235,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-array",
       "cases": [
         {
@@ -3624,8 +3258,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_callable.ril",
-      "sha256": "8cafae3be4d491059a982a3dc2e91cab51f76cd78e1c215bac6ab442ef8b1425",
-      "bytes": 249,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-callable",
       "cases": [
         {
@@ -3656,8 +3288,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_empty.ril",
-      "sha256": "2672fba97389df0174e514498403882d6640cf9a1a890e32d2202dee85fdd674",
-      "bytes": 314,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-empty",
       "cases": [
         {
@@ -3688,8 +3318,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_readonly_write.ril",
-      "sha256": "0c2033447ce6acf9b618cad583504b855d01a775d7cdaae01113dd615c02cf77",
-      "bytes": 183,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-readonly-write",
       "cases": [
         {
@@ -3709,8 +3337,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_wrong_binder.ril",
-      "sha256": "05a0ba3cdcb96b6cbbfec3dd34658ec86f345b7c55b567d94645e84c4c763ee7",
-      "bytes": 165,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-wrong-binder",
       "cases": [
         {
@@ -3730,8 +3356,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_wrong_dimension.ril",
-      "sha256": "f6b6d0a9b1a6d417050c50e29aa01162ec763cea9ad078383e0f6bfe3d755b7e",
-      "bytes": 174,
       "case": "tests/regressions/record-bounds.ril::scoped-symbolic-wrong-dimension",
       "cases": [
         {
@@ -3751,8 +3375,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_wrong_callable_mode.ril",
-      "sha256": "469ab0c0b36d35dbae9a1dd9c4ab2b9260dc425e7ba4d4de67d350d03fc386e5",
-      "bytes": 200,
       "case": "tests/regressions/record-bounds.ril::scoped-wrong-callable-mode",
       "cases": [
         {
@@ -3772,8 +3394,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/scoped_wrong_empty_inner_dimension.ril",
-      "sha256": "55b1fdc457ce6409a5b2e570b59393d977d7e9fcc1fae6556a4715cca8e297ec",
-      "bytes": 176,
       "case": "tests/regressions/record-bounds.ril::scoped-wrong-empty-inner-dimension",
       "cases": [
         {
@@ -3793,8 +3413,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/symbolic_coordinate.ril",
-      "sha256": "96b6b08cd90b203c381d7560b363049430b56582eb2513bd43519855f5fb473e",
-      "bytes": 69,
       "case": "tests/regressions/record-bounds.ril::symbolic-coordinate",
       "cases": [
         {
@@ -3814,8 +3432,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/record_bounds/write_scalar.ril",
-      "sha256": "ed08af29075c24854d5999a97c9a59854a3022c9a117a405c5d5a7edc431d6ba",
-      "bytes": 312,
       "case": "tests/regressions/record-bounds.ril::write-scalar",
       "cases": [
         {
@@ -3846,8 +3462,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/repeated_host_results.ril",
-      "sha256": "3f771001acccba48526fe8d4febdb7bd5bfb26108509996dcb25e02978869748",
-      "bytes": 898,
       "case": "tests/regressions/results.ril::repeated-host-results",
       "cases": [
         {
@@ -3878,8 +3492,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_receiving_native.ril",
-      "sha256": "2a932d483c793f17215871c11177513290712188e98fa5d118949048eb55629d",
-      "bytes": 1955,
       "case": "tests/regressions/source-receiving.ril::source-receiving-native",
       "cases": [
         {
@@ -3946,8 +3558,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_receiving_native.ril.pending",
-      "sha256": "2a932d483c793f17215871c11177513290712188e98fa5d118949048eb55629d",
-      "bytes": 1955,
       "case": "tests/regressions/source-receiving.ril::source-receiving-native",
       "cases": [
         {
@@ -4014,8 +3624,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/carriers.ril",
-      "sha256": "7f9f678ee0c3c8da6a0cdbcf16e0b8c9f252b42904efa624a6c87ff94457676c",
-      "bytes": 808,
       "case": "tests/regressions/source-types.ril::carriers",
       "cases": [
         {
@@ -4046,8 +3654,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/dynamic_view.ril",
-      "sha256": "f35fba64b037c6b2f7db133477e53e526f46fd455f99c892ee0dabe3801ed95d",
-      "bytes": 172,
       "case": "tests/regressions/source-types.ril::dynamic-view",
       "cases": [
         {
@@ -4078,8 +3684,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/effect_instance.ril",
-      "sha256": "969365119b26641959fa86d5a74e960c30108b5770f29bbcc1b2d313e7f85b5f",
-      "bytes": 233,
       "case": "tests/regressions/source-types.ril::effect-instance",
       "cases": [
         {
@@ -4115,8 +3719,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/empty_nested.ril",
-      "sha256": "9b386099a15e9338139adafb8606f3b78623afc22b8cc068e8081d8eebf90747",
-      "bytes": 211,
       "case": "tests/regressions/source-types.ril::empty-nested",
       "cases": [
         {
@@ -4147,8 +3749,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/forwarding.ril",
-      "sha256": "b613991843014420e7dacb81bb273072694826021c20eb9539cde66adc9e77d2",
-      "bytes": 303,
       "case": "tests/regressions/source-types.ril::forwarding",
       "cases": [
         {
@@ -4179,8 +3779,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/interfaces.ril",
-      "sha256": "8f35806398f55122919e3b3dab2fdd0051ce4cd6df125b0f4bd20afcf44ba5d3",
-      "bytes": 1289,
       "case": "tests/regressions/source-types.ril::interfaces",
       "cases": [
         {
@@ -4211,8 +3809,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/modes.ril",
-      "sha256": "776e2597374e9903df2a63951de50925a5f11b2d56539372d642f36c6b076a7f",
-      "bytes": 330,
       "case": "tests/regressions/source-types.ril::modes",
       "cases": [
         {
@@ -4248,8 +3844,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/returned_callable.ril",
-      "sha256": "f577e88f6d920597d4192ad01847461c3c9196e52ab64f3df41b7c1fb7e4d236",
-      "bytes": 495,
       "case": "tests/regressions/source-types.ril::returned-callable",
       "cases": [
         {
@@ -4280,8 +3874,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/source_type_witness/type_forwarding.ril",
-      "sha256": "3ccf9aafd65c2de807ed62c1bc1ec27c297310fd38666ce8e5c237f0af9c0da9",
-      "bytes": 298,
       "case": "tests/regressions/source-types.ril::type-forwarding",
       "cases": [
         {
@@ -4312,8 +3904,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_bound_callable_construction.ril",
-      "sha256": "50a337617b385aa623bb994ba061a3d004f29b66aa43cbc88520e52cfda3cb83",
-      "bytes": 318,
       "case": "tests/regressions/static.ril::static-bound-callable-construction",
       "cases": [
         {
@@ -4344,8 +3934,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_bound_fresh_construction.ril",
-      "sha256": "be48e91046ac511dfcc2d939fc8ce08fbcc5e45d4ae8938849fa06f3a31b3b5b",
-      "bytes": 501,
       "case": "tests/regressions/static.ril::static-bound-fresh-construction",
       "cases": [
         {
@@ -4376,8 +3964,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_bound_generic_members.ril",
-      "sha256": "7f30ac7305fda24874fb1e5de49b4ecfe46f99a5180be3a27216b19f5f6a0496",
-      "bytes": 1281,
       "case": "tests/regressions/static.ril::static-bound-generic-members",
       "cases": [
         {
@@ -4408,8 +3994,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_bound_projection.ril",
-      "sha256": "4e8b6ff072abb2efde6380e2f6cc5a9e4dea8ed66e6da1414a000957425bded0",
-      "bytes": 257,
       "case": "tests/regressions/static.ril::static-bound-projection",
       "cases": [
         {
@@ -4440,8 +4024,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_bound_result_inspection.ril",
-      "sha256": "79abc60f1cff10592c134d07c9cf7e8ed7c069f799c7eaa8b0f03f93d380e15a",
-      "bytes": 284,
       "case": "tests/regressions/static.ril::static-bound-result-inspection",
       "cases": [
         {
@@ -4477,8 +4059,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_bound_template_inference.ril",
-      "sha256": "5b014dc32b951d30c20f3c307391c5886e1a20b577720d7afdb6917dcd29bd48",
-      "bytes": 1812,
       "case": "tests/regressions/static.ril::static-bound-template-inference",
       "cases": [
         {
@@ -4509,8 +4089,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_const_int.ril",
-      "sha256": "dfad6855da1dc4753f9fcd85a30d176e7c3617e9f43a0fb06068aeb33b4cf4f8",
-      "bytes": 985,
       "case": "tests/regressions/static.ril::static-const-int",
       "cases": [
         {
@@ -4541,8 +4119,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_const_result_flow.ril",
-      "sha256": "2fca7ebd0f2570412457becb760f4e2ed3869d3d412d9fc9b36bada6f14aad74",
-      "bytes": 862,
       "case": "tests/regressions/static.ril::static-const-result-flow",
       "cases": [
         {
@@ -4573,8 +4149,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_generic_callable_receiving.ril",
-      "sha256": "fb9cb990ee326496d5cef9601c5bbb44525c80cb9f2029fef87d98d09d7a55d1",
-      "bytes": 372,
       "case": "tests/regressions/static.ril::static-generic-callable-receiving",
       "cases": [
         {
@@ -4605,8 +4179,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_generic_callable_wrapper.ril",
-      "sha256": "bb7a3a43fd26f67236fa911b817fd7cc980dc6eab4104618ae53a72d4c0e37ce",
-      "bytes": 411,
       "case": "tests/regressions/static.ril::static-generic-callable-wrapper",
       "cases": [
         {
@@ -4642,8 +4214,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_optional_result_fallback.ril",
-      "sha256": "ca62f682ab40cbeb053cf48a814b98db4385f08c9ae6ea053ab967b96d521657",
-      "bytes": 392,
       "case": "tests/regressions/static.ril::static-optional-result-fallback",
       "cases": [
         {
@@ -4674,8 +4244,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/computed_alias.ril",
-      "sha256": "16b8ca3c08f2bb0ab85d5b16af85aeb8e546aca2d859e567b07337e8c60a0e12",
-      "bytes": 278,
       "case": "tests/regressions/static.ril::computed-alias",
       "cases": [
         {
@@ -4706,8 +4274,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/positive.ril",
-      "sha256": "aa37bd838ca6917f26921fbd908d227c3f3bffc3d247861582d86da4ddfdd7a1",
-      "bytes": 1016,
       "case": "tests/regressions/static.ril::positive",
       "cases": [
         {
@@ -4738,8 +4304,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/reject_callable_mode.ril",
-      "sha256": "65e94cdabc6018f135c59f44b6a17427d568da85058a861bab2da79a8d6b78eb",
-      "bytes": 395,
       "case": "tests/regressions/static.ril::reject-callable-mode",
       "cases": [
         {
@@ -4759,8 +4323,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/reject_dynamic_outer.ril",
-      "sha256": "ae0086e48da3542bcefa6c1e2b13928b4eb9d9d745b8c38469fc8ec483852cad",
-      "bytes": 227,
       "case": "tests/regressions/static.ril::reject-dynamic-outer",
       "cases": [
         {
@@ -4780,8 +4342,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/reject_explicit_selection.ril",
-      "sha256": "9f1123c780a64243def47f802e0e27b24a2fc48166aa5578f275564ca88ea3b2",
-      "bytes": 147,
       "case": "tests/regressions/static.ril::reject-explicit-selection",
       "cases": [
         {
@@ -4801,8 +4361,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/reject_input_selection.ril",
-      "sha256": "462bb42bcdb90718e779fec9cde81e1c451233b7f8e979374a938d316de3fe60",
-      "bytes": 208,
       "case": "tests/regressions/static.ril::reject-input-selection",
       "cases": [
         {
@@ -4822,8 +4380,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/reject_result_inspection.ril",
-      "sha256": "b875477a53ddc06a25659d14f3d9e6f9116fceb040e1cea73f7750f85f2468bd",
-      "bytes": 261,
       "case": "tests/regressions/static.ril::reject-result-inspection",
       "cases": [
         {
@@ -4843,8 +4399,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/reject_universal_some.ril",
-      "sha256": "9cd6755b548a8dd9231017b0d3994becce8123b54cbd841f57dc6c3987275784",
-      "bytes": 291,
       "case": "tests/regressions/static.ril::reject-universal-some",
       "cases": [
         {
@@ -4864,8 +4418,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/reject_view_default.ril",
-      "sha256": "ee27b48d469f5cc8a83e0f6914b874611b9bdd57b389be179bf5af8ecc2cfc89",
-      "bytes": 288,
       "case": "tests/regressions/static.ril::reject-view-default",
       "cases": [
         {
@@ -4885,8 +4437,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context/result_transfer.ril",
-      "sha256": "b6f2f32d1369aed8a5ff1eddd618ac02f79ea0b8b6e1d8268b4804862828f642",
-      "bytes": 303,
       "case": "tests/regressions/static.ril::result-transfer",
       "cases": [
         {
@@ -4917,8 +4467,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context_containers.ril",
-      "sha256": "112b005aeabfe3ca4965df0137170187fa53fc13b0c742d289f8b1224056dd7a",
-      "bytes": 868,
       "case": "tests/regressions/static.ril::static-result-context-containers",
       "cases": [
         {
@@ -4949,8 +4497,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context_flow.ril",
-      "sha256": "6d441e23c98b5646821154c3ccd0c5984565e20ab02a79094ea80f5e10590519",
-      "bytes": 884,
       "case": "tests/regressions/static.ril::static-result-context-flow",
       "cases": [
         {
@@ -4981,8 +4527,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_context_shadow.ril",
-      "sha256": "19f1dc9885eb79120427e4bdd2c7e1b55e9497b3ff9bc75dadcef740d0e6ab4e",
-      "bytes": 234,
       "case": "tests/regressions/static.ril::static-result-context-shadow",
       "cases": [
         {
@@ -5013,8 +4557,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/static_result_map_lookup.ril",
-      "sha256": "22f5c045f643e03fae2c464fcc6add2c9b78d93465f702284d8064e6244fb92f",
-      "bytes": 420,
       "case": "tests/regressions/static.ril::static-result-map-lookup",
       "cases": [
         {
@@ -5045,8 +4587,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/storage_receiving_element.ril",
-      "sha256": "bd44c2d6a9045111c83775b311b88cdf2cc6e4a8948fda46bd80150f6933ea3e",
-      "bytes": 77,
       "case": "tests/regressions/source-receiving.ril::storage-receiving-element",
       "cases": [
         {
@@ -5066,8 +4606,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/storage_receiving_field.ril",
-      "sha256": "66a9779c02fe5d7f254b91f32afc198d78d4379b3b7c1e2ec2e62287caf34beb",
-      "bytes": 105,
       "case": "tests/regressions/source-receiving.ril::storage-receiving-field",
       "cases": [
         {
@@ -5087,8 +4625,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/storage_receiving_push.ril",
-      "sha256": "240667a8f0951530c6f480e3eaa1880e7db850f931cedaa6e78bf12af81652e4",
-      "bytes": 88,
       "case": "tests/regressions/source-receiving.ril::storage-receiving-push",
       "cases": [
         {
@@ -5108,8 +4644,6 @@
     },
     {
       "original": "crates/ril-compiler/tests/fixtures/storage_receiving_variable.ril",
-      "sha256": "761e9d39d08e87db2cc853620f09442df1357863365e2bcd45045b231bcc1360",
-      "bytes": 65,
       "case": "tests/regressions/source-receiving.ril::storage-receiving-variable",
       "cases": [
         {

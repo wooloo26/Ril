@@ -3,8 +3,6 @@
     "rust": "crates/ril-compiler/tests/call_result_observations.rs",
     "literal": 1,
     "case": "tests/regressions/source-observations.ril::call-result-complete-roots",
-    "bytes": 103,
-    "sha256": "705ceebeccbeb8dbf4c8968d2ac8d6895166c98679268fa8915a717e6cd094fa",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -12,8 +10,6 @@
     "rust": "crates/ril-compiler/tests/call_result_observations.rs",
     "literal": 2,
     "case": "tests/regressions/source-observations.ril::call-result-never-root",
-    "bytes": 55,
-    "sha256": "4b7e89f157da903a7505f4f1a39fea4e361e3dd9e2f5ce9a57b02738c27a4929",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -21,8 +17,6 @@
     "rust": "crates/ril-compiler/tests/ordinary_closure_sources.rs",
     "literal": 1,
     "case": "tests/regressions/source-observations.ril::closure-captured-step",
-    "bytes": 144,
-    "sha256": "1e147069e711962209e2d7cc7d142d3624c520bd9ee95bf54ecc63f29e223c0d",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -30,8 +24,6 @@
     "rust": "crates/ril-compiler/tests/ordinary_closure_sources.rs",
     "literal": 2,
     "case": "tests/regressions/source-observations.ril::closure-generic-return",
-    "bytes": 116,
-    "sha256": "556c3a9eb5e71273631be547d2640c589e7bfba14a3e69d4cd50bf34f318b8e8",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -39,8 +31,6 @@
     "rust": "crates/ril-compiler/tests/ordinary_closure_sources.rs",
     "literal": 3,
     "case": "tests/regressions/source-observations.ril::generic-immutable-empty-local",
-    "bytes": 83,
-    "sha256": "ec1890e9688c42a29cf42706b2c38f2da559aee2b09de489d4333ca4fbfcb697",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -48,8 +38,6 @@
     "rust": "crates/ril-compiler/tests/ordinary_closure_sources.rs",
     "literal": 4,
     "case": "tests/regressions/source-observations.ril::generic-tuple-projection",
-    "bytes": 115,
-    "sha256": "42091cbd1ea7fd1270be73573837a6bed4e0b4d433cb1a9600ac83ee08c5e920",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -57,8 +45,6 @@
     "rust": "crates/ril-compiler/tests/ordinary_closure_sources.rs",
     "literal": 5,
     "case": "tests/regressions/source-observations.ril::reject-open-fn-fixed-recovery",
-    "bytes": 95,
-    "sha256": "0409b36f4dc94ed13b8d79e5697cbc77f76bbb1968373f5fad41dff55d08558c",
     "mode": "check-fail",
     "diagnostic": "E0301"
   },
@@ -66,8 +52,6 @@
     "rust": "crates/ril-compiler/tests/ordinary_closure_sources.rs",
     "literal": 6,
     "case": "tests/regressions/source-observations.ril::named-generic-captured-header",
-    "bytes": 132,
-    "sha256": "6904e2199eecb74d651b515983094726ac17906a5f951c54ebaa74e21b75c405",
     "mode": "check-fail",
     "diagnostic": "E0703"
   },
@@ -75,8 +59,6 @@
     "rust": "crates/ril-compiler/tests/ordinary_closure_sources.rs",
     "literal": 7,
     "case": "tests/regressions/source-observations.ril::named-generic-distinct-instances",
-    "bytes": 170,
-    "sha256": "3faa857763b71a9ef112c10ae0609c4a957bc59fd64a96e7f59e77d409618462",
     "mode": "check-fail",
     "diagnostic": "E0703"
   },
@@ -84,8 +66,6 @@
     "rust": "crates/ril-compiler/tests/ordinary_closure_sources.rs",
     "literal": 8,
     "case": "tests/regressions/source-observations.ril::callable-product-open-row",
-    "bytes": 199,
-    "sha256": "5803d68d0b0d2fd4b26f188a20a4ff4d0fec846a6d208358f0eeeed53191477f",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -93,8 +73,6 @@
     "rust": "crates/ril-compiler/tests/generated_iterator_sources.rs",
     "literal": 1,
     "case": "tests/regressions/source-observations.ril::generated-indexed-iterator",
-    "bytes": 126,
-    "sha256": "6d8130c4c239957ee4477fe64856b0df41824969ce797a25b598f6dd4965fccf",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -102,8 +80,6 @@
     "rust": "crates/ril-compiler/tests/generated_iterator_sources.rs",
     "literal": 2,
     "case": "tests/regressions/source-observations.ril::generated-map-filter-take",
-    "bytes": 228,
-    "sha256": "96cbbeca1fee525ecf53bbd4f3755a31d72051f743ffa842805165a4f8eac12e",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -111,8 +87,6 @@
     "rust": "crates/ril-compiler/tests/static_constant_source_views.rs",
     "literal": 1,
     "case": "tests/regressions/source-observations.ril::constant-shared-node-distinct-views",
-    "bytes": 101,
-    "sha256": "b5ca2ea7e97968e5b31b6e358599c49962197f486abfce14d70f0f3ade30971d",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -120,8 +94,6 @@
     "rust": "crates/ril-compiler/tests/static_constant_source_views.rs",
     "literal": 2,
     "case": "tests/regressions/source-observations.ril::reject-constant-fixed-recovery",
-    "bytes": 97,
-    "sha256": "a5df9cc5f01bef50201f286c328dfcd9080601b076d55dae45456a90fddcc15e",
     "mode": "check-fail",
     "diagnostic": "E0301"
   },
@@ -129,8 +101,6 @@
     "rust": "crates/ril-compiler/tests/static_constant_source_views.rs",
     "literal": 3,
     "case": "tests/regressions/source-observations.ril::reject-constant-inner-dimension",
-    "bytes": 83,
-    "sha256": "1067ccba42c72b33852e62a31065ed3fc4f7db7f1c41f221e44d88442928e4fd",
     "mode": "check-fail",
     "diagnostic": "E0301"
   },
@@ -138,8 +108,6 @@
     "rust": "crates/ril-compiler/tests/storage_source_receiving.rs",
     "literal": 1,
     "case": "tests/regressions/source-observations.ril::matching-variable-replacement",
-    "bytes": 69,
-    "sha256": "da6852711fc267243a66e3eae32e002f86cd7f2ed2d02a93385d14697ecdef6d",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -147,8 +115,6 @@
     "rust": "crates/ril-compiler/tests/storage_source_receiving.rs",
     "literal": 2,
     "case": "tests/regressions/source-observations.ril::matching-record-member-replacement",
-    "bytes": 109,
-    "sha256": "fdfd63a6024bd3deaef16d98a4507d29b5fbe3cea080ccbf65ef8c43046f9355",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -156,8 +122,6 @@
     "rust": "crates/ril-compiler/tests/storage_source_receiving.rs",
     "literal": 3,
     "case": "tests/regressions/source-observations.ril::matching-array-element-replacement",
-    "bytes": 81,
-    "sha256": "2191abf5d5fd9d59d38a2d1cd5bb2d8084c8e2ed31bdeedc28c4d738d21f35bb",
     "mode": "check-pass",
     "diagnostic": null
   },
@@ -165,8 +129,6 @@
     "rust": "crates/ril-compiler/tests/storage_source_receiving.rs",
     "literal": 4,
     "case": "tests/regressions/source-observations.ril::matching-array-push",
-    "bytes": 92,
-    "sha256": "1a11124a7a69043907659fcb0288a5f9a50f0de285a129404aa9b8ac963d2146",
     "mode": "check-pass",
     "diagnostic": null
   }

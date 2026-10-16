@@ -20,7 +20,7 @@ Work proceeds in this order:
 3. Complete missing semantics and run the full acceptance matrix.
 4. Implement LSP and VS Code support on the analysis API.
 
-Commit `f7ebaf7` preserves the unfinished implementation before this migration.
+Git history preserves the unfinished implementation before this migration.
 The latest completed migration gate is `refactor-v2`: on each Windows and Linux
 host, 44 Rust targets report **810 passed, 50 failed and 1 ignored**.
 Both hosts compile those targets without warnings. Snapshot tests pass 5/5,
@@ -131,7 +131,7 @@ Cases retain separate mode, entry, platform and diagnostic expectations.
 Use `--@ file: NAME no-final-newline` for exact UTF-8 inputs without a final
 newline; hex blocks retain malformed bytes or exact CRLF fixtures.
 Rust tests use `ril_test::case_source`, `case_bytes` or `case_by_id` with the full ID.
-The registry tests verify original corpus bytes/IDs and migration SHA-256 manifests.
+The registry tests verify case identity, expectations, source reuse and migration coverage.
 
 The expensive ignored concrete-graph oracle needs an explicit bounded run.
 Its ignored status is not evidence of a passed oracle.
@@ -375,9 +375,13 @@ Neither uncertainty permits a silent safe assumption.
 Preserve `crates/ril-runtime/src/unicode_generated/LICENSE.txt`.
 Use UnicodeData.txt, SpecialCasing.txt, DerivedCoreProperties.txt and PropList.txt
 from the versioned Unicode 17.0.0 UCD directory, plus LICENSE.txt, in an offline
-input directory. The generator checks four pinned SHA-256 digests before writing.
+input directory. The generator verifies the small generated Unicode input manifest.
+Refresh that manifest explicitly from the trusted versioned input directory;
+checksums are calculated by the tool, never entered by hand. Ordinary generation
+only verifies the committed manifest and cannot update its own expected values.
 
 ```text
+cargo run --locked -p xtask --bin unicode-data -- manifest INPUT_DIRECTORY xtask/data/unicode-inputs.json
 cargo run --locked -p xtask --bin unicode-data -- INPUT_DIRECTORY crates/ril-runtime/src/unicode_generated
 ```
 

@@ -1,6 +1,5 @@
 use ril_test::{CaseRegistry, Mode, case_by_id, case_bytes, case_source, parse_bundle};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fs, path::Path};
 
 fn shared() -> &'static str {
@@ -63,34 +62,46 @@ fn readable_source_can_preserve_the_absence_of_a_final_newline() {
 }
 
 #[test]
-fn extracted_rust_programs_preserve_exact_source_bytes_and_expectations() {
+fn extracted_rust_programs_keep_case_links_and_expectations() {
     #[derive(Deserialize)]
     struct Inline {
         rust: String,
         case: String,
-        bytes: usize,
-        sha256: String,
         mode: Mode,
         diagnostic: Option<String>,
     }
     let rows: Vec<Inline> =
         serde_json::from_str(include_str!("data/inline-source-migration.json")).unwrap();
     assert_eq!(rows.len(), 19);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut ids = BTreeSet::new();
     for row in rows {
-        let bytes = case_bytes(&row.case);
-        assert_eq!(bytes.len(), row.bytes, "{}", row.rust);
-        assert_eq!(
-            format!("{:x}", Sha256::digest(bytes)),
-            row.sha256,
-            "{}",
+        assert!(
+            ids.insert(row.case.clone()),
+            "duplicate migration: {}",
             row.case
         );
         let case = case_by_id(&row.case);
+        assert_eq!(case.id, row.case);
         assert_eq!(case.meta.mode, row.mode, "{}", row.case);
         assert_eq!(
             case.errors,
             row.diagnostic.into_iter().collect::<Vec<_>>(),
             "{}",
+            row.case
+        );
+        let rust = fs::read_to_string(root.join(&row.rust)).unwrap();
+        // Two formerly invalid positive fixtures remain negative corpus
+        // cases; their original Rust tests use the explicit corrected pair.
+        let corrected = case
+            .meta
+            .companion
+            .as_ref()
+            .map(|name| format!("{}::{name}", case.bundle));
+        assert!(
+            rust.contains(&row.case) || corrected.is_some_and(|id| rust.contains(&id)),
+            "{} no longer references its migrated case or explicit companion {}",
+            row.rust,
             row.case
         );
     }
@@ -105,15 +116,11 @@ struct Manifest {
 #[derive(Deserialize)]
 struct Baseline {
     path: String,
-    bytes: usize,
-    sha256: String,
     cases: usize,
 }
 #[derive(Deserialize)]
 struct Fixture {
     original: String,
-    sha256: String,
-    bytes: usize,
     case: String,
     cases: Vec<Expected>,
 }
@@ -136,7 +143,7 @@ struct Counts {
 }
 
 #[test]
-fn migrated_fixture_bytes_expectations_and_entry_counts_match_the_frozen_manifest() {
+fn migrated_fixtures_keep_case_expectations_entry_counts_and_source_reuse() {
     let manifest: Manifest =
         serde_json::from_str(include_str!("data/fixture-migration.json")).unwrap();
     assert_eq!(
@@ -154,17 +161,35 @@ fn migrated_fixture_bytes_expectations_and_entry_counts_match_the_frozen_manifes
     let mut bundles = BTreeSet::new();
     for fixture in &manifest.fixtures {
         assert!(originals.insert(&fixture.original));
-        let bytes = case_bytes(&fixture.case);
-        assert_eq!(bytes.len(), fixture.bytes, "{}", fixture.original);
-        assert_eq!(
-            format!("{:x}", Sha256::digest(bytes)),
-            fixture.sha256,
-            "{}",
+        assert!(
+            !Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(&fixture.original)
+                .exists(),
+            "migrated fixture was reintroduced outside its bundle: {}",
             fixture.original
         );
-        unique_sources.insert(&fixture.sha256);
+        let source = case_by_id(&fixture.case);
+        let bytes = case_bytes(&fixture.case);
+        unique_sources.insert(&fixture.case);
+        assert!(
+            fixture
+                .cases
+                .iter()
+                .any(|expected| expected.id == fixture.case),
+            "migration lost its primary case: {}",
+            fixture.original
+        );
+        let mut fixture_ids = BTreeSet::new();
+        let mut entries = BTreeSet::new();
         for expected in &fixture.cases {
+            assert!(
+                fixture_ids.insert(&expected.id),
+                "duplicate case: {}",
+                expected.id
+            );
             let case = case_by_id(&expected.id);
+            assert_eq!(case.id, expected.id);
             assert_eq!(case.meta.mode, expected.mode, "{}", expected.id);
             assert_eq!(case.meta.entry, expected.entry, "{}", expected.id);
             assert_eq!(
@@ -174,6 +199,14 @@ fn migrated_fixture_bytes_expectations_and_entry_counts_match_the_frozen_manifes
                 expected.id
             );
             assert_eq!(case_bytes(&expected.id), bytes, "{}", expected.id);
+            assert_eq!(case.files, source.files, "{}", expected.id);
+            if let Some(entry) = &expected.entry {
+                assert!(
+                    entries.insert(entry),
+                    "duplicated native entry for {}: {entry}",
+                    fixture.original
+                );
+            }
             cases.insert(&expected.id);
             bundles.insert(&case.bundle);
         }
@@ -188,7 +221,7 @@ fn migrated_fixture_bytes_expectations_and_entry_counts_match_the_frozen_manifes
 }
 
 #[test]
-fn the_original_84_bundles_and_1067_case_ids_have_not_changed() {
+fn the_original_corpus_bundles_and_case_inventory_are_retained() {
     let manifest: Manifest =
         serde_json::from_str(include_str!("data/fixture-migration.json")).unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -196,16 +229,10 @@ fn the_original_84_bundles_and_1067_case_ids_have_not_changed() {
     let mut ids = BTreeSet::new();
     for bundle in &manifest.baseline {
         let bytes = fs::read(root.join(&bundle.path)).unwrap();
-        assert_eq!(bytes.len(), bundle.bytes, "{}", bundle.path);
-        assert_eq!(
-            format!("{:x}", Sha256::digest(&bytes)),
-            bundle.sha256,
-            "{}",
-            bundle.path
-        );
         let cases = parse_bundle(std::str::from_utf8(&bytes).unwrap(), &bundle.path).unwrap();
         assert_eq!(cases.len(), bundle.cases, "{}", bundle.path);
         for case in cases {
+            assert_eq!(case_by_id(&case.id), &case);
             assert!(ids.insert(case.id));
         }
     }

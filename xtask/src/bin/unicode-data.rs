@@ -5,24 +5,68 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
 };
-const INPUTS: [(&str, &str); 4] = [
-    (
-        "UnicodeData.txt",
-        "2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c",
-    ),
-    (
-        "SpecialCasing.txt",
-        "efc25faf19de21b92c1194c111c932e03d2a5eaf18194e33f1156e96de4c9588",
-    ),
-    (
-        "DerivedCoreProperties.txt",
-        "24c7fed1195c482faaefd5c1e7eb821c5ee1fb6de07ecdbaa64b56a99da22c08",
-    ),
-    (
-        "PropList.txt",
-        "130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd",
-    ),
+const VERSION: &str = "17.0.0";
+const INPUTS: [&str; 4] = [
+    "UnicodeData.txt",
+    "SpecialCasing.txt",
+    "DerivedCoreProperties.txt",
+    "PropList.txt",
 ];
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InputManifest {
+    version: String,
+    inputs: BTreeMap<String, String>,
+}
+
+fn pinned_inputs() -> io::Result<InputManifest> {
+    let manifest: InputManifest =
+        serde_json::from_str(include_str!("../../data/unicode-inputs.json")).map_err(|error| {
+            invalid(format!("invalid generated Unicode input manifest: {error}"))
+        })?;
+    if manifest.version != VERSION
+        || manifest.inputs.len() != INPUTS.len()
+        || INPUTS
+            .iter()
+            .any(|name| !manifest.inputs.contains_key(*name))
+    {
+        return Err(invalid(
+            "Unicode input manifest version or file set differs",
+        ));
+    }
+    Ok(manifest)
+}
+
+/// Explicit maintenance operation. Normal table generation only verifies the
+/// committed manifest; it never regenerates its own expected checksums.
+fn write_manifest(input: &Path, output: &Path) -> io::Result<()> {
+    let mut inputs = BTreeMap::new();
+    for name in INPUTS {
+        let bytes = fs::read(input.join(name))?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| invalid("UCD input is not UTF-8"))?;
+        if name != "UnicodeData.txt" {
+            let stem = name.trim_end_matches(".txt");
+            if !text
+                .lines()
+                .take(8)
+                .any(|line| line.contains(&format!("{stem}-{VERSION}.txt")))
+            {
+                return Err(invalid(format!(
+                    "{name} does not declare Unicode {VERSION}"
+                )));
+            }
+        }
+        inputs.insert(name.to_owned(), format!("{:x}", Sha256::digest(&bytes)));
+    }
+    let mut generated = serde_json::to_vec_pretty(&InputManifest {
+        version: VERSION.into(),
+        inputs,
+    })
+    .map_err(io::Error::other)?;
+    generated.push(b'\n');
+    fs::write(output, generated)
+}
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -47,11 +91,12 @@ fn mapping(text: &str) -> io::Result<String> {
         .collect()
 }
 fn run(input: &Path, output: &Path) -> io::Result<()> {
+    let manifest = pinned_inputs()?;
     let mut properties = vec![0u8; 0x110000];
     let mut lower = BTreeMap::<u32, String>::new();
     let mut upper = BTreeMap::<u32, String>::new();
-    for (name, hash) in INPUTS {
-        let text = read(input, name, hash)?;
+    for name in INPUTS {
+        let text = read(input, name, &manifest.inputs[name])?;
         match name {
             "UnicodeData.txt" => {
                 for line in text.lines() {
@@ -162,15 +207,71 @@ fn run(input: &Path, output: &Path) -> io::Result<()> {
 }
 fn main() -> std::process::ExitCode {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.len() != 2 {
-        eprintln!("usage: unicode-data INPUT_DIRECTORY OUTPUT_DIRECTORY");
-        return std::process::ExitCode::from(1);
-    }
-    match run(&PathBuf::from(&arguments[0]), &PathBuf::from(&arguments[1])) {
+    let result = match arguments.as_slice() {
+        [input, output] => run(&PathBuf::from(input), &PathBuf::from(output)),
+        [command, input, output] if command == "manifest" => {
+            write_manifest(&PathBuf::from(input), &PathBuf::from(output))
+        }
+        _ => {
+            eprintln!(
+                "usage: unicode-data INPUT_DIRECTORY OUTPUT_DIRECTORY\n       unicode-data manifest INPUT_DIRECTORY OUTPUT_MANIFEST"
+            );
+            return std::process::ExitCode::from(1);
+        }
+    };
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             std::process::ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inputs(directory: &Path) {
+        for name in INPUTS {
+            let text = if name == "UnicodeData.txt" {
+                "offline Unicode data\n".to_owned()
+            } else {
+                format!("# {}-{VERSION}.txt\n", name.trim_end_matches(".txt"))
+            };
+            fs::write(directory.join(name), text).unwrap();
+        }
+    }
+
+    #[test]
+    fn generated_values_detect_changed_inputs_without_rebaselining() {
+        let directory = tempfile::tempdir().unwrap();
+        inputs(directory.path());
+        let output = directory.path().join("inputs.json");
+        write_manifest(directory.path(), &output).unwrap();
+        let before = fs::read(&output).unwrap();
+        let manifest: InputManifest = serde_json::from_slice(&before).unwrap();
+        assert_eq!(manifest.version, VERSION);
+        assert_eq!(manifest.inputs.len(), INPUTS.len());
+        for name in INPUTS {
+            read(directory.path(), name, &manifest.inputs[name]).unwrap();
+        }
+        fs::write(directory.path().join(INPUTS[0]), "changed data").unwrap();
+        assert!(read(directory.path(), INPUTS[0], &manifest.inputs[INPUTS[0]]).is_err());
+        assert_eq!(fs::read(output).unwrap(), before);
+    }
+
+    #[test]
+    fn manifest_generation_rejects_another_unicode_version() {
+        let directory = tempfile::tempdir().unwrap();
+        inputs(directory.path());
+        fs::write(
+            directory.path().join("PropList.txt"),
+            "# PropList-16.0.0.txt\n",
+        )
+        .unwrap();
+        let output = directory.path().join("inputs.json");
+        assert!(write_manifest(directory.path(), &output).is_err());
+        assert!(!output.exists());
     }
 }
