@@ -244,6 +244,7 @@ impl Evaluator {
                                     && names.is_disjoint(&child)
                                 {
                                     let owner = TypeExpr {
+                                        hir_id: None,
                                         kind: TypeKind::Name {
                                             path: vec![declaration.name.clone()],
                                             arguments: vec![],
@@ -599,6 +600,7 @@ impl Evaluator {
                 .any(|variant| name == format!("{owner}::{}", variant.name));
         if same && !matches!(selected.kind, ExprKind::Generic { .. }) {
             *selected = Expr {
+                hir_id: None,
                 kind: ExprKind::Generic {
                     base: Box::new(selected.clone()),
                     arguments: arguments.clone(),
@@ -725,6 +727,7 @@ impl Evaluator {
                     });
                     if let Some(owner) = owner {
                         let ty = TypeExpr {
+                            hir_id: None,
                             text: String::new(),
                             kind: TypeKind::Name {
                                 path: vec![owner],
@@ -1006,11 +1009,13 @@ pub(super) fn accessor_lambda(path: &[AccessorSegment], span: Span) -> Expr {
         end: span.start + 1,
     };
     let mut projected = Expr {
+        hir_id: None,
         kind: ExprKind::Name(name.clone()),
         span: origin,
     };
     for segment in path {
         projected = Expr {
+            hir_id: None,
             kind: ExprKind::Field {
                 base: Box::new(projected),
                 field: segment.field.clone(),
@@ -1024,9 +1029,11 @@ pub(super) fn accessor_lambda(path: &[AccessorSegment], span: Span) -> Expr {
         };
     }
     Expr {
+        hir_id: None,
         kind: ExprKind::Lambda {
             parameters: vec![Parameter {
                 pattern: Pattern {
+                    hir_id: None,
                     kind: PatternKind::Name(name),
                     span: origin,
                 },

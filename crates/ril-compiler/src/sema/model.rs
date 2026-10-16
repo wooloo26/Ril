@@ -472,6 +472,7 @@ impl CallableReturnBound {
             predecessors: vec![],
             target: Ty::Unknown,
             syntax: TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 kind: ril_syntax::ast::TypeKind::Tuple(vec![]),
                 span,
@@ -954,6 +955,7 @@ pub struct BindingInfo {
 }
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
+    pub hir_id: Option<ril_compiler_core::ids::StmtId>,
     pub definition: ril_compiler_core::ids::DefinitionId,
     pub lexical_owner: Option<ril_compiler_core::ids::CallableOwner>,
     /// Complete declaration-time interpretation; never merged with a caller.
@@ -970,6 +972,7 @@ pub struct FunctionInfo {
 }
 #[derive(Debug, Clone)]
 pub struct ClosureInfo {
+    pub hir_id: Option<ril_compiler_core::ids::ExprId>,
     pub site: Option<ril_compiler_core::ids::ClosureSiteId>,
     pub creation_invocation: Option<super::copy_templates::InstanceId>,
     pub creation_closure: Option<super::effect_identity::ClosureInvocationId>,
@@ -1310,6 +1313,7 @@ mod callable_return_tests {
             predecessors: vec![],
             target,
             syntax: TypeExpr {
+                hir_id: None,
                 text: "T".into(),
                 kind: TypeKind::Name {
                     path: vec!["T".into()],

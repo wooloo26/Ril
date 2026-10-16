@@ -26,6 +26,9 @@ pub use scoped_source_identity::*;
 
 #[derive(Debug, Clone, Default)]
 pub struct Graph {
+    /// Static HIR identities indexed exactly like `values`. Dynamic invocation
+    /// identity remains in `invocation_expressions` and call records.
+    pub expression_sources: Vec<Option<ril_compiler_core::ids::ExprId>>,
     pub call_arguments: Vec<CallArguments>,
     pub invocation_expressions: Vec<InvocationExpression>,
     pub builtin_source_observations: Vec<BuiltinSourceObservation>,
@@ -1181,6 +1184,7 @@ pub struct CopyReference {
 #[derive(Debug, Clone)]
 pub struct CopyCallEvent {
     pub id: CopyCallEventId,
+    pub source_id: Option<ril_compiler_core::ids::ExprId>,
     pub callee_expression: Option<usize>,
     pub result_expression: Option<usize>,
     pub owner: Option<CallableOwner>,

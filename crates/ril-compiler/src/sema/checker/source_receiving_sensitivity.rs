@@ -257,6 +257,7 @@ impl Walk<'_> {
                     return self.ty(&schema, locals, caller, depth + 1);
                 }
                 let head = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: syntax.span,
                     kind: TypeKind::Name {
@@ -364,6 +365,7 @@ mod tests {
         let expression = ril_syntax::parse_expression("if true{int}else{str}", FileId(0));
         assert!(expression.diagnostics.is_empty() && !expression.incomplete);
         declaration.value = Some(TypeExpr {
+            hir_id: None,
             text: String::new(),
             span: declaration.span,
             kind: TypeKind::Computation(Box::new(expression.expression)),

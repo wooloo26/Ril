@@ -72,6 +72,7 @@ fn syntax_and_specialization_keys_must_agree_on_empty_nested_array_dimensions() 
         unreachable!()
     };
     **element = ril_syntax::ast::TypeExpr {
+        hir_id: None,
         text: String::new(),
         span: element.span,
         kind: TypeKind::Name {

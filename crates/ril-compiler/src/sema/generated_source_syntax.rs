@@ -25,6 +25,7 @@ pub(crate) fn iterator_lambda(
     };
     let parameter = Parameter {
         pattern: Pattern {
+            hir_id: None,
             kind: PatternKind::Name("ril__iter_state".into()),
             span: span(1, 2)?,
         },
@@ -46,6 +47,7 @@ pub(crate) fn iterator_lambda(
             label: None,
             mode: ParameterMode::Read,
             value: Expr {
+                hir_id: None,
                 kind: ExprKind::Name(name),
                 span: actual_span,
             },
@@ -53,10 +55,12 @@ pub(crate) fn iterator_lambda(
         });
     }
     Some(Expr {
+        hir_id: None,
         span: span(0, 32)?,
         kind: ExprKind::Lambda {
             parameters: vec![parameter],
             return_type: Some(TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: span(2, 3)?,
                 kind: TypeKind::Name {
@@ -66,9 +70,11 @@ pub(crate) fn iterator_lambda(
             }),
             annotations: vec![],
             body: Box::new(Expr {
+                hir_id: None,
                 span: span(4, 16)?,
                 kind: ExprKind::Call {
                     callee: Box::new(Expr {
+                        hir_id: None,
                         kind: ExprKind::Name(identity.into()),
                         span: span(5, 6)?,
                     }),

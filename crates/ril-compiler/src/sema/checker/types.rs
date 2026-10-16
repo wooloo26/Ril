@@ -1679,6 +1679,7 @@ impl Checker {
                     };
                     if let Some(length) = length
                         && !normalized_static_argument(&TypeExpr {
+                            hir_id: None,
                             kind: TypeKind::Computation(length.clone()),
                             text: String::new(),
                             span: length.span,
@@ -3038,6 +3039,7 @@ mod tests {
     fn incomplete_source_normalization_never_publishes_a_canonical_key() {
         let checker = Checker::new(FileId(0));
         let mut syntax = TypeExpr {
+            hir_id: None,
             kind: TypeKind::Name {
                 path: vec!["int".into()],
                 arguments: vec![],
@@ -3051,6 +3053,7 @@ mod tests {
         };
         for _ in 0..130 {
             syntax = TypeExpr {
+                hir_id: None,
                 kind: TypeKind::Array {
                     length: None,
                     element: Box::new(syntax),

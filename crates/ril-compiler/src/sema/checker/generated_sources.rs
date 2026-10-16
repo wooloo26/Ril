@@ -620,11 +620,13 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
             "generated source receipt is not the actual normal creation result",
         )?;
         let expected_callable = TypeExpr {
+            hir_id: None,
             text: String::new(),
             span: source.syntax.span,
             kind: TypeKind::Callable {
                 parameters: parameters.clone(),
                 result: Some(Box::new(TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: source.syntax.span,
                     kind: TypeKind::Name {

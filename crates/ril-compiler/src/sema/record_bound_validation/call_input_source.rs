@@ -33,7 +33,7 @@ pub(super) fn original_operand_source_key(
     let origins: Vec<_> = sites
         .calls
         .iter()
-        .filter(|site| Some(site.owner) == event.owner && site.expression.span == event.span)
+        .filter(|site| Some(site.owner) == event.owner && event.matches_source(site.expression))
         .collect();
     let [origin] = origins.as_slice() else {
         return Err("source operand origin has no unique actual Call".into());
@@ -58,7 +58,8 @@ pub(super) fn original_operand_source_key(
     };
     let context = context.context;
     require(
-        callee_fact.span == callee.span
+        callee_fact.source_id.is_some()
+            && callee_fact.source_id == callee.hir_id
             && context.owner == event.owner
             && context.invocation == event.parent,
         "source operand callee is borrowed from another occurrence",
@@ -111,7 +112,8 @@ pub(super) fn original_operand_source_key(
         .ok_or_else(|| "source operand root token is outside its arena".to_owned())?;
     require(
         token.allocation_epoch <= facts.allocation_history.len()
-            && value.span == syntax.span
+            && value.source_id.is_some()
+            && value.source_id == syntax.hir_id
             && facts
                 .invocation_expressions
                 .iter()
@@ -133,116 +135,16 @@ pub(super) fn input_select_key(
     selected: &BTreeMap<String, ArgumentKey>,
     depth: usize,
 ) -> Check<ArgumentKey> {
-    fn text(value: &str, work: &mut usize) -> Check<String> {
-        *work = work
-            .checked_sub(value.len().div_ceil(32))
-            .ok_or_else(|| "call input source text exceeds its substitution budget".to_owned())?;
-        Ok(value.to_owned())
-    }
-    fn select(
-        key: &ArgumentKey,
-        selected: &BTreeMap<String, ArgumentKey>,
-        work: &mut usize,
-        depth: usize,
-    ) -> Check<ArgumentKey> {
-        require(
-            depth < 64 && *work > 0,
-            "call input substitution/composition exceeds its source budget",
-        )?;
-        *work -= 1;
-        if let ArgumentKey::Binder { identity, .. } = key
-            && let Some(replacement) = selected.get(identity)
-            && replacement != key
-        {
-            return select(replacement, selected, work, depth + 1);
-        }
-        let mut child = |key: &ArgumentKey| select(key, selected, work, depth + 1);
-        Ok(match key {
-            ArgumentKey::Binder { identity, sort } => ArgumentKey::Binder {
-                identity: text(identity, work)?,
-                sort: *sort,
-            },
-            ArgumentKey::Closed(value) => ArgumentKey::Closed(text(value, work)?),
-            ArgumentKey::Record { fields, row } => {
-                let mut complete_fields = Vec::new();
-                for (name, mode, key) in fields {
-                    let name = text(name, work)?;
-                    let key = select(key, selected, work, depth + 1)?;
-                    complete_fields.push((name, *mode, key));
-                }
-                let mut fields = complete_fields;
-                let mut row = row
-                    .as_ref()
-                    .map(|row| select(row, selected, work, depth + 1).map(Box::new))
-                    .transpose()?;
-                if let Some(tail) = row.take() {
-                    match *tail {
-                        ArgumentKey::Record {
-                            fields: extra,
-                            row: rest,
-                        } => {
-                            for field in extra {
-                                require(
-                                    !fields.iter().any(|old| old.0 == field.0),
-                                    "input row remainder overlaps its genuine header fields",
-                                )?;
-                                fields.push(field);
-                            }
-                            row = rest;
-                        }
-                        other => row = Some(Box::new(other)),
-                    }
-                }
-                fields.sort_by(|left, right| left.0.cmp(&right.0));
-                ArgumentKey::Record { fields, row }
-            }
-            ArgumentKey::Array { length, element } => {
-                let element = child(element)?;
-                ArgumentKey::Array {
-                    length: length
-                        .as_ref()
-                        .map(|length| text(length, work))
-                        .transpose()?,
-                    element: Box::new(element),
-                }
-            }
-            ArgumentKey::Map { key, value } => ArgumentKey::Map {
-                key: Box::new(child(key)?),
-                value: Box::new(child(value)?),
-            },
-            ArgumentKey::Name { name, arguments } => {
-                let arguments = arguments.iter().map(&mut child).collect::<Check<_>>()?;
-                ArgumentKey::Name {
-                    name: text(name, work)?,
-                    arguments,
-                }
-            }
-            ArgumentKey::Tuple(items) => {
-                ArgumentKey::Tuple(items.iter().map(&mut child).collect::<Check<_>>()?)
-            }
-            ArgumentKey::Callable {
-                parameters,
-                result,
-                annotations,
-            } => {
-                let parameters = parameters
-                    .iter()
-                    .map(|(mode, key)| Ok((*mode, child(key)?)))
-                    .collect::<Check<_>>()?;
-                let result = Box::new(child(result)?);
-                let annotations = annotations
-                    .iter()
-                    .map(|annotation| text(annotation, work))
-                    .collect::<Check<_>>()?;
-                ArgumentKey::Callable {
-                    parameters,
-                    result,
-                    annotations,
-                }
-            }
-        })
-    }
-    select(key, selected, &mut 4096, depth)
+    require(
+        depth < 64,
+        "call input substitution exceeds its source depth budget",
+    )?;
+    crate::sema::source_types::substitute_key(
+        key,
+        selected,
+        &mut crate::sema::source_types::WorkLimit::new(4096),
+    )
+    .map_err(|error| format!("call input source substitution: {error}"))
 }
 
 pub(super) fn has_sources(facts: &SemanticFacts) -> Check<bool> {
@@ -475,7 +377,7 @@ impl Replay<'_> {
         let current: Vec<_> = sites
             .calls
             .iter()
-            .filter(|site| Some(site.owner) == event.owner && site.expression.span == event.span)
+            .filter(|site| Some(site.owner) == event.owner && event.matches_source(site.expression))
             .collect();
         let [current] = current.as_slice() else {
             return Err("call input operand interval has no unique actual Source call".into());
@@ -502,7 +404,9 @@ impl Replay<'_> {
             let later: Vec<_> = sites
                 .calls
                 .iter()
-                .filter(|site| Some(site.owner) == next.owner && site.expression.span == next.span)
+                .filter(|site| {
+                    Some(site.owner) == next.owner && next.matches_source(site.expression)
+                })
                 .collect();
             let [later] = later.as_slice() else {
                 return Err("call input interval has no unique following Source call".into());
@@ -720,7 +624,8 @@ impl Replay<'_> {
                             .expressions
                             .get(row.expression)
                             .is_some_and(|fact| {
-                                fact.span == expression.span
+                                fact.source_id.is_some()
+                                    && fact.source_id == expression.hir_id
                                     && fact.value.cause == value.cause
                                     && fact.value.ty == value.ty
                             })
@@ -826,10 +731,11 @@ impl Replay<'_> {
                 if row.context != context {
                     return None;
                 }
-                self.facts
-                    .expressions
-                    .get(row.expression)
-                    .filter(|fact| fact.span == expression.span && fact.value.cause == cause)
+                self.facts.expressions.get(row.expression).filter(|fact| {
+                    fact.source_id.is_some()
+                        && fact.source_id == expression.hir_id
+                        && fact.value.cause == cause
+                })
             })
             .collect();
         let [fact] = matching.as_slice() else {
@@ -907,7 +813,8 @@ impl Replay<'_> {
                                     .expressions
                                     .get(row.expression)
                                     .is_some_and(|fact| {
-                                        fact.span == key.span
+                                        fact.source_id.is_some()
+                                            && fact.source_id == key.hir_id
                                             && fact.value.constant
                                                 == Some(super::super::model::Constant::Integer(
                                                     i128::from(coordinate),
@@ -1190,6 +1097,7 @@ impl Replay<'_> {
                     parameter.default = None;
                 }
                 let syntax = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: expression.span,
                     kind: TypeKind::Callable {
@@ -1214,7 +1122,7 @@ impl Replay<'_> {
                 .copy_call_events
                 .iter()
                 .filter(|call| {
-                    call.span == expression.span
+                    call.matches_source(expression)
                         && call.owner == context.owner
                         && call.parent == context.invocation
                 })
@@ -1247,7 +1155,8 @@ impl Replay<'_> {
                                 "call input returned Source lost its exact callee".to_owned()
                             })?;
                         require(
-                            callee.span == callee_syntax.span
+                            callee.source_id.is_some()
+                                && callee.source_id == callee_syntax.hir_id
                                 && self
                                     .facts
                                     .invocation_expressions
@@ -1361,7 +1270,7 @@ impl Replay<'_> {
         for site in &sites.calls {
             require(
                 self.facts.copy_call_events.iter().any(|event| {
-                    event.owner == Some(site.owner) && event.span == site.expression.span
+                    event.owner == Some(site.owner) && event.matches_source(site.expression)
                 }),
                 "call input Source lost every actual event for a genuine Call",
             )
@@ -1373,7 +1282,7 @@ impl Replay<'_> {
                     .calls
                     .iter()
                     .filter(|site| {
-                        event.owner == Some(site.owner) && event.span == site.expression.span
+                        event.owner == Some(site.owner) && event.matches_source(site.expression)
                     })
                     .collect();
                 let [site] = matching.as_slice() else {
@@ -1400,7 +1309,8 @@ impl Replay<'_> {
                     return Err("call input callee lacks its unique emission context".into());
                 };
                 require(
-                    callee.span == syntax.span
+                    callee.source_id.is_some()
+                        && callee.source_id == syntax.hir_id
                         && row.context.owner == event.owner
                         && row.context.invocation == event.parent,
                     "call input callee token belongs to another Source occurrence or caller",
@@ -1601,7 +1511,7 @@ impl Replay<'_> {
                     .calls
                     .iter()
                     .filter(|site| {
-                        Some(site.owner) == event.owner && site.expression.span == event.span
+                        Some(site.owner) == event.owner && event.matches_source(site.expression)
                     })
                     .collect();
                 let [site] = source_sites.as_slice() else {
@@ -1681,7 +1591,8 @@ impl Replay<'_> {
                                     "call input supplied expression token is missing".to_owned()
                                 })?;
                             require(
-                                expression.span == syntax.span
+                                expression.source_id.is_some()
+                                    && expression.source_id == syntax.hir_id
                                     && event
                                         .callee_expression
                                         .is_some_and(|callee| callee < token.expression)
@@ -1868,7 +1779,8 @@ impl Replay<'_> {
                             "public callable input token is outside its arena".to_owned()
                         })?;
                     require(
-                        value.span == actual_syntax.span
+                        value.source_id.is_some()
+                            && value.source_id == actual_syntax.hir_id
                             && token.allocation_epoch <= self.facts.allocation_history.len()
                             && event
                                 .callee_expression

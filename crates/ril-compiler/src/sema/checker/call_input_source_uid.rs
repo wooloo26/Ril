@@ -37,7 +37,8 @@ impl Checker {
                         .expression_facts
                         .get(row.expression)
                         .is_some_and(|fact| {
-                            fact.span == syntax.span
+                            fact.source_id.is_some()
+                                && fact.source_id == syntax.hir_id
                                 && fact.value.cause == value.cause
                                 && fact.value.ty == value.ty
                         })
@@ -116,9 +117,11 @@ impl Checker {
                 if row.context != context {
                     return None;
                 }
-                self.expression_facts
-                    .get(row.expression)
-                    .filter(|fact| fact.span == syntax.span && fact.value.cause == cause)
+                self.expression_facts.get(row.expression).filter(|fact| {
+                    fact.source_id.is_some()
+                        && fact.source_id == syntax.hir_id
+                        && fact.value.cause == cause
+                })
             })
             .collect();
         let [observation] = observations.as_slice() else {
@@ -168,7 +171,8 @@ impl Checker {
                             return None;
                         }
                         self.expression_facts.get(row.expression).filter(|fact| {
-                            fact.span == key.span
+                            fact.source_id.is_some()
+                                && fact.source_id == key.hir_id
                                 && fact.value.constant
                                     == Some(Constant::Integer(i128::from(coordinate)))
                         })

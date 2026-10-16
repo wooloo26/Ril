@@ -104,11 +104,13 @@ impl Checker {
             return None;
         }
         let shell = TypeExpr {
+            hir_id: None,
             text: String::new(),
             span: context.span,
             kind: TypeKind::Array {
                 length: length.clone(),
                 element: Box::new(TypeExpr {
+                    hir_id: None,
                     text: "()".into(),
                     span: context.span,
                     kind: TypeKind::Tuple(vec![]),
@@ -361,6 +363,7 @@ pub(super) fn qualified_source_aliases_in(
         _ => return None,
     };
     Some(TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind,
         span: syntax.span,
@@ -468,6 +471,7 @@ pub(super) fn resolved_symbolic_names(
                 // below. Reuse the established nominal/builtin name policy
                 // rather than maintaining a second builtin allow-list.
                 let head = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: syntax.span,
                     kind: TypeKind::Name {

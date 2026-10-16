@@ -21,6 +21,7 @@ pub(super) fn parameters(name: &str, span: Span) -> Option<Vec<Parameter>> {
             .enumerate()
             .map(|(index, label)| Parameter {
                 pattern: Pattern {
+                    hir_id: None,
                     kind: PatternKind::Name((*label).into()),
                     span,
                 },
@@ -38,6 +39,7 @@ pub(super) fn parameters(name: &str, span: Span) -> Option<Vec<Parameter>> {
 }
 fn named(name: &str, span: Span) -> TypeExpr {
     TypeExpr {
+        hir_id: None,
         text: name.into(),
         kind: TypeKind::Name {
             path: vec![name.into()],
@@ -48,6 +50,7 @@ fn named(name: &str, span: Span) -> TypeExpr {
 }
 fn array(element: TypeExpr, span: Span) -> TypeExpr {
     TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind: TypeKind::Array {
             element: Box::new(element),
@@ -59,6 +62,7 @@ fn array(element: TypeExpr, span: Span) -> TypeExpr {
 fn callable(inputs: Vec<(ParameterMode, TypeExpr)>, output: TypeExpr, span: Span) -> TypeExpr {
     let mutable = inputs.iter().any(|(mode, _)| *mode != ParameterMode::Read);
     TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind: TypeKind::Callable {
             parameters: inputs
@@ -66,6 +70,7 @@ fn callable(inputs: Vec<(ParameterMode, TypeExpr)>, output: TypeExpr, span: Span
                 .enumerate()
                 .map(|(index, (mode, ty))| Parameter {
                     pattern: Pattern {
+                        hir_id: None,
                         kind: PatternKind::Name(format!("ril__parallel_{index}")),
                         span,
                     },
@@ -134,6 +139,7 @@ impl Checker {
         let read = |ty: TypeExpr| (ParameterMode::Read, ty);
         let first = arguments[0].clone();
         let unit = TypeExpr {
+            hir_id: None,
             text: "()".into(),
             kind: TypeKind::Tuple(vec![]),
             span,
@@ -234,6 +240,7 @@ fn parallel_output(name: &str, parameters: &[Parameter], span: Span) -> Option<T
                 return None;
             };
             TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 kind: TypeKind::Optional(element.clone()),
                 span,
@@ -242,6 +249,7 @@ fn parallel_output(name: &str, parameters: &[Parameter], span: Span) -> Option<T
         "Parallel::any" => named("bool", span),
         "Parallel::fold" => callback_result(&parameters[1])?,
         "Parallel::join" | "Parallel::join3" => TypeExpr {
+            hir_id: None,
             text: String::new(),
             kind: TypeKind::Tuple(
                 parameters
@@ -252,6 +260,7 @@ fn parallel_output(name: &str, parameters: &[Parameter], span: Span) -> Option<T
             span,
         },
         "Parallel::for_each" => TypeExpr {
+            hir_id: None,
             text: "()".into(),
             kind: TypeKind::Tuple(vec![]),
             span,

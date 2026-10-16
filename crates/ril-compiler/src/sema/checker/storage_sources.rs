@@ -13,11 +13,18 @@ pub(super) struct State {
     bindings: Vec<BindingSource>,
     writes: Vec<StorageWrite>,
     by_binding: BTreeMap<BindingId, usize>,
+    types: crate::sema::source_types::LiveSourceTypes,
 }
 
 impl State {
-    pub(super) fn into_parts(self) -> (Vec<BindingSource>, Vec<StorageWrite>) {
-        (self.bindings, self.writes)
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        Vec<BindingSource>,
+        Vec<StorageWrite>,
+        crate::sema::source_types::SourceTypeIndex,
+    ) {
+        (self.bindings, self.writes, self.types.freeze())
     }
 }
 
@@ -112,6 +119,12 @@ impl Checker {
                     path: Vec::new(),
                     key: None,
                 });
+                if self.storage_sources.types.record(id, None).is_err() {
+                    self.unsupported(
+                        binding.pattern.span,
+                        "storage source index could not record the original unknown view",
+                    );
+                }
                 continue;
             };
             let key = if *known {
@@ -124,6 +137,12 @@ impl Checker {
             self.storage_sources
                 .by_binding
                 .insert(id, self.storage_sources.bindings.len());
+            if self.storage_sources.types.record(id, key.as_ref()).is_err() {
+                self.unsupported(
+                    binding.pattern.span,
+                    "storage source graph admission exceeded its metadata budget",
+                );
+            }
             self.storage_sources.bindings.push(BindingSource {
                 binding: id,
                 context,
@@ -151,8 +170,7 @@ impl Checker {
             return None;
         }
         let id = *value.sources.first()?;
-        let entry = self
-            .storage_sources
+        self.storage_sources
             .bindings
             .get(*self.storage_sources.by_binding.get(&id)?)?;
         if value.sources != BTreeSet::from([id])
@@ -164,11 +182,10 @@ impl Checker {
             return Some(None);
         }
         Some(
-            entry
-                .key
-                .as_ref()
-                .and_then(|key| project_key(key, &path))
-                .cloned(),
+            self.storage_sources
+                .types
+                .projected_binding_key(id, &path)
+                .ok(),
         )
     }
 
@@ -225,7 +242,7 @@ impl Checker {
         });
         let fresh = source_reception::construction(rhs_syntax, &mut 4096);
         let answer = expected.as_ref().and_then(|expected| {
-            if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+            if crate::sema::source_types::key_is_coordinate_free(expected) {
                 return Some(true);
             }
             // Arithmetic compound assignment is checked separately and cannot

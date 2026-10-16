@@ -150,6 +150,7 @@ impl Checker {
                         let mut names = BTreeSet::new();
                         expressions::collect_names(
                             &Expr {
+                                hir_id: None,
                                 kind: ExprKind::Block(body.clone()),
                                 span: body.span,
                             },

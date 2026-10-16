@@ -1404,6 +1404,11 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
             result: ty(&mut graph.types, &operation.result),
         })
         .collect();
+    graph.expression_sources = facts
+        .expressions
+        .iter()
+        .map(|expression| expression.source_id)
+        .collect();
     graph.values = facts
         .expressions
         .iter()
@@ -1886,6 +1891,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .iter()
         .map(|event| p::CopyCallEvent {
             id: p::CopyCallEventId(event.id.0),
+            source_id: event.source_id,
             callee_expression: event.callee_expression,
             result_expression: event.result_expression,
             owner: event.owner,
@@ -2892,6 +2898,7 @@ mod contract_graph_tests {
         input.source_type_witness = Some(tampered);
         let facts = SemanticFacts {
             expressions: vec![crate::sema::ExpressionFact {
+                source_id: None,
                 span: declaration.span,
                 value: input,
             }],
@@ -2976,6 +2983,7 @@ mod contract_graph_tests {
                 },
                 identity: "File::write".into(),
                 full_header: ril_syntax::ast::TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: function.span,
                     kind: ril_syntax::ast::TypeKind::Callable {
@@ -3052,6 +3060,7 @@ mod contract_graph_tests {
                 argument_of: Some((c::CopyCallEventId(8), 0)),
             }],
             expressions: vec![crate::sema::ExpressionFact {
+                source_id: None,
                 span,
                 value: input.clone(),
             }],

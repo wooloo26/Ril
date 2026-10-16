@@ -1,6 +1,9 @@
 //! Owned source syntax. Names are unresolved and every node retains byte spans.
 use crate::SyntaxNode;
-use ril_compiler_core::source::Span;
+use ril_compiler_core::{
+    ids::{ExprId, GenericParamId, PatternId, StmtId, TypeExprId},
+    source::Span,
+};
 
 pub trait AstNode: Sized {
     fn cast(node: SyntaxNode) -> Option<Self>;
@@ -12,10 +15,26 @@ pub struct Program {
     pub statements: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
+    /// Assigned by identified HIR lowering. Clones retain the occurrence;
+    /// source structural equality deliberately does not compare this identity.
+    pub hir_id: Option<StmtId>,
+}
+impl PartialEq for Stmt {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.span == other.span
+    }
+}
+impl std::fmt::Debug for Stmt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Stmt")
+            .field("kind", &self.kind)
+            .field("span", &self.span)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,12 +114,31 @@ pub struct Function {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 pub struct GenericParameter {
     pub name: String,
     pub bound: Option<TypeExpr>,
     pub default: Option<TypeExpr>,
     pub span: Span,
+    pub hir_id: Option<GenericParamId>,
+}
+impl PartialEq for GenericParameter {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.bound == other.bound
+            && self.default == other.default
+            && self.span == other.span
+    }
+}
+impl std::fmt::Debug for GenericParameter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericParameter")
+            .field("name", &self.name)
+            .field("bound", &self.bound)
+            .field("default", &self.default)
+            .field("span", &self.span)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -135,11 +173,26 @@ pub struct Annotation {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 pub struct TypeExpr {
     pub text: String,
     pub kind: TypeKind,
     pub span: Span,
+    pub hir_id: Option<TypeExprId>,
+}
+impl PartialEq for TypeExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text && self.kind == other.kind && self.span == other.span
+    }
+}
+impl std::fmt::Debug for TypeExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TypeExpr")
+            .field("text", &self.text)
+            .field("kind", &self.kind)
+            .field("span", &self.span)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,10 +314,24 @@ pub struct Block {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
+    pub hir_id: Option<ExprId>,
+}
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.span == other.span
+    }
+}
+impl std::fmt::Debug for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Expr")
+            .field("kind", &self.kind)
+            .field("span", &self.span)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,10 +504,24 @@ pub struct HandlerArm {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Eq)]
 pub struct Pattern {
     pub kind: PatternKind,
     pub span: Span,
+    pub hir_id: Option<PatternId>,
+}
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.span == other.span
+    }
+}
+impl std::fmt::Debug for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pattern")
+            .field("kind", &self.kind)
+            .field("span", &self.span)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

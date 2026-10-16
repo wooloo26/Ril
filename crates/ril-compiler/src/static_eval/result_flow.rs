@@ -1902,7 +1902,9 @@ impl Engine<'_> {
             }
             PatternKind::Literal(literal) => self.pattern(
                 &Pattern {
+                    hir_id: None,
                     kind: PatternKind::Value(Box::new(Expr {
+                        hir_id: None,
                         kind: ExprKind::Literal(literal.clone()),
                         span: pattern.span,
                     })),

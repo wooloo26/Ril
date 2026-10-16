@@ -116,11 +116,13 @@ fn normalize_block(block: &mut Block) {
             label: None,
             mode: ParameterMode::Read,
             value: Expr {
+                hir_id: None,
                 kind: ExprKind::Lambda {
                     parameters: vec![],
                     return_type: None,
                     annotations: vec![],
                     body: Box::new(Expr {
+                        hir_id: None,
                         kind: ExprKind::Block(remainder),
                         span: remainder_span,
                     }),
@@ -136,6 +138,7 @@ fn normalize_block(block: &mut Block) {
         } else {
             let span = header.span;
             header = Expr {
+                hir_id: None,
                 kind: ExprKind::Call {
                     callee: Box::new(header),
                     arguments: vec![final_argument],
@@ -526,6 +529,7 @@ mod tests {
         assert_eq!(remainder(&arguments[0]).statements.len(), 1);
 
         let mut computation = TypeExpr {
+            hir_id: None,
             text: "computed".into(),
             kind: TypeKind::Computation(Box::new(raw_default)),
             span: default.span,

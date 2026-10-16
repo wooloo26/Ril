@@ -31,7 +31,10 @@ impl Checker {
             .iter()
             .filter_map(|row| {
                 let fact = self.expression_facts.get(row.expression)?;
-                (row.context == context && fact.span == syntax.span && fact.value == *value)
+                (row.context == context
+                    && fact.source_id.is_some()
+                    && fact.source_id == syntax.hir_id
+                    && fact.value == *value)
                     .then_some(row.expression)
             })
             .collect();
@@ -49,7 +52,9 @@ impl Checker {
                     && self
                         .expression_facts
                         .get(row.expression)
-                        .is_some_and(|fact| fact.span == syntax.span))
+                        .is_some_and(|fact| {
+                            fact.source_id.is_some() && fact.source_id == syntax.hir_id
+                        }))
                 .then_some(row.expression + 1)
             })
             .max()
@@ -68,7 +73,9 @@ impl Checker {
                                 .map(|fact| (row.expression, fact))
                         })
                         .flatten()
-                        .filter(|(_, fact)| fact.span == child.span)
+                        .filter(|(_, fact)| {
+                            fact.source_id.is_some() && fact.source_id == child.hir_id
+                        })
                 })
                 .collect();
             let [(index, fact)] = candidates.as_slice() else {

@@ -58,6 +58,7 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
     // Callable/Array Ty is never reified into a complete source schema.
     let (_, parameters) = standard::builtin_callable_signature(canonical_name, span)?;
     let named = |name: &str| TypeExpr {
+        hir_id: None,
         text: name.into(),
         span,
         kind: TypeKind::Name {
@@ -66,6 +67,7 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
         },
     };
     let result = |success: TypeExpr, error: &str| TypeExpr {
+        hir_id: None,
         text: String::new(),
         span,
         kind: TypeKind::Name {
@@ -79,6 +81,7 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
         Identity::ProcessWait => result(named("Process::ExitStatus"), "Process::ProcessError"),
         Identity::ProcessTerminate => result(
             TypeExpr {
+                hir_id: None,
                 text: "()".into(),
                 span,
                 kind: TypeKind::Tuple(vec![]),
@@ -89,6 +92,7 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
     Some(Contract {
         identity,
         source: TypeExpr {
+            hir_id: None,
             text: String::new(),
             span,
             kind: TypeKind::Callable {

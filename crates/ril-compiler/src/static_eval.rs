@@ -241,6 +241,7 @@ pub(crate) fn normalize_constructor_arguments(
             payloads.insert(declaration.name.clone(), payload);
         } else {
             let owner = TypeExpr {
+                hir_id: None,
                 kind: TypeKind::Name {
                     path: vec![declaration.name.clone()],
                     arguments: arguments.clone(),
@@ -582,6 +583,7 @@ impl Evaluator {
                     };
                 }
                 let ty = TypeExpr {
+                    hir_id: None,
                     text: name.clone(),
                     kind: TypeKind::Name {
                         path: name.split("::").map(str::to_owned).collect(),
@@ -1347,9 +1349,11 @@ impl Evaluator {
             // The magnitude of int's minimum is valid only together with its
             // immediate minus. It is not a separate positive int value.
             return Ok(Expr {
+                hir_id: None,
                 kind: ExprKind::Unary {
                     operator: "-".into(),
                     operand: Box::new(Expr {
+                        hir_id: None,
                         kind: ExprKind::Literal(Literal::Integer(format!("{}int", -*value))),
                         span,
                     }),
@@ -1371,6 +1375,7 @@ impl Evaluator {
         };
         if let Some(positive) = positive {
             return Ok(Expr {
+                hir_id: None,
                 kind: ExprKind::Unary {
                     operator: "-".into(),
                     operand: Box::new(self.materialize(positive, span)?),
@@ -1382,6 +1387,7 @@ impl Evaluator {
             if let Some(name) = self.publications.visible_name(id) {
                 self.budget.work(name.len() as u64)?;
                 return Ok(Expr {
+                    hir_id: None,
                     kind: ExprKind::Name(name.into()),
                     span,
                 });
@@ -1411,12 +1417,14 @@ impl Evaluator {
             StaticValue::Unit => Literal::Unit,
             StaticValue::String(value) => {
                 return Ok(Expr {
+                    hir_id: None,
                     kind: ExprKind::Interpolated(vec![StringPart::Text(value)]),
                     span,
                 });
             }
             StaticValue::Type(ty) => {
                 return Ok(Expr {
+                    hir_id: None,
                     kind: ExprKind::TypeValue(ty),
                     span,
                 });
@@ -1443,6 +1451,7 @@ impl Evaluator {
                     .map(|item| self.materialize(item, span))
                     .collect::<Result<_>>()?;
                 return Ok(Expr {
+                    hir_id: None,
                     kind: if tuple {
                         ExprKind::Tuple(items)
                     } else {
@@ -1466,6 +1475,7 @@ impl Evaluator {
                     })
                     .collect::<Result<_>>()?;
                 return Ok(Expr {
+                    hir_id: None,
                     kind: ExprKind::Map(entries),
                     span,
                 });
@@ -1484,6 +1494,7 @@ impl Evaluator {
                 } else {
                     ExprKind::Call {
                         callee: Box::new(Expr {
+                            hir_id: None,
                             kind: ExprKind::Name(name),
                             span,
                         }),
@@ -1500,7 +1511,11 @@ impl Evaluator {
                             .collect::<Result<_>>()?,
                     }
                 };
-                return Ok(Expr { kind, span });
+                return Ok(Expr {
+                    hir_id: None,
+                    kind,
+                    span,
+                });
             }
             StaticValue::Record(_) | StaticValue::Callable(_) | StaticValue::Result(_) => {
                 return Err(Failure::Unsupported(
@@ -1509,6 +1524,7 @@ impl Evaluator {
             }
         };
         Ok(Expr {
+            hir_id: None,
             kind: ExprKind::Literal(literal),
             span,
         })

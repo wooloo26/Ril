@@ -558,6 +558,7 @@ impl Visitor<'_> {
                 self.aliases.insert(
                     function.name.clone(),
                     Expr {
+                        hir_id: None,
                         kind: ExprKind::Ambient,
                         span: function.span,
                     },
@@ -576,6 +577,7 @@ impl Visitor<'_> {
                     if let PatternKind::Name(name) = &binding.pattern.kind {
                         let value = if binding.mode.is_reassignable() {
                             Expr {
+                                hir_id: None,
                                 kind: ExprKind::Ambient,
                                 span: binding.value.span,
                             }
@@ -805,6 +807,7 @@ impl Visitor<'_> {
                 self.aliases.insert(
                     name.clone(),
                     Expr {
+                        hir_id: None,
                         kind: ExprKind::Ambient,
                         span: pattern.span,
                     },
@@ -832,6 +835,7 @@ impl Visitor<'_> {
                     self.aliases.insert(
                         name.clone(),
                         Expr {
+                            hir_id: None,
                             kind: ExprKind::Ambient,
                             span: pattern.span,
                         },
@@ -845,6 +849,7 @@ impl Visitor<'_> {
                 self.aliases.insert(
                     name.clone(),
                     Expr {
+                        hir_id: None,
                         kind: ExprKind::Ambient,
                         span: pattern.span,
                     },

@@ -34,6 +34,7 @@ impl Checker {
         self.effect_type_binders
             .insert(token.clone(), identity.into());
         TypeExpr {
+            hir_id: None,
             text: String::new(),
             span,
             kind: TypeKind::Name {
@@ -125,6 +126,7 @@ impl Checker {
             TypeKind::Array { length, element } => {
                 if let Some(length) = length {
                     let probe = TypeExpr {
+                        hir_id: None,
                         text: String::new(),
                         span: length.span,
                         kind: TypeKind::Computation(length.clone()),
@@ -214,6 +216,7 @@ impl Checker {
                     .cloned()
                     .unwrap_or_default();
                 let syntax = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: site,
                     kind: TypeKind::Name {
@@ -250,6 +253,7 @@ impl Checker {
                 continue;
             };
             let written = TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: site,
                 kind: TypeKind::Name {

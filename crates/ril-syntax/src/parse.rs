@@ -67,6 +67,7 @@ pub fn parse_expression_at(text: &str, file: FileId, offset: usize) -> Expressio
         || parse_expression_inner(text, file, offset),
         || ExpressionParse {
             expression: Expr {
+                hir_id: None,
                 kind: ExprKind::Error,
                 span: Span {
                     file,
@@ -437,7 +438,11 @@ impl<'a> Parser<'a> {
         };
         let span = self.span(start);
         self.finish();
-        Stmt { kind, span }
+        Stmt {
+            hir_id: None,
+            kind,
+            span,
+        }
     }
 
     fn binding(&mut self, visibility: Visibility, is_meta: bool) -> Binding {
@@ -504,6 +509,7 @@ impl<'a> Parser<'a> {
             self.expression(0, false)
         } else if ty.is_some() && (self.eof() || self.newline() || self.at(";")) {
             Expr {
+                hir_id: None,
                 kind: ExprKind::Ambient,
                 span: self.span(self.offset()),
             }
@@ -603,6 +609,7 @@ impl<'a> Parser<'a> {
                         "generic parameters cannot constrain effects or capabilities",
                     );
                     Some(TypeExpr {
+                        hir_id: None,
                         text: String::new(),
                         kind: TypeKind::Error,
                         span,
@@ -619,6 +626,7 @@ impl<'a> Parser<'a> {
                 None
             };
             result.push(GenericParameter {
+                hir_id: None,
                 name,
                 bound,
                 default,
@@ -642,6 +650,7 @@ impl<'a> Parser<'a> {
                 let ty = self.type_expr();
                 (
                     Pattern {
+                        hir_id: None,
                         kind: PatternKind::Wildcard,
                         span: ty.span,
                     },
@@ -1058,6 +1067,7 @@ impl<'a> Parser<'a> {
             self.exhaust_nesting();
             self.finish();
             TypeExpr {
+                hir_id: None,
                 kind: TypeKind::Error,
                 text: String::new(),
                 span: self.span(start),
@@ -1087,6 +1097,7 @@ impl<'a> Parser<'a> {
         let mut kind = if self.eat("typeof") {
             let operand = self.expression(14, true);
             TypeKind::Computation(Box::new(Expr {
+                hir_id: None,
                 span: self.span(start),
                 kind: ExprKind::Unary {
                     operator: "typeof".into(),
@@ -1219,6 +1230,7 @@ impl<'a> Parser<'a> {
                     None
                 };
                 parameters.push(GenericParameter {
+                    hir_id: None,
                     name,
                     bound,
                     default,
@@ -1288,6 +1300,7 @@ impl<'a> Parser<'a> {
             if projections + self.depth > 128 {
                 self.exhaust_nesting();
                 let result = TypeExpr {
+                    hir_id: None,
                     kind: TypeKind::Error,
                     text: String::new(),
                     span: self.span(start),
@@ -1296,6 +1309,7 @@ impl<'a> Parser<'a> {
                 return result;
             }
             let base = TypeExpr {
+                hir_id: None,
                 text: self.text[start..self.last_end].to_owned(),
                 kind,
                 span: self.span(start),
@@ -1324,6 +1338,7 @@ impl<'a> Parser<'a> {
             && matches!(&kind,TypeKind::Name{path,..} if path==&["Type".to_owned()])
         {
             let parameter = TypeExpr {
+                hir_id: None,
                 text: self.text[start..self.last_end].to_owned(),
                 kind,
                 span: self.span(start),
@@ -1336,6 +1351,7 @@ impl<'a> Parser<'a> {
             };
         }
         let result = TypeExpr {
+            hir_id: None,
             text: self.text[start..self.last_end.max(start)].to_owned(),
             kind,
             span: self.span(start),
@@ -1447,6 +1463,7 @@ impl<'a> Parser<'a> {
             self.depth -= 1;
             self.finish();
             return Expr {
+                hir_id: None,
                 kind,
                 span: self.span(start),
             };
@@ -1461,6 +1478,7 @@ impl<'a> Parser<'a> {
             if extensions + self.depth > 128 {
                 self.exhaust_nesting();
                 left = Expr {
+                    hir_id: None,
                     kind: ExprKind::Error,
                     span: self.span(start),
                 };
@@ -1480,6 +1498,7 @@ impl<'a> Parser<'a> {
                 let arguments = self.arguments();
                 self.expect(")");
                 left = Expr {
+                    hir_id: None,
                     kind: ExprKind::Call {
                         callee: Box::new(left),
                         arguments,
@@ -1496,6 +1515,7 @@ impl<'a> Parser<'a> {
                 let index = self.expression(0, true);
                 self.expect("]");
                 left = Expr {
+                    hir_id: None,
                     kind: ExprKind::Index {
                         base: Box::new(left),
                         index: Box::new(index),
@@ -1519,6 +1539,7 @@ impl<'a> Parser<'a> {
                     let key = self.expression(0, true);
                     self.expect(")");
                     left = Expr {
+                        hir_id: None,
                         kind: ExprKind::ComputedField {
                             base: Box::new(left),
                             key: Box::new(key),
@@ -1532,6 +1553,7 @@ impl<'a> Parser<'a> {
                         self.name()
                     };
                     left = Expr {
+                        hir_id: None,
                         kind: ExprKind::Field {
                             base: Box::new(left),
                             field,
@@ -1546,17 +1568,20 @@ impl<'a> Parser<'a> {
                 let name = self.name();
                 left = match left.kind {
                     ExprKind::Name(first) => Expr {
+                        hir_id: None,
                         kind: ExprKind::Path(vec![first, name]),
                         span: self.span(start),
                     },
                     ExprKind::Path(mut path) => {
                         path.push(name);
                         Expr {
+                            hir_id: None,
                             kind: ExprKind::Path(path),
                             span: self.span(start),
                         }
                     }
                     _ => Expr {
+                        hir_id: None,
                         kind: ExprKind::Field {
                             base: Box::new(left),
                             field: name,
@@ -1570,6 +1595,7 @@ impl<'a> Parser<'a> {
             if self.at("<") && self.generic_call_ahead() {
                 let arguments = self.type_arguments();
                 left = Expr {
+                    hir_id: None,
                     kind: ExprKind::Generic {
                         base: Box::new(left),
                         arguments,
@@ -1580,6 +1606,7 @@ impl<'a> Parser<'a> {
             }
             if self.eat("?") {
                 left = Expr {
+                    hir_id: None,
                     kind: ExprKind::Unary {
                         operator: "?".into(),
                         operand: Box::new(left),
@@ -1603,11 +1630,13 @@ impl<'a> Parser<'a> {
                             span,
                         });
                         Expr {
+                            hir_id: None,
                             kind: ExprKind::Call { callee, arguments },
                             span: self.span(start),
                         }
                     }
                     _ => Expr {
+                        hir_id: None,
                         kind: ExprKind::Call {
                             callee: Box::new(left),
                             arguments: vec![Argument {
@@ -1639,6 +1668,7 @@ impl<'a> Parser<'a> {
                 }
                 let pattern = expr_test_pattern(value, &self.grouped_values);
                 left = Expr {
+                    hir_id: None,
                     kind: ExprKind::Is {
                         value: Box::new(left),
                         pattern,
@@ -1655,6 +1685,7 @@ impl<'a> Parser<'a> {
                         Some(Box::new(self.expression(right_binding, multiline)))
                     };
                 left = Expr {
+                    hir_id: None,
                     kind: ExprKind::Range {
                         start: Some(Box::new(left)),
                         end,
@@ -1666,6 +1697,7 @@ impl<'a> Parser<'a> {
             }
             let right = self.expression(right_binding, multiline);
             left = Expr {
+                hir_id: None,
                 kind: ExprKind::Binary {
                     operator,
                     left: Box::new(left),
@@ -1842,6 +1874,7 @@ impl<'a> Parser<'a> {
             },
         };
         Expr {
+            hir_id: None,
             kind,
             span: self.span(start),
         }
@@ -1972,6 +2005,7 @@ impl<'a> Parser<'a> {
         self.expect("[");
         if self.eat("]") {
             return Expr {
+                hir_id: None,
                 kind: ExprKind::Array(vec![]),
                 span: self.span(start),
             };
@@ -1979,6 +2013,7 @@ impl<'a> Parser<'a> {
         if self.eat(":") {
             self.expect("]");
             return Expr {
+                hir_id: None,
                 kind: ExprKind::Map(vec![]),
                 span: self.span(start),
             };
@@ -2009,6 +2044,7 @@ impl<'a> Parser<'a> {
         };
         self.expect("]");
         Expr {
+            hir_id: None,
             kind,
             span: self.span(start),
         }
@@ -2032,6 +2068,7 @@ impl<'a> Parser<'a> {
                     self.expression(0, true)
                 } else {
                     Expr {
+                        hir_id: None,
                         kind: ExprKind::Name(name.clone()),
                         span: self.span(start),
                     }
@@ -2050,6 +2087,7 @@ impl<'a> Parser<'a> {
         }
         self.expect("}");
         Expr {
+            hir_id: None,
             kind: ExprKind::Record {
                 ty,
                 fields,
@@ -2087,6 +2125,7 @@ impl<'a> Parser<'a> {
                 });
             }
             return Expr {
+                hir_id: None,
                 kind: ExprKind::Accessor(path),
                 span: self.span(start),
             };
@@ -2096,6 +2135,7 @@ impl<'a> Parser<'a> {
         let annotations = self.annotations();
         let body = Box::new(self.expression(0, false));
         Expr {
+            hir_id: None,
             kind: ExprKind::Lambda {
                 parameters,
                 return_type: None,
@@ -2136,6 +2176,7 @@ impl<'a> Parser<'a> {
         }
         self.expect("}");
         Expr {
+            hir_id: None,
             kind: ExprKind::Match {
                 value,
                 arms,
@@ -2160,7 +2201,9 @@ impl<'a> Parser<'a> {
             let right = self.expression(right_binding, true);
             let left = pattern_value(&pattern);
             pattern = Pattern {
+                hir_id: None,
                 kind: PatternKind::Value(Box::new(Expr {
+                    hir_id: None,
                     kind: ExprKind::Binary {
                         operator,
                         left: Box::new(left),
@@ -2176,7 +2219,9 @@ impl<'a> Parser<'a> {
             let end = self.expression(7, true);
             let begin = pattern_value(&pattern);
             pattern = Pattern {
+                hir_id: None,
                 kind: PatternKind::Value(Box::new(Expr {
+                    hir_id: None,
                     kind: ExprKind::Range {
                         start: Some(Box::new(begin)),
                         end: Some(Box::new(end)),
@@ -2196,6 +2241,7 @@ impl<'a> Parser<'a> {
                 }
             }
             pattern = Pattern {
+                hir_id: None,
                 kind: PatternKind::Alternative(choices),
                 span: self.span(start),
             };
@@ -2212,6 +2258,7 @@ impl<'a> Parser<'a> {
             self.exhaust_nesting();
             self.finish();
             Pattern {
+                hir_id: None,
                 kind: PatternKind::Wildcard,
                 span: self.span(start),
             }
@@ -2308,6 +2355,7 @@ impl<'a> Parser<'a> {
                     } else if self.at(".") && self.look(1) == "{" {
                         self.bump();
                         let ty = TypeExpr {
+                            hir_id: None,
                             text: path.join("::"),
                             kind: TypeKind::Name {
                                 path,
@@ -2335,6 +2383,7 @@ impl<'a> Parser<'a> {
             },
         };
         Pattern {
+            hir_id: None,
             kind,
             span: self.span(start),
         }
@@ -2365,12 +2414,14 @@ impl<'a> Parser<'a> {
                     self.pattern(true)
                 } else {
                     Pattern {
+                        hir_id: None,
                         kind: PatternKind::Name(name.clone()),
                         span: self.span(start),
                     }
                 };
                 if let Some(mode) = mode {
                     pattern = Pattern {
+                        hir_id: None,
                         kind: PatternKind::Mode {
                             mode,
                             pattern: Box::new(pattern),
@@ -2390,6 +2441,7 @@ impl<'a> Parser<'a> {
         }
         self.expect("}");
         Pattern {
+            hir_id: None,
             kind: PatternKind::Record {
                 ty,
                 fields,
@@ -2451,6 +2503,7 @@ fn expr_type(expr: &Expr) -> TypeExpr {
         _ => (vec![], vec![]),
     };
     TypeExpr {
+        hir_id: None,
         text: path.join("::"),
         kind: TypeKind::Name { path, arguments },
         span: expr.span,
@@ -2476,12 +2529,17 @@ fn expr_pattern(expr: Expr) -> Pattern {
         }
         _ => PatternKind::Value(Box::new(expr)),
     };
-    Pattern { kind, span }
+    Pattern {
+        hir_id: None,
+        kind,
+        span,
+    }
 }
 fn expr_test_pattern(expr: Expr, groups: &BTreeSet<(u32, u32)>) -> Pattern {
     let span = expr.span;
     if groups.contains(&(span.start, span.end)) {
         return Pattern {
+            hir_id: None,
             kind: PatternKind::Value(Box::new(expr)),
             span,
         };
@@ -2565,10 +2623,15 @@ fn expr_test_pattern(expr: Expr, groups: &BTreeSet<(u32, u32)>) -> Pattern {
         },
         _ => PatternKind::Value(Box::new(expr)),
     };
-    Pattern { kind, span }
+    Pattern {
+        hir_id: None,
+        kind,
+        span,
+    }
 }
 fn pattern_value(pattern: &Pattern) -> Expr {
     Expr {
+        hir_id: None,
         kind: match &pattern.kind {
             PatternKind::Literal(literal) => ExprKind::Literal(literal.clone()),
             PatternKind::Name(name) => ExprKind::Name(name.clone()),

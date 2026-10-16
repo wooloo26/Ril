@@ -132,7 +132,8 @@ impl Checker {
                         .expression_facts
                         .get(row.expression)
                         .is_some_and(|fact| {
-                            fact.span == closure.body.span
+                            fact.source_id.is_some()
+                                && fact.source_id == closure.body.hir_id
                                 && fact.value.cause == result.cause
                                 && fact.value.ty == result.ty
                         })
@@ -213,6 +214,7 @@ impl Checker {
                 parameter.default = None;
             }
             let syntax = TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: bound.span,
                 kind: TypeKind::Callable {

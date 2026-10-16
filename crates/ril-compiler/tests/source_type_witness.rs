@@ -353,6 +353,7 @@ fn example(){let child=Cell.{value:3};let result=answer(child);assert(result.chi
         value.source_type_witness = Some(std::sync::Arc::new(
             ril_compiler::sema::model::SourceTypeWitness {
                 syntax: ril_syntax::ast::TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: value
                         .source_type_witness

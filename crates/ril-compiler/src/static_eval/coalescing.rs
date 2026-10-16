@@ -186,6 +186,7 @@ impl Typer<'_> {
             {
                 received = self.complete_source_syntax(
                     &TypeExpr {
+                        hir_id: None,
                         text: String::new(),
                         span: right.span,
                         kind: TypeKind::Array {
@@ -219,6 +220,7 @@ impl Evaluator {
         expected: Option<&TypeExpr>,
     ) -> Result<StaticValue> {
         let context = expected.map(|ty| TypeExpr {
+            hir_id: None,
             text: String::new(),
             span: left.span,
             kind: TypeKind::Optional(Box::new(ty.clone())),

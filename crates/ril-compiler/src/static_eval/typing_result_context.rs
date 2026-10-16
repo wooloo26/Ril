@@ -230,6 +230,7 @@ impl Typer<'_> {
         clone_work::type_syntax(&self.schema_work, &context.written)?;
         clone_work::type_syntax(&self.schema_work, &context.source)?;
         let wrap = |syntax: TypeExpr| TypeExpr {
+            hir_id: None,
             span: syntax.span,
             text: String::new(),
             kind: TypeKind::Optional(Box::new(syntax)),

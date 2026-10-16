@@ -163,6 +163,7 @@ pub(super) fn type_of(evaluator: &Evaluator, operand: &Expr) -> Result<TypeExpr>
             }
         }
         return Ok(TypeExpr {
+            hir_id: None,
             kind: TypeKind::Name {
                 path: vec!["Prelude".into(), "Range".into()],
                 arguments: vec![reify_type(&element, operand.span)?],
@@ -208,6 +209,7 @@ fn reify_type(ty: &Ty, span: Span) -> Result<TypeExpr> {
         }
     };
     Ok(TypeExpr {
+        hir_id: None,
         kind,
         text: String::new(),
         span,
@@ -505,6 +507,7 @@ impl<'a> Typer<'a> {
                     .map(|(name, value)| (name.clone(), value_ty(value)))
                     .collect();
                 let syntax = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: self.evaluator.functions[&prepared.name].span,
                     kind: TypeKind::Callable {
@@ -930,7 +933,9 @@ impl<'a> Typer<'a> {
             }
             PatternKind::Literal(literal) => self.value_test(
                 &Pattern {
+                    hir_id: None,
                     kind: PatternKind::Value(Box::new(Expr {
+                        hir_id: None,
                         kind: ExprKind::Literal(literal.clone()),
                         span: pattern.span,
                     })),
@@ -1190,6 +1195,7 @@ impl<'a> Typer<'a> {
             }
             ExprKind::Path(path) => self.expr(
                 &Expr {
+                    hir_id: None,
                     kind: ExprKind::Name(path.join("::")),
                     span: expression.span,
                 },
@@ -1210,6 +1216,7 @@ impl<'a> Typer<'a> {
                     let _ = parameters;
                     self.type_names(
                         &TypeExpr {
+                            hir_id: None,
                             text: name.clone(),
                             kind: TypeKind::Name {
                                 path: name.split("::").map(str::to_owned).collect(),
@@ -1223,6 +1230,7 @@ impl<'a> Typer<'a> {
                 } else if matches!(env.get(&name), Some(Ty::Constructor(_))) {
                     self.type_names(
                         &TypeExpr {
+                            hir_id: None,
                             text: name.clone(),
                             kind: TypeKind::Name {
                                 path: vec![name],

@@ -316,6 +316,7 @@ impl Evaluator {
         let key = source.as_ref().map(|source| source.key.clone());
         if let Some(name) = pool.view_names.get(&(reference, key.clone())) {
             return Ok(Expr {
+                hir_id: None,
                 kind: ExprKind::Name(name.clone()),
                 span,
             });
@@ -332,6 +333,7 @@ impl Evaluator {
         }
         pool.view_names.insert((reference, key), name.clone());
         Ok(Expr {
+            hir_id: None,
             kind: ExprKind::Name(name),
             span,
         })

@@ -533,6 +533,7 @@ mod return_contract_tests {
         prior.raw = false;
         prior.target = Ty::Generic(binder.clone());
         prior.syntax = TypeExpr {
+            hir_id: None,
             kind: TypeKind::Name {
                 path: vec!["T".into()],
                 arguments: vec![],

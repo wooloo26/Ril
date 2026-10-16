@@ -181,6 +181,7 @@ impl Visitor<'_> {
             }
             ExprKind::Path(path) => self.callable(
                 &Expr {
+                    hir_id: None,
                     kind: ExprKind::Name(path.join("::")),
                     span: expr.span,
                 },

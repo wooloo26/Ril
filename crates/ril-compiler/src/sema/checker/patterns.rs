@@ -31,6 +31,93 @@ struct PatternDecision {
 }
 
 impl Checker {
+    /// A value-test leaf is a real desugaring of this PatternId. Repeated
+    /// executions reuse its static expression while retaining fresh dynamic
+    /// observations. A cloned span or an ambient name cannot provide an ID.
+    fn pattern_value_expression(&mut self, pattern: &Pattern) -> Option<Expr> {
+        use crate::hir::nodes as hir;
+        let Some(anchor) = pattern.hir_id else {
+            self.unsupported(
+                pattern.span,
+                "pattern value has no original HIR pattern identity",
+            );
+            return None;
+        };
+        let Some(original) = self.semantic_hir.pattern(anchor) else {
+            self.unsupported(pattern.span, "pattern value HIR anchor is absent");
+            return None;
+        };
+        let kind = match (&pattern.kind, &original.kind) {
+            (PatternKind::Name(name), hir::PatternKind::Name(actual)) if name == actual => {
+                ExprKind::Name(name.clone())
+            }
+            (PatternKind::Literal(value), hir::PatternKind::Literal(actual)) if value == actual => {
+                ExprKind::Literal(value.clone())
+            }
+            (
+                PatternKind::Constructor {
+                    path,
+                    arguments,
+                    parenthesized,
+                },
+                hir::PatternKind::Constructor {
+                    path: actual,
+                    arguments: actual_args,
+                    parenthesized: actual_parens,
+                },
+            ) if path == actual
+                && arguments.is_empty()
+                && actual_args.is_empty()
+                && !parenthesized
+                && !actual_parens =>
+            {
+                ExprKind::Path(path.clone())
+            }
+            _ => {
+                self.unsupported(
+                    pattern.span,
+                    "pattern value differs from its original HIR leaf",
+                );
+                return None;
+            }
+        };
+        let owner = original.info.owner;
+        let origin = hir::NodeId::Pattern(anchor);
+        let mut expression = Expr {
+            hir_id: None,
+            kind,
+            span: pattern.span,
+        };
+        if let Some(&id) = self.pattern_value_sources.get(&anchor) {
+            if self.semantic_hir.expression(id).is_none_or(|node| node.info.owner != owner
+                || !matches!(node.info.origin, hir::NodeOrigin::Generated { anchor, kind: hir::GeneratedKind::PatternValue, .. } if anchor == origin)) {
+                self.unsupported(pattern.span, "pattern value cache changed its actual HIR origin");
+                return None;
+            }
+            expression.hir_id = Some(id);
+            return Some(expression);
+        }
+        match self.semantic_hir.mint_generated_identified_expr(
+            &mut expression,
+            origin,
+            hir::GeneratedKind::PatternValue,
+            owner,
+            hir::HirLimits::default(),
+        ) {
+            Ok(id) => {
+                self.pattern_value_sources.insert(anchor, id);
+                Some(expression)
+            }
+            Err(_) => {
+                self.unsupported(
+                    pattern.span,
+                    "pattern value exceeded its generated HIR admission",
+                );
+                None
+            }
+        }
+    }
+
     fn pattern_outcome(&self, matched: Option<bool>) -> PatternOutcome {
         PatternOutcome::Normal(PatternDecision {
             matched,
@@ -726,6 +813,7 @@ impl Checker {
                 }
             }
             let test = Expr {
+                hir_id: None,
                 kind: ExprKind::Is {
                     value: Box::new(binding.value.clone()),
                     pattern: binding.pattern.clone(),
@@ -953,9 +1041,8 @@ impl Checker {
                             [value.cause],
                         );
                     }
-                    let expected = Expr {
-                        kind: ExprKind::Path(path.clone()),
-                        span: pattern.span,
+                    let Some(expected) = self.pattern_value_expression(pattern) else {
+                        return result;
                     };
                     let expected = self.expression(&expected, frame);
                     self.require_type(&expected, &value.ty, pattern.span);
@@ -1422,17 +1509,15 @@ impl Checker {
     ) -> PatternOutcome {
         match &pattern.kind {
             PatternKind::Wildcard => self.pattern_outcome(Some(true)),
-            PatternKind::Name(name) => {
-                let expected = Expr {
-                    kind: ExprKind::Name(name.clone()),
-                    span: pattern.span,
+            PatternKind::Name(_) => {
+                let Some(expected) = self.pattern_value_expression(pattern) else {
+                    return self.pattern_outcome(None);
                 };
                 self.compare_expected(value, &expected, frame)
             }
-            PatternKind::Literal(literal) => {
-                let expected = Expr {
-                    kind: ExprKind::Literal(literal.clone()),
-                    span: pattern.span,
+            PatternKind::Literal(_) => {
+                let Some(expected) = self.pattern_value_expression(pattern) else {
+                    return self.pattern_outcome(None);
                 };
                 self.compare_expected(value, &expected, frame)
             }
@@ -1551,9 +1636,8 @@ impl Checker {
                             [value.cause],
                         );
                     }
-                    let expected = Expr {
-                        kind: ExprKind::Path(path.clone()),
-                        span: pattern.span,
+                    let Some(expected) = self.pattern_value_expression(pattern) else {
+                        return self.pattern_outcome(None);
                     };
                     return self.compare_expected(value, &expected, frame);
                 }
@@ -2003,7 +2087,11 @@ fn constructor_payload_pattern(arguments: &[Pattern], span: Span) -> Pattern {
         [one] => return one.clone(),
         _ => PatternKind::Tuple(arguments.to_vec()),
     };
-    Pattern { kind, span }
+    Pattern {
+        hir_id: None,
+        kind,
+        span,
+    }
 }
 fn pattern_tag_possible(pattern: &Pattern, value: &Value, frame: &Frame) -> bool {
     match &pattern.kind {

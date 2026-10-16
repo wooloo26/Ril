@@ -46,6 +46,7 @@ pub(super) fn lower(
                 ));
             };
             let syntax = ril_syntax::ast::TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: source.syntax.span,
                 kind: ril_syntax::ast::TypeKind::Callable {

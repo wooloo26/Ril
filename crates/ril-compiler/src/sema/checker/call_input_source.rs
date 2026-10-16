@@ -51,8 +51,7 @@ pub(super) struct State {
 }
 
 struct Operand {
-    syntax: usize,
-    span: Span,
+    source_id: Option<ril_compiler_core::ids::ExprId>,
     context: InvocationContext,
     event: CopyCallEventId,
     slot: u32,
@@ -132,8 +131,7 @@ impl Checker {
         let marker = self.call_input_source.operands.len();
         let context = self.invocation_context(frame.callable_owner);
         self.call_input_source.operands.push(Operand {
-            syntax: std::ptr::from_ref(syntax) as usize,
-            span: syntax.span,
+            source_id: syntax.hir_id,
             context,
             event,
             slot: slot as u32,
@@ -147,8 +145,8 @@ impl Checker {
         frame: &Frame,
     ) -> Option<(CopyCallEventId, u32)> {
         let operand = self.call_input_source.operands.last()?;
-        (operand.syntax == std::ptr::from_ref(syntax) as usize
-            && operand.span == syntax.span
+        (operand.source_id.is_some()
+            && operand.source_id == syntax.hir_id
             && operand.context == self.invocation_context(frame.callable_owner))
         .then_some((operand.event, operand.slot))
     }
@@ -282,6 +280,7 @@ impl Checker {
                     parameter.default = None;
                 }
                 let syntax = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: syntax.span,
                     kind: TypeKind::Callable {
@@ -331,7 +330,7 @@ impl Checker {
             return;
         };
         let context = self.invocation_context(frame.callable_owner);
-        if observation.span != syntax.span
+        if (observation.source_id.is_none() || observation.source_id != syntax.hir_id)
             || !self
                 .invocation_expressions
                 .get(expression)
@@ -764,74 +763,13 @@ fn select(
     work: &mut usize,
     depth: usize,
 ) -> Option<ArgumentKey> {
-    *work = work.checked_sub(1)?;
-    if depth > 64 {
+    if depth >= 64 {
         return None;
     }
-    let mut child = |key| select(key, selected, work, depth + 1);
-    Some(match key {
-        ArgumentKey::Binder { identity, .. } => match selected.get(identity) {
-            Some(value) if value != key => child(value)?,
-            _ => key.clone(),
-        },
-        ArgumentKey::Array { length, element } => ArgumentKey::Array {
-            length: length.clone(),
-            element: Box::new(child(element)?),
-        },
-        ArgumentKey::Map { key, value } => ArgumentKey::Map {
-            key: Box::new(child(key)?),
-            value: Box::new(child(value)?),
-        },
-        ArgumentKey::Name { name, arguments } => ArgumentKey::Name {
-            name: name.clone(),
-            arguments: arguments.iter().map(&mut child).collect::<Option<_>>()?,
-        },
-        ArgumentKey::Tuple(items) => {
-            ArgumentKey::Tuple(items.iter().map(&mut child).collect::<Option<_>>()?)
-        }
-        ArgumentKey::Record { fields, row } => {
-            let mut fields: Vec<_> = fields
-                .iter()
-                .map(|(name, mutable, value)| Some((name.clone(), *mutable, child(value)?)))
-                .collect::<Option<_>>()?;
-            let mut row = match row {
-                Some(row) => Some(Box::new(child(row)?)),
-                None => None,
-            };
-            if let Some(tail) = row.take() {
-                match *tail {
-                    ArgumentKey::Record {
-                        fields: extra,
-                        row: rest,
-                    } => {
-                        for field in extra {
-                            if fields.iter().any(|old| old.0 == field.0) {
-                                return None;
-                            }
-                            fields.push(field);
-                        }
-                        row = rest;
-                    }
-                    other => row = Some(Box::new(other)),
-                }
-            }
-            fields.sort_by(|left, right| left.0.cmp(&right.0));
-            ArgumentKey::Record { fields, row }
-        }
-        ArgumentKey::Callable {
-            parameters,
-            result,
-            annotations,
-        } => ArgumentKey::Callable {
-            parameters: parameters
-                .iter()
-                .map(|(mode, value)| Some((*mode, child(value)?)))
-                .collect::<Option<_>>()?,
-            result: Box::new(child(result)?),
-            annotations: annotations.clone(),
-        },
-        _ => key.clone(),
-    })
+    let mut budget = crate::sema::source_types::WorkLimit::new(*work);
+    let result = crate::sema::source_types::substitute_key(key, selected, &mut budget);
+    *work = budget.remaining();
+    result.ok()
 }
 
 #[cfg(test)]

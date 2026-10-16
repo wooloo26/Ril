@@ -9,6 +9,7 @@ pub(crate) fn step_declaration() -> TypeDeclaration {
         end: 0,
     };
     let variable = |name: &str| TypeExpr {
+        hir_id: None,
         text: name.into(),
         kind: TypeKind::Name {
             path: vec![name.into()],
@@ -23,6 +24,7 @@ pub(crate) fn step_declaration() -> TypeDeclaration {
         generics: ["S", "T"]
             .into_iter()
             .map(|name| GenericParameter {
+                hir_id: None,
                 name: name.into(),
                 bound: None,
                 default: None,
@@ -43,6 +45,7 @@ pub(crate) fn step_declaration() -> TypeDeclaration {
                 name: "Yielded".into(),
                 generics: vec![],
                 payload: Some(TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     kind: TypeKind::Tuple(vec![variable("T"), variable("S")]),
                     span,

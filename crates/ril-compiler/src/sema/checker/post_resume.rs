@@ -8,12 +8,14 @@ pub(super) struct ArmSuffix {
     pub binding: Option<Binding>,
     pub statements: Vec<Stmt>,
     pub span: Span,
+    pub body_source: Option<ril_compiler_core::ids::ExprId>,
     pub definitions_start: usize,
     pub handler: usize,
     pub operation: String,
     pub boundary: u32,
     pub handler_boundary: u32,
     pub resume: Span,
+    pub resume_source: Option<ril_compiler_core::ids::ExprId>,
     pub context: super::super::effect_identity::InvocationContext,
     pub ended_operation_loans: BTreeSet<LoanId>,
     pub operation_receptions: Vec<super::super::resumption::OperationReception>,
@@ -128,12 +130,14 @@ impl Checker {
                 binding,
                 statements: block.statements[index + 1..].to_vec(),
                 span: block.span,
+                body_source: body.hir_id,
                 definitions_start,
                 handler,
                 operation: operation.into(),
                 boundary,
                 handler_boundary: self.handler_answer_boundary(handler),
                 resume: resume.span,
+                resume_source: resume.hir_id,
                 context: self.invocation_context(frame.callable_owner),
                 ended_operation_loans: self
                     .resume_contexts
@@ -178,6 +182,7 @@ impl Checker {
                 argument_of: None,
             });
         self.expression_facts.push(super::super::ExpressionFact {
+            source_id: suffix.resume_source,
             span: suffix.resume,
             value: answer.clone(),
         });
@@ -249,6 +254,7 @@ impl Checker {
                 argument_of: None,
             });
         self.expression_facts.push(super::super::ExpressionFact {
+            source_id: suffix.body_source,
             span: suffix.span,
             value: result.clone(),
         });

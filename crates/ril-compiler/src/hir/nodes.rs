@@ -13,6 +13,7 @@ use ril_syntax::ast::{
     self, AnnotationKind, BindingMode, ControlOperation, ParameterMode, Visibility,
 };
 
+mod identify;
 mod lower;
 mod walk;
 pub use walk::WalkError;
@@ -42,6 +43,15 @@ pub enum GeneratedKind {
     IteratorAdapter,
     StaticMaterialization,
     Desugaring,
+    /// Reading the expected value of a Name, literal, or nullary tag pattern.
+    PatternValue,
+}
+
+/// The selected input phase, before any semantic authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputOrigin {
+    Source,
+    Transformed(GeneratedKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,6 +466,8 @@ pub enum LowerError {
     IdentitySpace,
     #[error("generated HIR anchor or lexical owner is absent")]
     MissingAnchor,
+    #[error("AST and HIR structural correspondence differs")]
+    Correspondence,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -475,6 +487,27 @@ impl HirProgram {
     pub fn lower_with_limits(source: &ast::Program, limits: HirLimits) -> Result<Self, LowerError> {
         lower::program(source, limits)
     }
+    /// Assign static occurrence IDs to this exact AST by following typed HIR
+    /// edges. Existing IDs are ignored. A bounded read-only pairing pass must
+    /// succeed before any identity is written; failure preserves the input.
+    pub fn lower_identified(
+        source: &mut ast::Program,
+        origin: InputOrigin,
+    ) -> Result<Self, LowerError> {
+        Self::lower_identified_with_limits(source, origin, HirLimits::default())
+    }
+    pub fn lower_identified_with_limits(
+        source: &mut ast::Program,
+        origin: InputOrigin,
+        limits: HirLimits,
+    ) -> Result<Self, LowerError> {
+        let mut hir = Self::lower_with_limits(source, limits)?;
+        if let InputOrigin::Transformed(kind) = origin {
+            hir.mark_transformed(kind);
+        }
+        identify::program(&hir, source, limits)?;
+        Ok(hir)
+    }
     /// Transitional input from a pass that has not yet migrated to identity-
     /// preserving HIR transformations. Every node records the missing original
     /// correspondence; no source anchor is invented from a matching span.
@@ -483,18 +516,21 @@ impl HirProgram {
         kind: GeneratedKind,
     ) -> Result<Self, LowerError> {
         let mut hir = Self::lower(source)?;
-        for info in hir
+        hir.mark_transformed(kind);
+        Ok(hir)
+    }
+    fn mark_transformed(&mut self, kind: GeneratedKind) {
+        for info in self
             .expressions
             .iter_mut()
             .map(|node| &mut node.info)
-            .chain(hir.statements.iter_mut().map(|node| &mut node.info))
-            .chain(hir.patterns.iter_mut().map(|node| &mut node.info))
-            .chain(hir.generics.iter_mut().map(|node| &mut node.info))
-            .chain(hir.types.iter_mut().map(|node| &mut node.info))
+            .chain(self.statements.iter_mut().map(|node| &mut node.info))
+            .chain(self.patterns.iter_mut().map(|node| &mut node.info))
+            .chain(self.generics.iter_mut().map(|node| &mut node.info))
+            .chain(self.types.iter_mut().map(|node| &mut node.info))
         {
             info.origin = NodeOrigin::Transformed { kind };
         }
-        Ok(hir)
     }
     pub fn roots(&self) -> &[StmtId] {
         &self.roots
@@ -562,5 +598,36 @@ impl HirProgram {
         limits: HirLimits,
     ) -> Result<ExprId, LowerError> {
         lower::generated(self, source, anchor, kind, owner, limits)
+    }
+    /// Register and identify the generated AST as one transaction. The original
+    /// AST is untouched if allocation or structural admission fails. Canonical
+    /// record members and their controlled AST mirrors share occurrence IDs.
+    pub fn mint_generated_identified_expr(
+        &mut self,
+        source: &mut ast::Expr,
+        anchor: NodeId,
+        kind: GeneratedKind,
+        owner: LexicalOwner,
+        limits: HirLimits,
+    ) -> Result<ExprId, LowerError> {
+        let before = (
+            self.expressions.len(),
+            self.statements.len(),
+            self.patterns.len(),
+            self.generics.len(),
+            self.types.len(),
+            self.generated_roots.len(),
+        );
+        let id = self.mint_generated_expr(source, anchor, kind, owner, limits)?;
+        if let Err(error) = identify::expression(self, source, id, limits) {
+            self.expressions.truncate(before.0);
+            self.statements.truncate(before.1);
+            self.patterns.truncate(before.2);
+            self.generics.truncate(before.3);
+            self.types.truncate(before.4);
+            self.generated_roots.truncate(before.5);
+            return Err(error);
+        }
+        Ok(id)
     }
 }

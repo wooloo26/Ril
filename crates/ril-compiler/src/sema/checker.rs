@@ -179,34 +179,12 @@ fn analyze_inner(
     layout: ril_compiler_core::target::TargetLayout,
     constants: &crate::static_eval::constants::ConstantPool,
 ) -> AnalyzeOutcome {
-    let hir = match crate::hir::HirProgram::lower_transformed(
-        syntax,
-        crate::hir::nodes::GeneratedKind::StaticMaterialization,
-    ) {
-        Ok(hir) => std::sync::Arc::new(hir),
-        Err(error) => {
-            return AnalyzeOutcome {
-                program: None,
-                facts: None,
-                hir: None,
-                diagnostics: Vec::new(),
-                unsupported: vec![UnsupportedFeature {
-                    span: Span {
-                        file,
-                        start: 0,
-                        end: 0,
-                    },
-                    description: format!("semantic HIR construction is incomplete: {error:?}"),
-                }],
-            };
-        }
-    };
     let ambiguous_sites = crate::syntax_sites::ambiguous(syntax);
     if !ambiguous_sites.is_empty() {
         return AnalyzeOutcome {
             program: None,
             facts: None,
-            hir: Some(hir),
+            hir: None,
             diagnostics: vec![],
             unsupported: ambiguous_sites,
         };
@@ -244,9 +222,15 @@ fn analyze_inner(
         .filter(|ty| checker.resource_type(ty))
         .cloned()
         .collect();
-    let (binding_sources, storage_writes) = checker.storage_sources.into_parts();
-    let checked_syntax = std::sync::Arc::new(syntax.clone());
+    let (binding_sources, storage_writes, source_types) = checker.storage_sources.into_parts();
+    let checked_syntax = checker
+        .checked_source
+        .clone()
+        .unwrap_or_else(|| std::sync::Arc::new(syntax.clone()));
+    let hir = std::sync::Arc::new(std::mem::take(&mut checker.semantic_hir));
     let facts = SemanticFacts {
+        source_types,
+        semantic_hir: Some(hir.clone()),
         binding_sources,
         storage_writes,
         source_program: Some(checked_syntax.clone()),
@@ -387,6 +371,10 @@ pub(super) fn is_known_builtin_source_type(name: &str) -> bool {
 }
 
 struct Checker {
+    semantic_hir: crate::hir::HirProgram,
+    pattern_value_sources:
+        BTreeMap<ril_compiler_core::ids::PatternId, ril_compiler_core::ids::ExprId>,
+    checked_source: Option<std::sync::Arc<Program>>,
     explicit_named: explicit_named::State,
     call_input_source: call_input_source::State,
     invocation_loan_starts: Vec<super::invocation_loans::InvocationLoanStart>,
@@ -583,6 +571,9 @@ struct Checker {
 impl Checker {
     fn new(file: FileId) -> Self {
         let mut checker = Self {
+            semantic_hir: Default::default(),
+            pattern_value_sources: Default::default(),
+            checked_source: None,
             explicit_named: Default::default(),
             call_input_source: Default::default(),
             numeric: Default::default(),
@@ -927,6 +918,29 @@ impl Checker {
         }
     }
     fn run(&mut self, program: &Program) {
+        let mut identified = program.clone();
+        let hir = match crate::hir::HirProgram::lower_identified(
+            &mut identified,
+            crate::hir::nodes::InputOrigin::Transformed(
+                crate::hir::nodes::GeneratedKind::StaticMaterialization,
+            ),
+        ) {
+            Ok(hir) => hir,
+            Err(error) => {
+                self.unsupported(
+                    Span {
+                        file: self.file,
+                        start: 0,
+                        end: 0,
+                    },
+                    format!("semantic HIR construction is incomplete: {error}"),
+                );
+                return;
+            }
+        };
+        self.semantic_hir = hir;
+        let program = std::sync::Arc::new(identified);
+        self.checked_source = Some(program.clone());
         let mut frame = Frame {
             copy_call_event: None,
             received_closures: BTreeMap::new(),
@@ -1181,6 +1195,7 @@ impl Checker {
                         })
                         .map_or(DefinitionId(id as u32), |info| info.definition);
                     self.functions.push(FunctionInfo {
+                        hir_id: stmt.hir_id,
                         definition,
                         lexical_owner: frame.callable_owner,
                         typing_environment,
@@ -1646,6 +1661,7 @@ impl Checker {
                         );
                         self.record_copy_references(&value, binding.value.span, frame);
                         self.expression_facts.push(super::ExpressionFact {
+                            source_id: binding.value.hir_id,
                             span: binding.value.span,
                             value: value.clone(),
                         });
@@ -1933,14 +1949,11 @@ impl Checker {
                         // Unreachable source still receives static checks.
                         // Use the complete preview transaction so it cannot
                         // change this activation's continuing runtime state.
-                        self.preview_expression_source(
-                            &Expr {
+                        self.preview_block_source(
+                            &Block {
                                 span: block.span,
-                                kind: ExprKind::Block(Block {
-                                    statements: remaining,
-                                    where_items: Vec::new(),
-                                    span: block.span,
-                                }),
+                                statements: remaining,
+                                where_items: Vec::new(),
                             },
                             frame,
                             expected,

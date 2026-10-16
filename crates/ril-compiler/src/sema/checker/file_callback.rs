@@ -45,6 +45,7 @@ impl Checker {
             vec!["Io".into(), "IoError".into()]
         };
         let error = self.ty(&TypeExpr {
+            hir_id: None,
             text: if child {
                 "Process::ProcessError".into()
             } else {
@@ -59,6 +60,7 @@ impl Checker {
         let inputs = if child {
             vec![
                 self.ty(&TypeExpr {
+                    hir_id: None,
                     text: "Process::Command".into(),
                     kind: TypeKind::Name {
                         path: vec!["Process".into(), "Command".into()],

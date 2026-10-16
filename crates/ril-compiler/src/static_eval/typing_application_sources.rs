@@ -212,6 +212,7 @@ impl Typer<'_> {
                 && let TypeKind::Array { element, .. } = &actual_schema.syntax.kind
             {
                 let contextual = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: argument.value.span,
                     kind: TypeKind::Array {
@@ -287,6 +288,7 @@ impl Typer<'_> {
                 }
                 return self.complete_source_syntax(
                     &TypeExpr {
+                        hir_id: None,
                         text: String::new(),
                         span: expression.span,
                         kind: TypeKind::Callable {
@@ -570,6 +572,7 @@ impl Typer<'_> {
                     TypeKind::Array { element, .. } => self.complete_source_syntax(element, scope),
                     TypeKind::Map { value, .. } => self.complete_source_syntax(
                         &TypeExpr {
+                            hir_id: None,
                             kind: TypeKind::Optional(value.clone()),
                             text: String::new(),
                             span: expression.span,
@@ -618,6 +621,7 @@ impl Typer<'_> {
                 {
                     return self.complete_source_syntax(
                         &TypeExpr {
+                            hir_id: None,
                             text: String::new(),
                             span: expression.span,
                             kind: TypeKind::Optional(Box::new(child.syntax.clone())),
@@ -643,6 +647,7 @@ impl Typer<'_> {
                         .unwrap_or_else(|| {
                             self.complete_source_syntax(
                                 &TypeExpr {
+                                    hir_id: None,
                                     kind: TypeKind::Tuple(vec![]),
                                     text: String::new(),
                                     span: expression.span,
@@ -665,6 +670,7 @@ impl Typer<'_> {
         };
         self.complete_source_syntax(
             &TypeExpr {
+                hir_id: None,
                 kind: syntax,
                 text: String::new(),
                 span: expression.span,

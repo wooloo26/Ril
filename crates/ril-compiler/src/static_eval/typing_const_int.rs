@@ -109,11 +109,13 @@ fn integer_in_layout(value: i128, layout: TargetLayout) -> Result<i128> {
 
 pub(in crate::static_eval) fn argument_syntax(value: i128, span: Span) -> TypeExpr {
     let literal = Expr {
+        hir_id: None,
         kind: ExprKind::Literal(Literal::Integer(value.unsigned_abs().to_string())),
         span,
     };
     let expression = if value < 0 {
         Expr {
+            hir_id: None,
             kind: ExprKind::Unary {
                 operator: "-".into(),
                 operand: Box::new(literal),
@@ -124,6 +126,7 @@ pub(in crate::static_eval) fn argument_syntax(value: i128, span: Span) -> TypeEx
         literal
     };
     TypeExpr {
+        hir_id: None,
         text: value.to_string(),
         kind: TypeKind::Computation(Box::new(expression)),
         span,
@@ -147,6 +150,7 @@ impl Typer<'_> {
                 let name = id.key();
                 Ok(ConstArgumentSource {
                     syntax: TypeExpr {
+                        hir_id: None,
                         text: name.clone(),
                         kind: TypeKind::Name {
                             path: vec![name],
@@ -307,6 +311,7 @@ impl Typer<'_> {
         let expression = match &syntax.kind {
             TypeKind::Computation(expression) => (**expression).clone(),
             TypeKind::Name { path, arguments } if arguments.is_empty() => Expr {
+                hir_id: None,
                 kind: ExprKind::Name(path.join("::")),
                 span: syntax.span,
             },
@@ -428,6 +433,7 @@ mod tests {
     }
     fn name_argument(name: &str, span: Span) -> TypeExpr {
         TypeExpr {
+            hir_id: None,
             text: name.into(),
             kind: TypeKind::Name {
                 path: vec![name.into()],

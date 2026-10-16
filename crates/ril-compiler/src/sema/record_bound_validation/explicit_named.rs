@@ -202,6 +202,8 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
                             .values()
                             .filter(|header| {
                                 header.syntax == *function
+                                    && header.hir_id.is_some()
+                                    && header.hir_id == statement.hir_id
                                     && header.lexical_owner.unwrap_or(CallableOwner::Global)
                                         == owner
                             })
@@ -548,7 +550,7 @@ impl Replay<'_> {
         &'a self,
         event: &CopyCallEvent,
         expression: usize,
-        span: Span,
+        syntax: &Expr,
         context: InvocationContext,
         target: DefinitionId,
     ) -> Check<&'a Value> {
@@ -558,7 +560,7 @@ impl Replay<'_> {
             .get(expression)
             .ok_or_else(|| "explicit named expression token is outside its arena".to_owned())?;
         require(
-            expression.span == span,
+            expression.source_id.is_some() && expression.source_id == syntax.hir_id,
             "explicit named expression token names another actual AST node",
         )?;
         let [Callable::Named(index)] = expression.value.callables.as_slice() else {
@@ -708,7 +710,7 @@ impl Replay<'_> {
                     .copy_call_events
                     .iter()
                     .filter(|event| {
-                        event.owner == Some(site.owner) && event.span == call_syntax.span
+                        event.owner == Some(site.owner) && event.matches_source(call_syntax)
                     })
                     .collect();
                 require(
@@ -763,13 +765,7 @@ impl Replay<'_> {
                     let expression = event.callee_expression.ok_or_else(|| {
                         "explicit named call lacks its actual Generic emission token".to_owned()
                     })?;
-                    self.explicit_observation(
-                        event,
-                        expression,
-                        site.generic.span,
-                        context,
-                        target,
-                    )?;
+                    self.explicit_observation(event, expression, site.generic, context, target)?;
                     require(
                         event.references.len() == 2,
                         "explicit named call lost a genuine Generic/Name reference layer",
@@ -802,7 +798,7 @@ impl Replay<'_> {
                             base_value = Some(self.explicit_observation(
                                 event,
                                 reference.expression,
-                                site.base.span,
+                                site.base,
                                 context,
                                 target,
                             )?);

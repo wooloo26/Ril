@@ -229,6 +229,56 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> super::expressions::SourceExpression {
+        self.preview_evaluation(frame, |checker, frame| {
+            checker.expression_expected_source(expression, frame, expected, source)
+        })
+    }
+
+    /// A source block is already a collection of identified statements. A
+    /// preview does not manufacture an expression occurrence around it.
+    pub(super) fn preview_block_source(
+        &mut self,
+        block: &Block,
+        frame: &mut Frame,
+        expected: Option<&Ty>,
+        source: Option<&super::super::source_reception::Target>,
+    ) -> super::expressions::SourceExpression {
+        // Block previews can recursively examine unreachable suffixes. They
+        // still consume traversal work even though no wrapper is an expression.
+        if self.analysis_depth >= 64 || self.analysis_visits >= 1_000_000 {
+            self.unsupported(
+                block.span,
+                "semantic block preview traversal budget exhausted",
+            );
+            return super::expressions::SourceExpression {
+                value: Value::scalar(
+                    Ty::Unknown,
+                    None,
+                    self.cause(
+                        CauseKind::MissingProof,
+                        block.span,
+                        "block preview stopped",
+                        [],
+                    ),
+                ),
+                observation: None,
+                source_valid: false,
+            };
+        }
+        self.analysis_depth += 1;
+        self.analysis_visits += 1;
+        let result = self.preview_evaluation(frame, |checker, frame| {
+            checker.block_expected_source(block, frame, expected, source)
+        });
+        self.analysis_depth -= 1;
+        result
+    }
+
+    fn preview_evaluation<T>(
+        &mut self,
+        frame: &mut Frame,
+        evaluate: impl FnOnce(&mut Self, &mut Frame) -> T,
+    ) -> T {
         let budget = std::mem::take(&mut self.budget_coverage);
         let before = self.snapshot_flow();
         self.channel_preview();
@@ -237,7 +287,7 @@ impl Checker {
         let resumes = self.resume_contexts.clone();
         let ended = self.ended_operation_loans.clone();
         let breaks = self.loop_breaks.clone();
-        let result = self.expression_expected_source(expression, frame, expected, source);
+        let result = evaluate(self, frame);
         self.restore_preview(&before);
         *frame = prior;
         self.pending_abort = abort;
@@ -626,5 +676,19 @@ impl Checker {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    #[test]
+    fn generated_unreachable_suffixes_keep_a_traversal_budget_without_wrapper_expressions() {
+        let source = format!("fn example(){{ {} }}", "return;".repeat(192));
+        let outcome = crate::Session::new(source.into_bytes()).check();
+        assert!(
+            matches!(&outcome, crate::CompilationOutcome::NotImplemented { reason }
+                if reason.detail.contains("semantic") && reason.detail.contains("budget")),
+            "{outcome:?}"
+        );
     }
 }

@@ -263,6 +263,7 @@ impl Checker {
             self.register_constructor_source_type(
                 &key,
                 &TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span,
                     kind: TypeKind::Name {

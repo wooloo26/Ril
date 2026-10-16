@@ -41,7 +41,7 @@ impl Checker {
                 // A genuine scalar-only source graph has no additional
                 // dimension/callable coordinate duty. Ordinary typing and all
                 // publication permissions still run in the intrinsic.
-                if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+                if crate::sema::source_types::key_is_coordinate_free(expected) {
                     continue;
                 }
                 let input = self.storage_supplied_input(event, slot, &args[slot].1, span, frame)?;

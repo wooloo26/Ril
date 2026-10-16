@@ -15,12 +15,14 @@ fn span() -> Span {
 }
 fn name(value: &str) -> ast::Expr {
     ast::Expr {
+        hir_id: None,
         kind: ast::ExprKind::Name(value.into()),
         span: span(),
     }
 }
 fn ty(kind: ast::TypeKind) -> ast::TypeExpr {
     ast::TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind,
         span: span(),
@@ -34,6 +36,7 @@ fn int_type() -> ast::TypeExpr {
 }
 fn statement(expression: ast::Expr) -> ast::Stmt {
     ast::Stmt {
+        hir_id: None,
         kind: ast::StmtKind::Expr {
             expression,
             terminated: false,
@@ -44,6 +47,7 @@ fn statement(expression: ast::Expr) -> ast::Stmt {
 fn parameter(default: &str) -> ast::Parameter {
     ast::Parameter {
         pattern: ast::Pattern {
+            hir_id: None,
             kind: ast::PatternKind::Name("value".into()),
             span: span(),
         },
@@ -59,6 +63,7 @@ fn equal_spans_are_distinct_occurrences_and_analysis_targets_ids() {
     let original = name("same");
     let source = ast::Program {
         statements: vec![statement(ast::Expr {
+            hir_id: None,
             kind: ast::ExprKind::Tuple(vec![original.clone(), original]),
             span: span(),
         })],
@@ -146,6 +151,7 @@ fn traversal_reaches_expressions_inside_types_patterns_defaults_and_where_scopes
         is_halt: false,
         name: "example".into(),
         generics: vec![ast::GenericParameter {
+            hir_id: None,
             name: "T".into(),
             bound: Some(ty(ast::TypeKind::Array {
                 length: Some(Box::new(name("generic_length"))),
@@ -158,6 +164,7 @@ fn traversal_reaches_expressions_inside_types_patterns_defaults_and_where_scopes
         }],
         parameters: vec![ast::Parameter {
             pattern: ast::Pattern {
+                hir_id: None,
                 kind: ast::PatternKind::Value(Box::new(name("pattern_value"))),
                 span: span(),
             },
@@ -184,6 +191,7 @@ fn traversal_reaches_expressions_inside_types_patterns_defaults_and_where_scopes
         body: Some(ast::Block {
             where_items: vec![statement(name("body_scope"))],
             statements: vec![ast::Stmt {
+                hir_id: None,
                 span: span(),
                 kind: ast::StmtKind::Handler(vec![ast::HandlerArm {
                     operation: name("handler_operation"),
@@ -198,6 +206,7 @@ fn traversal_reaches_expressions_inside_types_patterns_defaults_and_where_scopes
     };
     let source = ast::Program {
         statements: vec![ast::Stmt {
+            hir_id: None,
             kind: ast::StmtKind::Function(function),
             span: span(),
         }],
@@ -239,17 +248,20 @@ fn traversal_reaches_expressions_inside_types_patterns_defaults_and_where_scopes
 fn recovery_nodes_exist_without_any_verification_certificate() {
     let source = ast::Program {
         statements: vec![ast::Stmt {
+            hir_id: None,
             span: span(),
             kind: ast::StmtKind::Binding(ast::Binding {
                 visibility: ast::Visibility::Private,
                 is_meta: false,
                 mode: ast::BindingMode::Let,
                 pattern: ast::Pattern {
+                    hir_id: None,
                     kind: ast::PatternKind::Error,
                     span: span(),
                 },
                 ty: Some(ty(ast::TypeKind::Error)),
                 value: ast::Expr {
+                    hir_id: None,
                     kind: ast::ExprKind::Error,
                     span: span(),
                 },
@@ -304,6 +316,7 @@ fn generated_occurrences_are_explicit_and_failed_minting_is_transactional() {
     let mut program = HirProgram::lower(&source).unwrap();
     let anchor = NodeId::Stmt(program.roots()[0]);
     let generated = ast::Expr {
+        hir_id: None,
         kind: ast::ExprKind::Tuple(vec![name("first"), name("second")]),
         span: span(),
     };
@@ -374,6 +387,7 @@ fn generated_occurrences_are_explicit_and_failed_minting_is_transactional() {
 fn lowering_and_walking_reject_exhausted_depth_node_and_text_budgets() {
     let source = ast::Program {
         statements: vec![statement(ast::Expr {
+            hir_id: None,
             kind: ast::ExprKind::Tuple(vec![name("first"), name("second")]),
             span: span(),
         })],

@@ -121,6 +121,7 @@ impl Checker {
             return;
         };
         let expression = Expr {
+            hir_id: None,
             kind: ExprKind::Block(body.clone()),
             span: body.span,
         };
@@ -193,6 +194,7 @@ impl Checker {
             return;
         };
         let expression = Expr {
+            hir_id: None,
             kind: ExprKind::Block(body.clone()),
             span: body.span,
         };

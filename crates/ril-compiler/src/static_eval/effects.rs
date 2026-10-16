@@ -36,6 +36,7 @@ pub(crate) fn argument_key(ty: &TypeExpr, binders: &BTreeMap<String, String>) ->
         TypeKind::Array { length, element } => ArgumentKey::Array {
             length: length.as_ref().map(|length| {
                 normalized_argument_key(&TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: length.span,
                     kind: TypeKind::Computation(length.clone()),
@@ -274,6 +275,7 @@ pub(crate) fn instantiate(
                 *argument = match bound {
                     Some(StaticValue::Type(ty)) => ty,
                     Some(value) => TypeExpr {
+                        hir_id: None,
                         text: argument.text.clone(),
                         span: argument.span,
                         kind: TypeKind::Computation(Box::new(

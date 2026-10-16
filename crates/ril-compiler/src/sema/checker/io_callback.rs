@@ -63,6 +63,7 @@ impl Checker {
             return self.unit(span);
         }
         let syntax = TypeExpr {
+            hir_id: None,
             text: String::new(),
             kind: TypeKind::Name {
                 path: vec![
@@ -140,6 +141,7 @@ impl Checker {
             return output;
         }
         let error_ty = self.ty(&TypeExpr {
+            hir_id: None,
             text: "Io::IoError".into(),
             kind: TypeKind::Name {
                 path: vec!["Io".into(), "IoError".into()],
@@ -149,6 +151,7 @@ impl Checker {
         });
         let (tag, error) = if read {
             let chunk = self.ty(&TypeExpr {
+                hir_id: None,
                 text: "Io::ReadChunk".into(),
                 kind: TypeKind::Name {
                     path: vec!["Io".into(), "ReadChunk".into()],
@@ -170,6 +173,7 @@ impl Checker {
             (output.result_tag, error)
         } else {
             let progress = self.ty(&TypeExpr {
+                hir_id: None,
                 text: "Io::WriteProgress".into(),
                 kind: TypeKind::Name {
                     path: vec!["Io".into(), "WriteProgress".into()],

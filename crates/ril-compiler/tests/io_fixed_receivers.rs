@@ -145,6 +145,7 @@ fn builtin_identity_validation_rejects_forged_names_and_builtin_type_arguments()
         (
             "File::Handle",
             vec![TypeExpr {
+                hir_id: None,
                 span: verified.facts().expressions[0].span,
                 text: String::new(),
                 kind: TypeKind::Name {
@@ -159,6 +160,7 @@ fn builtin_identity_validation_rejects_forged_names_and_builtin_type_arguments()
         let value = &mut facts.expressions[0].value;
         let witness = ril_compiler::sema::model::SourceTypeWitness {
             syntax: TypeExpr {
+                hir_id: None,
                 span: verified.facts().expressions[0].span,
                 text: String::new(),
                 kind: TypeKind::Name {

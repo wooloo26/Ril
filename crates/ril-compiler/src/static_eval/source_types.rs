@@ -373,6 +373,7 @@ impl Derive<'_> {
                     parameter.default = None;
                 }
                 let syntax = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: self.span,
                     kind: TypeKind::Callable {
@@ -449,6 +450,7 @@ impl Derive<'_> {
             _ => return Ok(None),
         };
         self.evaluator.source_type_witness(TypeExpr {
+            hir_id: None,
             kind,
             text: String::new(),
             span: self.span,

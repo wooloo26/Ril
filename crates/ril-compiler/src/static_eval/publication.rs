@@ -235,12 +235,15 @@ mod tests {
             end: 0,
         };
         let test = |name: &str| Expr {
+            hir_id: None,
             kind: ExprKind::Is {
                 value: Box::new(Expr {
+                    hir_id: None,
                     kind: ExprKind::Name("input".into()),
                     span,
                 }),
                 pattern: Pattern {
+                    hir_id: None,
                     kind: PatternKind::Name(name.into()),
                     span,
                 },
@@ -248,6 +251,7 @@ mod tests {
             span,
         };
         let binary = |operator: &str, left: Expr, right: Expr| Expr {
+            hir_id: None,
             kind: ExprKind::Binary {
                 operator: operator.into(),
                 left: Box::new(left),
@@ -256,6 +260,7 @@ mod tests {
             span,
         };
         let negate = |value: Expr| Expr {
+            hir_id: None,
             kind: ExprKind::Unary {
                 operator: "!".into(),
                 operand: Box::new(value),

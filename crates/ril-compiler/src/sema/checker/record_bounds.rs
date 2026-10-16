@@ -1316,6 +1316,7 @@ impl Checker {
                     && fields.iter().all(|field| field.key.is_closed())
                 {
                     let syntax = TypeExpr {
+                        hir_id: None,
                         text: String::new(),
                         span: *argument_span,
                         kind: TypeKind::Record {

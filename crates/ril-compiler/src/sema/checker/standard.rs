@@ -152,11 +152,13 @@ pub(super) fn builtin_callable_signature(name: &str, span: Span) -> Option<(Ty, 
             };
             Parameter {
                 pattern: Pattern {
+                    hir_id: None,
                     kind: PatternKind::Name((*name).into()),
                     span,
                 },
                 mode: *mode,
                 ty: Some(TypeExpr {
+                    hir_id: None,
                     text: type_name.into(),
                     kind: TypeKind::Name {
                         path: type_name.split("::").map(str::to_owned).collect(),

@@ -481,6 +481,7 @@ impl<'a> Replay<'a> {
                     let mut shell = syntax.clone();
                     if let TypeKind::Array { element, .. } = &mut shell.kind {
                         **element = TypeExpr {
+                            hir_id: None,
                             text: String::new(),
                             span: syntax.span,
                             kind: TypeKind::Tuple(vec![]),
@@ -989,6 +990,7 @@ impl Replay<'_> {
             }
             (Ty::Named(actual), _) => {
                 let syntax = TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: self.function_scope_span(scope),
                     kind: TypeKind::Name {
@@ -1305,6 +1307,7 @@ impl Replay<'_> {
         })?;
         self.normalized_key(
             &TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: self.function_scope_span(&BoundScope::default()),
                 kind: TypeKind::Name {
@@ -3883,6 +3886,7 @@ mod tests {
             rows: BTreeMap::from([("R".into(), row)]),
         };
         let int = TypeExpr {
+            hir_id: None,
             text: String::new(),
             span: fields[0].ty.span,
             kind: TypeKind::Name {

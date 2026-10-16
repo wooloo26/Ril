@@ -61,13 +61,13 @@ impl Replay<'_> {
             return Ok(None);
         }
         let events: Vec<_> = self.facts.copy_call_events.iter().filter(|event| {
-            event.span == expression.span && event.owner == context.owner && event.parent == context.invocation
+            event.matches_source(expression) && event.owner == context.owner && event.parent == context.invocation
                 && event.result_expression.is_some_and(|index| {
-                    self.facts.expressions.get(index).is_some_and(|fact| fact.span == expression.span && fact.value == *value)
+                    self.facts.expressions.get(index).is_some_and(|fact| fact.source_id.is_some() && fact.source_id == expression.hir_id && fact.value == *value)
                         && self.facts.invocation_expressions.get(index).is_some_and(|row| row.expression == index && row.context == context)
                 })
                 && event.callee_expression.is_some_and(|index| {
-                    self.facts.expressions.get(index).is_some_and(|fact| fact.span == callee.span && fact.value.sources.is_empty()
+                    self.facts.expressions.get(index).is_some_and(|fact| fact.source_id.is_some() && fact.source_id == callee.hir_id && fact.value.sources.is_empty()
                         && matches!(fact.value.callables.as_slice(), [crate::sema::model::Callable::Builtin(name)]
                             if name.strip_prefix("Prelude::").unwrap_or(name) == identity))
                         && self.facts.invocation_expressions.get(index).is_some_and(|row| row.expression == index && row.context == context)
@@ -106,7 +106,8 @@ impl Replay<'_> {
             .get(token.expression)
             .ok_or_else(|| "open Result Source operand is absent".to_owned())?;
         require(
-            operand.span == arguments[0].value.span
+            operand.source_id.is_some()
+                && operand.source_id == arguments[0].value.hir_id
                 && self
                     .facts
                     .invocation_expressions
@@ -243,11 +244,15 @@ impl Replay<'_> {
                 continue;
             }
             let context = self.input_caller_context(call)?;
+            let event = call
+                .source_event
+                .and_then(|id| self.facts.copy_call_events.get(id.0 as usize))
+                .ok_or_else(|| "producing result lost its actual source event".to_owned())?;
             let source: Vec<_> = sites
                 .calls
                 .iter()
                 .filter(|site| {
-                    Some(site.owner) == context.owner && site.expression.span == call.span
+                    Some(site.owner) == context.owner && event.matches_source(site.expression)
                 })
                 .collect();
             let [source] = source.as_slice() else {
@@ -262,7 +267,7 @@ impl Replay<'_> {
                         return None;
                     }
                     let value = self.facts.expressions.get(observation.expression)?;
-                    if value.span != call.span {
+                    if value.source_id.is_none() || value.source_id != event.source_id {
                         return None;
                     }
                     self.producing_result_causes(value.value.cause)
@@ -349,7 +354,7 @@ impl Replay<'_> {
                 continue;
             }
             for event in &self.facts.copy_call_events {
-                if event.span != site.expression.span
+                if !event.matches_source(site.expression)
                     || event.owner != context.owner
                     || event.parent != context.invocation
                 {
@@ -543,7 +548,9 @@ impl Replay<'_> {
                             .lambdas
                             .iter()
                             .filter(|header| {
-                                header.owner == site.owner && header.expression.span == site.span
+                                header.owner == site.owner
+                                    && closure.hir_id.is_some()
+                                    && header.expression.hir_id == closure.hir_id
                             })
                             .collect();
                         let [header] = headers.as_slice() else {

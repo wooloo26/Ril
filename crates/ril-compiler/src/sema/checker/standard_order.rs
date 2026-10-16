@@ -522,6 +522,7 @@ impl Checker {
                 .functions
                 .iter()
                 .map(|info| Stmt {
+                    hir_id: None,
                     kind: StmtKind::Function(info.syntax.clone()),
                     span: info.syntax.span,
                 })
@@ -541,10 +542,12 @@ impl Checker {
                     continue;
                 }
                 Callable::Named(id) => Some(Expr {
+                    hir_id: None,
                     kind: ExprKind::Name(self.functions[*id].syntax.name.clone()),
                     span,
                 }),
                 Callable::Closure(id) => Some(Expr {
+                    hir_id: None,
                     kind: ExprKind::Lambda {
                         parameters: self.closures[*id].parameters.clone(),
                         return_type: None,

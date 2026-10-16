@@ -110,6 +110,7 @@ pub(super) fn selected(
 
 pub(super) fn syntax(name: &str, span: Span) -> TypeExpr {
     TypeExpr {
+        hir_id: None,
         text: name.into(),
         kind: TypeKind::Name {
             path: vec![name.into()],

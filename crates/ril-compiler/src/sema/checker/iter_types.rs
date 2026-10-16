@@ -3,6 +3,7 @@ use super::*;
 
 fn named(name: &str, arguments: Vec<TypeExpr>, span: Span) -> TypeExpr {
     TypeExpr {
+        hir_id: None,
         text: name.into(),
         kind: TypeKind::Name {
             path: name.split("::").map(str::to_owned).collect(),
@@ -23,11 +24,13 @@ pub(super) fn schema(syntax: &TypeExpr) -> Option<TypeExpr> {
             mutable: false,
             span,
             ty: TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span,
                 kind: TypeKind::Callable {
                     parameters: vec![Parameter {
                         pattern: Pattern {
+                            hir_id: None,
                             kind: PatternKind::Name("ril__iter_state".into()),
                             span,
                         },
@@ -62,6 +65,7 @@ pub(super) fn schema(syntax: &TypeExpr) -> Option<TypeExpr> {
         _ => return None,
     };
     Some(TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind: TypeKind::Record { fields, row: None },
         span,
@@ -171,6 +175,7 @@ impl Checker {
             _ => return None,
         };
         Some(TypeExpr {
+            hir_id: None,
             text: String::new(),
             kind,
             span,

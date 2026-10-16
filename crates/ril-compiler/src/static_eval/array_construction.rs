@@ -25,6 +25,7 @@ impl Evaluator {
             && let TypeKind::Array { element, .. } = &actual.syntax.kind
         {
             witness = self.source_type_witness(TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: expected.span,
                 kind: TypeKind::Array {

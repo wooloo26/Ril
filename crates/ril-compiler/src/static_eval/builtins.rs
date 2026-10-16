@@ -181,6 +181,7 @@ impl Evaluator {
             }
             PatternKind::Literal(literal) => {
                 let actual = self.expression(&Expr {
+                    hir_id: None,
                     kind: ExprKind::Literal(literal.clone()),
                     span: pattern.span,
                 })?;

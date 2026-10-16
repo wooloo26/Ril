@@ -1,0 +1,154 @@
+--@ case: repeated-named-call
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_native
+--@ file: source.ril
+fn increment(value:int)->int{value+1}
+pub fn test_native(){
+    var index=0
+    var total=0
+    while index<3{
+        total+=increment(index)
+        index+=1
+    }
+    assert(total==6)
+}
+--@ end-file
+--@ end-case
+
+--@ case: ordinary-callee-before-arguments
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_native
+--@ file: source.ril
+var trace=0
+fn mark(digit:int)->int &{mut trace}{trace=trace*10+digit;digit}
+fn combine(left:int,right:int)->int{left*10+right}
+pub fn test_native() &{mut trace}{
+    trace=0
+    let result=({mark(1);combine})(mark(2),mark(3))
+    assert(result==23 && trace==123)
+}
+--@ end-file
+--@ end-case
+
+--@ case: pipeline-left-before-written-arguments
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_native
+--@ file: source.ril
+var trace=0
+fn mark(digit:int)->int &{mut trace}{trace=trace*10+digit;digit}
+fn combine(left:int,right:int)->int{left*10+right}
+pub fn test_native() &{mut trace}{
+    trace=0
+    let result=mark(1) |> combine(mark(2))
+    assert(result==12 && trace==12)
+}
+--@ end-file
+--@ end-case
+
+--@ case: named-default-after-explicit-arguments
+--@ mode: run-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ entry: test_native
+--@ companion: reject-stateful-parameter-default
+-- Defaults remain pure; omitted right observes the earlier actual left value.
+--@ file: source.ril
+var trace=0
+fn mark(digit:int)->int &{mut trace}{trace=trace*10+digit;digit}
+fn combine(left:int=3,right:int=left+1)->int{left*10+right}
+pub fn test_native() &{mut trace}{
+    trace=0
+    assert(combine(right:mark(2))==32 && trace==2)
+    trace=0
+    assert(combine(left:mark(1))==12 && trace==1)
+    trace=0
+    assert(combine()==34 && trace==0)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-stateful-parameter-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: named-default-after-explicit-arguments
+-- The initial new identity fixture was impure; retain its source as a negative.
+-- Error [E0409]: Defaults cannot retain state obligations even when the function declares them.
+--@ file: source.ril
+var trace=0
+fn mark(digit:int)->int &{mut trace}{trace=trace*10+digit;digit}
+fn combine(left:int=mark(3),right:int=mark(4))->int &{mut trace}{left*10+right}
+pub fn test_native() &{mut trace}{
+    trace=0
+    assert(combine(right:mark(2))==32 && trace==23)
+    trace=0
+    assert(combine(left:mark(1))==14 && trace==14)
+    trace=0
+    assert(combine()==34 && trace==34)
+}
+--@ end-file
+--@ end-case
+
+--@ case: closure-objects-share-lexical-site
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ file: source.ril
+type Adder=fn(int)->int &closure
+fn make(base:int)->Adder &capture{\value:int->base+value}
+pub fn test_native(){
+    let first=make(10)
+    let second=make(20)
+    assert(first(1)==11 && second(1)==21)
+    assert(first(2)==12 && second(2)==22)
+}
+--@ end-file
+--@ end-case
+
+--@ case: closure-default-uses-earlier-actual
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+--@ file: source.ril
+pub fn test_native(){
+    let action=\left:int,right:int=left+1 -> left*10+right
+    assert(action(3)==34)
+    assert(action(7)==78)
+    assert(action(right:9,left:2)==29)
+}
+--@ end-file
+--@ end-case
+
+--@ case: generated-adapter-per-call
+--@ mode: run-pass
+--@ spec: STD#explicit-iteration
+--@ entry: test_native
+--@ file: source.ril
+fn doubled(first:int)->int{
+    let indexed=Iter::indexed([first,first+1])
+    let mapped=Iter::map(indexed,\value:int->value*2)
+    let limited=Iter::take(mapped,1)
+    let mut cursor=Iter::cursor((0,0))
+    Iter::pull(mut cursor,limited) ?? 0
+}
+pub fn test_native(){
+    assert(doubled(3)==6)
+    assert(doubled(7)==14)
+}
+--@ end-file
+--@ end-case
+
+--@ case: repeated-pattern-value-read
+--@ mode: run-pass
+--@ spec: SPEC#value-tests-with-is
+--@ entry: test_native
+--@ file: source.ril
+fn same_value(value:int, expected:int)->bool{value is expected}
+fn is_one(value:int)->bool{value is 1}
+pub fn test_native(){
+    assert(same_value(1,1));assert(!same_value(2,1));assert(same_value(3,3))
+    assert(is_one(1));assert(!is_one(2));assert(is_one(1))
+}
+--@ end-file
+--@ end-case

@@ -1022,6 +1022,7 @@ fn row_syntax(row: &Row<SchemaField>, span: Span) -> Result<TypeExpr> {
         return Err(missing("an open static residual is not a closed type"));
     }
     Ok(TypeExpr {
+        hir_id: None,
         text: String::new(),
         span,
         kind: TypeKind::Record {
@@ -1080,6 +1081,7 @@ pub(super) fn lossless_syntax(ty: &Ty, span: Span) -> Option<TypeExpr> {
         _ => return None,
     };
     Some(TypeExpr {
+        hir_id: None,
         kind,
         text: String::new(),
         span,
@@ -1363,6 +1365,7 @@ mod tests {
         );
         let checker = Typer::new(&evaluator, None);
         let expression = Expr {
+            hir_id: None,
             kind: ExprKind::Name("value".into()),
             span: schema.syntax.span,
         };
@@ -1379,6 +1382,7 @@ mod tests {
         checker
             .bind(
                 &Pattern {
+                    hir_id: None,
                     kind: PatternKind::Name("value".into()),
                     span: schema.syntax.span,
                 },
@@ -1395,6 +1399,7 @@ mod tests {
         checker
             .bind_source_schema(
                 &Pattern {
+                    hir_id: None,
                     kind: PatternKind::Name("value".into()),
                     span: schema.syntax.span,
                 },
@@ -1618,6 +1623,7 @@ mod tests {
             .unwrap_or_else(|failure| unexpected(failure));
         let span = evaluator.functions["receiver"].span;
         let generic = TypeExpr {
+            hir_id: None,
             text: String::new(),
             span,
             kind: TypeKind::Name {
@@ -1626,6 +1632,7 @@ mod tests {
             },
         };
         let direct = TypeExpr {
+            hir_id: None,
             text: String::new(),
             span,
             kind: TypeKind::Name {
@@ -1638,6 +1645,7 @@ mod tests {
             .unwrap_or_else(|failure| unexpected(failure));
         assert_eq!(received, second);
         let wrapped = TypeExpr {
+            hir_id: None,
             text: String::new(),
             span,
             kind: TypeKind::Name {
@@ -1681,6 +1689,7 @@ mod tests {
             .bound_type(syntax, &BoundEnvironment::default())
             .unwrap_or_else(|failure| unexpected(failure));
         let wrapped = TypeExpr {
+            hir_id: None,
             text: String::new(),
             span: syntax.span,
             kind: TypeKind::Name {
@@ -2309,6 +2318,7 @@ mod tests {
             .function_ty("left", &Env::new())
             .unwrap_or_else(|failure| unexpected(failure));
         let name = Expr {
+            hir_id: None,
             kind: ExprKind::Name("left".into()),
             span: evaluator.functions["left"].span,
         };
@@ -2507,6 +2517,7 @@ mod tests {
         let mut evaluator =
             evaluator("meta fn shape()->[2]int{[1,2]}\ntype Items=[len(shape())]int");
         let source = TypeExpr {
+            hir_id: None,
             kind: TypeKind::Name {
                 path: vec!["Items".into()],
                 arguments: vec![],
@@ -2535,6 +2546,7 @@ mod tests {
         let mut caller = BoundEnvironment::default();
         caller.values.insert("size".into(), Ty::IntegerConstant(2));
         let source = TypeExpr {
+            hir_id: None,
             kind: TypeKind::Name {
                 path: vec!["Items".into()],
                 arguments: vec![],

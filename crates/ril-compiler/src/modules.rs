@@ -1397,6 +1397,7 @@ impl Resolver {
                 let value = local_value || self.value_declarations.contains(&path.join("::"));
                 if !binding && value && arguments.is_empty() && !*parenthesized {
                     pattern.kind = PatternKind::Value(Box::new(Expr {
+                        hir_id: None,
                         kind: if path.len() == 1 {
                             ExprKind::Name(path[0].clone())
                         } else {

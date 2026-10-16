@@ -137,6 +137,7 @@ impl Checker {
             let mut frozen_key = (**key).clone();
             frozen_key.kind = ExprKind::Name(format!("{KEY_TOKEN}{identity}"));
             return Some(Arc::new(TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: syntax.span,
                 kind: TypeKind::ComputedProjection {
@@ -375,6 +376,7 @@ impl Checker {
             views
                 .into_iter()
                 .map(|items| TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: constructor.span,
                     kind: TypeKind::Callable {
@@ -384,6 +386,7 @@ impl Checker {
                             .map(|(index, ty)| Parameter {
                                 mode: ParameterMode::Read,
                                 pattern: Pattern {
+                                    hir_id: None,
                                     kind: PatternKind::Name(format!("_{index}")),
                                     span: ty.span,
                                 },

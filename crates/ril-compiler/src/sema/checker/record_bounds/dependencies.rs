@@ -610,6 +610,7 @@ mod tests {
     }
     fn syntax() -> TypeExpr {
         TypeExpr {
+            hir_id: None,
             text: "U".into(),
             span: Span {
                 file: FileId(0),

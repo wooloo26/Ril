@@ -741,7 +741,7 @@ impl Checker {
             return self.unit(span);
         };
         let generated_id = crate::sema::generated_sources::GeneratedSourceId(ordinal);
-        let Some(syntax) = super::generated_sources::iterator_syntax(
+        let Some(mut syntax) = super::generated_sources::iterator_syntax(
             generated_id.0,
             &identity,
             &state_syntax,
@@ -754,6 +754,27 @@ impl Checker {
             );
             return self.unit(span);
         };
+        let registered = self
+            .copy_call_events
+            .get(origin_event.0 as usize)
+            .and_then(|event| event.source_id)
+            .and_then(|source| {
+                let anchor = crate::hir::nodes::NodeId::Expr(source);
+                let owner = self.semantic_hir.info(anchor)?.owner;
+                self.semantic_hir
+                    .mint_generated_identified_expr(
+                        &mut syntax,
+                        anchor,
+                        crate::hir::nodes::GeneratedKind::IteratorAdapter,
+                        owner,
+                        crate::hir::nodes::HirLimits::default(),
+                    )
+                    .ok()
+            });
+        if registered.is_none() {
+            self.unsupported(span, "generated iterator has no actual HIR origin call or exceeded its registration budget");
+            return self.unit(span);
+        }
         let Some(site) = self.closure_site(caller.callable_owner, syntax.span) else {
             self.unsupported(
                 span,
@@ -771,6 +792,7 @@ impl Checker {
             unreachable!()
         };
         self.closures.push(ClosureInfo {
+            hir_id: syntax.hir_id,
             site: Some(site),
             creation_invocation: self.copy_invocation_stack.last().copied(),
             creation_closure: self.closure_invocation_stack.last().copied(),
@@ -836,6 +858,7 @@ impl Checker {
         step.callables.push(Callable::Closure(closure));
         step.signature = Some(self.closures[closure].parameters.clone());
         let callable_schema = TypeExpr {
+            hir_id: None,
             text: String::new(),
             span,
             kind: TypeKind::Callable {
@@ -870,6 +893,7 @@ impl Checker {
         source.must_results = step.must_results.clone();
         source.scoped = step.scoped.clone();
         source.source_type_witness = self.source_type_from_frozen_syntax(&TypeExpr {
+            hir_id: None,
             text: String::new(),
             span,
             kind: TypeKind::Record {

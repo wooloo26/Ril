@@ -41,6 +41,7 @@ pub(super) fn operation_type(syntax: &TypeExpr) -> Option<TypeExpr> {
     let span = syntax.span;
     let read = name == "Io::ReadOps";
     let named = |name: &str| TypeExpr {
+        hir_id: None,
         text: name.into(),
         kind: TypeKind::Name {
             path: name.split("::").map(str::to_owned).collect(),
@@ -50,6 +51,7 @@ pub(super) fn operation_type(syntax: &TypeExpr) -> Option<TypeExpr> {
     };
     let parameter = |name: &str, ty: TypeExpr, mode| Parameter {
         pattern: Pattern {
+            hir_id: None,
             kind: PatternKind::Name(name.into()),
             span,
         },
@@ -60,6 +62,7 @@ pub(super) fn operation_type(syntax: &TypeExpr) -> Option<TypeExpr> {
     };
     let result = if read {
         TypeExpr {
+            hir_id: None,
             text: String::new(),
             kind: TypeKind::Name {
                 path: vec!["Prelude".into(), "Result".into()],
@@ -71,6 +74,7 @@ pub(super) fn operation_type(syntax: &TypeExpr) -> Option<TypeExpr> {
         named("Io::WriteProgress")
     };
     let callable = TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind: TypeKind::Callable {
             parameters: vec![
@@ -91,6 +95,7 @@ pub(super) fn operation_type(syntax: &TypeExpr) -> Option<TypeExpr> {
         span,
     };
     Some(TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind: TypeKind::Record {
             fields: vec![TypeField {
@@ -168,6 +173,7 @@ pub(super) fn data_type(ty: &Ty, span: Span) -> Option<TypeExpr> {
         _ => return None,
     };
     Some(TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind,
         span,

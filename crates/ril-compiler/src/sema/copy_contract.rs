@@ -125,6 +125,7 @@ pub struct CopyReference {
 #[derive(Debug, Clone)]
 pub struct CopyCallEvent {
     pub id: CopyCallEventId,
+    pub source_id: Option<ril_compiler_core::ids::ExprId>,
     pub callee_expression: Option<usize>,
     /// The actual root emission, including a Never result. This is an
     /// observation edge, not proof that arguments or a body completed.
@@ -137,6 +138,13 @@ pub struct CopyCallEvent {
     pub direct: bool,
     pub copy_operation: Option<CopyMode>,
     pub references: Vec<CopyReferenceId>,
+}
+impl CopyCallEvent {
+    /// Lexical identity comes from the actual labeled syntax occurrence.
+    /// A missing identity never matches another missing identity.
+    pub(crate) fn matches_source(&self, expression: &ril_syntax::ast::Expr) -> bool {
+        self.source_id.is_some() && self.source_id == expression.hir_id
+    }
 }
 #[derive(Debug, Clone)]
 pub struct CopyInvocation {

@@ -23,6 +23,7 @@ impl Checker {
             let mut group = BTreeMap::new();
             for arm in arms {
                 let expression = Expr {
+                    hir_id: None,
                     span: arm.body.span,
                     kind: ExprKind::Lambda {
                         parameters: arm.parameters,
@@ -52,6 +53,7 @@ impl Checker {
             return None;
         }
         Some(Expr {
+            hir_id: None,
             span,
             kind: match &value.callables[0] {
                 Callable::Named(id) => ExprKind::Name(self.functions[*id].syntax.name.clone()),
@@ -104,6 +106,7 @@ impl Checker {
                     return_type: self.functions[*id].syntax.return_type.clone(),
                     annotations: vec![],
                     body: Box::new(Expr {
+                        hir_id: None,
                         kind: ExprKind::Block(body.clone()),
                         span: body.span,
                     }),
@@ -136,6 +139,7 @@ impl Checker {
                 .functions
                 .iter()
                 .map(|info| Stmt {
+                    hir_id: None,
                     kind: StmtKind::Function(info.syntax.clone()),
                     span: info.syntax.span,
                 })
@@ -153,7 +157,7 @@ impl Checker {
                     [Callable::Closure(id)]=>self.closures[*id].captures.iter().all(|binding|lexical.get(&self.bindings[*binding].name)==Some(binding)),
                     _=>true,
                 };
-                let expression=compatible_capture.then(||self.callable_expression(value,span)).flatten().unwrap_or(Expr{kind:ExprKind::Error,span});
+                let expression=compatible_capture.then(||self.callable_expression(value,span)).flatten().unwrap_or(Expr{ hir_id: None,kind:ExprKind::Error,span});
                 Some((name.clone(),expression))
             })
             .collect();

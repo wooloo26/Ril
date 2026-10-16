@@ -1344,6 +1344,7 @@ impl Checker {
                     argument_of: None,
                 });
             self.expression_facts.push(super::super::ExpressionFact {
+                source_id: arm.operation.hir_id,
                 span: arm.operation.span,
                 value: target,
             });
@@ -2133,6 +2134,7 @@ fn audit_resumes(expr: &Expr, nested: bool) -> ResumeAudit {
                         if let Some(body) = &function.body {
                             let audit = audit_resumes(
                                 &Expr {
+                                    hir_id: None,
                                     kind: ExprKind::Block(body.clone()),
                                     span: body.span,
                                 },
@@ -2221,6 +2223,7 @@ fn audit_resumes(expr: &Expr, nested: bool) -> ResumeAudit {
             include(&mut result, audit_resumes(condition, nested));
             let mut body = audit_resumes(
                 &Expr {
+                    hir_id: None,
                     kind: ExprKind::Block(body.clone()),
                     span: body.span,
                 },
@@ -2235,6 +2238,7 @@ fn audit_resumes(expr: &Expr, nested: bool) -> ResumeAudit {
             include(&mut result, audit_resumes(iterable, nested));
             let mut body = audit_resumes(
                 &Expr {
+                    hir_id: None,
                     kind: ExprKind::Block(body.clone()),
                     span: body.span,
                 },

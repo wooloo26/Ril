@@ -72,6 +72,7 @@ impl Checker {
             defaults.opaque = false;
             defaults.variants.clear();
             defaults.value = Some(TypeExpr {
+                hir_id: None,
                 kind: TypeKind::Tuple(vec![]),
                 text: "()".into(),
                 span: declaration.span,
@@ -203,6 +204,7 @@ impl Checker {
                         .find(|variant| format!("{}::{}", declaration.name, variant.name) == *name)
                         .and_then(|variant| variant.result.clone())
                         .unwrap_or_else(|| TypeExpr {
+                            hir_id: None,
                             text: String::new(),
                             span: declaration.span,
                             kind: TypeKind::Name {

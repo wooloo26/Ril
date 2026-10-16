@@ -33,7 +33,7 @@ impl Replay<'_> {
             return Err("storage intrinsic is missing its original Call AST".into());
         };
         require(
-            event.span == syntax.span
+            event.matches_source(syntax)
                 && event.owner == context.owner
                 && event.parent == context.invocation
                 && event.target.is_none()
@@ -69,7 +69,8 @@ impl Replay<'_> {
                 .ok_or_else(|| "storage intrinsic operand observation is absent".to_owned())?;
             require(
                 supplied.allocation_epoch <= self.facts.allocation_history.len()
-                    && value.span == arguments[slot].value.span
+                    && value.source_id.is_some()
+                    && value.source_id == arguments[slot].value.hir_id
                     && self
                         .facts
                         .invocation_expressions
@@ -93,7 +94,7 @@ impl Replay<'_> {
             let expected = collection_part(&receiver, part).ok_or_else(|| {
                 "storage intrinsic receiver has no declared member projection".to_owned()
             })?;
-            if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+            if crate::sema::source_types::key_is_coordinate_free(expected) {
                 continue;
             }
             let actual = original(slot)?;

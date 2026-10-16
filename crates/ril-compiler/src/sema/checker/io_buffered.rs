@@ -171,6 +171,7 @@ impl Checker {
 
     fn buffered_type(&mut self, name: &str, span: Span) -> Ty {
         self.ty(&TypeExpr {
+            hir_id: None,
             text: name.into(),
             kind: TypeKind::Name {
                 path: name.split("::").map(str::to_owned).collect(),

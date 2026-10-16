@@ -124,6 +124,7 @@ impl Checker {
             });
         self.record_copy_references(&value, expr.span, frame);
         self.expression_facts.push(super::super::ExpressionFact {
+            source_id: expr.hir_id,
             span: expr.span,
             value: value.clone(),
         });
@@ -1185,7 +1186,7 @@ impl Checker {
                 right,
             } => {
                 if operator == "!>" || operator == "|>" {
-                    return self.pipeline(operator, left, right, expr.span, frame);
+                    return self.pipeline(operator, left, right, expr, frame);
                 }
                 let tag_test = matches!(operator.as_str(), "==" | "!=")
                     && (narrowing::is_none(left, frame) || narrowing::is_none(right, frame));
@@ -1661,7 +1662,7 @@ impl Checker {
                 let call_event = self.record_copy_call_event(
                     callee_syntax,
                     &callee,
-                    expr.span,
+                    expr,
                     reference_start,
                     callee_observation,
                     frame,
@@ -1957,13 +1958,7 @@ impl Checker {
                     self.loop_breaks.push((frame.owner, Vec::new()));
                     self.loop_continuations.push((frame.owner, false));
                     self.loop_unit.push(true);
-                    self.preview_expression(
-                        &Expr {
-                            kind: ExprKind::Block(body.clone()),
-                            span: body.span,
-                        },
-                        frame,
-                    );
+                    self.preview_block_source(body, frame, None, None);
                     self.loop_unit.pop();
                     self.loop_breaks.pop();
                     self.loop_continuations.pop();
@@ -1980,13 +1975,7 @@ impl Checker {
                     self.loop_breaks.push((frame.owner, Vec::new()));
                     self.loop_continuations.push((frame.owner, false));
                     self.loop_unit.push(true);
-                    let _ = self.preview_expression(
-                        &Expr {
-                            kind: ExprKind::Block(body.clone()),
-                            span: body.span,
-                        },
-                        frame,
-                    );
+                    let _ = self.preview_block_source(body, frame, None, None);
                     self.loop_breaks.pop();
                     self.loop_continuations.pop();
                     self.loop_unit.pop();
@@ -2125,7 +2114,7 @@ impl Checker {
                     result_type.as_ref(),
                     annotations,
                     body,
-                    expr.span,
+                    expr,
                     frame,
                 )
             }
@@ -2556,11 +2545,13 @@ impl Checker {
                         .into_iter()
                         .map(|name| Parameter {
                             pattern: Pattern {
+                                hir_id: None,
                                 kind: PatternKind::Name(name.into()),
                                 span,
                             },
                             mode: ParameterMode::Read,
                             ty: (name == "limit").then(|| TypeExpr {
+                                hir_id: None,
                                 text: "int".into(),
                                 kind: TypeKind::Name {
                                     path: vec!["int".into()],
@@ -2607,9 +2598,10 @@ impl Checker {
         operator: &str,
         left: &Expr,
         right: &Expr,
-        span: Span,
+        syntax: &Expr,
         frame: &mut Frame,
     ) -> Value {
+        let span = syntax.span;
         let value = self.expression(left, frame);
         if let ExprKind::Derive { base: None, recipe } = &right.kind {
             return self.derive_value(value, recipe, span, frame);
@@ -2829,9 +2821,10 @@ impl Checker {
         return_type: Option<&TypeExpr>,
         annotations: &[Annotation],
         body: &Expr,
-        span: Span,
+        syntax: &Expr,
         frame: &mut Frame,
     ) -> Value {
+        let span = syntax.span;
         for annotation in annotations {
             if annotation.kind == AnnotationKind::Effect {
                 self.effect_row(annotation);
@@ -2879,6 +2872,7 @@ impl Checker {
         );
         let site = self.closure_site(frame.callable_owner, span);
         self.closures.push(ClosureInfo {
+            hir_id: syntax.hir_id,
             site,
             creation_invocation: self.copy_invocation_stack.last().copied(),
             creation_closure: self.closure_invocation_stack.last().copied(),
@@ -3018,6 +3012,7 @@ impl Checker {
         self.validate_empty_callable_rows(&value.ty, annotations, span);
         if let Some(result) = return_type {
             let syntax = TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span,
                 kind: TypeKind::Callable {
@@ -3397,6 +3392,7 @@ mod observation_tests {
 
     fn integer(start: u32, value: &str) -> Expr {
         Expr {
+            hir_id: None,
             kind: ExprKind::Literal(Literal::Integer(value.into())),
             span: Span {
                 file: FileId(0),
@@ -3411,6 +3407,7 @@ mod observation_tests {
         let mut checker = Checker::new(FileId(0));
         let mut frame = checker.frame(BTreeMap::new(), false);
         let expression = Expr {
+            hir_id: None,
             span: Span {
                 file: FileId(0),
                 start: 0,
@@ -3470,6 +3467,7 @@ mod observation_tests {
         };
         let expected = integer(15, "7");
         let expression = Expr {
+            hir_id: None,
             span: Span {
                 file: FileId(0),
                 start: 2,
@@ -3477,10 +3475,12 @@ mod observation_tests {
             },
             kind: ExprKind::Is {
                 value: Box::new(Expr {
+                    hir_id: None,
                     kind: ExprKind::Name("result".into()),
                     span: subject_span,
                 }),
                 pattern: Pattern {
+                    hir_id: None,
                     span: Span {
                         file: FileId(0),
                         start: 12,
@@ -3489,6 +3489,7 @@ mod observation_tests {
                     kind: PatternKind::Constructor {
                         path: vec!["Ok".into()],
                         arguments: vec![Pattern {
+                            hir_id: None,
                             span: expected.span,
                             kind: PatternKind::Value(Box::new(expected)),
                         }],

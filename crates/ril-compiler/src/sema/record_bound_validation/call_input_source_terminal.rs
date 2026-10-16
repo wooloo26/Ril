@@ -88,7 +88,7 @@ impl Replay<'_> {
             .copy_call_events
             .iter()
             .filter(|inner| {
-                inner.span == operand.span
+                inner.matches_source(operand)
                     && inner.owner == context.owner
                     && inner.parent == context.invocation
                     && inner
@@ -110,7 +110,8 @@ impl Replay<'_> {
             .ok_or_else(|| "terminal intrinsic callee is outside its arena".to_owned())?;
         require(
             inner.target.is_none()
-                && observed.span == callee.span
+                && observed.source_id.is_some()
+                && observed.source_id == callee.hir_id
                 && observed.value.sources.is_empty()
                 && matches!(observed.value.callables.as_slice(), [Callable::Builtin(name)]
                 if matches!(name.as_str(), "panic" | "Prelude::panic")),
@@ -161,7 +162,8 @@ impl Replay<'_> {
             .ok_or_else(|| "terminal supplied root is outside its arena".to_owned())?;
         require(
             supplied.allocation_epoch <= self.facts.allocation_history.len()
-                && observed.span == syntax.span
+                && observed.source_id.is_some()
+                && observed.source_id == syntax.hir_id
                 && self
                     .facts
                     .invocation_expressions

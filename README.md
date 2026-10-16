@@ -21,26 +21,25 @@ Work proceeds in this order:
 4. Implement LSP and VS Code support on the analysis API.
 
 Git history preserves the unfinished implementation before this migration.
-The latest completed migration gate is `refactor-v2`: on each Windows and Linux
-host, 44 Rust targets report **810 passed, 50 failed and 1 ignored**.
-Both hosts compile those targets without warnings. Snapshot tests pass 5/5,
-HIR tests 7/7 and storage source tests 6/6, including strict dimension negatives.
-This is an intermediate migration checkpoint, not completed refactoring.
-Compared by test identity with v51, 14 failures are repaired, 43 previously
-passing tests regress, 29 tests are added and none disappear. Those regressions
-remain active failures and must be resolved before refactoring acceptance.
-The post-lint focused gate passes 48/48 tests on each host. Workspace all-target
-checking, Clippy with warnings denied, formatting and diff checks pass.
-There are now 98 bundles and 1,355 cases; this count has passed structural
-validation on both hosts and is not a claim that all new cases execute correctly.
+The latest migration checkpoint is `identity-v5`: on each Windows and Linux
+host, 44 Rust targets report **827 passed, 50 failed and 1 ignored**.
+It combines the complete v4 run with one targeted rerun after adding the missing
+literal-pattern control to a new fixture. Original results and overrides remain
+separate in the machine reports. No existing test regresses from `refactor-v2`;
+17 new tests pass. Its 43 regressions against v51 remain active failures.
+This is an intermediate checkpoint, not completed refactoring.
+Workspace all-target Clippy with warnings denied, formatting, registry tests and
+diff checks pass. Nine new CLI corpus cases pass on both hosts: eight compile
+and execute native programs, and one correctly rejects a stateful default.
+There are 99 bundles and 1,364 cases; structural validation passes on both hosts.
 
 The original corpus has 84 theme bundles and 1,067 case identities.
-The latest migration gate does not certify native execution or full corpus
-conformance. Historical native reports cannot certify this newer compiler.
+The focused native cases do not certify full corpus conformance.
+Historical native reports cannot certify this newer compiler.
 
 Detailed development reports remain under `target/`, including
-`refactor-v2-checkpoint.json`, `refactor-v2-case-comparison.json` and the matching
-compile/full-source logs. The pre-migration v51 reports remain the comparison base.
+`identity-v5-case-comparison-{windows,linux}.json`,
+`identity-native-corpus-{windows,linux}-v5.json` and matching build/test logs.
 Git preserves removed design documents and implementation history.
 New checkpoints identify the source revision, selected cases and platform.
 
@@ -221,6 +220,10 @@ Their IDs are local to each snapshot. Static output without a preserved source
 mapping is explicitly Transformed; only generated nodes with an actual anchor
 are Generated. The checker still consumes ASTs while individual consumers move
 to structural child IDs. Origin metadata alone provides no semantic proof.
+Controlled AST clones retain HIR IDs; syntax equality deliberately ignores them.
+Ordinary call replay checks actual callee/operand/result IDs and dynamic contexts.
+Source type graphs retain shared coordinates and explicit unknowns; binding views
+reside in one immutable snapshot store rather than being rebuilt at each projection.
 
 Independent validators read original HIR and actual evaluation records.
 They may share pure normalization and relations, but cannot substitute a
@@ -336,7 +339,7 @@ These are implementation gaps, not waived language requirements:
 - Complete outstanding static extent/sort contexts and shared-constant audits.
   Object identity and each reference's declared view remain separate.
 - Rerun engineering, corpus and native checks on both platforms.
-  Remove obsolete pending adapters only after their cases are migrated.
+  Four remaining pending test drafts contain unique cases that need migration.
 - Implement LSP and VS Code support after analysis contracts stabilize.
 
 Hover must show required annotations and full inferred capability information:

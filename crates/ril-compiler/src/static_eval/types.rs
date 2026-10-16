@@ -138,6 +138,7 @@ impl Evaluator {
                             || !declaration.variants.is_empty()
                         {
                             return Ok(TypeExpr {
+                                hir_id: None,
                                 text: ty.text.clone(),
                                 kind: TypeKind::Name {
                                     path: vec![declaration.name.clone()],
@@ -410,6 +411,7 @@ impl Evaluator {
             }
         };
         Ok(TypeExpr {
+            hir_id: None,
             text: ty.text.clone(),
             kind,
             span: ty.span,
@@ -601,6 +603,7 @@ impl Evaluator {
                     ty.clone()
                 }
                 _ => TypeExpr {
+                    hir_id: None,
                     text: argument.text.clone(),
                     kind: TypeKind::Computation(Box::new(
                         self.const_value_expr(value.clone(), argument.span)?,
@@ -656,6 +659,7 @@ impl Evaluator {
                 }
             }
             let remainder = TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 kind: TypeKind::Record {
                     fields: actual_fields
@@ -780,7 +784,11 @@ impl Evaluator {
             ),
             value => return self.materialize(value, span),
         };
-        Ok(Expr { kind, span })
+        Ok(Expr {
+            hir_id: None,
+            kind,
+            span,
+        })
     }
     pub(super) fn value_argument(&mut self, argument: &TypeExpr) -> Result<StaticValue> {
         match &argument.kind {
@@ -842,6 +850,7 @@ impl Evaluator {
                 if normalized_path(path) == "Option" && arguments.len() == 1 =>
             {
                 let optional = TypeExpr {
+                    hir_id: None,
                     kind: TypeKind::Optional(Box::new(arguments[0].clone())),
                     text: bound.text.clone(),
                     span: bound.span,
@@ -1057,6 +1066,7 @@ impl Evaluator {
                                 self.values.remove(&parameter.name);
                             }
                             let actual = TypeExpr {
+                                hir_id: None,
                                 text: name.clone(),
                                 kind: TypeKind::Name {
                                     path: path.clone(),
@@ -1201,6 +1211,7 @@ impl Evaluator {
                 }) = a.last()
                 {
                     let actual = TypeExpr {
+                        hir_id: None,
                         text: String::new(),
                         kind: TypeKind::Tuple(b[fixed..].to_vec()),
                         span: actual.span,
@@ -1282,6 +1293,7 @@ impl Evaluator {
                 }
                 if let Some(row) = row {
                     let actual = TypeExpr {
+                        hir_id: None,
                         text: String::new(),
                         kind: TypeKind::Record {
                             fields: b
@@ -1559,6 +1571,7 @@ fn valid_label(name: &str) -> bool {
 }
 fn unit_type(span: Span) -> TypeExpr {
     TypeExpr {
+        hir_id: None,
         text: "()".into(),
         kind: TypeKind::Tuple(vec![]),
         span,

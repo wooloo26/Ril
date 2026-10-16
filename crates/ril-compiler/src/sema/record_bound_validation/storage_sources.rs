@@ -48,13 +48,18 @@ impl Replay<'_> {
                 binding.name == name,
                 "storage source borrowed another named binding",
             )?;
-            let key = rows[0]
-                .key
-                .as_ref()
-                .ok_or_else(|| "storage declaration source remains unknown".to_owned())?;
-            projection(key, &path)
-                .cloned()
-                .ok_or_else(|| "storage path has no original declared source coordinate".to_owned())
+            require(
+                self.facts
+                    .source_types
+                    .validate_binding(id, rows[0].key.as_ref()),
+                "storage source index differs from the original binding view",
+            )?;
+            self.facts
+                .source_types
+                .projected_binding_key(id, &path)
+                .map_err(|error| {
+                    format!("storage path has no original declared source coordinate: {error:?}")
+                })
         })())
     }
 
@@ -452,6 +457,12 @@ impl Replay<'_> {
             let mut declarations = BTreeMap::new();
             for row in &self.facts.binding_sources {
                 require(
+                    self.facts
+                        .source_types
+                        .validate_binding(row.binding, row.key.as_ref()),
+                    "storage source index lost or changed its original binding schema",
+                )?;
+                require(
                     declarations.insert(row.binding, row).is_none(),
                     "storage declaration was recorded twice",
                 )?;
@@ -729,7 +740,7 @@ impl Replay<'_> {
                     .original_source_key(site.value, input, write.context, &sites)
                     .ok();
                 let fresh = source_reception::construction(site.value, &mut 4096);
-                let answer = if source_reception::sensitive(&expected, &mut 4096) == Some(false) {
+                let answer = if crate::sema::source_types::key_is_coordinate_free(&expected) {
                     Some(true)
                 } else if write.operator != "=" {
                     Some(false)
@@ -802,7 +813,7 @@ pub(in crate::sema::record_bound_validation) fn storage_compatible(
     if contains_callable(expected, &mut 4096)? {
         return None;
     }
-    if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+    if crate::sema::source_types::key_is_coordinate_free(expected) {
         return Some(true);
     }
     if let Some(actual) = actual {
@@ -959,6 +970,7 @@ mod tests {
     }
     fn function(binding: BindingId) -> FunctionInfo {
         FunctionInfo {
+            hir_id: None,
             definition: DefinitionId(0),
             lexical_owner: Some(CallableOwner::Global),
             typing_environment: Default::default(),
@@ -1049,6 +1061,7 @@ mod tests {
         let mut callee = Value::scalar(Ty::Unknown, None, CauseId(0));
         callee.callables.push(Callable::Named(1));
         facts.expressions.push(crate::sema::ExpressionFact {
+            source_id: None,
             span: span(),
             value: callee,
         });
@@ -1065,6 +1078,7 @@ mod tests {
             default_use: None,
         });
         facts.copy_call_events.push(CopyCallEvent {
+            source_id: None,
             id: CopyCallEventId(0),
             callee_expression: Some(0),
             result_expression: None,
@@ -1098,6 +1112,7 @@ mod tests {
         current.closure_invocation = Some(ClosureInvocationId(0));
         facts.invocations[0].context = Some(current);
         facts.closures.push(ClosureInfo {
+            hir_id: None,
             site: Some(ClosureSiteId(0)),
             creation_invocation: None,
             creation_closure: None,
@@ -1105,6 +1120,7 @@ mod tests {
             handler_context: vec![],
             parameters: vec![],
             body: Expr {
+                hir_id: None,
                 kind: ExprKind::Error,
                 span: span(),
             },

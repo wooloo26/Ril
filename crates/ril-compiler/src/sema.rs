@@ -22,6 +22,7 @@ pub mod copy_template_closure;
 pub mod copy_templates;
 pub mod default_uses;
 pub mod effect_identity;
+mod evaluation_identity;
 pub mod facts;
 pub mod generated_sources;
 pub mod invocation_loans;
@@ -41,6 +42,7 @@ pub(crate) mod source_reception;
 #[cfg(test)]
 mod source_reception_review_tests;
 mod source_type_validation;
+pub mod source_types;
 mod static_argument_validation;
 pub mod storage_sources;
 pub mod summary;
@@ -51,6 +53,8 @@ mod tests;
 
 #[derive(Debug, Clone, Default)]
 pub struct SemanticFacts {
+    pub source_types: source_types::SourceTypeIndex,
+    pub semantic_hir: Option<std::sync::Arc<crate::hir::HirProgram>>,
     /// The actual analyzed source tree supplies complete lexical declarations.
     /// A missing tree cannot establish a new Source-dependent proof.
     pub source_program: Option<std::sync::Arc<ril_syntax::ast::Program>>,
@@ -346,6 +350,7 @@ pub struct GenericBinder {
 }
 #[derive(Debug, Clone)]
 pub struct ExpressionFact {
+    pub source_id: Option<ril_compiler_core::ids::ExprId>,
     pub span: Span,
     pub value: model::Value,
 }

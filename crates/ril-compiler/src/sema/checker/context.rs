@@ -88,6 +88,7 @@ mod tests {
         let callee = environment("callee:T", Ty::Int("int".into()), "callee");
         checker.restore_typing_environment(caller.clone());
         let syntax = TypeExpr {
+            hir_id: None,
             text: "T".into(),
             kind: TypeKind::Name {
                 path: vec!["T".into()],

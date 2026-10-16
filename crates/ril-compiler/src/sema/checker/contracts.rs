@@ -147,6 +147,7 @@ impl Checker {
             match &syntax.kind {
                 TypeKind::Callable { result, .. } => {
                     Some(result.as_deref().cloned().unwrap_or_else(|| TypeExpr {
+                        hir_id: None,
                         text: "()".into(),
                         kind: TypeKind::Tuple(vec![]),
                         span: syntax.span,

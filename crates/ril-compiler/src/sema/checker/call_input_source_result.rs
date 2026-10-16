@@ -24,7 +24,9 @@ impl Checker {
             .copy_invocations
             .iter()
             .filter(|call| {
-                call.span == syntax.span
+                call.source_event
+                    .and_then(|id| self.copy_call_events.get(id.0 as usize))
+                    .is_some_and(|event| event.matches_source(syntax))
                     && call.parent == context.invocation
                     && call.caller_owner == context.owner
                     && call.source_event.is_some()
@@ -74,8 +76,9 @@ impl Checker {
         let Some(callee_fact) = self.expression_facts.get(token) else {
             return;
         };
-        if event.span != syntax.span
-            || callee_fact.span != callee.span
+        if !event.matches_source(syntax)
+            || callee_fact.source_id.is_none()
+            || callee_fact.source_id != callee.hir_id
             || !callee_fact.value.sources.is_empty()
         {
             return;
@@ -123,7 +126,8 @@ impl Checker {
                 let token = input.expression?;
                 let actual = self.expression_facts.get(token)?;
                 (input.context == context
-                    && actual.span == arguments[0].value.span
+                    && actual.source_id.is_some()
+                    && actual.source_id == arguments[0].value.hir_id
                     && actual.value.cause == payload.cause
                     && self.invocation_expressions.get(token).is_some_and(|row| {
                         row.expression == token
@@ -197,11 +201,12 @@ impl Checker {
         }
         let event = self.copy_call_events.get(event.0 as usize)?;
         let root = event.result_expression?;
-        if event.span != syntax.span
-            || !self
-                .expression_facts
-                .get(root)
-                .is_some_and(|fact| fact.span == syntax.span && fact.value.cause == value.cause)
+        if !event.matches_source(syntax)
+            || !self.expression_facts.get(root).is_some_and(|fact| {
+                fact.source_id.is_some()
+                    && fact.source_id == syntax.hir_id
+                    && fact.value.cause == value.cause
+            })
             || !self
                 .invocation_expressions
                 .get(root)
@@ -306,7 +311,9 @@ impl Checker {
             .copy_invocations
             .iter()
             .filter(|call| {
-                call.span == syntax.span
+                call.source_event
+                    .and_then(|id| self.copy_call_events.get(id.0 as usize))
+                    .is_some_and(|event| event.matches_source(syntax))
                     && call.parent == context.invocation
                     && call.caller_owner == context.owner
                     && call
@@ -322,8 +329,9 @@ impl Checker {
         let expression = self.expression_facts.get(event.callee_expression?)?;
         if Some(event.id) != call.source_event
             || event.target != Some(call.target)
-            || event.span != syntax.span
-            || expression.span != callee.span
+            || !event.matches_source(syntax)
+            || expression.source_id.is_none()
+            || expression.source_id != callee.hir_id
             || event.parent != context.invocation
             || event.owner != context.owner
         {
@@ -555,6 +563,7 @@ fn closed_result_syntax(key: &ArgumentKey, span: Span, work: &mut usize) -> Opti
         _ => return None,
     };
     Some(TypeExpr {
+        hir_id: None,
         text: String::new(),
         kind,
         span,

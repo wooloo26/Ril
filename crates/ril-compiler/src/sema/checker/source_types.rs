@@ -44,6 +44,7 @@ impl Checker {
             }
             (_, true, _) => {
                 result.source_type_witness = self.intern_closed_source_syntax(TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: witness.syntax.span,
                     kind: TypeKind::Name {
@@ -200,6 +201,7 @@ impl Checker {
             _ => return None,
         };
         Some(TypeExpr {
+            hir_id: None,
             text: String::new(),
             kind,
             span,
@@ -586,6 +588,7 @@ impl Checker {
                 annotations,
                 ..
             } => return_type.as_ref().map(|result| TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: expression.span,
                 kind: TypeKind::Callable {
@@ -602,6 +605,7 @@ impl Checker {
                     .source_element_syntax(value)
                     .or_else(|| erased_complete_syntax(&element, expression.span));
                 child.map(|element| TypeExpr {
+                    hir_id: None,
                     text: String::new(),
                     span: expression.span,
                     kind: TypeKind::Array {
@@ -624,12 +628,14 @@ impl Checker {
                         parameter.default = None;
                     }
                     Some(TypeExpr {
+                        hir_id: None,
                         text: String::new(),
                         span: expression.span,
                         kind: TypeKind::Callable {
                             parameters,
                             result: Some(Box::new(function.return_type.clone().unwrap_or(
                                 TypeExpr {
+                                    hir_id: None,
                                     text: "()".into(),
                                     kind: TypeKind::Tuple(vec![]),
                                     span: expression.span,
@@ -712,6 +718,7 @@ impl Checker {
             return;
         };
         value.source_type_witness = self.source_type_from_frozen_syntax(&TypeExpr {
+            hir_id: None,
             text: String::new(),
             span,
             kind: TypeKind::Array {
@@ -761,6 +768,7 @@ impl Checker {
             _ => return None,
         };
         Some(TypeExpr {
+            hir_id: None,
             text: String::new(),
             kind,
             span,
@@ -921,6 +929,7 @@ pub(super) fn expand_builtin_source_syntax(
             other => other.clone(),
         };
         Some(TypeExpr {
+            hir_id: None,
             text: String::new(),
             kind,
             span: syntax.span,

@@ -777,6 +777,7 @@ impl Checker {
                     is_halt: false,
                     name: name.into(),
                     generics: vec![GenericParameter {
+                        hir_id: None,
                         name: "T".into(),
                         bound: None,
                         default: None,

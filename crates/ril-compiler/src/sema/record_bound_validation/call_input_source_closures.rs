@@ -55,7 +55,11 @@ impl Replay<'_> {
         let headers: Vec<_> = sites
             .lambdas
             .iter()
-            .filter(|header| header.owner == site.owner && header.expression.span == site.span)
+            .filter(|header| {
+                header.owner == site.owner
+                    && closure.hir_id.is_some()
+                    && header.expression.hir_id == closure.hir_id
+            })
             .collect();
         let [header] = headers.as_slice() else {
             return Err("lambda formal Source header is not unique".into());
@@ -112,14 +116,19 @@ impl Replay<'_> {
         let headers: Vec<_> = sites
             .lambdas
             .iter()
-            .filter(|header| header.owner == site.owner && header.expression.span == site.span)
+            .filter(|header| {
+                header.owner == site.owner
+                    && closure.hir_id.is_some()
+                    && header.expression.hir_id == closure.hir_id
+            })
             .collect();
         let [header] = headers.as_slice() else {
             return Err("inferred lambda Source header is not unique".into());
         };
         match &expression.kind {
             ExprKind::Lambda { .. } => require(
-                expression.span == site.span
+                closure.hir_id.is_some()
+                    && expression.hir_id == closure.hir_id
                     && context.owner == Some(site.owner)
                     && context.invocation == closure.creation_invocation
                     && context.closure_invocation == closure.creation_closure
@@ -142,7 +151,8 @@ impl Replay<'_> {
                     .filter(|declaration| {
                         declaration.owner == site.owner
                             && declaration.binding.pattern.span == binding.span
-                            && declaration.binding.value.span == site.span
+                            && closure.hir_id.is_some()
+                            && declaration.binding.value.hir_id == closure.hir_id
                             && matches!(declaration.binding.value.kind, ExprKind::Lambda { .. })
                     })
                     .collect();
@@ -254,7 +264,7 @@ impl Replay<'_> {
                     self.facts
                         .expressions
                         .get(row.expression)
-                        .filter(|fact| fact.span == body.span)
+                        .filter(|fact| fact.source_id.is_some() && fact.source_id == body.hir_id)
                         .map(|fact| (row.context, &fact.value))
                 })
                 .collect();
@@ -316,6 +326,7 @@ impl Replay<'_> {
                 parameter.default = None;
             }
             let syntax = TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 span: bound.span,
                 kind: TypeKind::Callable {

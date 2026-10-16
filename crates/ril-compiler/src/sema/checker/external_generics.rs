@@ -64,6 +64,7 @@ impl Checker {
             name: function.name.clone(),
             generics: function.generics.clone(),
             value: Some(TypeExpr {
+                hir_id: None,
                 text: String::new(),
                 kind: TypeKind::Callable {
                     parameters: function.parameters.clone(),

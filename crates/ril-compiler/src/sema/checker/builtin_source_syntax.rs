@@ -533,6 +533,7 @@ mod prelude_tests {
                 default_use: None,
             },
             &Expr {
+                hir_id: None,
                 span: candidate.span,
                 kind: ExprKind::Name(spelling.into()),
             },

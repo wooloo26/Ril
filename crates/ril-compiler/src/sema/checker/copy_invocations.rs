@@ -121,7 +121,7 @@ impl Checker {
         &mut self,
         syntax: &Expr,
         value: &Value,
-        call: Span,
+        call: &Expr,
         reference_start: usize,
         callee_expression: Option<usize>,
         frame: &Frame,
@@ -165,11 +165,12 @@ impl Checker {
         }
         self.copy_call_events.push(CopyCallEvent {
             id,
+            source_id: call.hir_id,
             callee_expression,
             result_expression: None,
             owner: frame.callable_owner,
             parent,
-            span: call,
+            span: call.span,
             target,
             direct,
             copy_operation: match value.callables.as_slice() {

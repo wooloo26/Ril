@@ -61,6 +61,7 @@ pub enum ValidationIssueKind {
     BuiltinSource(String),
     GeneratedSource(String),
     StorageSource(String),
+    EvaluationIdentity(String),
     CallResult(String),
     ClosureActivation(String),
     StaticArgument(String),
@@ -94,6 +95,13 @@ pub fn solved_facts(facts: &SemanticFacts) -> Result<ValidatedStructure, Vec<Val
     };
     validator.structure();
     validator.boundaries();
+    if let Err((span, cause, message)) = super::evaluation_identity::validate(facts) {
+        validator.issue(
+            ValidationIssueKind::EvaluationIdentity(message),
+            Some(span),
+            cause,
+        );
+    }
     if let Err((span, cause, message)) =
         super::record_bound_validation::validate_storage_sources(facts)
     {
