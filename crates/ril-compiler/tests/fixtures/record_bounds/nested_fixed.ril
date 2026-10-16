@@ -1,2 +1,0 @@
-fn first<T:{items:[2]int,..R}>(value:(T,int))->int{value.(0).items[0]}
-pub fn test_native(){let items:[2]int=[7,9];assert(first((.{items:items},0))==7)}

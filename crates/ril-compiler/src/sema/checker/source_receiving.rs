@@ -232,9 +232,29 @@ impl Checker {
 /// annotations and their original source spans/environment. No `Ty` is used
 /// to fill a missing source coordinate. Recursive aliases retain an obligation
 /// here; their finite absence-of-sensitive-coordinate proof is separate.
-fn qualified_source_aliases(
-    checker: &mut Checker,
+pub(super) fn qualified_source_aliases(
+    checker: &Checker,
     syntax: &TypeExpr,
+    visiting: &mut BTreeSet<String>,
+    work: &mut usize,
+    depth: usize,
+) -> Option<TypeExpr> {
+    qualified_source_aliases_in(
+        checker,
+        syntax,
+        &checker.record_bound_scope(),
+        visiting,
+        work,
+        depth,
+    )
+}
+
+/// Interpret only original lexical names. Instance substitutions are applied
+/// to the resulting Source key, never used to reconstruct an erased Ty here.
+pub(super) fn qualified_source_aliases_in(
+    checker: &Checker,
+    syntax: &TypeExpr,
+    scope: &crate::sema::record_bounds::BoundScope,
     visiting: &mut BTreeSet<String>,
     work: &mut usize,
     depth: usize,
@@ -247,6 +267,12 @@ fn qualified_source_aliases(
     if let TypeKind::Name { path, arguments } = &syntax.kind {
         let name = path.join("::");
         *work = work.checked_sub(name.len().div_ceil(32))?;
+        if scope.types.contains_key(&name)
+            || scope.rows.contains_key(&name)
+            || checker.effect_type_binders.contains_key(&name)
+        {
+            return arguments.is_empty().then(|| syntax.clone());
+        }
         if let Some(declaration) = checker.types.get(&name)
             && !declaration.nominal
             && !declaration.opaque
@@ -263,16 +289,23 @@ fn qualified_source_aliases(
                 &checker.effect_type_binders,
             )?;
             let body = declaration.value.as_ref()?.clone();
-            // Reuse the original alias-capture check before reading its body.
-            // A caller environment may not reinterpret a captured binder.
-            checker.effect_argument_syntax(syntax).ok()?;
-            let result = qualified_source_aliases(checker, &body, visiting, work, depth + 1);
+            // A zero-argument alias has no substitution that could bind a free
+            // Type name. Keep the original effect reifier's capture rejection
+            // without reifying the enclosing function's selected value types.
+            if crate::static_eval::effects::type_dependencies(&body)
+                .iter()
+                .any(|name| scope.types.contains_key(name) || scope.rows.contains_key(name))
+            {
+                return None;
+            }
+            let result =
+                qualified_source_aliases_in(checker, &body, scope, visiting, work, depth + 1);
             visiting.remove(&name);
             return result;
         }
     }
     let mut child =
-        |ty: &TypeExpr| qualified_source_aliases(checker, ty, visiting, work, depth + 1);
+        |ty: &TypeExpr| qualified_source_aliases_in(checker, ty, scope, visiting, work, depth + 1);
     let kind = match &syntax.kind {
         TypeKind::Name { path, arguments } => TypeKind::Name {
             path: path.clone(),

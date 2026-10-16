@@ -1,2 +1,0 @@
-fn count<U,T:{items:[0][2]U,..R}>(value:(T,T))->int{len(value.(0).items)}
-fn forward<U,S>(value:({items:[0][2]U,tag:str,..S},{items:[0][3]U,tag:str,..S}))->int{count(value)}

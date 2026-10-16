@@ -2,7 +2,9 @@
 use ril_compiler::sema::{SemanticFacts, facts::ScopeId, validate::solved_facts};
 use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 
-const STEP: &str = "fn apply(callback:fn(int)->int,x:int)->int{callback(x)}\nfn example(){let step=\\n:int->n+1;let callback=\\n->apply(step,n);assert(callback(1)==2)}";
+fn step_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-observations.ril::closure-captured-step")
+}
 
 fn verified(source: &str) -> SemanticFacts {
     let mut facts = None;
@@ -26,10 +28,14 @@ fn verified(source: &str) -> SemanticFacts {
 #[test]
 fn real_lambda_bodies_and_immutable_generic_locals_supply_complete_source() {
     for source in [
-        STEP,
-        "fn make<T>(value:T)->fn(T)->T{\\argument:T->argument}\nfn consume<T>(value:T){let action=make(1);assert(action(2)==2)}",
-        "fn empty<T>()->[]T{let values:[]T=[];values}\nfn example(){let values:[]int=empty()}",
-        "type Number=int\nfn first<T>(value:(T,T))->T{value.0}\nfn example(){let number:Number=first((1,2));assert(number==1)}",
+        step_fixture(),
+        ril_test::case_source("tests/regressions/source-observations.ril::closure-generic-return"),
+        ril_test::case_source(
+            "tests/regressions/source-observations.ril::generic-immutable-empty-local",
+        ),
+        ril_test::case_source(
+            "tests/regressions/source-observations.ril::generic-tuple-projection",
+        ),
     ] {
         verified(source);
     }
@@ -37,7 +43,9 @@ fn real_lambda_bodies_and_immutable_generic_locals_supply_complete_source() {
 
 #[test]
 fn an_open_public_fn_view_does_not_recover_the_original_parameter_view() {
-    let source = "fn example<T>(values:[]T){let callback:fn([2]T)->int=\\items:[]T->0;let number=callback(values)}";
+    let source = ril_test::case_source(
+        "tests/regressions/source-observations.ril::reject-open-fn-fixed-recovery",
+    );
     let outcome = Session::new(source.as_bytes().to_vec()).check();
     assert!(
         matches!(&outcome,CompilationOutcome::Rejected {diagnostics}
@@ -48,7 +56,7 @@ fn an_open_public_fn_view_does_not_recover_the_original_parameter_view() {
 
 #[test]
 fn closure_activation_and_formal_owner_cannot_be_deleted_or_borrowed() {
-    let facts = verified(STEP);
+    let facts = verified(step_fixture());
     let probe = facts
         .closure_invocations
         .iter()
@@ -74,8 +82,12 @@ fn closure_activation_and_formal_owner_cannot_be_deleted_or_borrowed() {
 #[test]
 fn captured_named_headers_keep_their_own_type_selection_at_each_entry() {
     for source in [
-        "fn make<T>(value:T)->fn(T)->T{fn same(argument:T)->T{argument};same}\nfn consume<T>(value:T){let action=make(1);assert(action(2)==2)}",
-        "fn make<T>(value:T)->fn(T)->T{fn same(argument:T)->T{argument};same}\nfn example(){let number=make(1);let word=make(\"one\");assert(number(2)==2);assert(word(\"two\")==\"two\")}",
+        ril_test::case_source(
+            "tests/regressions/source-observations.ril::named-generic-captured-header-where",
+        ),
+        ril_test::case_source(
+            "tests/regressions/source-observations.ril::named-generic-distinct-instances-where",
+        ),
     ] {
         verified(source);
     }
@@ -84,8 +96,10 @@ fn captured_named_headers_keep_their_own_type_selection_at_each_entry() {
 #[test]
 fn open_callable_rows_survive_real_product_operands() {
     for source in [
-        "var calls=0\nfn step(value:int)->int &{mut calls}{calls+=1;value}\nfn invoke(value:{step:fn(int)->int &{mut calls}})&{mut calls}{assert(value.step(1)==1)}\nfn example()&{mut calls}{invoke(.{step:step})}",
-        include_str!("fixtures/record_bounds/scoped_callable_mut.ril"),
+        ril_test::case_source(
+            "tests/regressions/source-observations.ril::callable-product-open-row",
+        ),
+        ril_test::case_source("tests/regressions/record-bounds.ril::scoped-callable-mut"),
     ] {
         verified(source);
     }
@@ -93,7 +107,7 @@ fn open_callable_rows_survive_real_product_operands() {
 
 #[test]
 fn a_creation_probe_cannot_be_relabelled_as_an_unrecorded_runtime_call() {
-    let facts = verified(STEP);
+    let facts = verified(step_fixture());
     let probe = facts
         .closure_invocations
         .iter()

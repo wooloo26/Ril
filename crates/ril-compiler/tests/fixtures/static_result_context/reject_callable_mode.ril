@@ -1,8 +1,0 @@
-type Cell = { mut value: int }
-meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
--- Safety boundary: never accept by rewriting T's actual parameter mode.
--- Current independent static callback-mode typing remains NI; this batch must retain it.
-meta fn wrong(action: fn(mut Cell) -> () &mut) -> (fn(Cell) -> (), []int) {
-    let pair: (fn(Cell) -> (), []int) = retain(action)
-    pair
-}

@@ -2736,16 +2736,32 @@ mod tests {
             }
             let mut units = vec![];
             let mut root = FileId(0);
+            let mut parse_failed = false;
             for file in case.files.iter().filter(|file| file.name.ends_with(".ril")) {
                 let id = units.len() as u32;
                 if file.name == case.root {
                     root = FileId(id);
                 }
-                units.push(unit(
-                    &file.name,
-                    id,
-                    std::str::from_utf8(&file.bytes).unwrap(),
-                ));
+                let parsed =
+                    ril_syntax::parse_file(std::str::from_utf8(&file.bytes).unwrap(), FileId(id));
+                if !parsed.is_ok() {
+                    parse_failed = true;
+                    failures.push(format!(
+                        "{} / {}: {:?}",
+                        case.id, file.name, parsed.diagnostics
+                    ));
+                }
+                units.push(ModuleUnit {
+                    path: PathBuf::from("/ril-module-tests").join(&file.name),
+                    file: FileId(id),
+                    program: parsed.program,
+                    is_declaration: file.name.ends_with(".d.ril"),
+                });
+            }
+            if parse_failed {
+                // Already a failure; collect the remaining cases rather than
+                // resolving a recovered AST or stopping at an anonymous root.
+                continue;
             }
             let project = resolve(units, root);
             if !project.diagnostics.is_empty() {

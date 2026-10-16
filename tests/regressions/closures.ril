@@ -1,0 +1,133 @@
+--@ source: source-immediate-instances
+--@ file: source.ril
+eff Read<T>{get()->T}
+fn immediate<T>(value:T)->T{
+    with Read<T>::get()->resume value
+    (\->{(\->Read<T>::get())()})()
+}
+pub fn test_native(){assert(immediate(7)==7 && immediate("seven")=="seven" && immediate(9)==9)}
+--@ end-file
+--@ end-source
+
+--@ case: immediate-instances
+--@ mode: check-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ use-source: source-immediate-instances
+--@ end-case
+
+--@ case: immediate-instances-test-native
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ use-source: source-immediate-instances
+--@ end-case
+
+--@ source: source-invalid-immutable-capture
+--@ file: source.ril
+eff Read<T>{get()->T}
+fn immediate<T>(value:T)->T{
+    with Read<T>::get()->resume value
+    (\->{let inner=\->Read<T>::get();inner()})()
+}
+pub fn test_native(){assert(immediate(7)==7 && immediate("seven")=="seven" && immediate(9)==9)}
+--@ end-file
+--@ end-source
+
+--@ case: invalid-immutable-capture
+--@ mode: check-fail
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- Error [E0535]: original regression expectation
+--@ use-source: source-invalid-immutable-capture
+--@ end-case
+
+--@ source: source-nested-and-budget
+--@ file: source.ril
+eff Read<T>{get()->T}
+type Reader<T>=fn()->T &closure
+fn make<T>(value:T)->Reader<T> &capture{
+    with Read<T>::get()->resume value
+    with Read<T>::get()->resume (Read<T>::get())
+    \->Read<T>::get()
+}
+pub fn test_native(){
+    let seven=make(7)
+    let nine=make(9)
+    let word=make("seven")
+    assert(seven()==7 && nine()==9 && word()=="seven")
+    let exhausted={with Div::exhausted()->None;Some(Div::budget(0,seven))}
+    let first={with Div::exhausted()->None;Some(Div::budget(100,seven))}
+    let second={with Div::exhausted()->None;Some(Div::budget(100,nine))}
+    assert(exhausted==None && first==Some(7) && second==Some(9))
+    assert(seven()==7 && word()=="seven")
+}
+--@ end-file
+--@ end-source
+
+--@ case: nested-and-budget
+--@ mode: check-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ use-source: source-nested-and-budget
+--@ end-case
+
+--@ case: nested-and-budget-test-native
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ use-source: source-nested-and-budget
+--@ end-case
+
+--@ source: source-retained-instances
+--@ file: source.ril
+eff Read<T>{get()->T}
+type Reader<T>=fn()->T &closure
+fn make<T>(value:T)->Reader<T> &capture{
+    with Read<T>::get()->resume value
+    \->Read<T>::get()
+}
+pub fn test_native(){
+    let seven=make(7)
+    let nine=make(9)
+    let word=make("seven")
+    with {Read<int>::get()->resume 100,Read<str>::get()->resume "outside"}
+    assert(seven()==7 && nine()==9 && word()=="seven")
+    assert(seven()==7 && word()=="seven" && nine()==9)
+}
+--@ end-file
+--@ end-source
+
+--@ case: retained-instances
+--@ mode: check-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ use-source: source-retained-instances
+--@ end-case
+
+--@ case: retained-instances-test-native
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ use-source: source-retained-instances
+--@ end-case
+
+--@ source: source-unclosed
+--@ file: source.ril
+eff Read<T>{get()->T}
+fn unclosed<T>(value:T)->T{
+    with Read<T>::get()->resume value
+    (\->Read<T>::get())()
+}
+pub fn test_native(){}
+--@ end-file
+--@ end-source
+
+--@ case: unclosed
+--@ mode: check-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ use-source: source-unclosed
+--@ end-case
+
+--@ case: unclosed-test-native
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ use-source: source-unclosed
+--@ end-case

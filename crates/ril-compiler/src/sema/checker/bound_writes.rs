@@ -14,20 +14,6 @@ pub(super) struct ObservedStore<'a> {
 }
 
 impl Checker {
-    pub(super) fn observed_expression(
-        &self,
-        start: usize,
-        syntax: &Expr,
-        frame: &Frame,
-    ) -> Option<usize> {
-        let index = self.invocation_expressions.len().checked_sub(1)?;
-        let observation = self.invocation_expressions.get(index)?;
-        (index >= start
-            && observation.context == self.invocation_context(frame.callable_owner)
-            && self.expression_facts.get(observation.expression)?.span == syntax.span)
-            .then_some(index)
-    }
-
     pub(super) fn bound_write_access(
         &mut self,
         value: &Value,

@@ -6,8 +6,8 @@ mod native_probe;
 #[test]
 fn original_nine_scope_entry_executes_all_nine_optional_routes() {
     native_probe::executes(
-        include_str!(
-            "../../ril-compiler/tests/fixtures/channel_message_optional_callback_scope_budget.ril"
+        ril_test::case_source(
+            "tests/regressions/channels.ril::channel-message-optional-callback-scope-budget",
         ),
         "unchanged original single-entry nine-scope program",
     );

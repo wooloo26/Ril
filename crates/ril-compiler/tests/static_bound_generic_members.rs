@@ -14,7 +14,7 @@ fn session(source: &str, target: &str) -> Session {
 fn bounded_member_generic_arguments_are_selected_on_both_layouts_and_lower_to_core() {
     for target in ["pointer32", "pointer64"] {
         let verified = session(
-            include_str!("fixtures/static_bound_generic_members.ril"),
+            ril_test::case_source("tests/regressions/static.ril::static-bound-generic-members"),
             target,
         )
         .verify()

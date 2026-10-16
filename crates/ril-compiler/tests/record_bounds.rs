@@ -1,7 +1,9 @@
 use ril_compiler::sema::record_bounds::{BoundRowRole, StructuralSchemaSource};
 use ril_compiler::{CompilationOutcome, Session};
 
-const ORIGINAL_PROJECTION: &str = include_str!("fixtures/record_bounds/original_projection.ril");
+fn original_projection_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::original-projection")
+}
 
 fn rejected(source: &str, code: &str) {
     let outcome = Session::new(source.as_bytes().to_vec()).check();
@@ -14,7 +16,7 @@ fn rejected(source: &str, code: &str) {
 
 #[test]
 fn original_spec_projection_keeps_t_and_publishes_application_evidence() {
-    let program = Session::new(ORIGINAL_PROJECTION.as_bytes().to_vec())
+    let program = Session::new(original_projection_fixture().as_bytes().to_vec())
         .verify()
         .unwrap();
     let facts = program.facts();

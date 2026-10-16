@@ -90,22 +90,22 @@ pub fn test_native(){
 
 #[test]
 fn generic_closures_at_one_site_keep_distinct_static_instances() {
-    executes(include_str!(
-        "fixtures/generic_closures/immediate_instances.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/closures.ril::immediate-instances",
     ));
 }
 
 #[test]
 fn escaping_generic_closures_keep_each_creation_capture_and_recipe() {
-    executes(include_str!(
-        "fixtures/generic_closures/retained_instances.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/closures.ril::retained-instances",
     ));
 }
 
 #[test]
 fn escaped_generic_nested_handlers_keep_their_metered_entries() {
-    executes(include_str!(
-        "fixtures/generic_closures/nested_and_budget.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/closures.ril::nested-and-budget",
     ));
 }
 
@@ -115,7 +115,7 @@ fn an_unclosed_generic_closure_keeps_its_specialization_boundary() {
     let path = directory.path().join("unclosed.ril");
     fs::write(
         &path,
-        include_str!("fixtures/generic_closures/unclosed.ril"),
+        ril_test::case_source("tests/regressions/closures.ril::unclosed"),
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_ril"))

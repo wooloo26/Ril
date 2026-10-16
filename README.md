@@ -21,19 +21,26 @@ Work proceeds in this order:
 4. Implement LSP and VS Code support on the analysis API.
 
 Commit `f7ebaf7` preserves the unfinished implementation before this migration.
-Its last completed source gate is v51: on each Windows and Linux host,
-42 Rust test targets report **811 passed, 20 failed and 1 ignored**.
-Subsequent storage integration was interrupted and initially did not compile.
-This checkpoint is not a full-workspace or full-corpus success.
+The latest completed migration gate is `refactor-v2`: on each Windows and Linux
+host, 44 Rust targets report **810 passed, 50 failed and 1 ignored**.
+Both hosts compile those targets without warnings. Snapshot tests pass 5/5,
+HIR tests 7/7 and storage source tests 6/6, including strict dimension negatives.
+This is an intermediate migration checkpoint, not completed refactoring.
+Compared by test identity with v51, 14 failures are repaired, 43 previously
+passing tests regress, 29 tests are added and none disappear. Those regressions
+remain active failures and must be resolved before refactoring acceptance.
+The post-lint focused gate passes 48/48 tests on each host. Workspace all-target
+checking, Clippy with warnings denied, formatting and diff checks pass.
+There are now 98 bundles and 1,355 cases; this count has passed structural
+validation on both hosts and is not a claim that all new cases execute correctly.
 
 The original corpus has 84 theme bundles and 1,067 case identities.
-An earlier frozen native checkpoint passed 1,065 applicable cases per host,
-including 354 native builds/executions; the host union covered all 1,067.
-That result predates the current source-type and fact-validation work.
-Do not reuse it as evidence for a newer compiler.
+The latest migration gate does not certify native execution or full corpus
+conformance. Historical native reports cannot certify this newer compiler.
 
 Detailed development reports remain under `target/`, including
-`source-receiving-v51-checkpoint.json` and the matching compile/full-source logs.
+`refactor-v2-checkpoint.json`, `refactor-v2-case-comparison.json` and the matching
+compile/full-source logs. The pre-migration v51 reports remain the comparison base.
 Git preserves removed design documents and implementation history.
 New checkpoints identify the source revision, selected cases and platform.
 
@@ -118,6 +125,14 @@ Pure Rust models, randomized generators and invalid byte inputs remain Rust.
 Migration preserves source bytes, expectations, entries and execution counts.
 Grouping files must not weaken individual expectations or isolation.
 
+Shared programs use `--@ source: NAME` / `--@ end-source`, containing the usual
+virtual file blocks; each case selects one with `--@ use-source: NAME`.
+Cases retain separate mode, entry, platform and diagnostic expectations.
+Use `--@ file: NAME no-final-newline` for exact UTF-8 inputs without a final
+newline; hex blocks retain malformed bytes or exact CRLF fixtures.
+Rust tests use `ril_test::case_source`, `case_bytes` or `case_by_id` with the full ID.
+The registry tests verify original corpus bytes/IDs and migration SHA-256 manifests.
+
 The expensive ignored concrete-graph oracle needs an explicit bounded run.
 Its ignored status is not evidence of a passed oracle.
 CI runs applicable cases on both supported platforms; their union must cover
@@ -200,6 +215,12 @@ Its immutable `AnalysisSnapshot` retains diagnostics and available facts for
 failed or incomplete programs. `check` and `verify` retain their distinctions.
 Only complete analysis plus independent validation can construct the private
 `VerifiedProgram` required by normal lowering.
+
+The first HIR migration separates pre-static source HIR from checked-input HIR.
+Their IDs are local to each snapshot. Static output without a preserved source
+mapping is explicitly Transformed; only generated nodes with an actual anchor
+are Generated. The checker still consumes ASTs while individual consumers move
+to structural child IDs. Origin metadata alone provides no semantic proof.
 
 Independent validators read original HIR and actual evaluation records.
 They may share pure normalization and relations, but cannot substitute a
@@ -298,8 +319,13 @@ These are implementation gaps, not waived language requirements:
 
 - Finish HIR, explicit environments and domain ownership migration.
   Remove old source reconstruction as each consumer moves.
-- Finish storage source/replay checks for variable, record-member, array-element
-  and Array::push replacement of `[0][2]int` by stored `[0][3]int`.
+- The first slice has HIR arenas, shared immutable analysis snapshots and unique
+  frozen environments for captured contracts. Active Checker working tables,
+  expression execution and most validators still need domain/typed-ID migration.
+  Fixed fixture files are centralized; many older inline Rust programs remain.
+- Extend storage source/replay to pipelines, recursive schemas, inferred callback
+  inputs and every handler activation. The six focused dimension groups pass;
+  broader storage coverage still causes explicit unresolved results.
 - Preserve open generic/row and callable sources through arguments, returns,
   captures, constructors, annotations and containers.
 - Record actual pipeline and generated I/O callback invocations.

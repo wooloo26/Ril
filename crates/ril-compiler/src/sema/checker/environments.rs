@@ -172,6 +172,9 @@ impl Checker {
                 && function.lexical_scope == source.lexical_scope
             {
                 function.lexical.insert(source.name.clone(), binding);
+                function.typing_environment = function
+                    .typing_environment
+                    .with_contract_bindings(function.lexical.clone());
             }
         }
     }

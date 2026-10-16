@@ -789,14 +789,10 @@ impl Checker {
             contracts::LambdaContract {
                 return_type: return_type.clone(),
                 annotations: vec![],
-                lexical: environment.env.clone(),
                 span,
-                generic_context: self.generic_context.clone(),
-                generic_substitutions: self.generic_substitutions.clone(),
-                generic_type_witnesses: self.generic_type_witnesses.clone(),
-                bound_row_context: self.bound_row_context.clone(),
-                bound_row_selections: self.bound_row_selections.clone(),
-                static_key_arguments: self.static_key_arguments.clone(),
+                typing_environment: self
+                    .capture_typing_environment()
+                    .with_contract_bindings(environment.env.clone()),
             },
         );
         self.iter_steps.insert(

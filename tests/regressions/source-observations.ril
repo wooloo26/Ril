@@ -1,0 +1,206 @@
+--@ case: call-result-complete-roots
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn leaf(value:int)->int{value}
+fn example(){let first=leaf(1);let second=leaf(first);assert(second==1)}
+--@ end-file
+--@ end-case
+
+--@ case: call-result-never-root
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn stop()->int{panic("stop")}
+fn example()->int{stop()}
+--@ end-file
+--@ end-case
+
+--@ case: closure-captured-step
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn apply(callback:fn(int)->int,x:int)->int{callback(x)}
+fn example(){let step=\n:int->n+1;let callback=\n->apply(step,n);assert(callback(1)==2)}
+--@ end-file
+--@ end-case
+
+--@ case: closure-generic-return
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn make<T>(value:T)->fn(T)->T{\argument:T->argument}
+fn consume<T>(value:T){let action=make(1);assert(action(2)==2)}
+--@ end-file
+--@ end-case
+
+--@ case: generic-immutable-empty-local
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn empty<T>()->[]T{let values:[]T=[];values}
+fn example(){let values:[]int=empty()}
+--@ end-file
+--@ end-case
+
+--@ case: generic-tuple-projection
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+type Number=int
+fn first<T>(value:(T,T))->T{value.0}
+fn example(){let number:Number=first((1,2));assert(number==1)}
+--@ end-file
+--@ end-case
+
+--@ case: reject-open-fn-fixed-recovery
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+-- Error [E0301]: original source reception regression
+--@ file: source.ril no-final-newline
+fn example<T>(values:[]T){let callback:fn([2]T)->int=\items:[]T->0;let number=callback(values)}
+--@ end-file
+--@ end-case
+
+--@ case: named-generic-captured-header
+--@ mode: check-fail
+--@ spec: SPEC#dual-tier-where-invariants
+--@ companion: named-generic-captured-header-where
+-- Error [E0703]: Historical invalid fixture; a body declaration requires where.
+--@ file: source.ril no-final-newline
+fn make<T>(value:T)->fn(T)->T{fn same(argument:T)->T{argument};same}
+fn consume<T>(value:T){let action=make(1);assert(action(2)==2)}
+--@ end-file
+--@ end-case
+
+--@ case: named-generic-distinct-instances
+--@ mode: check-fail
+--@ spec: SPEC#dual-tier-where-invariants
+--@ companion: named-generic-distinct-instances-where
+-- Error [E0703]: Historical invalid fixture; a body declaration requires where.
+--@ file: source.ril no-final-newline
+fn make<T>(value:T)->fn(T)->T{fn same(argument:T)->T{argument};same}
+fn example(){let number=make(1);let word=make("one");assert(number(2)==2);assert(word("two")=="two")}
+--@ end-file
+--@ end-case
+
+--@ case: named-generic-captured-header-where
+--@ mode: check-pass
+--@ spec: SPEC#dual-tier-where-invariants
+--@ companion: named-generic-captured-header
+-- Corrected declaration placement; the original invalid source remains above.
+--@ file: source.ril
+fn make<T>(value:T)->fn(T)->T{
+    same
+where
+    fn same(argument:T)->T{argument}
+}
+fn consume<T>(value:T){let action=make(1);assert(action(2)==2)}
+--@ end-file
+--@ end-case
+
+--@ case: named-generic-distinct-instances-where
+--@ mode: check-pass
+--@ spec: SPEC#dual-tier-where-invariants
+--@ companion: named-generic-distinct-instances
+-- Corrected declaration placement; the original invalid source remains above.
+--@ file: source.ril
+fn make<T>(value:T)->fn(T)->T{
+    same
+where
+    fn same(argument:T)->T{argument}
+}
+fn example(){let number=make(1);let word=make("one");assert(number(2)==2);assert(word("two")=="two")}
+--@ end-file
+--@ end-case
+
+--@ case: callable-product-open-row
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+var calls=0
+fn step(value:int)->int &{mut calls}{calls+=1;value}
+fn invoke(value:{step:fn(int)->int &{mut calls}})&{mut calls}{assert(value.step(1)==1)}
+fn example()&{mut calls}{invoke(.{step:step})}
+--@ end-file
+--@ end-case
+
+--@ case: generated-indexed-iterator
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn example(){let source=Iter::indexed([10,20]);let mut cursor=Iter::cursor(0);assert(Iter::pull(mut cursor,source)==Some(10))}
+--@ end-file
+--@ end-case
+
+--@ case: generated-map-filter-take
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn example(){let source=Iter::map(Iter::indexed([1,2]),\n->n*2);let filtered=Iter::filter(source,\n:int->n>1);let limited=Iter::take(filtered,1);let mut cursor=Iter::cursor((0,0));assert(Iter::pull(mut cursor,limited)==Some(2))}
+--@ end-file
+--@ end-case
+
+--@ case: constant-shared-node-distinct-views
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+meta let FIXED:[2]int=[1,2]
+meta let WEAK:[]int=FIXED
+fn example() &{FIXED,WEAK}{assert(FIXED==WEAK)}
+--@ end-file
+--@ end-case
+
+--@ case: reject-constant-fixed-recovery
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+-- Error [E0301]: original source reception regression
+--@ file: source.ril no-final-newline
+meta let FIXED:[2]int=[1,2]
+meta let WEAK:[]int=FIXED
+fn bad() &{WEAK}{let recovered:[2]int=WEAK}
+--@ end-file
+--@ end-case
+
+--@ case: reject-constant-inner-dimension
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+-- Error [E0301]: original source reception regression
+--@ file: source.ril no-final-newline
+meta let ORIGINAL:[0][3]int=[]
+fn bad() &{ORIGINAL}{let changed:[0][2]int=ORIGINAL}
+--@ end-file
+--@ end-case
+
+--@ case: matching-variable-replacement
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn example(){var target:[0][2]int=[];let old:[0][2]int=[];target=old}
+--@ end-file
+--@ end-case
+
+--@ case: matching-record-member-replacement
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+type Box={mut item:[0][2]int}
+fn example(){let mut holder=Box.{item:[]};let old:[0][2]int=[];holder.item=old}
+--@ end-file
+--@ end-case
+
+--@ case: matching-array-element-replacement
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn example(){let mut values:[1][0][2]int=[[]];let old:[0][2]int=[];values[0]=old}
+--@ end-file
+--@ end-case
+
+--@ case: matching-array-push
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn example(){let mut values:[][0][2]int=[];let old:[0][2]int=[];Array::push(mut values,old)}
+--@ end-file
+--@ end-case

@@ -4,7 +4,8 @@ use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 fn optional_fallback_returns_the_original_or_reached_producer_on_both_layouts() {
     for target in ["pointer32", "pointer64"] {
         let program = Session::with_options(
-            include_bytes!("fixtures/static_optional_result_fallback.ril").to_vec(),
+            ril_test::case_bytes("tests/regressions/static.ril::static-optional-result-fallback")
+                .to_vec(),
             CheckOptions {
                 target: target.into(),
                 ..Default::default()

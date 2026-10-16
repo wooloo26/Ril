@@ -69,8 +69,7 @@ fn a_closure_created_after_its_factory_return_keeps_its_dynamic_closure_parent()
 
 #[test]
 fn generic_reader_alias_keeps_qualified_results_and_actual_creation_instances() {
-    let source =
-        include_str!("../../ril-cli/tests/fixtures/generic_closures/retained_instances.ril");
+    let source = ril_test::case_source("tests/regressions/closures.ril::retained-instances");
     let program = accepted(source);
     let facts = program.facts();
     let mut created = BTreeSet::new();
@@ -172,8 +171,8 @@ fn latent_handler_and_helper_captures_preserve_scalar_storage_cells() {
 
 #[test]
 fn a_nonpositive_budget_marks_action_coverage_without_claiming_runtime_entry() {
-    let program = accepted(include_str!(
-        "../../ril-cli/tests/fixtures/generic_closures/nested_and_budget.ril"
+    let program = accepted(ril_test::case_source(
+        "tests/regressions/closures.ril::nested-and-budget",
     ));
     let facts = program.facts();
     let validations: Vec<_> = facts

@@ -1,3 +1,0 @@
-type Cell={mut value:int,tag:str}
-fn replace<T:{mut value:int,..R}>(mut object:T,replacement:int)&mut{object.value=replacement}
-pub fn test_native(){let mut object=Cell.{value:1,tag:"kept"};replace(mut object,7);assert(object.value==7);assert(object.tag=="kept");replace(mut object,11);assert(object.value==11)}

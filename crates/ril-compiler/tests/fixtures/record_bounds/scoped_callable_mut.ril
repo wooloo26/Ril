@@ -1,5 +1,0 @@
-type Cell={mut value:int}
-fn bump(mut cell:Cell)&mut{cell.value+=1}
-fn read<T:{id:int,..R}>(value:(T,int))->int{value.(0).id}
-fn forward<S>(value:({id:int,action:fn(mut Cell)->() &mut,..S},int))->int{read(value)}
-pub fn test_native(){assert(forward((.{id:7,action:bump},0))==7)}

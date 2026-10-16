@@ -14,8 +14,8 @@ fn session(source: &str, target: &str) -> Session {
 fn complete_result_contexts_select_missing_types_on_both_layouts_and_lower_to_core() {
     for target in ["pointer32", "pointer64"] {
         for source in [
-            include_str!("fixtures/static_result_context/positive.ril"),
-            include_str!("fixtures/static_result_context/result_transfer.ril"),
+            ril_test::case_source("tests/regressions/static.ril::positive"),
+            ril_test::case_source("tests/regressions/static.ril::result-transfer"),
         ] {
             let verified = session(source, target).verify().unwrap();
             ril_compiler::lower::lower_core(&verified).unwrap();
@@ -25,7 +25,7 @@ fn complete_result_contexts_select_missing_types_on_both_layouts_and_lower_to_co
 
 #[test]
 fn computed_alias_annotations_keep_their_frozen_full_source_and_original_root() {
-    let source = include_str!("fixtures/static_result_context/computed_alias.ril");
+    let source = ril_test::case_source("tests/regressions/static.ril::computed-alias");
     for target in ["pointer32", "pointer64"] {
         let verified = session(source, target).verify().unwrap();
         ril_compiler::lower::lower_core(&verified).unwrap();
@@ -36,9 +36,9 @@ fn computed_alias_annotations_keep_their_frozen_full_source_and_original_root() 
 fn result_contexts_do_not_replace_dynamic_inputs_explicit_types_or_return_shells() {
     for target in ["pointer32", "pointer64"] {
         for source in [
-            include_str!("fixtures/static_result_context/reject_dynamic_outer.ril"),
-            include_str!("fixtures/static_result_context/reject_explicit_selection.ril"),
-            include_str!("fixtures/static_result_context/reject_input_selection.ril"),
+            ril_test::case_source("tests/regressions/static.ril::reject-dynamic-outer"),
+            ril_test::case_source("tests/regressions/static.ril::reject-explicit-selection"),
+            ril_test::case_source("tests/regressions/static.ril::reject-input-selection"),
         ] {
             let outcome = session(source, target).check();
             assert!(
@@ -52,7 +52,7 @@ fn result_contexts_do_not_replace_dynamic_inputs_explicit_types_or_return_shells
 #[test]
 fn receiving_views_still_erase_defaults_and_unsupported_callable_modes_stay_unproved() {
     let outcome = session(
-        include_str!("fixtures/static_result_context/reject_view_default.ril"),
+        ril_test::case_source("tests/regressions/static.ril::reject-view-default"),
         "pointer64",
     )
     .check();
@@ -61,7 +61,7 @@ fn receiving_views_still_erase_defaults_and_unsupported_callable_modes_stay_unpr
         "{outcome:?}"
     );
     let boundary = session(
-        include_str!("fixtures/static_result_context/reject_callable_mode.ril"),
+        ril_test::case_source("tests/regressions/static.ril::reject-callable-mode"),
         "pointer64",
     )
     .check();
@@ -75,8 +75,8 @@ fn receiving_views_still_erase_defaults_and_unsupported_callable_modes_stay_unpr
 fn result_contexts_do_not_inspect_returned_results_or_discharge_universal_some_paths() {
     for target in ["pointer32", "pointer64"] {
         for source in [
-            include_str!("fixtures/static_result_context/reject_result_inspection.ril"),
-            include_str!("fixtures/static_result_context/reject_universal_some.ril"),
+            ril_test::case_source("tests/regressions/static.ril::reject-result-inspection"),
+            ril_test::case_source("tests/regressions/static.ril::reject-universal-some"),
         ] {
             let outcome = session(source, target).check();
             assert!(

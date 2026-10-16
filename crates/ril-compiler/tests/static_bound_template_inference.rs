@@ -14,7 +14,7 @@ fn session(source: &str, target: &str) -> Session {
 fn symbolic_alias_map_and_callable_members_check_both_layouts_and_lower_to_core() {
     for target in ["pointer32", "pointer64"] {
         let verified = session(
-            include_str!("fixtures/static_bound_template_inference.ril"),
+            ril_test::case_source("tests/regressions/static.ril::static-bound-template-inference"),
             target,
         )
         .verify()

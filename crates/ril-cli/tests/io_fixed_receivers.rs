@@ -3,13 +3,13 @@ use std::{fs, process::Command};
 #[test]
 fn declared_fixed_receiver_schemas_execute_with_the_existing_stream_callbacks() {
     for source in [
-        include_str!("../../ril-compiler/tests/fixtures/io_fixed_receiver.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/io_dynamic_receiver_control.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/io_nested_fixed_receiver.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/io_fixed_writer.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/io_dynamic_fixed_backing.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/io_readonly_capture.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/io_resource_fixed_receiver.ril"),
+        ril_test::case_source("tests/regressions/io.ril::io-fixed-receiver"),
+        ril_test::case_source("tests/regressions/io.ril::io-dynamic-receiver-control"),
+        ril_test::case_source("tests/regressions/io.ril::io-nested-fixed-receiver"),
+        ril_test::case_source("tests/regressions/io.ril::io-fixed-writer"),
+        ril_test::case_source("tests/regressions/io.ril::io-dynamic-fixed-backing"),
+        ril_test::case_source("tests/regressions/io.ril::io-readonly-capture"),
+        ril_test::case_source("tests/regressions/io.ril::io-resource-fixed-receiver"),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("io-fixed.ril");

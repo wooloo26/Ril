@@ -12,7 +12,7 @@ fn session(source: &str, target: &str) -> Session {
 
 #[test]
 fn known_bound_fields_feed_real_result_producers_on_both_static_layouts() {
-    let source = include_str!("fixtures/static_bound_projection.ril");
+    let source = ril_test::case_source("tests/regressions/static.ril::static-bound-projection");
     for target in ["pointer32", "pointer64"] {
         let verified = session(source, target).verify().unwrap();
         ril_compiler::lower::lower_core(&verified).unwrap();
@@ -21,7 +21,8 @@ fn known_bound_fields_feed_real_result_producers_on_both_static_layouts() {
 
 #[test]
 fn a_reached_bound_member_inspection_discharges_the_actual_caller_producer() {
-    let source = include_str!("fixtures/static_bound_result_inspection.ril");
+    let source =
+        ril_test::case_source("tests/regressions/static.ril::static-bound-result-inspection");
     session(source, "pointer64").verify().unwrap();
 }
 
@@ -59,13 +60,15 @@ meta let ANSWER=read(.{id:7},true)
 
 #[test]
 fn generic_receiving_transports_the_actual_callable_interface_and_defaults() {
-    let source = include_str!("fixtures/static_generic_callable_receiving.ril");
+    let source =
+        ril_test::case_source("tests/regressions/static.ril::static-generic-callable-receiving");
     session(source, "pointer64").verify().unwrap();
 }
 
 #[test]
 fn generic_alias_wrappers_keep_nested_actual_callable_interfaces() {
-    let source = include_str!("fixtures/static_generic_callable_wrapper.ril");
+    let source =
+        ril_test::case_source("tests/regressions/static.ril::static-generic-callable-wrapper");
     session(source, "pointer64").verify().unwrap();
 }
 
@@ -103,7 +106,8 @@ meta let _=assert(ANSWER==7)
 
 #[test]
 fn editing_a_bound_application_cannot_reuse_the_previous_inspection() {
-    let valid = include_str!("fixtures/static_bound_result_inspection.ril");
+    let valid =
+        ril_test::case_source("tests/regressions/static.ril::static-bound-result-inspection");
     let invalid = r#"
 meta fn read<T:{id:int,..R}>(value:T)->int{value.id}
 meta let _={let hidden:Result<int,str>=Ok(1);read(.{id:7,hidden:hidden});()}
@@ -129,7 +133,7 @@ meta let _={let hidden:Result<int,str>=Ok(1);read(.{id:7,hidden:hidden});()}
 #[test]
 fn selecting_a_bound_numeric_field_keeps_other_fields_callable_defaults() {
     session(
-        include_str!("fixtures/static_bound_callable_construction.ril"),
+        ril_test::case_source("tests/regressions/static.ril::static-bound-callable-construction"),
         "pointer64",
     )
     .verify()

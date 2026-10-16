@@ -30,6 +30,7 @@ mod closure_invocations;
 mod collection_types;
 mod concurrent;
 mod constants;
+mod context;
 mod contract_types;
 mod contracts;
 mod generated_sources;
@@ -133,6 +134,8 @@ pub(super) fn analyze_constants(
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
             Err(error) => AnalyzeOutcome {
                 program: None,
+                facts: None,
+                hir: None,
                 diagnostics: Vec::new(),
                 unsupported: vec![UnsupportedFeature {
                     span: Span {
@@ -176,10 +179,34 @@ fn analyze_inner(
     layout: ril_compiler_core::target::TargetLayout,
     constants: &crate::static_eval::constants::ConstantPool,
 ) -> AnalyzeOutcome {
+    let hir = match crate::hir::HirProgram::lower_transformed(
+        syntax,
+        crate::hir::nodes::GeneratedKind::StaticMaterialization,
+    ) {
+        Ok(hir) => std::sync::Arc::new(hir),
+        Err(error) => {
+            return AnalyzeOutcome {
+                program: None,
+                facts: None,
+                hir: None,
+                diagnostics: Vec::new(),
+                unsupported: vec![UnsupportedFeature {
+                    span: Span {
+                        file,
+                        start: 0,
+                        end: 0,
+                    },
+                    description: format!("semantic HIR construction is incomplete: {error:?}"),
+                }],
+            };
+        }
+    };
     let ambiguous_sites = crate::syntax_sites::ambiguous(syntax);
     if !ambiguous_sites.is_empty() {
         return AnalyzeOutcome {
             program: None,
+            facts: None,
+            hir: Some(hir),
             diagnostics: vec![],
             unsupported: ambiguous_sites,
         };
@@ -218,10 +245,11 @@ fn analyze_inner(
         .cloned()
         .collect();
     let (binding_sources, storage_writes) = checker.storage_sources.into_parts();
+    let checked_syntax = std::sync::Arc::new(syntax.clone());
     let facts = SemanticFacts {
         binding_sources,
         storage_writes,
-        source_program: Some(std::sync::Arc::new(syntax.clone())),
+        source_program: Some(checked_syntax.clone()),
         channel_repetitions: checker.channel_repetitions,
         channel_messages: checker.channel_message_facts,
         channel_exits: checker.channel_exit_facts,
@@ -336,16 +364,20 @@ fn analyze_inner(
             }));
     }
     let accepted = semantically_complete && checker.unsupported.is_empty();
+    let facts = std::sync::Arc::new(facts);
     let program = accepted.then(|| {
         VerifiedProgram::verified(
-            syntax.clone(),
+            checked_syntax,
             checker.definitions,
-            facts,
+            facts.clone(),
+            hir.clone(),
             checker.diagnostics.clone(),
         )
     });
     AnalyzeOutcome {
         program,
+        facts: Some(facts),
+        hir: Some(hir),
         diagnostics: checker.diagnostics,
         unsupported: checker.unsupported,
     }
@@ -801,15 +833,11 @@ impl Checker {
         }
         false
     }
-    fn generic_scope(&mut self, id: usize) -> BTreeMap<String, String> {
+    fn generic_scope(&mut self, id: usize) -> super::context::FrozenEnvironment {
         let info = self.functions[id].clone();
         let function = &info.syntax;
-        let mut context = info.generic_context;
-        self.generic_substitutions = info.generic_substitutions;
-        self.generic_type_witnesses = info.generic_type_witnesses;
-        self.static_key_arguments = info.static_key_arguments;
-        self.bound_row_context = info.bound_row_context;
-        self.bound_row_selections = info.bound_row_selections;
+        let previous = self.enter_typing_environment(&info.typing_environment);
+        let mut context = self.generic_context.clone();
         let mut owned_keys = Vec::new();
         for (index, generic) in function.generics.iter().enumerate() {
             self.bound_row_context.remove(&generic.name);
@@ -843,7 +871,7 @@ impl Checker {
         for identity in owned_keys {
             self.generic_key_contexts.insert(identity, context.clone());
         }
-        let previous = std::mem::replace(&mut self.generic_context, context);
+        self.generic_context = context;
         self.declare_record_bounds(id);
         self.declare_row_contract(function);
         previous
@@ -978,6 +1006,9 @@ impl Checker {
         for function in &mut self.functions {
             if function.owner.is_none() {
                 function.lexical = self.global.clone();
+                function.typing_environment = function
+                    .typing_environment
+                    .with_contract_bindings(function.lexical.clone());
             }
         }
         let functions = self.functions.len();
@@ -990,16 +1021,7 @@ impl Checker {
             let function = self.functions[id].syntax.clone();
             self.checked_definitions
                 .insert(self.functions[id].definition);
-            let previous_rows = (
-                self.bound_row_context.clone(),
-                self.bound_row_selections.clone(),
-            );
-            let previous_arguments = (
-                self.generic_substitutions.clone(),
-                self.generic_type_witnesses.clone(),
-                self.static_key_arguments.clone(),
-            );
-            let previous_generic = self.generic_scope(id);
+            let previous_typing = self.generic_scope(id);
             self.validate_defaults(id, self.functions[id].lexical.clone());
             if function.body.is_none() {
                 for annotation in &function.annotations {
@@ -1013,12 +1035,7 @@ impl Checker {
                         "bodyless declaration outside a checked foreign declaration unit",
                     );
                 }
-                self.generic_context = previous_generic;
-                self.bound_row_context = previous_rows.0;
-                self.bound_row_selections = previous_rows.1;
-                self.generic_substitutions = previous_arguments.0;
-                self.generic_type_witnesses = previous_arguments.1;
-                self.static_key_arguments = previous_arguments.2;
+                self.restore_typing_environment(previous_typing);
                 continue;
             }
             let mut arguments = Vec::new();
@@ -1063,12 +1080,7 @@ impl Checker {
             let preview = self.snapshot_flow();
             let _ = self.invoke_named(id, arguments, function.span, None, true);
             self.restore_definition_state(&preview);
-            self.generic_context = previous_generic;
-            self.bound_row_context = previous_rows.0;
-            self.bound_row_selections = previous_rows.1;
-            self.generic_substitutions = previous_arguments.0;
-            self.generic_type_witnesses = previous_arguments.1;
-            self.static_key_arguments = previous_arguments.2;
+            self.restore_typing_environment(previous_typing);
         }
         for id in frame.locals {
             self.check_authority_use(id);
@@ -1154,7 +1166,9 @@ impl Checker {
                     if function.is_meta {
                         self.unsupported(function.span,"compile-time function definitions require static-family verification before runtime semantic analysis");
                     }
-                    let creation_generics = self.generic_context.clone();
+                    let typing_environment = self
+                        .capture_typing_environment()
+                        .with_contract_bindings(frame.env.clone());
                     let id = self.functions.len();
                     let definition = frame
                         .callable_owner
@@ -1169,12 +1183,7 @@ impl Checker {
                     self.functions.push(FunctionInfo {
                         definition,
                         lexical_owner: frame.callable_owner,
-                        generic_context: creation_generics,
-                        generic_substitutions: self.generic_substitutions.clone(),
-                        generic_type_witnesses: self.generic_type_witnesses.clone(),
-                        static_key_arguments: self.static_key_arguments.clone(),
-                        bound_row_context: self.bound_row_context.clone(),
-                        bound_row_selections: self.bound_row_selections.clone(),
+                        typing_environment,
                         syntax: function.clone(),
                         lexical: frame.env.clone(),
                         owner: (frame.owner != ScopeId(0)).then_some(frame.owner),
@@ -1185,16 +1194,7 @@ impl Checker {
                         writes: BTreeSet::new(),
                         environment_published: false,
                     });
-                    let previous_rows = (
-                        self.bound_row_context.clone(),
-                        self.bound_row_selections.clone(),
-                    );
-                    let previous_arguments = (
-                        self.generic_substitutions.clone(),
-                        self.generic_type_witnesses.clone(),
-                        self.static_key_arguments.clone(),
-                    );
-                    let previous_generic = self.generic_scope(id);
+                    let previous_typing = self.generic_scope(id);
                     for item in &function.signature_where {
                         if let StmtKind::Type(decl) = &item.kind {
                             self.declare_constructors(decl);
@@ -1251,12 +1251,7 @@ impl Checker {
                         frame,
                         false,
                     );
-                    self.generic_context = previous_generic;
-                    self.bound_row_context = previous_rows.0;
-                    self.bound_row_selections = previous_rows.1;
-                    self.generic_substitutions = previous_arguments.0;
-                    self.generic_type_witnesses = previous_arguments.1;
-                    self.static_key_arguments = previous_arguments.2;
+                    self.restore_typing_environment(previous_typing);
                 }
                 _ => {}
             }

@@ -8,7 +8,9 @@ use ril_compiler::{
     },
 };
 
-const SOURCE: &str = include_str!("fixtures/record_bounds/original_projection.ril");
+fn source_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::original-projection")
+}
 
 fn verified(source: &str) -> SemanticFacts {
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
@@ -29,7 +31,7 @@ fn rejected(facts: &SemanticFacts) {
 
 #[test]
 fn source_declarations_and_actual_checks_have_independent_nonvacuous_coverage() {
-    let facts = verified(SOURCE);
+    let facts = verified(source_fixture());
     assert!(
         !facts.record_bounds.is_empty()
             && !facts.generic_bound_checks.is_empty()
@@ -164,7 +166,7 @@ fn fixed_storage_is_frozen_before_the_actual_application_entry() {
 
 #[test]
 fn forged_field_identity_and_row_absences_do_not_revalidate_one_another() {
-    let facts = verified(SOURCE);
+    let facts = verified(source_fixture());
     let mut damaged = facts.clone();
     damaged.record_bounds[0].fields[0].key =
         ril_compiler::sema::effect_identity::ArgumentKey::Name {
@@ -179,7 +181,7 @@ fn forged_field_identity_and_row_absences_do_not_revalidate_one_another() {
 
 #[test]
 fn symbolic_keyof_replay_preserves_all_origins_without_selecting_a_member() {
-    let source = include_str!("fixtures/record_bounds/symbolic_coordinate.ril");
+    let source = ril_test::case_source("tests/regressions/record-bounds.ril::symbolic-coordinate");
     let direct = verified(&source.replace("record.(key)", "record.(K)"));
     assert!(direct.expressions.iter().any(|expression| matches!(
         expression.value.ty,

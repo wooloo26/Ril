@@ -24,29 +24,29 @@ fn executes(source: &str) {
 
 #[test]
 fn shared_children_remain_shared_and_equal_allocations_stay_distinct() {
-    executes(include_str!(
-        "fixtures/static_constant_graphs/shared_and_distinct.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/static.ril::shared-and-distinct",
     ));
 }
 
 #[test]
 fn later_meta_projections_reference_the_original_child() {
-    executes(include_str!(
-        "fixtures/static_constant_graphs/later_projection.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/static.ril::later-projection",
     ));
 }
 
 #[test]
 fn map_order_and_variant_payloads_preserve_shared_children() {
-    executes(include_str!(
-        "fixtures/static_constant_graphs/map_and_variant.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/static.ril::map-and-variant",
     ));
 }
 
 #[test]
 fn worker_allocation_pressure_keeps_constant_pool_roots() {
-    executes(include_str!(
-        "fixtures/static_constant_graphs/worker_allocation_pressure.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/static.ril::worker-allocation-pressure",
     ));
 }
 

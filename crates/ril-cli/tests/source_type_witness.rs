@@ -3,15 +3,15 @@ use std::{fs, process::Command};
 #[test]
 fn complete_source_type_identity_executes_across_generic_and_retained_calls() {
     for source in [
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/forwarding.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/empty_nested.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/returned_callable.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/modes.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/dynamic_view.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/effect_instance.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/type_forwarding.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/carriers.ril"),
-        include_str!("../../ril-compiler/tests/fixtures/source_type_witness/interfaces.ril"),
+        ril_test::case_source("tests/regressions/source-types.ril::forwarding"),
+        ril_test::case_source("tests/regressions/source-types.ril::empty-nested"),
+        ril_test::case_source("tests/regressions/source-types.ril::returned-callable"),
+        ril_test::case_source("tests/regressions/source-types.ril::modes"),
+        ril_test::case_source("tests/regressions/source-types.ril::dynamic-view"),
+        ril_test::case_source("tests/regressions/source-types.ril::effect-instance"),
+        ril_test::case_source("tests/regressions/source-types.ril::type-forwarding"),
+        ril_test::case_source("tests/regressions/source-types.ril::carriers"),
+        ril_test::case_source("tests/regressions/source-types.ril::interfaces"),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("source-schema.ril");

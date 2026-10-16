@@ -4,7 +4,7 @@
 #[test]
 fn preserved_nine_scope_source_must_verify_completely_before_core_lowering() {
     let source =
-        include_str!("../../tests/fixtures/channel_message_optional_callback_scope_budget.ril");
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-optional-callback-scope-budget");
     let verified = crate::Session::new(source.as_bytes().to_vec())
         .verify()
         .unwrap_or_else(|error| panic!("original nine-scope program: {error:?}"));

@@ -30,7 +30,7 @@ fn run(command: &str, source: &str) -> serde_json::Value {
 
 #[test]
 fn original_reference_shadowing_source_checks_and_executes_unchanged() {
-    let source = include_str!("fixtures/static_reference_shadowing.ril");
+    let source = ril_test::case_source("tests/regressions/static.ril::static-reference-shadowing");
     assert_eq!(run("check", source)["status"], "accepted");
     run("test", source);
 }

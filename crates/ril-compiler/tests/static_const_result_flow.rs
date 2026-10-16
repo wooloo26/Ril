@@ -1,12 +1,14 @@
 use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 
-const POSITIVE: &str = include_str!("fixtures/static_const_result_flow.ril");
+fn positive_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/static.ril::static-const-result-flow")
+}
 
 #[test]
 fn const_roles_survive_block_pattern_and_loop_shadows_without_changing_result_identity() {
     for target in ["pointer32", "pointer64"] {
         let verified = Session::with_options(
-            POSITIVE.as_bytes().to_vec(),
+            positive_fixture().as_bytes().to_vec(),
             CheckOptions {
                 target: target.into(),
                 ..Default::default()
@@ -56,10 +58,10 @@ meta let ACTUAL=hidden<2>()
 
 #[test]
 fn removing_a_local_inspection_matches_a_fresh_session() {
-    let mut incremental = Session::new(POSITIVE.as_bytes().to_vec());
+    let mut incremental = Session::new(positive_fixture().as_bytes().to_vec());
     incremental.verify().unwrap();
-    let changed = POSITIVE.replacen("assert(local is Ok(_)|Err(_))", "assert(n==11)", 1);
-    for source in [changed.as_str(), POSITIVE] {
+    let changed = positive_fixture().replacen("assert(local is Ok(_)|Err(_))", "assert(n==11)", 1);
+    for source in [changed.as_str(), positive_fixture()] {
         incremental.update(source.as_bytes().to_vec());
         let fresh = Session::new(source.as_bytes().to_vec());
         let fresh_outcome = fresh.check();

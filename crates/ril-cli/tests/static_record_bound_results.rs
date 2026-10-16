@@ -6,25 +6,27 @@ fn static_bounds_and_transported_callable_interfaces_execute() {
     for (label, source) in [
         (
             "static bound numeric construction with callable default",
-            include_str!(
-                "../../ril-compiler/tests/fixtures/static_bound_callable_construction.ril"
+            ril_test::case_source(
+                "tests/regressions/static.ril::static-bound-callable-construction",
             ),
         ),
         (
             "static bound projection",
-            include_str!("../../ril-compiler/tests/fixtures/static_bound_projection.ril"),
+            ril_test::case_source("tests/regressions/static.ril::static-bound-projection"),
         ),
         (
             "static bound Result inspection",
-            include_str!("../../ril-compiler/tests/fixtures/static_bound_result_inspection.ril"),
+            ril_test::case_source("tests/regressions/static.ril::static-bound-result-inspection"),
         ),
         (
             "static generic callable",
-            include_str!("../../ril-compiler/tests/fixtures/static_generic_callable_receiving.ril"),
+            ril_test::case_source(
+                "tests/regressions/static.ril::static-generic-callable-receiving",
+            ),
         ),
         (
             "static generic wrapper",
-            include_str!("../../ril-compiler/tests/fixtures/static_generic_callable_wrapper.ril"),
+            ril_test::case_source("tests/regressions/static.ril::static-generic-callable-wrapper"),
         ),
     ] {
         native_probe::executes(source, label);

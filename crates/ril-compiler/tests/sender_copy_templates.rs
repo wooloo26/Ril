@@ -3,8 +3,9 @@ use ril_compiler::{
     sema::{copy_template_closure::validate, resource_copy::CopyDischarge},
 };
 
-const POSITIVE: &str =
-    include_str!("../../ril-cli/tests/fixtures/resource_clone/private_helpers.ril");
+fn positive_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/copy.ril::private-helpers")
+}
 const DUP: &str = "fn duplicate<T>(source:T)->T @Fiber{clone(source)}\n";
 fn reject(source: &str, code: &str) {
     let outcome = Session::new(source.as_bytes().to_vec()).check();
@@ -16,7 +17,9 @@ fn reject(source: &str, code: &str) {
 
 #[test]
 fn private_helpers_use_the_actual_sender_contract_and_keep_ordinary_copies_separate() {
-    let verified = Session::new(POSITIVE.as_bytes().to_vec()).verify().unwrap();
+    let verified = Session::new(positive_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     let facts = verified.facts();
     validate(facts).unwrap();
     let closure = facts.copy_template_closure.as_ref().unwrap();
@@ -111,7 +114,9 @@ fn consumed_authority_and_scope_escape_cannot_borrow_a_successful_sender_event()
 
 #[test]
 fn final_certificate_rejects_sender_events_borrowed_from_another_instance() {
-    let verified = Session::new(POSITIVE.as_bytes().to_vec()).verify().unwrap();
+    let verified = Session::new(positive_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     let facts = verified.facts();
     let choices: Vec<_> = facts
         .copy_template_closure

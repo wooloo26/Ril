@@ -17,5 +17,6 @@ mod type_identity_lower;
 pub use db::{Database, SourceFacts, SourceInput, source_facts};
 pub use driver::{BuildOptions, DriverError, build_path, check_path, check_path_with};
 pub use session::{
-    CheckOptions, CompilationOutcome, ProjectError, ProjectSource, Session, UnitKind,
+    AnalysisSnapshot, AnalysisStatus, CheckOptions, CompilationOutcome, ProjectError,
+    ProjectSource, Session, UnitKind,
 };

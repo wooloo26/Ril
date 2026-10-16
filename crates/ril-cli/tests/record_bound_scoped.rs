@@ -6,23 +6,21 @@ fn fixed_empty_inner_callable_mode_and_immutable_scoped_sources_execute() {
     for (name, source) in [
         (
             "scoped fixed",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/scoped_fixed.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-fixed"),
         ),
         (
             "scoped empty inner dimension",
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/scoped_empty_inner_dimension.ril"
+            ril_test::case_source(
+                "tests/regressions/record-bounds.ril::scoped-empty-inner-dimension",
             ),
         ),
         (
             "scoped callable mode",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/scoped_callable_mut.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::scoped-callable-mut"),
         ),
         (
             "scoped immutable field",
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/scoped_immutable_field.ril"
-            ),
+            ril_test::case_source("tests/regressions/record-bounds.ril::scoped-immutable-field"),
         ),
     ] {
         native_probe::executes(source, name);

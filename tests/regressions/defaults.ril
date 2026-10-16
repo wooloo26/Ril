@@ -1,0 +1,235 @@
+--@ source: source-entry-budget-order
+--@ file: source.ril
+fn doomed(value:int=panic("default runs before body entry"))->int{value}
+pub fn test_native(){
+    with Div::exhausted()->()
+    Div::budget(1,\->{doomed();()})
+}
+--@ end-file
+--@ end-source
+
+--@ case: entry-budget-order
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-entry-budget-order
+--@ end-case
+
+--@ case: entry-budget-order-test-native
+--@ mode: run-panic
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+-- Panics: original default-entry budget ordering
+--@ use-source: source-entry-budget-order
+--@ end-case
+
+--@ source: source-helper-entry-budget-order
+--@ file: source.ril
+halt fn helper()->int{panic("helper default runs before callee body entry")}
+fn doomed(value:int=helper())->int{value}
+pub fn test_native(){
+    with Div::exhausted()->()
+    Div::budget(2,\->{doomed();()})
+}
+--@ end-file
+--@ end-source
+
+--@ case: helper-entry-budget-order
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-helper-entry-budget-order
+--@ end-case
+
+--@ case: helper-entry-budget-order-test-native
+--@ mode: run-panic
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+-- Panics: original default-entry budget ordering
+--@ use-source: source-helper-entry-budget-order
+--@ end-case
+
+--@ source: source-lambda-entry-budget-order
+--@ file: source.ril
+let ACTION=\value:int=panic("lambda default runs before body entry")->value
+pub fn test_native() &{ACTION}{
+    with Div::exhausted()->()
+    Div::budget(1,\->{ACTION();()})
+}
+--@ end-file
+--@ end-source
+
+--@ case: lambda-entry-budget-order
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-lambda-entry-budget-order
+--@ end-case
+
+--@ case: lambda-entry-budget-order-test-native
+--@ mode: run-panic
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+-- Panics: original default-entry budget ordering
+--@ use-source: source-lambda-entry-budget-order
+--@ end-case
+
+--@ source: source-local-budget
+--@ file: source.ril
+eff Mark<T>{touch()}
+halt fn answer()->int{7}
+fn measured<T>(witness:T,value:int={with Div::exhausted()->0;Div::budget(1,answer)})->int @Mark<T>{Mark<T>::touch();value}
+pub fn test_native(){
+    with {Mark<int>::touch()->resume(),Mark<str>::touch()->resume()}
+    assert(measured(0)==7 && measured("")==7 && measured(0,9)==9)
+}
+--@ end-file
+--@ end-source
+
+--@ case: local-budget
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-local-budget
+--@ end-case
+
+--@ case: local-budget-test-native
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+--@ use-source: source-local-budget
+--@ end-case
+
+--@ source: source-local-handler
+--@ file: source.ril
+eff Read<T>{get()->T}
+fn selected<T>(witness:T,value:T={with Read<T>::get()->resume witness;Read<T>::get()})->T{value}
+pub fn test_native(){
+    assert(selected(7)==7 && selected("seven")=="seven")
+    assert(selected(9)==9 && selected(7,11)==11)
+}
+--@ end-file
+--@ end-source
+
+--@ case: local-handler
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-local-handler
+--@ end-case
+
+--@ case: local-handler-test-native
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+--@ use-source: source-local-handler
+--@ end-case
+
+--@ source: source-retained-closure
+--@ file: source.ril
+eff Mark<T>{touch()}
+eff Read{get()->int}
+type Reader=fn()->int &closure
+fn make<T>(witness:T,value:int,reader:Reader={with Read::get()->resume value;\->Read::get()})->Reader @Mark<T>{
+    Mark<T>::touch()
+    reader
+}
+pub fn test_native(){
+    with {Mark<int>::touch()->resume(),Mark<str>::touch()->resume()}
+    let seven=make(0,7)
+    let nine=make(0,9)
+    let text_instance=make("",11)
+    with Read::get()->resume 100
+    assert(seven()==7 && nine()==9 && text_instance()==11 && seven()==7)
+    let measured={with Div::exhausted()->None;Some(Div::budget(100,nine))}
+    assert(measured==Some(9) && text_instance()==11)
+}
+--@ end-file
+--@ end-source
+
+--@ case: retained-closure
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-retained-closure
+--@ end-case
+
+--@ case: retained-closure-test-native
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+--@ use-source: source-retained-closure
+--@ end-case
+
+--@ source: source-scalars-and-order
+--@ file: source.ril
+eff Read<T>{get()->T}
+var trace=0
+fn pair<T>(witness:T,base:int=3,value:int=base+1)->(T,int) @Read<T>{(Read<T>::get(),value)}
+pub fn test_native() &{mut trace}{
+    with {Read<int>::get()->resume 7,Read<str>::get()->resume "seven"}
+    assert(pair(0)==(7,4) && pair("",10)==("seven",11))
+    assert(pair(0,8,50)==(7,50))
+    let result=pair(value:{trace=trace*10+1;90},witness:{trace=trace*10+2;0})
+    assert(result==(7,90) && trace==12)
+}
+--@ end-file
+--@ end-source
+
+--@ case: scalars-and-order
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-scalars-and-order
+--@ end-case
+
+--@ case: scalars-and-order-test-native
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+--@ use-source: source-scalars-and-order
+--@ end-case
+
+--@ source: source-supplied-only
+--@ file: source.ril
+eff Mark<T>{touch()}
+type Reader=fn()->int &closure
+fn make<T>(witness:T,reader:Reader=\->7)->Reader @Mark<T>{Mark<T>::touch();reader}
+pub fn test_native(){
+    with {Mark<int>::touch()->resume(),Mark<str>::touch()->resume()}
+    let explicit=make(0,\->9)
+    let omitted=make("")
+    assert(explicit()==9 && omitted()==7)
+}
+--@ end-file
+--@ end-source
+
+--@ case: supplied-only
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-supplied-only
+--@ end-case
+
+--@ case: supplied-only-test-native
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+--@ use-source: source-supplied-only
+--@ end-case
+
+--@ source: source-transitive
+--@ file: source.ril
+eff Read<T>{get()->T}
+fn read<T>(witness:T)->T @Read<T>{Read<T>::get()}
+fn selected<T>(witness:T,value:T={with Read<T>::get()->resume witness;read(witness)})->T{value}
+pub fn test_native(){
+    assert(selected(7)==7 && selected("seven")=="seven" && selected(9)==9)
+}
+--@ end-file
+--@ end-source
+
+--@ case: transitive
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ use-source: source-transitive
+--@ end-case
+
+--@ case: transitive-test-native
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+--@ use-source: source-transitive
+--@ end-case

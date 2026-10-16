@@ -48,7 +48,9 @@ fn example(){let reader=make_reader();let first=reader();let second=reader();ass
 
 #[test]
 fn normal_reference_answers_run_the_suffix_against_the_actual_graph() {
-    let verified = accepted(include_str!("fixtures/non_tail_reference_answer.ril"));
+    let verified = accepted(ril_test::case_source(
+        "tests/regressions/effects.ril::non-tail-reference-answer",
+    ));
     assert!(
         verified
             .facts()
@@ -312,7 +314,9 @@ fn removing_graph_loan_or_invocation_evidence_fails_independent_validation() {
 #[test]
 fn ended_continuation_locals_need_a_current_scope_exit_without_retiring_captures() {
     use sema::facts::{Permission, Publication};
-    let verified = accepted(include_str!("fixtures/non_tail_private_local_answer.ril"));
+    let verified = accepted(ril_test::case_source(
+        "tests/regressions/effects.ril::non-tail-private-local-answer",
+    ));
     accepted(
         r#"
 type Cell={mut value:int}

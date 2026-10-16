@@ -2,7 +2,9 @@ use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 
 #[test]
 fn shared_constant_nodes_keep_distinct_declared_source_views() {
-    let source = "meta let FIXED:[2]int=[1,2]\nmeta let WEAK:[]int=FIXED\nfn example() &{FIXED,WEAK}{assert(FIXED==WEAK)}";
+    let source = ril_test::case_source(
+        "tests/regressions/source-observations.ril::constant-shared-node-distinct-views",
+    );
     for target in ["pointer32", "pointer64"] {
         let verified = Session::with_options(
             source.as_bytes().to_vec(),
@@ -37,7 +39,9 @@ fn shared_constant_nodes_keep_distinct_declared_source_views() {
 #[test]
 fn an_evaluated_dynamic_alias_cannot_recover_a_fixed_source_from_shared_storage() {
     for target in ["pointer32", "pointer64"] {
-        let source = "meta let FIXED:[2]int=[1,2]\nmeta let WEAK:[]int=FIXED\nfn bad() &{WEAK}{let recovered:[2]int=WEAK}";
+        let source = ril_test::case_source(
+            "tests/regressions/source-observations.ril::reject-constant-fixed-recovery",
+        );
         let outcome = Session::with_options(
             source.as_bytes().to_vec(),
             CheckOptions {
@@ -57,8 +61,9 @@ fn an_evaluated_dynamic_alias_cannot_recover_a_fixed_source_from_shared_storage(
 #[test]
 fn empty_evaluated_graphs_keep_their_written_nested_element_dimensions() {
     for target in ["pointer32", "pointer64"] {
-        let source =
-            "meta let ORIGINAL:[0][3]int=[]\nfn bad() &{ORIGINAL}{let changed:[0][2]int=ORIGINAL}";
+        let source = ril_test::case_source(
+            "tests/regressions/source-observations.ril::reject-constant-inner-dimension",
+        );
         let outcome = Session::with_options(
             source.as_bytes().to_vec(),
             CheckOptions {

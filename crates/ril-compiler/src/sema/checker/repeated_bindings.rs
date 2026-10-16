@@ -87,7 +87,7 @@ impl Checker {
                 }
                 let mut returns: Vec<_> = value.callable_returns.iter().map(Arc::as_ref).collect();
                 while let Some(bound) = returns.pop() {
-                    bindings.extend(bound.lexical.values().copied());
+                    bindings.extend(bound.typing_environment.contract_bindings.values().copied());
                     returns.extend(bound.predecessors.iter().map(Arc::as_ref));
                 }
                 values.extend(

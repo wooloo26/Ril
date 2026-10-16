@@ -2871,14 +2871,10 @@ impl Checker {
             super::contracts::LambdaContract {
                 return_type: return_type.cloned(),
                 annotations: annotations.to_vec(),
-                lexical: frame.env.clone(),
                 span,
-                generic_context: self.generic_context.clone(),
-                generic_substitutions: self.generic_substitutions.clone(),
-                generic_type_witnesses: self.generic_type_witnesses.clone(),
-                bound_row_context: self.bound_row_context.clone(),
-                bound_row_selections: self.bound_row_selections.clone(),
-                static_key_arguments: self.static_key_arguments.clone(),
+                typing_environment: self
+                    .capture_typing_environment()
+                    .with_contract_bindings(frame.env.clone()),
             },
         );
         let site = self.closure_site(frame.callable_owner, span);

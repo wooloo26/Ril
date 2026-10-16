@@ -1,6 +1,0 @@
-eff Read<T>{get()->T}
-fn unclosed<T>(value:T)->T{
-    with Read<T>::get()->resume value
-    (\->Read<T>::get())()
-}
-pub fn test_native(){}

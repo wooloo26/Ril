@@ -14,6 +14,8 @@ mod closure_sources;
 mod composites;
 #[path = "constructor_input_source.rs"]
 mod constructor_inputs;
+#[path = "call_input_source_headers.rs"]
+mod headers;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
 #[path = "call_input_source_uid.rs"]
@@ -82,16 +84,7 @@ impl Checker {
             return Vec::new();
         };
         let info = self.functions[*index].clone();
-        let previous = (
-            self.generic_context.clone(),
-            self.bound_row_context.clone(),
-            self.bound_row_selections.clone(),
-            self.generic_substitutions.clone(),
-            self.generic_type_witnesses.clone(),
-            self.static_key_arguments.clone(),
-            self.contract_environment.clone(),
-        );
-        self.generic_scope(*index);
+        let previous = self.generic_scope(*index);
         let owned: BTreeSet<_> = info
             .syntax
             .generics
@@ -126,13 +119,7 @@ impl Checker {
                 Some(target)
             })
             .collect();
-        self.generic_context = previous.0;
-        self.bound_row_context = previous.1;
-        self.bound_row_selections = previous.2;
-        self.generic_substitutions = previous.3;
-        self.generic_type_witnesses = previous.4;
-        self.static_key_arguments = previous.5;
-        self.contract_environment = previous.6;
+        self.restore_typing_environment(previous);
         result
     }
     pub(super) fn begin_source_argument(
@@ -308,14 +295,14 @@ impl Checker {
                 // does not compare, clear or grant those obligation rows.
                 super::source_receiving::resolved_symbolic_names(
                     &syntax,
-                    &function.generic_context,
+                    &function.typing_environment.generic_context,
                     &self.types,
                     &mut 4096,
                     0,
                 )?;
                 return crate::static_eval::effects::bounded_argument_key(
                     &syntax,
-                    &function.generic_context,
+                    &function.typing_environment.generic_context,
                 );
             }
         }
@@ -476,24 +463,11 @@ impl Checker {
                 crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new())
             })
             .or_else(|| {
-                // The original header has already resolved transparent aliases
-                // in its lexical scope. Open rows prevent a closed witness,
-                // but cannot turn a nested Cell alias into a nominal identity.
-                let raw = target.key?;
-                let mut selected: BTreeMap<_, _> = self
-                    .static_arguments_for(info, span)
-                    .arguments
-                    .into_iter()
-                    .filter_map(|argument| Some((argument.binder, argument.key?)))
-                    .collect();
-                let invocation = self.copy_invocation_stack.last().copied();
-                for check in &self.generic_bound_checks {
-                    if check.context.invocation == invocation
-                        && check.context.owner == Some(CallableOwner::Function(info.definition))
-                    {
-                        selected.extend(check.substitutions.clone());
-                    }
-                }
+                // Normalize the declared header before selecting its actual
+                // Type leaves. An open selected record is not a closed Ty
+                // witness, and cannot prevent use of its real Source receipt.
+                let raw = self.original_input_header_key(syntax)?;
+                let selected = self.actual_input_source_selections(info, source_event, span)?;
                 select(&raw, &selected, &mut 4096, 0)
             });
         let Some(expected) = expected else {
@@ -661,22 +635,7 @@ impl Checker {
                 Callable::Closure(index) => {
                     let closure = self.closures.get(*index)?.clone();
                     let contract = self.lambda_contracts.get(index)?.clone();
-                    let previous = (
-                        self.generic_context.clone(),
-                        self.bound_row_context.clone(),
-                        self.bound_row_selections.clone(),
-                        self.generic_substitutions.clone(),
-                        self.generic_type_witnesses.clone(),
-                        self.static_key_arguments.clone(),
-                        self.contract_environment.clone(),
-                    );
-                    self.generic_context = contract.generic_context;
-                    self.bound_row_context = contract.bound_row_context;
-                    self.bound_row_selections = contract.bound_row_selections;
-                    self.generic_substitutions = contract.generic_substitutions;
-                    self.generic_type_witnesses = contract.generic_type_witnesses;
-                    self.static_key_arguments = contract.static_key_arguments;
-                    self.set_contract_environment(&closure.lexical);
+                    let previous = self.enter_typing_environment(&contract.typing_environment);
                     let keys: Option<Vec<_>> = closure
                         .parameters
                         .iter()
@@ -694,13 +653,7 @@ impl Checker {
                             }
                         })
                         .collect();
-                    self.generic_context = previous.0;
-                    self.bound_row_context = previous.1;
-                    self.bound_row_selections = previous.2;
-                    self.generic_substitutions = previous.3;
-                    self.generic_type_witnesses = previous.4;
-                    self.static_key_arguments = previous.5;
-                    self.contract_environment = previous.6;
+                    self.restore_typing_environment(previous);
                     keys?
                 }
                 Callable::Symbolic(..) if self.symbolic_has_no_inputs(callee) => Vec::new(),
@@ -890,8 +843,8 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(|| {
-                let source = include_str!(
-                    "../../../tests/fixtures/record_bounds/scoped_immutable_field.ril"
+                let source = ril_test::case_source(
+                    "tests/regressions/record-bounds.ril::scoped-immutable-field",
                 );
                 let parsed = ril_syntax::parse(source);
                 assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
@@ -907,6 +860,7 @@ mod tests {
                         continue;
                     };
                     let scope: BTreeMap<_, _> = function
+                        .typing_environment
                         .generic_context
                         .iter()
                         .map(|(name, id)| (name.clone(), id.clone()))
@@ -955,9 +909,7 @@ mod tests {
     #[test]
     fn symbolic_formal_inputs_keep_complete_coordinates_before_reception() {
         std::thread::Builder::new().stack_size(16 * 1024 * 1024).spawn(|| {
-        let source = include_str!(
-            "../../../tests/fixtures/record_bounds/pending/scoped_symbolic_array_explicit.ril"
-        );
+        let source = ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-array-explicit");
         let parsed = ril_syntax::parse(source);
         assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
         let mut checker = Checker::new(FileId(0));

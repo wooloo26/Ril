@@ -236,7 +236,7 @@ impl Checker {
             .collect();
         let mut captured_arguments = Vec::new();
         let mut unresolved_captured_binders = BTreeSet::new();
-        for (name, identity) in &info.generic_context {
+        for (name, identity) in &info.typing_environment.generic_context {
             if info
                 .syntax
                 .generics

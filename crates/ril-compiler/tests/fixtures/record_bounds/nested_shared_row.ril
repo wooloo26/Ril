@@ -1,2 +1,0 @@
-fn both<T:{id:int,..R},U:{flag:bool,..R}>(value:(T,U))->int{value.(0).id}
-pub fn test_native(){assert(both((.{id:7,tag:"same"},.{flag:true,tag:"same"}))==7)}

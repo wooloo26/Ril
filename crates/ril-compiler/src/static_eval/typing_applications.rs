@@ -2345,7 +2345,8 @@ mod tests {
 
     #[test]
     fn result_flow_alias_wrapper_preserves_the_returned_actual_callable_interface() {
-        let source = include_bytes!("../../tests/fixtures/static_generic_callable_wrapper.ril");
+        let source =
+            ril_test::case_bytes("tests/regressions/static.ril::static-generic-callable-wrapper");
         let session = crate::Session::new(source.to_vec());
         let verified = session.verify().unwrap();
         crate::lower::lower_core(&verified).unwrap();

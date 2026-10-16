@@ -1,0 +1,33 @@
+--@ case: constant-answer
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ file: source.ril
+fn example()->int{1}
+--@ end-file
+--@ end-case
+
+--@ case: readonly-reassignment
+--@ mode: check-fail
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+-- Error [E0501]: An immutable binding cannot be reassigned.
+--@ file: source.ril
+fn example(){let value=1;value=2}
+--@ end-file
+--@ end-case
+
+--@ case: reserved-keyword-recovery
+--@ mode: check-fail
+--@ spec: SPEC#keywords
+-- Error [E0113]: A keyword cannot be a local binding name.
+--@ file: source.ril
+fn example(){let return=1}
+--@ end-file
+--@ end-case
+
+--@ case: fixed-input-pipeline
+--@ mode: check-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ file: source.ril
+fn apply(callback:fn([2]int)->int,values:[2]int)->int{values |> callback}
+--@ end-file
+--@ end-case

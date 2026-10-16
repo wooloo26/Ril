@@ -1,2 +1,0 @@
-fn read<T:{id:int,..R}>(value:{box:(int,{payload:T})})->int{value.box.(1).payload.id}
-pub fn test_native(){assert(read(.{box:(0,.{payload:.{id:7,tag:"ok"}})})==7)}

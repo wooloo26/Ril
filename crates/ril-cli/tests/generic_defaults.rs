@@ -23,34 +23,42 @@ fn executes(source: &str) {
 
 #[test]
 fn generic_defaults_keep_parameter_order_and_explicit_argument_order() {
-    executes(include_str!(
-        "fixtures/generic_defaults/scalars_and_order.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/defaults.ril::scalars-and-order",
     ));
 }
 
 #[test]
 fn default_handlers_use_the_callee_substitution_and_actual_parameters() {
-    executes(include_str!("fixtures/generic_defaults/local_handler.ril"));
+    executes(ril_test::case_source(
+        "tests/regressions/defaults.ril::local-handler",
+    ));
 }
 
 #[test]
 fn default_budgets_keep_their_actual_handler_and_callee_proofs() {
-    executes(include_str!("fixtures/generic_defaults/local_budget.ril"));
+    executes(ril_test::case_source(
+        "tests/regressions/defaults.ril::local-budget",
+    ));
 }
 
 #[test]
 fn default_created_recipes_survive_creation_and_keep_distinct_captures() {
-    executes(include_str!(
-        "fixtures/generic_defaults/retained_closure.ril"
+    executes(ril_test::case_source(
+        "tests/regressions/defaults.ril::retained-closure",
     ));
 }
 
 #[test]
 fn supplied_only_instances_do_not_materialize_an_unexecuted_default_closure() {
-    executes(include_str!("fixtures/generic_defaults/supplied_only.ril"));
+    executes(ril_test::case_source(
+        "tests/regressions/defaults.ril::supplied-only",
+    ));
 }
 
 #[test]
 fn defaults_can_call_a_closed_generic_helper_in_their_own_handler_context() {
-    executes(include_str!("fixtures/generic_defaults/transitive.ril"));
+    executes(ril_test::case_source(
+        "tests/regressions/defaults.ril::transitive",
+    ));
 }

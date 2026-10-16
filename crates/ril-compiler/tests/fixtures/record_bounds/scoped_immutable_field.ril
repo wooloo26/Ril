@@ -1,3 +1,0 @@
-fn first<T:{items:Immut<[2]int>,..R}>(value:(T,int))->int{value.(0).items[0]}
-fn forward<S>(value:({items:Immut<[2]int>,tag:str,..S},int))->int{first(value)}
-pub fn test_native(){let items:Immut<[2]int>=[7,9];assert(forward((.{items:items,tag:"ok"},0))==7)}

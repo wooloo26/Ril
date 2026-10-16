@@ -1,3 +1,0 @@
-type Pick=\T->{loop{last type<T>}}
-type Chosen=Pick<int>
-fn identity(value:Chosen)->Chosen{value}

@@ -7,7 +7,9 @@ use ril_compiler_core::{
     target::TargetLayout,
 };
 use serde::Serialize;
+mod analysis;
 pub(crate) mod entry;
+pub use analysis::{AnalysisSnapshot, AnalysisStatus};
 mod project;
 pub use project::{ProjectError, ProjectSource};
 
@@ -82,33 +84,42 @@ impl Session {
         }
     }
     pub fn verify(&self) -> Result<crate::hir::VerifiedProgram, CompilationOutcome> {
+        self.analyze().into_verified()
+    }
+    pub fn analyze(&self) -> AnalysisSnapshot {
         if self.layout().is_none() {
-            return Err(CompilationOutcome::UnsupportedEnvironment {
-                detail: format!("unknown abstract target {}", self.options.target),
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::UnsupportedEnvironment {
+                    detail: format!("unknown abstract target {}", self.options.target),
+                },
+                None,
+            );
         }
         if let Some(project) = &self.project {
-            return self.verify_sources(project);
+            return self.analyze_sources(project);
         }
         let facts = self.facts();
         if let Some(offset) = facts.invalid_utf8_at {
             let start = u32::try_from(offset).unwrap_or(u32::MAX);
-            return Err(CompilationOutcome::Rejected {
-                diagnostics: vec![Diagnostic {
-                    code: "E0104".into(),
-                    severity: Severity::Error,
-                    message: "source is not valid UTF-8".into(),
-                    labels: vec![Label {
-                        span: Span {
-                            file: FileId(0),
-                            start,
-                            end: start.saturating_add(1),
-                        },
-                        message: "invalid byte sequence".into(),
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::Rejected {
+                    diagnostics: vec![Diagnostic {
+                        code: "E0104".into(),
+                        severity: Severity::Error,
+                        message: "source is not valid UTF-8".into(),
+                        labels: vec![Label {
+                            span: Span {
+                                file: FileId(0),
+                                start,
+                                end: start.saturating_add(1),
+                            },
+                            message: "invalid byte sequence".into(),
+                        }],
+                        causes: vec![],
                     }],
-                    causes: vec![],
-                }],
-            });
+                },
+                None,
+            );
         }
         let parsed = parsed_source(&self.db, self.source, 0);
         if parsed
@@ -116,16 +127,22 @@ impl Session {
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error)
         {
-            return Err(CompilationOutcome::Rejected {
-                diagnostics: parsed.diagnostics.clone(),
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::Rejected {
+                    diagnostics: parsed.diagnostics.clone(),
+                },
+                Some(parsed.program.clone()),
+            );
         }
         if parsed.incomplete {
-            return Err(CompilationOutcome::NotImplemented {
-                reason: NotImplemented::new(Stage::Syntax, "unsupported syntax"),
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::NotImplemented {
+                    reason: NotImplemented::new(Stage::Syntax, "unsupported syntax"),
+                },
+                Some(parsed.program.clone()),
+            );
         }
-        self.verify_program(&parsed.program)
+        self.analyze_program(&parsed.program)
     }
     /// An owned source AST crosses resolution and static evaluation before the
     /// private semantic boundary, just like byte and multi-file Sessions.
@@ -133,16 +150,25 @@ impl Session {
         &self,
         program: &ril_syntax::ast::Program,
     ) -> Result<crate::hir::VerifiedProgram, CompilationOutcome> {
+        self.analyze_program(program).into_verified()
+    }
+    pub fn analyze_program(&self, program: &ril_syntax::ast::Program) -> AnalysisSnapshot {
         let diagnostics = ril_syntax::validate_program(program);
         if !diagnostics.is_empty() {
-            return Err(CompilationOutcome::Rejected { diagnostics });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::Rejected { diagnostics },
+                Some(program.clone()),
+            );
         }
         if self.layout().is_none() {
-            return Err(CompilationOutcome::UnsupportedEnvironment {
-                detail: format!("unknown abstract target {}", self.options.target),
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::UnsupportedEnvironment {
+                    detail: format!("unknown abstract target {}", self.options.target),
+                },
+                Some(program.clone()),
+            );
         }
-        self.verify_resolved(crate::modules::resolve(
+        self.analyze_resolved(crate::modules::resolve(
             vec![crate::modules::ModuleUnit {
                 path: std::path::PathBuf::from("/ril-memory-source.ril"),
                 file: FileId(0),
@@ -152,44 +178,57 @@ impl Session {
             FileId(0),
         ))
     }
-    fn verify_project_at(
+    fn analyze_project_at(
         &self,
         program: &ril_syntax::ast::Program,
         root: FileId,
         declarations: &[FileId],
-    ) -> Result<crate::hir::VerifiedProgram, CompilationOutcome> {
+    ) -> AnalysisSnapshot {
         let Some(layout) = self.layout() else {
-            return Err(CompilationOutcome::UnsupportedEnvironment {
-                detail: format!("unknown abstract target {}", self.options.target),
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::UnsupportedEnvironment {
+                    detail: format!("unknown abstract target {}", self.options.target),
+                },
+                Some(program.clone()),
+            );
         };
         if self.options.unit == UnitKind::Executable
             && let Some(diagnostic) = entry_diagnostic(program)
         {
-            return Err(CompilationOutcome::Rejected {
-                diagnostics: vec![diagnostic],
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::Rejected {
+                    diagnostics: vec![diagnostic],
+                },
+                Some(program.clone()),
+            );
         }
         let resolved_source = program.clone();
         let evaluated =
             crate::static_eval::evaluate_with_budget(program, layout, self.options.static_budget);
         if !evaluated.diagnostics.is_empty() {
-            return Err(CompilationOutcome::Rejected {
-                diagnostics: evaluated.diagnostics,
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::Rejected {
+                    diagnostics: evaluated.diagnostics,
+                },
+                Some(resolved_source),
+            );
         }
         if !evaluated.unsupported.is_empty() {
-            return Err(CompilationOutcome::NotImplemented {
-                reason: NotImplemented::new(
-                    Stage::StaticEvaluation,
-                    evaluated
-                        .unsupported
-                        .iter()
-                        .map(|feature| feature.description.clone())
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                ),
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::NotImplemented {
+                    reason: NotImplemented::new(
+                        Stage::StaticEvaluation,
+                        evaluated
+                            .unsupported
+                            .iter()
+                            .map(|feature| feature.description.clone())
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    ),
+                },
+                Some(resolved_source),
+            )
+            .with_unresolved(evaluated.unsupported);
         }
         let analyzed = crate::sema::analyze_project_for(
             &evaluated.program,
@@ -203,13 +242,27 @@ impl Session {
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error)
         {
-            return Err(CompilationOutcome::Rejected {
-                diagnostics: analyzed.diagnostics,
-            });
+            return AnalysisSnapshot::semantic(
+                CompilationOutcome::Rejected {
+                    diagnostics: analyzed.diagnostics,
+                },
+                resolved_source,
+                analyzed.hir,
+                analyzed.facts,
+                analyzed.unsupported,
+            );
         }
         if let Some(mut program) = analyzed.program {
-            if self.options.unit == UnitKind::Executable {
-                entry::verify_environment(&program, "main", true)?;
+            if self.options.unit == UnitKind::Executable
+                && let Err(outcome) = entry::verify_environment(&program, "main", true)
+            {
+                return AnalysisSnapshot::semantic(
+                    outcome,
+                    resolved_source,
+                    analyzed.hir,
+                    analyzed.facts,
+                    analyzed.unsupported,
+                );
             }
             program.attach_resolved_source(resolved_source);
             program.attach_static_metadata(
@@ -217,7 +270,7 @@ impl Session {
                 evaluated.type_functions,
                 evaluated.static_termination,
             );
-            return Ok(program);
+            return AnalysisSnapshot::verified(program);
         }
         let details = analyzed
             .unsupported
@@ -231,16 +284,23 @@ impl Session {
             })
             .collect::<Vec<_>>()
             .join("; ");
-        Err(CompilationOutcome::NotImplemented {
-            reason: NotImplemented::new(
-                Stage::Provenance,
-                if details.is_empty() {
-                    "semantic verification is incomplete".into()
-                } else {
-                    details
-                },
-            ),
-        })
+        AnalysisSnapshot::semantic(
+            CompilationOutcome::NotImplemented {
+                reason: NotImplemented::new(
+                    Stage::Provenance,
+                    if details.is_empty() {
+                        "semantic verification is incomplete".into()
+                    } else {
+                        details
+                    },
+                ),
+            },
+            resolved_source,
+            analyzed.hir,
+            analyzed.facts,
+            analyzed.unsupported,
+        )
+        .with_diagnostics(analyzed.diagnostics)
     }
 }
 

@@ -382,14 +382,16 @@ impl Checker {
             } else {
                 let mut rewritten = (**bound).clone();
                 rewritten.target = substitute_inferred_type(&bound.target, selected);
-                for ty in rewritten.generic_substitutions.values_mut() {
+                let mut environment = rewritten.typing_environment.thaw();
+                for ty in environment.generic_substitutions.values_mut() {
                     *ty = substitute_inferred_type(ty, selected);
                 }
+                rewritten.typing_environment = environment.freeze();
                 for predecessor in &mut rewritten.predecessors {
                     *predecessor = rewrite_bound(predecessor, selected, memo);
                 }
                 if rewritten.target == bound.target
-                    && rewritten.generic_substitutions == bound.generic_substitutions
+                    && rewritten.typing_environment == bound.typing_environment
                     && rewritten
                         .predecessors
                         .iter()
@@ -538,16 +540,18 @@ mod return_contract_tests {
             text: "T".into(),
             span,
         };
-        prior
+        let mut environment = prior.typing_environment.thaw();
+        environment
             .generic_context
             .insert("T".into(), "declaration:T".into());
-        prior
+        environment
             .generic_substitutions
             .insert("declaration:T".into(), Ty::Generic(binder));
-        prior.lexical.insert("source".into(), 7);
-        prior
+        environment.contract_bindings.insert("source".into(), 7);
+        environment
             .static_key_arguments
             .insert("key".into(), StaticCoordinate::Label("field".into()));
+        prior.typing_environment = environment.freeze();
         let prior = Arc::new(prior);
         let mut head = (*prior).clone();
         head.predecessors = vec![
@@ -567,11 +571,23 @@ mod return_contract_tests {
         let head = &value.callable_returns[0];
         for bound in [head, &head.predecessors[0]] {
             assert_eq!(bound.target, Ty::Str);
-            assert_eq!(bound.generic_substitutions["declaration:T"], Ty::Str);
+            assert_eq!(
+                bound.typing_environment.generic_substitutions["declaration:T"],
+                Ty::Str
+            );
             assert_eq!(bound.syntax, prior.syntax);
-            assert_eq!(bound.generic_context, prior.generic_context);
-            assert_eq!(bound.lexical, prior.lexical);
-            assert_eq!(bound.static_key_arguments, prior.static_key_arguments);
+            assert_eq!(
+                bound.typing_environment.generic_context,
+                prior.typing_environment.generic_context
+            );
+            assert_eq!(
+                bound.typing_environment.contract_bindings,
+                prior.typing_environment.contract_bindings
+            );
+            assert_eq!(
+                bound.typing_environment.static_key_arguments,
+                prior.typing_environment.static_key_arguments
+            );
         }
         assert!(head.predecessors[1].raw);
         assert_eq!(head.predecessors[1].target, Ty::Unknown);

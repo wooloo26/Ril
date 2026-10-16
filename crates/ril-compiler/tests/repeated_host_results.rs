@@ -16,7 +16,9 @@ fn rejected(source: &str, code: &str) {
 
 #[test]
 fn original_host_result_callback_has_only_independently_checked_local_producers() {
-    accepted(include_str!("fixtures/repeated_host_results.ril"));
+    accepted(ril_test::case_source(
+        "tests/regressions/results.ril::repeated-host-results",
+    ));
     for source in [
         "use ril/io\nfn read_number(number:int)->int @Fiber{let result=Io::stdin_read(0);assert(result is Ok(_) | Err(_));number}\nfn example() @Fiber{let _=Array::map([1,2],read_number)}",
         "use ril/random\nfn read_number(number:int)->int @Fiber{let result=Random::entropy(0);assert(result is Ok(_) | Err(_));number}\nfn example() @Fiber{let _=Array::map([1,2],read_number)}",

@@ -146,7 +146,8 @@ impl<'a> Replay<'a> {
                             .all(|(left, right)| left.mode == right.mode && left.ty == right.ty)
                         && previous.syntax.return_type == function.syntax.return_type
                         && previous.lexical_owner == function.lexical_owner
-                        && previous.generic_context == function.generic_context,
+                        && previous.typing_environment.generic_context
+                            == function.typing_environment.generic_context,
                     "one named declaration has inconsistent frozen lexical headers",
                 )?;
             }
@@ -258,7 +259,8 @@ impl<'a> Replay<'a> {
         for owner in self.owner_chain(definition)? {
             let function = self.function(owner)?;
             require(
-                function.generic_context == types && function.bound_row_context == rows,
+                function.typing_environment.generic_context == types
+                    && function.typing_environment.bound_row_context == rows,
                 "captured structural scope does not match the nearest source lexical binders and residuals",
             )?;
             self.install_scope(owner, &mut types, &mut rows)?;
@@ -3462,7 +3464,12 @@ impl Replay<'_> {
                 .functions
                 .iter()
                 .filter(|function| function.definition == call.target)
-                .any(|function| function.bound_row_selections.contains_key(&id))
+                .any(|function| {
+                    function
+                        .typing_environment
+                        .bound_row_selections
+                        .contains_key(&id)
+                })
         {
             return Err("fixed captured residual requires its exact creator invocation and callable capture anchor".into());
         }
@@ -3977,9 +3984,9 @@ mod tests {
             .unwrap()
             .identity
             .clone();
-        facts.functions[leaf]
-            .generic_context
-            .insert("T".into(), wrong);
+        let mut changed = facts.functions[leaf].typing_environment.thaw();
+        changed.generic_context.insert("T".into(), wrong);
+        facts.functions[leaf].typing_environment = changed.freeze();
         assert!(Replay::new(&facts).unwrap().scope(definition).is_err());
     }
 

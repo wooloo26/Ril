@@ -4,8 +4,8 @@ use ril_ir::specialization::ArgumentKey;
 #[test]
 fn original_fixed_receiver_and_dynamic_control_keep_actual_callback_schemas() {
     for source in [
-        include_str!("fixtures/io_fixed_receiver.ril"),
-        include_str!("fixtures/io_dynamic_receiver_control.ril"),
+        ril_test::case_source("tests/regressions/io.ril::io-fixed-receiver"),
+        ril_test::case_source("tests/regressions/io.ril::io-dynamic-receiver-control"),
     ] {
         let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
         let core = ril_compiler::lower::lower_core(&verified).unwrap();
@@ -16,11 +16,11 @@ fn original_fixed_receiver_and_dynamic_control_keep_actual_callback_schemas() {
 #[test]
 fn nested_empty_readonly_and_dynamic_views_keep_declared_storage_schemas() {
     for source in [
-        include_str!("fixtures/io_nested_fixed_receiver.ril"),
-        include_str!("fixtures/io_fixed_writer.ril"),
-        include_str!("fixtures/io_dynamic_fixed_backing.ril"),
-        include_str!("fixtures/io_readonly_capture.ril"),
-        include_str!("fixtures/io_resource_fixed_receiver.ril"),
+        ril_test::case_source("tests/regressions/io.ril::io-nested-fixed-receiver"),
+        ril_test::case_source("tests/regressions/io.ril::io-fixed-writer"),
+        ril_test::case_source("tests/regressions/io.ril::io-dynamic-fixed-backing"),
+        ril_test::case_source("tests/regressions/io.ril::io-readonly-capture"),
+        ril_test::case_source("tests/regressions/io.ril::io-resource-fixed-receiver"),
     ] {
         let verified = Session::new(source.as_bytes().to_vec())
             .verify()
@@ -32,14 +32,16 @@ fn nested_empty_readonly_and_dynamic_views_keep_declared_storage_schemas() {
 
 #[test]
 fn exact_scratch_storage_survives_summary_without_changing_dynamic_view_identity() {
-    let fixed = include_str!("fixtures/io_fixed_receiver.ril").replace(
+    let fixed = ril_test::case_source("tests/regressions/io.ril::io-fixed-receiver").replace(
         "assert(result is Ok(_)|Err(_))",
         "assert(result is Ok(_)|Err(_));Array::push(mut reader.scratch,3u8)",
     );
     rejects(&fixed, "E0301");
-    let verified = Session::new(include_bytes!("fixtures/io_dynamic_fixed_backing.ril").to_vec())
-        .verify()
-        .unwrap();
+    let verified = Session::new(
+        ril_test::case_bytes("tests/regressions/io.ril::io-dynamic-fixed-backing").to_vec(),
+    )
+    .verify()
+    .unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     assert!(core.provenance.bindings.iter().filter(|binding|binding.name=="reader").filter_map(|binding|binding.value.source_type_witness.as_ref()).any(|witness|matches!(&witness.shape,ArgumentKey::Record{fields,..} if fields.iter().any(|(name,_,shape)|name=="scratch" && matches!(shape,ArgumentKey::Array{length:None,..})))));
 }
@@ -134,9 +136,10 @@ fn receiver_resources_are_not_erased_by_schema_reification() {
 #[test]
 fn builtin_identity_validation_rejects_forged_names_and_builtin_type_arguments() {
     use ril_syntax::ast::{TypeExpr, TypeKind};
-    let verified = Session::new(include_bytes!("fixtures/io_fixed_receiver.ril").to_vec())
-        .verify()
-        .unwrap();
+    let verified =
+        Session::new(ril_test::case_bytes("tests/regressions/io.ril::io-fixed-receiver").to_vec())
+            .verify()
+            .unwrap();
     for (name, arguments, key) in [
         ("File::Forged", vec![], "File::Forged<>"),
         (

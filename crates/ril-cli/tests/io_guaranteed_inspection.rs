@@ -6,13 +6,11 @@ fn guaranteed_read_and_empty_write_inspections_execute() {
     for (label, original) in [
         (
             "read_all",
-            include_str!("../../ril-compiler/tests/fixtures/io_callback_result_inspection.ril"),
+            ril_test::case_source("tests/regressions/io.ril::io-callback-result-inspection"),
         ),
         (
             "empty write_all",
-            include_str!(
-                "../../ril-compiler/tests/fixtures/io_callback_empty_write_inspection.ril"
-            ),
+            ril_test::case_source("tests/regressions/io.ril::io-callback-empty-write-inspection"),
         ),
     ] {
         let source = format!("{original}\npub fn test_native(){{example()}}");

@@ -129,7 +129,7 @@ impl Checker {
                     .map(|bound| bound.as_ref())
                     .collect();
                 while let Some(bound) = returns.pop() {
-                    protected.extend(bound.lexical.values().copied());
+                    protected.extend(bound.typing_environment.contract_bindings.values().copied());
                     returns.extend(bound.predecessors.iter().map(|bound| bound.as_ref()));
                 }
                 participants.extend(&value.participants);

@@ -4,7 +4,7 @@ use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 fn exact_lookup_and_absence_preserve_real_producers_on_both_layouts() {
     for target in ["pointer32", "pointer64"] {
         let program = Session::with_options(
-            include_bytes!("fixtures/static_result_map_lookup.ril").to_vec(),
+            ril_test::case_bytes("tests/regressions/static.ril::static-result-map-lookup").to_vec(),
             CheckOptions {
                 target: target.into(),
                 ..Default::default()

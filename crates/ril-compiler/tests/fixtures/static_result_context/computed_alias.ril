@@ -1,6 +1,0 @@
-meta fn shape() -> [2]int { [1, 2] }
-type Items = [len(shape())]int
-meta fn initialize() -> [2]int { [7, 9] }
-meta let VALUES: Items = initialize()
-meta let _ = assert(VALUES[0] == 7 && VALUES[1] == 9)
-pub fn test_native() &{VALUES} { assert(VALUES[0] == 7 && VALUES[1] == 9) }

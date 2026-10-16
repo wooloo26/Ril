@@ -1,7 +1,0 @@
-fn identity<T>(value:T)->T{value}
-pub fn test_native(){
-    let input:[2]int=[1,2]
-    let dynamic:[]int=input
-    let output=identity(dynamic)
-    assert(output==[1,2])
-}

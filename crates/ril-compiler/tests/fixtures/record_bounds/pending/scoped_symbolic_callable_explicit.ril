@@ -1,4 +1,0 @@
-fn same(value:int)->int{value}
-fn read<U,T:{id:int,action:fn(U)->U,..R}>(value:(T,int))->int{value.(0).id}
-fn forward<U,S>(value:({id:int,action:fn(U)->U,..S},int))->int{read<U>(value)}
-pub fn test_native(){assert(forward((.{id:7,action:same},0))==7)}

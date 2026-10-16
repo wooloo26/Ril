@@ -569,8 +569,8 @@ mod tests {
     }
 
     fn original_formal_fixed_field_probe() {
-        let parsed = ril_syntax::parse(include_str!(
-            "../../../../tests/fixtures/record_bounds/scoped_fixed.ril"
+        let parsed = ril_syntax::parse(ril_test::case_source(
+            "tests/regressions/record-bounds.ril::nested-rigid-fixed",
         ));
         assert!(parsed.is_ok());
         let resolved = crate::modules::resolve(

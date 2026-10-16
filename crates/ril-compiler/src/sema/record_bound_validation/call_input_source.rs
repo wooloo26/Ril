@@ -5,12 +5,12 @@ use super::*;
 mod closure_sources;
 #[path = "call_input_source_composites.rs"]
 mod composites;
-#[path = "storage_input_source.rs"]
-mod storage_inputs;
 #[path = "constructor_input_source.rs"]
 mod constructor_inputs;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
+#[path = "storage_input_source.rs"]
+mod storage_inputs;
 use crate::sema::{
     copy_contract::CopyInvocation,
     default_uses::{ArgumentSource, DefaultOrigin},
@@ -150,12 +150,11 @@ pub(super) fn input_select_key(
             "call input substitution/composition exceeds its source budget",
         )?;
         *work -= 1;
-        if let ArgumentKey::Binder { identity, .. } = key {
-            if let Some(replacement) = selected.get(identity)
-                && replacement != key
-            {
-                return select(replacement, selected, work, depth + 1);
-            }
+        if let ArgumentKey::Binder { identity, .. } = key
+            && let Some(replacement) = selected.get(identity)
+            && replacement != key
+        {
+            return select(replacement, selected, work, depth + 1);
         }
         let mut child = |key: &ArgumentKey| select(key, selected, work, depth + 1);
         Ok(match key {
@@ -428,10 +427,9 @@ impl Replay<'_> {
                                 }))
                             }
                         };
-                        let remainder = if fields.is_empty() && tail.is_some() {
-                            *tail.unwrap()
-                        } else {
-                            ArgumentKey::Record { fields, row: tail }
+                        let remainder = match (fields, tail) {
+                            (fields, Some(tail)) if fields.is_empty() => *tail,
+                            (fields, tail) => ArgumentKey::Record { fields, row: tail },
                         };
                         let choice = selected
                             .get(identity)
@@ -991,7 +989,8 @@ impl Replay<'_> {
             return key;
         }
         if value.source_type_witness.is_none()
-            && let Some(key) = self.original_carrier_source_key(expression, value, context, sites, work, depth)?
+            && let Some(key) =
+                self.original_carrier_source_key(expression, value, context, sites, work, depth)?
         {
             return Ok(key);
         }

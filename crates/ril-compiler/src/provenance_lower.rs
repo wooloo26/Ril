@@ -2072,21 +2072,25 @@ impl ReturnContracts {
                 span: bound.span,
                 callables: bound.callables.iter().map(callable).collect(),
                 lexical: bound
-                    .lexical
+                    .typing_environment
+                    .contract_bindings
                     .iter()
                     .map(|(name, &id)| (name.clone(), id as u32))
                     .collect(),
                 generic_context: bound
+                    .typing_environment
                     .generic_context
                     .iter()
                     .map(|(name, value)| (name.clone(), value.clone()))
                     .collect(),
                 generic_substitutions: bound
+                    .typing_environment
                     .generic_substitutions
                     .iter()
                     .map(|(name, value)| (name.clone(), ty(types, value)))
                     .collect(),
                 generic_type_witnesses: bound
+                    .typing_environment
                     .generic_type_witnesses
                     .iter()
                     .filter_map(|(name, witness)| {
@@ -2095,16 +2099,19 @@ impl ReturnContracts {
                     })
                     .collect(),
                 bound_row_context: bound
+                    .typing_environment
                     .bound_row_context
                     .iter()
                     .map(|(name, id)| (name.clone(), *id))
                     .collect(),
                 bound_row_selections: bound
+                    .typing_environment
                     .bound_row_selections
                     .values()
                     .map(|selection| record_bounds::selection(selection, types, self))
                     .collect(),
                 static_key_arguments: bound
+                    .typing_environment
                     .static_key_arguments
                     .iter()
                     .map(|(name, coordinate)| {
@@ -2841,10 +2848,12 @@ mod contract_graph_tests {
         let mut bound = m::CallableReturnBound::raw(m::Callable::Closure(1), declaration.span);
         bound.raw = false;
         bound.target = input.ty.clone();
-        bound.generic_type_witnesses.insert(
+        let mut environment = bound.typing_environment.thaw();
+        environment.generic_type_witnesses.insert(
             "creator:T".into(),
             input.source_type_witness.as_ref().unwrap().clone(),
         );
+        bound.typing_environment = environment.freeze();
         let bound_id = context.intern(&mut types, &Arc::new(bound));
         let captured = &context.nodes[bound_id.0 as usize].generic_type_witnesses;
         assert_eq!(captured[0].0, "creator:T");

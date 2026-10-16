@@ -242,6 +242,7 @@ mod tests {
             kind,
             fixed_array_length: None,
             value: provenance::Value {
+                option_identity: None,
                 source_type_witness: None,
                 numeric: Default::default(),
                 condition_inspections: Default::default(),

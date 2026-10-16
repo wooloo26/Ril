@@ -63,14 +63,7 @@ impl Checker {
             }).collect();
         };
         let info = self.functions[*id].clone();
-        let previous_rows = (
-            self.bound_row_context.clone(),
-            self.bound_row_selections.clone(),
-        );
-        let previous_substitutions = self.generic_substitutions.clone();
-        let previous_type_witnesses = self.generic_type_witnesses.clone();
-        let previous_keys = self.static_key_arguments.clone();
-        let previous = self.generic_scope(*id);
+        let previous_typing = self.generic_scope(*id);
         let binders: BTreeSet<_> = info
             .syntax
             .generics
@@ -161,12 +154,7 @@ impl Checker {
         }) {
             self.unsupported(span,"expected-only generic numeric selection requires an explicit prepared instance witness");
         }
-        self.generic_context = previous;
-        self.bound_row_context = previous_rows.0;
-        self.bound_row_selections = previous_rows.1;
-        self.generic_substitutions = previous_substitutions;
-        self.generic_type_witnesses = previous_type_witnesses;
-        self.static_key_arguments = previous_keys;
+        self.restore_typing_environment(previous_typing);
 
         let mut occupied = BTreeSet::new();
         let interface = callee.signature.as_ref().unwrap_or(&info.syntax.parameters);

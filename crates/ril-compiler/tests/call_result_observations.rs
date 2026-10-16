@@ -5,7 +5,14 @@ use ril_compiler::{
 
 #[test]
 fn actual_call_roots_keep_the_same_full_context_as_their_callee() {
-    let verified = Session::new(b"fn leaf(value:int)->int{value}\nfn example(){let first=leaf(1);let second=leaf(first);assert(second==1)}".to_vec()).verify().unwrap();
+    let verified = Session::new(
+        ril_test::case_bytes(
+            "tests/regressions/source-observations.ril::call-result-complete-roots",
+        )
+        .to_vec(),
+    )
+    .verify()
+    .unwrap();
     let facts = verified.facts();
     assert!(!facts.copy_call_events.is_empty());
     for event in &facts.copy_call_events {
@@ -31,10 +38,12 @@ fn actual_call_roots_keep_the_same_full_context_as_their_callee() {
 
 #[test]
 fn an_observed_never_root_does_not_claim_normal_argument_or_body_completion() {
-    let verified =
-        Session::new(b"fn stop()->int{panic(\"stop\")}\nfn example()->int{stop()}".to_vec())
-            .verify()
-            .unwrap();
+    let verified = Session::new(
+        ril_test::case_bytes("tests/regressions/source-observations.ril::call-result-never-root")
+            .to_vec(),
+    )
+    .verify()
+    .unwrap();
     let facts = verified.facts();
     assert!(facts.copy_call_events.iter().any(|event| {
         event

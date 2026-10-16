@@ -2,7 +2,9 @@
 //! This test never executes Ril; the CLI adapter must verify actual results.
 use ril_compiler::{CheckOptions, Session};
 
-const SOURCE: &str = include_str!("fixtures/source_receiving_native.ril.pending");
+fn source_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-receiving.ril::source-receiving-native")
+}
 const ENTRIES: [&str; 7] = [
     "test_fresh_fixed",
     "test_empty_composites",
@@ -17,7 +19,7 @@ const ENTRIES: [&str; 7] = [
 fn complete_native_receiving_fixture_has_real_source_and_core_proofs() {
     for target in ["pointer32", "pointer64"] {
         let verified = Session::with_options(
-            SOURCE.as_bytes().to_vec(),
+            source_fixture().as_bytes().to_vec(),
             CheckOptions {
                 target: target.into(),
                 ..CheckOptions::default()

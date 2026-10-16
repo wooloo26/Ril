@@ -17,8 +17,15 @@ fn corpus_cli_lists_validates_and_extracts_without_execution() {
         "{}",
         String::from_utf8_lossy(&list.stderr)
     );
+    let listed = String::from_utf8(list.stdout).unwrap();
+    let cases =
+        ril_test::discover_cases(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests")).unwrap();
+    assert_eq!(listed.lines().count(), cases.len());
     assert_eq!(
-        String::from_utf8(list.stdout).unwrap().lines().count(),
+        cases
+            .iter()
+            .filter(|case| !case.bundle.starts_with("tests/regressions/"))
+            .count(),
         1067
     );
     let valid = invoke(&["corpus", "validate"]);

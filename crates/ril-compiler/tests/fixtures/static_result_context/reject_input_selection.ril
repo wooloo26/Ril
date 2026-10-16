@@ -1,4 +1,0 @@
-meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
-meta let STORED: []int = []
--- Expected: E0301. T was selected from a declared dynamic input schema.
-meta let PAIR: ([0]int, []int) = retain(STORED)

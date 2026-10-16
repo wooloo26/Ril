@@ -6,7 +6,7 @@ fn generic_helpers_clone_sender_authority_for_the_same_channel_and_child_task() 
     let source = directory.path().join("sender-helper.ril");
     fs::write(
         &source,
-        include_str!("fixtures/resource_clone/private_helpers.ril"),
+        ril_test::case_source("tests/regressions/copy.ril::private-helpers"),
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_ril"))

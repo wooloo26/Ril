@@ -24,8 +24,8 @@ fn execute(source: &str) {
 
 #[test]
 fn original_host_result_callback_executes_unchanged() {
-    execute(include_str!(
-        "../../ril-compiler/tests/fixtures/repeated_host_results.ril"
+    execute(ril_test::case_source(
+        "tests/regressions/results.ril::repeated-host-results",
     ));
 }
 

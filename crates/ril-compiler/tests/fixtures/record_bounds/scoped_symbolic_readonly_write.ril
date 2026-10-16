@@ -1,3 +1,0 @@
-type Cell={mut value:int}
-fn corrupt<U,T:{items:[2]U,..R}>(value:(T,int)){value.(0).items[0]=value.(0).items[1]}
-fn forward<U,S>(value:({items:[2]U,tag:str,..S},int)){corrupt(value)}

@@ -10,9 +10,15 @@ use ril_compiler::{
     },
 };
 
-const ARRAY: &str = include_str!("fixtures/record_bounds/scoped_symbolic_array.ril");
-const EMPTY: &str = include_str!("fixtures/record_bounds/scoped_symbolic_empty.ril");
-const CALLABLE: &str = include_str!("fixtures/record_bounds/scoped_symbolic_callable.ril");
+fn array_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-array")
+}
+fn empty_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-empty")
+}
+fn callable_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-callable")
+}
 
 fn verified(source: &str, target: &str) -> SemanticFacts {
     let program = Session::with_options(
@@ -54,14 +60,14 @@ fn damaged(facts: &SemanticFacts) {
 #[test]
 fn a_symbolic_array_member_keeps_its_genuine_u_and_complete_fixed_shape() {
     for target in ["pointer32", "pointer64"] {
-        verified(ARRAY, target);
+        verified(array_fixture(), target);
     }
 }
 
 #[test]
 fn an_empty_outer_member_does_not_invent_a_u_element_or_erase_inner_dimensions() {
     for target in ["pointer32", "pointer64"] {
-        let facts = verified(EMPTY, target);
+        let facts = verified(empty_fixture(), target);
         assert!(
             facts
                 .scoped_source_identities
@@ -74,13 +80,15 @@ fn an_empty_outer_member_does_not_invent_a_u_element_or_erase_inner_dimensions()
 #[test]
 fn a_symbolic_callable_member_keeps_its_parameter_and_return_interfaces() {
     for target in ["pointer32", "pointer64"] {
-        verified(CALLABLE, target);
+        verified(callable_fixture(), target);
     }
 }
 
 #[test]
 fn a_known_inner_dimension_conflict_remains_a_type_error_under_symbolic_u() {
-    let source = include_str!("fixtures/record_bounds/scoped_symbolic_wrong_dimension.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/record-bounds.ril::scoped-symbolic-wrong-dimension",
+    );
     let outcome = Session::new(source.as_bytes().to_vec()).check();
     assert!(
         matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
@@ -91,12 +99,13 @@ fn a_known_inner_dimension_conflict_remains_a_type_error_under_symbolic_u() {
 
 #[test]
 fn a_numeric_receiver_cannot_override_the_type_of_the_actual_fixed_input() {
-    let source = ARRAY.replace(
+    let source = array_fixture().replace(
         "assert(forward((.{items:items,tag:\"same\"},0))==7)",
         "let wrong:f64=forward((.{items:items,tag:\"same\"},0))",
     );
     assert_ne!(
-        source, ARRAY,
+        source,
+        array_fixture(),
         "negative did not change the real receiving position"
     );
     let outcome = Session::new(source.into_bytes()).check();
@@ -122,8 +131,10 @@ fn a_true_expected_only_numeric_instance_still_needs_its_separate_proof() {
 #[test]
 fn different_unproved_binders_and_readonly_writes_cannot_be_authorized() {
     for source in [
-        include_str!("fixtures/record_bounds/scoped_symbolic_wrong_binder.ril"),
-        include_str!("fixtures/record_bounds/scoped_symbolic_readonly_write.ril"),
+        ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-wrong-binder"),
+        ril_test::case_source(
+            "tests/regressions/record-bounds.ril::scoped-symbolic-readonly-write",
+        ),
     ] {
         // A retained NI is a nonauthorization guard, not a successful negative
         // language conformance case. In particular U/V is not disjointness.
@@ -137,7 +148,7 @@ fn different_unproved_binders_and_readonly_writes_cannot_be_authorized() {
 
 #[test]
 fn deleted_coverage_missing_entry_tables_and_wrong_epochs_never_issue_member_tokens() {
-    let facts = verified(EMPTY, "pointer64");
+    let facts = verified(empty_fixture(), "pointer64");
     let identity = &facts.scoped_source_identities[0];
     let mut copy = facts.clone();
     copy.scoped_source_identities.clear();
@@ -172,7 +183,7 @@ fn deleted_coverage_missing_entry_tables_and_wrong_epochs_never_issue_member_tok
 
 #[test]
 fn a_dependent_owned_u_requires_its_actual_static_argument_position() {
-    let facts = verified(EMPTY, "pointer64");
+    let facts = verified(empty_fixture(), "pointer64");
     let source = &facts.scoped_source_identities[0];
     let check = facts
         .generic_bound_checks
@@ -215,7 +226,7 @@ fn a_dependent_owned_u_requires_its_actual_static_argument_position() {
 
 #[test]
 fn actual_snapshot_bridges_fixed_storage_and_symbolic_sources_are_independent_obligations() {
-    let facts = verified(ARRAY, "pointer64");
+    let facts = verified(array_fixture(), "pointer64");
     let identity = &facts.scoped_source_identities[0];
     let check = facts
         .generic_bound_checks
@@ -254,7 +265,7 @@ fn actual_snapshot_bridges_fixed_storage_and_symbolic_sources_are_independent_ob
 
 #[test]
 fn a_callable_cannot_borrow_another_members_signature_or_drop_its_received_returns() {
-    let facts = verified(CALLABLE, "pointer64");
+    let facts = verified(callable_fixture(), "pointer64");
     let original = facts.scoped_source_identities[0].occurrences[0]
         .formal
         .invocation;
@@ -285,7 +296,7 @@ fn a_callable_cannot_borrow_another_members_signature_or_drop_its_received_retur
 
 #[test]
 fn dependent_u_must_match_its_original_stored_field_and_complete_coordinates() {
-    let facts = verified(ARRAY, "pointer64");
+    let facts = verified(array_fixture(), "pointer64");
     let source = &facts.scoped_source_identities[0];
     let check = facts
         .generic_bound_checks
@@ -342,7 +353,7 @@ fn dependent_u_must_match_its_original_stored_field_and_complete_coordinates() {
     }
     damaged(&copy);
 
-    let facts = verified(CALLABLE, "pointer64");
+    let facts = verified(callable_fixture(), "pointer64");
     let source = &facts.scoped_source_identities[0];
     let check = facts
         .generic_bound_checks
@@ -366,7 +377,7 @@ fn dependent_u_must_match_its_original_stored_field_and_complete_coordinates() {
     parameters[0].mode = ril_syntax::ast::ParameterMode::Mut;
     damaged(&copy);
 
-    let facts = verified(EMPTY, "pointer64");
+    let facts = verified(empty_fixture(), "pointer64");
     let mut copy = facts.clone();
     let key = &mut copy.scoped_source_identities[0].key;
     let ArgumentKey::Record { fields, .. } = key else {

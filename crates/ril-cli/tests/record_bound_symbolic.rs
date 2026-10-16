@@ -6,21 +6,15 @@ mod native_probe;
 fn symbolic_array_empty_inner_and_callable_sources_execute() {
     for (source, name) in [
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_array.ril"
-            ),
+            ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-array"),
             "symbolic fixed array member",
         ),
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_empty.ril"
-            ),
+            ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-empty"),
             "symbolic empty outer member retains inner dimension",
         ),
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/scoped_symbolic_callable.ril"
-            ),
+            ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-callable"),
             "symbolic callable parameter and return identity",
         ),
     ] {

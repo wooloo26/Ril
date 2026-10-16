@@ -275,8 +275,8 @@ fn formal_scope_sentinels_and_relation_material_cannot_bypass_the_structure_chec
 #[test]
 fn existing_resource_result_and_collection_programs_keep_valid_structure() {
     for source in [
-        include_str!("../../../tests/fixtures/nested_result_channel.ril"),
-        include_str!("../../../../ril-cli/tests/fixtures/resource_clone/private_helpers.ril"),
+        ril_test::case_source("tests/regressions/channels.ril::nested-result-channel"),
+        ril_test::case_source("tests/regressions/copy.ril::private-helpers"),
         "type Node={mut value:int,mut following:?Node}\nfn example(){let mut original=Node.{value:1,following:None};original.following=Some(^mut original);let mut copied=^mut clone(original);copied.value+=1;assert(original.value==1)}",
         "fn repeat(values:[]int)->[][]int{var current=[[1],[2]];for values as index{current=clone(current)};current}\nfn example(){assert(repeat([1,2])==[[1],[2]])}",
     ] {

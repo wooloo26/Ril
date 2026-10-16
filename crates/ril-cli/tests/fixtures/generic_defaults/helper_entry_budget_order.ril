@@ -1,6 +1,0 @@
-halt fn helper()->int{panic("helper default runs before callee body entry")}
-fn doomed(value:int=helper())->int{value}
-pub fn test_native(){
-    with Div::exhausted()->()
-    Div::budget(2,\->{doomed();()})
-}

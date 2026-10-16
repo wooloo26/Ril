@@ -6,27 +6,25 @@ mod native_probe;
 fn immediate_named_type_prefixes_execute_the_real_original_programs() {
     for (source, name) in [
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_array_explicit.ril"
+            ril_test::case_source(
+                "tests/regressions/record-bounds.ril::scoped-symbolic-array-explicit",
             ),
             "explicit fixed symbolic member",
         ),
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_empty_explicit.ril"
+            ril_test::case_source(
+                "tests/regressions/record-bounds.ril::scoped-symbolic-empty-explicit",
             ),
             "explicit empty outer symbolic member",
         ),
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/pending/scoped_symbolic_callable_explicit.ril"
+            ril_test::case_source(
+                "tests/regressions/record-bounds.ril::scoped-symbolic-callable-explicit",
             ),
             "explicit symbolic callable member",
         ),
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/pending/explicit_named_prefix.ril.pending"
-            ),
+            ril_test::case_source("tests/regressions/record-bounds.ril::explicit-named-prefix"),
             "unused explicit Type and partial prefix",
         ),
     ] {

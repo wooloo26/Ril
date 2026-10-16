@@ -221,8 +221,10 @@ impl Checker {
                     annotations: vec![],
                 },
             };
-            let mut original =
-                crate::static_eval::effects::bounded_argument_key(&syntax, &bound.generic_context)?;
+            let mut original = crate::static_eval::effects::bounded_argument_key(
+                &syntax,
+                &bound.typing_environment.generic_context,
+            )?;
             let ArgumentKey::Callable {
                 annotations: actual,
                 ..
@@ -232,7 +234,7 @@ impl Checker {
             };
             *actual = annotations.clone();
             let mut selected = BTreeMap::new();
-            for (identity, witness) in &bound.generic_type_witnesses {
+            for (identity, witness) in &bound.typing_environment.generic_type_witnesses {
                 if !witness.validate_closed() {
                     return None;
                 }
@@ -244,7 +246,7 @@ impl Checker {
                     )?,
                 );
             }
-            for (identity, ty) in &bound.generic_substitutions {
+            for (identity, ty) in &bound.typing_environment.generic_substitutions {
                 if selected.contains_key(identity) {
                     continue;
                 }

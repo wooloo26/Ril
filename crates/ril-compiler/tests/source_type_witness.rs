@@ -1,20 +1,46 @@
 use ril_compiler::{CompilationOutcome, Session};
 use ril_ir::specialization::ArgumentKey;
 
-const FORWARDING: &str = include_str!("fixtures/source_type_witness/forwarding.ril");
-const EMPTY: &str = include_str!("fixtures/source_type_witness/empty_nested.ril");
-const RETURNED: &str = include_str!("fixtures/source_type_witness/returned_callable.ril");
-const MODES: &str = include_str!("fixtures/source_type_witness/modes.ril");
-const DYNAMIC: &str = include_str!("fixtures/source_type_witness/dynamic_view.ril");
-const EFFECT: &str = include_str!("fixtures/source_type_witness/effect_instance.ril");
-const TYPES: &str = include_str!("fixtures/source_type_witness/type_forwarding.ril");
-const CARRIERS: &str = include_str!("fixtures/source_type_witness/carriers.ril");
-const INTERFACES: &str = include_str!("fixtures/source_type_witness/interfaces.ril");
+fn forwarding_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::forwarding")
+}
+fn empty_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::empty-nested")
+}
+fn returned_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::returned-callable")
+}
+fn modes_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::modes")
+}
+fn dynamic_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::dynamic-view")
+}
+fn effect_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::effect-instance")
+}
+fn types_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::type-forwarding")
+}
+fn carriers_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::carriers")
+}
+fn interfaces_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::interfaces")
+}
 
 #[test]
 fn fixed_array_generic_identity_and_nested_forwarding_reach_core() {
     for source in [
-        FORWARDING, EMPTY, RETURNED, MODES, DYNAMIC, TYPES, EFFECT, CARRIERS, INTERFACES,
+        forwarding_fixture(),
+        empty_fixture(),
+        returned_fixture(),
+        modes_fixture(),
+        dynamic_fixture(),
+        types_fixture(),
+        effect_fixture(),
+        carriers_fixture(),
+        interfaces_fixture(),
     ] {
         let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
         let core = ril_compiler::lower::lower_core(&verified).unwrap();
@@ -50,7 +76,9 @@ fn explicit_callable_destinations_still_rename_labels_and_erase_defaults() {
 
 #[test]
 fn constructor_and_carrier_roots_export_their_own_complete_type() {
-    let verified = Session::new(CARRIERS.as_bytes().to_vec()).verify().unwrap();
+    let verified = Session::new(carriers_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     let box_name = verified
         .facts()
@@ -108,14 +136,18 @@ fn a_payload_type_never_discharges_an_effect_on_a_different_wrapper_or_construct
 
 #[test]
 fn a_closed_effect_instance_uses_the_complete_actual_array_schema() {
-    let verified = Session::new(EFFECT.as_bytes().to_vec()).verify().unwrap();
+    let verified = Session::new(effect_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     assert!(core.provenance.specializations.iter().flat_map(|instance|&instance.arguments).any(|argument|matches!(&argument.key,ArgumentKey::Array {length:Some(outer),element} if outer=="const(int:0)" && matches!(&**element,ArgumentKey::Array {length:Some(inner),..} if inner=="const(int:2)"))));
 }
 
 #[test]
 fn retained_return_contracts_export_each_creator_invocations_own_complete_schema() {
-    let verified = Session::new(RETURNED.as_bytes().to_vec()).verify().unwrap();
+    let verified = Session::new(returned_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     let schemas: Vec<_> = core
         .provenance
@@ -131,7 +163,9 @@ fn retained_return_contracts_export_each_creator_invocations_own_complete_schema
 
 #[test]
 fn empty_nested_dimensions_survive_actual_instantiations_and_core_values() {
-    let verified = Session::new(EMPTY.as_bytes().to_vec()).verify().unwrap();
+    let verified = Session::new(empty_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     let nested = |shape: &ArgumentKey| matches!(shape,ArgumentKey::Array {length:Some(outer),element} if outer=="const(int:0)" && matches!(&**element,ArgumentKey::Array {length:Some(inner),..} if inner=="const(int:2)"));
     assert!(verified.facts().effect_invocations.iter().filter(|invocation|!invocation.verifying).flat_map(|invocation|&invocation.arguments).filter_map(|argument|argument.key.as_ref()).any(|shape|matches!(shape,ril_compiler::sema::effect_identity::ArgumentKey::Array {length:Some(outer),element} if outer=="const(int:0)" && matches!(&**element,ril_compiler::sema::effect_identity::ArgumentKey::Array {length:Some(inner),..} if inner=="const(int:2)"))));
@@ -146,7 +180,9 @@ fn empty_nested_dimensions_survive_actual_instantiations_and_core_values() {
 
 #[test]
 fn a_dynamic_view_never_borrows_fixed_backing_type_identity() {
-    let verified = Session::new(DYNAMIC.as_bytes().to_vec()).verify().unwrap();
+    let verified = Session::new(dynamic_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     let actual: Vec<_> = verified
         .facts()
@@ -210,7 +246,7 @@ fn generic_return_identity_grants_neither_writable_access_nor_disjoint_origins()
 
 #[test]
 fn tampering_only_frozen_snapshot_syntax_is_rejected_even_when_value_equality_hides_it() {
-    let verified = Session::new(FORWARDING.as_bytes().to_vec())
+    let verified = Session::new(forwarding_fixture().as_bytes().to_vec())
         .verify()
         .unwrap();
     let mut facts = verified.facts().clone();
@@ -243,7 +279,7 @@ fn tampering_only_frozen_snapshot_syntax_is_rejected_even_when_value_equality_hi
 
 #[test]
 fn a_consistent_key_cannot_turn_an_unresolved_binder_spelling_into_a_nominal_type() {
-    let verified = Session::new(FORWARDING.as_bytes().to_vec())
+    let verified = Session::new(forwarding_fixture().as_bytes().to_vec())
         .verify()
         .unwrap();
     let mut facts = verified.facts().clone();

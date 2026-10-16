@@ -1,5 +1,0 @@
-let ACTION=\value:int=panic("lambda default runs before body entry")->value
-pub fn test_native() &{ACTION}{
-    with Div::exhausted()->()
-    Div::budget(1,\->{ACTION();()})
-}

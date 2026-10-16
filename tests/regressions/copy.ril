@@ -1,0 +1,127 @@
+--@ source: source-binary-recursive-copy
+--@ file: source.ril
+type Node={mut value:int,mut left:?Node,mut right:?Node}
+pub fn test_native(){
+    let mut node=Node.{value:1,left:None,right:None}
+    node.left=Some(^mut node)
+    node.right=Some(^mut node)
+    let mut copied=^mut clone(node)
+    copied.value=9
+    assert(copied.left?.value==Some(9))
+    assert(copied.right?.value==Some(9))
+    assert(node.left?.value==Some(1))
+    assert(node.right?.value==Some(1))
+    let mut second=^mut clone(copied)
+    second.value=13
+    assert(second.left?.value==Some(13))
+    assert(second.right?.value==Some(13))
+    assert(copied.value==9 && node.value==1)
+    let mut head=Node.{value:3,left:None,right:None}
+    let mut tail=Node.{value:4,left:None,right:None}
+    head.left=Some(^mut tail)
+    head.right=Some(^mut tail)
+    tail.left=Some(^mut head)
+    tail.right=Some(^mut tail)
+    let mut independent=^mut clone(head)
+    let mut child=^mut (independent.left ?? panic("left"))
+    child.value=11
+    let view shared=independent.right ?? panic("right")
+    assert(shared.value==11)
+    independent.value=12
+    assert(child.left?.value==Some(12))
+    assert(child.right?.value==Some(11))
+    assert(head.value==3 && tail.value==4)
+    let snapshot=clone_immut(head)
+    head.value=30
+    tail.value=40
+    assert(snapshot.value==3)
+    assert(snapshot.left?.value==Some(4))
+    assert(snapshot.right?.value==Some(4))
+}
+--@ end-file
+--@ end-source
+
+--@ case: binary-recursive-copy
+--@ mode: check-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ use-source: source-binary-recursive-copy
+--@ end-case
+
+--@ case: binary-recursive-copy-test-native
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_native
+--@ use-source: source-binary-recursive-copy
+--@ end-case
+
+--@ source: source-binary-recursive-copy-resource-negative
+--@ file: source.ril
+use ril/file
+type Node={mut left:?Node,mut right:?Node,file:File::Handle}
+fn bad(file:File::Handle){
+    let mut node=Node.{left:None,right:None,file:file}
+    node.left=Some(^mut node)
+    node.right=Some(^mut node)
+    let copied=clone(node)
+}
+--@ end-file
+--@ end-source
+
+--@ case: binary-recursive-copy-resource-negative
+--@ mode: check-fail
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+-- Error [E0530]: original regression expectation
+--@ use-source: source-binary-recursive-copy-resource-negative
+--@ end-case
+
+--@ source: source-private-helpers
+--@ file: source.ril
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+fn duplicate<T>(source:T)->T @Fiber{clone(source)}
+fn forward<T>(source:T)->T @Fiber{duplicate(source)}
+pub fn test_native() @Async{
+    assert(duplicate(7)==7)
+    let result=scope \mut s -> {
+        let starter=s.fork(\->())
+        starter.join()?
+        let (tx,mut rx)=Channel::bounded<int>(2)
+        let mut first=forward(tx)
+        let mut second=duplicate(tx)
+        let inner_result=scope \mut inner -> {
+            let child=inner.fork(\->{
+                let own=forward(tx)
+                Channel::close(own)
+            })
+            child.join()?
+            Ok()
+        }
+        assert(inner_result is Ok())
+        Channel::close(tx)
+        assert((first !> Channel::send(1)) is Ok())
+        Channel::close(first)
+        assert((second !> Channel::send(2)) is Ok())
+        Channel::close(second)
+        assert((rx !> Channel::recv()) is Ok(1))
+        assert((rx !> Channel::recv()) is Ok(2))
+        assert((rx !> Channel::recv()) is Err(Channel::ChannelError::Closed))
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-source
+
+--@ case: private-helpers
+--@ mode: check-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ use-source: source-private-helpers
+--@ end-case
+
+--@ case: private-helpers-test-native
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_native
+--@ use-source: source-private-helpers
+--@ end-case

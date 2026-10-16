@@ -1,0 +1,615 @@
+--@ source: source-nested-alias
+--@ file: source.ril
+fn both<T:{id:int,..R}>(value:(T,T))->int{value.(0).id+value.(1).id}
+pub fn test_native(){let record=.{id:7,tag:"same"};assert(both((record,record))==14)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-alias
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-alias
+--@ end-case
+
+--@ case: nested-alias-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-alias
+--@ end-case
+
+--@ source: source-nested-field
+--@ file: source.ril
+fn read<T:{id:int,..R}>(value:{payload:T,tag:int})->int{value.payload.id}
+pub fn test_native(){assert(read(.{payload:.{id:7,tag:"ok"},tag:0})==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-field
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-field
+--@ end-case
+
+--@ case: nested-field-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-field
+--@ end-case
+
+--@ source: source-nested-field-forward
+--@ file: source.ril
+fn read<T:{id:int,..R}>(value:{payload:T,tag:int})->int{value.payload.id}
+fn forward<U:{id:int,tag:str,..S}>(value:{payload:U,tag:int})->int{read(value)}
+pub fn test_native(){assert(forward(.{payload:.{id:7,tag:"ok"},tag:0})==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-field-forward
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-field-forward
+--@ end-case
+
+--@ case: nested-field-forward-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-field-forward
+--@ end-case
+
+--@ source: source-nested-fixed
+--@ file: source.ril
+fn first<T:{items:[2]int,..R}>(value:(T,int))->int{value.(0).items[0]}
+pub fn test_native(){let items:[2]int=[7,9];assert(first((.{items:items},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-fixed
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-fixed
+--@ end-case
+
+--@ case: nested-fixed-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-fixed
+--@ end-case
+
+--@ source: source-nested-mixed
+--@ file: source.ril
+fn read<T:{id:int,..R}>(value:{box:(int,{payload:T})})->int{value.box.(1).payload.id}
+pub fn test_native(){assert(read(.{box:(0,.{payload:.{id:7,tag:"ok"}})})==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-mixed
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-mixed
+--@ end-case
+
+--@ case: nested-mixed-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-mixed
+--@ end-case
+
+--@ source: source-nested-readonly
+--@ file: source.ril
+type Cell={mut id:int}
+fn read<T:{mut id:int,..R}>(value:(T,int))->int{value.(0).id}
+pub fn test_native(){let mut cell=Cell.{id:7};cell.id=8;let view observed=cell;assert(read((observed,0))==8)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-readonly
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-readonly
+--@ end-case
+
+--@ case: nested-readonly-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-readonly
+--@ end-case
+
+--@ source: source-nested-rigid-field
+--@ file: source.ril
+fn read<T:{id:int,..R}>(value:{payload:T,tag:int})->int{value.payload.id}
+fn forward<S>(value:{payload:{id:int,tag:str,..S},tag:int})->int{read(value)}
+pub fn test_native(){assert(forward(.{payload:.{id:7,tag:"ok"},tag:0})==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-rigid-field
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-rigid-field
+--@ end-case
+
+--@ case: nested-rigid-field-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-rigid-field
+--@ end-case
+
+--@ source: source-nested-rigid-fixed
+--@ file: source.ril
+fn first<T:{items:[2]int,..R}>(value:(T,int))->int{value.(0).items[0]}
+fn forward<S>(value:({items:[2]int,tag:str,..S},int))->int{first(value)}
+pub fn test_native(){let items:[2]int=[7,9];assert(forward((.{items:items,tag:"ok"},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-rigid-fixed
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-rigid-fixed
+--@ end-case
+
+--@ case: nested-rigid-fixed-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-rigid-fixed
+--@ end-case
+
+--@ source: source-nested-rigid-shared-row
+--@ file: source.ril
+fn both<T:{id:int,..R},U:{flag:bool,..R}>(value:(T,U))->int{value.(0).id}
+fn forward<S>(value:({id:int,tag:str,..S},{flag:bool,tag:str,..S}))->int{both(value)}
+pub fn test_native(){assert(forward((.{id:7,tag:"same"},.{flag:true,tag:"same"}))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-rigid-shared-row
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-rigid-shared-row
+--@ end-case
+
+--@ case: nested-rigid-shared-row-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-rigid-shared-row
+--@ end-case
+
+--@ source: source-nested-rigid-tuple
+--@ file: source.ril
+fn read<T:{id:int,..R}>(value:(T,int))->int{value.(0).id}
+fn forward<S>(value:({id:int,tag:str,..S},int))->int{read(value)}
+pub fn test_native(){assert(forward((.{id:7,tag:"ok"},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-rigid-tuple
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-rigid-tuple
+--@ end-case
+
+--@ case: nested-rigid-tuple-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-rigid-tuple
+--@ end-case
+
+--@ source: source-nested-shared-row
+--@ file: source.ril
+fn both<T:{id:int,..R},U:{flag:bool,..R}>(value:(T,U))->int{value.(0).id}
+pub fn test_native(){assert(both((.{id:7,tag:"same"},.{flag:true,tag:"same"}))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-shared-row
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-shared-row
+--@ end-case
+
+--@ case: nested-shared-row-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-shared-row
+--@ end-case
+
+--@ source: source-nested-tuple
+--@ file: source.ril
+fn read<T:{id:int,..R}>(value:(T,int))->int{value.(0).id}
+pub fn test_native(){assert(read((.{id:7,tag:"ok"},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-tuple
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-tuple
+--@ end-case
+
+--@ case: nested-tuple-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-tuple
+--@ end-case
+
+--@ source: source-nested-tuple-forward
+--@ file: source.ril
+fn read<T:{id:int,..R}>(value:(T,int))->int{value.(0).id}
+fn forward<U:{id:int,tag:str,..S}>(value:(U,int))->int{read(value)}
+pub fn test_native(){assert(forward((.{id:7,tag:"ok"},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-tuple-forward
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-nested-tuple-forward
+--@ end-case
+
+--@ case: nested-tuple-forward-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-nested-tuple-forward
+--@ end-case
+
+--@ source: source-original-projection
+--@ file: source.ril
+fn read_id<T:{id:int,..R}>(value:T)->int{value.id}
+pub fn test_native(){let answer=read_id(.{id:7,tag:"ok"});assert(answer==7)}
+--@ end-file
+--@ end-source
+
+--@ case: original-projection
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-original-projection
+--@ end-case
+
+--@ case: original-projection-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-original-projection
+--@ end-case
+
+--@ source: source-explicit-named-prefix
+--@ file: source.ril
+fn choose<T,U>(value:T,other:U)->T{value}
+fn unused<T>()->int{11}
+fn defaulted<T>(value:int=7)->int{value}
+fn forwarded<U>(value:U)->U{choose<U>(value,0)}
+pub fn test_native(){
+    let items:[2]int=[13,17]
+    let chosen=choose<[2]int>(items,"retained dimension")
+    assert(chosen[0]==13)
+    assert(forwarded(19)==19)
+    assert(unused<[2]int>()==11)
+    assert(defaulted<str>()==7)
+    assert(choose<[2]int>([7,9],0)[0]==7)
+}
+--@ end-file
+--@ end-source
+
+--@ case: explicit-named-prefix
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-explicit-named-prefix
+--@ end-case
+
+--@ case: explicit-named-prefix-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-explicit-named-prefix
+--@ end-case
+
+--@ source: source-scoped-symbolic-array-explicit
+--@ file: source.ril
+fn first<U,T:{items:[2]U,..R}>(value:(T,int))->U{value.(0).items[0]}
+fn forward<U,S>(value:({items:[2]U,tag:str,..S},int))->U{first<U>(value)}
+pub fn test_native(){let items:[2]int=[7,9];assert(forward((.{items:items,tag:"same"},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-array-explicit
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-symbolic-array-explicit
+--@ end-case
+
+--@ case: scoped-symbolic-array-explicit-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-symbolic-array-explicit
+--@ end-case
+
+--@ source: source-scoped-symbolic-array
+--@ file: source.ril
+fn first<U,T:{items:[2]U,..R}>(value:(T,int))->U{value.(0).items[0]}
+fn forward<U,S>(value:({items:[2]U,tag:str,..S},int))->U{first(value)}
+pub fn test_native(){let items:[2]int=[7,9];assert(forward((.{items:items,tag:"same"},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-array
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-symbolic-array
+--@ end-case
+
+--@ case: scoped-symbolic-array-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-symbolic-array
+--@ end-case
+
+--@ source: source-scoped-symbolic-callable-explicit
+--@ file: source.ril
+fn same(value:int)->int{value}
+fn read<U,T:{id:int,action:fn(U)->U,..R}>(value:(T,int))->int{value.(0).id}
+fn forward<U,S>(value:({id:int,action:fn(U)->U,..S},int))->int{read<U>(value)}
+pub fn test_native(){assert(forward((.{id:7,action:same},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-callable-explicit
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-symbolic-callable-explicit
+--@ end-case
+
+--@ case: scoped-symbolic-callable-explicit-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-symbolic-callable-explicit
+--@ end-case
+
+--@ source: source-scoped-symbolic-callable
+--@ file: source.ril
+fn same(value:int)->int{value}
+fn read<U,T:{id:int,action:fn(U)->U,..R}>(value:(T,int))->int{value.(0).id}
+fn forward<U,S>(value:({id:int,action:fn(U)->U,..S},int))->int{read(value)}
+pub fn test_native(){assert(forward((.{id:7,action:same},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-callable
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-symbolic-callable
+--@ end-case
+
+--@ case: scoped-symbolic-callable-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-symbolic-callable
+--@ end-case
+
+--@ source: source-scoped-symbolic-empty-explicit
+--@ file: source.ril
+fn count<U,T:{items:[0][2]U,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<U,S>(value:({items:[0][2]U,tag:str,..S},{items:[0][2]U,tag:str,..S}))->int{count<U>(value)}
+pub fn test_native(){let left:[0][2]int=[];let right:[0][2]int=[];assert(forward((.{items:left,tag:"same"},.{items:right,tag:"same"}))==0)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-empty-explicit
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-symbolic-empty-explicit
+--@ end-case
+
+--@ case: scoped-symbolic-empty-explicit-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-symbolic-empty-explicit
+--@ end-case
+
+--@ source: source-scoped-symbolic-empty
+--@ file: source.ril
+fn count<U,T:{items:[0][2]U,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<U,S>(value:({items:[0][2]U,tag:str,..S},{items:[0][2]U,tag:str,..S}))->int{count(value)}
+pub fn test_native(){let left:[0][2]int=[];let right:[0][2]int=[];assert(forward((.{items:left,tag:"same"},.{items:right,tag:"same"}))==0)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-empty
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-symbolic-empty
+--@ end-case
+
+--@ case: scoped-symbolic-empty-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-symbolic-empty
+--@ end-case
+
+--@ source: source-scoped-callable-mut
+--@ file: source.ril
+type Cell={mut value:int}
+fn bump(mut cell:Cell)&mut{cell.value+=1}
+fn read<T:{id:int,..R}>(value:(T,int))->int{value.(0).id}
+fn forward<S>(value:({id:int,action:fn(mut Cell)->() &mut,..S},int))->int{read(value)}
+pub fn test_native(){assert(forward((.{id:7,action:bump},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-callable-mut
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-callable-mut
+--@ end-case
+
+--@ case: scoped-callable-mut-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-callable-mut
+--@ end-case
+
+--@ source: source-scoped-empty-inner-dimension
+--@ file: source.ril
+fn first<T:{items:[0][2]int,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<S>(value:({items:[0][2]int,tag:str,..S},{items:[0][2]int,tag:str,..S}))->int{first(value)}
+pub fn test_native(){let left:[0][2]int=[];let right:[0][2]int=[];assert(forward((.{items:left,tag:"same"},.{items:right,tag:"same"}))==0)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-empty-inner-dimension
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-empty-inner-dimension
+--@ end-case
+
+--@ case: scoped-empty-inner-dimension-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-empty-inner-dimension
+--@ end-case
+
+--@ source: source-scoped-immutable-field
+--@ file: source.ril
+fn first<T:{items:Immut<[2]int>,..R}>(value:(T,int))->int{value.(0).items[0]}
+fn forward<S>(value:({items:Immut<[2]int>,tag:str,..S},int))->int{first(value)}
+pub fn test_native(){let items:Immut<[2]int>=[7,9];assert(forward((.{items:items,tag:"ok"},0))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-immutable-field
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-scoped-immutable-field
+--@ end-case
+
+--@ case: scoped-immutable-field-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-scoped-immutable-field
+--@ end-case
+
+--@ source: source-scoped-symbolic-readonly-write
+--@ file: source.ril
+type Cell={mut value:int}
+fn corrupt<U,T:{items:[2]U,..R}>(value:(T,int)){value.(0).items[0]=value.(0).items[1]}
+fn forward<U,S>(value:({items:[2]U,tag:str,..S},int)){corrupt(value)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-readonly-write
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0522]: normative target; retained NI guards are not conformance passes
+--@ use-source: source-scoped-symbolic-readonly-write
+--@ end-case
+
+--@ source: source-scoped-symbolic-wrong-binder
+--@ file: source.ril
+fn read<U,T:{items:[2]U,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<U,V,S>(value:({items:[2]U,tag:str,..S},{items:[2]V,tag:str,..S}))->int{read(value)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-wrong-binder
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0301]: normative target; retained NI guards are not conformance passes
+--@ use-source: source-scoped-symbolic-wrong-binder
+--@ end-case
+
+--@ source: source-scoped-symbolic-wrong-dimension
+--@ file: source.ril
+fn count<U,T:{items:[0][2]U,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<U,S>(value:({items:[0][2]U,tag:str,..S},{items:[0][3]U,tag:str,..S}))->int{count(value)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-symbolic-wrong-dimension
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0301]: original regression expectation
+--@ use-source: source-scoped-symbolic-wrong-dimension
+--@ end-case
+
+--@ source: source-scoped-wrong-callable-mode
+--@ file: source.ril
+type Cell={mut value:int}
+fn first<T:{id:int,..R}>(value:(T,T))->int{value.(0).id}
+fn forward<S>(value:({id:int,action:fn(Cell)->(),..S},{id:int,action:fn(mut Cell)->() &mut,..S}))->int{first(value)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-wrong-callable-mode
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0301]: original regression expectation
+--@ use-source: source-scoped-wrong-callable-mode
+--@ end-case
+
+--@ source: source-scoped-wrong-empty-inner-dimension
+--@ file: source.ril
+fn first<T:{items:[0][2]int,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<S>(value:({items:[0][2]int,tag:str,..S},{items:[0][3]int,tag:str,..S}))->int{first(value)}
+--@ end-file
+--@ end-source
+
+--@ case: scoped-wrong-empty-inner-dimension
+--@ mode: check-fail
+--@ spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0301]: original regression expectation
+--@ use-source: source-scoped-wrong-empty-inner-dimension
+--@ end-case
+
+--@ source: source-symbolic-coordinate
+--@ file: source.ril
+fn get_field<T:{..R},K:keyof T>(record:T,key:K)->T.(K){record.(key)}
+--@ end-file
+--@ end-source
+
+--@ case: symbolic-coordinate
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-symbolic-coordinate
+--@ end-case
+
+--@ source: source-write-scalar
+--@ file: source.ril
+type Cell={mut value:int,tag:str}
+fn replace<T:{mut value:int,..R}>(mut object:T,replacement:int)&mut{object.value=replacement}
+pub fn test_native(){let mut object=Cell.{value:1,tag:"kept"};replace(mut object,7);assert(object.value==7);assert(object.tag=="kept");replace(mut object,11);assert(object.value==11)}
+--@ end-file
+--@ end-source
+
+--@ case: write-scalar
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ use-source: source-write-scalar
+--@ end-case
+
+--@ case: write-scalar-test-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ entry: test_native
+--@ use-source: source-write-scalar
+--@ end-case

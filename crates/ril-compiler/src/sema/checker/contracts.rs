@@ -21,15 +21,8 @@ pub(super) struct CanonicalBuiltinSummary {
 pub(super) struct LambdaContract {
     pub return_type: Option<TypeExpr>,
     pub annotations: Vec<Annotation>,
-    pub lexical: Env,
     pub span: Span,
-    pub generic_context: BTreeMap<String, String>,
-    pub generic_substitutions: BTreeMap<String, Ty>,
-    pub generic_type_witnesses: BTreeMap<String, Arc<SourceTypeWitness>>,
-    pub bound_row_context: BTreeMap<String, ril_compiler_core::ids::BoundRowId>,
-    pub bound_row_selections:
-        BTreeMap<ril_compiler_core::ids::BoundRowId, crate::sema::record_bounds::BoundRowSelection>,
-    pub static_key_arguments: BTreeMap<String, StaticCoordinate>,
+    pub typing_environment: crate::sema::context::FrozenEnvironment,
 }
 #[derive(Clone)]
 pub(super) struct ContractEnvironment {
@@ -185,13 +178,7 @@ impl Checker {
             syntax: result,
             span: syntax.span,
             callables: value.callables.clone(),
-            lexical: self.contract_environment.clone(),
-            generic_context: self.generic_context.clone(),
-            generic_substitutions: self.generic_substitutions.clone(),
-            generic_type_witnesses: self.generic_type_witnesses.clone(),
-            bound_row_context: self.bound_row_context.clone(),
-            bound_row_selections: self.bound_row_selections.clone(),
-            static_key_arguments: self.static_key_arguments.clone(),
+            typing_environment: self.capture_typing_environment(),
         };
         let same_stage = |previous: &Arc<CallableReturnBound>| {
             !previous.raw
@@ -199,13 +186,7 @@ impl Checker {
                 && previous.syntax == bound.syntax
                 && previous.span == bound.span
                 && previous.callables == bound.callables
-                && previous.lexical == bound.lexical
-                && previous.generic_context == bound.generic_context
-                && previous.generic_substitutions == bound.generic_substitutions
-                && previous.generic_type_witnesses == bound.generic_type_witnesses
-                && previous.bound_row_context == bound.bound_row_context
-                && previous.bound_row_selections == bound.bound_row_selections
-                && previous.static_key_arguments == bound.static_key_arguments
+                && previous.typing_environment == bound.typing_environment
         };
         if !value.callable_returns.is_empty() && value.callable_returns.iter().all(same_stage) {
             return;
@@ -283,13 +264,7 @@ impl Checker {
         if callee.callable_returns.is_empty() || result.ty == Ty::Never {
             return result;
         }
-        let previous_generic = self.generic_context.clone();
-        let previous_substitutions = self.generic_substitutions.clone();
-        let previous_type_witnesses = self.generic_type_witnesses.clone();
-        let previous_row_context = self.bound_row_context.clone();
-        let previous_row_selections = self.bound_row_selections.clone();
-        let previous_static_keys = self.static_key_arguments.clone();
-        let previous_environment = self.contract_environment.clone();
+        let previous_typing = self.capture_typing_environment();
         let before = self.snapshot_flow();
         let mut combined = None;
         let mut context = Evaluation {
@@ -325,13 +300,7 @@ impl Checker {
                 }
             }
         }
-        self.generic_context = previous_generic;
-        self.generic_substitutions = previous_substitutions;
-        self.generic_type_witnesses = previous_type_witnesses;
-        self.bound_row_context = previous_row_context;
-        self.bound_row_selections = previous_row_selections;
-        self.static_key_arguments = previous_static_keys;
-        self.contract_environment = previous_environment;
+        self.restore_typing_environment(previous_typing);
         combined.map(|(value, _)| value).unwrap_or(result)
     }
 
@@ -341,13 +310,7 @@ impl Checker {
         alternative: &mut Value,
         frame: &Frame,
     ) {
-        self.generic_context = bound.generic_context.clone();
-        self.generic_substitutions = bound.generic_substitutions.clone();
-        self.generic_type_witnesses = bound.generic_type_witnesses.clone();
-        self.bound_row_context = bound.bound_row_context.clone();
-        self.bound_row_selections = bound.bound_row_selections.clone();
-        self.static_key_arguments = bound.static_key_arguments.clone();
-        self.contract_environment = bound.lexical.clone();
+        self.restore_typing_environment(bound.typing_environment.clone());
         // Contextual inference rewrites this value's checked target while the
         // retained source syntax still names its declaration's binders. Carry
         // that already selected identity into nested return-contract syntax.
@@ -355,6 +318,7 @@ impl Checker {
         let mut syntax_names = BTreeSet::new();
         syntax_target.generic_names(&mut syntax_names);
         let binders = bound
+            .typing_environment
             .generic_context
             .values()
             .cloned()
@@ -815,7 +779,7 @@ impl Checker {
         if !contract.annotations.is_empty() {
             let bound = CallableBound {
                 annotations: contract.annotations,
-                lexical: contract.lexical,
+                lexical: contract.typing_environment.contract_bindings.clone(),
                 span: contract.span,
             };
             let captures = self.closures[id].captures.clone();

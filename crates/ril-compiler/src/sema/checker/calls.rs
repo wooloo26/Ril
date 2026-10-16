@@ -354,12 +354,7 @@ impl Checker {
         if verifying {
             self.widen_definition_environment(&info.lexical);
         }
-        let previous_rows = self.bound_row_context.clone();
-        let previous_row_selections = self.bound_row_selections.clone();
-        let previous_substitutions = self.generic_substitutions.clone();
-        let previous_type_witnesses = self.generic_type_witnesses.clone();
-        let previous_static_keys = self.static_key_arguments.clone();
-        let previous_generic = self.generic_scope(id);
+        let previous_typing = self.generic_scope(id);
         let binders: BTreeSet<_> = function
             .generics
             .iter()
@@ -461,12 +456,7 @@ impl Checker {
             if let Some(caller) = caller.as_mut()
                 && let Some(value) = self.instantiate_recursive(id, &args, span, caller)
             {
-                self.generic_context = previous_generic;
-                self.bound_row_context = previous_rows;
-                self.bound_row_selections = previous_row_selections;
-                self.generic_substitutions = previous_substitutions;
-                self.generic_type_witnesses = previous_type_witnesses;
-                self.static_key_arguments = previous_static_keys;
+                self.restore_typing_environment(previous_typing);
                 self.universal = previous_universal;
                 self.complete_copy_invocation();
                 self.finish_default_invocation();
@@ -479,12 +469,7 @@ impl Checker {
                 .map(|t| self.ty(t))
                 .unwrap_or(Ty::Unit);
             let value = self.formal_value(ty, id as u32, span, &mut BTreeSet::new());
-            self.generic_context = previous_generic;
-            self.bound_row_context = previous_rows;
-            self.bound_row_selections = previous_row_selections;
-            self.generic_substitutions = previous_substitutions;
-            self.generic_type_witnesses = previous_type_witnesses;
-            self.static_key_arguments = previous_static_keys;
+            self.restore_typing_environment(previous_typing);
             self.universal = previous_universal;
             return value;
         }
@@ -612,12 +597,7 @@ impl Checker {
                 }
                 self.call_stack.pop();
                 self.loop_depth = previous_loop_depth;
-                self.generic_context = previous_generic;
-                self.bound_row_context = previous_rows;
-                self.bound_row_selections = previous_row_selections;
-                self.generic_substitutions = previous_substitutions;
-                self.generic_type_witnesses = previous_type_witnesses;
-                self.static_key_arguments = previous_static_keys;
+                self.restore_typing_environment(previous_typing);
                 self.universal = previous_universal;
                 return value;
             }
@@ -1140,12 +1120,7 @@ impl Checker {
         result.participants =
             super::recursive_calls::normalize_participants(&result.participants, &local_loans);
         self.loop_depth = previous_loop_depth;
-        self.generic_context = previous_generic;
-        self.bound_row_context = previous_rows;
-        self.bound_row_selections = previous_row_selections;
-        self.generic_substitutions = previous_substitutions;
-        self.generic_type_witnesses = previous_type_witnesses;
-        self.static_key_arguments = previous_static_keys;
+        self.restore_typing_environment(previous_typing);
         self.universal = previous_universal;
         let _ = (loan_origins, verifying);
         result.unsuffixed_numeric = false;
@@ -1434,19 +1409,13 @@ impl Checker {
             return Value::scalar(Ty::Unknown, None, CauseId(0));
         }
         let closure = self.closures[id].clone();
-        let previous_generic = self.generic_context.clone();
-        let previous_rows = self.bound_row_context.clone();
-        let previous_row_selections = self.bound_row_selections.clone();
-        let previous_substitutions = self.generic_substitutions.clone();
-        let previous_type_witnesses = self.generic_type_witnesses.clone();
-        let previous_static_keys = self.static_key_arguments.clone();
-        if let Some(contract) = self.lambda_contracts.get(&id) {
-            self.generic_context = contract.generic_context.clone();
-            self.bound_row_context = contract.bound_row_context.clone();
-            self.bound_row_selections = contract.bound_row_selections.clone();
-            self.generic_substitutions = contract.generic_substitutions.clone();
-            self.generic_type_witnesses = contract.generic_type_witnesses.clone();
-            self.static_key_arguments = contract.static_key_arguments.clone();
+        let previous_typing = self.capture_typing_environment();
+        if let Some(environment) = self
+            .lambda_contracts
+            .get(&id)
+            .map(|contract| contract.typing_environment.clone())
+        {
+            self.restore_typing_environment(environment);
         }
         let previous_loop_depth = self.loop_depth;
         self.loop_depth = 0;
@@ -1775,12 +1744,7 @@ impl Checker {
         result.through_return = true;
         result.unsuffixed_numeric = false;
         result.static_coordinate = None;
-        self.generic_context = previous_generic;
-        self.generic_substitutions = previous_substitutions;
-        self.generic_type_witnesses = previous_type_witnesses;
-        self.static_key_arguments = previous_static_keys;
-        self.bound_row_context = previous_rows;
-        self.bound_row_selections = previous_row_selections;
+        self.restore_typing_environment(previous_typing);
         self.complete_closure_invocation();
         result
     }
@@ -1882,12 +1846,7 @@ impl Checker {
                 continue;
             }
             self.ensure_named_environment(id);
-            let previous_rows = self.bound_row_context.clone();
-            let previous_row_selections = self.bound_row_selections.clone();
-            let previous_substitutions = self.generic_substitutions.clone();
-            let previous_type_witnesses = self.generic_type_witnesses.clone();
-            let previous_static_keys = self.static_key_arguments.clone();
-            let previous_generic = self.generic_scope(id);
+            let previous_typing = self.generic_scope(id);
             let preview = self.snapshot_flow();
             let active = std::mem::replace(
                 &mut self.active_handlers,
@@ -1935,12 +1894,7 @@ impl Checker {
             let _ = self.invoke_named(id, arguments, function.span, None, true);
             self.restore_definition_state(&preview);
             self.active_handlers = active;
-            self.generic_context = previous_generic;
-            self.bound_row_context = previous_rows;
-            self.bound_row_selections = previous_row_selections;
-            self.generic_substitutions = previous_substitutions;
-            self.generic_type_witnesses = previous_type_witnesses;
-            self.static_key_arguments = previous_static_keys;
+            self.restore_typing_environment(previous_typing);
         }
         self.budget_coverage = budget;
     }
@@ -3275,12 +3229,7 @@ impl Checker {
             .iter()
             .enumerate()
             .any(|(index, parameter)| slots[index].is_none() && parameter.default.is_some());
-        let previous_generic = self.generic_context.clone();
-        let previous_rows = self.bound_row_context.clone();
-        let previous_row_selections = self.bound_row_selections.clone();
-        let previous_substitutions = self.generic_substitutions.clone();
-        let previous_type_witnesses = self.generic_type_witnesses.clone();
-        let previous_static_keys = self.static_key_arguments.clone();
+        let previous_typing = self.capture_typing_environment();
         if has_default && let Some(id) = target {
             let info = self.functions[id].clone();
             self.generic_scope(id);
@@ -3464,12 +3413,7 @@ impl Checker {
                 .iter_mut()
                 .all(|(_, value, _)| value.current(&self.recency_moves).ty != Ty::Never);
         frame.obligations.include(&defaults.obligations, true);
-        self.generic_context = previous_generic;
-        self.bound_row_context = previous_rows;
-        self.bound_row_selections = previous_row_selections;
-        self.generic_substitutions = previous_substitutions;
-        self.generic_type_witnesses = previous_type_witnesses;
-        self.static_key_arguments = previous_static_keys;
+        self.restore_typing_environment(previous_typing);
         self.check_public_call_input_sources(callee, callee_syntax, source_event, frame);
         let mut result = result
             .into_iter()

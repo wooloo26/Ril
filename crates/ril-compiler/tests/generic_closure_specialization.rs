@@ -3,8 +3,7 @@ use ril_compiler_core::ids::CallableOwner;
 
 #[test]
 fn abstract_live_captures_cannot_be_published_by_an_immutable_binding() {
-    let source =
-        include_str!("../../ril-cli/tests/fixtures/generic_closures/invalid_immutable_capture.ril");
+    let source = ril_test::case_source("tests/regressions/closures.ril::invalid-immutable-capture");
     let outcome = Session::new(source.as_bytes().to_vec()).check();
     assert!(
         matches!(&outcome,ril_compiler::CompilationOutcome::Rejected {diagnostics} if diagnostics.iter().any(|diagnostic|diagnostic.code=="E0535")),
@@ -14,8 +13,7 @@ fn abstract_live_captures_cannot_be_published_by_an_immutable_binding() {
 
 #[test]
 fn escaping_instances_map_closures_and_recipes_to_their_actual_static_owner() {
-    let source =
-        include_str!("../../ril-cli/tests/fixtures/generic_closures/retained_instances.ril");
+    let source = ril_test::case_source("tests/regressions/closures.ril::retained-instances");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let program = ril_compiler::lower::lower_core(&verified).unwrap();
     assert_eq!(program.provenance.specializations.len(), 2);
@@ -70,8 +68,7 @@ fn escaping_instances_map_closures_and_recipes_to_their_actual_static_owner() {
 
 #[test]
 fn nested_sites_follow_their_specialized_parent_closure() {
-    let source =
-        include_str!("../../ril-cli/tests/fixtures/generic_closures/immediate_instances.ril");
+    let source = ril_test::case_source("tests/regressions/closures.ril::immediate-instances");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let program = ril_compiler::lower::lower_core(&verified).unwrap();
     for instance in &program.provenance.specializations {

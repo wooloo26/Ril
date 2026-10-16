@@ -1,6 +1,0 @@
-meta fn inspect<T:{pending:Result<int,str>,..R}>(value:T)->int{
-    match value.pending{Ok(number)->number,Err(_)->0}
-}
-meta let ANSWER={let pending:Result<int,str>=Ok(7);inspect(.{pending:pending,id:1})}
-meta let _=assert(ANSWER==7)
-pub fn test_native() &{ANSWER}{assert(ANSWER==7)}

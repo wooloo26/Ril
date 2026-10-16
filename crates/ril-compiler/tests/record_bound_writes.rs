@@ -7,10 +7,14 @@ use ril_compiler::{
     },
 };
 
-const SOURCE: &str = include_str!("fixtures/record_bounds/write_scalar.ril");
+fn source_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::write-scalar")
+}
 
 fn facts() -> SemanticFacts {
-    let program = Session::new(SOURCE.as_bytes().to_vec()).verify().unwrap();
+    let program = Session::new(source_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     let facts = program.facts().clone();
     assert!(!facts.bound_field_writes.is_empty());
     solved_facts(&facts).unwrap();
@@ -56,7 +60,7 @@ fn damaged(facts: &SemanticFacts) {
 fn actual_mutable_assignment_keeps_the_receiver_old_member_and_real_access() {
     facts();
     let program = Session::with_options(
-        SOURCE.as_bytes().to_vec(),
+        source_fixture().as_bytes().to_vec(),
         ril_compiler::CheckOptions {
             target: "pointer32".into(),
             ..Default::default()

@@ -136,10 +136,7 @@ impl Session {
             .ok_or(ProjectError::MissingSource(path))?;
         Ok(())
     }
-    pub(super) fn verify_sources(
-        &self,
-        project: &ProjectInputs,
-    ) -> Result<crate::hir::VerifiedProgram, CompilationOutcome> {
+    pub(super) fn analyze_sources(&self, project: &ProjectInputs) -> AnalysisSnapshot {
         let mut units = Vec::new();
         let mut diagnostics = Vec::new();
         let mut incomplete = false;
@@ -176,48 +173,79 @@ impl Session {
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error)
         {
-            return Err(CompilationOutcome::Rejected { diagnostics });
+            let source = ril_syntax::ast::Program {
+                statements: units
+                    .iter()
+                    .flat_map(|unit| unit.program.statements.iter().cloned())
+                    .collect(),
+            };
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::Rejected { diagnostics },
+                Some(source),
+            );
         }
         if incomplete {
-            return Err(CompilationOutcome::NotImplemented {
-                reason: NotImplemented::new(Stage::Syntax, "unsupported project syntax"),
-            });
+            let source = ril_syntax::ast::Program {
+                statements: units
+                    .iter()
+                    .flat_map(|unit| unit.program.statements.iter().cloned())
+                    .collect(),
+            };
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::NotImplemented {
+                    reason: NotImplemented::new(Stage::Syntax, "unsupported project syntax"),
+                },
+                Some(source),
+            );
         }
-        self.verify_resolved(crate::modules::resolve(units, FileId(0)))
+        self.analyze_resolved(crate::modules::resolve(units, FileId(0)))
     }
     pub(crate) fn verify_resolved(
         &self,
         project: ResolvedProject,
     ) -> Result<crate::hir::VerifiedProgram, CompilationOutcome> {
+        self.analyze_resolved(project).into_verified()
+    }
+    pub(crate) fn analyze_resolved(&self, project: ResolvedProject) -> AnalysisSnapshot {
         if project
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error)
         {
-            return Err(CompilationOutcome::Rejected {
-                diagnostics: project.diagnostics,
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::Rejected {
+                    diagnostics: project.diagnostics,
+                },
+                Some(project.program),
+            );
         }
         if project.syntax_incomplete {
-            return Err(CompilationOutcome::NotImplemented {
-                reason: NotImplemented::new(
-                    Stage::Syntax,
-                    "unsupported module syntax or syntax analysis budget reached",
-                ),
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::NotImplemented {
+                    reason: NotImplemented::new(
+                        Stage::Syntax,
+                        "unsupported module syntax or syntax analysis budget reached",
+                    ),
+                },
+                Some(project.program),
+            );
         }
         if !project.unsupported.is_empty() {
-            return Err(CompilationOutcome::NotImplemented {
-                reason: NotImplemented::new(
-                    Stage::Resolution,
-                    project
-                        .unsupported
-                        .iter()
-                        .map(|item| item.description.clone())
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                ),
-            });
+            return AnalysisSnapshot::failed(
+                CompilationOutcome::NotImplemented {
+                    reason: NotImplemented::new(
+                        Stage::Resolution,
+                        project
+                            .unsupported
+                            .iter()
+                            .map(|item| item.description.clone())
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    ),
+                },
+                Some(project.program),
+            )
+            .with_unresolved(project.unsupported);
         }
         let declarations = project
             .units
@@ -225,10 +253,12 @@ impl Session {
             .filter(|unit| unit.is_declaration)
             .map(|unit| unit.file)
             .collect::<Vec<_>>();
-        let mut verified = self.verify_project_at(&project.program, project.root, &declarations)?;
-        verified.attach_external_declarations(project.external_declarations);
-        verified.attach_type_declarations(project.type_declarations);
-        Ok(verified)
+        let mut snapshot = self.analyze_project_at(&project.program, project.root, &declarations);
+        if let Some(verified) = snapshot.verified_mut() {
+            verified.attach_external_declarations(project.external_declarations);
+            verified.attach_type_declarations(project.type_declarations);
+        }
+        snapshot
     }
 }
 

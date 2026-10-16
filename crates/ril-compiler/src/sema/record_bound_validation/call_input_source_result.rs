@@ -10,19 +10,32 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
     ) -> Check {
-        let [crate::sema::model::Callable::Builtin(identity)] = callee.callables.as_slice() else { return Ok(()) };
+        let [crate::sema::model::Callable::Builtin(identity)] = callee.callables.as_slice() else {
+            return Ok(());
+        };
         let success = match identity.strip_prefix("Prelude::").unwrap_or(identity) {
             "Ok" => true,
             "Err" => false,
             _ => return Ok(()),
         };
-        let root = event.result_expression.and_then(|index| self.facts.expressions.get(index))
+        let root = event
+            .result_expression
+            .and_then(|index| self.facts.expressions.get(index))
             .ok_or_else(|| "Result source has no actual result root".to_owned())?;
-        if root.value.ty == Ty::Never || root.value.source_type_witness.is_some() { return Ok(()); }
-        let Ty::Result(ok, error) = &root.value.ty else { return Err("Result source changed its actual primitive type".into()) };
-        if (if success { error } else { ok }).as_ref() == &Ty::Unknown { return Ok(()); }
-        require(self.original_carrier_source_key(syntax, &root.value, context, sites, &mut 4096, 0)?.is_some(),
-            "contextual open Result has no independently reconstructed active source")
+        if root.value.ty == Ty::Never || root.value.source_type_witness.is_some() {
+            return Ok(());
+        }
+        let Ty::Result(ok, error) = &root.value.ty else {
+            return Err("Result source changed its actual primitive type".into());
+        };
+        if (if success { error } else { ok }).as_ref() == &Ty::Unknown {
+            return Ok(());
+        }
+        require(
+            self.original_carrier_source_key(syntax, &root.value, context, sites, &mut 4096, 0)?
+                .is_some(),
+            "contextual open Result has no independently reconstructed active source",
+        )
     }
 
     pub(super) fn original_carrier_source_key(
@@ -34,12 +47,19 @@ impl Replay<'_> {
         work: &mut usize,
         depth: usize,
     ) -> Check<Option<ArgumentKey>> {
-        let ExprKind::Call { callee, arguments } = &expression.kind else { return Ok(None) };
-        let Some(success) = value.result_tag else { return Ok(None) };
+        let ExprKind::Call { callee, arguments } = &expression.kind else {
+            return Ok(None);
+        };
+        let Some(success) = value.result_tag else {
+            return Ok(None);
+        };
         let identity = if success { "Ok" } else { "Err" };
-        if arguments.len() != 1 || arguments[0].label.is_some()
+        if arguments.len() != 1
+            || arguments[0].label.is_some()
             || arguments[0].mode != ril_syntax::ast::ParameterMode::Read
-        { return Ok(None); }
+        {
+            return Ok(None);
+        }
         let events: Vec<_> = self.facts.copy_call_events.iter().filter(|event| {
             event.span == expression.span && event.owner == context.owner && event.parent == context.invocation
                 && event.result_expression.is_some_and(|index| {
@@ -53,35 +73,98 @@ impl Replay<'_> {
                         && self.facts.invocation_expressions.get(index).is_some_and(|row| row.expression == index && row.context == context)
                 })
         }).collect();
-        if events.is_empty() { return Ok(None); }
-        let [event] = events.as_slice() else { return Err("open Result Source borrowed another carrier event".into()) };
+        if events.is_empty() {
+            return Ok(None);
+        }
+        let [event] = events.as_slice() else {
+            return Err("open Result Source borrowed another carrier event".into());
+        };
         super::super::super::checker::actual_prelude_name(self.facts, context, callee, identity)?;
-        let preparations: Vec<_> = self.facts.call_arguments.iter().filter(|row| row.source_event == event.id).collect();
-        let [preparation] = preparations.as_slice() else { return Err("open Result Source lacks its actual supplied operand".into()) };
-        require(preparation.target.is_none() && preparation.evaluation_complete
-            && preparation.slots == [crate::sema::default_uses::ArgumentSource::Supplied]
-            && preparation.supplied.len() == 1,
-            "open Result Source changed its primitive invocation or operand slots")?;
-        let token = preparation.supplied.get(&0).ok_or_else(|| "open Result Source lost slot zero".to_owned())?;
-        let operand = self.facts.expressions.get(token.expression).ok_or_else(|| "open Result Source operand is absent".to_owned())?;
-        require(operand.span == arguments[0].value.span
-            && self.facts.invocation_expressions.get(token.expression).is_some_and(|row|
-                row.expression == token.expression && row.context == context && row.argument_of == Some((event.id, 0))),
-            "open Result Source operand borrowed another physical occurrence")?;
+        let preparations: Vec<_> = self
+            .facts
+            .call_arguments
+            .iter()
+            .filter(|row| row.source_event == event.id)
+            .collect();
+        let [preparation] = preparations.as_slice() else {
+            return Err("open Result Source lacks its actual supplied operand".into());
+        };
+        require(
+            preparation.target.is_none()
+                && preparation.evaluation_complete
+                && preparation.slots == [crate::sema::default_uses::ArgumentSource::Supplied]
+                && preparation.supplied.len() == 1,
+            "open Result Source changed its primitive invocation or operand slots",
+        )?;
+        let token = preparation
+            .supplied
+            .get(&0)
+            .ok_or_else(|| "open Result Source lost slot zero".to_owned())?;
+        let operand = self
+            .facts
+            .expressions
+            .get(token.expression)
+            .ok_or_else(|| "open Result Source operand is absent".to_owned())?;
+        require(
+            operand.span == arguments[0].value.span
+                && self
+                    .facts
+                    .invocation_expressions
+                    .get(token.expression)
+                    .is_some_and(|row| {
+                        row.expression == token.expression
+                            && row.context == context
+                            && row.argument_of == Some((event.id, 0))
+                    }),
+            "open Result Source operand borrowed another physical occurrence",
+        )?;
         self.input_operand_interval(event, 0, token.expression, context, sites)?;
-        let payload = if success { value.result_success.as_deref() } else { value.result_error.as_deref() }
-            .ok_or_else(|| "open Result Source lost its active payload".to_owned())?;
-        require(payload.cause == operand.value.cause
-            && value.result_payload.as_deref() == Some(payload)
-            && self.facts.explanations.causes.get(value.cause.0 as usize).is_some_and(|cause| cause.parents == [operand.value.cause]),
-            "open Result Source active payload is not its actual constructor operand")?;
-        let active = self.original_source_key_inner(&arguments[0].value, &operand.value, context, sites, work, depth + 1)?;
+        let payload = if success {
+            value.result_success.as_deref()
+        } else {
+            value.result_error.as_deref()
+        }
+        .ok_or_else(|| "open Result Source lost its active payload".to_owned())?;
+        require(
+            payload.cause == operand.value.cause
+                && value.result_payload.as_deref() == Some(payload)
+                && self
+                    .facts
+                    .explanations
+                    .causes
+                    .get(value.cause.0 as usize)
+                    .is_some_and(|cause| cause.parents == [operand.value.cause]),
+            "open Result Source active payload is not its actual constructor operand",
+        )?;
+        let active = self.original_source_key_inner(
+            &arguments[0].value,
+            &operand.value,
+            context,
+            sites,
+            work,
+            depth + 1,
+        )?;
         let receiver = self.producing_receiver_key(expression, value, context, sites)?;
-        let ArgumentKey::Name { name, arguments } = receiver else { return Err("open Result Source has no actual Result receiver".into()) };
-        require(name == "Result" && arguments.len() == 2, "open Result Source changed its receiving family")?;
+        let ArgumentKey::Name { name, arguments } = receiver else {
+            return Err("open Result Source has no actual Result receiver".into());
+        };
+        require(
+            name == "Result" && arguments.len() == 2,
+            "open Result Source changed its receiving family",
+        )?;
         let inactive = arguments[usize::from(success)].clone();
-        let key = ArgumentKey::Name { name: "Result".into(), arguments: if success { vec![active, inactive] } else { vec![inactive, active] } };
-        require(source_reception::complete(&key, work).is_some(), "open Result Source exceeds its complete schema budget")?;
+        let key = ArgumentKey::Name {
+            name: "Result".into(),
+            arguments: if success {
+                vec![active, inactive]
+            } else {
+                vec![inactive, active]
+            },
+        };
+        require(
+            source_reception::complete(&key, work).is_some(),
+            "open Result Source exceeds its complete schema budget",
+        )?;
         Ok(Some(key))
     }
     pub(super) fn input_type_sort(&self, identity: &str) -> Check<bool> {
@@ -335,9 +418,20 @@ impl Replay<'_> {
             }
         }
         if let Some(CallableOwner::Function(owner)) = context.owner {
-            let function = self.function(owner)?;
-            if let (Some(syntax), Some(body)) =
-                (&function.syntax.return_type, &function.syntax.body)
+            let declaration = self.function(owner)?;
+            let functions: Vec<_> = sites
+                .functions
+                .iter()
+                .filter(|site| {
+                    site.owner == CallableOwner::Function(owner)
+                        && *site.function == declaration.syntax
+                })
+                .collect();
+            let [function] = functions.as_slice() else {
+                return Err("producing result has no unique original function header".into());
+            };
+            let function = function.function;
+            if let (Some(syntax), Some(body)) = (&function.return_type, &function.body)
                 && let Some(Stmt {
                     kind:
                         StmtKind::Expr {

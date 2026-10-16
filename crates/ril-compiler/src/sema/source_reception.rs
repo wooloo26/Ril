@@ -8,6 +8,40 @@ use super::effect_identity::ArgumentKey;
 use ril_syntax::ast::{Expr, ExprKind, ParameterMode, RecordMember};
 use std::collections::BTreeMap;
 
+/// Pure type-coordinate projection shared by production and independent replay.
+/// It neither reads storage nor establishes a path's access permission.
+pub(crate) fn project_key<'a>(
+    mut key: &'a ArgumentKey,
+    path: &[super::facts::Slot],
+) -> Option<&'a ArgumentKey> {
+    use super::facts::Slot;
+    let mut work = 4096usize;
+    for slot in path {
+        work = work.checked_sub(1)?;
+        while let ArgumentKey::Name { name, arguments } = key {
+            if !matches!(name.as_str(), "Immut" | "Prelude::Immut") || arguments.len() != 1 {
+                break;
+            }
+            work = work.checked_sub(1)?;
+            key = &arguments[0];
+        }
+        key = match (key, slot) {
+            (ArgumentKey::Record { fields, .. }, Slot::Field(name)) => {
+                // Charge names before comparing or scanning a wide row.
+                for (label, _, _) in fields {
+                    work = work.checked_sub(1 + label.len().max(name.len()).div_ceil(32))?;
+                }
+                &fields.iter().find(|field| &field.0 == name)?.2
+            }
+            (ArgumentKey::Tuple(items), Slot::Tuple(index)) => items.get(*index as usize)?,
+            (ArgumentKey::Array { element, .. }, Slot::Index(_) | Slot::AnyIndex) => element,
+            (ArgumentKey::Map { value, .. }, Slot::Index(_) | Slot::AnyIndex) => value,
+            _ => return None,
+        };
+    }
+    Some(key)
+}
+
 /// Complete expected source frozen at its real elaboration point.
 /// None retains an unresolved source obligation; it is not an erased fallback.
 #[derive(Debug, Clone)]

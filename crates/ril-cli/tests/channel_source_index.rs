@@ -8,16 +8,18 @@ use std::{
 // Preserve the original split program, including both forwarding wrappers.
 // Each test verifies this complete source in a fresh CLI process before running
 // its selected entry. The original single-entry proof-budget gap is not run.
-const SOURCE: &str = include_str!(
-    "../../ril-compiler/tests/fixtures/channel_message_optional_callback_source_index_checked.ril"
-);
+fn source_fixture() -> &'static str {
+    ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-optional-callback-source-index-checked",
+    )
+}
 
 fn executes(entry: &str) {
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("program.ril");
     let stdout = directory.path().join("stdout.json");
     let stderr = directory.path().join("stderr.log");
-    fs::write(&input, SOURCE).unwrap();
+    fs::write(&input, source_fixture()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_ril"));
     command
         .arg("test")

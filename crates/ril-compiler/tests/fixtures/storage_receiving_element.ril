@@ -1,1 +1,0 @@
-fn bad(){let mut values:[1][0][2]int=[[]];let old:[0][3]int=[];values[0]=old}

@@ -4,7 +4,7 @@ mod native_probe;
 #[test]
 fn const_roles_and_transferred_results_survive_lexical_shadows() {
     native_probe::executes(
-        include_str!("../../ril-compiler/tests/fixtures/static_const_result_flow.ril"),
+        ril_test::case_source("tests/regressions/static.ril::static-const-result-flow"),
         "static const roles and Result flow",
     );
 }

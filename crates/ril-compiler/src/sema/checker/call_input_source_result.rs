@@ -112,7 +112,9 @@ impl Checker {
             .source_type_witness
             .as_ref()
             .filter(|witness| witness.validate_closed())
-            .and_then(|witness| crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new()))
+            .and_then(|witness| {
+                crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new())
+            })
             .or_else(|| {
                 // An open row remains the real operand's Source. Only the
                 // absent branch receives a context; no active type is copied
@@ -120,11 +122,16 @@ impl Checker {
                 let input = self.call_input_source.supplied.get(&event.id)?.get(&0)?;
                 let token = input.expression?;
                 let actual = self.expression_facts.get(token)?;
-                (input.context == context && actual.span == arguments[0].value.span
+                (input.context == context
+                    && actual.span == arguments[0].value.span
                     && actual.value.cause == payload.cause
-                    && self.invocation_expressions.get(token).is_some_and(|row|
-                        row.expression == token && row.context == context && row.argument_of == Some((event.id, 0))))
-                    .then(|| input.key.clone()).flatten()
+                    && self.invocation_expressions.get(token).is_some_and(|row| {
+                        row.expression == token
+                            && row.context == context
+                            && row.argument_of == Some((event.id, 0))
+                    }))
+                .then(|| input.key.clone())
+                .flatten()
             });
         let Some(active_key) = active_key else { return };
         let inactive_key = source
@@ -157,13 +164,17 @@ impl Checker {
             name: "Result".into(),
             arguments: keys,
         };
-        if source_reception::complete(&key, &mut 4096).is_none() { return; }
+        if source_reception::complete(&key, &mut 4096).is_none() {
+            return;
+        }
         value.ty = if success {
             Ty::Result(active.clone(), expected_inactive.clone())
         } else {
             Ty::Result(expected_inactive.clone(), active.clone())
         };
-        self.call_input_source.carrier_sources.insert(value.cause.0, key.clone());
+        self.call_input_source
+            .carrier_sources
+            .insert(value.cause.0, key.clone());
         value.source_type_witness = closed_result_syntax(&key, syntax.span, &mut 4096)
             .and_then(|original| self.source_type_from_frozen_syntax(&original));
     }
@@ -174,17 +185,34 @@ impl Checker {
         syntax: &Expr,
         frame: &Frame,
     ) -> Option<ArgumentKey> {
-        let ExprKind::Call { arguments, .. } = &syntax.kind else { return None };
-        if arguments.len() != 1 { return None; }
+        let ExprKind::Call { arguments, .. } = &syntax.kind else {
+            return None;
+        };
+        if arguments.len() != 1 {
+            return None;
+        }
         let (event, context) = self.call_input_source.carriers.get(&value.cause.0)?;
-        if *context != self.invocation_context(frame.callable_owner) { return None; }
+        if *context != self.invocation_context(frame.callable_owner) {
+            return None;
+        }
         let event = self.copy_call_events.get(event.0 as usize)?;
         let root = event.result_expression?;
         if event.span != syntax.span
-            || !self.expression_facts.get(root).is_some_and(|fact| fact.span == syntax.span && fact.value.cause == value.cause)
-            || !self.invocation_expressions.get(root).is_some_and(|row| row.expression == root && row.context == *context)
-        { return None; }
-        self.call_input_source.carrier_sources.get(&value.cause.0).cloned()
+            || !self
+                .expression_facts
+                .get(root)
+                .is_some_and(|fact| fact.span == syntax.span && fact.value.cause == value.cause)
+            || !self
+                .invocation_expressions
+                .get(root)
+                .is_some_and(|row| row.expression == root && row.context == *context)
+        {
+            return None;
+        }
+        self.call_input_source
+            .carrier_sources
+            .get(&value.cause.0)
+            .cloned()
     }
 
     fn producing_source_selection(
@@ -332,8 +360,8 @@ impl Checker {
             .iter()
             .find(|function| function.definition == call.target)?;
         let mut scope = BoundScope {
-            types: target.generic_context.clone(),
-            rows: target.bound_row_context.clone(),
+            types: target.typing_environment.generic_context.clone(),
+            rows: target.typing_environment.bound_row_context.clone(),
         };
         for (index, parameter) in target.syntax.generics.iter().enumerate() {
             let binder = self.generic_binders.values().find(|binder| {
@@ -345,7 +373,20 @@ impl Checker {
                 .types
                 .insert(parameter.name.clone(), binder.identity.clone());
         }
-        let key = self.record_bound_key(target.syntax.return_type.as_ref()?, &scope)?;
+        for row in self
+            .bound_rows
+            .iter()
+            .filter(|row| row.definition == target.definition)
+        {
+            if scope
+                .rows
+                .insert(row.name.clone(), row.id)
+                .is_some_and(|old| old != row.id)
+            {
+                return None;
+            }
+        }
+        let key = self.original_source_header_key(target.syntax.return_type.as_ref()?, &scope)?;
         let rows: Vec<_> = self
             .effect_invocations
             .iter()
@@ -420,6 +461,7 @@ impl Checker {
                 || binder.definition != argument.definition
                 || binder.index != argument.index
                 || !target
+                    .typing_environment
                     .generic_context
                     .values()
                     .any(|identity| identity == &argument.binder)

@@ -199,6 +199,7 @@ fn covered(
         return false;
     }
     let expected: BTreeSet<_> = function
+        .typing_environment
         .generic_context
         .iter()
         .filter(|(name, _)| {

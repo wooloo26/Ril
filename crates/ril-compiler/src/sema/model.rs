@@ -463,14 +463,7 @@ pub struct CallableReturnBound {
     pub syntax: TypeExpr,
     pub span: Span,
     pub callables: Vec<Callable>,
-    pub lexical: Env,
-    pub generic_context: BTreeMap<String, String>,
-    pub generic_substitutions: BTreeMap<String, Ty>,
-    pub generic_type_witnesses: BTreeMap<String, Arc<SourceTypeWitness>>,
-    pub bound_row_context: BTreeMap<String, ril_compiler_core::ids::BoundRowId>,
-    pub bound_row_selections:
-        BTreeMap<ril_compiler_core::ids::BoundRowId, super::record_bounds::BoundRowSelection>,
-    pub static_key_arguments: BTreeMap<String, StaticCoordinate>,
+    pub typing_environment: super::context::FrozenEnvironment,
 }
 impl CallableReturnBound {
     pub fn raw(callable: Callable, span: Span) -> Self {
@@ -485,13 +478,7 @@ impl CallableReturnBound {
             },
             span,
             callables: vec![callable],
-            lexical: BTreeMap::new(),
-            generic_context: BTreeMap::new(),
-            generic_substitutions: BTreeMap::new(),
-            generic_type_witnesses: BTreeMap::new(),
-            bound_row_context: BTreeMap::new(),
-            bound_row_selections: BTreeMap::new(),
-            static_key_arguments: BTreeMap::new(),
+            typing_environment: Default::default(),
         }
     }
 }
@@ -969,15 +956,8 @@ pub struct BindingInfo {
 pub struct FunctionInfo {
     pub definition: ril_compiler_core::ids::DefinitionId,
     pub lexical_owner: Option<ril_compiler_core::ids::CallableOwner>,
-    pub generic_context: BTreeMap<String, String>,
-    /// Producer-owned selections captured when this named value is declared.
-    /// A later caller's same-spelled binder must not reinterpret its header.
-    pub generic_substitutions: BTreeMap<String, Ty>,
-    pub generic_type_witnesses: BTreeMap<String, Arc<SourceTypeWitness>>,
-    pub static_key_arguments: BTreeMap<String, StaticCoordinate>,
-    pub bound_row_context: BTreeMap<String, ril_compiler_core::ids::BoundRowId>,
-    pub bound_row_selections:
-        BTreeMap<ril_compiler_core::ids::BoundRowId, super::record_bounds::BoundRowSelection>,
+    /// Complete declaration-time interpretation; never merged with a caller.
+    pub typing_environment: super::context::FrozenEnvironment,
     pub syntax: Function,
     pub lexical: Env,
     pub owner: Option<ScopeId>,
@@ -1339,17 +1319,20 @@ mod callable_return_tests {
             },
             span,
             callables: vec![callable],
-            lexical: [("source".into(), file as usize)].into(),
-            generic_context: [("T".into(), identity.into())].into(),
-            generic_substitutions: [(identity.into(), Ty::Int("int".into()))].into(),
-            generic_type_witnesses: BTreeMap::new(),
-            bound_row_context: BTreeMap::new(),
-            bound_row_selections: BTreeMap::new(),
-            static_key_arguments: [(
-                format!("{identity}:key"),
-                StaticCoordinate::Label("value".into()),
-            )]
-            .into(),
+            typing_environment: super::super::context::TypingEnvironment {
+                generic_context: [("T".into(), identity.into())].into(),
+                generic_substitutions: [(identity.into(), Ty::Int("int".into()))].into(),
+                generic_type_witnesses: BTreeMap::new(),
+                bound_row_context: BTreeMap::new(),
+                bound_row_selections: BTreeMap::new(),
+                static_key_arguments: [(
+                    format!("{identity}:key"),
+                    StaticCoordinate::Label("value".into()),
+                )]
+                .into(),
+                contract_bindings: [("source".into(), file as usize)].into(),
+            }
+            .freeze(),
         }));
         value
     }
@@ -1421,7 +1404,7 @@ mod callable_return_tests {
                 .unwrap();
             assert_eq!(raw.callables, [Callable::Closure(3)]);
             assert!(raw.predecessors.is_empty());
-            assert!(raw.generic_substitutions.is_empty());
+            assert!(raw.typing_environment.generic_substitutions.is_empty());
             assert_eq!(
                 joined.join(&joined, 2, CauseId(2)).callable_returns,
                 joined.callable_returns

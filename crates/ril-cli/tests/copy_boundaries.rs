@@ -9,7 +9,9 @@ fn binary_recursive_resource_sibling_is_rejected_without_execution() {
         .join("binary-recursive-resource-negative.ril");
     fs::write(
         &path,
-        include_str!("fixtures/binary_recursive_copy_resource_negative.ril"),
+        ril_test::case_source(
+            "tests/regressions/copy.ril::binary-recursive-copy-resource-negative",
+        ),
     )
     .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_ril"))
@@ -35,7 +37,11 @@ fn binary_recursive_resource_sibling_is_rejected_without_execution() {
 fn binary_recursive_copies_preserve_both_cycles_and_shared_child_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("binary-recursive-copy.ril");
-    fs::write(&path, include_str!("fixtures/binary_recursive_copy.ril")).unwrap();
+    fs::write(
+        &path,
+        ril_test::case_source("tests/regressions/copy.ril::binary-recursive-copy"),
+    )
+    .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_ril"))
         .arg("test")
         .arg(&path)

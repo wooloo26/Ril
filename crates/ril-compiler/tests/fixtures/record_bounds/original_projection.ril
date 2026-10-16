@@ -1,2 +1,0 @@
-fn read_id<T:{id:int,..R}>(value:T)->int{value.id}
-pub fn test_native(){let answer=read_id(.{id:7,tag:"ok"});assert(answer==7)}

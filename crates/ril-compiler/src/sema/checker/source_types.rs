@@ -657,39 +657,19 @@ impl Checker {
         function: &FunctionInfo,
         syntax: &TypeExpr,
     ) -> Option<Arc<SourceTypeWitness>> {
-        let previous = (
-            std::mem::replace(&mut self.generic_context, function.generic_context.clone()),
-            std::mem::replace(
-                &mut self.generic_substitutions,
-                function.generic_substitutions.clone(),
-            ),
-            std::mem::replace(
-                &mut self.generic_type_witnesses,
-                function.generic_type_witnesses.clone(),
-            ),
-            std::mem::replace(
-                &mut self.static_key_arguments,
-                function.static_key_arguments.clone(),
-            ),
-            std::mem::replace(
-                &mut self.bound_row_context,
-                function.bound_row_context.clone(),
-            ),
-            std::mem::replace(
-                &mut self.bound_row_selections,
-                function.bound_row_selections.clone(),
-            ),
-        );
-        let source = self.source_type_from_syntax(syntax);
-        (
-            self.generic_context,
-            self.generic_substitutions,
-            self.generic_type_witnesses,
-            self.static_key_arguments,
-            self.bound_row_context,
-            self.bound_row_selections,
-        ) = previous;
-        source
+        self.source_type_in_environment(syntax, &function.typing_environment)
+    }
+
+    /// Source queries state which declaration interprets their Type and Key
+    /// names. The ambient caller is restored even when normalization fails.
+    pub(super) fn source_type_in_environment(
+        &mut self,
+        syntax: &TypeExpr,
+        environment: &crate::sema::context::FrozenEnvironment,
+    ) -> Option<Arc<SourceTypeWitness>> {
+        self.with_typing_environment(environment, |checker| {
+            checker.source_type_from_syntax(syntax)
+        })
     }
 
     fn source_element_syntax(&self, value: &Value) -> Option<TypeExpr> {

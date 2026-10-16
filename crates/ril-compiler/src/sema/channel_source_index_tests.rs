@@ -426,8 +426,8 @@ fn successful_index_reuses_structure_but_every_lookup_still_spends_work() {
 
 #[test]
 fn repeated_pure_source_scans_no_longer_reject_the_preserved_split_composition() {
-    let source = include_str!(
-        "../../tests/fixtures/channel_message_optional_callback_source_index_checked.ril"
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-optional-callback-source-index-checked",
     );
     let verified = Session::new(source.as_bytes().to_vec())
         .verify()
@@ -437,8 +437,9 @@ fn repeated_pure_source_scans_no_longer_reject_the_preserved_split_composition()
 
 #[test]
 fn structural_guard_laws_do_not_authorize_the_preserved_replay_state_gap() {
-    let source =
-        include_str!("../../tests/fixtures/channel_message_optional_callback_scope_budget.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-optional-callback-scope-budget",
+    );
     match Session::new(source.as_bytes().to_vec()).check() {
         crate::CompilationOutcome::NotImplemented { reason } => {
             assert_eq!(reason.stage, ril_compiler_core::phase::Stage::Provenance);

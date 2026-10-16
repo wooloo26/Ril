@@ -2,7 +2,10 @@ use crate::{Error, Result, annotations::line_comments, require};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::{collections::HashSet, sync::LazyLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -341,7 +344,13 @@ struct CaseBuilder {
 struct FileBuilder {
     name: String,
     hex: bool,
+    final_newline: bool,
     lines: Vec<String>,
+}
+
+struct SourceBuilder {
+    name: String,
+    files: Vec<VirtualFile>,
 }
 
 fn decode_metadata(mut raw: Map<String, Value>) -> Result<Metadata> {
@@ -400,11 +409,15 @@ fn decode_metadata(mut raw: Map<String, Value>) -> Result<Metadata> {
 
 /// Framing is independent from the embedded program's lexical validity.
 pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
-    static FILE: LazyLock<Regex> = LazyLock::new(|| regex(r"^--@ file: (\S+?)(?: (hex))?$"));
+    static FILE: LazyLock<Regex> =
+        LazyLock::new(|| regex(r"^--@ file: (\S+?)(?: (hex|no-final-newline))?$"));
     static DIRECTIVE: LazyLock<Regex> = LazyLock::new(|| regex(r"^--@ ([a-z-]+): (.+)$"));
     let mut cases = Vec::new();
     let mut names = HashSet::new();
     let mut current: Option<CaseBuilder> = None;
+    let mut source: Option<SourceBuilder> = None;
+    let mut sources: HashMap<String, Vec<VirtualFile>> = HashMap::new();
+    let mut used_sources = HashSet::new();
     let mut file: Option<FileBuilder> = None;
     let lines: Vec<_> = text.split('\n').collect();
     for (index, raw_line) in lines.iter().enumerate() {
@@ -441,12 +454,22 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                             })
                             .collect()
                     } else {
-                        open.lines
+                        let mut bytes: Vec<_> = open
+                            .lines
                             .iter()
                             .flat_map(|line| line.bytes().chain(*b"\n"))
-                            .collect()
+                            .collect();
+                        if !open.final_newline && !bytes.is_empty() {
+                            bytes.pop();
+                        }
+                        bytes
                     };
-                    current.as_mut().unwrap().files.push(VirtualFile {
+                    let files = if let Some(source) = &mut source {
+                        &mut source.files
+                    } else {
+                        &mut current.as_mut().unwrap().files
+                    };
+                    files.push(VirtualFile {
                         name: open.name.clone(),
                         bytes,
                     });
@@ -461,6 +484,43 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                     open.lines.push(line.into());
                 }
                 return Ok(());
+            }
+            if let Some(name) = line.strip_prefix("--@ source: ") {
+                require(NAME.is_match(name), "invalid shared source name")?;
+                require(
+                    current.is_none() && source.is_none(),
+                    "nested shared source or case",
+                )?;
+                require(!sources.contains_key(name), "duplicate shared source")?;
+                source = Some(SourceBuilder {
+                    name: name.into(),
+                    files: Vec::new(),
+                });
+                return Ok(());
+            }
+            if let Some(open) = &mut source {
+                if line == "--@ end-source" {
+                    require(!open.files.is_empty(), "empty shared source")?;
+                    let open = source.take().unwrap();
+                    sources.insert(open.name, open.files);
+                    return Ok(());
+                }
+                if let Some(capture) = FILE.captures(line) {
+                    portable_path(&capture[1])?;
+                    file = Some(FileBuilder {
+                        name: capture[1].into(),
+                        hex: capture.get(2).is_some_and(|flag| flag.as_str() == "hex"),
+                        final_newline: capture
+                            .get(2)
+                            .is_none_or(|flag| flag.as_str() != "no-final-newline"),
+                        lines: Vec::new(),
+                    });
+                    return Ok(());
+                }
+                return require(
+                    line.trim().is_empty() || (line.starts_with("--") && !line.starts_with("--@")),
+                    "shared source accepts only file blocks",
+                );
             }
             if let Some(name) = line
                 .strip_prefix("--@ case: ")
@@ -504,11 +564,26 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                 cases.push(item);
                 return Ok(());
             }
+            if let Some(name) = line.strip_prefix("--@ use-source: ") {
+                require(
+                    open.files.is_empty(),
+                    "a case has exactly one shared source or explicit file set",
+                )?;
+                open.files = sources
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| Error::Invalid(format!("unknown shared source: {name}")))?;
+                used_sources.insert(name.to_owned());
+                return Ok(());
+            }
             if let Some(capture) = FILE.captures(line) {
                 portable_path(&capture[1])?;
                 file = Some(FileBuilder {
                     name: capture[1].into(),
-                    hex: capture.get(2).is_some(),
+                    hex: capture.get(2).is_some_and(|flag| flag.as_str() == "hex"),
+                    final_newline: capture
+                        .get(2)
+                        .is_none_or(|flag| flag.as_str() != "no-final-newline"),
                     lines: Vec::new(),
                 });
                 return Ok(());
@@ -567,8 +642,12 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
         result.map_err(|error| Error::Invalid(format!("{bundle}:{}: {error}", index + 1)))?;
     }
     require(
-        file.is_none() && current.is_none(),
+        file.is_none() && current.is_none() && source.is_none(),
         format!("{bundle}: unclosed file or case"),
+    )?;
+    require(
+        sources.keys().all(|name| used_sources.contains(name)),
+        format!("{bundle}: unused shared source"),
     )?;
     require(!cases.is_empty(), format!("{bundle}: empty bundle"))?;
     Ok(cases)

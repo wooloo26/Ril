@@ -465,11 +465,12 @@ impl Walk<'_> {
                 let child_shadow = shadow | self.pattern_names(pattern, depth + 1)?;
                 self.block(body, owner, child_shadow, depth + 1)?;
             }
-            ExprKind::Control { value, .. } => {
-                if let Some(value) = value {
-                    self.expr(value, owner, shadow, depth + 1)?;
-                }
+            ExprKind::Control {
+                value: Some(value), ..
+            } => {
+                self.expr(value, owner, shadow, depth + 1)?;
             }
+            ExprKind::Control { value: None, .. } => {}
             ExprKind::Derive { base, recipe } => {
                 if let Some(base) = base {
                     self.expr(base, owner, shadow, depth + 1)?;

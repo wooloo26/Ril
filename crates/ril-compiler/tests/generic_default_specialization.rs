@@ -4,11 +4,11 @@ use ril_compiler::sema::default_uses::DefaultOrigin;
 #[test]
 fn default_slots_preserve_exact_application_and_evaluation_identities() {
     for source in [
-        include_str!("../../ril-cli/tests/fixtures/generic_defaults/scalars_and_order.ril"),
-        include_str!("../../ril-cli/tests/fixtures/generic_defaults/local_handler.ril"),
-        include_str!("../../ril-cli/tests/fixtures/generic_defaults/local_budget.ril"),
-        include_str!("../../ril-cli/tests/fixtures/generic_defaults/retained_closure.ril"),
-        include_str!("../../ril-cli/tests/fixtures/generic_defaults/transitive.ril"),
+        ril_test::case_source("tests/regressions/defaults.ril::scalars-and-order"),
+        ril_test::case_source("tests/regressions/defaults.ril::local-handler"),
+        ril_test::case_source("tests/regressions/defaults.ril::local-budget"),
+        ril_test::case_source("tests/regressions/defaults.ril::retained-closure"),
+        ril_test::case_source("tests/regressions/defaults.ril::transitive"),
     ] {
         let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
         let core = ril_compiler::lower::lower_core(&verified).unwrap();
@@ -36,7 +36,7 @@ fn default_slots_preserve_exact_application_and_evaluation_identities() {
 
 #[test]
 fn supplied_only_slot_prunes_only_its_private_instances_fallback() {
-    let source = include_str!("../../ril-cli/tests/fixtures/generic_defaults/supplied_only.ril");
+    let source = ril_test::case_source("tests/regressions/defaults.ril::supplied-only");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     assert_eq!(core.provenance.specializations.len(), 2);

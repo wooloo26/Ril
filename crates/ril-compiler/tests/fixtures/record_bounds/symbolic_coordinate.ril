@@ -1,1 +1,0 @@
-fn get_field<T:{..R},K:keyof T>(record:T,key:K)->T.(K){record.(key)}

@@ -7,8 +7,12 @@ use ril_compiler::{
     },
 };
 
-const TUPLE: &str = include_str!("fixtures/record_bounds/nested_rigid_tuple.ril");
-const SHARED: &str = include_str!("fixtures/record_bounds/nested_rigid_shared_row.ril");
+fn tuple_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-tuple")
+}
+fn shared_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-shared-row")
+}
 
 fn verified(source: &str) -> SemanticFacts {
     let program = Session::new(source.as_bytes().to_vec()).verify().unwrap();
@@ -30,9 +34,9 @@ fn rejected(facts: &SemanticFacts) {
 #[test]
 fn tuple_field_and_shared_row_forward_actual_rigid_formal_children() {
     for source in [
-        TUPLE,
-        include_str!("fixtures/record_bounds/nested_rigid_field.ril"),
-        SHARED,
+        tuple_fixture(),
+        ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-field"),
+        shared_fixture(),
     ] {
         let facts = verified(source);
         assert!(facts.generic_bound_checks.iter().any(|check| {
@@ -51,7 +55,7 @@ fn tuple_field_and_shared_row_forward_actual_rigid_formal_children() {
 
 #[test]
 fn rigid_child_schema_cannot_borrow_another_parameter_scope_or_type_subterm() {
-    let facts = verified(SHARED);
+    let facts = verified(shared_fixture());
     let actual: Vec<_> = facts
         .generic_bound_checks
         .iter()
@@ -93,7 +97,7 @@ fn rigid_child_schema_cannot_borrow_another_parameter_scope_or_type_subterm() {
 
 #[test]
 fn opaque_rigid_rows_cannot_be_closed_or_gain_new_absence_premises() {
-    let facts = verified(TUPLE);
+    let facts = verified(tuple_fixture());
     let index = facts
         .generic_bound_checks
         .iter()
@@ -134,7 +138,7 @@ fn missing_guaranteed_members_and_mutability_are_real_type_errors() {
 
 #[test]
 fn fixed_rigid_fields_transport_the_complete_scoped_source_identity() {
-    let source = include_str!("fixtures/record_bounds/nested_rigid_fixed.ril");
+    let source = ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-fixed");
     let facts = verified(source);
     assert!(!facts.scoped_source_identities.is_empty());
 }

@@ -1,6 +1,0 @@
-eff Read<T>{get()->T}
-fn read<T>(witness:T)->T @Read<T>{Read<T>::get()}
-fn selected<T>(witness:T,value:T={with Read<T>::get()->resume witness;read(witness)})->T{value}
-pub fn test_native(){
-    assert(selected(7)==7 && selected("seven")=="seven" && selected(9)==9)
-}

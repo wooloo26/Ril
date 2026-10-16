@@ -956,8 +956,8 @@ impl Replay<'_> {
             require(
                 member.callable_returns.iter().any(|returned| {
                     !returned.raw
-                        && returned.generic_context == identity.scope.types
-                        && returned.bound_row_context == identity.scope.rows
+                        && returned.typing_environment.generic_context == identity.scope.types
+                        && returned.typing_environment.bound_row_context == identity.scope.rows
                         && returned.callables == member.callables
                         && self
                             .ty_matches(&returned.target, result, &identity.scope, 0)

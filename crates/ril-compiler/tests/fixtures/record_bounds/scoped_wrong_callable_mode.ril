@@ -1,3 +1,0 @@
-type Cell={mut value:int}
-fn first<T:{id:int,..R}>(value:(T,T))->int{value.(0).id}
-fn forward<S>(value:({id:int,action:fn(Cell)->(),..S},{id:int,action:fn(mut Cell)->() &mut,..S}))->int{first(value)}

@@ -2,7 +2,7 @@ use ril_compiler::{CompilationOutcome, Session};
 
 #[test]
 fn bounded_helper_calls_keep_each_live_endpoint_and_channel() {
-    let source = include_str!("../../ril-cli/tests/fixtures/resource_clone/private_helpers.ril")
+    let source = ril_test::case_source("tests/regressions/copy.ril::private-helpers")
         .replace(
             "fn duplicate<T>(source:T)->T @Fiber",
             "fn duplicate(source:Channel::Sender<int>)->Channel::Sender<int> @Fiber",

@@ -352,6 +352,7 @@ impl Replay<'_> {
         for argument in &receipt.captured_arguments {
             require(
                 function
+                    .typing_environment
                     .generic_context
                     .values()
                     .any(|identity| identity == &argument.binder)

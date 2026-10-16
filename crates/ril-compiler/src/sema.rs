@@ -15,6 +15,7 @@ mod channel_message_validation;
 pub mod channel_messages;
 mod channel_production;
 pub mod closure_exclusivity;
+pub mod context;
 pub mod copy_contract;
 pub mod copy_eligibility;
 pub mod copy_template_closure;
@@ -363,6 +364,9 @@ pub struct UnsupportedFeature {
 #[derive(Debug)]
 pub struct AnalyzeOutcome {
     pub program: Option<VerifiedProgram>,
+    /// Available observations remain inspectable when semantic verification fails.
+    pub facts: Option<std::sync::Arc<SemanticFacts>>,
+    pub hir: Option<std::sync::Arc<crate::hir::HirProgram>>,
     pub diagnostics: Vec<Diagnostic>,
     pub unsupported: Vec<UnsupportedFeature>,
 }
@@ -371,6 +375,8 @@ pub fn analyze(syntax: &ril_syntax::ast::Program, file: FileId) -> AnalyzeOutcom
     if !diagnostics.is_empty() {
         return AnalyzeOutcome {
             program: None,
+            facts: None,
+            hir: None,
             diagnostics,
             unsupported: vec![],
         };
@@ -387,6 +393,8 @@ pub fn analyze(syntax: &ril_syntax::ast::Program, file: FileId) -> AnalyzeOutcom
     if !resolved.diagnostics.is_empty() || !resolved.unsupported.is_empty() {
         return AnalyzeOutcome {
             program: None,
+            facts: None,
+            hir: None,
             diagnostics: resolved.diagnostics,
             unsupported: resolved.unsupported,
         };
@@ -396,6 +404,8 @@ pub fn analyze(syntax: &ril_syntax::ast::Program, file: FileId) -> AnalyzeOutcom
     if !evaluated.diagnostics.is_empty() || !evaluated.unsupported.is_empty() {
         return AnalyzeOutcome {
             program: None,
+            facts: None,
+            hir: None,
             diagnostics: evaluated.diagnostics,
             unsupported: evaluated.unsupported,
         };

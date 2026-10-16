@@ -12,7 +12,7 @@ fn session(source: &str, target: &str) -> Session {
 
 #[test]
 fn scalar_const_selection_forwarding_shadow_capture_and_type_mix_check_both_layouts() {
-    let source = include_str!("fixtures/static_const_int.ril");
+    let source = ril_test::case_source("tests/regressions/static.ril::static-const-int");
     for target in ["pointer32", "pointer64"] {
         let verified = session(source, target).verify().unwrap();
         ril_compiler::lower::lower_core(&verified).unwrap();

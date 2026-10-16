@@ -5,19 +5,15 @@ mod native_probe;
 fn complete_result_contexts_and_transferred_results_execute() {
     for (source, name) in [
         (
-            include_str!("../../ril-compiler/tests/fixtures/static_result_context/positive.ril"),
+            ril_test::case_source("tests/regressions/static.ril::positive"),
             "complete static result contexts",
         ),
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/static_result_context/result_transfer.ril"
-            ),
+            ril_test::case_source("tests/regressions/static.ril::result-transfer"),
             "contextual Result producer transfer",
         ),
         (
-            include_str!(
-                "../../ril-compiler/tests/fixtures/static_result_context/computed_alias.ril"
-            ),
+            ril_test::case_source("tests/regressions/static.ril::computed-alias"),
             "frozen computed alias result context",
         ),
     ] {

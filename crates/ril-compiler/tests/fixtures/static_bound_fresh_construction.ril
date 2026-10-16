@@ -1,9 +1,0 @@
-meta fn read<T:{mut id:i8,..R}>(value:T)->i8{value.id}
-meta let ANSWER=read(.{id:7,tag:"direct"})
-meta let SPREAD={let stored=.{id:11i8};read(.{..stored,tag:"spread"})}
-meta let OVERRIDE={let stored=.{id:99};read(.{id:13,..stored,tag:"override"})}
-meta let BLOCK=read({.{id:17,tag:"block"}})
-meta let _=assert(ANSWER==7i8 && SPREAD==11i8 && OVERRIDE==13i8 && BLOCK==17i8)
-pub fn test_native() &{ANSWER,SPREAD,OVERRIDE,BLOCK}{
-    assert(ANSWER==7i8 && SPREAD==11i8 && OVERRIDE==13i8 && BLOCK==17i8)
-}

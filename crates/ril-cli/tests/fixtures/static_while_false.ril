@@ -1,3 +1,0 @@
-meta fn none()->int{while false{};7}
-meta let VALUE=none()
-meta let _=assert(VALUE==7)

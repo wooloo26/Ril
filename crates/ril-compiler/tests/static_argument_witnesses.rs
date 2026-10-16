@@ -10,8 +10,12 @@ use ril_compiler::{
 };
 use ril_syntax::ast::TypeKind;
 
-const EFFECT: &str = include_str!("fixtures/source_type_witness/effect_instance.ril");
-const MODES: &str = include_str!("fixtures/source_type_witness/modes.ril");
+fn effect_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::effect-instance")
+}
+fn modes_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-types.ril::modes")
+}
 const CAPTURED: &str = r#"
 fn outer<T>(value:T)->T{
     inner(value)
@@ -50,7 +54,7 @@ fn actual_array(facts: &mut SemanticFacts) -> &mut StaticArgumentWitness {
 
 #[test]
 fn syntax_and_specialization_keys_must_agree_on_empty_nested_array_dimensions() {
-    let original = facts(EFFECT);
+    let original = facts(effect_fixture());
     assert!(solved_facts(&original).is_ok());
     let mut damaged = original.clone();
     let Some(ArgumentKey::Array { element, .. }) = &mut actual_array(&mut damaged).key else {
@@ -86,7 +90,7 @@ fn syntax_and_specialization_keys_must_agree_on_empty_nested_array_dimensions() 
 
 #[test]
 fn partial_static_arguments_cannot_claim_a_complete_substitution() {
-    let original = facts(EFFECT);
+    let original = facts(effect_fixture());
     for drop_key in [false, true] {
         let mut damaged = original.clone();
         let argument = actual_array(&mut damaged);
@@ -109,7 +113,7 @@ fn partial_static_arguments_cannot_claim_a_complete_substitution() {
 
 #[test]
 fn symbolic_static_arguments_require_the_original_registered_binder() {
-    let original = facts(EFFECT);
+    let original = facts(effect_fixture());
     let symbolic = original
         .effect_invocations
         .iter()
@@ -203,7 +207,7 @@ fn defaults_and_captured_static_arguments_receive_the_same_independent_check() {
 
 #[test]
 fn observations_cover_their_exact_declaration_and_captured_environment() {
-    let mut damaged = facts(EFFECT);
+    let mut damaged = facts(effect_fixture());
     let selected = damaged
         .effect_invocations
         .iter()
@@ -234,7 +238,7 @@ fn observations_cover_their_exact_declaration_and_captured_environment() {
 
 #[test]
 fn callable_parameter_modes_and_obligation_rows_cannot_disagree_with_substitution_syntax() {
-    let original = facts(MODES);
+    let original = facts(modes_fixture());
     let selected = original.effect_invocations.iter().enumerate()
         .filter(|(_, event)| !event.verifying)
         .find_map(|(event, observation)| {

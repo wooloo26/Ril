@@ -1,13 +1,19 @@
 use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 
-const VALID: &str = include_str!("fixtures/static_result_context_flow.ril");
-const CONTAINERS: &str = include_str!("fixtures/static_result_context_containers.ril");
-const SHADOW: &str = include_str!("fixtures/static_result_context_shadow.ril");
+fn valid_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/static.ril::static-result-context-flow")
+}
+fn containers_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/static.ril::static-result-context-containers")
+}
+fn shadow_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/static.ril::static-result-context-shadow")
+}
 
 #[test]
 fn result_contexts_follow_returns_constructor_payloads_and_fallbacks() {
     for target in ["pointer32", "pointer64"] {
-        for source in [VALID, CONTAINERS, SHADOW] {
+        for source in [valid_fixture(), containers_fixture(), shadow_fixture()] {
             let verified = Session::with_options(
                 source.as_bytes().to_vec(),
                 CheckOptions {
@@ -24,7 +30,7 @@ fn result_contexts_follow_returns_constructor_payloads_and_fallbacks() {
 
 #[test]
 fn an_outer_dimension_cannot_replace_the_nearer_local_dimension() {
-    let source = SHADOW.replace("Ok([1, 2, 3])", "Ok([1, 2])");
+    let source = shadow_fixture().replace("Ok([1, 2, 3])", "Ok([1, 2])");
     for target in ["pointer32", "pointer64"] {
         let outcome = Session::with_options(
             source.as_bytes().to_vec(),
@@ -45,9 +51,9 @@ fn an_outer_dimension_cannot_replace_the_nearer_local_dimension() {
 #[test]
 fn contextual_receiving_and_presence_do_not_inspect_the_producer() {
     for source in [
-        VALID.replace("assert(final.0 is Ok(_))", "assert(wrapped is Some(_))"),
-        VALID.replace("assert(final.0 is Ok(_))", "assert(len(final.1) == 0)"),
-        CONTAINERS.replace(
+        valid_fixture().replace("assert(final.0 is Ok(_))", "assert(wrapped is Some(_))"),
+        valid_fixture().replace("assert(final.0 is Ok(_))", "assert(len(final.1) == 0)"),
+        containers_fixture().replace(
             "assert(kept.0 is Ok(_))",
             "assert(table[\"item\"] is Some(_))",
         ),
@@ -63,10 +69,10 @@ fn contextual_receiving_and_presence_do_not_inspect_the_producer() {
 
 #[test]
 fn changing_a_contextual_result_inspection_matches_a_fresh_session() {
-    let mut incremental = Session::new(VALID.as_bytes().to_vec());
+    let mut incremental = Session::new(valid_fixture().as_bytes().to_vec());
     incremental.verify().unwrap();
-    let dropped = VALID.replace("assert(final.0 is Ok(_))", "assert(wrapped is Some(_))");
-    for source in [dropped.as_str(), VALID] {
+    let dropped = valid_fixture().replace("assert(final.0 is Ok(_))", "assert(wrapped is Some(_))");
+    for source in [dropped.as_str(), valid_fixture()] {
         incremental.update(source.as_bytes().to_vec());
         let fresh = Session::new(source.as_bytes().to_vec());
         assert_eq!(

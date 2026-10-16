@@ -1,1 +1,0 @@
-fn bad(){let mut values:[][0][2]int=[];let old:[0][3]int=[];Array::push(mut values,old)}

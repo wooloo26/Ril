@@ -24,9 +24,9 @@ fn run(source: &str) -> serde_json::Value {
 #[test]
 fn default_panics_happen_before_the_callee_body_entry_charge() {
     for source in [
-        include_str!("fixtures/generic_defaults/entry_budget_order.ril"),
-        include_str!("fixtures/generic_defaults/helper_entry_budget_order.ril"),
-        include_str!("fixtures/generic_defaults/lambda_entry_budget_order.ril"),
+        ril_test::case_source("tests/regressions/defaults.ril::entry-budget-order"),
+        ril_test::case_source("tests/regressions/defaults.ril::helper-entry-budget-order"),
+        ril_test::case_source("tests/regressions/defaults.ril::lambda-entry-budget-order"),
     ] {
         let report = run(source);
         assert_eq!(report["runtime"], "language-panic", "{report}");

@@ -324,9 +324,11 @@ impl Replay<'_> {
                     annotations: vec![],
                 },
             };
-            let mut original =
-                crate::static_eval::effects::bounded_argument_key(&syntax, &bound.generic_context)
-                    .ok_or_else(|| "lambda public view exceeds its source budget".to_owned())?;
+            let mut original = crate::static_eval::effects::bounded_argument_key(
+                &syntax,
+                &bound.typing_environment.generic_context,
+            )
+            .ok_or_else(|| "lambda public view exceeds its source budget".to_owned())?;
             let ArgumentKey::Callable {
                 annotations: actual,
                 ..
@@ -336,7 +338,7 @@ impl Replay<'_> {
             };
             *actual = annotations.clone();
             let mut selected = BTreeMap::new();
-            for (identity, witness) in &bound.generic_type_witnesses {
+            for (identity, witness) in &bound.typing_environment.generic_type_witnesses {
                 self.type_binder(identity)?;
                 require(
                     witness.validate_closed(),
@@ -351,7 +353,7 @@ impl Replay<'_> {
                     .ok_or_else(|| "lambda public witness exceeds its source budget".to_owned())?,
                 );
             }
-            for (identity, ty) in &bound.generic_substitutions {
+            for (identity, ty) in &bound.typing_environment.generic_substitutions {
                 if selected.contains_key(identity) {
                     continue;
                 }

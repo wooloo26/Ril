@@ -96,14 +96,21 @@ fn an_unrecorded_pipeline_cannot_authorize_sensitive_public_inputs() {
 
 #[test]
 fn result_carriers_keep_the_actual_open_payload_and_context_only_the_absent_branch() {
-    checked("fn wrapped<R>(item:{..R})->Result<{..R},str>{Ok(item)}\nfn example(){let result=wrapped(.{item:1});assert(result is Ok(_))}");
-    checked("fn wrapped<R>(item:{..R})->Result<str,{..R}>{Err(item)}\nfn example(){let result=wrapped(.{item:1});assert(result is Err(_))}");
+    checked(
+        "fn wrapped<R>(item:{..R})->Result<{..R},str>{Ok(item)}\nfn example(){let result=wrapped(.{item:1});assert(result is Ok(_))}",
+    );
+    checked(
+        "fn wrapped<R>(item:{..R})->Result<str,{..R}>{Err(item)}\nfn example(){let result=wrapped(.{item:1});assert(result is Err(_))}",
+    );
     for source in [
         "fn wrapped(item:[0][3]int)->Result<[0][2]int,str>{Ok(item)}",
         "fn wrapped(item:[0][3]int)->Result<str,[0][2]int>{Err(item)}",
     ] {
         let outcome = Session::new(source.as_bytes().to_vec()).check();
-        assert!(matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
-            if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0301")), "{source}\n{outcome:?}");
+        assert!(
+            matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+            if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0301")),
+            "{source}\n{outcome:?}"
+        );
     }
 }

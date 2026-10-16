@@ -14,7 +14,7 @@ fn session(source: &str, target: &str) -> Session {
 fn fresh_record_members_receive_known_numeric_and_slot_declarations_on_both_layouts() {
     for target in ["pointer32", "pointer64"] {
         let verified = session(
-            include_str!("fixtures/static_bound_fresh_construction.ril"),
+            ril_test::case_source("tests/regressions/static.ril::static-bound-fresh-construction"),
             target,
         )
         .verify()

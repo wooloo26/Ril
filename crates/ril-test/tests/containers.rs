@@ -392,7 +392,12 @@ fn discovery_is_strict_and_inventory_matches_the_migration_baseline() {
     .unwrap();
     assert!(discover_cases(temp.path()).is_err());
     let cases = discover_cases(&repo().join("tests")).unwrap();
-    let stats = validate_corpus(&cases, &repo().join("doc"), true).unwrap();
+    validate_corpus(&cases, &repo().join("doc"), true).unwrap();
+    let original: Vec<_> = cases
+        .into_iter()
+        .filter(|case| !case.bundle.starts_with("tests/regressions/"))
+        .collect();
+    let stats = validate_corpus(&original, &repo().join("doc"), true).unwrap();
     assert_eq!(
         (
             stats.bundles,

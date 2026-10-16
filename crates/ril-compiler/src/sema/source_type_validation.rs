@@ -125,10 +125,12 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
                 }
                 if self.contracts.len() > 65536
                     || bound
+                        .typing_environment
                         .generic_type_witnesses
                         .values()
                         .any(|witness| !self.witness(witness))
                     || bound
+                        .typing_environment
                         .bound_row_selections
                         .values()
                         .filter_map(|selection| selection.source_type_witness.as_ref())
@@ -157,7 +159,15 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
     walk.pending
         .extend(facts.invocation_loan_starts.iter().map(|loan| &loan.source));
     for function in &facts.functions {
-        for selection in function.bound_row_selections.values() {
+        if function.lexical != function.typing_environment.contract_bindings {
+            return Err((function.syntax.span, CauseId(0)));
+        }
+        for witness in function.typing_environment.generic_type_witnesses.values() {
+            if !walk.witness(witness) {
+                return Err((witness.syntax.span, CauseId(0)));
+            }
+        }
+        for selection in function.typing_environment.bound_row_selections.values() {
             if let Some(witness) = &selection.source_type_witness
                 && !walk.witness(witness)
             {

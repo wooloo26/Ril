@@ -23,8 +23,8 @@ fn execute(source: &str) {
 
 #[test]
 fn original_non_tail_reference_answer_executes() {
-    execute(include_str!(
-        "../../ril-compiler/tests/fixtures/non_tail_reference_answer.ril"
+    execute(ril_test::case_source(
+        "tests/regressions/effects.ril::non-tail-reference-answer",
     ));
 }
 
@@ -86,7 +86,7 @@ pub fn test_native(){
 fn private_body_writers_end_before_receiving_the_continuation_answer() {
     execute(&format!(
         "{}\npub fn test_native(){{assert(answer()==[8])}}",
-        include_str!("../../ril-compiler/tests/fixtures/non_tail_private_local_answer.ril")
+        ril_test::case_source("tests/regressions/effects.ril::non-tail-private-local-answer")
     ));
     execute(
         r#"

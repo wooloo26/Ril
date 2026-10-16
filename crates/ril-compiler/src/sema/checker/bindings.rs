@@ -529,13 +529,15 @@ impl Checker {
                 );
             }
             if !self.check_storage_write_source(
-                target,
-                operator,
-                rhs_syntax,
-                rhs,
-                StorageDestination::Binding(id),
+                super::storage_sources::StoreReception {
+                    target,
+                    operator,
+                    rhs_syntax,
+                    rhs,
+                    destination: StorageDestination::Binding(id),
+                    receiver: None,
+                },
                 &mut value,
-                None,
                 frame,
             ) {
                 return None;
@@ -753,17 +755,19 @@ impl Checker {
             self.transport_value_since(&mut value, value_recency);
         }
         if !self.check_storage_write_source(
-            target,
-            operator,
-            rhs_syntax,
-            rhs,
-            StorageDestination::Projection {
-                receiver,
-                selector,
-                slot: slot.clone(),
+            super::storage_sources::StoreReception {
+                target,
+                operator,
+                rhs_syntax,
+                rhs,
+                destination: StorageDestination::Projection {
+                    receiver,
+                    selector,
+                    slot: slot.clone(),
+                },
+                receiver: Some(&base),
             },
             &mut value,
-            Some(&base),
             frame,
         ) {
             return None;

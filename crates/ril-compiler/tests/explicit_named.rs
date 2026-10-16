@@ -6,14 +6,18 @@ use ril_compiler::sema::{
 };
 use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 
-const ARRAY: &str =
-    include_str!("fixtures/record_bounds/pending/scoped_symbolic_array_explicit.ril");
-const EMPTY: &str =
-    include_str!("fixtures/record_bounds/pending/scoped_symbolic_empty_explicit.ril");
-const CALLABLE: &str =
-    include_str!("fixtures/record_bounds/pending/scoped_symbolic_callable_explicit.ril");
-const PREFIX: &str =
-    include_str!("fixtures/record_bounds/pending/explicit_named_prefix.ril.pending");
+fn array_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-array-explicit")
+}
+fn empty_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-empty-explicit")
+}
+fn callable_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-symbolic-callable-explicit")
+}
+fn prefix_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::explicit-named-prefix")
+}
 
 fn verified(source: &str, target: &str) -> SemanticFacts {
     let program = Session::with_options(
@@ -45,7 +49,7 @@ fn explicit_damaged(facts: &SemanticFacts) {
 
 #[test]
 fn the_three_preserved_explicit_sources_have_real_source_and_core_proofs() {
-    for source in [ARRAY, EMPTY, CALLABLE] {
+    for source in [array_fixture(), empty_fixture(), callable_fixture()] {
         for target in ["pointer32", "pointer64"] {
             verified(source, target);
         }
@@ -55,7 +59,7 @@ fn the_three_preserved_explicit_sources_have_real_source_and_core_proofs() {
 #[test]
 fn explicit_unused_type_and_partial_prefix_keep_complete_source_identity() {
     for target in ["pointer32", "pointer64"] {
-        verified(PREFIX, target);
+        verified(prefix_fixture(), target);
     }
 }
 
@@ -93,7 +97,7 @@ fn an_applied_named_value_still_needs_storage_and_escape_transport() {
 
 #[test]
 fn removing_an_unused_explicit_own_row_or_its_application_is_not_vacuous() {
-    let facts = verified(PREFIX, "pointer64");
+    let facts = verified(prefix_fixture(), "pointer64");
     let target = facts
         .functions
         .iter()
@@ -123,7 +127,7 @@ fn removing_an_unused_explicit_own_row_or_its_application_is_not_vacuous() {
 
 #[test]
 fn a_consistent_static_dimension_change_cannot_change_the_explicit_source() {
-    let facts = verified(PREFIX, "pointer64");
+    let facts = verified(prefix_fixture(), "pointer64");
     let target = facts
         .functions
         .iter()
@@ -142,11 +146,11 @@ fn a_consistent_static_dimension_change_cannot_change_the_explicit_source() {
         .iter_mut()
         .find(|row| row.invocation == Some(instance))
         .unwrap();
-    let other_source = PREFIX
+    let other_source = prefix_fixture()
         .replace("[2]int", "[3]int")
         .replace("[13,17]", "[13,17,19]")
         .replace("[7,9]", "[7,9,11]");
-    assert_ne!(other_source, PREFIX);
+    assert_ne!(other_source, prefix_fixture());
     let other = verified(&other_source, "pointer64");
     let other_target = other
         .functions
@@ -173,7 +177,7 @@ fn a_consistent_static_dimension_change_cannot_change_the_explicit_source() {
 
 #[test]
 fn another_caller_u_cannot_replace_the_exact_explicit_type_binder() {
-    let facts = verified(ARRAY, "pointer64");
+    let facts = verified(array_fixture(), "pointer64");
     let callee = facts
         .functions
         .iter()

@@ -1,9 +1,0 @@
-eff Mark<T>{touch()}
-type Reader=fn()->int &closure
-fn make<T>(witness:T,reader:Reader=\->7)->Reader @Mark<T>{Mark<T>::touch();reader}
-pub fn test_native(){
-    with {Mark<int>::touch()->resume(),Mark<str>::touch()->resume()}
-    let explicit=make(0,\->9)
-    let omitted=make("")
-    assert(explicit()==9 && omitted()==7)
-}

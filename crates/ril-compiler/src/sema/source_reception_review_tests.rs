@@ -13,6 +13,30 @@ fn int() -> ArgumentKey {
     }
 }
 
+#[test]
+fn projection_keeps_nested_dimensions_and_refuses_excessive_row_scans() {
+    use super::facts::Slot;
+    let source = record(false, array(Some(0), array(Some(3), int())));
+    let member = relation::project_key(&source, &[Slot::Field("items".into())]).unwrap();
+    assert_eq!(
+        relation::compatible(
+            &array(Some(0), array(Some(2), int())),
+            member,
+            None,
+            &mut 4096
+        ),
+        Some(false),
+    );
+    assert!(relation::project_key(&source, &[Slot::Field("missing".into())]).is_none());
+    let wide = ArgumentKey::Record {
+        fields: (0..4097)
+            .map(|index| (format!("field{index}"), false, int()))
+            .collect(),
+        row: None,
+    };
+    assert!(relation::project_key(&wide, &[Slot::Field("field0".into())]).is_none());
+}
+
 fn array(length: Option<u64>, element: ArgumentKey) -> ArgumentKey {
     ArgumentKey::Array {
         length: length.map(|value| format!("const(int:{value})")),

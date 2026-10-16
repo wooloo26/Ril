@@ -56,9 +56,9 @@ fn native(source: &str, budget: u64) {
 #[test]
 fn four_original_ni_sources_check_and_publish_native_values() {
     for source in [
-        include_str!("fixtures/static_loop_last.ril"),
-        include_str!("fixtures/static_for_return.ril"),
-        include_str!("fixtures/static_while_false.ril"),
+        ril_test::case_source("tests/regressions/static.ril::static-loop-last"),
+        ril_test::case_source("tests/regressions/static.ril::static-for-return"),
+        ril_test::case_source("tests/regressions/static.ril::static-while-false"),
     ] {
         accepted(source, 100_000);
         native(
@@ -66,7 +66,7 @@ fn four_original_ni_sources_check_and_publish_native_values() {
             100_000,
         );
     }
-    let source = include_str!("fixtures/static_type_loop.ril");
+    let source = ril_test::case_source("tests/regressions/static.ril::static-type-loop");
     accepted(source, 100_000);
     native(
         &format!("{source}\npub fn test_native(){{assert(identity(7)==7)}}"),

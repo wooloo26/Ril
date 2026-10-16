@@ -1,16 +1,21 @@
 use ril_compiler::{CompilationOutcome, Session};
 
-const ORIGINAL: &str = include_str!("fixtures/io_callback_result_inspection.ril");
+fn original_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/io.ril::io-callback-result-inspection")
+}
 
 #[test]
 fn a_normal_read_all_return_retains_its_reached_first_operation_inspection() {
-    let verified = Session::new(ORIGINAL.as_bytes().to_vec()).verify().unwrap();
+    let verified = Session::new(original_fixture().as_bytes().to_vec())
+        .verify()
+        .unwrap();
     ril_compiler::lower::lower_core(&verified).unwrap();
 }
 
 #[test]
 fn an_empty_write_all_still_enters_the_validation_operation() {
-    let source = include_str!("fixtures/io_callback_empty_write_inspection.ril");
+    let source =
+        ril_test::case_source("tests/regressions/io.ril::io-callback-empty-write-inspection");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     ril_compiler::lower::lower_core(&verified).unwrap();
 }

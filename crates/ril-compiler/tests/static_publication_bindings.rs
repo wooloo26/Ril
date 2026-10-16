@@ -12,8 +12,8 @@ fn core(source: &str) -> ril_compiler::sema::SemanticFacts {
 
 #[test]
 fn original_same_spelling_reference_shadow_is_legal_and_has_distinct_origins() {
-    let facts = core(include_str!(
-        "../../ril-cli/tests/fixtures/static_reference_shadowing.ril"
+    let facts = core(ril_test::case_source(
+        "tests/regressions/static.ril::static-reference-shadowing",
     ));
     let values: Vec<_> = facts
         .bindings

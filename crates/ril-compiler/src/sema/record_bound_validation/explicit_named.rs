@@ -27,6 +27,11 @@ pub(super) struct BindingSite<'a> {
     pub binding: &'a ril_syntax::ast::Binding,
 }
 
+pub(super) struct FunctionSite<'a> {
+    pub owner: CallableOwner,
+    pub function: &'a ril_syntax::ast::Function,
+}
+
 pub(super) struct AssignmentSite<'a> {
     pub owner: CallableOwner,
     pub target: &'a Expr,
@@ -40,6 +45,7 @@ pub(super) struct SourceSites<'a> {
     pub bindings: Vec<BindingSite<'a>>,
     pub assignments: Vec<AssignmentSite<'a>>,
     pub lambdas: Vec<CallSite<'a>>,
+    pub functions: Vec<FunctionSite<'a>>,
 }
 
 enum Pending<'a> {
@@ -104,6 +110,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
             bindings: Vec::new(),
             assignments: Vec::new(),
             lambdas: Vec::new(),
+            functions: Vec::new(),
         });
     }
     let mut headers: BTreeMap<DefinitionId, &FunctionInfo> = BTreeMap::new();
@@ -131,6 +138,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
     let mut bindings = Vec::new();
     let mut assignments = Vec::new();
     let mut lambdas = Vec::new();
+    let mut functions = Vec::new();
     loop {
         let node = match pending.pop() {
             Some(node) => node,
@@ -212,6 +220,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
                             "named input function header or lexical owner differs from the actual Program",
                         )?;
                         let owner = CallableOwner::Function(header.definition);
+                        functions.push(FunctionSite { owner, function });
                         if let Some(body) = &function.body {
                             push_block(&mut pending, owner, body, depth + 1);
                         }
@@ -463,6 +472,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
         bindings,
         assignments,
         lambdas,
+        functions,
     })
 }
 

@@ -6,17 +6,15 @@ fn actual_nested_rigid_tuple_field_and_shared_residual_forwarding_execute() {
     for (name, source) in [
         (
             "rigid tuple",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_rigid_tuple.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-tuple"),
         ),
         (
             "rigid field",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_rigid_field.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-field"),
         ),
         (
             "rigid shared row",
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/nested_rigid_shared_row.ril"
-            ),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-shared-row"),
         ),
     ] {
         native_probe::executes(source, name);

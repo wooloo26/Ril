@@ -6,43 +6,39 @@ fn actual_tuple_field_forwarding_alias_and_fixed_structural_selections_execute()
     for (label, source) in [
         (
             "tuple",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_tuple.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-tuple"),
         ),
         (
             "field",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_field.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-field"),
         ),
         (
             "mixed",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_mixed.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-mixed"),
         ),
         (
             "tuple forward",
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/nested_tuple_forward.ril"
-            ),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-tuple-forward"),
         ),
         (
             "field forward",
-            include_str!(
-                "../../ril-compiler/tests/fixtures/record_bounds/nested_field_forward.ril"
-            ),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-field-forward"),
         ),
         (
             "fixed",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_fixed.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-fixed"),
         ),
         (
             "alias",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_alias.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-alias"),
         ),
         (
             "readonly",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_readonly.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-readonly"),
         ),
         (
             "shared row",
-            include_str!("../../ril-compiler/tests/fixtures/record_bounds/nested_shared_row.ril"),
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-shared-row"),
         ),
     ] {
         native_probe::executes(source, label);

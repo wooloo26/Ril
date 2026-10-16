@@ -34,7 +34,7 @@ fn source(tail: &str, flag: bool) -> String {
 
 #[test]
 fn channel_receives_check_the_nested_producer_actually_carried_by_each_endpoint() {
-    let source = include_str!("../../ril-compiler/tests/fixtures/nested_result_channel.ril")
+    let source = ril_test::case_source("tests/regressions/channels.ril::nested-result-channel")
         .replace("fn example()", "pub fn test_native()");
     executes(&source);
 }

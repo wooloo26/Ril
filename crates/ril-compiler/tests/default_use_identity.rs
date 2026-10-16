@@ -13,9 +13,9 @@ fn accepted(source: &str) -> ril_compiler::hir::VerifiedProgram {
 #[test]
 fn actual_defaults_have_callee_static_keys_and_an_exact_entered_call_event() {
     for source in [
-        include_str!("../../ril-cli/tests/fixtures/generic_defaults/scalars_and_order.ril"),
-        include_str!("../../ril-cli/tests/fixtures/generic_defaults/local_handler.ril"),
-        include_str!("../../ril-cli/tests/fixtures/generic_defaults/local_budget.ril"),
+        ril_test::case_source("tests/regressions/defaults.ril::scalars-and-order"),
+        ril_test::case_source("tests/regressions/defaults.ril::local-handler"),
+        ril_test::case_source("tests/regressions/defaults.ril::local-budget"),
     ] {
         let program = accepted(source);
         let facts = program.facts();
@@ -55,8 +55,8 @@ fn actual_defaults_have_callee_static_keys_and_an_exact_entered_call_event() {
 
 #[test]
 fn default_created_retained_closures_keep_their_actual_use_and_parameter_transfer() {
-    let program = accepted(include_str!(
-        "../../ril-cli/tests/fixtures/generic_defaults/retained_closure.ril"
+    let program = accepted(ril_test::case_source(
+        "tests/regressions/defaults.ril::retained-closure",
     ));
     let facts = program.facts();
     let actual: Vec<_> = facts

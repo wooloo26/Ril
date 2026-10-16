@@ -1,0 +1,1582 @@
+--@ source: source-channel-condition-receipts-checked
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        match value{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->{
+                match business{
+                    Some(inner)->assert(inner is Ok(_)|Err(_)),
+                    None->()
+                }
+                assert(business==value)
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+pub fn test_some_ok() @Async{
+    let value:Option<Result<int,str>>=Some(Ok(7))
+    assert(consume(value) is Ok())
+}
+
+pub fn test_some_err() @Async{
+    let value:Option<Result<int,str>>=Some(Err("inner"))
+    assert(consume(value) is Ok())
+}
+
+pub fn test_none() @Async{
+    let value:Option<Result<int,str>>=None
+    assert(consume(value) is Ok())
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-condition-receipts-checked
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-condition-receipts-checked
+--@ end-case
+
+--@ case: channel-condition-receipts-checked-test-some-ok
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_some_ok
+--@ use-source: source-channel-condition-receipts-checked
+--@ end-case
+
+--@ case: channel-condition-receipts-checked-test-some-err
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_some_err
+--@ use-source: source-channel-condition-receipts-checked
+--@ end-case
+
+--@ case: channel-condition-receipts-checked-test-none
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_none
+--@ use-source: source-channel-condition-receipts-checked
+--@ end-case
+
+--@ source: source-channel-condition-receipts-checked-original
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        match value{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Some(inner)->assert(inner is Ok(_)|Err(_)),
+                None->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+pub fn test_some_ok() @Async{
+    let value:Option<Result<int,str>>=Some(Ok(7))
+    assert(consume(value) is Ok()|Err(_))
+}
+
+pub fn test_some_err() @Async{
+    let value:Option<Result<int,str>>=Some(Err("inner"))
+    assert(consume(value) is Ok()|Err(_))
+}
+
+pub fn test_none() @Async{
+    let value:Option<Result<int,str>>=None
+    assert(consume(value) is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-condition-receipts-checked-original
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-condition-receipts-checked-original
+--@ end-case
+
+--@ case: channel-condition-receipts-checked-original-test-some-ok
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_some_ok
+--@ use-source: source-channel-condition-receipts-checked-original
+--@ end-case
+
+--@ case: channel-condition-receipts-checked-original-test-some-err
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_some_err
+--@ use-source: source-channel-condition-receipts-checked-original
+--@ end-case
+
+--@ case: channel-condition-receipts-checked-original-test-none
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_none
+--@ use-source: source-channel-condition-receipts-checked-original
+--@ end-case
+
+--@ source: source-channel-condition-receipts-clone-unpaid
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn unpaid(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        match value{
+            Some(inner)->{
+                assert(inner is Ok(_)|Err(_))
+                let copied=clone(inner)
+                let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(1)
+                assert(Channel::send(mut tx,copied) is Ok())
+                match Channel::recv(mut rx){Ok(_)->(),Err(_)->panic("receive")}
+                Channel::close(tx)
+                Channel::close(rx)
+            },
+            None->()
+        }
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        Ok()
+    }
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-condition-receipts-clone-unpaid
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: original regression expectation
+--@ use-source: source-channel-condition-receipts-clone-unpaid
+--@ end-case
+
+--@ source: source-channel-condition-receipts-nested-unpaid
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn unpaid(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        match value{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<Result<int,str>,str>>(1)
+        let nested:Result<Result<int,str>,str>=Ok(Ok(7))
+        assert(nested is Ok(_)|Err(_))
+        assert(Channel::send(mut tx,nested) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->assert(business is Ok(_)|Err(_)),
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-condition-receipts-nested-unpaid
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: original regression expectation
+--@ use-source: source-channel-condition-receipts-nested-unpaid
+--@ end-case
+
+--@ source: source-channel-formal-result
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+fn publish(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
+    Channel::send(mut endpoint,value)
+}
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(1)
+        let payload:Result<int,str>=Ok(7)
+        let sent=publish(mut tx,payload)
+        match sent{
+            Ok()->{let received=Channel::recv(mut rx);match received{Ok(value)->assert(value is Ok(7)|Err(_)),Err(_)->panic("receive failed")}},
+            Err(_)->assert(payload is Ok(7)|Err(_))
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-formal-result
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-formal-result
+--@ end-case
+
+--@ case: channel-formal-result-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-formal-result
+--@ end-case
+
+--@ source: source-channel-message-captured-formal
+--@ file: source.ril hex
+75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
+72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
+68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
+65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 2c 76 61 6c 75 65 3a 52 65 73 75 6c 74 3c 69 6e 74
+2c 73 74 72 3e 29 2d 3e 52 65 73 75 6c 74 3c 28 29 2c 43 68 61 6e 6e 65 6c 3a 3a 43 68 61 6e 6e
+65 6c 45 72 72 6f 72 3e 20 40 46 69 62 65 72 20 26 6d 75 74 7b 0a 20 20 20 20 6c 65 74 20 6d 75
+74 20 61 63 74 69 6f 6e 3d 5c 2d 3e 43 68 61 6e 6e 65 6c 3a 3a 73 65 6e 64 28 6d 75 74 20 65 6e
+64 70 6f 69 6e 74 2c 76 61 6c 75 65 29 0d 0a 20 20 20 20 61 63 74 69 6f 6e 28 29 0a 7d 0a 70 75
+62 20 66 6e 20 74 65 73 74 5f 6e 61 74 69 76 65 28 29 20 40 41 73 79 6e 63 7b 0a 20 20 20 20 6c
+65 74 20 72 65 73 75 6c 74 3d 73 63 6f 70 65 20 5c 6d 75 74 20 73 2d 3e 7b 0a 20 20 20 20 20 20
+20 20 6c 65 74 20 74 61 73 6b 3d 73 2e 66 6f 72 6b 28 5c 2d 3e 28 29 29 0a 20 20 20 20 20 20 20
+20 61 73 73 65 72 74 28 74 61 73 6b 2e 6a 6f 69 6e 28 29 20 69 73 20 4f 6b 28 29 7c 45 72 72 28
+5f 29 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 28 6d 75 74 20 74 78 2c 6d 75 74 20 72 78 29 3d
+43 68 61 6e 6e 65 6c 3a 3a 62 6f 75 6e 64 65 64 3c 52 65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e
+3e 28 31 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 70 61 79 6c 6f 61 64 3a 52 65 73 75 6c 74 3c
+69 6e 74 2c 73 74 72 3e 3d 4f 6b 28 37 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 73 65 6e 74 3d
+70 75 62 6c 69 73 68 28 6d 75 74 20 74 78 2c 70 61 79 6c 6f 61 64 29 0a 20 20 20 20 20 20 20 20
+6d 61 74 63 68 20 73 65 6e 74 7b 0a 20 20 20 20 20 20 20 20 20 20 20 20 4f 6b 28 29 2d 3e 7b 6c
+65 74 20 72 65 63 65 69 76 65 64 3d 43 68 61 6e 6e 65 6c 3a 3a 72 65 63 76 28 6d 75 74 20 72 78
+29 3b 6d 61 74 63 68 20 72 65 63 65 69 76 65 64 7b 4f 6b 28 76 61 6c 75 65 29 2d 3e 61 73 73 65
+72 74 28 76 61 6c 75 65 20 69 73 20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 2c 45 72 72 28 5f 29
+2d 3e 70 61 6e 69 63 28 22 72 65 63 65 69 76 65 20 66 61 69 6c 65 64 22 29 7d 7d 2c 0a 20 20 20
+20 20 20 20 20 20 20 20 20 45 72 72 28 5f 29 2d 3e 61 73 73 65 72 74 28 70 61 79 6c 6f 61 64 20
+69 73 20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 0a 20 20 20 20 20 20 20 20 7d 0a 20 20 20 20 20
+20 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 74 78 29 0a 20 20 20 20 20 20 20 20 43 68
+61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0a 20 20 20 20 20 20 20 20 4f 6b 28 29 0a 20 20
+20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20 4f 6b 28 29 7c 45 72
+72 28 5f 29 29 0a 7d 0a
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-captured-formal
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-captured-formal
+--@ end-case
+
+--@ case: channel-message-captured-formal-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-captured-formal
+--@ end-case
+
+--@ source: source-channel-message-conditional-returns
+--@ file: source.ril hex
+75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
+72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
+68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
+65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 2c 76 61 6c 75 65 3a 52 65 73 75 6c 74 3c 69 6e 74
+2c 73 74 72 3e 2c 63 68 6f 69 63 65 3a 62 6f 6f 6c 29 2d 3e 52 65 73 75 6c 74 3c 28 29 2c 43 68
+61 6e 6e 65 6c 3a 3a 43 68 61 6e 6e 65 6c 45 72 72 6f 72 3e 20 40 46 69 62 65 72 20 26 6d 75 74
+7b 0a 20 20 20 20 6c 65 74 20 73 65 6e 74 3d 43 68 61 6e 6e 65 6c 3a 3a 73 65 6e 64 28 6d 75 74
+20 65 6e 64 70 6f 69 6e 74 2c 76 61 6c 75 65 29 0d 0a 20 20 20 20 61 73 73 65 72 74 28 73 65 6e
+74 20 69 73 20 4f 6b 28 29 29 0d 0a 20 20 20 20 69 66 20 63 68 6f 69 63 65 20 7b 72 65 74 75 72
+6e 20 73 65 6e 74 7d 65 6c 73 65 7b 72 65 74 75 72 6e 20 45 72 72 28 43 68 61 6e 6e 65 6c 3a 3a
+43 68 61 6e 6e 65 6c 45 72 72 6f 72 3a 3a 43 6c 6f 73 65 64 29 7d 0a 7d 0a 70 75 62 20 66 6e 20
+74 65 73 74 5f 6e 61 74 69 76 65 28 29 20 40 41 73 79 6e 63 7b 0a 20 20 20 20 6c 65 74 20 72 65
+73 75 6c 74 3d 73 63 6f 70 65 20 5c 6d 75 74 20 73 2d 3e 7b 0a 20 20 20 20 20 20 20 20 6c 65 74
+20 74 61 73 6b 3d 73 2e 66 6f 72 6b 28 5c 2d 3e 28 29 29 0a 20 20 20 20 20 20 20 20 61 73 73 65
+72 74 28 74 61 73 6b 2e 6a 6f 69 6e 28 29 20 69 73 20 4f 6b 28 29 7c 45 72 72 28 5f 29 29 0a 20
+20 20 20 20 20 20 20 6c 65 74 20 28 6d 75 74 20 74 78 2c 6d 75 74 20 72 78 29 3d 43 68 61 6e 6e
+65 6c 3a 3a 62 6f 75 6e 64 65 64 3c 52 65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 28 31 29 0a
+20 20 20 20 20 20 20 20 6c 65 74 20 70 61 79 6c 6f 61 64 3a 52 65 73 75 6c 74 3c 69 6e 74 2c 73
+74 72 3e 3d 4f 6b 28 37 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 73 65 6e 74 3d 70 75 62 6c 69
+73 68 28 6d 75 74 20 74 78 2c 70 61 79 6c 6f 61 64 2c 66 61 6c 73 65 29 0a 20 20 20 20 20 20 20
+20 6d 61 74 63 68 20 73 65 6e 74 7b 0a 20 20 20 20 20 20 20 20 20 20 20 20 4f 6b 28 29 2d 3e 7b
+6c 65 74 20 72 65 63 65 69 76 65 64 3d 43 68 61 6e 6e 65 6c 3a 3a 72 65 63 76 28 6d 75 74 20 72
+78 29 3b 6d 61 74 63 68 20 72 65 63 65 69 76 65 64 7b 4f 6b 28 76 61 6c 75 65 29 2d 3e 61 73 73
+65 72 74 28 76 61 6c 75 65 20 69 73 20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 2c 45 72 72 28 5f
+29 2d 3e 70 61 6e 69 63 28 22 72 65 63 65 69 76 65 20 66 61 69 6c 65 64 22 29 7d 7d 2c 0a 20 20
+20 20 20 20 20 20 20 20 20 20 45 72 72 28 5f 29 2d 3e 61 73 73 65 72 74 28 70 61 79 6c 6f 61 64
+20 69 73 20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 0a 20 20 20 20 20 20 20 20 7d 0a 20 20 20 20
+20 20 20 20 6c 65 74 20 74 69 63 6b 65 74 3d 43 68 61 6e 6e 65 6c 3a 3a 64 65 74 61 63 68 28 6d
+75 74 20 72 78 29 0d 0a 20 20 20 20 20 20 20 20 6c 65 74 20 72 65 73 74 6f 72 65 64 3d 43 68 61
+6e 6e 65 6c 3a 3a 61 74 74 61 63 68 28 74 69 63 6b 65 74 29 0d 0a 20 20 20 20 20 20 20 20 43 68
+61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 74 78 29 0a 20 20 20 20 20 20 20 20 43 68 61 6e 6e 65 6c
+3a 3a 63 6c 6f 73 65 28 72 65 73 74 6f 72 65 64 29 0a 20 20 20 20 20 20 20 20 4f 6b 28 29 0a 20
+20 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20 4f 6b 28 29 7c 45
+72 72 28 5f 29 29 0a 7d 0a
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-conditional-returns
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-conditional-returns
+--@ end-case
+
+--@ case: channel-message-conditional-returns-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-conditional-returns
+--@ end-case
+
+--@ source: source-channel-message-fallback
+--@ file: source.ril hex
+75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
+72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
+68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
+65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 2c 76 61 6c 75 65 3a 52 65 73 75 6c 74 3c 69 6e 74
+2c 73 74 72 3e 29 2d 3e 52 65 73 75 6c 74 3c 28 29 2c 43 68 61 6e 6e 65 6c 3a 3a 43 68 61 6e 6e
+65 6c 45 72 72 6f 72 3e 20 40 46 69 62 65 72 20 26 6d 75 74 7b 0a 20 20 20 20 43 68 61 6e 6e 65
+6c 3a 3a 73 65 6e 64 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 2c 76 61 6c 75 65 29 0a 7d 0a 70 75
+62 20 66 6e 20 74 65 73 74 5f 6e 61 74 69 76 65 28 29 20 40 41 73 79 6e 63 7b 0a 20 20 20 20 6c
+65 74 20 72 65 73 75 6c 74 3d 73 63 6f 70 65 20 5c 6d 75 74 20 73 2d 3e 7b 0a 20 20 20 20 20 20
+20 20 6c 65 74 20 74 61 73 6b 3d 73 2e 66 6f 72 6b 28 5c 2d 3e 28 29 29 0a 20 20 20 20 20 20 20
+20 61 73 73 65 72 74 28 74 61 73 6b 2e 6a 6f 69 6e 28 29 20 69 73 20 4f 6b 28 29 7c 45 72 72 28
+5f 29 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 28 6d 75 74 20 74 78 2c 6d 75 74 20 72 78 29 3d
+43 68 61 6e 6e 65 6c 3a 3a 62 6f 75 6e 64 65 64 3c 52 65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e
+3e 28 31 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 70 61 79 6c 6f 61 64 3a 52 65 73 75 6c 74 3c
+69 6e 74 2c 73 74 72 3e 3d 4f 6b 28 37 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 73 65 6e 74 3d
+70 75 62 6c 69 73 68 28 6d 75 74 20 74 78 2c 70 61 79 6c 6f 61 64 29 0a 20 20 20 20 20 20 20 20
+6c 65 74 20 5f 3d 73 65 6e 74 20 3f 3f 20 5c 65 72 72 6f 72 2d 3e 7b 61 73 73 65 72 74 28 70 61
+79 6c 6f 61 64 20 69 73 20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 3b 28 29 7d 0d 0a 20 20 20 20
+20 20 20 20 6d 61 74 63 68 20 73 65 6e 74 7b 0a 20 20 20 20 20 20 20 20 20 20 20 20 4f 6b 28 29
+2d 3e 7b 6c 65 74 20 72 65 63 65 69 76 65 64 3d 43 68 61 6e 6e 65 6c 3a 3a 72 65 63 76 28 6d 75
+74 20 72 78 29 3b 6d 61 74 63 68 20 72 65 63 65 69 76 65 64 7b 4f 6b 28 76 61 6c 75 65 29 2d 3e
+61 73 73 65 72 74 28 76 61 6c 75 65 20 69 73 20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 2c 45 72
+72 28 5f 29 2d 3e 70 61 6e 69 63 28 22 72 65 63 65 69 76 65 20 66 61 69 6c 65 64 22 29 7d 7d 2c
+0a 20 20 20 20 20 20 20 20 20 20 20 20 45 72 72 28 5f 29 2d 3e 28 29 0a 20 20 20 20 20 20 20 20
+7d 0a 20 20 20 20 20 20 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 74 78 29 0a 20 20 20
+20 20 20 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0a 20 20 20 20 20 20 20 20
+4f 6b 28 29 0a 20 20 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20
+4f 6b 28 29 7c 45 72 72 28 5f 29 29 0a 7d 0a
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-fallback
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-fallback
+--@ end-case
+
+--@ case: channel-message-fallback-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-fallback
+--@ end-case
+
+--@ source: source-channel-message-finite-graphs
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<Result<int,str>,str>>(1)
+        let nested:Result<Result<int,str>,str>=Ok(Ok(7))
+        assert(Channel::send(mut tx,nested) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{Ok(inner)->assert(inner is Ok(7)|Err(_)),Err(_)->()},
+            Err(_)->panic("nested")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        let first:Result<int,str>=Ok(11)
+        let second:Result<int,str>=Err("second")
+        assert(first is Ok(_)|Err(_))
+        assert(second is Ok(_)|Err(_))
+        let array=[first,second]
+        let (mut atx,mut arx)=Channel::bounded<[]Result<int,str>>(1)
+        assert(Channel::send(mut atx,array) is Ok())
+        assert(Channel::recv(mut arx) is Ok(_))
+        Channel::close(atx)
+        Channel::close(arx)
+        let mapping=["a":first,"b":second]
+        let (mut mtx,mut mrx)=Channel::bounded<[str:Result<int,str>]>(1)
+        assert(Channel::send(mut mtx,mapping) is Ok())
+        assert(Channel::recv(mut mrx) is Ok(_))
+        Channel::close(mtx)
+        Channel::close(mrx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-finite-graphs
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-finite-graphs
+--@ end-case
+
+--@ case: channel-message-finite-graphs-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-finite-graphs
+--@ end-case
+
+--@ source: source-channel-message-formal-array-graph-gap
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+fn consume(value:Immut<[]Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Immut<[]Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){Ok(business)->assert(business[0] is Ok(_)|Err(_)),Err(_)->panic("receive")}
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+pub fn test_native(){}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-array-graph-gap
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+-- Original formal Result producers remain owned by their caller; this definition is valid.
+--@ use-source: source-channel-message-formal-array-graph-gap
+--@ end-case
+
+--@ source: source-channel-message-formal-failed-send-loses-original
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+fn publish(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
+    Channel::send(mut endpoint,value)
+}
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(1)
+        let payload:Result<int,str>=Ok(7)
+        let sent=publish(mut tx,payload)
+        match sent{
+            Ok()->{let received=Channel::recv(mut rx);match received{Ok(value)->assert(value is Ok(7)|Err(_)),Err(_)->panic("receive failed")}},
+            Err(_)->()
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-failed-send-loses-original
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: original regression expectation
+--@ use-source: source-channel-message-formal-failed-send-loses-original
+--@ end-case
+
+--@ source: source-channel-message-formal-map-graph-gap
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+fn consume(value:Immut<[str:Result<int,str>]>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Immut<[str:Result<int,str>]>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){Ok(business)->assert(business["a"] is Some(Ok(_)|Err(_))|None),Err(_)->panic("receive")}
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+pub fn test_native(){}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-map-graph-gap
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+-- Original formal Result producers remain owned by their caller; this definition is valid.
+--@ use-source: source-channel-message-formal-map-graph-gap
+--@ end-case
+
+--@ source: source-channel-message-formal-nested-checked
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Result<Result<int,str>,str>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<Result<int,str>,str>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Ok(inner)->assert(inner is Ok(_)|Err(_)),
+                Err(_)->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+pub fn test_native() @Async{
+    let first:Result<Result<int,str>,str>=Ok(Ok(7))
+    let second:Result<Result<int,str>,str>=Ok(Err("inner"))
+    let third:Result<Result<int,str>,str>=Err("outer")
+    assert(consume(first) is Ok()|Err(_))
+    assert(consume(second) is Ok()|Err(_))
+    assert(consume(third) is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-nested-checked
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-formal-nested-checked
+--@ end-case
+
+--@ case: channel-message-formal-nested-checked-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-formal-nested-checked
+--@ end-case
+
+--@ source: source-channel-message-formal-nested-graph-gap
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+fn consume(value:Result<Result<int,str>,str>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<Result<int,str>,str>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){Ok(business)->assert(business is Ok(_)|Err(_)),Err(_)->panic("receive")}
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+pub fn test_native(){}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-nested-graph-gap
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: original regression expectation
+--@ use-source: source-channel-message-formal-nested-graph-gap
+--@ end-case
+
+--@ source: source-channel-message-formal-optional-checked
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Some(inner)->assert(inner is Ok(_)|Err(_)),
+                None->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+pub fn test_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    assert(consume(first) is Ok()|Err(_))
+    assert(consume(second) is Ok()|Err(_))
+    assert(consume(third) is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-optional-checked
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-formal-optional-checked
+--@ end-case
+
+--@ case: channel-message-formal-optional-checked-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-formal-optional-checked
+--@ end-case
+
+--@ source: source-channel-message-formal-optional-clone-checked
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        let copied=clone(value)
+        match value{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        assert(Channel::send(mut tx,copied) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Some(inner)->assert(inner is Ok(_)|Err(_)),
+                None->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+pub fn test_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    assert(consume(first) is Ok()|Err(_))
+    assert(consume(second) is Ok()|Err(_))
+    assert(consume(third) is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-optional-clone-checked
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-formal-optional-clone-checked
+--@ end-case
+
+--@ case: channel-message-formal-optional-clone-checked-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-formal-optional-clone-checked
+--@ end-case
+
+--@ source: source-channel-message-formal-two-branches-checked
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Result<Result<int,str>,Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<Result<int,str>,Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Ok(inner)->assert(inner is Ok(_)|Err(_)),
+                Err(inner)->assert(inner is Ok(_)|Err(_))
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+pub fn test_native() @Async{
+    let first:Result<Result<int,str>,Result<int,str>>=Ok(Ok(7))
+    let second:Result<Result<int,str>,Result<int,str>>=Ok(Err("success"))
+    let third:Result<Result<int,str>,Result<int,str>>=Err(Ok(8))
+    let fourth:Result<Result<int,str>,Result<int,str>>=Err(Err("failure"))
+    assert(consume(first) is Ok()|Err(_))
+    assert(consume(second) is Ok()|Err(_))
+    assert(consume(third) is Ok()|Err(_))
+    assert(consume(fourth) is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-two-branches-checked
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-formal-two-branches-checked
+--@ end-case
+
+--@ case: channel-message-formal-two-branches-checked-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-formal-two-branches-checked
+--@ end-case
+
+--@ source: source-channel-message-formal-two-optionals-checked
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>,other:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        match other{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Some(inner)->assert(inner is Ok(_)|Err(_)),
+                None->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+pub fn test_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    assert(consume(first,third) is Ok()|Err(_))
+    assert(consume(second,first) is Ok()|Err(_))
+    assert(consume(third,second) is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-formal-two-optionals-checked
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-formal-two-optionals-checked
+--@ end-case
+
+--@ case: channel-message-formal-two-optionals-checked-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-formal-two-optionals-checked
+--@ end-case
+
+--@ source: source-channel-message-inline-closed-send-loses-original
+--@ file: source.ril hex
+75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
+72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 70 75 62 20 66 6e 20 74 65
+73 74 5f 6e 61 74 69 76 65 28 29 20 40 41 73 79 6e 63 7b 0a 20 20 20 20 6c 65 74 20 72 65 73 75
+6c 74 3d 73 63 6f 70 65 20 5c 6d 75 74 20 73 2d 3e 7b 0a 20 20 20 20 20 20 20 20 6c 65 74 20 74
+61 73 6b 3d 73 2e 66 6f 72 6b 28 5c 2d 3e 28 29 29 0a 20 20 20 20 20 20 20 20 61 73 73 65 72 74
+28 74 61 73 6b 2e 6a 6f 69 6e 28 29 20 69 73 20 4f 6b 28 29 7c 45 72 72 28 5f 29 29 0a 20 20 20
+20 20 20 20 20 6c 65 74 20 28 6d 75 74 20 74 78 2c 72 78 29 3d 43 68 61 6e 6e 65 6c 3a 3a 62 6f
+75 6e 64 65 64 3c 52 65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 28 31 29 0a 20 20 20 20 20 20
+20 20 6c 65 74 20 70 61 79 6c 6f 61 64 3a 52 65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3d 4f 6b
+28 37 29 0a 20 20 20 20 20 20 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0d 0a
+20 20 20 20 20 20 20 20 6c 65 74 20 73 65 6e 74 3d 43 68 61 6e 6e 65 6c 3a 3a 73 65 6e 64 28 6d
+75 74 20 74 78 2c 70 61 79 6c 6f 61 64 29 0a 20 20 20 20 20 20 20 20 6d 61 74 63 68 20 73 65 6e
+74 7b 0a 20 20 20 20 20 20 20 20 20 20 20 20 4f 6b 28 29 2d 3e 28 29 2c 0a 20 20 20 20 20 20 20
+20 20 20 20 20 45 72 72 28 5f 29 2d 3e 28 29 0a 20 20 20 20 20 20 20 20 7d 0a 20 20 20 20 20 20
+20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 74 78 29 0a 0a 20 20 20 20 20 20 20 20 4f 6b
+28 29 0a 20 20 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20 4f 6b
+28 29 7c 45 72 72 28 5f 29 29 0a 7d 0a
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-inline-closed-send-loses-original
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: original regression expectation
+--@ use-source: source-channel-message-inline-closed-send-loses-original
+--@ end-case
+
+--@ source: source-channel-message-inline-control
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(1)
+        let payload:Result<int,str>=Ok(7)
+        let sent=Channel::send(mut tx,payload)
+        match sent{
+            Ok()->{let received=Channel::recv(mut rx);match received{Ok(value)->assert(value is Ok(7)|Err(_)),Err(_)->panic("receive failed")}},
+            Err(_)->assert(payload is Ok(7)|Err(_))
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-inline-control
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-inline-control
+--@ end-case
+
+--@ case: channel-message-inline-control-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-inline-control
+--@ end-case
+
+--@ source: source-channel-message-inline-outer-only
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(1)
+        let payload:Result<int,str>=Ok(7)
+        let sent=Channel::send(mut tx,payload)
+        match sent{
+            Ok()->{let received=Channel::recv(mut rx);match received{Ok(_)->(),Err(_)->panic("receive failed")}},
+            Err(_)->assert(payload is Ok(7)|Err(_))
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-inline-outer-only
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: original regression expectation
+--@ use-source: source-channel-message-inline-outer-only
+--@ end-case
+
+--@ source: source-channel-message-inline-unread-close
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(1)
+        let payload:Result<int,str>=Ok(7)
+        let sent=Channel::send(mut tx,payload)
+        match sent{
+            Ok()->(),
+            Err(_)->assert(payload is Ok(7)|Err(_))
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-inline-unread-close
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: original regression expectation
+--@ use-source: source-channel-message-inline-unread-close
+--@ end-case
+
+--@ source: source-channel-message-loop-cardinality-gap
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(2)
+        let mut action=\number:int->{
+            let value:Result<int,str>=Ok(number)
+            assert(value is Ok(_)|Err(_))
+            assert(Channel::send(mut tx,value) is Ok())
+            number
+        }
+        for 0..2 as number {let _=action(number)}
+        assert(Channel::recv(mut rx) is Ok(_))
+        match Channel::recv(mut rx){
+            Ok(_)->{
+                let (mut other_tx,other_rx)=Channel::bounded<Result<int,str>>(1)
+                let unpaid:Result<int,str>=Ok(99)
+                assert(Channel::send(mut other_tx,unpaid) is Ok())
+                Channel::close(other_tx)
+                Channel::close(other_rx)
+            },
+            Err(_)->()
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-loop-cardinality-gap
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: normative target; retained NI guards are not conformance passes
+--@ use-source: source-channel-message-loop-cardinality-gap
+--@ end-case
+
+--@ source: source-channel-message-nested-formal
+--@ file: source.ril hex
+75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
+72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
+68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
+65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 2c 76 61 6c 75 65 3a 52 65 73 75 6c 74 3c 69 6e 74
+2c 73 74 72 3e 29 2d 3e 52 65 73 75 6c 74 3c 28 29 2c 43 68 61 6e 6e 65 6c 3a 3a 43 68 61 6e 6e
+65 6c 45 72 72 6f 72 3e 20 40 46 69 62 65 72 20 26 6d 75 74 7b 0a 20 20 20 20 43 68 61 6e 6e 65
+6c 3a 3a 73 65 6e 64 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 2c 76 61 6c 75 65 29 0a 7d 0a 66 6e
+20 72 65 6c 61 79 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e
+64 65 72 3c 52 65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 2c 76 61 6c 75 65 3a 52 65 73 75 6c
+74 3c 69 6e 74 2c 73 74 72 3e 29 2d 3e 52 65 73 75 6c 74 3c 28 29 2c 43 68 61 6e 6e 65 6c 3a 3a
+43 68 61 6e 6e 65 6c 45 72 72 6f 72 3e 20 40 46 69 62 65 72 20 26 6d 75 74 7b 0a 20 20 20 20 70
+75 62 6c 69 73 68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 2c 76 61 6c 75 65 29 0a 7d 0d 0a 70 75
+62 20 66 6e 20 74 65 73 74 5f 6e 61 74 69 76 65 28 29 20 40 41 73 79 6e 63 7b 0a 20 20 20 20 6c
+65 74 20 72 65 73 75 6c 74 3d 73 63 6f 70 65 20 5c 6d 75 74 20 73 2d 3e 7b 0a 20 20 20 20 20 20
+20 20 6c 65 74 20 74 61 73 6b 3d 73 2e 66 6f 72 6b 28 5c 2d 3e 28 29 29 0a 20 20 20 20 20 20 20
+20 61 73 73 65 72 74 28 74 61 73 6b 2e 6a 6f 69 6e 28 29 20 69 73 20 4f 6b 28 29 7c 45 72 72 28
+5f 29 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 28 6d 75 74 20 74 78 2c 6d 75 74 20 72 78 29 3d
+43 68 61 6e 6e 65 6c 3a 3a 62 6f 75 6e 64 65 64 3c 52 65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e
+3e 28 31 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 70 61 79 6c 6f 61 64 3a 52 65 73 75 6c 74 3c
+69 6e 74 2c 73 74 72 3e 3d 4f 6b 28 37 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 73 65 6e 74 3d
+72 65 6c 61 79 28 6d 75 74 20 74 78 2c 70 61 79 6c 6f 61 64 29 0a 20 20 20 20 20 20 20 20 6d 61
+74 63 68 20 73 65 6e 74 7b 0a 20 20 20 20 20 20 20 20 20 20 20 20 4f 6b 28 29 2d 3e 7b 6c 65 74
+20 72 65 63 65 69 76 65 64 3d 43 68 61 6e 6e 65 6c 3a 3a 72 65 63 76 28 6d 75 74 20 72 78 29 3b
+6d 61 74 63 68 20 72 65 63 65 69 76 65 64 7b 4f 6b 28 76 61 6c 75 65 29 2d 3e 61 73 73 65 72 74
+28 76 61 6c 75 65 20 69 73 20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 2c 45 72 72 28 5f 29 2d 3e
+70 61 6e 69 63 28 22 72 65 63 65 69 76 65 20 66 61 69 6c 65 64 22 29 7d 7d 2c 0a 20 20 20 20 20
+20 20 20 20 20 20 20 45 72 72 28 5f 29 2d 3e 61 73 73 65 72 74 28 70 61 79 6c 6f 61 64 20 69 73
+20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 0a 20 20 20 20 20 20 20 20 7d 0a 20 20 20 20 20 20 20
+20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 74 78 29 0a 20 20 20 20 20 20 20 20 43 68 61 6e
+6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0a 20 20 20 20 20 20 20 20 4f 6b 28 29 0a 20 20 20 20
+7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20 4f 6b 28 29 7c 45 72 72 28
+5f 29 29 0a 7d 0a
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-nested-formal
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-nested-formal
+--@ end-case
+
+--@ case: channel-message-nested-formal-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-nested-formal
+--@ end-case
+
+--@ source: source-channel-message-optional-callback-scope-budget
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>,other:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        match other{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Some(inner)->assert(inner is Ok(_)|Err(_)),
+                None->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+fn alias_unknown_optional(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    consume(value,value)
+}
+fn named_optional_callback(value:Option<Result<int,str>>) @Async{
+    assert(consume(value,value) is Ok()|Err(_))
+}
+fn through_named_optional_callback(value:Option<Result<int,str>>) @Async{
+    named_optional_callback(value)
+}
+fn through_single_optional_callback(value:Option<Result<int,str>>) @Async{
+    let mapped=Array::map([1],\number:int->{named_optional_callback(value);number})
+}
+
+pub fn test_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    assert(alias_unknown_optional(first) is Ok()|Err(_))
+    assert(alias_unknown_optional(second) is Ok()|Err(_))
+    assert(alias_unknown_optional(third) is Ok()|Err(_))
+    through_named_optional_callback(first)
+    through_named_optional_callback(second)
+    through_named_optional_callback(third)
+    through_single_optional_callback(first)
+    through_single_optional_callback(second)
+    through_single_optional_callback(third)
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-optional-callback-scope-budget
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-optional-callback-scope-budget
+--@ end-case
+
+--@ case: channel-message-optional-callback-scope-budget-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-optional-callback-scope-budget
+--@ end-case
+
+--@ source: source-channel-message-optional-callback-source-controls
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>,other:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        match other{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Some(inner)->assert(inner is Ok(_)|Err(_)),
+                None->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+fn named_optional_callback(value:Option<Result<int,str>>) @Async{
+    assert(consume(value,value) is Ok()|Err(_))
+}
+fn through_single_optional_callback(value:Option<Result<int,str>>) @Async{
+    let mapped=Array::map([1],\number:int->{named_optional_callback(value);number})
+}
+
+pub fn test_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    assert(consume(first,first) is Ok()|Err(_))
+    assert(consume(second,second) is Ok()|Err(_))
+    assert(consume(third,third) is Ok()|Err(_))
+}
+
+pub fn test_named_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    named_optional_callback(first)
+    named_optional_callback(second)
+    named_optional_callback(third)
+}
+
+pub fn test_single_map_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    through_single_optional_callback(first)
+    through_single_optional_callback(second)
+    through_single_optional_callback(third)
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-optional-callback-source-controls
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-optional-callback-source-controls
+--@ end-case
+
+--@ case: channel-message-optional-callback-source-controls-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-optional-callback-source-controls
+--@ end-case
+
+--@ case: channel-message-optional-callback-source-controls-test-named-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_named_native
+--@ use-source: source-channel-message-optional-callback-source-controls
+--@ end-case
+
+--@ case: channel-message-optional-callback-source-controls-test-single-map-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_single_map_native
+--@ use-source: source-channel-message-optional-callback-source-controls
+--@ end-case
+
+--@ source: source-channel-message-optional-callback-source-index-checked
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>,other:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        match other{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Some(inner)->assert(inner is Ok(_)|Err(_)),
+                None->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+fn alias_unknown_optional(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    consume(value,value)
+}
+fn named_optional_callback(value:Option<Result<int,str>>) @Async{
+    assert(consume(value,value) is Ok()|Err(_))
+}
+fn through_named_optional_callback(value:Option<Result<int,str>>) @Async{
+    named_optional_callback(value)
+}
+fn through_single_optional_callback(value:Option<Result<int,str>>) @Async{
+    let mapped=Array::map([1],\number:int->{named_optional_callback(value);number})
+}
+
+pub fn test_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    assert(alias_unknown_optional(first) is Ok()|Err(_))
+    assert(alias_unknown_optional(second) is Ok()|Err(_))
+    assert(alias_unknown_optional(third) is Ok()|Err(_))
+}
+
+pub fn test_named_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    through_named_optional_callback(first)
+    through_named_optional_callback(second)
+    through_named_optional_callback(third)
+}
+
+pub fn test_single_map_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    through_single_optional_callback(first)
+    through_single_optional_callback(second)
+    through_single_optional_callback(third)
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-optional-callback-source-index-checked
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-optional-callback-source-index-checked
+--@ end-case
+
+--@ case: channel-message-optional-callback-source-index-checked-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-optional-callback-source-index-checked
+--@ end-case
+
+--@ case: channel-message-optional-callback-source-index-checked-test-named-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_named_native
+--@ use-source: source-channel-message-optional-callback-source-index-checked
+--@ end-case
+
+--@ case: channel-message-optional-callback-source-index-checked-test-single-map-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_single_map_native
+--@ use-source: source-channel-message-optional-callback-source-index-checked
+--@ end-case
+
+--@ source: source-channel-message-optional-scalar
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<int>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Option<int>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        assert(Channel::recv(mut rx) is Ok(_))
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+pub fn test_native() @Async{
+    assert(consume(Some(7)) is Ok()|Err(_))
+    assert(consume(None) is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-optional-scalar
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-optional-scalar
+--@ end-case
+
+--@ case: channel-message-optional-scalar-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-optional-scalar
+--@ end-case
+
+--@ source: source-channel-message-optional-scalar-source-controls
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<int>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Option<int>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        assert(Channel::recv(mut rx) is Ok(_))
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+fn unrelated_global_optional(value:?int)->int{value ?? 0}
+let STORED=unrelated_global_optional(Array::get([1],0))
+
+fn ordinary_tag_receipts(value:?int){
+    let result:Result<int,str>=Ok(1)
+    if value is Some(_){assert(result is Ok(_)|Err(_))}
+    else{assert(result is Ok(_)|Err(_))}
+}
+fn ordinary_tag_forward(value:?int){ordinary_tag_receipts(value)}
+
+pub fn test_native() @Async &{STORED}{
+    assert(STORED==1)
+    ordinary_tag_forward(Some(7))
+    ordinary_tag_forward(None)
+    assert(consume(Some(7)) is Ok()|Err(_))
+    assert(consume(None) is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-optional-scalar-source-controls
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-optional-scalar-source-controls
+--@ end-case
+
+--@ case: channel-message-optional-scalar-source-controls-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-optional-scalar-source-controls
+--@ end-case
+
+--@ source: source-channel-message-question-checked
+--@ file: source.ril hex
+75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
+72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
+68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
+65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 2c 76 61 6c 75 65 3a 52 65 73 75 6c 74 3c 69 6e 74
+2c 73 74 72 3e 29 2d 3e 52 65 73 75 6c 74 3c 28 29 2c 43 68 61 6e 6e 65 6c 3a 3a 43 68 61 6e 6e
+65 6c 45 72 72 6f 72 3e 20 40 46 69 62 65 72 20 26 6d 75 74 7b 0a 20 20 20 20 61 73 73 65 72 74
+28 76 61 6c 75 65 20 69 73 20 4f 6b 28 5f 29 7c 45 72 72 28 5f 29 29 0d 0a 20 20 20 20 43 68 61
+6e 6e 65 6c 3a 3a 73 65 6e 64 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 2c 76 61 6c 75 65 29 3f 0d
+0a 20 20 20 20 4f 6b 28 29 0a 7d 0a 70 75 62 20 66 6e 20 74 65 73 74 5f 6e 61 74 69 76 65 28 29
+20 40 41 73 79 6e 63 7b 0a 20 20 20 20 6c 65 74 20 72 65 73 75 6c 74 3d 73 63 6f 70 65 20 5c 6d
+75 74 20 73 2d 3e 7b 0a 20 20 20 20 20 20 20 20 6c 65 74 20 74 61 73 6b 3d 73 2e 66 6f 72 6b 28
+5c 2d 3e 28 29 29 0a 20 20 20 20 20 20 20 20 61 73 73 65 72 74 28 74 61 73 6b 2e 6a 6f 69 6e 28
+29 20 69 73 20 4f 6b 28 29 7c 45 72 72 28 5f 29 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 28 6d
+75 74 20 74 78 2c 6d 75 74 20 72 78 29 3d 43 68 61 6e 6e 65 6c 3a 3a 62 6f 75 6e 64 65 64 3c 52
+65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3e 28 31 29 0a 20 20 20 20 20 20 20 20 6c 65 74 20 70
+61 79 6c 6f 61 64 3a 52 65 73 75 6c 74 3c 69 6e 74 2c 73 74 72 3e 3d 4f 6b 28 37 29 0a 20 20 20
+20 20 20 20 20 6c 65 74 20 73 65 6e 74 3d 70 75 62 6c 69 73 68 28 6d 75 74 20 74 78 2c 70 61 79
+6c 6f 61 64 29 0a 20 20 20 20 20 20 20 20 6d 61 74 63 68 20 73 65 6e 74 7b 0a 20 20 20 20 20 20
+20 20 20 20 20 20 4f 6b 28 29 2d 3e 7b 6c 65 74 20 72 65 63 65 69 76 65 64 3d 43 68 61 6e 6e 65
+6c 3a 3a 72 65 63 76 28 6d 75 74 20 72 78 29 3b 6d 61 74 63 68 20 72 65 63 65 69 76 65 64 7b 4f
+6b 28 76 61 6c 75 65 29 2d 3e 61 73 73 65 72 74 28 76 61 6c 75 65 20 69 73 20 4f 6b 28 37 29 7c
+45 72 72 28 5f 29 29 2c 45 72 72 28 5f 29 2d 3e 70 61 6e 69 63 28 22 72 65 63 65 69 76 65 20 66
+61 69 6c 65 64 22 29 7d 7d 2c 0a 20 20 20 20 20 20 20 20 20 20 20 20 45 72 72 28 5f 29 2d 3e 61
+73 73 65 72 74 28 70 61 79 6c 6f 61 64 20 69 73 20 4f 6b 28 37 29 7c 45 72 72 28 5f 29 29 0a 20
+20 20 20 20 20 20 20 7d 0a 20 20 20 20 20 20 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28
+74 78 29 0a 20 20 20 20 20 20 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0a 20
+20 20 20 20 20 20 20 4f 6b 28 29 0a 20 20 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73
+75 6c 74 20 69 73 20 4f 6b 28 29 7c 45 72 72 28 5f 29 29 0a 7d 0a
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-question-checked
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-question-checked
+--@ end-case
+
+--@ case: channel-message-question-checked-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-question-checked
+--@ end-case
+
+--@ source: source-channel-message-repeated-cardinality-gap
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(2)
+        let mut action=\number:int->{
+            let value:Result<int,str>=Ok(number)
+            assert(value is Ok(_)|Err(_))
+            assert(Channel::send(mut tx,value) is Ok())
+            number
+        }
+        let _=Array::map([1,2],mut action)
+        assert(Channel::recv(mut rx) is Ok(_))
+        match Channel::recv(mut rx){
+            Ok(_)->{
+                let (mut other_tx,other_rx)=Channel::bounded<Result<int,str>>(1)
+                let unpaid:Result<int,str>=Ok(99)
+                assert(Channel::send(mut other_tx,unpaid) is Ok())
+                Channel::close(other_tx)
+                Channel::close(other_rx)
+            },
+            Err(_)->()
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-repeated-cardinality-gap
+--@ mode: check-fail
+--@ spec: SPEC#structured-concurrency-channels
+-- Error [E0720]: normative target; retained NI guards are not conformance passes
+--@ use-source: source-channel-message-repeated-cardinality-gap
+--@ end-case
+
+--@ source: source-channel-message-same-sender
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+fn publish(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
+    Channel::send(mut endpoint,value)
+}
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(2)
+        let first:Result<int,str>=Ok(11)
+        let second:Result<int,str>=Err("second")
+        assert(publish(mut tx,first) is Ok())
+        assert(publish(mut tx,second) is Ok())
+        match Channel::recv(mut rx){Ok(value)->assert(value is Ok(11)|Err(_)),Err(_)->panic("first")}
+        match Channel::recv(mut rx){Ok(value)->assert(value is Ok(_)|Err("second")),Err(_)->panic("second")}
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-same-sender
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-same-sender
+--@ end-case
+
+--@ case: channel-message-same-sender-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-same-sender
+--@ end-case
+
+--@ source: source-channel-message-two-senders
+--@ file: source.ril
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+fn publish(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
+    Channel::send(mut endpoint,value)
+}
+fn relay(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
+    publish(mut endpoint,value)
+}
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let (tx,mut rx)=Channel::bounded<Result<int,str>>(2)
+        let first=s.fork(\->{
+            let mut own=clone(tx)
+            let payload:Result<int,str>=Ok(11)
+            assert(relay(mut own,payload) is Ok())
+            Channel::close(own)
+        })
+        let second=s.fork(\->{
+            let mut own=clone(tx)
+            let payload:Result<int,str>=Err("second")
+            assert(relay(mut own,payload) is Ok())
+            Channel::close(own)
+        })
+        assert(first.join() is Ok()|Err(_))
+        assert(second.join() is Ok()|Err(_))
+        match Channel::recv(mut rx){Ok(value)->assert(value is Ok(_)|Err(_)),Err(_)->panic("first")}
+        match Channel::recv(mut rx){Ok(value)->assert(value is Ok(_)|Err(_)),Err(_)->panic("second")}
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}
+--@ end-file
+--@ end-source
+
+--@ case: channel-message-two-senders
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-channel-message-two-senders
+--@ end-case
+
+--@ case: channel-message-two-senders-test-native
+--@ mode: run-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ entry: test_native
+--@ use-source: source-channel-message-two-senders
+--@ end-case
+
+--@ source: source-nested-result-channel
+--@ file: source.ril
+use ril/concurrent::{scope,TaskFault}
+use ril/concurrent/channel
+fn duplicate(tx:Channel::Sender<Result<int,str>>)->Channel::Sender<Result<int,str>> @Fiber{clone(tx)}
+fn example() @Async{
+    let result=scope \mut s -> {
+        let child=s.fork(\->())
+        child.join()?
+        let (tx,mut rx)=Channel::bounded<Result<int,str>>(1)
+        let (other_tx,mut other_rx)=Channel::bounded<Result<int,str>>(1)
+        let mut own=duplicate(tx)
+        let mut other=duplicate(other_tx)
+        let spare=duplicate(tx)
+        Channel::close(spare)
+        assert((own !> Channel::send(Ok(1))) is Ok())
+        assert((other !> Channel::send(Ok(2))) is Ok())
+        Channel::close(own)
+        Channel::close(other)
+        assert((rx !> Channel::recv()) is Ok(Ok(1)))
+        assert((other_rx !> Channel::recv()) is Ok(Ok(2)))
+        Channel::close(tx)
+        Channel::close(other_tx)
+        Channel::close(rx)
+        Channel::close(other_rx)
+        Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-source
+
+--@ case: nested-result-channel
+--@ mode: check-pass
+--@ spec: SPEC#structured-concurrency-channels
+--@ use-source: source-nested-result-channel
+--@ end-case

@@ -7,14 +7,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SOURCE: &str = include_str!("../../ril-compiler/tests/fixtures/source_receiving_native.ril");
+fn source_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/source-receiving.ril::source-receiving-native")
+}
 
 fn executes(entry: &str) {
     let directory = tempfile::tempdir().unwrap();
     let input = directory.path().join("program.ril");
     let stdout = directory.path().join("stdout.json");
     let stderr = directory.path().join("stderr.log");
-    fs::write(&input, SOURCE).unwrap();
+    fs::write(&input, source_fixture()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_ril"));
     command
         .arg("test")

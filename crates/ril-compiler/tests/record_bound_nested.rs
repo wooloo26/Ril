@@ -7,9 +7,15 @@ use ril_compiler::{
     },
 };
 
-const TUPLE: &str = include_str!("fixtures/record_bounds/nested_tuple.ril");
-const FIXED: &str = include_str!("fixtures/record_bounds/nested_fixed.ril");
-const ALIAS: &str = include_str!("fixtures/record_bounds/nested_alias.ril");
+fn tuple_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::nested-tuple")
+}
+fn fixed_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::nested-fixed")
+}
+fn alias_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::nested-alias")
+}
 
 fn verified(source: &str) -> SemanticFacts {
     let program = Session::new(source.as_bytes().to_vec()).verify().unwrap();
@@ -33,11 +39,11 @@ fn damaged(facts: &SemanticFacts) {
 #[test]
 fn precise_products_keep_the_whole_actual_argument_and_existing_selected_object() {
     for source in [
-        TUPLE,
-        include_str!("fixtures/record_bounds/nested_field.ril"),
-        include_str!("fixtures/record_bounds/nested_mixed.ril"),
-        FIXED,
-        include_str!("fixtures/record_bounds/nested_readonly.ril"),
+        tuple_fixture(),
+        ril_test::case_source("tests/regressions/record-bounds.ril::nested-field"),
+        ril_test::case_source("tests/regressions/record-bounds.ril::nested-mixed"),
+        fixed_fixture(),
+        ril_test::case_source("tests/regressions/record-bounds.ril::nested-readonly"),
     ] {
         let facts = verified(source);
         let check = facts
@@ -66,8 +72,8 @@ fn precise_products_keep_the_whole_actual_argument_and_existing_selected_object(
 #[test]
 fn nested_caller_bounds_keep_their_rigid_open_tail() {
     for source in [
-        include_str!("fixtures/record_bounds/nested_tuple_forward.ril"),
-        include_str!("fixtures/record_bounds/nested_field_forward.ril"),
+        ril_test::case_source("tests/regressions/record-bounds.ril::nested-tuple-forward"),
+        ril_test::case_source("tests/regressions/record-bounds.ril::nested-field-forward"),
     ] {
         let facts = verified(source);
         assert!(facts.generic_bound_checks.iter().any(|check| {
@@ -86,7 +92,7 @@ fn nested_caller_bounds_keep_their_rigid_open_tail() {
 
 #[test]
 fn repeated_nested_t_preserves_the_actual_alias_without_inventing_independence() {
-    let facts = verified(ALIAS);
+    let facts = verified(alias_fixture());
     let check = facts
         .generic_bound_checks
         .iter()
@@ -116,9 +122,9 @@ fn repeated_nested_t_preserves_the_actual_alias_without_inventing_independence()
 #[test]
 fn real_nested_mismatches_and_readonly_writes_are_rejected() {
     for source in [
-        TUPLE.replace("id:7,tag:\"ok\"", "tag:\"wrong\""),
+        tuple_fixture().replace("id:7,tag:\"ok\"", "tag:\"wrong\""),
         "fn both<T:{id:int,..R}>(value:(T,T))->int{value.(0).id}\npub fn test_native(){assert(both((.{id:7},.{id:\"wrong\"}))==7)}".into(),
-        FIXED.replace("let items:[2]int=[7,9]", "let items:[3]int=[7,9,11]"),
+        fixed_fixture().replace("let items:[2]int=[7,9]", "let items:[3]int=[7,9,11]"),
         "fn both<T:{items:[2]int,..R}>(value:(T,T))->int{value.(0).items[0]}\npub fn test_native(){let left:[2]int=[7,9];let right:[3]int=[7,9,11];assert(both((.{items:left},.{items:right}))==7)}".into(),
     ] {
         assert!(matches!(Session::new(source.as_bytes().to_vec()).check(), CompilationOutcome::Rejected { diagnostics } if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0301")), "{source}");
@@ -131,7 +137,7 @@ fn real_nested_mismatches_and_readonly_writes_are_rejected() {
 
 #[test]
 fn nested_paths_cannot_be_deleted_replaced_or_borrowed_from_another_slot() {
-    let facts = verified(TUPLE);
+    let facts = verified(tuple_fixture());
     let index = facts
         .generic_bound_checks
         .iter()
@@ -152,7 +158,7 @@ fn nested_paths_cannot_be_deleted_replaced_or_borrowed_from_another_slot() {
         copy.generic_bound_checks[index].selection_path = replacement;
         damaged(&copy);
     }
-    let facts = verified(ALIAS);
+    let facts = verified(alias_fixture());
     let index = facts
         .generic_bound_checks
         .iter()
@@ -170,7 +176,7 @@ fn nested_paths_cannot_be_deleted_replaced_or_borrowed_from_another_slot() {
 
 #[test]
 fn original_stored_paths_and_fixed_resize_invariants_remain_required() {
-    let facts = verified(FIXED);
+    let facts = verified(fixed_fixture());
     let index = facts
         .generic_bound_checks
         .iter()
@@ -234,7 +240,7 @@ fn original_stored_paths_and_fixed_resize_invariants_remain_required() {
 
 #[test]
 fn nested_read_reception_cannot_gain_authority_or_lose_its_root_observation() {
-    let facts = verified(TUPLE);
+    let facts = verified(tuple_fixture());
     let projection = facts
         .generic_bound_projections
         .iter()
@@ -285,7 +291,7 @@ fn nested_read_reception_cannot_gain_authority_or_lose_its_root_observation() {
 
 #[test]
 fn different_bounds_in_one_product_keep_their_own_paths_and_one_shared_row() {
-    let source = include_str!("fixtures/record_bounds/nested_shared_row.ril");
+    let source = ril_test::case_source("tests/regressions/record-bounds.ril::nested-shared-row");
     let facts = verified(source);
     let actual: Vec<_> = facts
         .generic_bound_checks

@@ -147,7 +147,7 @@ fn wrapper_and_comparison_truth_are_not_payload_truth() {
 
 #[test]
 fn channel_nested_predicates_inspect_their_own_messages() {
-    let source = include_str!("fixtures/nested_result_channel.ril");
+    let source = ril_test::case_source("tests/regressions/channels.ril::nested-result-channel");
     accepted(source);
     rejected(&source.replace(
         "assert((other_rx !> Channel::recv()) is Ok(Ok(2)))",

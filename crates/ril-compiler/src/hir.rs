@@ -1,5 +1,8 @@
 //! Frontend definitions and the semantic verification boundary.
 use ril_compiler_core::{ids::DefinitionId, source::Span};
+pub mod nodes;
+pub use nodes::HirProgram;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct Definition {
@@ -11,9 +14,10 @@ pub struct Definition {
 #[derive(Debug)]
 pub struct VerifiedProgram {
     definitions: Vec<Definition>,
-    syntax: ril_syntax::ast::Program,
-    resolved_source: ril_syntax::ast::Program,
-    facts: crate::sema::SemanticFacts,
+    syntax: Arc<ril_syntax::ast::Program>,
+    resolved_source: Arc<ril_syntax::ast::Program>,
+    facts: Arc<crate::sema::SemanticFacts>,
+    semantic_hir: Arc<HirProgram>,
     diagnostics: Vec<ril_compiler_core::diagnostic::Diagnostic>,
     static_definitions: Vec<ril_syntax::ast::Function>,
     type_functions: Vec<ril_syntax::ast::TypeDeclaration>,
@@ -46,7 +50,7 @@ impl VerifiedProgram {
         &self.resolved_source
     }
     pub(crate) fn attach_resolved_source(&mut self, source: ril_syntax::ast::Program) {
-        self.resolved_source = source;
+        self.resolved_source = Arc::new(source);
     }
     pub fn static_definitions(&self) -> &[ril_syntax::ast::Function] {
         &self.static_definitions
@@ -81,13 +85,26 @@ impl VerifiedProgram {
     pub fn facts(&self) -> &crate::sema::SemanticFacts {
         &self.facts
     }
+    pub fn semantic_hir(&self) -> &HirProgram {
+        &self.semantic_hir
+    }
+    pub(crate) fn shared_facts(&self) -> Arc<crate::sema::SemanticFacts> {
+        self.facts.clone()
+    }
+    pub(crate) fn shared_hir(&self) -> Arc<HirProgram> {
+        self.semantic_hir.clone()
+    }
+    pub(crate) fn shared_source(&self) -> Arc<ril_syntax::ast::Program> {
+        self.resolved_source.clone()
+    }
     pub fn diagnostics(&self) -> &[ril_compiler_core::diagnostic::Diagnostic] {
         &self.diagnostics
     }
     pub(crate) fn verified(
-        syntax: ril_syntax::ast::Program,
+        syntax: Arc<ril_syntax::ast::Program>,
         definitions: Vec<Definition>,
-        facts: crate::sema::SemanticFacts,
+        facts: Arc<crate::sema::SemanticFacts>,
+        semantic_hir: Arc<HirProgram>,
         diagnostics: Vec<ril_compiler_core::diagnostic::Diagnostic>,
     ) -> Self {
         Self {
@@ -95,6 +112,7 @@ impl VerifiedProgram {
             resolved_source: syntax.clone(),
             syntax,
             facts,
+            semantic_hir,
             diagnostics,
             static_definitions: vec![],
             type_functions: vec![],

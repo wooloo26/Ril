@@ -1,17 +1,23 @@
 use ril_compiler::{Session, sema::channel_messages::ChannelAction};
 
 fn facts() -> ril_compiler::sema::SemanticFacts {
-    Session::new(include_bytes!("fixtures/channel_formal_result.ril").to_vec())
-        .verify()
-        .unwrap()
-        .facts()
-        .clone()
+    Session::new(
+        ril_test::case_bytes("tests/regressions/channels.ril::channel-formal-result").to_vec(),
+    )
+    .verify()
+    .unwrap()
+    .facts()
+    .clone()
 }
 
 #[test]
 fn representative_callbacks_and_loop_bodies_do_not_prove_message_cardinality() {
-    let repeated = include_str!("fixtures/channel_message_repeated_cardinality_gap.ril");
-    let ordinary = include_str!("fixtures/channel_message_loop_cardinality_gap.ril");
+    let repeated = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-repeated-cardinality-gap",
+    );
+    let ordinary = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-loop-cardinality-gap",
+    );
     for source in [repeated.to_owned(), ordinary.to_owned()] {
         match Session::new(source.as_bytes().to_vec()).check() {
             ril_compiler::CompilationOutcome::NotImplemented { reason } => assert!(
@@ -36,7 +42,7 @@ fn representative_callbacks_and_loop_bodies_do_not_prove_message_cardinality() {
 fn scalar_only_and_empty_message_repetitions_keep_their_own_execution_regions() {
     let source = format!(
         "{}\nfn checked(number:int)->int{{number+1}}\nlet MAPPED=Array::map([1,2],checked)\nfn unrelated()->Result<(),Concurrent::TaskFault> @Async {{Concurrent::scope \\mut s -> {{let child=s.fork(\\->());let (mut tx,mut rx)=Channel::bounded<int>(2);for [1,2] as value {{assert((tx !> Channel::send(value)) is Ok());assert((rx !> Channel::recv()) is Ok(_));let local=clone(tx);Channel::close(local)}};Channel::close(tx);Channel::close(rx);child.join()}}}}",
-        include_str!("fixtures/channel_formal_result.ril")
+        ril_test::case_source("tests/regressions/channels.ril::channel-formal-result")
     );
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     assert!(!verified.facts().channel_repetitions.is_empty());
@@ -59,13 +65,17 @@ fn erasing_repetition_tables_cannot_erase_callback_and_incoming_loop_call_bounds
     use ril_syntax::ast::{ExprKind, Literal, StmtKind};
     for (source, array) in [
         (
-            include_str!("fixtures/channel_message_repeated_cardinality_gap.ril")
-                .replace("[1,2]", "[1]"),
+            ril_test::case_source(
+                "tests/regressions/channels.ril::channel-message-repeated-cardinality-gap",
+            )
+            .replace("[1,2]", "[1]"),
             true,
         ),
         (
-            include_str!("fixtures/channel_message_loop_cardinality_gap.ril")
-                .replace("0..2", "0..1"),
+            ril_test::case_source(
+                "tests/regressions/channels.ril::channel-message-loop-cardinality-gap",
+            )
+            .replace("0..2", "0..1"),
             false,
         ),
     ] {
@@ -117,7 +127,7 @@ fn erasing_repetition_tables_cannot_erase_callback_and_incoming_loop_call_bounds
 #[test]
 fn zero_entry_inspection_cannot_pay_a_later_channel_message() {
     use ril_syntax::ast::{ExprKind, StmtKind};
-    let original = include_str!("fixtures/channel_formal_result.ril");
+    let original = ril_test::case_source("tests/regressions/channels.ril::channel-formal-result");
     let inspected = original.replace(
         "let sent=publish(mut tx,payload)",
         "let inspect=\\number:int->{assert(payload is Ok(_)|Err(_));number}\nlet _=Array::map([1],inspect)\nlet sent=publish(mut tx,payload)",
@@ -294,10 +304,10 @@ fn final_inspected_flags_cannot_replace_missing_business_inspection_events() {
 #[test]
 fn inline_nested_and_captured_publishers_use_the_same_actual_summary_contract() {
     for source in [
-        include_str!("fixtures/channel_message_inline_control.ril"),
-        include_str!("fixtures/channel_message_nested_formal.ril"),
-        include_str!("fixtures/channel_message_captured_formal.ril"),
-        include_str!("fixtures/channel_message_same_sender.ril"),
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-inline-control"),
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-nested-formal"),
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-captured-formal"),
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-same-sender"),
     ] {
         let verified = Session::new(source.as_bytes().to_vec())
             .verify()
@@ -308,7 +318,8 @@ fn inline_nested_and_captured_publishers_use_the_same_actual_summary_contract() 
 
 #[test]
 fn different_sender_tasks_do_not_borrow_the_analysis_walks_global_order() {
-    let original = include_str!("fixtures/channel_message_two_senders.ril");
+    let original =
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-two-senders");
     for source in [
         original.to_owned(),
         original.replacen(
@@ -329,10 +340,16 @@ fn different_sender_tasks_do_not_borrow_the_analysis_walks_global_order() {
 #[test]
 fn outer_transport_checks_and_normal_close_cannot_discard_business_debt() {
     for source in [
-        include_str!("fixtures/channel_message_formal_failed_send_loses_original.ril"),
-        include_str!("fixtures/channel_message_inline_closed_send_loses_original.ril"),
-        include_str!("fixtures/channel_message_inline_outer_only.ril"),
-        include_str!("fixtures/channel_message_inline_unread_close.ril"),
+        ril_test::case_source(
+            "tests/regressions/channels.ril::channel-message-formal-failed-send-loses-original",
+        ),
+        ril_test::case_source(
+            "tests/regressions/channels.ril::channel-message-inline-closed-send-loses-original",
+        ),
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-inline-outer-only"),
+        ril_test::case_source(
+            "tests/regressions/channels.ril::channel-message-inline-unread-close",
+        ),
     ] {
         match Session::new(source.as_bytes().to_vec()).check() {
             ril_compiler::CompilationOutcome::Rejected { diagnostics, .. } => assert!(
@@ -348,8 +365,10 @@ fn outer_transport_checks_and_normal_close_cannot_discard_business_debt() {
 
 #[test]
 fn fallback_and_propagation_keep_success_and_failure_message_responsibilities_disjoint() {
-    let fallback = include_str!("fixtures/channel_message_fallback.ril");
-    let question = include_str!("fixtures/channel_message_question_checked.ril");
+    let fallback =
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-fallback");
+    let question =
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-question-checked");
     for source in [fallback, question] {
         let verified = Session::new(source.as_bytes().to_vec())
             .verify()
@@ -380,7 +399,9 @@ fn fallback_and_propagation_keep_success_and_failure_message_responsibilities_di
 
 #[test]
 fn a_returned_family_tag_is_selected_by_its_actual_member_receipt() {
-    let source = include_str!("fixtures/channel_message_conditional_returns.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-conditional-returns",
+    );
     let verified = Session::new(source.as_bytes().to_vec())
         .verify()
         .unwrap_or_else(|error| panic!("{error:?}\n{source}"));
@@ -421,12 +442,14 @@ fn caller_summary_identity_and_complete_return_coverage_are_not_optional() {
         summary.context = None;
     }
     rejected(&changed);
-    let mut changed =
-        Session::new(include_bytes!("fixtures/channel_message_question_checked.ril").to_vec())
-            .verify()
-            .unwrap()
-            .facts()
-            .clone();
+    let mut changed = Session::new(
+        ril_test::case_bytes("tests/regressions/channels.ril::channel-message-question-checked")
+            .to_vec(),
+    )
+    .verify()
+    .unwrap()
+    .facts()
+    .clone();
     let returned = changed
         .channel_exits
         .iter()
@@ -450,13 +473,15 @@ fn caller_summary_identity_and_complete_return_coverage_are_not_optional() {
 
 #[test]
 fn a_business_error_from_scope_does_not_supply_cancellation_proof() {
-    let source = include_str!("fixtures/channel_message_inline_unread_close.ril")
-        .replace("(mut tx,mut rx)", "(mut tx,rx)")
-        .replace("Channel::close(rx)", "let _=rx")
-        .replace(
-            "        Ok()",
-            "        Err(Concurrent::TaskFault::Panicked(\"domain\"))",
-        );
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-inline-unread-close",
+    )
+    .replace("(mut tx,mut rx)", "(mut tx,rx)")
+    .replace("Channel::close(rx)", "let _=rx")
+    .replace(
+        "        Ok()",
+        "        Err(Concurrent::TaskFault::Panicked(\"domain\"))",
+    );
     match Session::new(source.into_bytes()).check() {
         ril_compiler::CompilationOutcome::Rejected { diagnostics, .. } => assert!(
             diagnostics
@@ -471,8 +496,12 @@ fn a_business_error_from_scope_does_not_supply_cancellation_proof() {
 #[test]
 fn unknown_nested_and_collection_producer_graphs_never_become_complete_from_one_tag() {
     for source in [
-        include_str!("fixtures/channel_message_formal_array_graph_gap.ril"),
-        include_str!("fixtures/channel_message_formal_map_graph_gap.ril"),
+        ril_test::case_source(
+            "tests/regressions/channels.ril::channel-message-formal-array-graph-gap",
+        ),
+        ril_test::case_source(
+            "tests/regressions/channels.ril::channel-message-formal-map-graph-gap",
+        ),
     ] {
         match Session::new(source.as_bytes().to_vec()).check() {
             ril_compiler::CompilationOutcome::NotImplemented { reason } => assert!(
@@ -482,7 +511,8 @@ fn unknown_nested_and_collection_producer_graphs_never_become_complete_from_one_
             other => panic!("{other:?}\n{source}"),
         }
     }
-    let source = include_str!("fixtures/channel_message_finite_graphs.ril");
+    let source =
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-finite-graphs");
     let verified = Session::new(source.as_bytes().to_vec())
         .verify()
         .unwrap_or_else(|error| panic!("{error:?}"));
@@ -504,8 +534,12 @@ fn unknown_nested_and_collection_producer_graphs_never_become_complete_from_one_
 #[test]
 fn finite_formal_nested_results_retain_branch_exclusive_borrowed_producers() {
     for source in [
-        include_str!("fixtures/channel_message_formal_nested_checked.ril"),
-        include_str!("fixtures/channel_message_formal_two_branches_checked.ril"),
+        ril_test::case_source(
+            "tests/regressions/channels.ril::channel-message-formal-nested-checked",
+        ),
+        ril_test::case_source(
+            "tests/regressions/channels.ril::channel-message-formal-two-branches-checked",
+        ),
     ] {
         let verified = Session::new(source.as_bytes().to_vec())
             .verify()
@@ -526,7 +560,9 @@ fn finite_formal_nested_results_retain_branch_exclusive_borrowed_producers() {
         }
         rejected(&changed);
     }
-    let source = include_str!("fixtures/channel_message_formal_nested_graph_gap.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-nested-graph-gap",
+    );
     match Session::new(source.as_bytes().to_vec()).check() {
         ril_compiler::CompilationOutcome::Rejected { diagnostics, .. } => assert!(
             diagnostics
@@ -536,7 +572,9 @@ fn finite_formal_nested_results_retain_branch_exclusive_borrowed_producers() {
         ),
         other => panic!("{other:?}\n{source}"),
     }
-    let source = include_str!("fixtures/channel_message_formal_two_branches_checked.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-two-branches-checked",
+    );
     for source in [
         source.replace("Err(inner)->assert(inner is Ok(_)|Err(_))", "Err(_)->()"),
         source.replace("Ok(inner)->assert(inner is Ok(_)|Err(_))", "Ok(_)->()"),
@@ -555,7 +593,9 @@ fn finite_formal_nested_results_retain_branch_exclusive_borrowed_producers() {
 
 #[test]
 fn a_business_event_cannot_move_to_an_unrelated_declaration_region() {
-    let source = include_str!("fixtures/channel_message_formal_nested_checked.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-nested-checked",
+    );
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let mut changed = verified.facts().clone();
     let other = changed
@@ -578,14 +618,17 @@ fn a_business_event_cannot_move_to_an_unrelated_declaration_region() {
 
 #[test]
 fn result_free_optional_inputs_do_not_need_business_presence_choices() {
-    let source = include_str!("fixtures/channel_message_optional_scalar.ril");
+    let source =
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-optional-scalar");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     ril_compiler::lower::lower_core(&verified).unwrap();
 }
 
 #[test]
 fn formal_optional_presence_does_not_inspect_its_inner_result() {
-    let source = include_str!("fixtures/channel_message_formal_optional_checked.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-optional-checked",
+    );
     let verified = Session::new(source.as_bytes().to_vec())
         .verify()
         .unwrap_or_else(|error| panic!("{error:?}\n{source}"));
@@ -604,7 +647,9 @@ fn formal_optional_presence_does_not_inspect_its_inner_result() {
 
 #[test]
 fn an_optional_clone_keeps_the_tag_bit_but_has_a_new_result_producer() {
-    let source = include_str!("fixtures/channel_message_formal_optional_clone_checked.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-optional-clone-checked",
+    );
     let verified = Session::new(source.as_bytes().to_vec())
         .verify()
         .unwrap_or_else(|error| panic!("{error:?}\n{source}"));
@@ -627,7 +672,9 @@ fn an_optional_clone_keeps_the_tag_bit_but_has_a_new_result_producer() {
 
 #[test]
 fn independent_formal_optional_paths_cannot_be_unified_even_with_one_valid_cause() {
-    let source = include_str!("fixtures/channel_message_formal_two_optionals_checked.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
+    );
     let verified = Session::new(source.as_bytes().to_vec())
         .verify()
         .unwrap_or_else(|error| panic!("{error:?}\n{source}"));
@@ -657,7 +704,9 @@ fn independent_formal_optional_paths_cannot_be_unified_even_with_one_valid_cause
 
 #[test]
 fn formal_optional_independence_cannot_be_disabled_by_a_registered_owner() {
-    let source = include_str!("fixtures/channel_message_formal_two_optionals_checked.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
+    );
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let mut changed = verified.facts().clone();
     let invocation = changed
@@ -687,7 +736,9 @@ fn formal_optional_independence_cannot_be_disabled_by_a_registered_owner() {
 
 #[test]
 fn formal_optional_independence_survives_every_entry_selector_combination() {
-    let source = include_str!("fixtures/channel_message_formal_two_optionals_checked.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
+    );
     let actual_alias = format!(
         "{source}\nfn alias_unknown_optional(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{{consume(value,value)}}\nfn named_optional_callback(value:Option<Result<int,str>>) @Async{{assert(consume(value,value) is Ok()|Err(_))}}\nfn through_named_optional_callback(value:Option<Result<int,str>>) @Async{{named_optional_callback(value)}}\nfn through_single_optional_callback(value:Option<Result<int,str>>) @Async{{let mapped=Array::map([1],\\number:int->{{named_optional_callback(value);number}})}}\n"
     );
@@ -789,7 +840,9 @@ fn formal_optional_independence_survives_every_entry_selector_combination() {
 
 #[test]
 fn deleting_the_entire_formal_input_table_cannot_skip_header_coverage() {
-    let source = include_str!("fixtures/channel_message_formal_two_optionals_checked.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
+    );
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let mut changed = verified.facts().clone();
     let invocation = changed
@@ -818,7 +871,8 @@ fn deleting_the_entire_formal_input_table_cannot_skip_header_coverage() {
 
 #[test]
 fn unrelated_global_optional_inputs_do_not_require_business_message_source_proofs() {
-    let scalar = include_str!("fixtures/channel_message_optional_scalar.ril");
+    let scalar =
+        ril_test::case_source("tests/regressions/channels.ril::channel-message-optional-scalar");
     Session::new(scalar.as_bytes().to_vec()).verify().unwrap();
     let source = format!(
         "{scalar}\nfn unrelated_global_optional(value:?int)->int{{value ?? 0}}\nlet STORED=unrelated_global_optional(Array::get([1],0))\n"
@@ -868,7 +922,7 @@ fn unrelated_global_optional_inputs_do_not_require_business_message_source_proof
 
 #[test]
 fn formal_sender_results_keep_actual_message_events_and_lower_complete_evidence() {
-    let source = include_str!("fixtures/channel_formal_result.ril");
+    let source = ril_test::case_source("tests/regressions/channels.ril::channel-formal-result");
     let verified = Session::new(source.as_bytes().to_vec())
         .verify()
         .unwrap_or_else(|error| panic!("{error:?}"));

@@ -50,8 +50,9 @@ fn real_formal_and_some_pattern_supply_a_source_path() {
 
 #[test]
 fn unchanged_e508_formal_capture_is_grounded_but_receive_call_is_not_inferred() {
-    let source =
-        include_str!("../../tests/fixtures/channel_message_optional_callback_scope_budget.ril");
+    let source = ril_test::case_source(
+        "tests/regressions/channels.ril::channel-message-optional-callback-scope-budget",
+    );
     let program = program(source);
     let header = header(&program, "consume");
     let StmtKind::Expr { expression, .. } = &header.body.as_ref().unwrap().statements[0].kind

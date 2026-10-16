@@ -8,10 +8,18 @@ use ril_compiler::{
     },
 };
 
-const FIXED: &str = include_str!("fixtures/record_bounds/scoped_fixed.ril");
-const EMPTY: &str = include_str!("fixtures/record_bounds/scoped_empty_inner_dimension.ril");
-const CALLABLE: &str = include_str!("fixtures/record_bounds/scoped_callable_mut.ril");
-const IMMUTABLE: &str = include_str!("fixtures/record_bounds/scoped_immutable_field.ril");
+fn fixed_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-fixed")
+}
+fn empty_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-empty-inner-dimension")
+}
+fn callable_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-callable-mut")
+}
+fn immutable_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/record-bounds.ril::scoped-immutable-field")
+}
 
 fn verified(source: &str) -> SemanticFacts {
     let program = Session::new(source.as_bytes().to_vec()).verify().unwrap();
@@ -62,7 +70,7 @@ fn damaged(facts: &SemanticFacts) {
 
 #[test]
 fn fixed_fields_have_complete_source_header_and_existing_product_receipts() {
-    let facts = verified(FIXED);
+    let facts = verified(fixed_fixture());
     let identity = &facts.scoped_source_identities[0];
     assert!(!identity.key.is_closed());
     assert!(
@@ -79,7 +87,7 @@ fn fixed_fields_have_complete_source_header_and_existing_product_receipts() {
             .all(|occurrence| facts.bindings[occurrence.formal.binding].parameter)
     );
     let pointer32 = Session::with_options(
-        FIXED.as_bytes().to_vec(),
+        fixed_fixture().as_bytes().to_vec(),
         CheckOptions {
             target: "pointer32".into(),
             ..CheckOptions::default()
@@ -92,7 +100,7 @@ fn fixed_fields_have_complete_source_header_and_existing_product_receipts() {
 
 #[test]
 fn an_empty_outer_array_keeps_the_inner_dimension_without_inventing_t_elements() {
-    let facts = verified(EMPTY);
+    let facts = verified(empty_fixture());
     assert_eq!(facts.scoped_source_identities[0].occurrences.len(), 2);
     assert!(
         facts.scoped_source_identities[0]
@@ -109,7 +117,7 @@ fn an_empty_outer_array_keeps_the_inner_dimension_without_inventing_t_elements()
 
 #[test]
 fn callable_parameter_modes_effect_qualifications_and_immutable_fields_survive() {
-    for source in [CALLABLE, IMMUTABLE] {
+    for source in [callable_fixture(), immutable_fixture()] {
         verified(source);
     }
 }
@@ -117,8 +125,10 @@ fn callable_parameter_modes_effect_qualifications_and_immutable_fields_survive()
 #[test]
 fn complete_known_field_dimension_and_callable_mode_conflicts_are_type_errors() {
     for source in [
-        include_str!("fixtures/record_bounds/scoped_wrong_empty_inner_dimension.ril"),
-        include_str!("fixtures/record_bounds/scoped_wrong_callable_mode.ril"),
+        ril_test::case_source(
+            "tests/regressions/record-bounds.ril::scoped-wrong-empty-inner-dimension",
+        ),
+        ril_test::case_source("tests/regressions/record-bounds.ril::scoped-wrong-callable-mode"),
     ] {
         let outcome = Session::new(source.as_bytes().to_vec()).check();
         assert!(
@@ -131,7 +141,7 @@ fn complete_known_field_dimension_and_callable_mode_conflicts_are_type_errors() 
 
 #[test]
 fn deleted_certificate_and_probe_flags_never_make_complete_source_coverage_vacuous() {
-    let facts = verified(FIXED);
+    let facts = verified(fixed_fixture());
     for flags in [false, true] {
         let mut copy = facts.clone();
         copy.scoped_source_identities.clear();
@@ -149,7 +159,7 @@ fn deleted_certificate_and_probe_flags_never_make_complete_source_coverage_vacuo
 
 #[test]
 fn original_and_current_entry_tables_require_full_arity_before_selection() {
-    let facts = verified(EMPTY);
+    let facts = verified(empty_fixture());
     let identity = &facts.scoped_source_identities[0];
     let current = identity.context.invocation.unwrap().0 as usize;
     let source = identity.occurrences[0].formal.invocation.0 as usize;
@@ -166,7 +176,7 @@ fn original_and_current_entry_tables_require_full_arity_before_selection() {
 
 #[test]
 fn each_t_occurrence_requires_its_actual_original_formal_path() {
-    let facts = verified(EMPTY);
+    let facts = verified(empty_fixture());
     let mut copy = facts.clone();
     copy.scoped_source_identities[0].occurrences.pop();
     damaged(&copy);
@@ -185,7 +195,7 @@ fn each_t_occurrence_requires_its_actual_original_formal_path() {
 
 #[test]
 fn original_source_name_and_actual_parent_callee_tokens_cannot_be_replaced_by_metadata() {
-    let facts = verified(FIXED);
+    let facts = verified(fixed_fixture());
     let mut copy = facts.clone();
     copy.scoped_source_identities[0].occurrences[0]
         .formal
@@ -219,7 +229,7 @@ fn original_source_name_and_actual_parent_callee_tokens_cannot_be_replaced_by_me
 
 #[test]
 fn matching_descriptor_edits_cannot_rewrite_the_original_inner_dimension() {
-    let mut facts = verified(EMPTY);
+    let mut facts = verified(empty_fixture());
     let identity = &mut facts.scoped_source_identities[0];
     let ArgumentKey::Record { fields, .. } = &mut identity.key else {
         unreachable!()
@@ -261,7 +271,7 @@ fn matching_descriptor_edits_cannot_rewrite_the_original_inner_dimension() {
 
 #[test]
 fn scoped_identity_arena_context_and_epoch_require_real_registered_anchors() {
-    let facts = verified(FIXED);
+    let facts = verified(fixed_fixture());
     let mut unrelated = Session::new(b"fn example(){}".to_vec())
         .verify()
         .unwrap()
