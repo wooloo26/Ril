@@ -1,0 +1,13 @@
+fn choose<T,U>(value:T,other:U)->T{value}
+fn unused<T>()->int{11}
+fn defaulted<T>(value:int=7)->int{value}
+fn forwarded<U>(value:U)->U{choose<U>(value,0)}
+pub fn test_native(){
+    let items:[2]int=[13,17]
+    let chosen=choose<[2]int>(items,"retained dimension")
+    assert(chosen[0]==13)
+    assert(forwarded(19)==19)
+    assert(unused<[2]int>()==11)
+    assert(defaulted<str>()==7)
+    assert(choose<[2]int>([7,9],0)[0]==7)
+}

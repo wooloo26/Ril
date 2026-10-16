@@ -1,0 +1,3 @@
+type Cell={mut id:int}
+fn read<T:{mut id:int,..R}>(value:(T,int))->int{value.(0).id}
+pub fn test_native(){let mut cell=Cell.{id:7};cell.id=8;let view observed=cell;assert(read((observed,0))==8)}

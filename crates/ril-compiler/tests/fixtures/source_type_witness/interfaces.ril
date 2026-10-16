@@ -1,0 +1,33 @@
+fn first(left:int=1)->int{left}
+fn second(right:int=2)->int{right}
+fn wrap<T>(value:T)->{item:T}{.{item:value}}
+fn pair<T>(first:T,second:T)->(T,T){(first,second)}
+fn forward<T>(value:T)->T{value}
+fn make<T>(value:T)->(fn()->T &closure) &capture{\->value}
+type Later<T>=fn()->T &closure
+fn make_alias<T>(value:T)->Later<T> &capture{\->value}
+pub fn test_native(){
+    let a=wrap(forward(first))
+    let b=wrap(forward(second))
+    assert(a.item(left:3)==3 && b.item(right:4)==4)
+    assert(a.item()==1 && b.item()==2)
+    let both=pair(first,second)
+    assert(both.0(left:5)==5 && both.1(right:6)==6)
+    assert(both.0()==1 && both.1()==2)
+    let one=make(first)
+    let two=make(second)
+    let callback_one=one()
+    let callback_two=two()
+    assert(callback_one(left:7)==7 && callback_two(right:8)==8)
+    assert(callback_one()==1 && callback_two()==2)
+    let alias_one=make_alias(first)
+    let alias_two=make_alias(second)
+    let aliased_one=alias_one()
+    let aliased_two=alias_two()
+    assert(aliased_one(left:9)==9 && aliased_two(right:10)==10)
+    assert(aliased_one()==1 && aliased_two()==2)
+    let explicit:fn(renamed:int)->int=second
+    assert(explicit(renamed:11)==11)
+    let typed:{item:fn(renamed:int)->int}=.{item:second}
+    assert(typed.item(renamed:12)==12)
+}

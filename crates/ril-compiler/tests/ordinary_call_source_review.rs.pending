@@ -1,0 +1,86 @@
+//! Independent, unregistered review cases. No Cargo or native execution has
+//! been performed for this file. Copy/register only in an agreed owner window.
+//! The five v30 Accepted before cases are separate frozen-CLI Source evidence;
+//! the explicit/context cases below remain unexecuted proposed regressions.
+use ril_compiler::{CheckOptions, CompilationOutcome, Session};
+
+fn session(source: &str, target: &str) -> Session {
+    Session::with_options(
+        source.as_bytes().to_vec(),
+        CheckOptions {
+            target: target.into(),
+            ..Default::default()
+        },
+    )
+}
+
+fn rejects(source: &str, code: &str) {
+    for target in ["pointer32", "pointer64"] {
+        let outcome = session(source, target).check();
+        assert!(
+            matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+            if diagnostics.iter().any(|diagnostic| diagnostic.code == code)),
+            "{target}\n{source}\n{outcome:?}"
+        );
+    }
+}
+
+#[test]
+fn original_whole_source_must_be_checked_before_call_or_default_ascription() {
+    // Source-only v30 before evidence: the first three are in
+    // target/ordinary-call-source-before-v30-report.json; the last two are in
+    // target/ordinary-call-extra-before-v30-report.json. CLI SHA256 is
+    // 038A74DD7ED1F93D3BEF7581FC315B32F34B92B2E70634DD1EFD441D12C6AE69
+    // and was unchanged before/after each probe. All five returned Accepted.
+    for source in [
+        "fn exact(value:[2]int)->int{0}\nfn example()->int{let values:[]int=[7,9];exact(values)}",
+        "fn exact<T>(value:[2]T)->int{0}\nfn example()->int{let values:[]int=[7,9];exact(values)}",
+        "fn exact<T>(value:[0][2]T)->int{0}\nfn example()->int{let values:[0][3]int=[];exact(values)}",
+        "fn take(callback:fn([2]int)->int)->int{0}\nfn triple(values:[3]int)->int{0}\nfn example()->int{take(triple)}",
+        "fn dynamic()->[]int{[7,9]}\nfn take(value:[2]int=dynamic())->int{0}\nfn example()->int{take()}",
+    ] {
+        rejects(source, "E0301");
+    }
+}
+
+#[test]
+fn explicit_child_selection_does_not_erase_fixed_roots_or_empty_inner_dimensions() {
+    for source in [
+        "fn exact<T>(value:[2]T)->int{0}\nfn example()->int{let values:[]int=[7,9];exact<int>(values)}",
+        "fn exact<T>(value:[0][2]T)->int{0}\nfn example()->int{let values:[0][3]int=[];exact<int>(values)}",
+        "fn exact<T>(value:{items:[2]T})->int{0}\nfn example()->int{let values:[]int=[7,9];let holder=.{items:values};exact<int>(holder)}",
+    ] {
+        rejects(source, "E0301");
+    }
+}
+
+#[test]
+fn fresh_construction_contexts_and_explicit_unused_types_keep_their_own_default_scope() {
+    for source in [
+        "fn exact(value:[2]int)->int{value[0]}\nfn example(){assert(exact([7,9])==7)}",
+        "fn exact(value:[2]int=[7,9])->int{value[0]}\nfn example(){assert(exact()==7)}",
+        "type Holder={items:[2]int}\nfn example(){let holder:Holder=.{items:[7,9]};assert(holder.items[0]==7)}",
+        "fn example(){let pair:([2]int,int)=([7,9],0);assert(pair.0[0]==7)}",
+        "fn choose<T>(value:int=7)->int{value}\nfn example(){assert(choose<str>()==7)}",
+        "fn echo<U>(value:U)->U{value}\nfn forward<U>(value:U)->U{echo<U>(value)}\nfn example(){assert(forward(7)==7)}",
+        "fn second<T,U>(first:T,second:U)->U{second}\nfn example(){assert(second<str>(\"x\",7)==7)}",
+    ] {
+        for target in ["pointer32", "pointer64"] {
+            let verified = session(source, target).verify().unwrap();
+            ril_compiler::lower::lower_core(&verified).unwrap();
+        }
+    }
+}
+
+#[test]
+fn explicit_generic_type_identity_cannot_restore_a_restricted_callable_default() {
+    rejects(
+        "fn right(right:int=2)->int{right}\nfn pass<T>(value:T)->T{value}\nfn example(){let view:fn(other:int)->int=right;let received=pass<fn(other:int)->int>(view);received()}",
+        "E0314",
+    );
+}
+
+#[test]
+fn static_argument_prefix_arity_retains_its_specific_diagnostic() {
+    rejects("fn empty<T>(){}\nfn example(){empty<int,str>()}", "E0340");
+}

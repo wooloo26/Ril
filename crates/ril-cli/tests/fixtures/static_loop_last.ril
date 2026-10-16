@@ -1,0 +1,3 @@
+meta fn once()->int{loop{last 7}}
+meta let VALUE=once()
+meta let _=assert(VALUE==7)

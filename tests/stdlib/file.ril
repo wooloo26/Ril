@@ -44,7 +44,7 @@ pub fn test_invalid_utf8_and_temp_file() -> Result<(), Io::IoError> @Fiber {
     File::remove_file(Path::from_string("invalid.txt"))?
     let (path, mut handle) = File::temp_file(Path::from_string("."))?
     File::close(mut handle)?
-    assert(File::metadata(path)?.size == 0u64)
+    assert((File::metadata(path)?).size == 0u64)
     File::remove_file(path)?
     Ok()
 }
@@ -119,7 +119,7 @@ pub fn test_stream_position_and_eof() -> Result<(), Io::IoError> @Fiber {
         assert(eof.data == b"" && eof.end)
         assert(File::seek(mut handle, File::SeekFrom::End(3i64))? == 6u64)
     }
-    assert(File::metadata(path)?.size == 3u64)
+    assert((File::metadata(path)?).size == 3u64)
     assert(File::read("stream.bin") is Ok("abc"))
     File::remove_file(path)?
     Ok()
@@ -147,7 +147,7 @@ pub fn test_whole_file_and_directories() -> Result<(), Io::IoError> @Fiber {
     File::write_text(source, "Aé\r\n")?
     assert(File::read_text(source)? == "Aé\r\n")
     assert(File::read_bytes(source)? == String::utf8("Aé\r\n"))
-    assert(File::metadata(source)?.size == 5u64)
+    assert((File::metadata(source)?).size == 5u64)
     let entries = File::read_dir(directory)?
     assert(len(entries) == 1 && entries[0].name == Os::from_string("a.ril"))
     assert(entries[0].path == source && entries[0].kind == File::FileKind::Regular)

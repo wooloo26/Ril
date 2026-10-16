@@ -1,0 +1,23 @@
+// Append to tests/source_receiving_boundaries.rs after the new match API lands.
+// Uses that test target's existing session helper and imports.
+#[test]
+fn match_result_source_target_is_not_applied_to_subject_guard_or_nested_statement() {
+    for target in ["pointer32", "pointer64"] {
+        for source in [
+            "fn correct(flag:bool)->[0][2]int{let stored:[0][2]int=[];match flag{true->stored,false->[]}}",
+            "fn correct(flag:bool)->[0][2]int{let choice:bool=match flag{true->true,false->false};match choice{true->[],false->[]}}",
+            "fn correct(flag:bool)->[0][2]int{match flag{true if flag->[],true->[],false->[]}}",
+        ] {
+            let verified = session(source, target)
+                .verify()
+                .unwrap_or_else(|outcome| panic!("{target}: {source}\n{outcome:?}"));
+            ril_compiler::lower::lower_core(&verified).unwrap();
+        }
+        let source = "fn wrong(flag:bool)->[0][2]int{let stored:[0][3]int=[];match flag{true->[],false->stored}}";
+        let outcome = session(source, target).check();
+        assert!(
+            matches!(&outcome, CompilationOutcome::Rejected { diagnostics } if diagnostics.iter().any(|diagnostic|diagnostic.code=="E0301")),
+            "{target}: {source}\n{outcome:?}"
+        );
+    }
+}

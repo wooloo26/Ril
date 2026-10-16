@@ -1,0 +1,14 @@
+-- Native regression: shared children and distinct equal-content allocations.
+meta fn shared() -> ([]int, []int) { let child = [1]; (child, child) }
+meta fn distinct() -> ([]int, []int) { ([1], [1]) }
+meta let SHARED = shared()
+meta let DISTINCT = distinct()
+pub fn test_native() &{SHARED, DISTINCT} {
+    let mut shared_copy = ^mut clone(SHARED)
+    shared_copy.0 !> Array::push(2)
+    assert(shared_copy.1 == [1, 2])
+    let mut distinct_copy = ^mut clone(DISTINCT)
+    distinct_copy.0 !> Array::push(2)
+    assert(distinct_copy.1 == [1])
+    assert(SHARED.0 == [1] && DISTINCT.0 == [1])
+}

@@ -1,0 +1,6 @@
+meta fn first(values:[]int)->int{
+    for values as value{if value>0{return value};next}
+    0
+}
+meta let VALUE=first([-1,7,9])
+meta let _=assert(VALUE==7)

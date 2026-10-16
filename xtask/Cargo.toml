@@ -9,14 +9,14 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+sha2.workspace = true
 ril-test.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
 tempfile.workspace = true
+process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object", "creation-flags"] }
 
 [[bin]]
 name = "xtask"

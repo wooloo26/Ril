@@ -1,0 +1,13 @@
+use ril/io
+type Writer={scratch:[2]u8,mut calls:int}
+fn write(mut writer:Writer,data:bytes)->Io::WriteProgress&mut{
+    writer.calls+=1
+    writer.scratch[0]=9u8
+    .{written:len(data),error:None}
+}
+pub fn test_native(){
+    let mut writer=Writer.{scratch:[1u8,2u8],calls:0}
+    assert(Io::write_all(mut writer,b"abc",.{write:write}) is Ok())
+    assert(Io::write_all(mut writer,b"",.{write:write}) is Ok())
+    assert(writer.calls==2 && len(writer.scratch)==2 && writer.scratch[0]==9u8)
+}

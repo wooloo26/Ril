@@ -1,0 +1,2 @@
+fn read<U,T:{items:[2]U,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<U,V,S>(value:({items:[2]U,tag:str,..S},{items:[2]V,tag:str,..S}))->int{read(value)}

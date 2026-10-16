@@ -11,9 +11,96 @@ pub struct Definition {
 #[derive(Debug)]
 pub struct VerifiedProgram {
     definitions: Vec<Definition>,
+    syntax: ril_syntax::ast::Program,
+    resolved_source: ril_syntax::ast::Program,
+    facts: crate::sema::SemanticFacts,
+    diagnostics: Vec<ril_compiler_core::diagnostic::Diagnostic>,
+    static_definitions: Vec<ril_syntax::ast::Function>,
+    type_functions: Vec<ril_syntax::ast::TypeDeclaration>,
+    static_termination: std::collections::BTreeMap<String, crate::termination::Judgment>,
+    external_declarations: Vec<crate::modules::ExternalDeclaration>,
+    type_declarations: std::collections::BTreeMap<String, String>,
 }
 impl VerifiedProgram {
+    pub fn type_declarations(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.type_declarations
+    }
+    pub(crate) fn attach_type_declarations(
+        &mut self,
+        types: std::collections::BTreeMap<String, String>,
+    ) {
+        self.type_declarations = types;
+    }
+    pub fn external_declarations(&self) -> &[crate::modules::ExternalDeclaration] {
+        &self.external_declarations
+    }
+    pub(crate) fn attach_external_declarations(
+        &mut self,
+        declarations: Vec<crate::modules::ExternalDeclaration>,
+    ) {
+        self.external_declarations = declarations;
+    }
+    /// The complete resolved source before static materialization, including
+    /// lexical nesting and definitions erased from the executable program.
+    pub fn resolved_source(&self) -> &ril_syntax::ast::Program {
+        &self.resolved_source
+    }
+    pub(crate) fn attach_resolved_source(&mut self, source: ril_syntax::ast::Program) {
+        self.resolved_source = source;
+    }
+    pub fn static_definitions(&self) -> &[ril_syntax::ast::Function] {
+        &self.static_definitions
+    }
+    pub fn type_functions(&self) -> &[ril_syntax::ast::TypeDeclaration] {
+        &self.type_functions
+    }
+    pub fn static_termination(
+        &self,
+    ) -> &std::collections::BTreeMap<String, crate::termination::Judgment> {
+        &self.static_termination
+    }
+    pub(crate) fn attach_static_metadata(
+        &mut self,
+        definitions: Vec<ril_syntax::ast::Function>,
+        types: Vec<ril_syntax::ast::TypeDeclaration>,
+        termination: std::collections::BTreeMap<String, crate::termination::Judgment>,
+    ) {
+        self.static_definitions = definitions;
+        self.type_functions = types;
+        self.static_termination = termination;
+    }
     pub fn definitions(&self) -> &[Definition] {
         &self.definitions
+    }
+    pub fn program(&self) -> &ril_syntax::ast::Program {
+        &self.syntax
+    }
+    pub fn syntax(&self) -> &ril_syntax::ast::Program {
+        &self.syntax
+    }
+    pub fn facts(&self) -> &crate::sema::SemanticFacts {
+        &self.facts
+    }
+    pub fn diagnostics(&self) -> &[ril_compiler_core::diagnostic::Diagnostic] {
+        &self.diagnostics
+    }
+    pub(crate) fn verified(
+        syntax: ril_syntax::ast::Program,
+        definitions: Vec<Definition>,
+        facts: crate::sema::SemanticFacts,
+        diagnostics: Vec<ril_compiler_core::diagnostic::Diagnostic>,
+    ) -> Self {
+        Self {
+            definitions,
+            resolved_source: syntax.clone(),
+            syntax,
+            facts,
+            diagnostics,
+            static_definitions: vec![],
+            type_functions: vec![],
+            static_termination: Default::default(),
+            external_declarations: vec![],
+            type_declarations: Default::default(),
+        }
     }
 }

@@ -1,0 +1,4 @@
+meta fn empty<T>() -> []T { [] }
+-- The declared dynamic outer shell cannot acquire the receiver's fixed zero.
+-- Expected: E0301, despite this implementation currently returning zero items.
+meta let ITEMS: [0][2]int = empty()

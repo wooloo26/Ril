@@ -1,0 +1,8 @@
+use ril/file
+type Node={mut left:?Node,mut right:?Node,file:File::Handle}
+fn bad(file:File::Handle){
+    let mut node=Node.{left:None,right:None,file:file}
+    node.left=Some(^mut node)
+    node.right=Some(^mut node)
+    let copied=clone(node)
+}

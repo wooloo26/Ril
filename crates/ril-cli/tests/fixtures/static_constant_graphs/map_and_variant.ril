@@ -1,0 +1,14 @@
+-- Native regression: map order and variant payload edges share one child.
+meta let ROOT = {
+    let child = [3]
+    (child, ["a": child, "b": child], Some(child))
+}
+pub fn test_native() &{ROOT} {
+    let mut copied = ^mut clone(ROOT)
+    copied.0 !> Array::push(4)
+    assert(Map::get(copied.1, "a") == Some([3, 4]))
+    assert(Map::get(copied.1, "b") == Some([3, 4]))
+    assert(Map::keys(copied.1) == ["a", "b"])
+    assert(copied.2 == Some([3, 4]))
+    assert(ROOT.0 == [3])
+}

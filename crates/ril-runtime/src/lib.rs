@@ -1,4 +1,57 @@
-//! Native runtime reservation. There is no collector or scheduler yet.
+//! Native execution support with explicit outcomes and managed handles.
+#![deny(unsafe_code)]
 pub use ril_runtime_api as api;
+mod activation;
+pub mod budget;
+pub mod byte_string;
+pub mod channel;
+mod channel_runtime;
+pub mod collections;
+pub mod concurrent;
+pub mod cps;
+mod cps_exit;
+pub mod deque;
+pub mod encoding;
+pub mod environment;
+mod ffi;
+pub mod file;
+mod foreign_codec;
+mod foreign_process;
+mod foreign_runtime;
+pub mod formatting;
+pub mod heap;
+mod host_cleanup;
+mod host_job;
+mod host_service;
+mod host_stdio;
+mod host_transfer;
+mod io;
+pub mod io_buffered;
+mod io_reservations;
+pub mod iteration;
+pub mod map;
+pub mod native_string;
+pub mod numeric;
+pub mod order;
+pub mod parallel;
+pub mod path;
+#[cfg(windows)]
+mod platform_environment;
+mod platform_file;
+mod platform_io;
+#[cfg(target_os = "linux")]
+mod platform_signal;
+mod platform_stdio;
+pub mod process;
+pub mod process_io;
+pub mod random;
+pub mod scheduler;
+pub mod shared;
 mod status;
+pub mod string;
+pub mod time;
+mod timer;
+pub mod unicode;
+pub mod value;
+pub mod window;
 pub use status::{RuntimeStatus, STATUS};

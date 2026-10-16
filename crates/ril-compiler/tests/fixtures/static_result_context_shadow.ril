@@ -1,0 +1,11 @@
+meta fn local() -> int {
+    let n = 2
+    {
+    let n = 3
+    let result: Result<[n]int, str> = Ok([1, 2, 3])
+    assert(result is Ok(_))
+    7
+    }
+}
+meta let ANSWER = local()
+pub fn test_native() &{ANSWER} { assert(ANSWER == 7) }

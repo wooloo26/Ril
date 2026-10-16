@@ -1,0 +1,17 @@
+eff Mark<T>{touch()}
+eff Read{get()->int}
+type Reader=fn()->int &closure
+fn make<T>(witness:T,value:int,reader:Reader={with Read::get()->resume value;\->Read::get()})->Reader @Mark<T>{
+    Mark<T>::touch()
+    reader
+}
+pub fn test_native(){
+    with {Mark<int>::touch()->resume(),Mark<str>::touch()->resume()}
+    let seven=make(0,7)
+    let nine=make(0,9)
+    let text_instance=make("",11)
+    with Read::get()->resume 100
+    assert(seven()==7 && nine()==9 && text_instance()==11 && seven()==7)
+    let measured={with Div::exhausted()->None;Some(Div::budget(100,nine))}
+    assert(measured==Some(9) && text_instance()==11)
+}

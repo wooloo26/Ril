@@ -10,4 +10,8 @@ workspace = true
 
 [dependencies]
 ril-compiler-core.workspace = true
+ril-text-format.workspace = true
 rowan.workspace = true
+
+[dev-dependencies]
+ril-test.workspace = true

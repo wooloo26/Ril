@@ -1,0 +1,51 @@
+//! Independent unregistered producer boundary review. A genuine registry UID
+//! does not turn an arbitrary Ty::Generic value into a Source-derived Type.
+//! No Cargo or semantic test execution has been performed for this file.
+use super::*;
+
+#[test]
+fn registered_generic_shape_alone_does_not_mint_a_type_source_identity() {
+    let source =
+        "fn owner<U>(value:U){}\nfn other<V>(value:V){}\nfn keys<T,K:keyof T>(record:T,key:K){}";
+    let parsed = ril_syntax::parse(source);
+    assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
+    let mut checker = Checker::new(FileId(0));
+    checker.run(&parsed.program);
+    let owner = checker
+        .functions
+        .iter()
+        .position(|function| function.syntax.name == "owner")
+        .unwrap();
+    let definition = checker.functions[owner].definition;
+    checker.generic_scope(owner);
+    let mut frame = checker.frame(BTreeMap::new(), false);
+    frame.definition = Some(definition);
+    frame.callable_owner = Some(CallableOwner::Function(definition));
+    let expression = ril_syntax::parse_expression("0", FileId(0));
+    assert!(expression.diagnostics.is_empty() && !expression.incomplete);
+    for (function, index) in [("owner", 0), ("other", 0), ("keys", 1)] {
+        let definition = checker
+            .functions
+            .iter()
+            .find(|actual| actual.syntax.name == function)
+            .unwrap()
+            .definition;
+        let identity = checker
+            .generic_binders
+            .values()
+            .find(|binder| binder.definition == definition && binder.index == index)
+            .unwrap()
+            .identity
+            .clone();
+        // This value has neither a real formal binding, a projection receipt,
+        // nor a named return receipt. All three UIDs are truly registered;
+        // `keys` additionally demonstrates a registered non-Type binder.
+        let counterfeit = Value::scalar(Ty::Generic(identity), None, CauseId(0));
+        assert!(
+            checker
+                .original_source_receiving_key(&counterfeit, &expression.expression, &frame)
+                .is_none(),
+            "registered {function}:{index} without Source minted a Type identity"
+        );
+    }
+}

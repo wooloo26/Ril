@@ -3,3 +3,4 @@ pub mod diagnostic;
 pub mod ids;
 pub mod phase;
 pub mod source;
+pub mod target;

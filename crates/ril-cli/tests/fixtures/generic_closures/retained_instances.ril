@@ -1,0 +1,14 @@
+eff Read<T>{get()->T}
+type Reader<T>=fn()->T &closure
+fn make<T>(value:T)->Reader<T> &capture{
+    with Read<T>::get()->resume value
+    \->Read<T>::get()
+}
+pub fn test_native(){
+    let seven=make(7)
+    let nine=make(9)
+    let word=make("seven")
+    with {Read<int>::get()->resume 100,Read<str>::get()->resume "outside"}
+    assert(seven()==7 && nine()==9 && word()=="seven")
+    assert(seven()==7 && word()=="seven" && nine()==9)
+}

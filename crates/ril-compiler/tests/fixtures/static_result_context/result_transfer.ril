@@ -1,0 +1,9 @@
+meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
+meta let ANSWER = {
+    let pending: Result<int, str> = Ok(7)
+    let pair: (Result<int, str>, []int) = retain(pending)
+    assert(pair.0 is Ok(_))
+    7
+}
+meta let _ = assert(ANSWER == 7)
+pub fn test_native() &{ANSWER} { assert(ANSWER == 7) }

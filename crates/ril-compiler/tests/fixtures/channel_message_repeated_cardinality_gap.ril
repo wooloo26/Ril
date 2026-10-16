@@ -1,0 +1,31 @@
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<int,str>>(2)
+        let mut action=\number:int->{
+            let value:Result<int,str>=Ok(number)
+            assert(value is Ok(_)|Err(_))
+            assert(Channel::send(mut tx,value) is Ok())
+            number
+        }
+        let _=Array::map([1,2],mut action)
+        assert(Channel::recv(mut rx) is Ok(_))
+        match Channel::recv(mut rx){
+            Ok(_)->{
+                let (mut other_tx,other_rx)=Channel::bounded<Result<int,str>>(1)
+                let unpaid:Result<int,str>=Ok(99)
+                assert(Channel::send(mut other_tx,unpaid) is Ok())
+                Channel::close(other_tx)
+                Channel::close(other_rx)
+            },
+            Err(_)->()
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}

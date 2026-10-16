@@ -1,0 +1,10 @@
+eff Read<T>{get()->T}
+var trace=0
+fn pair<T>(witness:T,base:int=3,value:int=base+1)->(T,int) @Read<T>{(Read<T>::get(),value)}
+pub fn test_native() &{mut trace}{
+    with {Read<int>::get()->resume 7,Read<str>::get()->resume "seven"}
+    assert(pair(0)==(7,4) && pair("",10)==("seven",11))
+    assert(pair(0,8,50)==(7,50))
+    let result=pair(value:{trace=trace*10+1;90},witness:{trace=trace*10+2;0})
+    assert(result==(7,90) && trace==12)
+}

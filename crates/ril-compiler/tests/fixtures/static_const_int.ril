@@ -1,0 +1,29 @@
+meta fn size<n:int>()->int{n}
+meta fn forward<n:int>()->int{size<n>()}
+meta fn shadow<n:int>()->int{
+    {let n=5;assert(size<n>()==5);()}
+    size<n>()
+}
+meta fn captured<n:int>()->int{
+    inside() where meta fn inside()->int{n}
+}
+meta fn pair<T,n:int>(value:T)->(T,int){(value,n)}
+
+meta let SCALAR=size<2>()
+meta let NEGATIVE=size<-3>()
+meta let FORWARDED=forward<9>()
+meta let SHADOW=shadow<7>()
+meta let CAPTURED=captured<6>()
+meta let FIXED={
+    let n=2
+    independent<100>()
+    where meta fn fixed()->[n]int{[1,2]};meta fn independent<n:int>()->int{len(fixed())}
+}
+meta let MIXED={let selected=pair<str,4>("x");assert(selected.0=="x");selected.1}
+meta let _=assert(SCALAR==2 && NEGATIVE== -3 && FORWARDED==9)
+meta let _=assert(SHADOW==7 && CAPTURED==6 && FIXED==2 && MIXED==4)
+
+pub fn test_native() &{SCALAR,NEGATIVE,FORWARDED,SHADOW,CAPTURED,FIXED,MIXED}{
+    assert(SCALAR==2 && NEGATIVE== -3 && FORWARDED==9)
+    assert(SHADOW==7 && CAPTURED==6 && FIXED==2 && MIXED==4)
+}

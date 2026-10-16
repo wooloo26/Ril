@@ -1,0 +1,3 @@
+fn count<U,T:{items:[0][2]U,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<U,S>(value:({items:[0][2]U,tag:str,..S},{items:[0][2]U,tag:str,..S}))->int{count<U>(value)}
+pub fn test_native(){let left:[0][2]int=[];let right:[0][2]int=[];assert(forward((.{items:left,tag:"same"},.{items:right,tag:"same"}))==0)}

@@ -8,6 +8,6 @@ pub struct RuntimeStatus {
 }
 pub const STATUS: RuntimeStatus = RuntimeStatus {
     contract_version: api::CONTRACT_VERSION,
-    tracing_gc: false,
-    task_scheduler: false,
+    tracing_gc: true,
+    task_scheduler: true,
 };

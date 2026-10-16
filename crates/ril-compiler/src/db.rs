@@ -30,6 +30,31 @@ pub fn source_facts(db: &dyn salsa::Database, source: SourceInput) -> SourceFact
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedSource {
+    pub program: ril_syntax::ast::Program,
+    pub diagnostics: Vec<ril_compiler_core::diagnostic::Diagnostic>,
+    pub incomplete: bool,
+}
+
+#[salsa::tracked]
+pub fn parsed_source(db: &dyn salsa::Database, source: SourceInput, file: u32) -> ParsedSource {
+    let bytes = source.bytes(db);
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return ParsedSource {
+            program: Default::default(),
+            diagnostics: vec![],
+            incomplete: true,
+        };
+    };
+    let parsed = ril_syntax::parse_file(text, ril_compiler_core::source::FileId(file));
+    ParsedSource {
+        program: parsed.program,
+        diagnostics: parsed.diagnostics,
+        incomplete: parsed.incomplete,
+    }
+}
+
 pub(crate) fn update_source(db: &mut Database, source: SourceInput, bytes: Vec<u8>) {
     source.set_bytes(db).to(bytes);
 }

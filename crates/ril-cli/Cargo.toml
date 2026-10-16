@@ -11,12 +11,17 @@ workspace = true
 [dependencies]
 ril-compiler.workspace = true
 ril-codegen.workspace = true
+ril-codegen-cranelift.workspace = true
+ril-runtime.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 tracing-subscriber.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
+ril-ir.workspace = true
+ril-compiler-core.workspace = true
+
 
 [[bin]]
 name = "ril"

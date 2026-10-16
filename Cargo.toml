@@ -17,7 +17,9 @@ ril-ir = { path = "crates/ril-ir" }
 ril-codegen = { path = "crates/ril-codegen" }
 ril-codegen-cranelift = { path = "crates/ril-codegen-cranelift" }
 ril-runtime-api = { path = "crates/ril-runtime-api" }
+ril-runtime = { path = "crates/ril-runtime" }
 ril-test = { path = "crates/ril-test" }
+ril-text-format = { path = "crates/ril-text-format" }
 clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
@@ -36,6 +38,11 @@ cranelift-module = "0.136"
 cranelift-object = "0.136"
 object = { version = "0.40", default-features = false, features = ["read", "std"] }
 junction = { version = "2.1", default-features = false }
+num-bigint = "0.4"
+num-traits = "0.2"
+sha2 = "0.10"
+ryu = "1.0"
+getrandom = "0.4"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

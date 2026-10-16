@@ -1,0 +1,7 @@
+eff Read{get()->int}
+fn answer()->[]int{
+    with Read::get()->{let answer=resume 7;assert(answer[0]==8);clone(answer)}
+    let mut values=[Read::get()]
+    values[0]+=1
+    values
+}

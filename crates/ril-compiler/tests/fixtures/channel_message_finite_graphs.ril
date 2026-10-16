@@ -1,0 +1,35 @@
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+pub fn test_native() @Async{
+    let result=scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<Result<int,str>,str>>(1)
+        let nested:Result<Result<int,str>,str>=Ok(Ok(7))
+        assert(Channel::send(mut tx,nested) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{Ok(inner)->assert(inner is Ok(7)|Err(_)),Err(_)->()},
+            Err(_)->panic("nested")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        let first:Result<int,str>=Ok(11)
+        let second:Result<int,str>=Err("second")
+        assert(first is Ok(_)|Err(_))
+        assert(second is Ok(_)|Err(_))
+        let array=[first,second]
+        let (mut atx,mut arx)=Channel::bounded<[]Result<int,str>>(1)
+        assert(Channel::send(mut atx,array) is Ok())
+        assert(Channel::recv(mut arx) is Ok(_))
+        Channel::close(atx)
+        Channel::close(arx)
+        let mapping=["a":first,"b":second]
+        let (mut mtx,mut mrx)=Channel::bounded<[str:Result<int,str>]>(1)
+        assert(Channel::send(mut mtx,mapping) is Ok())
+        assert(Channel::recv(mut mrx) is Ok(_))
+        Channel::close(mtx)
+        Channel::close(mrx)
+        Ok()
+    }
+    assert(result is Ok()|Err(_))
+}

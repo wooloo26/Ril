@@ -1,0 +1,7 @@
+fn identity<T>(value:T)->T{value}
+fn wrap<T>(value:T)->(T,int){(value,7)}
+pub fn test_native(){
+    let input:[0][2]int=[]
+    let output:[0][2]int=identity(wrap(identity(input)).0)
+    assert(len(output)==0)
+}

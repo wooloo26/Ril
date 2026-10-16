@@ -1,0 +1,10 @@
+meta let ANSWER={
+    let first:Result<int,str>=Ok(7)
+    let second:Result<int,str>=Err("other")
+    let values:[str:Result<int,str>]=["first":first,"second":second]
+    match values["first"]{Some(selected)->assert(selected is Ok(7)),None->()}
+    match values["second"]{Some(other)->assert(other is Err("other")),None->()}
+    assert(values["absent"] is None)
+    7
+}
+pub fn test_native() &{ANSWER}{assert(ANSWER==7)}

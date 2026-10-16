@@ -1,0 +1,7 @@
+meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
+meta let _ = {
+    let pending: Result<int, str> = Ok(7)
+    let pair: (Result<int, str>, []int) = retain(pending)
+    -- Expected: E0720. Inferring U does not inspect the returned T producer.
+    ()
+}

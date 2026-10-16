@@ -1,0 +1,6 @@
+eff Read<T>{get()->T}
+fn immediate<T>(value:T)->T{
+    with Read<T>::get()->resume value
+    (\->{(\->Read<T>::get())()})()
+}
+pub fn test_native(){assert(immediate(7)==7 && immediate("seven")=="seven" && immediate(9)==9)}

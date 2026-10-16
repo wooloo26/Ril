@@ -1,0 +1,2 @@
+fn first<T:{items:[0][2]int,..R}>(value:(T,T))->int{len(value.(0).items)}
+fn forward<S>(value:({items:[0][2]int,tag:str,..S},{items:[0][3]int,tag:str,..S}))->int{first(value)}

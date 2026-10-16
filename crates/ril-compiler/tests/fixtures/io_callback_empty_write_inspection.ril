@@ -1,0 +1,12 @@
+use ril/io
+type Writer={pending:Result<int,str>,mut calls:int}
+fn write(mut writer:Writer,data:bytes)->Io::WriteProgress &mut{
+    writer.calls+=1
+    assert(writer.pending is Ok(_)|Err(_))
+    .{written:len(data),error:None}
+}
+fn example(){
+    let pending:Result<int,str>=Ok(1)
+    let mut writer=Writer.{pending:pending,calls:0}
+    assert(Io::write_all(mut writer,b"",.{write:write}) is Ok(_)|Err(_))
+}

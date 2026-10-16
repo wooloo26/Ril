@@ -25,3 +25,5 @@ jobs:
         run: cargo install cargo-nextest --version 0.9.148 --locked
       - name: Run checks
         run: cargo xtask ci
+      - name: Execute language corpus
+        run: cargo xtask corpus run --applicable-only

@@ -1,0 +1,7 @@
+eff Mark<T>{touch()}
+halt fn answer()->int{7}
+fn measured<T>(witness:T,value:int={with Div::exhausted()->0;Div::budget(1,answer)})->int @Mark<T>{Mark<T>::touch();value}
+pub fn test_native(){
+    with {Mark<int>::touch()->resume(),Mark<str>::touch()->resume()}
+    assert(measured(0)==7 && measured("")==7 && measured(0,9)==9)
+}

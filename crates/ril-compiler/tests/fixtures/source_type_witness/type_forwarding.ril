@@ -1,0 +1,9 @@
+type Wrapped<T>={item:T}
+fn identity<T>(value:T)->T{value}
+fn wrap<T>(value:T)->Wrapped<T>{Wrapped<T>.{item:value}}
+fn unwrap<T>(value:Wrapped<T>)->T{value.item}
+pub fn test_native(){
+    let input:[2]int=[1,2]
+    let output:typeof(input)=identity(unwrap(wrap(input)))
+    assert(output==[1,2])
+}

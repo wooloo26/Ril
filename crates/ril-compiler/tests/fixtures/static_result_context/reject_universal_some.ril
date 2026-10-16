@@ -1,0 +1,8 @@
+meta fn discard<U>(value: ?Result<int, str>) -> []U {
+    match value {
+        Some(item) -> { let pending: Result<int, str> = Ok(1); [] },
+        None -> [],
+    }
+}
+-- Expected: E0720. This actual None does not discharge the definition's Some path.
+meta let ITEMS: []int = discard(None)

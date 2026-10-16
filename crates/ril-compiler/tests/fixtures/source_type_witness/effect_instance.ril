@@ -1,0 +1,8 @@
+eff Read<T>{get()->T}
+fn read<T>(witness:T)->T @Read<T>{Read<T>::get()}
+pub fn test_native(){
+    let input:[0][2]int=[]
+    with Read<[0][2]int>::get()->resume input
+    let output:[0][2]int=read(input)
+    assert(len(output)==0)
+}

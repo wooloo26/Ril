@@ -1,0 +1,14 @@
+// Pending adapter: register and execute only after the unchanged source passes
+// a real Session and Core gate under the central structural-idempotence law.
+#[path = "support/native_probe.rs"]
+mod native_probe;
+
+#[test]
+fn original_nine_scope_entry_executes_all_nine_optional_routes() {
+    native_probe::executes(
+        include_str!(
+            "../../ril-compiler/tests/fixtures/channel_message_optional_callback_scope_budget.ril"
+        ),
+        "unchanged original single-entry nine-scope program",
+    );
+}

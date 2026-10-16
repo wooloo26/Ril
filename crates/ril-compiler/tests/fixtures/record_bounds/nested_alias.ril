@@ -1,0 +1,2 @@
+fn both<T:{id:int,..R}>(value:(T,T))->int{value.(0).id+value.(1).id}
+pub fn test_native(){let record=.{id:7,tag:"same"};assert(both((record,record))==14)}

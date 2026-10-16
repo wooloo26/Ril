@@ -1,0 +1,20 @@
+type Token(int)
+type Box<T>(T)
+eff Mark<T>{get()->int}
+fn mark<T>(value:T)->int @Mark<T>{Mark<T>::get()}
+fn identity<T>(value:T)->T{value}
+pub fn test_native(){
+    let input:[2]int=[1,2]
+    let optional=Some(input)
+    let selected:?[2]int=identity(optional)
+    assert(selected is Some(_))
+    let result:Result<[2]int,str>=Ok(input)
+    let selected_result=identity(result)
+    match selected_result {Ok(values)->assert(values==[1,2]),Err(_)->panic("unexpected")}
+    let boxed=Box<[2]int>(input)
+    let selected_box:Box<[2]int>=identity(boxed)
+    let token=Token(7)
+    let selected_token:Token=identity(token)
+    with {Mark<?[2]int>::get()->resume 1,Mark<Box<[2]int>>::get()->resume 2,Mark<Token>::get()->resume 3}
+    assert(mark(optional)==1 && mark(selected_box)==2 && mark(selected_token)==3)
+}

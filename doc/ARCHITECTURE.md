@@ -6,7 +6,7 @@ remain the normative language contracts.
 
 ## Workspace organization
 
-All ten application/library crates live under crates/. The eleventh workspace
+All eleven application/library crates live under crates/. The twelfth workspace
 package, xtask, owns repository maintenance. tests/ contains only the existing
 Ril language-test containers. A crate marks a dependency or reuse boundary;
 closely related phases are modules inside the owning crate.
@@ -21,6 +21,7 @@ closely related phases are modules inside the owning crate.
 | ril-codegen-cranelift | Cranelift AOT emission behind the native backend interface |
 | ril-runtime-api | Logical managed-heap and execution contracts: gc, execution, error |
 | ril-runtime | Native runtime implementation and availability |
+| ril-text-format | Pure scalar formatting shared by static evaluation and runtime; explicit target int bounds and output budgets |
 | ril-cli | The ril command-line application |
 | ril-test | Test-container parsing, corpus validation, extraction and adapter contracts |
 | xtask | Development commands and workspace architecture validation |
@@ -67,6 +68,9 @@ flowchart TD
     native --> ir
     native --> api["ril-runtime-api"]
     runtime["ril-runtime"] --> api
+    compiler --> format["ril-text-format"]
+    syntax --> format
+    runtime --> format
     xtask --> corpus["ril-test"]
 ~~~
 
@@ -76,6 +80,11 @@ interfaces and target descriptions without depending on a concrete emitter.
 ril-compiler uses these abstract interfaces; it does not depend on Cranelift.
 Neither runtime crate depends on compiler, syntax or code-generation crates.
 The corpus tool remains independent of the compiler.
+
+`ril-text-format` has no workspace dependencies. It accepts ordinary scalar
+values, a target pointer width and an explicit implementation output budget.
+It shares Ril conversion rules without coupling the runtime to compiler data
+or coupling compile-time execution to heap handles and native ABI state.
 
 cargo xtask ci checks these boundaries using Cargo's resolved dependency graph
 with all features and targets included. It checks production and build
@@ -135,8 +144,10 @@ preserve Ril arithmetic, evaluation order, identity, effects and cleanup.
 Salsa is confined to ril-compiler::db. The driver performs filesystem I/O and
 target selection outside queries; sessions supply source revisions to the
 database. Queries derive deterministic facts and reuse results until their
-inputs change. The current session models one source input; persistent caches,
-watchers, language servers and package resolution are future work.
+inputs change. Session accepts either one source or an in-memory project with
+stable per-file inputs and explicit add, edit, and remove operations. The
+filesystem driver discovers modules outside queries. Persistent caches,
+watchers, language servers and package resolution remain future work.
 
 Session, CompilationOutcome, check_path and build_path are exported from the
 ril-compiler crate root. CLI presentation is separate. Unimplemented phases use
@@ -149,27 +160,93 @@ x86_64-unknown-linux-gnu (ELF), both little-endian with 64-bit pointers. Target
 properties are separate from implementation availability: an OS capability
 does not imply an implemented Ril library operation.
 
-Cranelift accepts an explicitly constructed native IR module with exported,
-zero-argument functions returning an i64 constant. Tests emit both object
-formats on either host and inspect their architectures and defined symbols.
-This validates the emitter boundary; it is not a Ril source compilation or a
-linked-program test. Cranelift types do not escape the concrete backend.
+Cranelift emits managed native functions and structured control flow from Core.
+Closures use a uniform C ABI of environment and argument-tuple handles to a
+result handle. Intermediate values and captured binding cells have explicit
+roots. Tests compile, link and execute actual Ril sources on the host; separate
+object-format tests inspect COFF and ELF output. Cranelift types do not escape
+the concrete backend. Uniform boxed execution retains verified generic binder
+identities; operations requiring unresolved specialization are unavailable.
 
 Object emission and platform linking have separate interfaces. LinkRequest
-identifies objects, the target runtime library and output. The future linker
-will invoke tools with argument vectors and distinguish missing tools,
-unsupported combinations and link failures. The current CLI invokes no linker.
+identifies objects, the target runtime library and output. The system linker
+uses argument vectors, discovers MSVC/SDK libraries on Windows and invokes cc
+on Linux. Missing tools and unsupported cross-linking remain distinct from
+link failures. CLI build/test inject the backend, linker and runtime library.
 
-ril-runtime-api defines logical contracts, not a frozen binary ABI.
-CONTRACT_VERSION is 1. Artifacts record runtime_contract_version, and native
-runtime status exposes contract_version. Concrete binary layouts and calling
-conventions will be defined together with runtime integration.
+ril-runtime-api defines logical contracts and versioned native operation tags.
+CONTRACT_VERSION is 3. Artifacts record runtime_contract_version, and native
+runtime status exposes contract_version. Exported C functions pass only scalar
+POD values, generation handles and explicit buffer pointers/lengths. The
+availability table is exact: an unimplemented builtin cannot silently become
+a native call that fails only at runtime.
 
 Explicit managed handles, type descriptors, roots, object tracing and safepoints
-establish the collector boundary. Suspended computations and tasks must retain
-their roots. Language panic is distinct from Rust panic and native crashes.
-Scoped cleanup, cancellation and task completion preserve language semantics
-independently of GC timing. The collector and scheduler are not implemented.
+establish the collector boundary. The non-moving mark-sweep heap preserves
+cycles and internal aliases during deep clone; generation checks reject stale
+handles. Scoped cleanup invokes current callbacks in LIFO order, with explicit
+primary and cleanup fault causes, independently of collection. Language panic
+is distinct from Rust panic and native crashes. Native continuation steps,
+resumptions, delimiter/handler chains and captured cells are precisely traced.
+Task actions, results, scope state and channel queues also retain their roots.
+Execution state remains worker-local. An opt-in shared heap
+serializes managed access at ABI safepoints and publishes each worker's precise
+roots before releasing the gate. Infrastructure tests cover four allocating
+workers collecting shared cycles, native callback reentry, and suspended
+trampoline roots. Standard streams, sleep, entropy, process operations, file
+stream operations and implicit file/child cleanup now separate request
+preparation, host work and managed result construction. The host work runs
+outside this gate. Child waits and sleep use wakeable task cancellation tokens;
+cancelling a child wait preserves its owner's cleanup authority. Standard-stream
+and file transfers use cancellable host requests; interruptible filesystem waits
+have platform-specific cancellation workers. Source Concurrent scopes/tasks and
+bounded channels execute through this shared heap. Ordinary tasks currently own
+native threads, while Parallel uses bounded workers per operation. A bounded
+task/IO executor and complete cancellation-exit semantic transport remain work in
+progress. Platform interruption limits are documented in NATIVE_FILESYSTEM.md.
+
+Effect operations carry verified identities into Core. Selective CPS uses a
+transitive call-graph fixed point and conservatively includes dynamic calls.
+The CPS native IR is a graph of ANF blocks; Cranelift emits each continuation
+as machine code and a runtime trampoline dispatches steps outside heap borrows.
+Tail resumption restores the request's handler chain; an arm runs outside its
+selected handler, and abort bypasses the suspended body. GC-traced logical
+activations retain scoped actions across physical native steps. Delimiter
+checkpoints distinguish normal return from abort; deferred arm activations stay
+alive until the resumed body completes, including on panic. Source tests execute
+5,000 effect requests with shared mutable cells and collection, and verify LIFO
+cleanup on suspension, abort, return, loop control, and resumed-body panic.
+The task-owned cleanup outcome machine retains pending work and masks across CPS
+invocations, including handlers entered during cleanup. See NATIVE_CLEANUP.md for
+the ABI and fault-order contract. Retained handlers carry lexical definition and
+callable-owner identities into reusable native recipes. The source solver delays
+non-tail suffixes until the actual body answer and cleanup boundary, retaining
+typed ordering evidence in Core. Checked copy answers and certified strict
+identity transport of ordinary references/Results have native tests; richer
+suffix and resource-answer proofs remain incomplete.
+
+The runtime implements exact timestamp arithmetic, process-local monotonic
+observations, SplitMix64 state, and host cryptographic entropy without seeded
+fallback. Blocking time and entropy operations currently execute outside the
+managed heap gate on the owning thread. Sleep is wakeable by task cancellation;
+the host entropy operation has no general interruption guarantee. Runtime
+availability and semantic permission contracts remain separate.
+
+Native strings preserve raw POSIX bytes or Windows UTF-16 units. Paths use target
+lexical rules without filesystem observations. File authorities use opaque,
+nonclonable identities, shared open/position state, explicit close and a separate
+finite implicit release. Rename uses atomic no-replacement platform operations;
+it never checks existence then performs an overwriting rename. Environment
+snapshots preserve native arguments and names. Host operations separate managed
+request preparation/result construction from blocking work and preserve actual
+partial-transfer outcomes on cancellation. A blocked native task is not yet a
+parked continuation in a bounded scheduler.
+
+Runtime unsafe exceptions are restricted to ABI calls and the small
+`platform_file`, `platform_environment`, `platform_io`, `platform_stdio`, and
+`platform_signal` modules. Each raw operation documents
+ownership, buffer lifetime and host guarantees; the rest of the runtime retains
+crate-level `deny(unsafe_code)` and compiler crates retain `forbid`.
 
 ## Current capabilities and development
 
@@ -178,14 +255,20 @@ dependencies pinned by Cargo.lock. Project implementation and maintenance logic
 are Rust; TOML and CI YAML provide configuration. rustc, Git, system APIs and
 platform linkers are external development/platform tools.
 
-Implemented infrastructure includes byte-preserving source storage, structured
-diagnostics, target descriptions, a lossless Rowan unparsed envelope, Salsa
-source queries, the native object probe, and the complete corpus tool.
+Implemented paths include recovering lossless lexing/parsing, owned ASTs,
+module resolution, type and capability checking, pure static evaluation,
+termination obligations, verified HIR-to-Core lowering, managed native object
+emission, linking, execution and the subprocess corpus adapter. Capability
+evidence includes finite heap shapes, permission roots, conditional relations,
+recursive summaries, Result duties and derivation causes; it crosses into Core
+without granting authority to manually constructed IR.
 
-Ril lexing/parsing, semantic analysis, both lowering paths, linking, collection
-and task scheduling remain unimplemented. check/build report that explicitly
-and emit no executable artifacts. Invalid UTF-8 can already produce E0104;
-this does not imply complete lexical conformance or semantic test execution.
+This is an implementation in progress. Algebraic handlers/resumption,
+comprehensive narrowing, resource contracts, concurrency, all static type
+computation and the complete standard library are not yet fully covered.
+check/build distinguish verified success, rejection and explicit unimplemented
+features. Partial support and infrastructure tests do not establish complete
+language conformance.
 
 ~~~text
 cargo build --workspace --locked
@@ -194,6 +277,8 @@ cargo run --locked -p ril-cli -- targets
 cargo xtask corpus validate
 cargo xtask corpus list
 cargo xtask corpus extract <case-id> --out <empty-directory>
+cargo xtask corpus run --mode check-pass --mode check-fail
+cargo xtask corpus run --filter permissions --json
 cargo xtask ci
 ~~~
 
@@ -224,11 +309,17 @@ panic identity from an exit code. Warnings do not alter acceptance. Empty
 selection, unimplemented stages and unavailable environments remain incomplete;
 crashes and timeouts cannot satisfy expected language failures.
 
-A future executor must create fresh program state and a workspace for each
-case, honor arguments/environment without shell evaluation, build declared
-helpers, enforce timeouts and terminate child processes. Those execution
-responsibilities are not part of the current container tool. Validation
-continues to report semantic execution as not-run.
+The executor creates fresh program state and an isolated workspace for each
+case, honors arguments/environment without shell evaluation, builds declared
+helpers, enforces timeouts and terminates child process groups or Windows Job
+Objects. CLI JSON conveys diagnostics and runtime reports independently from
+program output bytes. Run supports exact IDs, substrings, modes and an external
+compiler path. Structural validation remains a separate command and continues
+to label semantic execution as not-run; only actual execution can pass cases.
+`--applicable-only` excludes runtime cases requiring the other known host OS,
+records every exclusion separately, and leaves all static-layout cases selected.
+Unknown capabilities and unavailable tools remain incomplete. The CI matrix
+uses this flag; its selection union must still cover the full corpus.
 
 ## Implementation sequence
 

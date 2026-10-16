@@ -1,0 +1,23 @@
+meta fn package<T, U>(value: T) -> (T, []U) { (value, []) }
+meta fn checked() -> int {
+    let pending: Result<int, str> = Ok(7)
+    let items: []int = [1]
+    if len(items) == 1 { assert(pending is Ok(_)) }
+    7
+}
+meta let CHECKED = checked()
+meta let ANSWER = {
+    let original: Result<int, str> = Ok(7)
+    let rows: [1](Result<int, str>, []int) = [package(original)]
+    let holder: {entry: (Result<int, str>, []int)} = .{entry: package(rows[0].0)}
+    let table: [str: (Result<int, str>, []int)] = ["item": package(holder.entry.0)]
+    let kept: (Result<int, str>, []int) = match table["item"] {
+        Some(item) -> item,
+        None -> package(original),
+    }
+    assert(kept.0 is Ok(_))
+    assert(len(kept.1) == 0 && len(rows) == 1)
+    7
+}
+meta let _ = assert(ANSWER == 7)
+pub fn test_native() &{ANSWER, CHECKED} { assert(ANSWER == 7 && CHECKED == 7) }

@@ -1,0 +1,3 @@
+meta fn empty<T>() -> []T { [] }
+-- Expected: E0301. Result context must not replace explicitly selected int.
+meta let ITEMS: []str = empty<int>()

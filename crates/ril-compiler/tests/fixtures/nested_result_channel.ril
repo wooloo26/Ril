@@ -1,0 +1,27 @@
+use ril/concurrent::{scope,TaskFault}
+use ril/concurrent/channel
+fn duplicate(tx:Channel::Sender<Result<int,str>>)->Channel::Sender<Result<int,str>> @Fiber{clone(tx)}
+fn example() @Async{
+    let result=scope \mut s -> {
+        let child=s.fork(\->())
+        child.join()?
+        let (tx,mut rx)=Channel::bounded<Result<int,str>>(1)
+        let (other_tx,mut other_rx)=Channel::bounded<Result<int,str>>(1)
+        let mut own=duplicate(tx)
+        let mut other=duplicate(other_tx)
+        let spare=duplicate(tx)
+        Channel::close(spare)
+        assert((own !> Channel::send(Ok(1))) is Ok())
+        assert((other !> Channel::send(Ok(2))) is Ok())
+        Channel::close(own)
+        Channel::close(other)
+        assert((rx !> Channel::recv()) is Ok(Ok(1)))
+        assert((other_rx !> Channel::recv()) is Ok(Ok(2)))
+        Channel::close(tx)
+        Channel::close(other_tx)
+        Channel::close(rx)
+        Channel::close(other_rx)
+        Ok()
+    }
+    assert(result is Ok())
+}

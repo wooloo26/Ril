@@ -1,0 +1,33 @@
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<int>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Option<int>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        assert(Channel::recv(mut rx) is Ok(_))
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+fn unrelated_global_optional(value:?int)->int{value ?? 0}
+let STORED=unrelated_global_optional(Array::get([1],0))
+
+fn ordinary_tag_receipts(value:?int){
+    let result:Result<int,str>=Ok(1)
+    if value is Some(_){assert(result is Ok(_)|Err(_))}
+    else{assert(result is Ok(_)|Err(_))}
+}
+fn ordinary_tag_forward(value:?int){ordinary_tag_receipts(value)}
+
+pub fn test_native() @Async &{STORED}{
+    assert(STORED==1)
+    ordinary_tag_forward(Some(7))
+    ordinary_tag_forward(None)
+    assert(consume(Some(7)) is Ok()|Err(_))
+    assert(consume(None) is Ok()|Err(_))
+}

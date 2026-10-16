@@ -1,0 +1,453 @@
+//! Immediate named Type prefixes. This private preparation is not a callable
+//! value and supplies no value, permission, escape or default-interface proof.
+use super::*;
+use crate::sema::{
+    copy_contract::CopyCallEventId,
+    effect_identity::{ArgumentKey, InvocationContext, StaticBinderSort},
+};
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub(super) struct Selection {
+    pub binder: String,
+    pub index: u32,
+    pub ty: Ty,
+    pub syntax: TypeExpr,
+    pub key: ArgumentKey,
+    pub witness: Option<Arc<SourceTypeWitness>>,
+}
+
+#[derive(Clone)]
+pub(super) struct Prepared {
+    target: DefinitionId,
+    context: InvocationContext,
+    span: Span,
+    expression: Option<usize>,
+    pub selections: Vec<Selection>,
+}
+
+struct Window {
+    span: Span,
+    context: InvocationContext,
+    prepared: Option<Prepared>,
+}
+
+#[derive(Default)]
+pub(super) struct State {
+    windows: Vec<Window>,
+    prepared: BTreeMap<CopyCallEventId, Prepared>,
+}
+
+impl Checker {
+    pub(super) fn begin_explicit_named_callee(
+        &mut self,
+        syntax: &Expr,
+        frame: &Frame,
+    ) -> Option<usize> {
+        if !matches!(syntax.kind, ExprKind::Generic { .. }) {
+            return None;
+        }
+        let marker = self.explicit_named.windows.len();
+        let context = self.invocation_context(frame.callable_owner);
+        self.explicit_named.windows.push(Window {
+            span: syntax.span,
+            context,
+            prepared: None,
+        });
+        Some(marker)
+    }
+
+    /// Called by the existing Generic expression arm, after its real base has
+    /// been evaluated. False preserves all existing constructor/standard paths.
+    pub(super) fn prepare_explicit_named(
+        &mut self,
+        syntax: &Expr,
+        value: &Value,
+        frame: &Frame,
+    ) -> bool {
+        let [Callable::Named(index)] = value.callables.as_slice() else {
+            return false;
+        };
+        let info = self.functions[*index].clone();
+        if info.syntax.body.is_none() {
+            return false; // Existing foreign generic handling owns this case.
+        }
+        let context = self.invocation_context(frame.callable_owner);
+        if self
+            .explicit_named
+            .windows
+            .last()
+            .is_none_or(|window| window.span != syntax.span || window.context != context)
+        {
+            return false;
+        }
+        if context.default_use.is_some() || context.budget_validation {
+            self.unsupported(
+                syntax.span,
+                "explicit named default or validation context needs its separate source contract",
+            );
+            return true;
+        }
+        let ExprKind::Generic { base, arguments } = &syntax.kind else {
+            return false;
+        };
+        let name = match &base.kind {
+            ExprKind::Name(name) => Some(name.as_str()),
+            ExprKind::Path(path) if path.len() == 1 => Some(path[0].as_str()),
+            _ => None,
+        };
+        // Same-spelled aliases still need the genuine declaration binding.
+        let declaration = value.sources.len() == 1
+            && value
+                .sources
+                .iter()
+                .next()
+                .and_then(|id| self.bindings.get(*id))
+                .is_some_and(|binding| {
+                    binding.span == info.syntax.span
+                        && binding.name == info.syntax.name
+                        && !binding.parameter
+                });
+        if name != Some(info.syntax.name.as_str())
+            || !declaration
+            || !matches!(frame.callable_owner, Some(CallableOwner::Function(_)))
+        {
+            self.unsupported(syntax.span, "explicit named application requires its immediate genuine declaration and caller namespace");
+            return true;
+        }
+        if arguments.is_empty() || arguments.len() > info.syntax.generics.len() {
+            self.error(
+                "E0340",
+                syntax.span,
+                "explicit Type prefix has the wrong number of generic arguments",
+                [value.cause],
+            );
+            return true;
+        }
+        let mut selections = Vec::new();
+        for (index, argument) in arguments.iter().enumerate() {
+            let parameter = &info.syntax.generics[index];
+            let owned: Vec<_> = self
+                .generic_binders
+                .values()
+                .filter(|binder| {
+                    binder.definition == info.definition && binder.index as usize == index
+                })
+                .collect();
+            let [binder] = owned.as_slice() else {
+                self.unsupported(
+                    argument.span,
+                    "explicit Type prefix has no unique genuine owned binder",
+                );
+                return true;
+            };
+            if !crate::sema::record_bounds::certifies_type_sort(
+                &binder.identity,
+                binder,
+                parameter,
+                &self.record_bounds,
+            ) {
+                self.unsupported(
+                    argument.span,
+                    "explicit named prefix currently requires ordinary Type arguments",
+                );
+                return true;
+            }
+            let identity = binder.identity.clone();
+            // Resolve before entering the callee's same-spelled namespace.
+            let ty = self.ty(argument);
+            let ty = self.call_inference_type(&ty);
+            let witness = self.source_type_from_syntax(argument);
+            let frozen = if let Some(witness) = &witness {
+                witness.syntax.clone()
+            } else {
+                let Ty::Generic(caller) = &ty else {
+                    self.unsupported(
+                        argument.span,
+                        "explicit open composite Type argument requires complete source transport",
+                    );
+                    return true;
+                };
+                if !self
+                    .generic_context
+                    .values()
+                    .any(|identity| identity == caller)
+                {
+                    self.unsupported(
+                        argument.span,
+                        "explicit Type argument borrowed an unrelated symbolic binder",
+                    );
+                    return true;
+                }
+                match self.effect_argument_syntax(argument) {
+                    Ok(syntax) => syntax,
+                    Err(message) => {
+                        self.unsupported(argument.span, message);
+                        return true;
+                    }
+                }
+            };
+            let Some(key) = crate::static_eval::effects::bounded_argument_key(
+                &frozen,
+                &self.effect_type_binders,
+            ) else {
+                self.unsupported(
+                    argument.span,
+                    "explicit Type argument source key exceeds its work bound",
+                );
+                return true;
+            };
+            if witness.is_none()
+                && !matches!(&key,
+                ArgumentKey::Binder { identity: caller, sort: StaticBinderSort::Type }
+                    if matches!(&ty, Ty::Generic(identity) if identity == caller))
+            {
+                self.unsupported(
+                    argument.span,
+                    "explicit symbolic Type argument has no exact caller identity",
+                );
+                return true;
+            }
+            selections.push(Selection {
+                binder: identity,
+                index: index as u32,
+                ty,
+                syntax: frozen,
+                key,
+                witness,
+            });
+        }
+        self.explicit_named
+            .windows
+            .last_mut()
+            .expect("checked immediate callee window")
+            .prepared = Some(Prepared {
+            target: info.definition,
+            context,
+            span: syntax.span,
+            expression: None,
+            selections,
+        });
+        true
+    }
+
+    pub(super) fn end_explicit_named_callee(
+        &mut self,
+        marker: Option<usize>,
+        observed: Option<usize>,
+    ) -> Option<Prepared> {
+        let marker = marker?;
+        // Even a failed nested window cannot leave preparation for a later call.
+        if self.explicit_named.windows.len() != marker + 1 {
+            self.explicit_named.windows.truncate(marker);
+            return None;
+        }
+        let window = self.explicit_named.windows.pop()?;
+        let mut prepared = window.prepared?;
+        let expression = observed?;
+        let row = self.expression_facts.get(expression)?;
+        if row.span != prepared.span || row.value.ty == Ty::Never {
+            return None;
+        }
+        prepared.expression = Some(expression);
+        Some(prepared)
+    }
+
+    pub(super) fn seal_explicit_named_callee(
+        &mut self,
+        prepared: Option<Prepared>,
+        event: CopyCallEventId,
+        frame: &Frame,
+    ) {
+        let Some(prepared) = prepared else {
+            return;
+        };
+        let Some(expression) = prepared.expression else {
+            return;
+        };
+        let context = self.invocation_context(frame.callable_owner);
+        let valid = context == prepared.context
+            && self
+                .copy_call_events
+                .get(event.0 as usize)
+                .is_some_and(|call| {
+                    call.id == event
+                        && call.direct
+                        && call.target == Some(prepared.target)
+                        && call.owner == context.owner
+                        && call.parent == context.invocation
+                        && call.callee_expression == Some(expression)
+                })
+            && self
+                .invocation_expressions
+                .iter()
+                .filter(|row| row.expression == expression && row.context == context)
+                .count()
+                == 1;
+        if !valid || self.explicit_named.prepared.contains_key(&event) {
+            self.unsupported(prepared.span, "explicit named application lacks its exact emitted callee and actual call identity");
+            return;
+        }
+        self.explicit_named.prepared.insert(event, prepared);
+    }
+
+    pub(super) fn explicit_named_for_event(
+        &self,
+        event: CopyCallEventId,
+        target: DefinitionId,
+    ) -> Option<Prepared> {
+        let prepared = self.explicit_named.prepared.get(&event)?;
+        let call = self.copy_call_events.get(event.0 as usize)?;
+        (call.id == event
+            && call.direct
+            && call.target == Some(target)
+            && prepared.target == target
+            && call.owner == prepared.context.owner
+            && call.parent == prepared.context.invocation
+            && call.callee_expression == prepared.expression)
+            .then(|| prepared.clone())
+    }
+
+    pub(super) fn explicit_named_for_invocation(&self, info: &FunctionInfo) -> Option<Prepared> {
+        let invocation = self
+            .copy_invocation_stack
+            .last()
+            .and_then(|id| self.copy_invocations.get(id.0 as usize))?;
+        if invocation.target != info.definition {
+            return None;
+        }
+        let prepared = self.explicit_named_for_event(invocation.source_event?, info.definition)?;
+        (invocation.parent == prepared.context.invocation
+            && invocation.caller_owner == prepared.context.owner)
+            .then_some(prepared)
+    }
+
+    pub(super) fn seed_explicit_named(&mut self, prepared: &Prepared) {
+        for selected in &prepared.selections {
+            self.generic_substitutions
+                .insert(selected.binder.clone(), selected.ty.clone());
+            if let Some(witness) = &selected.witness {
+                self.generic_type_witnesses
+                    .insert(selected.binder.clone(), witness.clone());
+            }
+        }
+    }
+
+    /// Input-selected schemas must agree before the explicit descriptor is
+    /// restored; equal erased Ty cannot wash away dimensions or Fn modes.
+    pub(super) fn finish_explicit_named_inference(&mut self, prepared: &Prepared, span: Span) {
+        for selected in &prepared.selections {
+            let same_ty = self.generic_substitutions.get(&selected.binder) == Some(&selected.ty);
+            let same_source = match (
+                &selected.witness,
+                self.generic_type_witnesses.get(&selected.binder),
+            ) {
+                (Some(_), Some(actual)) => {
+                    crate::static_eval::effects::bounded_argument_key(
+                        &actual.syntax,
+                        &self.effect_type_binders,
+                    )
+                    .and_then(|actual| {
+                        crate::sema::source_reception::compatible(
+                            &selected.key,
+                            &actual,
+                            None,
+                            &mut 4096,
+                        )
+                    })
+                }
+                (Some(_), None) => None,
+                (None, _) => Some(true),
+            };
+            if !same_ty || same_source == Some(false) {
+                self.error(
+                    "E0301",
+                    span,
+                    "actual input conflicts with the explicit complete Type argument",
+                    [],
+                );
+            } else if same_source.is_none() {
+                self.unsupported(span, "explicit Type input needs its complete original Source relation");
+            }
+        }
+        self.seed_explicit_named(prepared);
+    }
+
+    pub(super) fn validate_explicit_named_arguments(
+        &mut self,
+        info: &FunctionInfo,
+        span: Span,
+    ) -> bool {
+        let Some(prepared) = self.explicit_named_for_invocation(info) else {
+            return true;
+        };
+        let actual = self.static_arguments_for(info, span).arguments;
+        let mut complete = actual.len() == info.syntax.generics.len();
+        for selection in &prepared.selections {
+            let consistent = crate::static_eval::effects::bounded_argument_key(
+                &selection.syntax,
+                &self.effect_type_binders,
+            )
+            .as_ref()
+                == Some(&selection.key);
+            let same = actual.get(selection.index as usize).is_some_and(|row| {
+                row.definition == info.definition
+                    && row.index == selection.index
+                    && row.binder == selection.binder
+                    && row.key.as_ref() == Some(&selection.key)
+                    && row.syntax.is_some()
+            });
+            if !consistent || !same {
+                complete = false;
+                self.unsupported(
+                    span,
+                    "explicit Type prefix differs from its complete actual static argument row",
+                );
+            }
+        }
+        complete
+    }
+
+    pub(super) fn explicit_numeric_input(
+        &self,
+        event: CopyCallEventId,
+        info: &FunctionInfo,
+        binder: &str,
+        expected: &Ty,
+        arguments: &[crate::sema::effect_identity::StaticArgumentWitness],
+    ) -> bool {
+        let Some(current) = self
+            .copy_invocation_stack
+            .last()
+            .and_then(|id| self.copy_invocations.get(id.0 as usize))
+            .filter(|current| {
+                current.source_event == Some(event) && current.target == info.definition
+            })
+        else {
+            return false;
+        };
+        if current.id != *self.copy_invocation_stack.last().expect("current instance")
+            || arguments.len() != info.syntax.generics.len()
+        {
+            return false;
+        }
+        self.explicit_named_for_invocation(info)
+            .is_some_and(|prepared| {
+                prepared.selections.iter().any(|selection| {
+                    selection.binder == binder
+                        && &selection.ty == expected
+                        && (selection.witness.is_some()
+                            || matches!(&selection.key, ArgumentKey::Binder { identity, sort: StaticBinderSort::Type }
+                                if matches!(&selection.ty, Ty::Generic(actual) if actual == identity)))
+                        && self.generic_substitutions.get(binder) == Some(expected)
+                        && arguments.get(selection.index as usize).is_some_and(|argument|
+                            argument.definition == info.definition && argument.index == selection.index
+                                && argument.binder == selection.binder
+                                && argument.key.as_ref() == Some(&selection.key)
+                                && argument.syntax.as_ref().is_some_and(|syntax|
+                                    crate::static_eval::effects::bounded_argument_key(syntax, &self.effect_type_binders)
+                                        .as_ref() == Some(&selection.key)))
+                })
+            })
+    }
+}

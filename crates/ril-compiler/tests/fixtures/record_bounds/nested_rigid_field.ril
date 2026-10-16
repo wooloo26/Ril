@@ -1,0 +1,3 @@
+fn read<T:{id:int,..R}>(value:{payload:T,tag:int})->int{value.payload.id}
+fn forward<S>(value:{payload:{id:int,tag:str,..S},tag:int})->int{read(value)}
+pub fn test_native(){assert(forward(.{payload:.{id:7,tag:"ok"},tag:0})==7)}

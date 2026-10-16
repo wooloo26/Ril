@@ -1,0 +1,4 @@
+meta fn transport(value:?Result<int,str>)->Result<int,str>{value??Err("fallback")}
+meta let ANSWER={let pending:Result<int,str>=Ok(7);let returned=transport(Some(pending));match returned{Ok(value)->value,Err(_)->0}}
+meta let FALLBACK={let returned=transport(None);match returned{Ok(_)->0,Err(error)->len(error)}}
+pub fn test_native() &{ANSWER,FALLBACK}{assert(ANSWER==7);assert(FALLBACK==8)}

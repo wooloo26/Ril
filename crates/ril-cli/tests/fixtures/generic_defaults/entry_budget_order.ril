@@ -1,0 +1,5 @@
+fn doomed(value:int=panic("default runs before body entry"))->int{value}
+pub fn test_native(){
+    with Div::exhausted()->()
+    Div::budget(1,\->{doomed();()})
+}

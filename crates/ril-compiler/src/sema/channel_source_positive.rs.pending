@@ -1,0 +1,12 @@
+// Unregistered positive acceptance gate. Keep this pending until a separately
+// reviewed complete-state proof admits the unchanged source without increasing
+// the replay-state limit or erasing source, custody, history or Result debts.
+#[test]
+fn preserved_nine_scope_source_must_verify_completely_before_core_lowering() {
+    let source =
+        include_str!("../../tests/fixtures/channel_message_optional_callback_scope_budget.ril");
+    let verified = crate::Session::new(source.as_bytes().to_vec())
+        .verify()
+        .unwrap_or_else(|error| panic!("original nine-scope program: {error:?}"));
+    crate::lower::lower_core(&verified).unwrap();
+}

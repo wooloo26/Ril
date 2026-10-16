@@ -1,0 +1,2 @@
+type Box={mut item:[0][2]int}
+fn bad(){let mut holder=Box.{item:[]};let old:[0][3]int=[];holder.item=old}

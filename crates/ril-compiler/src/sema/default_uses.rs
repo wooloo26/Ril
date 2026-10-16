@@ -1,0 +1,71 @@
+//! A default evaluation belongs to one application event, before body entry.
+use super::{
+    copy_contract::{CopyCallEventId, CopyInvocationStatus, CopyValueSnapshot},
+    copy_templates::InstanceId,
+    effect_identity::{InvocationContext, StaticArgumentWitness},
+};
+use ril_compiler_core::{
+    ids::{CallableOwner, DefinitionId},
+    source::Span,
+};
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DefaultUseId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultOrigin {
+    Call(CopyCallEventId),
+    DeclarationProbe,
+    InvocationFallback(InstanceId),
+}
+
+#[derive(Debug, Clone)]
+pub struct DefaultUse {
+    pub id: DefaultUseId,
+    pub origin: DefaultOrigin,
+    pub target: Option<DefinitionId>,
+    pub parameter: u32,
+    pub caller: InvocationContext,
+    pub owner: Option<CallableOwner>,
+    pub span: Span,
+    pub arguments: Vec<StaticArgumentWitness>,
+    pub captured_arguments: Vec<StaticArgumentWitness>,
+    pub unresolved_captured_binders: BTreeSet<String>,
+    /// Normal evaluation is necessary but never certifies body entry by itself.
+    pub evaluation_complete: bool,
+    pub status: CopyInvocationStatus,
+    pub entered: Vec<InstanceId>,
+    pub result: Option<CopyValueSnapshot>,
+    /// The real root emission, in this receipt's default-use context. This
+    /// cannot be recovered later by searching for a matching span or cause.
+    pub result_expression: Option<usize>,
+    /// Epoch of that actual result snapshot, before later arguments/defaults.
+    /// A missing or partial result supplies no body-entry proof.
+    pub result_allocation_epoch: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgumentSource {
+    Supplied,
+    Default(DefaultUseId),
+    Missing,
+}
+
+/// The original supplied operand observation; this is not a receiving cast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuppliedArgument {
+    pub expression: usize,
+    pub allocation_epoch: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallArguments {
+    pub source_event: CopyCallEventId,
+    pub target: Option<DefinitionId>,
+    pub slots: Vec<ArgumentSource>,
+    /// Actual parameter slot after the original public label/position mapping.
+    /// Missing observations cannot be replaced by equal-span/value searches.
+    pub supplied: BTreeMap<u32, SuppliedArgument>,
+    pub evaluation_complete: bool,
+}

@@ -1,0 +1,302 @@
+//! Effect-only static reification. Internal binder names are created after the
+//! public owned-AST validation boundary and require an entry in the registry.
+use super::super::effect_identity::{EffectInvocation, StaticArgumentWitness};
+use super::*;
+
+#[derive(Default)]
+pub(super) struct StaticArguments {
+    pub arguments: Vec<StaticArgumentWitness>,
+    pub captured_arguments: Vec<StaticArgumentWitness>,
+    pub unresolved_captured_binders: BTreeSet<String>,
+}
+
+impl Checker {
+    fn certified_effect_type_binder(&self, identity: &str) -> bool {
+        let Some(binder) = self.generic_binders.get(identity) else {
+            return false;
+        };
+        let parameter = self
+            .functions
+            .iter()
+            .find(|function| function.definition == binder.definition)
+            .and_then(|function| function.syntax.generics.get(binder.index as usize));
+        parameter.is_some_and(|parameter| {
+            crate::sema::record_bounds::certifies_type_sort(
+                identity,
+                binder,
+                parameter,
+                &self.record_bounds,
+            )
+        })
+    }
+    fn effect_binder_type(&mut self, identity: &str, span: Span) -> TypeExpr {
+        let token = format!("\0effect-binder:{identity}");
+        self.effect_type_binders
+            .insert(token.clone(), identity.into());
+        TypeExpr {
+            text: String::new(),
+            span,
+            kind: TypeKind::Name {
+                path: vec![token],
+                arguments: vec![],
+            },
+        }
+    }
+
+    fn effect_selected_type(&mut self, ty: &Ty, span: Span) -> Option<TypeExpr> {
+        let ty = self.call_inference_type(ty);
+        if let Ty::Generic(identity) = &ty {
+            if !self.certified_effect_type_binder(identity) {
+                return None;
+            }
+            return Some(self.effect_binder_type(identity, span));
+        }
+        // Reification must retain all qualifiers. In particular, do not turn
+        // an inferred fixed array or callable into the weaker erased Ty view.
+        self.selected_type_key(&ty)?;
+        io_types::data_type(&ty, span)
+    }
+
+    pub(super) fn effect_argument_syntax(
+        &mut self,
+        syntax: &TypeExpr,
+    ) -> Result<TypeExpr, &'static str> {
+        let mut syntax = syntax.clone();
+        if let TypeKind::Name { path, arguments } = &syntax.kind {
+            let name = path.join("::");
+            if let Some(identity) = self
+                .effect_type_binders
+                .get(&name)
+                .or_else(|| self.generic_context.get(&name))
+                .cloned()
+            {
+                if !arguments.is_empty() {
+                    return Err(
+                        "symbolic effect type constructor requires a kind substitution proof",
+                    );
+                }
+                if !self.certified_effect_type_binder(&identity) {
+                    return Err("symbolic effect argument requires a certified Type binder sort");
+                }
+                if let Some(witness) = self.generic_type_witnesses.get(&identity) {
+                    return Ok(witness.syntax.clone());
+                }
+                return if let Some(selected) = self.generic_substitutions.get(&identity).cloned() {
+                    self.effect_selected_type(&selected, syntax.span)
+                        .ok_or("selected effect argument lacks its complete source type shape")
+                } else {
+                    Ok(self.effect_binder_type(&identity, syntax.span))
+                };
+            }
+            if let Some(declaration) = self.types.get(&name) {
+                let mut dependencies = BTreeSet::new();
+                if let Some(value) = &declaration.value {
+                    dependencies.extend(crate::static_eval::effects::type_dependencies(value));
+                }
+                for parameter in &declaration.generics {
+                    if let Some(bound) = &parameter.bound {
+                        dependencies.extend(crate::static_eval::effects::type_dependencies(bound));
+                    }
+                    if let Some(default) = &parameter.default {
+                        dependencies
+                            .extend(crate::static_eval::effects::type_dependencies(default));
+                    }
+                }
+                for parameter in &declaration.generics {
+                    dependencies.remove(&parameter.name);
+                }
+                if dependencies
+                    .iter()
+                    .any(|name| self.generic_context.contains_key(name))
+                {
+                    return Err(
+                        "effect argument alias captures an enclosing binder without its declaration environment",
+                    );
+                }
+            }
+        }
+        match &mut syntax.kind {
+            TypeKind::Name { arguments, .. } | TypeKind::Tuple(arguments) => {
+                for argument in arguments {
+                    *argument = self.effect_argument_syntax(argument)?;
+                }
+            }
+            TypeKind::Optional(inner) => **inner = self.effect_argument_syntax(inner)?,
+            TypeKind::Array { length, element } => {
+                if let Some(length) = length {
+                    let probe = TypeExpr {
+                        text: String::new(),
+                        span: length.span,
+                        kind: TypeKind::Computation(length.clone()),
+                    };
+                    self.closed_effect_syntax(&probe)?;
+                }
+                **element = self.effect_argument_syntax(element)?;
+            }
+            TypeKind::Map { key, value } => {
+                **key = self.effect_argument_syntax(key)?;
+                **value = self.effect_argument_syntax(value)?;
+            }
+            TypeKind::Record { fields, row } => {
+                for field in fields {
+                    field.ty = self.effect_argument_syntax(&field.ty)?;
+                }
+                if let Some(row) = row {
+                    **row = self.effect_argument_syntax(row)?;
+                }
+            }
+            TypeKind::Callable {
+                parameters,
+                result,
+                annotations,
+            } => {
+                if !annotations.is_empty() {
+                    if !self.generic_context.is_empty() {
+                        return Err(
+                            "effect argument callable rows require their canonical lexical binder environment",
+                        );
+                    }
+                    self.closed_effect_syntax(&syntax)?;
+                    return Ok(syntax);
+                }
+                for parameter in parameters {
+                    if let Some(ty) = &mut parameter.ty {
+                        *ty = self.effect_argument_syntax(ty)?;
+                    }
+                }
+                if let Some(result) = result {
+                    **result = self.effect_argument_syntax(result)?;
+                }
+            }
+            _ => self.closed_effect_syntax(&syntax)?,
+        }
+        Ok(syntax)
+    }
+
+    fn closed_effect_syntax(&self, syntax: &TypeExpr) -> Result<(), &'static str> {
+        if !self.generic_context.is_empty()
+            && matches!(
+                syntax.kind,
+                TypeKind::TypeFunction { .. } | TypeKind::KindArrow { .. }
+            )
+        {
+            return Err(
+                "symbolic higher-kind effect arguments require a canonical lexical environment",
+            );
+        }
+        if crate::static_eval::effects::type_dependencies(syntax)
+            .iter()
+            .any(|name| {
+                self.generic_context.contains_key(name)
+                    || self.effect_type_binders.contains_key(name)
+            })
+        {
+            Err("symbolic effect computation requires a canonical static substitution proof")
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn static_arguments_for(
+        &mut self,
+        info: &FunctionInfo,
+        site: Span,
+    ) -> StaticArguments {
+        let arguments = info
+            .syntax
+            .generics
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| {
+                let identity = self
+                    .generic_context
+                    .get(&parameter.name)
+                    .cloned()
+                    .unwrap_or_default();
+                let syntax = TypeExpr {
+                    text: String::new(),
+                    span: site,
+                    kind: TypeKind::Name {
+                        path: vec![parameter.name.clone()],
+                        arguments: vec![],
+                    },
+                };
+                let syntax = self.effect_argument_syntax(&syntax).ok();
+                let key = syntax.as_ref().map(|syntax| {
+                    crate::static_eval::effects::argument_key(syntax, &self.effect_type_binders)
+                });
+                StaticArgumentWitness {
+                    definition: info.definition,
+                    index: index as u32,
+                    binder: identity,
+                    key,
+                    syntax,
+                }
+            })
+            .collect();
+        let mut captured_arguments = Vec::new();
+        let mut unresolved_captured_binders = BTreeSet::new();
+        for (name, identity) in &info.generic_context {
+            if info
+                .syntax
+                .generics
+                .iter()
+                .any(|parameter| parameter.name == *name)
+            {
+                continue;
+            }
+            let Some(binder) = self.generic_binders.get(identity).cloned() else {
+                unresolved_captured_binders.insert(identity.clone());
+                continue;
+            };
+            let written = TypeExpr {
+                text: String::new(),
+                span: site,
+                kind: TypeKind::Name {
+                    path: vec![name.clone()],
+                    arguments: vec![],
+                },
+            };
+            let syntax = self.effect_argument_syntax(&written).ok();
+            let key = syntax.as_ref().map(|syntax| {
+                crate::static_eval::effects::argument_key(syntax, &self.effect_type_binders)
+            });
+            captured_arguments.push(StaticArgumentWitness {
+                definition: binder.definition,
+                index: binder.index,
+                binder: identity.clone(),
+                key,
+                syntax,
+            });
+        }
+        StaticArguments {
+            arguments,
+            captured_arguments,
+            unresolved_captured_binders,
+        }
+    }
+
+    pub(super) fn record_effect_invocation(
+        &mut self,
+        info: &FunctionInfo,
+        site: Span,
+        summary: &super::super::summary::InvocationSummary,
+        verifying: bool,
+        callback_epoch: usize,
+    ) {
+        let selected = self.static_arguments_for(info, site);
+        self.effect_invocations.push(EffectInvocation {
+            invocation: self.copy_invocation_stack.last().copied(),
+            budget_validation: self.budget_validation_depth > 0,
+            function: info.definition,
+            site,
+            arguments: selected.arguments,
+            captured_arguments: selected.captured_arguments,
+            unresolved_captured_binders: selected.unresolved_captured_binders,
+            operations: summary.performed_operations.clone(),
+            callbacks: self.effect_callback_uses[callback_epoch..].to_vec(),
+            unresolved: summary.unresolved.clone(),
+            verifying,
+        });
+    }
+}

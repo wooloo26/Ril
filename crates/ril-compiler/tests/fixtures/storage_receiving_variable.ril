@@ -1,0 +1,1 @@
+fn bad(){var target:[0][2]int=[];let old:[0][3]int=[];target=old}

@@ -1,0 +1,56 @@
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+
+fn consume(value:Option<Result<int,str>>,other:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let child=s.fork(\->())
+        assert(child.join() is Ok()|Err(_))
+        match other{Some(inner)->assert(inner is Ok(_)|Err(_)),None->()}
+        let (mut tx,mut rx)=Channel::bounded<Option<Result<int,str>>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){
+            Ok(business)->match business{
+                Some(inner)->assert(inner is Ok(_)|Err(_)),
+                None->()
+            },
+            Err(_)->panic("receive")
+        }
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+
+fn named_optional_callback(value:Option<Result<int,str>>) @Async{
+    assert(consume(value,value) is Ok()|Err(_))
+}
+fn through_single_optional_callback(value:Option<Result<int,str>>) @Async{
+    let mapped=Array::map([1],\number:int->{named_optional_callback(value);number})
+}
+
+pub fn test_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    assert(consume(first,first) is Ok()|Err(_))
+    assert(consume(second,second) is Ok()|Err(_))
+    assert(consume(third,third) is Ok()|Err(_))
+}
+
+pub fn test_named_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    named_optional_callback(first)
+    named_optional_callback(second)
+    named_optional_callback(third)
+}
+
+pub fn test_single_map_native() @Async{
+    let first:Option<Result<int,str>>=Some(Ok(7))
+    let second:Option<Result<int,str>>=Some(Err("inner"))
+    let third:Option<Result<int,str>>=None
+    through_single_optional_callback(first)
+    through_single_optional_callback(second)
+    through_single_optional_callback(third)
+}

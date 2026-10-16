@@ -1,0 +1,15 @@
+use ril/concurrent::{scope}
+use ril/concurrent/channel
+fn consume(value:Result<Result<int,str>,str>)->Result<(),Concurrent::TaskFault> @Async{
+    scope \mut s->{
+        let task=s.fork(\->())
+        assert(task.join() is Ok()|Err(_))
+        let (mut tx,mut rx)=Channel::bounded<Result<Result<int,str>,str>>(1)
+        assert(Channel::send(mut tx,value) is Ok())
+        match Channel::recv(mut rx){Ok(business)->assert(business is Ok(_)|Err(_)),Err(_)->panic("receive")}
+        Channel::close(tx)
+        Channel::close(rx)
+        Ok()
+    }
+}
+pub fn test_native(){}

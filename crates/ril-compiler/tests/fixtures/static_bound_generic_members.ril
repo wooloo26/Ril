@@ -1,0 +1,42 @@
+meta fn member<T: { item: U, ..R }, U>(value: T) -> U {
+    value.item
+}
+
+meta fn nested<T: { item: U, ..R }, U: { value: int, ..S }>(value: T) -> int {
+    value.item.value
+}
+
+meta fn array_member<T: { items: []U, ..R }, U>(value: T) -> U {
+    value.items[0]
+}
+
+meta fn residual<T: { id: int, ..R }, R: { item: U, ..S }, U>(value: T) -> T {
+    value
+}
+
+meta fn second(right: int = 2) -> int {
+    right
+}
+
+meta let MEMBER = member(.{ item: 7, tag: "member" })
+meta let NESTED = nested(.{ item: .{ value: 9, detail: "nested" }, tag: "outer" })
+meta let ARRAY = array_member(.{ items: [11, 13], tag: "array" })
+meta let RESIDUAL_ITEM = residual(.{ id: 1, item: 17, tag: "residual" }).item
+meta let CALLABLE = member(.{ item: second, tag: "callable" })(right: 19)
+meta let DEFAULT = member(.{ item: second, tag: "default" })()
+
+meta let _ = assert(MEMBER == 7)
+meta let _ = assert(NESTED == 9)
+meta let _ = assert(ARRAY == 11)
+meta let _ = assert(RESIDUAL_ITEM == 17)
+meta let _ = assert(CALLABLE == 19)
+meta let _ = assert(DEFAULT == 2)
+
+pub fn test_native() &{ MEMBER, NESTED, ARRAY, RESIDUAL_ITEM, CALLABLE, DEFAULT } {
+    assert(MEMBER == 7)
+    assert(NESTED == 9)
+    assert(ARRAY == 11)
+    assert(RESIDUAL_ITEM == 17)
+    assert(CALLABLE == 19)
+    assert(DEFAULT == 2)
+}

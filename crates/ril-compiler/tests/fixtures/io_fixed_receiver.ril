@@ -1,0 +1,12 @@
+use ril/io
+type Reader={scratch:[2]u8,mut calls:int}
+fn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
+    assert(limit>=0)
+    reader.calls+=1
+    Ok(.{data:b"",end:limit>0})
+}
+pub fn test_native(){
+    let mut reader=Reader.{scratch:[1u8,2u8],calls:0}
+    let result=Io::read_all(mut reader,.{read:read})
+    assert(result is Ok(_)|Err(_))
+}

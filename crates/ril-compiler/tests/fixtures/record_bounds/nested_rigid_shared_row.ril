@@ -1,0 +1,3 @@
+fn both<T:{id:int,..R},U:{flag:bool,..R}>(value:(T,U))->int{value.(0).id}
+fn forward<S>(value:({id:int,tag:str,..S},{flag:bool,tag:str,..S}))->int{both(value)}
+pub fn test_native(){assert(forward((.{id:7,tag:"same"},.{flag:true,tag:"same"}))==7)}

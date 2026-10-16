@@ -1,0 +1,38 @@
+type Node={mut value:int,mut left:?Node,mut right:?Node}
+pub fn test_native(){
+    let mut node=Node.{value:1,left:None,right:None}
+    node.left=Some(^mut node)
+    node.right=Some(^mut node)
+    let mut copied=^mut clone(node)
+    copied.value=9
+    assert(copied.left?.value==Some(9))
+    assert(copied.right?.value==Some(9))
+    assert(node.left?.value==Some(1))
+    assert(node.right?.value==Some(1))
+    let mut second=^mut clone(copied)
+    second.value=13
+    assert(second.left?.value==Some(13))
+    assert(second.right?.value==Some(13))
+    assert(copied.value==9 && node.value==1)
+    let mut head=Node.{value:3,left:None,right:None}
+    let mut tail=Node.{value:4,left:None,right:None}
+    head.left=Some(^mut tail)
+    head.right=Some(^mut tail)
+    tail.left=Some(^mut head)
+    tail.right=Some(^mut tail)
+    let mut independent=^mut clone(head)
+    let mut child=^mut (independent.left ?? panic("left"))
+    child.value=11
+    let view shared=independent.right ?? panic("right")
+    assert(shared.value==11)
+    independent.value=12
+    assert(child.left?.value==Some(12))
+    assert(child.right?.value==Some(11))
+    assert(head.value==3 && tail.value==4)
+    let snapshot=clone_immut(head)
+    head.value=30
+    tail.value=40
+    assert(snapshot.value==3)
+    assert(snapshot.left?.value==Some(4))
+    assert(snapshot.right?.value==Some(4))
+}

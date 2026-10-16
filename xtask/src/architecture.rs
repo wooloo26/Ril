@@ -69,12 +69,24 @@ pub fn load(repo: &Path) -> Result<Metadata, ArchitectureError> {
 
 fn allowed_workspace_dependencies(name: &str) -> Option<&'static [&'static str]> {
     Some(match name {
-        "ril-compiler-core" | "ril-runtime-api" | "ril-test" => &[],
-        "ril-syntax" | "ril-ir" => &["ril-compiler-core"],
+        "ril-compiler-core" | "ril-runtime-api" | "ril-test" | "ril-text-format" => &[],
+        "ril-syntax" => &["ril-compiler-core", "ril-text-format"],
+        "ril-ir" => &["ril-compiler-core"],
         "ril-codegen" => &["ril-compiler-core", "ril-ir"],
-        "ril-compiler" => &["ril-compiler-core", "ril-syntax", "ril-ir", "ril-codegen"],
-        "ril-runtime" => &["ril-runtime-api"],
-        "ril-cli" => &["ril-compiler", "ril-codegen"],
+        "ril-compiler" => &[
+            "ril-compiler-core",
+            "ril-syntax",
+            "ril-ir",
+            "ril-codegen",
+            "ril-text-format",
+        ],
+        "ril-runtime" => &["ril-runtime-api", "ril-text-format"],
+        "ril-cli" => &[
+            "ril-compiler",
+            "ril-codegen",
+            "ril-codegen-cranelift",
+            "ril-runtime",
+        ],
         "xtask" => &["ril-test"],
         name if is_concrete_backend(name) => &[
             "ril-compiler-core",
@@ -104,6 +116,20 @@ fn forbidden_transitive_dependency(root: &str, dependency: &str) -> bool {
         "ril-syntax" => {
             dependency == "ril-compiler"
                 || is_query_engine(dependency)
+                || is_concrete_backend(dependency)
+                || is_cranelift(dependency)
+        }
+        "ril-text-format" => {
+            is_frontend(dependency)
+                || matches!(
+                    dependency,
+                    "ril-compiler-core"
+                        | "ril-ir"
+                        | "ril-codegen"
+                        | "ril-cli"
+                        | "ril-runtime-api"
+                        | "ril-runtime"
+                )
                 || is_concrete_backend(dependency)
                 || is_cranelift(dependency)
         }
@@ -239,6 +265,7 @@ mod tests {
                 "ril-codegen-cranelift",
                 "ril-runtime-api",
                 "ril-runtime",
+                "ril-text-format",
             ],
             &[
                 ("ril-syntax", "ril-compiler-core", None),
@@ -252,9 +279,12 @@ mod tests {
                 ("ril-codegen-cranelift", "cranelift-codegen", None),
                 ("ril-codegen-cranelift", "ril-runtime-api", None),
                 ("ril-runtime", "ril-runtime-api", None),
+                ("ril-runtime", "ril-text-format", None),
+                ("ril-syntax", "ril-text-format", None),
+                ("ril-compiler", "ril-text-format", None),
             ],
         );
-        assert_eq!(check(&metadata).unwrap(), 8);
+        assert_eq!(check(&metadata).unwrap(), 9);
     }
 
     #[test]
@@ -292,6 +322,31 @@ mod tests {
                     .is_err()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn scalar_formatting_cannot_acquire_a_compiler_or_runtime_dependency() {
+        for dependency in [
+            "ril-runtime-api",
+            "ril-runtime",
+            "ril-compiler-core",
+            "ril-compiler",
+            "ril-syntax",
+            "ril-ir",
+            "ril-codegen",
+            "ril-codegen-cranelift",
+        ] {
+            assert!(
+                check(&graph(
+                    &["ril-text-format"],
+                    &[
+                        ("ril-text-format", "external-helper", None),
+                        ("external-helper", dependency, None)
+                    ]
+                ))
+                .is_err()
+            );
         }
     }
 
@@ -363,5 +418,12 @@ mod tests {
         assert!(check(&metadata).is_err());
         assert!(check(&graph(&[], &[])).is_err());
         assert!(check(&graph(&["unclassified"], &[])).is_err());
+    }
+
+    #[test]
+    fn actual_workspace_obeys_the_resolved_dependency_policy() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let metadata = load(repository).unwrap();
+        assert_eq!(check(&metadata).unwrap(), metadata.workspace_members.len());
     }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "ril-text-format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+num-bigint.workspace = true
+ryu.workspace = true

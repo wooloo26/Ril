@@ -1,0 +1,7 @@
+meta fn read<T:{id:int,..R}>(value:T)->int{
+    let pending:Result<int,str>=Ok(value.id)
+    match pending{Ok(number)->number,Err(_)->0}
+}
+meta let ANSWER=read(.{id:7,tag:"ok"})
+meta let _=assert(ANSWER==7)
+pub fn test_native() &{ANSWER}{assert(ANSWER==7)}

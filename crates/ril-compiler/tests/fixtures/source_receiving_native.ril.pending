@@ -1,0 +1,57 @@
+-- Pending: this whole source must pass Session/Core before native activation.
+type Holder={empty:[0][2]int,pair:([2]int,[0][2]int)}
+
+fn second(values:[2]int)->int{values[1]}
+fn first<T>(values:[2]T)->T{values[0]}
+fn identity<T>(value:T)->T{value}
+fn default_pair(values:[2]int=[17,19])->int{values[0]+values[1]}
+fn branch_pair(flag:bool)->[2]int{if flag{[23,29]}else{[31,37]}}
+fn match_pair(flag:bool)->[2]int{match flag{true->[41,43],false->[47,53]}}
+fn explicit_pair(flag:bool)->[2]int{if flag{return [59,61]};[67,71]}
+
+pub fn test_fresh_fixed(){
+    let fixed:[2]int=[3,5]
+    let dynamic:[]int=fixed
+    assert(len(fixed)==2 && fixed[0]==3 && fixed[1]==5)
+    assert(len(dynamic)==2 && dynamic[0]==3 && dynamic[1]==5)
+}
+
+pub fn test_empty_composites(){
+    let nested:[0][2]int=[]
+    let pair:([2]int,[0][2]int)=([7,11],[])
+    let holder=Holder.{empty:[],pair:([13,17],[])}
+    assert(len(nested)==0 && len(pair.1)==0 && pair.0[1]==11)
+    assert(len(holder.empty)==0 && len(holder.pair.1)==0)
+    assert(holder.pair.0[0]==13 && holder.pair.0[1]==17)
+}
+
+pub fn test_callback(){
+    let callback:fn([2]int)->int=second
+    let inferred:fn([2]int)->int=\values -> values[0]+values[1]
+    assert(callback([19,23])==23)
+    assert(inferred([29,31])==60)
+}
+
+pub fn test_return_branches(){
+    assert(branch_pair(true)==[23,29] && branch_pair(false)==[31,37])
+    assert(match_pair(true)==[41,43] && match_pair(false)==[47,53])
+    assert(explicit_pair(true)==[59,61] && explicit_pair(false)==[67,71])
+}
+
+pub fn test_ordinary(){
+    let fixed:[2]int=[73,79]
+    let returned:[2]int=identity(fixed)
+    assert(first(fixed)==73 && second(returned)==79)
+    assert(second([83,89])==89)
+}
+
+pub fn test_default(){
+    assert(default_pair()==36)
+    assert(default_pair([97,101])==198)
+}
+
+pub fn test_explicit_generic(){
+    let fixed:[2]int=[103,107]
+    let returned:[2]int=identity<[2]int>(fixed)
+    assert(first<int>(fixed)==103 && returned==[103,107])
+}

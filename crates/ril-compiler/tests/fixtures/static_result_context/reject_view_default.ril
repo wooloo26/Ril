@@ -1,0 +1,7 @@
+meta fn right(right: int = 2) -> int { right }
+meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
+meta let ANSWER = {
+    let pair: (fn(renamed: int) -> int, []int) = retain(right)
+    -- Expected: E0314. The explicit receiving view erases the declaration default.
+    pair.0()
+}

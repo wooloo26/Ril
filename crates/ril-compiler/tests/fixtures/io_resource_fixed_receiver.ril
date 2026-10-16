@@ -1,0 +1,15 @@
+use ril/io
+use ril/file
+use ril/path
+type Reader={scratch:[2]u8,file:File::Handle,mut calls:int}
+fn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
+    reader.calls+=1
+    reader.scratch[0]=9u8
+    Ok(.{data:b"",end:true})
+}
+pub fn test_native() @Fiber{
+    let scoped mut file=File::open_path(Path::from_string("Cargo.toml"),File::OpenMode::Read) ?? \_error->panic("open")
+    let mut reader=Reader.{scratch:[1u8,2u8],file:^mut file,calls:0}
+    assert(Io::read_all(mut reader,.{read:read}) is Ok(_))
+    assert(reader.calls==1 && reader.scratch[0]==9u8)
+}

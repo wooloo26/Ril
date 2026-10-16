@@ -1,0 +1,499 @@
+//! Original input schemas, before any receiving ascription. Stored array
+//! cardinality is deliberately absent; only a real literal AST supplies fresh
+//! receiving context. This private state is replayed through CallArguments.
+use super::*;
+use crate::sema::{
+    copy_contract::CopyCallEventId,
+    default_uses::DefaultUseId,
+    effect_identity::{ArgumentKey, InvocationContext},
+    source_reception::{self, Construction},
+};
+
+#[derive(Clone)]
+struct Input {
+    context: InvocationContext,
+    expression: Option<usize>,
+    allocation_epoch: usize,
+    key: Option<ArgumentKey>,
+    fresh: Construction,
+    default: Option<DefaultUseId>,
+}
+
+#[derive(Default)]
+pub(super) struct State {
+    supplied: BTreeMap<CopyCallEventId, BTreeMap<usize, Input>>,
+    defaults: BTreeMap<(CopyCallEventId, usize), Input>,
+    operands: Vec<Operand>,
+}
+
+struct Operand {
+    syntax: usize,
+    span: Span,
+    context: InvocationContext,
+    event: CopyCallEventId,
+    slot: u32,
+}
+
+impl Checker {
+    pub(super) fn begin_source_argument(
+        &mut self,
+        event: CopyCallEventId,
+        slot: usize,
+        syntax: &Expr,
+        frame: &Frame,
+    ) -> usize {
+        let marker = self.call_input_source.operands.len();
+        let context = self.invocation_context(frame.callable_owner);
+        self.call_input_source.operands.push(Operand {
+            syntax: std::ptr::from_ref(syntax) as usize,
+            span: syntax.span,
+            context,
+            event,
+            slot: slot as u32,
+        });
+        marker
+    }
+
+    pub(super) fn source_argument_of(
+        &self,
+        syntax: &Expr,
+        frame: &Frame,
+    ) -> Option<(CopyCallEventId, u32)> {
+        let operand = self.call_input_source.operands.last()?;
+        (operand.syntax == std::ptr::from_ref(syntax) as usize
+            && operand.span == syntax.span
+            && operand.context == self.invocation_context(frame.callable_owner))
+        .then_some((operand.event, operand.slot))
+    }
+
+    pub(super) fn end_source_argument(&mut self, marker: usize) {
+        self.call_input_source.operands.truncate(marker);
+    }
+
+    pub(super) fn original_source_receiving_key(
+        &mut self,
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+    ) -> Option<ArgumentKey> {
+        if let Some(witness) = &value.source_type_witness {
+            if !witness.validate_closed() {
+                return None;
+            }
+            return crate::static_eval::effects::bounded_argument_key(
+                &witness.syntax,
+                &BTreeMap::new(),
+            );
+        }
+        if let ExprKind::Name(name) = &syntax.kind {
+            let binding = value
+                .sources
+                .iter()
+                .next()
+                .and_then(|id| self.bindings.get(*id))?;
+            if value.sources.len() != 1 || binding.name != *name {
+                return None;
+            }
+            if binding.parameter && binding.owner == frame.owner {
+                let function = self
+                    .functions
+                    .iter()
+                    .find(|function| frame.callable_owner == Some(CallableOwner::Function(function.definition)))?;
+                let parameter = function.syntax.parameters.iter().find(|parameter|
+                    parameter.pattern.span == binding.span && matches!(&parameter.pattern.kind, PatternKind::Name(actual) if actual == name))?;
+                let ty = parameter.ty.clone()?;
+                return self.freeze_source_receiving_target(&ty).key;
+            }
+            if let [Callable::Named(index)] = value.callables.as_slice() {
+                let function = self.functions[*index].clone();
+                if binding.parameter
+                    || binding.span != function.syntax.span
+                    || !function.syntax.generics.is_empty()
+                {
+                    return None;
+                }
+                let syntax = TypeExpr {
+                    text: String::new(),
+                    span: syntax.span,
+                    kind: TypeKind::Callable {
+                        parameters: function.syntax.parameters.clone(),
+                        result: function.syntax.return_type.clone().map(Box::new),
+                        annotations: function.syntax.annotations.clone(),
+                    },
+                };
+                // Array/mode coordinates remain present in the genuine header
+                // even if a named obligation row has no closed witness. This
+                // does not compare, clear or grant those obligation rows.
+                super::source_receiving::resolved_symbolic_names(
+                    &syntax,
+                    &function.generic_context,
+                    &self.types,
+                    &mut 4096,
+                    0,
+                )?;
+                return crate::static_eval::effects::bounded_argument_key(
+                    &syntax,
+                    &function.generic_context,
+                );
+            }
+        }
+        let syntax = io_types::receiver_type(value, &value.ty, syntax.span)?;
+        crate::static_eval::effects::bounded_argument_key(&syntax, &self.effect_type_binders)
+    }
+
+    pub(super) fn record_call_input_source(
+        &mut self,
+        event: CopyCallEventId,
+        slot: usize,
+        syntax: &Expr,
+        observed: Option<usize>,
+        frame: &Frame,
+    ) {
+        let Some(expression) = observed else {
+            return;
+        };
+        let Some(observation) = self.expression_facts.get(expression) else {
+            return;
+        };
+        let context = self.invocation_context(frame.callable_owner);
+        if observation.span != syntax.span
+            || !self.invocation_expressions.get(expression).is_some_and(|row| {
+                row.expression == expression && row.context == context
+                    && row.argument_of == Some((event, slot as u32))
+            }) {
+            return;
+        }
+        let value = observation.value.clone();
+        let Some(fresh) = source_reception::construction(syntax, &mut 4096) else {
+            self.unsupported(
+                syntax.span,
+                "call input literal source exceeds its work bound",
+            );
+            return;
+        };
+        let allocation_epoch = self.recency_moves.len();
+        let key = self.original_source_receiving_key(&value, syntax, frame);
+        self.call_input_source
+            .supplied
+            .entry(event)
+            .or_default()
+            .insert(
+                slot,
+                Input {
+                    context,
+                    expression: Some(expression),
+                    allocation_epoch,
+                    key,
+                    fresh,
+                    default: None,
+                },
+            );
+    }
+
+    pub(super) fn record_default_call_input_source(
+        &mut self,
+        event: CopyCallEventId,
+        slot: usize,
+        id: DefaultUseId,
+        syntax: &Expr,
+        frame: &Frame,
+    ) {
+        let Some(record) = self
+            .default_uses
+            .get(id.0 as usize)
+            .filter(|record| record.id == id)
+        else {
+            return;
+        };
+        let Some(snapshot) = &record.result else {
+            return;
+        };
+        let value = snapshot.value.clone();
+        let context = record.caller;
+        let Some(allocation_epoch) = record.result_allocation_epoch else {
+            return;
+        };
+        let Some(fresh) = source_reception::construction(syntax, &mut 4096) else {
+            self.unsupported(
+                syntax.span,
+                "default input literal source exceeds its work bound",
+            );
+            return;
+        };
+        let key = self.original_source_receiving_key(&value, syntax, frame);
+        self.call_input_source.defaults.insert(
+            (event, slot),
+            Input {
+                context,
+                expression: None,
+                allocation_epoch,
+                key,
+                fresh,
+                default: Some(id),
+            },
+        );
+    }
+
+    pub(super) fn call_supplied_observations(
+        &self,
+        event: CopyCallEventId,
+    ) -> BTreeMap<u32, crate::sema::default_uses::SuppliedArgument> {
+        self.call_input_source
+            .supplied
+            .get(&event)
+            .into_iter()
+            .flat_map(|arguments| arguments.iter())
+            .filter_map(|(slot, input)| {
+                Some((
+                    *slot as u32,
+                    crate::sema::default_uses::SuppliedArgument {
+                        expression: input.expression?,
+                        allocation_epoch: input.allocation_epoch,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    pub(super) fn check_named_input_source(
+        &mut self,
+        info: &FunctionInfo,
+        slot: usize,
+        value: &Value,
+        source_event: Option<CopyCallEventId>,
+        span: Span,
+    ) -> bool {
+        let Some(syntax) = info
+            .syntax
+            .parameters
+            .get(slot)
+            .and_then(|parameter| parameter.ty.as_ref())
+        else {
+            return true;
+        };
+        // First use a fully instantiated source descriptor. Missing closed
+        // witnesses fall back only to the actual complete static Type rows.
+        let expected = self
+            .source_type_from_syntax(syntax)
+            .and_then(|witness| {
+                crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new())
+            })
+            .or_else(|| {
+                let raw = crate::static_eval::effects::bounded_argument_key(
+                    syntax,
+                    &self.generic_context,
+                )?;
+                let mut selected: BTreeMap<_, _> = self
+                    .static_arguments_for(info, span)
+                    .arguments
+                    .into_iter()
+                    .filter_map(|argument| Some((argument.binder, argument.key?)))
+                    .collect();
+                let invocation = self.copy_invocation_stack.last().copied();
+                for check in &self.generic_bound_checks {
+                    if check.context.invocation == invocation
+                        && check.context.owner == Some(CallableOwner::Function(info.definition))
+                    {
+                        selected.extend(check.substitutions.clone());
+                    }
+                }
+                select(&raw, &selected, &mut 4096, 0)
+            });
+        let Some(expected) = expected else {
+            self.unsupported(
+                span,
+                "call input requires its complete formal source schema",
+            );
+            return false;
+        };
+        if source_reception::sensitive(&expected, &mut 4096) == Some(false) {
+            return true;
+        }
+        let input = source_event
+            .and_then(|event| {
+                self.call_input_source
+                    .supplied
+                    .get(&event)
+                    .and_then(|arguments| arguments.get(&slot))
+                    .or_else(|| self.call_input_source.defaults.get(&(event, slot)))
+            })
+            .cloned();
+        let answer = input.as_ref().and_then(|input| {
+            let event =
+                source_event.and_then(|event| self.copy_call_events.get(event.0 as usize))?;
+            if let Some(id) = input.default {
+                let record = self
+                    .default_uses
+                    .get(id.0 as usize)
+                    .filter(|record| record.id == id)?;
+                if record.target != Some(info.definition)
+                    || record.parameter as usize != slot
+                    || record.caller != input.context
+                    || record.result_allocation_epoch != Some(input.allocation_epoch)
+                {
+                    return None;
+                }
+                match record.origin {
+                    crate::sema::default_uses::DefaultOrigin::Call(id)
+                        if id == event.id
+                            && event.owner == input.context.owner
+                            && event.parent == input.context.invocation => {}
+                    crate::sema::default_uses::DefaultOrigin::InvocationFallback(id)
+                        if self.copy_invocation_stack.last() == Some(&id)
+                            && self
+                                .copy_invocations
+                                .get(id.0 as usize)
+                                .is_some_and(|call| {
+                                    call.source_event == Some(event.id)
+                                        && call.target == info.definition
+                                }) => {}
+                    _ => return None,
+                }
+            } else if event.owner != input.context.owner || event.parent != input.context.invocation
+            {
+                return None;
+            }
+            match &input.key {
+                Some(actual) => {
+                    source_reception::compatible(&expected, actual, Some(&input.fresh), &mut 4096)
+                }
+                None => match (&expected, &input.fresh) {
+                    (ArgumentKey::Array { length, element }, Construction::Array(items))
+                        if items.is_empty()
+                            && length
+                                .as_ref()
+                                .is_none_or(|length| length == "const(int:0)") =>
+                    {
+                        source_reception::complete(element, &mut 4096)?;
+                        Some(true)
+                    }
+                    _ => None,
+                },
+            }
+        });
+        match answer {
+            Some(true) => true,
+            Some(false) => {
+                self.error(
+                    "E0301",
+                    span,
+                    "original input array or callable source schema does not fit the parameter",
+                    [value.cause],
+                );
+                false
+            }
+            None => {
+                self.unsupported(
+                    span,
+                    "call input lacks its original complete schema and actual Source observation",
+                );
+                false
+            }
+        }
+    }
+
+    pub(super) fn check_public_call_input_sources(
+        &mut self,
+        callee: &Value,
+        syntax: &Expr,
+        event: CopyCallEventId,
+        frame: &Frame,
+    ) {
+        if matches!(callee.callables.as_slice(), [Callable::Named(_)])
+            || callee.callables.iter().all(|callable| matches!(callable, Callable::Builtin(_) | Callable::Constructor(_)))
+        {
+            return;
+        }
+        let Some(ArgumentKey::Callable { parameters, .. }) = self.original_source_receiving_key(callee, syntax, frame) else {
+            self.unsupported(syntax.span, "public callable input requires its original complete Source signature");
+            return;
+        };
+        let context = self.invocation_context(frame.callable_owner);
+        for (slot, (_, expected)) in parameters.iter().enumerate() {
+            if source_reception::sensitive(expected, &mut 4096) == Some(false) { continue; }
+            let input = self.call_input_source.supplied.get(&event).and_then(|rows| rows.get(&slot))
+                .or_else(|| self.call_input_source.defaults.get(&(event, slot))).cloned();
+            let answer = input.as_ref().and_then(|input| {
+                if input.context != context { return None; }
+                input_compatible(expected, input)
+            });
+            match answer {
+                Some(true) => {},
+                Some(false) => self.error("E0301", syntax.span,
+                    "original input source does not fit the actual public callable signature", [callee.cause]),
+                None => self.unsupported(syntax.span,
+                    "public callable input lost its complete original schema or actual operand identity"),
+            }
+        }
+    }
+}
+
+fn input_compatible(expected: &ArgumentKey, input: &Input) -> Option<bool> {
+    match &input.key {
+        Some(actual) => source_reception::compatible(expected, actual, Some(&input.fresh), &mut 4096),
+        None => match (expected, &input.fresh) {
+            (ArgumentKey::Array { length, element }, Construction::Array(items)) if items.is_empty() => {
+                source_reception::complete(element, &mut 4096)?;
+                Some(length.as_ref().is_none_or(|length| length == "const(int:0)"))
+            },
+            _ => None,
+        },
+    }
+}
+
+fn select(
+    key: &ArgumentKey,
+    selected: &BTreeMap<String, ArgumentKey>,
+    work: &mut usize,
+    depth: usize,
+) -> Option<ArgumentKey> {
+    *work = work.checked_sub(1)?;
+    if depth > 64 {
+        return None;
+    }
+    let mut child = |key| select(key, selected, work, depth + 1);
+    Some(match key {
+        ArgumentKey::Binder { identity, .. } => match selected.get(identity) {
+            Some(value) if value != key => child(value)?,
+            _ => key.clone(),
+        },
+        ArgumentKey::Array { length, element } => ArgumentKey::Array {
+            length: length.clone(),
+            element: Box::new(child(element)?),
+        },
+        ArgumentKey::Map { key, value } => ArgumentKey::Map {
+            key: Box::new(child(key)?),
+            value: Box::new(child(value)?),
+        },
+        ArgumentKey::Name { name, arguments } => ArgumentKey::Name {
+            name: name.clone(),
+            arguments: arguments.iter().map(&mut child).collect::<Option<_>>()?,
+        },
+        ArgumentKey::Tuple(items) => {
+            ArgumentKey::Tuple(items.iter().map(&mut child).collect::<Option<_>>()?)
+        }
+        ArgumentKey::Record { fields, row } => ArgumentKey::Record {
+            fields: fields
+                .iter()
+                .map(|(name, mutable, value)| Some((name.clone(), *mutable, child(value)?)))
+                .collect::<Option<_>>()?,
+            row: match row {
+                Some(row) => Some(Box::new(child(row)?)),
+                None => None,
+            },
+        },
+        ArgumentKey::Callable {
+            parameters,
+            result,
+            annotations,
+        } => ArgumentKey::Callable {
+            parameters: parameters
+                .iter()
+                .map(|(mode, value)| Some((*mode, child(value)?)))
+                .collect::<Option<_>>()?,
+            result: Box::new(child(result)?),
+            annotations: annotations.clone(),
+        },
+        _ => key.clone(),
+    })
+}

@@ -1,0 +1,14 @@
+fn make<T>(value:T)->(fn()->T &closure) &capture{\->value}
+fn identity<T>(value:T)->T{value}
+pub fn test_native(){
+    let input:[2]int=[1,2]
+    let action=make(input)
+    let empty:[0][2]int=[]
+    let empty_action=make(empty)
+    let other:[3]int=[3,4,5]
+    let other_action=make(other)
+    let output:[2]int=identity(action())
+    let empty_output:[0][2]int=empty_action()
+    let other_output:[3]int=other_action()
+    assert(output==[1,2] && len(empty_output)==0 && other_output[2]==5)
+}

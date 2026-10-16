@@ -1,0 +1,299 @@
+//! Immutable declaration views and physical receipts for storage reception.
+//! The current value of a mutable binding is never its declaration schema.
+use super::*;
+use crate::sema::{
+    effect_identity::ArgumentKey,
+    source_reception,
+    storage_sources::{BindingSource, StorageDestination, StorageObservation, StorageWrite},
+};
+
+#[derive(Default)]
+pub(super) struct State {
+    bindings: Vec<BindingSource>,
+    writes: Vec<StorageWrite>,
+    by_binding: BTreeMap<BindingId, usize>,
+}
+
+impl State {
+    pub(super) fn into_parts(self) -> (Vec<BindingSource>, Vec<StorageWrite>) {
+        (self.bindings, self.writes)
+    }
+}
+
+pub(super) struct PreparedBindingSource {
+    context: crate::sema::effect_identity::InvocationContext,
+    activation: ScopeId,
+    root: Option<ArgumentKey>,
+}
+
+impl Checker {
+    pub(super) fn prepare_storage_binding_source(
+        &mut self,
+        binding: &Binding,
+        target: Option<&source_reception::Target>,
+        initializer: StorageObservation,
+        frame: &Frame,
+    ) -> PreparedBindingSource {
+        let context = self.invocation_context(frame.callable_owner);
+        let original = self.expression_facts.get(initializer.expression).cloned();
+        let root = if let Some(target) = target {
+            target.key.clone()
+        } else {
+            original.as_ref().and_then(|original| {
+                self.original_source_receiving_key(&original.value, &binding.value, frame)
+            })
+        };
+        PreparedBindingSource { context, activation: frame.owner, root }
+    }
+
+    pub(super) fn record_storage_binding_sources(
+        &mut self,
+        binding: &Binding,
+        prepared: &PreparedBindingSource,
+        initializer: StorageObservation,
+        start: usize,
+        frame: &Frame,
+    ) {
+        let context = prepared.context;
+        let root = &prepared.root;
+        if prepared.activation != frame.owner || context != self.invocation_context(frame.callable_owner) {
+            self.unsupported(binding.pattern.span, "storage declaration changed its original elaboration context");
+            return;
+        }
+        let mut names = Vec::new();
+        let _ = pattern_paths(&binding.pattern, &mut Vec::new(), true, &mut names, &mut 4096);
+        for id in start..self.bindings.len() {
+            let actual = &self.bindings[id];
+            if actual.parameter || actual.owner != frame.owner {
+                continue;
+            }
+            let candidates: Vec<_> = names.iter().filter(|(span, name, _, _)| {
+                *span == actual.span && *name == actual.name
+            }).collect();
+            let [(_, _, path, known)] = candidates.as_slice() else {
+                // A real introduced binding remains an unknown declaration,
+                // including guarded/rest patterns not represented by Slots.
+                self.storage_sources.by_binding.insert(id, self.storage_sources.bindings.len());
+                self.storage_sources.bindings.push(BindingSource {
+                    binding: id, context, activation: frame.owner,
+                    declaration: binding.pattern.span, declared: binding.ty.is_some(),
+                    initializer: initializer.clone(), path: Vec::new(), key: None,
+                });
+                continue;
+            };
+            let key = if *known {
+                root.as_ref().and_then(|root| project_key(root, path)).cloned()
+            } else { None };
+            self.storage_sources.by_binding.insert(id, self.storage_sources.bindings.len());
+            self.storage_sources.bindings.push(BindingSource {
+                binding: id, context, activation: frame.owner,
+                declaration: binding.pattern.span, declared: binding.ty.is_some(),
+                initializer: initializer.clone(), path: path.clone(), key,
+            });
+        }
+    }
+
+    /// The outer option distinguishes absence of a ledger entry from an entry
+    /// whose schema is unknown. The latter must not fall back to a current RHS.
+    pub(super) fn storage_binding_source_key(
+        &self,
+        value: &Value,
+        syntax: &Expr,
+        _frame: &Frame,
+    ) -> Option<Option<ArgumentKey>> {
+        let mut path = Vec::new();
+        let name = source_path(syntax, &mut path, &mut 4096)?;
+        if value.sources.len() != 1 { return None; }
+        let id = *value.sources.first()?;
+        let entry = self.storage_sources.bindings.get(*self.storage_sources.by_binding.get(&id)?)?;
+        if value.sources != BTreeSet::from([id])
+            || self.bindings.get(id).is_none_or(|binding| binding.name != name)
+        {
+            return Some(None);
+        }
+        Some(entry.key.as_ref().and_then(|key| project_key(key, &path)).cloned())
+    }
+
+    pub(super) fn check_storage_write_source(
+        &mut self,
+        target: &Expr,
+        operator: &str,
+        rhs_syntax: &Expr,
+        rhs: StorageObservation,
+        destination: StorageDestination,
+        replacement: &mut Value,
+        receiver: Option<&Value>,
+        frame: &Frame,
+    ) -> bool {
+        let expected = match &destination {
+            StorageDestination::Binding(binding) => self.storage_sources.by_binding.get(binding)
+                .and_then(|index| self.storage_sources.bindings.get(*index))
+                .and_then(|source| source.key.clone()),
+            StorageDestination::Projection { slot, .. } => {
+                let syntax = match &target.kind {
+                    ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => Some(base.as_ref()),
+                    _ => None,
+                };
+                receiver.zip(syntax).and_then(|(value, syntax)| {
+                    self.original_source_receiving_key(value, syntax, frame)
+                }).and_then(|key| project_key(&key, std::slice::from_ref(slot)).cloned())
+            }
+        };
+        let context = self.invocation_context(frame.callable_owner);
+        self.storage_sources.writes.push(StorageWrite {
+            context, activation: frame.owner, span: target.span,
+            operator: operator.into(), rhs: rhs.clone(), destination,
+            expected: expected.clone(), completed: true,
+        });
+        let observation = self.expression_facts.get(rhs.expression).cloned();
+        let actual = observation.as_ref().and_then(|original| {
+            self.original_source_receiving_key(&original.value, rhs_syntax, frame)
+        });
+        let fresh = source_reception::construction(rhs_syntax, &mut 4096);
+        let answer = expected.as_ref().and_then(|expected| {
+            if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+                return Some(true);
+            }
+            // Arithmetic compound assignment is checked separately and cannot
+            // create a collection/Fn Source from its numeric RHS.
+            if operator != "=" { return Some(false); }
+            compatible(expected, actual.as_ref(), fresh.as_ref())
+        });
+        match answer {
+            Some(true) => {
+                // Replace only the type view. Permission, publication, causes,
+                // origins and all actual write obligations remain unchanged.
+                replacement.source_type_witness = expected.as_ref()
+                    .and_then(|key| super::call_input_source::storage_closed_source_syntax(key, target.span))
+                    .and_then(|syntax| self.source_type_from_frozen_syntax(&syntax));
+                true
+            }
+            Some(false) => {
+                self.error("E0301", target.span,
+                    "stored input source does not fit the destination's original declaration schema",
+                    [replacement.cause]);
+                false
+            }
+            None => {
+                self.unsupported(target.span,
+                    "storage reception requires its original declaration and complete input source coordinates");
+                false
+            }
+        }
+    }
+
+    pub(super) fn record_aborted_storage_write(
+        &mut self,
+        target: &Expr,
+        operator: &str,
+        rhs: StorageObservation,
+        destination: StorageDestination,
+        frame: &Frame,
+    ) {
+        self.storage_sources.writes.push(StorageWrite {
+            context: self.invocation_context(frame.callable_owner), activation: frame.owner,
+            span: target.span, operator: operator.into(), rhs, destination,
+            expected: None, completed: false,
+        });
+    }
+}
+
+fn compatible(
+    expected: &ArgumentKey,
+    actual: Option<&ArgumentKey>,
+    fresh: Option<&source_reception::Construction>,
+) -> Option<bool> {
+    // A type-coordinate relation does not prove retained callable bounds.
+    // Until frozen lexical row/latent certificates are attached to stores,
+    // every callable coordinate (also nested) remains an obligation.
+    if has_callable(expected, &mut 4096)? { return None; }
+    if let Some(actual) = actual {
+        return source_reception::compatible(expected, actual, fresh, &mut 4096);
+    }
+    match (expected, fresh) {
+        (ArgumentKey::Array { length, element }, Some(source_reception::Construction::Array(items))) if items.is_empty() => {
+            source_reception::complete(element, &mut 4096)?;
+            Some(length.as_ref().is_none_or(|length| length == "const(int:0)"))
+        }
+        _ => None,
+    }
+}
+
+pub(in crate::sema::checker) fn has_callable(key: &ArgumentKey, work: &mut usize) -> Option<bool> {
+    *work = work.checked_sub(1)?;
+    let children: Vec<&ArgumentKey> = match key {
+        ArgumentKey::Callable { .. } => return Some(true),
+        ArgumentKey::Array { element, .. } => vec![element],
+        ArgumentKey::Map { key, value } => vec![key, value],
+        ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => arguments.iter().collect(),
+        ArgumentKey::Record { fields, row } => fields.iter().map(|field| &field.2).chain(row.iter().map(|row| row.as_ref())).collect(),
+        ArgumentKey::Closed(_) => return None,
+        ArgumentKey::Binder { .. } => vec![],
+    };
+    for child in children { if has_callable(child, work)? { return Some(true); } }
+    Some(false)
+}
+
+fn project_key<'a>(mut key: &'a ArgumentKey, path: &[Slot]) -> Option<&'a ArgumentKey> {
+    for slot in path {
+        while let ArgumentKey::Name { name, arguments } = key {
+            if !matches!(name.as_str(), "Immut" | "Prelude::Immut") || arguments.len() != 1 { break; }
+            key = &arguments[0];
+        }
+        key = match (key, slot) {
+            (ArgumentKey::Record { fields, .. }, Slot::Field(name)) => &fields.iter().find(|field| &field.0 == name)?.2,
+            (ArgumentKey::Tuple(items), Slot::Tuple(index)) => items.get(*index as usize)?,
+            (ArgumentKey::Array { element, .. }, Slot::Index(_) | Slot::AnyIndex) => element,
+            (ArgumentKey::Map { value, .. }, Slot::Index(_) | Slot::AnyIndex) => value,
+            _ => return None,
+        };
+    }
+    Some(key)
+}
+
+fn source_path<'a>(syntax: &'a Expr, path: &mut Vec<Slot>, work: &mut usize) -> Option<&'a str> {
+    *work = work.checked_sub(1)?;
+    match &syntax.kind {
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Field { base, field, .. } => {
+            let name = source_path(base, path, work)?;
+            path.push(field.parse().map(Slot::Tuple).unwrap_or_else(|_| Slot::Field(field.clone())));
+            Some(name)
+        }
+        ExprKind::Index { base, .. } => {
+            let name = source_path(base, path, work)?;
+            path.push(Slot::AnyIndex);
+            Some(name)
+        }
+        _ => None,
+    }
+}
+
+fn pattern_paths(
+    pattern: &Pattern,
+    path: &mut Vec<Slot>,
+    known: bool,
+    out: &mut Vec<(Span, String, Vec<Slot>, bool)>,
+    work: &mut usize,
+) -> Option<()> {
+    *work = work.checked_sub(1)?;
+    match &pattern.kind {
+        PatternKind::Name(name) => out.push((pattern.span, name.clone(), path.clone(), known)),
+        PatternKind::Mode { pattern, .. } => { pattern_paths(pattern, path, known, out, work)?; }
+        PatternKind::Tuple(items) => for (index, item) in items.iter().enumerate() {
+            path.push(Slot::Tuple(index as u32)); pattern_paths(item, path, known, out, work)?; path.pop();
+        },
+        PatternKind::Record { fields, rest_binding, .. } => {
+            for field in fields {
+                path.push(Slot::Field(field.name.clone())); pattern_paths(&field.pattern, path, known, out, work)?; path.pop();
+            }
+            if let Some(name) = rest_binding { out.push((pattern.span, name.clone(), Vec::new(), false)); }
+        }
+        PatternKind::Constructor { arguments, .. } | PatternKind::Alternative(arguments) => {
+            for argument in arguments { pattern_paths(argument, &mut Vec::new(), false, out, work)?; }
+        }
+        PatternKind::Type { binder: Some(name), .. } => out.push((pattern.span, name.clone(), Vec::new(), false)),
+        _ => {}
+    }
+    Some(())
+}

@@ -1,0 +1,269 @@
+//! Check immutable source coordinates before any receiving ascription.
+//!
+//! The caller supplies the actual operand and its recorder-minted expression
+//! index. A Name cannot borrow an old literal's construction context through a
+//! cause, and an already typed record cannot reopen its member construction.
+use super::*;
+use crate::sema::{
+    effect_identity::ArgumentKey,
+    source_reception::{self, Construction, Target},
+};
+use std::sync::Arc;
+
+impl Checker {
+    /// Call in the annotation's original lexical/static environment. A return
+    /// target is frozen before entering the body, not when a Return is read.
+    pub(super) fn freeze_source_receiving_target(&mut self, syntax: &TypeExpr) -> Target {
+        let frozen = self
+            .source_type_from_syntax(syntax)
+            .and_then(|witness| {
+                let key = crate::static_eval::effects::bounded_argument_key(
+                    &witness.syntax,
+                    &BTreeMap::new(),
+                )?;
+                source_reception::complete(&key, &mut 4096)?;
+                Some((key, Arc::new(witness.syntax.clone())))
+            })
+            .or_else(|| {
+                // Bound the source structure before the legacy effect
+                // reifier recursively clones it. A failed closed-source
+                // attempt does not waive the reconstruction boundary.
+                let original = crate::static_eval::effects::bounded_argument_key(
+                    syntax,
+                    &self.effect_type_binders,
+                )?;
+                source_reception::complete(&original, &mut 4096)?;
+                let syntax = self.effect_argument_syntax(syntax).ok()?;
+                let key = crate::static_eval::effects::bounded_argument_key(
+                    &syntax,
+                    &self.effect_type_binders,
+                )?;
+                let mut work = 4096;
+                resolved_symbolic_names(
+                    &syntax,
+                    &self.effect_type_binders,
+                    &self.types,
+                    &mut work,
+                    0,
+                )?;
+                source_reception::complete(&key, &mut work)?;
+                Some((key, Arc::new(syntax)))
+            });
+        let (key, frozen_syntax) = match frozen {
+            Some((key, syntax)) => (Some(key), Some(syntax)),
+            None => (None, None),
+        };
+        Target {
+            span: syntax.span,
+            key,
+            syntax: frozen_syntax,
+        }
+    }
+
+    /// This is an additional source-coordinate check. Existing type, numeric,
+    /// effect, default, permission and Result checks must still run unchanged.
+    /// In particular, true does not authorize later mutation of a descriptor.
+    pub(super) fn require_source_reception(
+        &mut self,
+        target: &Target,
+        actual: &Expr,
+        value: &Value,
+        observed: Option<usize>,
+        frame: &Frame,
+    ) -> bool {
+        if value.ty == Ty::Never {
+            return true;
+        }
+        let Some(expected) = &target.key else {
+            self.unsupported(
+                actual.span,
+                "receiving requires its original complete annotation source schema",
+            );
+            return false;
+        };
+        let mut work = 4096;
+        match source_reception::sensitive(expected, &mut work) {
+            Some(false) => return true,
+            None => {
+                self.unsupported(actual.span, "receiving annotation source is not resolved");
+                return false;
+            }
+            Some(true) => {}
+        }
+        let original = observed.and_then(|index| {
+            // These are the two actual append-only recorder arenas. Require
+            // their exact common index, not the last expression or a span
+            // search. An unpaired recorder entry supplies no observation.
+            let context = self.invocation_expressions.get(index)?;
+            let expression = self.expression_facts.get(index)?;
+            (context.expression == index
+                && context.context == self.invocation_context(frame.callable_owner)
+                && expression.span == actual.span)
+                .then(|| expression.value.clone())
+        });
+        let answer = original.as_ref().and_then(|original| {
+            let fresh = source_reception::construction(actual, &mut work)?;
+            let original_key = self.original_source_receiving_key(original, actual, frame);
+            // Recency transport may change graph identities, but it must not
+            // change immutable source coordinates before this boundary. This
+            // comparison also rejects passing an unrelated historical token.
+            let current_key = self.original_source_receiving_key(value, actual, frame);
+            if original_key != current_key {
+                return None;
+            }
+            match &original_key {
+                Some(key) => source_reception::compatible(expected, key, Some(&fresh), &mut work),
+                None => empty_array_context(expected, &fresh, &mut work),
+            }
+        });
+        match answer {
+            Some(true) => true,
+            Some(false) => {
+                self.error(
+                    "E0301",
+                    actual.span,
+                    "original array or callable source schema does not fit the receiving annotation",
+                    [value.cause],
+                );
+                false
+            }
+            None => {
+                self.unsupported(
+                    actual.span,
+                    "receiving lacks its original complete schema and actual Source observation",
+                );
+                false
+            }
+        }
+    }
+}
+
+/// Project the already frozen record schema. A field is never re-resolved in
+/// the environment reached after evaluating earlier members.
+pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
+    let key = target.key.as_ref().and_then(|key| {
+        let ArgumentKey::Record { fields, row: None } = key else {
+            return None;
+        };
+        let mut work = 4096usize;
+        for (label, _, key) in fields {
+            work = work.checked_sub(1 + label.len().max(name.len()).div_ceil(32))?;
+            if label == name {
+                source_reception::complete(key, &mut work)?;
+                return Some(key.clone());
+            }
+        }
+        None
+    });
+    let syntax = key.as_ref().and_then(|_| {
+        let TypeKind::Record { fields, row: None } = &target.syntax.as_ref()?.kind else {
+            return None;
+        };
+        fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| Arc::new(field.ty.clone()))
+    });
+    Target { span, key, syntax }
+}
+
+fn empty_array_context(
+    expected: &ArgumentKey,
+    construction: &Construction,
+    work: &mut usize,
+) -> Option<bool> {
+    let (ArgumentKey::Array { length, element }, Construction::Array(items)) =
+        (expected, construction)
+    else {
+        return None;
+    };
+    if !items.is_empty() {
+        return None;
+    }
+    source_reception::complete(expected, work)?;
+    if length
+        .as_ref()
+        .is_some_and(|length| length != "const(int:0)")
+    {
+        return Some(false);
+    }
+    source_reception::complete(element, work)?;
+    Some(true)
+}
+
+/// `effect_argument_syntax` has already certified synthetic Binder tokens.
+/// Every other Name must satisfy the existing source-name policy. In
+/// particular, leaving a transparent Alias<T> unexpanded is not a proof that
+/// it has no array/callable coordinates.
+fn resolved_symbolic_names(
+    syntax: &TypeExpr,
+    binders: &BTreeMap<String, String>,
+    declarations: &BTreeMap<String, TypeDeclaration>,
+    work: &mut usize,
+    depth: usize,
+) -> Option<()> {
+    *work = work.checked_sub(1)?;
+    if depth >= 64 {
+        return None;
+    }
+    let mut children: Vec<&TypeExpr> = Vec::new();
+    match &syntax.kind {
+        TypeKind::Name { path, arguments } => {
+            for segment in path {
+                *work = work.checked_sub(segment.len().div_ceil(32))?;
+            }
+            let full = path.join("::");
+            if binders.contains_key(&full) {
+                if !arguments.is_empty() {
+                    return None;
+                }
+            } else {
+                // Only the head is tested here; each real argument is visited
+                // below. Reuse the established nominal/builtin name policy
+                // rather than maintaining a second builtin allow-list.
+                let head = TypeExpr {
+                    text: String::new(),
+                    span: syntax.span,
+                    kind: TypeKind::Name {
+                        path: path.clone(),
+                        arguments: vec![],
+                    },
+                };
+                let witness = SourceTypeWitness {
+                    key: crate::static_eval::normalized_argument_key(&head),
+                    syntax: head,
+                };
+                if !crate::sema::source_type_validation::resolved_names(&witness, declarations) {
+                    return None;
+                }
+            }
+            children.extend(arguments);
+        }
+        TypeKind::Optional(inner) | TypeKind::Array { element: inner, .. } => {
+            children.push(inner);
+        }
+        TypeKind::Map { key, value } => children.extend([&**key, &**value]),
+        TypeKind::Tuple(items) => children.extend(items),
+        TypeKind::Record { fields, row } => {
+            children.extend(fields.iter().map(|field| &field.ty));
+            children.extend(row.iter().map(|row| &**row));
+        }
+        TypeKind::Callable {
+            parameters, result, ..
+        } => {
+            for parameter in parameters {
+                children.push(parameter.ty.as_ref()?);
+            }
+            children.extend(result.iter().map(|result| &**result));
+        }
+        _ => return None,
+    }
+    for child in children {
+        resolved_symbolic_names(child, binders, declarations, work, depth + 1)?;
+    }
+    Some(())
+}
+
+#[cfg(test)]
+#[path = "source_receiving_tests.rs"]
+mod tests;

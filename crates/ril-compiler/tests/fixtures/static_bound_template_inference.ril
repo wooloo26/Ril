@@ -1,0 +1,57 @@
+type Packet<X> = { value: X }
+type OtherPacket<Y> = { value: Y }
+
+meta fn alias_member<T: { payload: Packet<U>, ..R }, U>(value: T) -> U {
+    value.payload.value
+}
+
+meta fn alias_array<T: { payload: [0]Packet<U>, ..R }, U>(value: T) -> T {
+    value
+}
+
+meta fn forward<X: { payload: OtherPacket<Y>, ..S }, Y>(value: X) -> Y {
+    alias_member(value)
+}
+
+meta fn map_value<T: { items: [str: V], ..R }, V>(value: T) -> T {
+    value
+}
+
+meta fn callable<T: { handler: fn(input: U) -> V, ..R }, U, V>(value: T) -> T {
+    value
+}
+
+meta fn second(right: int = 2) -> int {
+    right
+}
+
+meta let ALIAS = alias_member(.{ payload: .{ value: 7 }, tag: "alias" })
+meta let MAP = map_value(.{ items: ["a": 11], tag: "map" }).items["a"] ?? 0
+meta let CALLABLE = callable(.{ handler: second, tag: "callable" }).handler(right: 19)
+meta let DEFAULT = callable(.{ handler: second, tag: "default" }).handler()
+meta let ALIAS_CALLABLE = alias_member(.{ payload: .{ value: second } })(right: 23)
+meta let ALIAS_DEFAULT = alias_member(.{ payload: .{ value: second } })()
+meta let FORWARDED = forward(.{ payload: .{ value: 29 }, tag: "forwarded" })
+
+meta let _ = {
+    let empty: [0]Packet<int> = []
+    let carried = alias_array(.{ payload: empty })
+    assert(carried.payload == empty)
+}
+meta let _ = assert(ALIAS == 7)
+meta let _ = assert(MAP == 11)
+meta let _ = assert(CALLABLE == 19)
+meta let _ = assert(DEFAULT == 2)
+meta let _ = assert(ALIAS_CALLABLE == 23)
+meta let _ = assert(ALIAS_DEFAULT == 2)
+meta let _ = assert(FORWARDED == 29)
+
+pub fn test_native() &{ ALIAS, MAP, CALLABLE, DEFAULT, ALIAS_CALLABLE, ALIAS_DEFAULT, FORWARDED } {
+    assert(ALIAS == 7)
+    assert(MAP == 11)
+    assert(CALLABLE == 19)
+    assert(DEFAULT == 2)
+    assert(ALIAS_CALLABLE == 23)
+    assert(ALIAS_DEFAULT == 2)
+    assert(FORWARDED == 29)
+}

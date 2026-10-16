@@ -1,6 +1,8 @@
 //! Code generation contracts, target descriptions, and native lowering.
 pub mod artifact;
 pub mod backend;
+pub mod cps;
+mod hof;
 pub mod link;
 pub mod lower;
 pub mod target;

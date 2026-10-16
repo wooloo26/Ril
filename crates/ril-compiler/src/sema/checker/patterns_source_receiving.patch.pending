@@ -1,0 +1,117 @@
+--- a/crates/ril-compiler/src/sema/checker/patterns.rs
++++ b/crates/ril-compiler/src/sema/checker/patterns.rs
+@@ -1,5 +1,7 @@
+ //! Binding match patterns and nonbinding value tests have different authority rules.
+ use super::*;
++use super::expressions::SourceExpression;
++use crate::sema::source_reception::Target;
+ 
+ #[derive(Clone)]
+ struct PatternState {
+@@ -316,15 +318,37 @@
+         span: Span,
+         frame: &mut Frame,
+     ) -> Value {
++        self.check_match_expected_source(expression, arms, type_match, span, frame, None, None)
++            .value
++    }
++
++    #[allow(clippy::too_many_arguments, reason = "Preserve the existing match operands and explicit receiving context")]
++    pub(super) fn check_match_expected_source(
++        &mut self,
++        expression: &Expr,
++        arms: &[MatchArm],
++        type_match: bool,
++        span: Span,
++        frame: &mut Frame,
++        expected: Option<&Ty>,
++        source: Option<&Target>,
++    ) -> SourceExpression {
+         if type_match {
+             self.unsupported(span, "static type-match pattern checking");
+-            return Value::scalar(
+-                Ty::Unknown,
+-                None,
+-                self.cause(CauseKind::MissingProof, span, "unresolved type match", []),
+-            );
+-        }
++            return SourceExpression {
++                value: Value::scalar(
++                    Ty::Unknown,
++                    None,
++                    self.cause(CauseKind::MissingProof, span, "unresolved type match", []),
++                ),
++                observation: None,
++                source_valid: false,
++            };
++        }
++        // Subject and guards are not result positions. An explicit Return
++        // inside them still receives its own fixed Frame return target.
+         let subject = self.expression(expression, frame);
++        let mut source_valid = true;
+         if subject.ty == Ty::Never {
+             for arm in arms {
+                 if matches!(arm.pattern.kind, PatternKind::Wildcard) {
+@@ -332,7 +356,12 @@
+                         let value = self.preview_expression(guard, frame);
+                         self.require_type(&value, &Ty::Bool, guard.span);
+                     }
+-                    self.preview_expression(&arm.body, frame);
++                    let before = self.snapshot_flow();
++                    let original = frame.clone();
++                    let checked = self.expression_expected_source(&arm.body, frame, expected, source);
++                    source_valid &= checked.source_valid;
++                    self.restore_preview(&before);
++                    *frame = original;
+                 } else {
+                     self.unsupported(
+                         arm.pattern.span,
+@@ -340,7 +369,11 @@
+                     );
+                 }
+             }
+-            return subject;
++            return SourceExpression {
++                value: subject,
++                observation: None,
++                source_valid,
++            };
+         }
+         if let Some(first) = arms.first() {
+             self.inspect_guaranteed_pattern_head(&subject, &first.pattern, span, frame);
+@@ -410,7 +443,11 @@
+                 self.require_type(&guard, &Ty::Bool, arm.span);
+             }
+             let returned_before = frame.returned.len();
+-            let mut value = self.expression(&arm.body, frame);
++            // Check each actual result before constructor transport or
++            // branch join can replace or coarsen its source descriptor.
++            let checked = self.expression_expected_source(&arm.body, frame, expected, source);
++            source_valid &= checked.source_valid;
++            let mut value = checked.value;
+             if let PatternKind::Constructor { path, .. } = &arm.pattern.kind
+                 && let Some(tag) = self.resolved_pattern_tag(path, &subject, frame)
+             {
+@@ -515,11 +552,17 @@
+                 [subject.cause],
+             );
+         }
+-        result.unwrap_or_else(|| {
+-            let mut value = self.unit(span);
+-            value.ty = Ty::Never;
+-            value
+-        })
++        SourceExpression {
++            value: result.unwrap_or_else(|| {
++                let mut value = self.unit(span);
++                value.ty = Ty::Never;
++                value
++            }),
++            // The enclosing expression emitter mints the real match token.
++            // Arm tokens must not masquerade as this expression's result.
++            observation: None,
++            source_valid,
++        }
+     }
+ 
+     pub(super) fn check_is(
