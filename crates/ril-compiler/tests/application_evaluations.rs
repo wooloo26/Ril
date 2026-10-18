@@ -151,6 +151,49 @@ fn historical_operands_keep_their_allocation_epoch_and_require_explicit_transpor
 }
 
 #[test]
+fn storage_receipts_require_the_original_hir_node_and_observation_epoch() {
+    use ril_compiler::sema::validate::ValidationIssueKind;
+    for layout in ["pointer32", "pointer64"] {
+        let facts = verified("application-loop-computed-callee-fixed-empty", layout);
+        assert!(!facts.allocation_history.is_empty());
+        let (position, source) = facts
+            .binding_sources
+            .iter()
+            .enumerate()
+            .find(|(_, source)| source.key.is_some())
+            .expect("a real complete binding declaration");
+        let original = &facts.expressions[source.initializer.expression];
+        assert_eq!(
+            source.initializer.allocation_epoch,
+            original.allocation_epoch
+        );
+        let mut changed = facts.clone();
+        changed.binding_sources[position]
+            .initializer
+            .allocation_epoch =
+            (original.allocation_epoch + 1) % (facts.allocation_history.len() + 1);
+        let issues =
+            solved_facts(&changed).expect_err("storage borrowed another observation epoch");
+        assert!(issues.iter().any(|issue| matches!(&issue.kind,
+            ValidationIssueKind::StorageSource(message)
+                if message.contains("storage operand belongs to another syntax, epoch or full invocation context"))));
+
+        let other_id = facts
+            .expressions
+            .iter()
+            .filter_map(|fact| fact.source_id)
+            .find(|id| Some(*id) != original.source_id)
+            .expect("a distinct genuine HIR node");
+        let mut changed = facts.clone();
+        changed.expressions[source.initializer.expression].source_id = Some(other_id);
+        let issues = solved_facts(&changed).expect_err("storage borrowed another actual HIR node");
+        assert!(issues.iter().any(|issue| matches!(&issue.kind,
+            ValidationIssueKind::StorageSource(message)
+                if message.contains("storage operand belongs to another syntax, epoch or full invocation context"))));
+    }
+}
+
+#[test]
 fn ordinary_and_pipeline_prefixes_follow_their_real_hir_children() {
     for layout in ["pointer32", "pointer64"] {
         let facts = verified("application-ordinary-complete-order", layout);

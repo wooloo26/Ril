@@ -75,7 +75,10 @@ impl Replay<'_> {
             .get(observed.expression)
             .ok_or_else(|| "storage operand observation is outside its arena".to_owned())?;
         require(
-            original.span == syntax.span
+            original.source_id.is_some()
+                && original.source_id == syntax.hir_id
+                && original.span == syntax.span
+                && original.allocation_epoch == observed.allocation_epoch
                 && observed.allocation_epoch <= self.facts.allocation_history.len()
                 && self
                     .facts
