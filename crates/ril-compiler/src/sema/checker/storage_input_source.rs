@@ -103,6 +103,7 @@ impl Checker {
             .filter(|preparation| preparation.source_event == event);
         let preparation = preparations.next()?;
         if preparations.next().is_some()
+            || !preparation.slots_bound
             || !preparation.evaluation_complete
             || preparation.slots.get(slot)
                 != Some(&crate::sema::default_uses::ArgumentSource::Supplied)

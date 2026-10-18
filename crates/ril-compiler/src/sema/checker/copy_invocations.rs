@@ -117,16 +117,37 @@ impl Checker {
         }
     }
 
-    pub(super) fn record_copy_call_event(
+    pub(super) fn reserve_copy_call_event(
         &mut self,
-        syntax: &Expr,
-        value: &Value,
         call: &Expr,
-        reference_start: usize,
-        callee_expression: Option<usize>,
         frame: &Frame,
     ) -> CopyCallEventId {
         let id = CopyCallEventId(self.copy_call_events.len() as u32);
+        self.copy_call_events.push(CopyCallEvent {
+            id,
+            source_id: call.hir_id,
+            callee_expression: None,
+            result_expression: None,
+            owner: frame.callable_owner,
+            parent: self.copy_invocation_stack.last().copied(),
+            span: call.span,
+            target: None,
+            direct: false,
+            copy_operation: None,
+            references: vec![],
+        });
+        id
+    }
+
+    pub(super) fn complete_copy_call_callee(
+        &mut self,
+        id: CopyCallEventId,
+        syntax: &Expr,
+        value: &Value,
+        reference_start: usize,
+        callee_expression: Option<usize>,
+        frame: &Frame,
+    ) {
         let parent = self.copy_invocation_stack.last().copied();
         let target = match value.callables.as_slice() {
             [Callable::Named(index)] => Some(self.functions[*index].definition),
@@ -163,32 +184,22 @@ impl Checker {
                 reference.direct_call = Some(id);
             }
         }
-        self.copy_call_events.push(CopyCallEvent {
-            id,
-            source_id: call.hir_id,
-            callee_expression,
-            result_expression: None,
-            owner: frame.callable_owner,
-            parent,
-            span: call.span,
-            target,
-            direct,
-            copy_operation: match value.callables.as_slice() {
-                [Callable::Builtin(name)]
-                    if matches!(name.as_str(), "clone" | "Prelude::clone") =>
-                {
-                    Some(CopyMode::Mutable)
-                }
-                [Callable::Builtin(name)]
-                    if matches!(name.as_str(), "clone_immut" | "Prelude::clone_immut") =>
-                {
-                    Some(CopyMode::Immutable)
-                }
-                _ => None,
-            },
-            references: references.iter().map(|reference| reference.id).collect(),
-        });
-        id
+        let event = &mut self.copy_call_events[id.0 as usize];
+        event.callee_expression = callee_expression;
+        event.target = target;
+        event.direct = direct;
+        event.copy_operation = match value.callables.as_slice() {
+            [Callable::Builtin(name)] if matches!(name.as_str(), "clone" | "Prelude::clone") => {
+                Some(CopyMode::Mutable)
+            }
+            [Callable::Builtin(name)]
+                if matches!(name.as_str(), "clone_immut" | "Prelude::clone_immut") =>
+            {
+                Some(CopyMode::Immutable)
+            }
+            _ => None,
+        };
+        event.references = references.iter().map(|reference| reference.id).collect();
     }
 
     fn copy_executed_within(&self, root: InstanceId, mut child: InstanceId) -> bool {

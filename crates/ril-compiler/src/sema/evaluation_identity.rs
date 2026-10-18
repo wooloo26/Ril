@@ -231,58 +231,134 @@ impl Replay<'_> {
     }
 
     fn event(&self, event: &CopyCallEvent) -> Check<usize> {
+        use crate::hir::application::EvaluationRole;
         let source = event
             .source_id
-            .ok_or("call event has no static HIR identity")?;
+            .ok_or("application event has no static HIR identity")?;
         let syntax = self
             .hir
             .expression(source)
-            .ok_or("call event HIR identity is outside its arena")?;
-        let hir::ExprKind::Call { callee, arguments } = &syntax.kind else {
-            return Err("call event HIR identity is not a Call".into());
-        };
-        let callee_index = event
-            .callee_expression
-            .ok_or("call event lost its actual callee observation")?;
+            .ok_or("application HIR identity is absent")?;
+        let application = self
+            .hir
+            .application(source)?
+            .ok_or("event HIR identity is not an application")?;
         let result_index = event
             .result_expression
-            .ok_or("call event lost its actual root observation")?;
+            .ok_or("application lost its actual root observation")?;
+        let (result_value, context) = self.observation(result_index, source)?;
         require(
-            callee_index < result_index,
-            "call result precedes its actual callee",
+            event.span == syntax.info.span && result_value.span == syntax.info.span,
+            "application location metadata differs from its identified HIR root",
         )?;
-        let (callee_value, context) = self.observation(callee_index, *callee)?;
-        let (result_value, result_context) = self.observation(result_index, source)?;
         require(
-            context.owner == event.owner
-                && context.invocation == event.parent
-                && context == result_context,
-            "call callee and result belong to different full invocation contexts",
+            context.owner == event.owner && context.invocation == event.parent,
+            "application result belongs to another full invocation context",
         )?;
         require(
             self.static_owner(syntax.info.owner)? == self.dynamic_owner(context)?,
-            "call static HIR owner differs from its actual lexical owner",
+            "application HIR owner differs from its actual lexical owner",
         )?;
-        if callee_value.value.ty == Ty::Never {
-            require(
-                !self.preparations.contains_key(&event.id) && result_value.value.ty == Ty::Never,
-                "abrupt callee claims evaluated arguments or a normal result",
-            )?;
-            return Ok(result_index);
-        }
         let preparation = self
             .preparations
             .get(&event.id)
-            .ok_or("normal callee lost its actual argument preparation")?;
+            .ok_or("application lost its reserved preparation")?;
         require(
             preparation.target == event.target,
-            "argument preparation belongs to another call target",
+            "application preparation resolved target differs from its actual event",
+        )?;
+        require(
+            !preparation.evaluated.is_empty() && preparation.evaluated.len() <= LIMIT,
+            "application preparation has no real evaluated prefix",
+        )?;
+        let mut order = application.evaluation_order();
+        let mut previous = None;
+        let mut epoch = 0usize;
+        let mut abrupt = false;
+        let mut callee = None;
+        let mut operands = BTreeMap::new();
+        for evaluation in &preparation.evaluated {
+            require(
+                !abrupt && order.next() == Some(evaluation.role),
+                "application evaluation is not its actual ordered prefix",
+            )?;
+            let expected = application
+                .expression(evaluation.role)
+                .ok_or("application prefix role is absent from HIR")?;
+            let token = evaluation.observation;
+            require(
+                previous.is_none_or(|index| index < token.expression)
+                    && token.expression < result_index
+                    && epoch <= token.allocation_epoch
+                    && token.allocation_epoch <= self.facts.allocation_history.len(),
+                "application prefix changed its physical order or allocation epoch",
+            )?;
+            let (actual, observed_context) = self.observation(token.expression, expected)?;
+            require(
+                observed_context == context && actual.allocation_epoch == token.allocation_epoch,
+                "application prefix borrowed another full invocation context",
+            )?;
+            if evaluation.role == EvaluationRole::Callee {
+                require(
+                    self.observations[&token.expression].argument_of.is_none(),
+                    "callee root claims a parameter slot",
+                )?;
+                callee = Some((token.expression, actual));
+            } else {
+                require(
+                    operands.insert(evaluation.role, token).is_none(),
+                    "application operand was evaluated twice",
+                )?;
+            }
+            previous = Some(token.expression);
+            epoch = token.allocation_epoch;
+            abrupt = actual.value.ty == Ty::Never;
+        }
+        let prefix_complete = order.next().is_none();
+        require(
+            prefix_complete || abrupt,
+            "application omitted evaluation without an actual Never result",
+        )?;
+        require(
+            event.callee_expression == callee.map(|(index, _)| index),
+            "application callee differs from its actual evaluated prefix",
+        )?;
+        if callee.is_none() {
+            require(
+                event.target.is_none()
+                    && !event.direct
+                    && event.copy_operation.is_none()
+                    && event.references.is_empty(),
+                "application before callee evaluation claims a resolved target or copy operation",
+            )?;
+        }
+        if !preparation.slots_bound {
+            require(
+                abrupt
+                    && !preparation.evaluation_complete
+                    && preparation.slots.is_empty()
+                    && preparation.supplied.is_empty()
+                    && result_value.value.ty == Ty::Never,
+                "unbound application claims normal completion or received parameter slots",
+            )?;
+            for token in operands.values() {
+                require(
+                    self.observations[&token.expression].argument_of.is_none(),
+                    "unbound operand claims a parameter slot",
+                )?;
+            }
+            return Ok(result_index);
+        }
+        let (_, callee_value) = callee.ok_or("bound parameter slots have no actual callee")?;
+        require(
+            callee_value.value.ty != Ty::Never,
+            "abrupt callee claims parameter binding",
         )?;
         let signature = callee_value.value.signature.as_ref();
-        let count = signature.map_or(arguments.len(), Vec::len);
+        let count = signature.map_or(application.operands.len(), Vec::len);
         require(
-            count <= LIMIT && arguments.len() <= LIMIT && preparation.slots.len() == count,
-            "call argument slots differ from the actual public signature",
+            count <= LIMIT && preparation.slots.len() == count,
+            "application slots differ from its public signature",
         )?;
         let mut labels = BTreeMap::new();
         if let Some(signature) = signature {
@@ -290,19 +366,19 @@ impl Replay<'_> {
                 if let PatternKind::Name(name) = &parameter.pattern.kind {
                     require(
                         labels.insert(name.as_str(), index).is_none(),
-                        "public callable signature repeats an argument label",
+                        "public callable signature repeats a label",
                     )?;
                 }
             }
         }
         let mut occupied = BTreeSet::new();
-        let mut written = Vec::new();
+        let mut consumed = BTreeSet::new();
         let mut next = 0usize;
-        for argument in arguments {
-            let slot = if let Some(label) = &argument.label {
+        for operand in &application.operands {
+            let slot = if let Some(label) = operand.label {
                 *labels
-                    .get(label.as_str())
-                    .ok_or("written argument label is absent from its public signature")?
+                    .get(label)
+                    .ok_or("written label is absent from the public signature")?
             } else {
                 while occupied.contains(&next) {
                     next += 1;
@@ -311,49 +387,30 @@ impl Replay<'_> {
             };
             require(
                 slot < count && occupied.insert(slot),
-                "written arguments duplicate or exceed an actual parameter slot",
+                "application duplicates or exceeds a parameter slot",
             )?;
-            written.push((slot, argument.value));
-        }
-        let mut consumed = BTreeSet::new();
-        let mut previous = callee_index;
-        let mut epoch = 0usize;
-        let mut abrupt = false;
-        for (slot, source) in written {
-            let token = preparation.supplied.get(&(slot as u32));
-            if abrupt {
+            if let Some(token) = operands.get(&operand.role) {
                 require(
-                    token.is_none(),
-                    "a supplied argument was evaluated after an abrupt earlier operand",
+                    preparation.slots.get(slot) == Some(&ArgumentSource::Supplied)
+                        && preparation.supplied.get(&(slot as u32)) == Some(token)
+                        && self.observations[&token.expression].argument_of
+                            == Some((event.id, slot as u32)),
+                    "bound supplied slot differs from its real prefix observation",
                 )?;
-                continue;
+                consumed.insert(slot as u32);
+            } else {
+                require(
+                    abrupt && !preparation.supplied.contains_key(&(slot as u32)),
+                    "unreached operand claims a supplied parameter",
+                )?;
             }
-            let token = token.ok_or("a written argument lost its own physical observation")?;
-            require(
-                preparation.slots.get(slot) == Some(&ArgumentSource::Supplied)
-                    && previous < token.expression
-                    && token.expression < result_index
-                    && epoch <= token.allocation_epoch
-                    && token.allocation_epoch <= self.facts.allocation_history.len(),
-                "supplied operand changed slot, evaluation order or allocation epoch",
-            )?;
-            let (actual, actual_context) = self.observation(token.expression, source)?;
-            require(
-                actual_context == context
-                    && self.observations[&token.expression].argument_of
-                        == Some((event.id, slot as u32)),
-                "supplied operand belongs to another full invocation or call event",
-            )?;
-            consumed.insert(slot as u32);
-            previous = token.expression;
-            epoch = token.allocation_epoch;
-            abrupt = actual.value.ty == Ty::Never;
         }
         require(
             consumed.len() == preparation.supplied.len(),
-            "call preparation includes an unwritten or foreign supplied operand",
+            "application contains a foreign supplied operand",
         )?;
-        let supplied_abrupt = abrupt;
+        let prefix_abrupt = abrupt;
+        let mut previous = previous.unwrap();
         for (slot, origin) in preparation.slots.iter().enumerate() {
             match origin {
                 ArgumentSource::Supplied => require(
@@ -366,8 +423,8 @@ impl Replay<'_> {
                 )?,
                 ArgumentSource::Default(id) => {
                     require(
-                        !supplied_abrupt && !occupied.contains(&slot),
-                        "default replaced a supplied or unevaluated written operand",
+                        prefix_complete && !prefix_abrupt && !occupied.contains(&slot),
+                        "default replaced a supplied or unreached operand",
                     )?;
                     let default = self
                         .facts
@@ -379,7 +436,7 @@ impl Replay<'_> {
                         default.origin == DefaultOrigin::Call(event.id)
                             && default.parameter as usize == slot
                             && default.caller == context,
-                        "default slot borrowed another call's evaluation",
+                        "default slot borrowed another application's evaluation",
                     )?;
                     let original = signature
                         .and_then(|parameters| parameters.get(slot))
@@ -398,12 +455,16 @@ impl Replay<'_> {
                             && index < result_index
                             && epoch <= observed_epoch
                             && observed_epoch <= self.facts.allocation_history.len(),
-                        "default was evaluated outside its actual operand interval",
+                        "default is outside its actual evaluation interval",
                     )?;
                     let (actual, default_context) = self.observation(index, original)?;
+                    let expected_context = InvocationContext {
+                        owner: default.owner,
+                        default_use: Some(*id),
+                        ..context
+                    };
                     require(
-                        default_context.default_use == Some(*id)
-                            && default_context.owner == default.owner,
+                        default_context == expected_context && default.span == actual.span,
                         "default root belongs to another default-use context",
                     )?;
                     abrupt = actual.value.ty == Ty::Never;
@@ -418,18 +479,17 @@ impl Replay<'_> {
         }
         require(
             preparation.evaluation_complete == !abrupt,
-            "argument completion lacks a real normal or abrupt evaluation proof",
+            "parameter completion lacks actual normal or abrupt evaluation evidence",
         )?;
         if abrupt {
             require(
                 result_value.value.ty == Ty::Never,
-                "abrupt arguments claim a normal call result",
+                "abrupt application prefix/default claims a normal result",
             )?;
         }
         Ok(result_index)
     }
 }
-
 pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     let fallback = facts
         .file
@@ -449,6 +509,9 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             && facts.invocation_expressions.len() <= LIMIT
             && facts.copy_call_events.len() <= LIMIT
             && facts.call_arguments.len() <= LIMIT
+            && facts.default_uses.len() <= LIMIT
+            && facts.copy_invocations.len() <= LIMIT
+            && facts.closure_invocations.len() <= LIMIT
             && facts.functions.len() <= LIMIT
             && facts.closures.len() <= LIMIT,
         "evaluation identity replay budget exhausted",
@@ -456,7 +519,8 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     .map_err(fail)?;
     let Some(hir) = facts.semantic_hir.as_deref() else {
         return require(
-            facts.copy_call_events.is_empty()
+            facts.source_program.is_none()
+                && facts.copy_call_events.is_empty()
                 && facts
                     .expressions
                     .iter()
@@ -481,6 +545,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         )
         .map_err(fail)?;
     }
+    let mut evaluated_roots = BTreeSet::new();
     for row in &facts.call_arguments {
         require(
             facts
@@ -491,6 +556,62 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             "argument preparation is duplicated or has no actual call event",
         )
         .map_err(fail)?;
+        require(
+            row.evaluated.len() <= LIMIT,
+            "application prefix exceeds its work bound",
+        )
+        .map_err(fail)?;
+        for step in &row.evaluated {
+            require(
+                evaluated_roots.insert(step.observation.expression),
+                "two application prefixes claim the same actual evaluation root",
+            )
+            .map_err(fail)?;
+        }
+    }
+    // These are reverse obligations. The last supplied operand may have
+    // stopped before defaults/body entry, even when it was the complete written
+    // prefix. An abrupt default itself still owns its genuine earlier defaults
+    // and its own slot, so completion alone must not erase their evidence.
+    for (index, default) in facts.default_uses.iter().enumerate() {
+        let DefaultOrigin::Call(event) = default.origin else {
+            continue;
+        };
+        require(
+            default.id.0 as usize == index
+                && replay.preparations.get(&event).is_some_and(|preparation| {
+                    preparation.slots_bound
+                        && preparation.slots.get(default.parameter as usize)
+                            == Some(&ArgumentSource::Default(default.id))
+                }),
+            "actual default lost its exact application's reached parameter slot",
+        )
+        .map_err(|message| (default.span, None, message))?;
+    }
+    for (source_event, span) in facts
+        .copy_invocations
+        .iter()
+        .filter_map(|invocation| {
+            invocation
+                .source_event
+                .map(|event| (event, invocation.span))
+        })
+        .chain(facts.closure_invocations.iter().filter_map(|invocation| {
+            invocation
+                .source_event
+                .map(|event| (event, invocation.site))
+        }))
+    {
+        require(
+            replay
+                .preparations
+                .get(&source_event)
+                .is_some_and(|preparation| {
+                    preparation.slots_bound && preparation.evaluation_complete
+                }),
+            "an incomplete application preparation claims an entered callable body",
+        )
+        .map_err(|message| (span, None, message))?;
     }
     for row in &facts.invocation_expressions {
         if let Some((event, slot)) = row.argument_of {
@@ -523,6 +644,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     }
     let pattern_values = replay.pattern_value_sources().map_err(fail)?;
     let mut results = BTreeSet::new();
+    let mut previous_occurrences = BTreeMap::new();
     for (index, event) in facts.copy_call_events.iter().enumerate() {
         require(
             event.id.0 as usize == index,
@@ -532,6 +654,26 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         let result = replay
             .event(event)
             .map_err(|message| (event.span, None, message))?;
+        let context = replay.observations[&result].context;
+        let key = (
+            event.source_id,
+            context.owner,
+            context.invocation.map(|id| id.0),
+            context.closure,
+            context.closure_invocation.map(|id| id.0),
+            context.budget_validation,
+            context.default_use.map(|id| id.0),
+        );
+        if let Some(previous) = previous_occurrences.insert(key, result) {
+            require(
+                previous
+                    < replay.preparations[&event.id].evaluated[0]
+                        .observation
+                        .expression,
+                "repeated application prefix borrowed an earlier occurrence",
+            )
+            .map_err(|message| (event.span, None, message))?;
+        }
         require(
             results.insert(result),
             "two call events claim one physical root observation",
@@ -574,7 +716,17 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             )
             .map_err(|message| (expression.span, Some(expression.value.cause), message))?;
         }
-        if matches!(source.kind, hir::ExprKind::Call { .. }) {
+        if hir
+            .application(id)
+            .map_err(|message| {
+                (
+                    expression.span,
+                    Some(expression.value.cause),
+                    message.to_owned(),
+                )
+            })?
+            .is_some()
+        {
             require(
                 results.contains(&index),
                 "an actual HIR Call root lost its dynamic call event",
@@ -588,7 +740,10 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sema::{default_uses::SuppliedArgument, model::Value};
+    use crate::sema::{
+        default_uses::{ApplicationEvaluation, EvaluationRole, SuppliedArgument},
+        model::Value,
+    };
     use ril_syntax::ast::{self, ParameterMode};
     use std::sync::Arc;
 
@@ -635,15 +790,42 @@ mod tests {
         }
     }
     fn model(arguments: usize, events: usize, repeat: bool) -> SemanticFacts {
+        application_model(arguments, events, repeat, false)
+    }
+    fn application_model(
+        arguments: usize,
+        events: usize,
+        repeat: bool,
+        pipeline: bool,
+    ) -> SemanticFacts {
+        use crate::hir::application::AstApplication;
         let mut source = ast::Program {
             statements: (0..if repeat { 1 } else { events })
-                .map(|_| ast::Stmt {
-                    hir_id: None,
-                    span: span(),
-                    kind: ast::StmtKind::Expr {
-                        expression: syntax(arguments),
-                        terminated: true,
-                    },
+                .map(|_| {
+                    let mut expression = syntax(arguments);
+                    if pipeline {
+                        expression = ast::Expr {
+                            hir_id: None,
+                            span: span(),
+                            kind: ast::ExprKind::Binary {
+                                operator: "|>".into(),
+                                left: Box::new(ast::Expr {
+                                    hir_id: None,
+                                    span: span(),
+                                    kind: ast::ExprKind::Literal(ast::Literal::Integer("0".into())),
+                                }),
+                                right: Box::new(expression),
+                            },
+                        };
+                    }
+                    ast::Stmt {
+                        hir_id: None,
+                        span: span(),
+                        kind: ast::StmtKind::Expr {
+                            expression,
+                            terminated: true,
+                        },
+                    }
                 })
                 .collect(),
         };
@@ -655,44 +837,60 @@ mod tests {
             else {
                 unreachable!()
             };
-            let ast::ExprKind::Call { callee, arguments } = &expression.kind else {
-                unreachable!()
-            };
+            let application = AstApplication::from_ast(expression).unwrap();
             let id = CopyCallEventId(ordinal as u32);
-            let callee_index = facts.expressions.len();
-            facts.expressions.push(ExpressionFact {
-                source_id: callee.hir_id,
-                span: span(),
-                value: Value::scalar(Ty::Unknown, None, CauseId(0)),
-            });
-            facts.invocation_expressions.push(InvocationExpression {
-                context: context(),
-                expression: callee_index,
-                argument_of: None,
-            });
+            let mut callee = None;
+            let mut evaluated = Vec::new();
             let mut supplied = BTreeMap::new();
-            for (slot, argument) in arguments.iter().enumerate() {
+            for role in application.evaluation_order() {
+                let root = application.expression(role).unwrap();
                 let index = facts.expressions.len();
-                supplied.insert(
-                    slot as u32,
-                    SuppliedArgument {
-                        expression: index,
-                        allocation_epoch: 0,
-                    },
-                );
+                let token = SuppliedArgument {
+                    expression: index,
+                    allocation_epoch: 0,
+                };
+                evaluated.push(ApplicationEvaluation {
+                    role,
+                    observation: token,
+                });
+                let argument_of = match role {
+                    EvaluationRole::Callee => {
+                        callee = Some(index);
+                        None
+                    }
+                    EvaluationRole::Piped => {
+                        supplied.insert(0, token);
+                        Some((id, 0))
+                    }
+                    EvaluationRole::Written(index) => {
+                        let slot = index + u32::from(pipeline);
+                        supplied.insert(slot, token);
+                        Some((id, slot))
+                    }
+                };
                 facts.expressions.push(ExpressionFact {
-                    source_id: argument.value.hir_id,
+                    allocation_epoch: 0,
+                    source_id: root.hir_id,
                     span: span(),
-                    value: Value::scalar(Ty::Int("int".into()), None, CauseId(0)),
+                    value: Value::scalar(
+                        if role == EvaluationRole::Callee {
+                            Ty::Unknown
+                        } else {
+                            Ty::Int("int".into())
+                        },
+                        None,
+                        CauseId(0),
+                    ),
                 });
                 facts.invocation_expressions.push(InvocationExpression {
                     context: context(),
                     expression: index,
-                    argument_of: Some((id, slot as u32)),
+                    argument_of,
                 });
             }
             let result = facts.expressions.len();
             facts.expressions.push(ExpressionFact {
+                allocation_epoch: 0,
                 source_id: expression.hir_id,
                 span: span(),
                 value: Value::scalar(Ty::Int("int".into()), None, CauseId(0)),
@@ -705,7 +903,7 @@ mod tests {
             facts.copy_call_events.push(CopyCallEvent {
                 source_id: expression.hir_id,
                 id,
-                callee_expression: Some(callee_index),
+                callee_expression: callee,
                 result_expression: Some(result),
                 owner: Some(CallableOwner::Global),
                 parent: None,
@@ -718,7 +916,9 @@ mod tests {
             facts.call_arguments.push(CallArguments {
                 source_event: id,
                 target: None,
-                slots: vec![ArgumentSource::Supplied; arguments.len()],
+                evaluated,
+                slots_bound: true,
+                slots: vec![ArgumentSource::Supplied; application.operands.len()],
                 supplied,
                 evaluation_complete: true,
             });
@@ -727,7 +927,6 @@ mod tests {
         facts.source_program = Some(Arc::new(source));
         facts
     }
-
     fn pattern_model(pattern: ast::PatternKind, expected: ast::ExprKind) -> SemanticFacts {
         let mut source = ast::Program {
             statements: vec![ast::Stmt {
@@ -777,6 +976,7 @@ mod tests {
             .unwrap();
         let mut facts = SemanticFacts::default();
         facts.expressions.push(ExpressionFact {
+            allocation_epoch: 0,
             source_id: Some(id),
             span: span(),
             value: Value::scalar(Ty::Bool, None, CauseId(0)),
@@ -930,6 +1130,78 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_uses_its_binary_identity_and_exact_prefix_before_binding_slots() {
+        let facts = application_model(1, 1, false, true);
+        assert!(validate(&facts).is_ok());
+        let source = facts.copy_call_events[0].source_id.unwrap();
+        assert!(matches!(
+            facts
+                .semantic_hir
+                .as_ref()
+                .unwrap()
+                .expression(source)
+                .unwrap()
+                .kind,
+            hir::ExprKind::Binary { .. }
+        ));
+        assert_eq!(
+            facts.call_arguments[0]
+                .evaluated
+                .iter()
+                .map(|step| step.role)
+                .collect::<Vec<_>>(),
+            [
+                EvaluationRole::Piped,
+                EvaluationRole::Written(0),
+                EvaluationRole::Callee
+            ]
+        );
+        for mutation in 0..4 {
+            let mut changed = facts.clone();
+            match mutation {
+                0 => changed.call_arguments[0].evaluated.swap(0, 2),
+                1 => {
+                    let foreign = changed.call_arguments[0].evaluated[1].observation;
+                    changed.call_arguments[0].supplied.insert(0, foreign);
+                }
+                2 => {
+                    changed.call_arguments[0].slots_bound = false;
+                    changed.call_arguments[0].slots.clear();
+                    changed.call_arguments[0].supplied.clear();
+                }
+                3 => changed.copy_call_events[0].callee_expression = None,
+                _ => unreachable!(),
+            }
+            assert!(validate(&changed).is_err(), "pipeline mutation {mutation}");
+        }
+        let mut early = facts;
+        let result = early.expressions.pop().unwrap();
+        early.expressions.truncate(1);
+        early.expressions.push(result);
+        early.expressions[0].value.ty = Ty::Never;
+        early.expressions[1].value.ty = Ty::Never;
+        early.invocation_expressions.truncate(1);
+        early.invocation_expressions[0].argument_of = None;
+        early.invocation_expressions.push(InvocationExpression {
+            context: context(),
+            expression: 1,
+            argument_of: None,
+        });
+        early.copy_call_events[0].callee_expression = None;
+        early.copy_call_events[0].result_expression = Some(1);
+        let preparation = &mut early.call_arguments[0];
+        preparation.evaluated.truncate(1);
+        preparation.slots_bound = false;
+        preparation.evaluation_complete = false;
+        preparation.slots.clear();
+        preparation.supplied.clear();
+        assert!(
+            validate(&early).is_ok(),
+            "an abrupt piped prefix must retain no invented callee"
+        );
+    }
+
+    #[test]
     fn one_static_call_can_have_several_dynamic_events_but_never_share_a_root() {
         let facts = model(1, 2, true);
         assert_eq!(
@@ -971,6 +1243,28 @@ mod tests {
     }
 
     #[test]
+    fn deleting_hir_and_all_dynamic_application_identities_cannot_hide_real_source() {
+        let mut facts = model(1, 2, false);
+        assert!(validate(&facts).is_ok());
+        assert!(facts.source_program.is_some());
+        facts.semantic_hir = None;
+        facts.copy_call_events.clear();
+        facts.call_arguments.clear();
+        for expression in &mut facts.expressions {
+            expression.source_id = None;
+        }
+        for row in &mut facts.invocation_expressions {
+            row.argument_of = None;
+        }
+        assert!(
+            validate(&facts)
+                .unwrap_err()
+                .2
+                .contains("no owning semantic HIR")
+        );
+    }
+
+    #[test]
     fn never_operands_keep_partial_evaluation_without_inventing_later_arguments() {
         let mut facts = model(2, 1, false);
         facts.expressions[1].value.ty = Ty::Never;
@@ -986,6 +1280,7 @@ mod tests {
         facts.invocation_expressions.remove(2);
         facts.invocation_expressions[2].expression = 2;
         facts.copy_call_events[0].result_expression = Some(2);
+        facts.call_arguments[0].evaluated.pop();
         assert!(validate(&facts).is_ok());
         let mut forged = facts.clone();
         forged.call_arguments[0].evaluation_complete = true;
@@ -994,11 +1289,100 @@ mod tests {
         facts.invocation_expressions.remove(1);
         facts.invocation_expressions[1].expression = 1;
         facts.copy_call_events[0].result_expression = Some(1);
-        facts.call_arguments.clear();
+        facts.call_arguments[0].evaluated.truncate(1);
+        facts.call_arguments[0].slots_bound = false;
+        facts.call_arguments[0].slots.clear();
+        facts.call_arguments[0].supplied.clear();
         facts.expressions[0].value.ty = Ty::Never;
         assert!(
             validate(&facts).is_ok(),
-            "a Never callee has no actual argument preparation"
+            "a Never callee retains only its reserved evaluation prefix"
+        );
+    }
+
+    #[test]
+    fn an_abrupt_operand_cannot_start_defaults_or_enter_any_callable_body() {
+        use crate::sema::copy_contract::{CopyInvocation, CopyInvocationStatus};
+        use crate::sema::copy_templates::InstanceId;
+        use crate::sema::default_uses::{DefaultUse, DefaultUseId};
+        use crate::sema::effect_identity::{ClosureInvocation, ClosureInvocationId};
+        use crate::sema::facts::ScopeId;
+        let mut facts = model(1, 1, false);
+        facts.expressions[1].value.ty = Ty::Never;
+        facts.expressions[2].value.ty = Ty::Never;
+        facts.call_arguments[0].evaluation_complete = false;
+        assert!(validate(&facts).is_ok());
+        let event = CopyCallEventId(0);
+        let mut changed = facts.clone();
+        changed.default_uses.push(DefaultUse {
+            id: DefaultUseId(0),
+            origin: DefaultOrigin::Call(event),
+            target: None,
+            parameter: 0,
+            caller: context(),
+            owner: context().owner,
+            span: span(),
+            arguments: vec![],
+            captured_arguments: vec![],
+            unresolved_captured_binders: BTreeSet::new(),
+            evaluation_complete: false,
+            status: CopyInvocationStatus::Incomplete,
+            entered: vec![],
+            result: None,
+            result_expression: None,
+            result_allocation_epoch: None,
+        });
+        assert!(
+            validate(&changed)
+                .unwrap_err()
+                .2
+                .contains("reached parameter slot")
+        );
+        let mut changed = facts.clone();
+        changed.copy_invocations.push(CopyInvocation {
+            id: InstanceId(0),
+            parent: None,
+            caller: None,
+            caller_owner: context().owner,
+            caller_activation: None,
+            entry_allocation_epoch: 0,
+            target: DefinitionId(0),
+            span: span(),
+            declaration_probe: false,
+            direct: false,
+            source_event: Some(event),
+            arguments: vec![],
+            boundaries: BTreeSet::new(),
+            result: None,
+            resource_copies: vec![],
+            status: CopyInvocationStatus::Incomplete,
+        });
+        assert!(
+            validate(&changed)
+                .unwrap_err()
+                .2
+                .contains("entered callable body")
+        );
+        let mut changed = facts;
+        changed.closure_invocations.push(ClosureInvocation {
+            id: ClosureInvocationId(0),
+            source_event: Some(event),
+            caller_activation: ScopeId(0),
+            activation: Some(ScopeId(1)),
+            closure: 0,
+            parent_named: None,
+            parent_closure: None,
+            caller_owner: context().owner,
+            site: span(),
+            probe: false,
+            budget_validation: false,
+            status: CopyInvocationStatus::Incomplete,
+        });
+        assert!(
+            validate(&changed)
+                .unwrap_err()
+                .2
+                .contains("entered callable body")
         );
     }
 

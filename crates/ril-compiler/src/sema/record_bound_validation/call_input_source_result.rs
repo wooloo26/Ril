@@ -47,9 +47,11 @@ impl Replay<'_> {
         work: &mut usize,
         depth: usize,
     ) -> Check<Option<ArgumentKey>> {
-        let ExprKind::Call { callee, arguments } = &expression.kind else {
+        let Some(application) = AstApplication::from_ast(expression) else {
             return Ok(None);
         };
+        let callee = application.callee;
+        let arguments = &application.operands;
         let Some(success) = value.result_tag else {
             return Ok(None);
         };
@@ -64,13 +66,13 @@ impl Replay<'_> {
             event.matches_source(expression) && event.owner == context.owner && event.parent == context.invocation
                 && event.result_expression.is_some_and(|index| {
                     self.facts.expressions.get(index).is_some_and(|fact| fact.source_id.is_some() && fact.source_id == expression.hir_id && fact.value == *value)
-                        && self.facts.invocation_expressions.get(index).is_some_and(|row| row.expression == index && row.context == context)
+                        && self.observations.row(index, work).is_ok_and(|row| row.context == context)
                 })
                 && event.callee_expression.is_some_and(|index| {
                     self.facts.expressions.get(index).is_some_and(|fact| fact.source_id.is_some() && fact.source_id == callee.hir_id && fact.value.sources.is_empty()
                         && matches!(fact.value.callables.as_slice(), [crate::sema::model::Callable::Builtin(name)]
                             if name.strip_prefix("Prelude::").unwrap_or(name) == identity))
-                        && self.facts.invocation_expressions.get(index).is_some_and(|row| row.expression == index && row.context == context)
+                        && self.observations.row(index, work).is_ok_and(|row| row.context == context)
                 })
         }).collect();
         if events.is_empty() {
@@ -107,15 +109,12 @@ impl Replay<'_> {
             .ok_or_else(|| "open Result Source operand is absent".to_owned())?;
         require(
             operand.source_id.is_some()
-                && operand.source_id == arguments[0].value.hir_id
+                && operand.source_id == arguments[0].expression.hir_id
                 && self
-                    .facts
-                    .invocation_expressions
-                    .get(token.expression)
-                    .is_some_and(|row| {
-                        row.expression == token.expression
-                            && row.context == context
-                            && row.argument_of == Some((event.id, 0))
+                    .observations
+                    .row(token.expression, work)
+                    .is_ok_and(|row| {
+                        row.context == context && row.argument_of == Some((event.id, 0))
                     }),
             "open Result Source operand borrowed another physical occurrence",
         )?;
@@ -138,12 +137,15 @@ impl Replay<'_> {
             "open Result Source active payload is not its actual constructor operand",
         )?;
         let active = self.original_source_key_inner(
-            &arguments[0].value,
+            arguments[0].expression,
             &operand.value,
             context,
             sites,
             work,
-            depth + 1,
+            SourceVisit {
+                depth: depth + 1,
+                observation: Some(token.expression),
+            },
         )?;
         let receiver = self.producing_receiver_key(expression, value, context, sites)?;
         let ArgumentKey::Name { name, arguments } = receiver else {
@@ -344,12 +346,13 @@ impl Replay<'_> {
             if Some(site.owner) != context.owner {
                 continue;
             }
-            let ExprKind::Call { callee, arguments } = &site.expression.kind else {
-                unreachable!()
-            };
+            let application = AstApplication::from_ast(site.expression)
+                .ok_or_else(|| "producing receiver has no original application".to_owned())?;
+            let callee = application.callee;
+            let arguments = &application.operands;
             if !arguments
                 .iter()
-                .any(|argument| receiving_contains(&argument.value, expression, &mut 4096))
+                .any(|argument| receiving_contains(argument.expression, expression, &mut 4096))
             {
                 continue;
             }
@@ -367,10 +370,9 @@ impl Replay<'_> {
                     continue;
                 };
                 if !self
-                    .facts
-                    .invocation_expressions
-                    .get(token)
-                    .is_some_and(|row| row.expression == token && row.context == context)
+                    .observations
+                    .row(token, &mut 4096)
+                    .is_ok_and(|row| row.context == context)
                 {
                     continue;
                 }
@@ -387,16 +389,20 @@ impl Replay<'_> {
                 else {
                     continue;
                 };
-                for (written, argument) in arguments.iter().enumerate() {
-                    if !receiving_contains(&argument.value, expression, &mut 4096) {
-                        continue;
-                    }
-                    let slot=match &argument.label {
-                        None=>Some(written),
+                let mut occupied = BTreeSet::new();
+                for argument in arguments {
+                    let slot=match argument.label {
+                        None=>(0..parameters.len()).find(|slot| !occupied.contains(slot)),
                         Some(label)=>fact.value.signature.as_ref().and_then(|parameters|parameters.iter().position(|parameter|
-                            matches!(&parameter.pattern.kind,ril_syntax::ast::PatternKind::Name(name) if name==label))),
+                            matches!(&parameter.pattern.kind,ril_syntax::ast::PatternKind::Name(name) if name.as_str()==label))),
                     };
                     let Some(slot) = slot else { continue };
+                    if !occupied.insert(slot) {
+                        continue;
+                    }
+                    if !receiving_contains(argument.expression, expression, &mut 4096) {
+                        continue;
+                    }
                     let Some(token) = preparation.supplied.get(&(slot as u32)) else {
                         continue;
                     };
@@ -411,7 +417,7 @@ impl Replay<'_> {
                         && let Some(key) = receiving_path(
                             self,
                             context,
-                            &argument.value,
+                            argument.expression,
                             expression,
                             key,
                             &mut 4096,
@@ -517,10 +523,12 @@ impl Replay<'_> {
         callee: &Value,
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
+        observation: Option<usize>,
     ) -> Check<Vec<Option<ArgumentKey>>> {
-        if let Ok(ArgumentKey::Callable { parameters, .. }) =
-            self.original_source_key(syntax, callee, context, sites)
-        {
+        if let Ok(ArgumentKey::Callable { parameters, .. }) = observation.map_or_else(
+            || self.original_source_key(syntax, callee, context, sites),
+            |index| self.original_observed_source_key(syntax, index, context, sites),
+        ) {
             return Ok(parameters.into_iter().map(|(_, key)| Some(key)).collect());
         }
         require(
@@ -667,9 +675,9 @@ impl Replay<'_> {
         key: &ArgumentKey,
         context: InvocationContext,
     ) -> Option<ArgumentKey> {
-        let ExprKind::Call { callee, arguments } = &root.kind else {
-            return None;
-        };
+        let application = AstApplication::from_ast(root)?;
+        let callee = application.callee;
+        let arguments = &application.operands;
         if arguments.len() != 1
             || arguments[0].label.is_some()
             || arguments[0].mode != ril_syntax::ast::ParameterMode::Read
@@ -702,24 +710,24 @@ impl Replay<'_> {
         super::super::super::checker::actual_prelude_name(self.facts, context, callee, identity)
             .ok()?;
         let matches=self.facts.copy_call_events.iter().filter(|event| {
-            if event.owner!=context.owner||event.parent!=context.invocation||event.span!=root.span {return false;}
+            if event.owner!=context.owner||event.parent!=context.invocation||!event.matches_source(root) {return false;}
             let Some(token)=event.callee_expression else {return false};
             let Some(fact)=self.facts.expressions.get(token) else {return false};
-            fact.span==callee.span&&fact.value.sources.is_empty()
+            fact.source_id.is_some()&&fact.source_id==callee.hir_id&&fact.value.sources.is_empty()
                 && matches!(fact.value.callables.as_slice(),[crate::sema::model::Callable::Builtin(name)]
                     if name.strip_prefix("Prelude::").unwrap_or(name)==identity)
-                && self.facts.invocation_expressions.get(token).is_some_and(|row|row.expression==token&&row.context==context)
+                && self.observations.row(token, &mut 4096).is_ok_and(|row|row.context==context)
                 && self.facts.call_arguments.iter().filter(|row|row.source_event==event.id
                     &&row.target.is_none()&&row.evaluation_complete&&row.slots==[crate::sema::default_uses::ArgumentSource::Supplied]
                     &&row.supplied.len()==1&&row.supplied.get(&0).is_some_and(|token|
-                        self.facts.invocation_expressions.get(token.expression).is_some_and(|row|
-                            row.expression==token.expression&&row.context==context&&row.argument_of==Some((event.id,0)))
+                        self.observations.row(token.expression, &mut 4096).is_ok_and(|row|
+                            row.context==context&&row.argument_of==Some((event.id,0)))
                         &&self.facts.expressions.get(token.expression).is_some_and(|fact| {
-                            if fact.span!=arguments[0].value.span {return false;}
+                            if fact.source_id.is_none()||fact.source_id!=arguments[0].expression.hir_id {return false;}
                             self.facts.invocation_expressions.iter().any(|row| {
                                 if row.context!=context||row.expression<=token.expression {return false;}
                                 let Some(result)=self.facts.expressions.get(row.expression) else {return false};
-                                if result.span!=root.span {return false;}
+                                if result.source_id.is_none()||result.source_id!=root.hir_id {return false;}
                                 let Some(cause)=self.facts.explanations.causes.get(result.value.cause.0 as usize) else {return false};
                                 if !cause.parents.contains(&fact.value.cause) {return false;}
                                 let tagged=match identity {"Some"=>result.value.option_tag==Some(true),
@@ -930,6 +938,20 @@ fn receiving_path(
     if std::ptr::eq(root, target) {
         return Some(key.clone());
     }
+    if let Some(application) = AstApplication::from_ast(root) {
+        if application.operands.len() != 1 {
+            return None;
+        }
+        let payload = replay.carrier_payload_key(root, key, context)?;
+        return receiving_path(
+            replay,
+            context,
+            application.operands[0].expression,
+            target,
+            &payload,
+            work,
+        );
+    }
     match (&root.kind, key) {
         (ExprKind::Tuple(items), ArgumentKey::Tuple(keys)) if items.len() == keys.len() => items
             .iter()
@@ -945,10 +967,6 @@ fn receiving_path(
             },
             _,
         ) => receiving_path(replay, context, value, target, key, work),
-        (ExprKind::Call { arguments, .. }, _) if arguments.len() == 1 => {
-            let payload = replay.carrier_payload_key(root, key, context)?;
-            receiving_path(replay, context, &arguments[0].value, target, &payload, work)
-        }
         _ => None,
     }
 }
@@ -961,13 +979,16 @@ fn receiving_contains(root: &Expr, target: &Expr, work: &mut usize) -> bool {
     if std::ptr::eq(root, target) {
         return true;
     }
+    if let Some(application) = AstApplication::from_ast(root) {
+        return application
+            .operands
+            .iter()
+            .any(|operand| receiving_contains(operand.expression, target, work));
+    }
     match &root.kind {
         ExprKind::Tuple(items) | ExprKind::Array(items) => items
             .iter()
             .any(|item| receiving_contains(item, target, work)),
-        ExprKind::Call { arguments, .. } => arguments
-            .iter()
-            .any(|argument| receiving_contains(&argument.value, target, work)),
         ExprKind::Control {
             operation: ril_syntax::ast::ControlOperation::Return,
             value: Some(value),

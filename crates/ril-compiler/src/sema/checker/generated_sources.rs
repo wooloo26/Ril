@@ -1,7 +1,12 @@
 //! A generated body is admitted through its actual canonical adapter creation,
 //! not through a synthetic file, a reserved name, or a successful later call.
 use super::*;
-use crate::sema::{effect_identity::ArgumentKey, generated_sources::GeneratedSource};
+use crate::hir::application::AstApplication;
+use crate::sema::record_bound_validation::OriginalOperandSources;
+use crate::sema::{
+    effect_identity::{ArgumentKey, InvocationContext},
+    generated_sources::GeneratedSource,
+};
 #[path = "../generated_source_syntax.rs"]
 mod syntax;
 pub(super) use syntax::iterator_lambda as iterator_syntax;
@@ -9,6 +14,15 @@ pub(super) use syntax::iterator_lambda as iterator_syntax;
 type Failure = (Span, Option<CauseId>, String);
 fn require(condition: bool, message: &str) -> Result<(), String> {
     condition.then_some(()).ok_or_else(|| message.into())
+}
+
+fn observation_context(facts: &SemanticFacts, expression: usize) -> Option<InvocationContext> {
+    let mut matching = facts
+        .invocation_expressions
+        .iter()
+        .filter(|row| row.expression == expression);
+    let context = matching.next()?.context;
+    matching.next().is_none().then_some(context)
 }
 
 /// A read-only captured binding may pass through later branch joins. Those
@@ -200,6 +214,7 @@ fn map_result(
     source: &GeneratedSource,
     actual: &Expr,
     input: &ArgumentKey,
+    operands: &OriginalOperandSources<'_>,
 ) -> Result<ArgumentKey, String> {
     if let ExprKind::Lambda {
         parameters,
@@ -231,11 +246,7 @@ fn map_result(
             "generated map result requires its complete original return source".into()
         });
     }
-    let callback = crate::sema::record_bound_validation::original_operand_source_key(
-        facts,
-        source.origin_event,
-        1,
-    )?;
+    let callback = operands.key(source.origin_event, 1)?;
     let ArgumentKey::Callable {
         parameters, result, ..
     } = callback
@@ -305,6 +316,7 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
         facts.generated_sources.len() == facts.iter_steps.len(),
         "generated iterator source receipt was deleted or duplicated",
     )?;
+    let operands = OriginalOperandSources::new(facts)?;
     let coordinates = crate::sema::record_bound_validation::ordinary_source_coordinates(facts)?;
     let ordinary_lambdas =
         crate::sema::record_bound_validation::ordinary_lambda_coordinates(facts)?;
@@ -325,15 +337,16 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
         let matches: Vec<_> = coordinates
             .iter()
             .filter(|(owner, expr)| {
-                Some(*owner) == source.origin_context.owner && expr.span == event.span
+                Some(*owner) == source.origin_context.owner && event.matches_source(expr)
             })
             .collect();
         let [(_, origin)] = matches.as_slice() else {
             return Err("generated source creation has no unique genuine adapter Call".into());
         };
-        let ExprKind::Call { callee, arguments } = &origin.kind else {
-            return Err("generated source creation is not a Call".into());
-        };
+        let application = AstApplication::from_ast(origin)
+            .ok_or("generated source creation is not an application")?;
+        let callee = application.callee;
+        let arguments = &application.operands;
         let actual_name = match &callee.kind {
             ExprKind::Name(name) => name.clone(),
             ExprKind::Path(path) => path.join("::"),
@@ -356,14 +369,10 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
             .get(callee_index)
             .ok_or("generated source callee token is outside its arena")?;
         require(
-            callee_value.span == callee.span
+            callee_value.source_id.is_some()
+                && callee_value.source_id == callee.hir_id
                 && callee_value.value.callables == [Callable::Builtin(actual_name.clone())]
-                && facts
-                    .invocation_expressions
-                    .get(callee_index)
-                    .is_some_and(|row| {
-                        row.expression == callee_index && row.context == source.origin_context
-                    }),
+                && observation_context(facts, callee_index) == Some(source.origin_context),
             "generated source callee borrowed another occurrence, owner or target",
         )?;
         let count = if source.adapter == iter::AdapterKind::Indexed {
@@ -377,21 +386,21 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
         )?;
         let mut written = BTreeMap::new();
         for argument in arguments {
-            let slot = if let Some(label) = &argument.label {
+            let slot = if let Some(label) = argument.label {
                 callee_value
                     .value
                     .signature
                     .as_ref()
                     .and_then(|parameters| {
                         parameters.iter().position(|parameter|
-                        matches!(&parameter.pattern.kind, PatternKind::Name(name) if name == label))
+                        matches!(&parameter.pattern.kind, PatternKind::Name(name) if name.as_str() == label))
                     })
             } else {
                 (0..count).find(|slot| !written.contains_key(slot))
             }
             .ok_or("generated source argument has no actual label/position")?;
             require(
-                slot < count && written.insert(slot, &argument.value).is_none(),
+                slot < count && written.insert(slot, argument.expression).is_none(),
                 "generated source supplies one capture twice",
             )?;
         }
@@ -487,8 +496,7 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
             key(facts, &result_arguments[0])? == actual_state,
             "generated state and result successor source differ",
         )?;
-        let input =
-            crate::sema::record_bound_validation::original_operand_source_key(facts, event.id, 0)?;
+        let input = operands.key(event.id, 0)?;
         let (expected_state, expected_item) = if source.adapter == iter::AdapterKind::Indexed {
             let ArgumentKey::Array { element, .. } = input else {
                 return Err("generated indexed adapter requires its original array source".into());
@@ -514,7 +522,10 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
                     item,
                 ),
                 iter::AdapterKind::Filter => (state, item),
-                iter::AdapterKind::Map => (state, map_result(facts, source, written[&1], &item)?),
+                iter::AdapterKind::Map => (
+                    state,
+                    map_result(facts, source, written[&1], &item, &operands)?,
+                ),
                 iter::AdapterKind::Indexed => unreachable!(),
             }
         };
@@ -563,17 +574,14 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
                 .get(token.expression)
                 .ok_or("generated capture operand is absent")?;
             require(
-                callee_index < token.expression
-                    && original.span == written[&slot].span
+                original.source_id.is_some()
+                    && original.source_id == written[&slot].hir_id
                     && token.allocation_epoch <= facts.allocation_history.len()
-                    && facts
-                        .invocation_expressions
-                        .get(token.expression)
-                        .is_some_and(|row| {
-                            row.expression == token.expression
-                                && row.context == source.origin_context
-                                && row.argument_of == Some((event.id, slot as u32))
-                        }),
+                    && observation_context(facts, token.expression) == Some(source.origin_context)
+                    && facts.invocation_expressions.iter().any(|row| {
+                        row.expression == token.expression
+                            && row.argument_of == Some((event.id, slot as u32))
+                    }),
                 "generated capture operand belongs to another event, context or slot",
             )?;
             let binding = facts
@@ -608,15 +616,11 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
             .get(result_index)
             .ok_or("generated source creation result is absent")?;
         require(
-            result.span == origin.span
+            result.source_id.is_some()
+                && result.source_id == origin.hir_id
                 && result.value.ty != Ty::Never
                 && result.value.cause == step.cause
-                && facts
-                    .invocation_expressions
-                    .get(result_index)
-                    .is_some_and(|row| {
-                        row.expression == result_index && row.context == source.origin_context
-                    }),
+                && observation_context(facts, result_index) == Some(source.origin_context),
             "generated source receipt is not the actual normal creation result",
         )?;
         let expected_callable = TypeExpr {

@@ -90,7 +90,9 @@ impl Checker {
                 };
                 *element
             }
-            ExprKind::Call { .. } => self.original_called_result_source(value, syntax, frame)?,
+            _ if crate::hir::application::AstApplication::from_ast(syntax).is_some() => {
+                self.original_called_result_source(value, syntax, frame)?
+            }
 
             _ => return None,
         };

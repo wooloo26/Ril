@@ -351,8 +351,27 @@ pub struct GenericBinder {
 #[derive(Debug, Clone)]
 pub struct ExpressionFact {
     pub source_id: Option<ril_compiler_core::ids::ExprId>,
+    /// The node identities in `value` belong to this immutable observation epoch.
+    pub allocation_epoch: usize,
     pub span: Span,
     pub value: model::Value,
+}
+impl ExpressionFact {
+    /// Obtain a later view without rewriting this historical observation.
+    pub fn value_at(
+        &self,
+        epoch: usize,
+        history: &[(facts::NodeId, facts::NodeId)],
+    ) -> Option<model::Value> {
+        if self.allocation_epoch > epoch || epoch > history.len() {
+            return None;
+        }
+        let mut value = self.value.clone();
+        for &(recent, older) in &history[self.allocation_epoch..epoch] {
+            value.remap_origins(recent, older);
+        }
+        Some(value)
+    }
 }
 impl SemanticFacts {
     pub fn expressions_at(&self, span: Span) -> impl Iterator<Item = &ExpressionFact> {

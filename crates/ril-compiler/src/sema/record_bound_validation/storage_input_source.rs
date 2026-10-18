@@ -29,9 +29,9 @@ impl Replay<'_> {
             "Set::insert" => (2, &[(1, Part::Element)]),
             _ => return Ok(()),
         };
-        let ExprKind::Call { arguments, .. } = &syntax.kind else {
-            return Err("storage intrinsic is missing its original Call AST".into());
-        };
+        let application = AstApplication::from_ast(syntax)
+            .ok_or_else(|| "storage intrinsic is missing its original application".to_owned())?;
+        let arguments = &application.operands;
         require(
             event.matches_source(syntax)
                 && event.owner == context.owner
@@ -70,20 +70,18 @@ impl Replay<'_> {
             require(
                 supplied.allocation_epoch <= self.facts.allocation_history.len()
                     && value.source_id.is_some()
-                    && value.source_id == arguments[slot].value.hir_id
+                    && value.source_id == arguments[slot].expression.hir_id
                     && self
-                        .facts
-                        .invocation_expressions
-                        .get(supplied.expression)
-                        .is_some_and(|row| {
-                            row.expression == supplied.expression
-                                && row.context == context
+                        .observations
+                        .row(supplied.expression, &mut 4096)
+                        .is_ok_and(|row| {
+                            row.context == context
                                 && row.argument_of == Some((event.id, slot as u32))
                         }),
                 "storage intrinsic operand borrowed another occurrence, epoch or context",
             )?;
             self.input_operand_interval(event, slot, supplied.expression, context, sites)?;
-            self.original_source_key(&arguments[slot].value, &value.value, context, sites)
+            self.original_source_key(arguments[slot].expression, &value.value, context, sites)
         };
         let receiver = original(0)?;
         require(
@@ -114,7 +112,7 @@ impl Replay<'_> {
                     "storage callable bounds require their original frozen lexical proof",
                 )?;
             }
-            let fresh = source_reception::construction(&arguments[slot].value, &mut 4096)
+            let fresh = source_reception::construction(arguments[slot].expression, &mut 4096)
                 .ok_or_else(|| {
                     "storage intrinsic original construction exceeds its budget".to_owned()
                 })?;

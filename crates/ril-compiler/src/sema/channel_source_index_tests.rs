@@ -3,6 +3,52 @@ use super::*;
 use crate::Session;
 use crate::sema::copy_templates::InstanceId;
 use ril_compiler_core::ids::DefinitionId;
+use ril_syntax::ast::ExprKind;
+
+#[test]
+fn pipeline_source_bounds_require_the_actual_static_application_identity() {
+    let source = ril_test::case_source(
+        "tests/regressions/evaluation-identity.ril::pipeline-left-before-written-arguments",
+    );
+    let original = facts(source);
+    let event = original
+        .copy_call_events
+        .iter()
+        .find(|event| {
+            event
+                .source_id
+                .and_then(|id| original.semantic_hir.as_ref()?.application(id).ok()?)
+                .is_some_and(|application| {
+                    application.kind == crate::hir::application::ApplicationKind::Pipeline
+                })
+        })
+        .unwrap();
+    let (expression, _) = Index::new(&original)
+        .application_syntax(event.id, &mut 65_536)
+        .unwrap();
+    assert_eq!(expression.hir_id, event.source_id);
+    assert!(matches!(expression.kind, ExprKind::Binary { .. }));
+
+    let mut erased = original.clone();
+    erased.copy_call_events[event.id.0 as usize].source_id = None;
+    assert!(
+        Index::new(&erased)
+            .application_syntax(event.id, &mut 65_536)
+            .is_err()
+    );
+    let foreign = original
+        .copy_call_events
+        .iter()
+        .find(|other| other.owner == event.owner && other.source_id != event.source_id)
+        .unwrap();
+    let mut substituted = original.clone();
+    substituted.copy_call_events[event.id.0 as usize].source_id = foreign.source_id;
+    assert!(
+        Index::new(&substituted)
+            .application_syntax(event.id, &mut 65_536)
+            .is_err()
+    );
+}
 
 fn facts(source: &str) -> SemanticFacts {
     Session::new(source.as_bytes().to_vec())

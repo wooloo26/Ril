@@ -222,7 +222,7 @@ impl Checker {
                     .and_then(|(value, syntax)| {
                         self.original_source_receiving_key(value, syntax, frame)
                     })
-                    .and_then(|key| project_key(&key, std::slice::from_ref(slot)).cloned())
+                    .and_then(|key| self.storage_projection_source_key(&key, slot))
             }
         };
         let context = self.invocation_context(frame.callable_owner);
@@ -276,6 +276,58 @@ impl Checker {
                 false
             }
         }
+    }
+
+    /// A structural bound guarantees the Source of a named member, not a
+    /// complete Source for its open parent. Select the declared member before
+    /// substituting its leaves; unrelated row members remain unresolved.
+    fn storage_projection_source_key(
+        &self,
+        source: &ArgumentKey,
+        slot: &Slot,
+    ) -> Option<ArgumentKey> {
+        let (
+            ArgumentKey::Binder {
+                identity,
+                sort: crate::sema::effect_identity::StaticBinderSort::Type,
+            },
+            Slot::Field(label),
+        ) = (source, slot)
+        else {
+            return project_key(source, std::slice::from_ref(slot)).cloned();
+        };
+        let binder = self.generic_binders.get(identity)?;
+        let declaration = self
+            .functions
+            .iter()
+            .find(|function| function.definition == binder.definition)?;
+        let parameter = declaration.syntax.generics.get(binder.index as usize)?;
+        if !crate::sema::record_bounds::certifies_type_sort(
+            identity,
+            binder,
+            parameter,
+            &self.record_bounds,
+        ) {
+            return None;
+        }
+        let bound = self
+            .record_bounds
+            .get(self.record_bounds_by_binder.get(identity)?.0 as usize)?;
+        if bound.binder != *identity
+            || bound.definition != binder.definition
+            || bound.generic_index != binder.index
+        {
+            return None;
+        }
+        let fields: Vec<_> = bound
+            .fields
+            .iter()
+            .filter(|field| field.label == *label)
+            .collect();
+        let [field] = fields.as_slice() else {
+            return None;
+        };
+        self.selected_bound_key(&field.key)
     }
 
     pub(super) fn record_aborted_storage_write(

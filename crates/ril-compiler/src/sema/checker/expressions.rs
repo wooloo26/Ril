@@ -124,6 +124,7 @@ impl Checker {
             });
         self.record_copy_references(&value, expr.span, frame);
         self.expression_facts.push(super::super::ExpressionFact {
+            allocation_epoch: self.recency_moves.len(),
             source_id: expr.hir_id,
             span: expr.span,
             value: value.clone(),
@@ -131,15 +132,12 @@ impl Checker {
         self.record_builtin_source_observation(expr, &value, observation, frame);
         if let Some(event) = source_call_event {
             let context = self.invocation_context(frame.callable_owner);
-            let callee_context = self.copy_call_events[event.0 as usize]
-                .callee_expression
-                .and_then(|index| self.invocation_expressions.get(index))
-                .map(|row| row.context);
             let call = &mut self.copy_call_events[event.0 as usize];
             if call.id == event
                 && call.owner == context.owner
                 && call.parent == context.invocation
-                && callee_context == Some(context)
+                && call.source_id.is_some()
+                && call.source_id == expr.hir_id
                 && call.result_expression.is_none()
             {
                 call.result_expression = Some(observation);
@@ -1186,7 +1184,15 @@ impl Checker {
                 right,
             } => {
                 if operator == "!>" || operator == "|>" {
-                    return self.pipeline(operator, left, right, expr, frame);
+                    if let ExprKind::Derive { base: None, recipe } = &right.kind {
+                        let value = self.expression(left, frame);
+                        if value.ty == Ty::Never {
+                            self.preview_expression(recipe, frame);
+                            return value;
+                        }
+                        return self.derive_value(value, recipe, expr.span, frame);
+                    }
+                    return self.application_expression(expr, expected, frame, source_call_event);
                 }
                 let tag_test = matches!(operator.as_str(), "==" | "!=")
                     && (narrowing::is_none(left, frame) || narrowing::is_none(right, frame));
@@ -1646,87 +1652,8 @@ impl Checker {
                 }
                 value
             }
-            ExprKind::Call { callee, arguments } => {
-                let nullary_none = match &callee.kind {
-                    ExprKind::Name(name) => {
-                        name == "Prelude::None" || (name == "None" && !frame.env.contains_key(name))
-                    }
-                    ExprKind::Path(path) => path == &["Prelude".to_owned(), "None".to_owned()],
-                    _ => false,
-                };
-                let callee_syntax = callee.as_ref();
-                let reference_start = self.copy_references.len();
-                let explicit_window = self.begin_explicit_named_callee(callee_syntax, frame);
-                let (callee, callee_observation) = self.expression_observed(callee_syntax, frame);
-                let explicit = self.end_explicit_named_callee(explicit_window, callee_observation);
-                let call_event = self.record_copy_call_event(
-                    callee_syntax,
-                    &callee,
-                    expr,
-                    reference_start,
-                    callee_observation,
-                    frame,
-                );
-                *source_call_event = Some(call_event);
-                self.seal_explicit_named_callee(explicit, call_event, frame);
-                if callee.ty == Ty::Never {
-                    for argument in arguments {
-                        self.preview_expression(&argument.value, frame);
-                    }
-                    return callee;
-                }
-                let mut callee = EvaluatedValue::new(callee, self.recency_moves.len());
-                let scope_arguments = self.immediate_scope_arguments.clone();
-                if matches!(callee.current(&self.recency_moves).callables.as_slice(), [Callable::Builtin(name)] if name == "Concurrent::scope")
-                {
-                    for argument in arguments {
-                        if matches!(argument.value.kind, ExprKind::Lambda { .. }) {
-                            let span = argument.value.span;
-                            self.immediate_scope_arguments.insert((
-                                span.file.0,
-                                span.start,
-                                span.end,
-                            ));
-                        }
-                    }
-                }
-                let args = self.arguments(
-                    super::call_input_source::Callee {
-                        value: &callee.current(&self.recency_moves),
-                        syntax: callee_syntax,
-                    },
-                    arguments,
-                    expr.span,
-                    call_event,
-                    frame,
-                    expected,
-                );
-                let callee = callee.into_current(&self.recency_moves);
-                self.immediate_scope_arguments = scope_arguments;
-                self.window_future_expressions(&[], frame);
-                if nullary_none {
-                    self.error(
-                        "E0353",
-                        expr.span,
-                        "the None tag is data and cannot be called",
-                        [callee.cause],
-                    );
-                    return self.unit(expr.span);
-                }
-                let asserted = !callee.callables.is_empty() && callee.callables.iter().all(|target|
-                    matches!(target, Callable::Builtin(name) if matches!(name.as_str(), "assert" | "Prelude::assert")));
-                let previous_call = frame.copy_call_event.replace(call_event);
-                let assertion_condition = asserted
-                    .then(|| args.first().map(|(_, value, _)| value.clone()))
-                    .flatten();
-                let output = self.invoke(&callee, args, expr.span, frame);
-                frame.copy_call_event = previous_call;
-                if output.ty != Ty::Never
-                    && let Some(condition) = assertion_condition
-                {
-                    self.inspect_condition_value(&condition, true, expr.span);
-                }
-                output
+            ExprKind::Call { .. } => {
+                self.application_expression(expr, expected, frame, source_call_event)
             }
             ExprKind::If {
                 condition,
@@ -2593,59 +2520,20 @@ impl Checker {
             self.cause(CauseKind::Source, span, "unresolved name", []),
         )
     }
-    fn pipeline(
+    fn application_expression(
         &mut self,
-        operator: &str,
-        left: &Expr,
-        right: &Expr,
         syntax: &Expr,
+        expected: Option<&Ty>,
         frame: &mut Frame,
+        source_call_event: &mut Option<super::super::copy_contract::CopyCallEventId>,
     ) -> Value {
-        let span = syntax.span;
-        let value = self.expression(left, frame);
-        if let ExprKind::Derive { base: None, recipe } = &right.kind {
-            return self.derive_value(value, recipe, span, frame);
-        }
-        let mut args = vec![(
-            if operator == "!>" {
-                ParameterMode::Mut
-            } else {
-                ParameterMode::Read
-            },
-            EvaluatedValue::new(value, self.recency_moves.len()),
-            left.span,
-        )];
-        let callee = if let ExprKind::Call { callee, arguments } = &right.kind {
-            for arg in arguments {
-                if arg.mode != ParameterMode::Read
-                    && !matches!(
-                        arg.value.kind,
-                        ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. }
-                    )
-                {
-                    self.error(
-                        "E0410",
-                        arg.span,
-                        "mutable pipeline argument requires an addressable target",
-                        [],
-                    );
-                }
-                let value = self.expression(&arg.value, frame);
-                args.push((
-                    arg.mode,
-                    EvaluatedValue::new(value, self.recency_moves.len()),
-                    arg.span,
-                ));
-            }
-            self.expression(callee, frame)
-        } else {
-            self.expression(right, frame)
+        let Some(application) = crate::hir::application::AstApplication::from_ast(syntax) else {
+            self.unsupported(syntax.span, "application has no bounded source structure");
+            return self.unit(syntax.span);
         };
-        let args = args
-            .into_iter()
-            .map(|(mode, value, span)| (mode, value.into_current(&self.recency_moves), span))
-            .collect();
-        self.invoke(&callee, args, span, frame)
+        let (value, event) = self.evaluate_application(&application, expected, frame);
+        *source_call_event = Some(event);
+        value
     }
     fn loop_body(
         &mut self,

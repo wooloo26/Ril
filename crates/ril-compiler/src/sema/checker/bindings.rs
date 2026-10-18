@@ -754,27 +754,9 @@ impl Checker {
         if !matches!(target.kind, ExprKind::Index { .. }) {
             self.transport_value_since(&mut value, value_recency);
         }
-        if !self.check_storage_write_source(
-            super::storage_sources::StoreReception {
-                target,
-                operator,
-                rhs_syntax,
-                rhs,
-                destination: StorageDestination::Projection {
-                    receiver,
-                    selector,
-                    slot: slot.clone(),
-                },
-                receiver: Some(&base),
-            },
-            &mut value,
-            frame,
-        ) {
-            return None;
-        }
-        if let Some(index) = &index_value {
-            self.constrain_collection_insert(&base, &value, Some(index), target.span);
-        }
+        // Known path/member restrictions are independent of Source completeness.
+        // A missing source proof may prevent a store, but cannot hide an
+        // already proven readonly-path or immutable-member error.
         if base.permission != Permission::Write {
             let container = matches!(target.kind, ExprKind::Index { .. })
                 || base.sources.iter().any(|id| {
@@ -810,6 +792,27 @@ impl Checker {
                 "record slot is not mutable",
                 [base.cause],
             );
+        }
+        if !self.check_storage_write_source(
+            super::storage_sources::StoreReception {
+                target,
+                operator,
+                rhs_syntax,
+                rhs,
+                destination: StorageDestination::Projection {
+                    receiver,
+                    selector,
+                    slot: slot.clone(),
+                },
+                receiver: Some(&base),
+            },
+            &mut value,
+            frame,
+        ) {
+            return None;
+        }
+        if let Some(index) = &index_value {
+            self.constrain_collection_insert(&base, &value, Some(index), target.span);
         }
         if matches!(slot, Slot::Index(_) | Slot::AnyIndex) {
             self.constrain_collection_insert(&base, &value, None, target.span);

@@ -1,14 +1,18 @@
 //! Readonly lexical syntax and actual-ID row indexes for channel evidence.
 //! Instance callee, argument, borrowing and custody proofs remain separate.
 use super::{Bounds, Check, Node, children};
+use crate::hir::application::AstApplication;
 use crate::sema::{
     SemanticFacts,
     copy_contract::{CopyCallEvent, CopyCallEventId},
     copy_templates::InstanceId,
     effect_identity::InvocationCall,
 };
-use ril_compiler_core::{ids::CallableOwner, source::Span};
-use ril_syntax::ast::{Expr, ExprKind, Function, PatternKind, StmtKind};
+use ril_compiler_core::{
+    ids::{CallableOwner, ExprId},
+    source::Span,
+};
+use ril_syntax::ast::{Expr, Function, PatternKind, StmtKind};
 use std::collections::{BTreeMap, btree_map::Entry};
 
 #[derive(Clone, Copy)]
@@ -51,9 +55,15 @@ struct AtSpan<'a> {
     call: Match<'a>,
 }
 
+#[derive(Default)]
+struct OwnerSyntax<'a> {
+    locations: BTreeMap<SpanKey, AtSpan<'a>>,
+    applications: BTreeMap<ExprId, Match<'a>>,
+}
+
 pub(super) struct Index<'a> {
     facts: &'a SemanticFacts,
-    owners: BTreeMap<CallableOwner, BTreeMap<SpanKey, AtSpan<'a>>>,
+    owners: BTreeMap<CallableOwner, OwnerSyntax<'a>>,
     caller_rows: Option<BTreeMap<InstanceId, Vec<&'a InvocationCall>>>,
 }
 
@@ -94,6 +104,7 @@ impl<'a> Index<'a> {
         };
         let key = (span.file.0, span.start, span.end);
         let found = source
+            .locations
             .get(&key)
             .map(|at| match role {
                 Role::Expression => at.expression,
@@ -101,6 +112,36 @@ impl<'a> Index<'a> {
             })
             .unwrap_or_default();
         found.get()
+    }
+
+    /// Application bounds are reconstructed under their actual lexical owner
+    /// and selected by static HIR identity, never recovered from a source span.
+    pub(super) fn application_syntax(
+        &mut self,
+        id: CopyCallEventId,
+        work: &mut usize,
+    ) -> Check<Found<'a>> {
+        let event = self.application(id, work)?;
+        let owner = event
+            .owner
+            .ok_or("channel application has no lexical owner")?;
+        let source_id = event
+            .source_id
+            .ok_or("channel application has no HIR identity")?;
+        let source = match self.owners.entry(owner) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(Self::build(self.facts, owner, work)?),
+        };
+        let found = source
+            .applications
+            .get(&source_id)
+            .copied()
+            .unwrap_or_default()
+            .get()?;
+        if found.0.hir_id != Some(source_id) || found.0.span != event.span {
+            return Err("channel application disagrees with its original HIR source".into());
+        }
+        Ok(found)
     }
 
     /// An application remains identified by its physical arena position.
@@ -149,7 +190,7 @@ impl<'a> Index<'a> {
         facts: &'a SemanticFacts,
         owner: CallableOwner,
         work: &mut usize,
-    ) -> Check<BTreeMap<SpanKey, AtSpan<'a>>> {
+    ) -> Check<OwnerSyntax<'a>> {
         let mut stack = Vec::new();
         match owner {
             CallableOwner::Global => {
@@ -198,18 +239,26 @@ impl<'a> Index<'a> {
                 stack.push(Node::Expr(&source.body, Bounds::default()));
             }
         }
-        let mut output = BTreeMap::<SpanKey, AtSpan<'a>>::new();
+        let mut output = OwnerSyntax::default();
         while let Some(node) = stack.pop() {
             charge(work)?;
             match node {
                 Node::Expr(expression, bounds) => {
                     let span = expression.span;
                     let at = output
+                        .locations
                         .entry((span.file.0, span.start, span.end))
                         .or_default();
                     at.expression.add((expression, bounds));
-                    if matches!(expression.kind, ExprKind::Call { .. }) {
+                    if AstApplication::from_ast(expression).is_some() {
                         at.call.add((expression, bounds));
+                        if let Some(id) = expression.hir_id {
+                            output
+                                .applications
+                                .entry(id)
+                                .or_default()
+                                .add((expression, bounds));
+                        }
                     }
                     children(expression, bounds, &mut stack);
                 }

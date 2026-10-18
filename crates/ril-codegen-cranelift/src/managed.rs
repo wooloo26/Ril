@@ -1593,15 +1593,6 @@ impl Emitter<'_, '_> {
         arguments: &[core::Argument],
         span: ril_compiler_core::source::Span,
     ) -> Result<Value, BackendError> {
-        self.call_with_prefix(callee, arguments, span, &[])
-    }
-    fn call_with_prefix(
-        &mut self,
-        callee: &Expr,
-        arguments: &[core::Argument],
-        span: ril_compiler_core::source::Span,
-        prefix: &[Value],
-    ) -> Result<Value, BackendError> {
         let named = if let ExprKind::Name(name) = &callee.kind {
             Some(name.as_str())
         } else {
@@ -1640,7 +1631,7 @@ impl Emitter<'_, '_> {
         if !self.reachable {
             return Ok(callable.expect("terminated callable expression"));
         }
-        let mut values: Vec<_> = prefix.iter().map(|value| (None, *value)).collect();
+        let mut values = Vec::with_capacity(arguments.len());
         for argument in arguments {
             let value = self.expr(&argument.value)?;
             if !self.reachable {
@@ -2001,23 +1992,8 @@ impl Emitter<'_, '_> {
                 left,
                 right,
             } if operator == "??" => self.coalesce(left, right),
-            ExprKind::Binary {
-                operator,
-                left,
-                right,
-            } if operator == "|>" || operator == "!>" => {
-                let left = self.expr(left)?;
-                if !self.reachable {
-                    return Ok(left);
-                }
-                if let ExprKind::Call {
-                    callee, arguments, ..
-                } = &right.kind
-                {
-                    self.call_with_prefix(callee, arguments, expr.span, &[left])
-                } else {
-                    self.call_with_prefix(right, &[], expr.span, &[left])
-                }
+            ExprKind::Binary { operator, .. } if operator == "|>" || operator == "!>" => {
+                Err(unsupported("unlowered pipeline application"))
             }
             ExprKind::Binary {
                 operator,

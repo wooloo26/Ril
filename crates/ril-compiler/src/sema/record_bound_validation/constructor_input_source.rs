@@ -129,13 +129,10 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
     ) -> Check {
-        let ExprKind::Call {
-            callee: callee_syntax,
-            arguments,
-        } = &syntax.kind
-        else {
-            return Err("constructor source event is not a genuine Call".into());
-        };
+        let application = AstApplication::from_ast(syntax)
+            .ok_or_else(|| "constructor source has no genuine application".to_owned())?;
+        let callee_syntax = application.callee;
+        let arguments = &application.operands;
         for callable in &callee.callables {
             let Callable::Constructor(name) = callable else {
                 continue;
@@ -185,10 +182,10 @@ impl Replay<'_> {
             )?;
             let mut written = BTreeMap::new();
             for argument in arguments {
-                let slot = if let Some(label) = &argument.label {
+                let slot = if let Some(label) = argument.label {
                     callee.signature.as_ref().and_then(|parameters| {
                         parameters.iter().position(|parameter|
-                        matches!(&parameter.pattern.kind, PatternKind::Name(name) if name == label))
+                        matches!(&parameter.pattern.kind, PatternKind::Name(name) if name.as_str() == label))
                     })
                 } else {
                     (0..expected.len()).find(|slot| !written.contains_key(slot))
@@ -197,7 +194,7 @@ impl Replay<'_> {
                     "constructor source argument has no actual label/position slot".to_owned()
                 })?;
                 require(
-                    written.insert(slot, &argument.value).is_none(),
+                    written.insert(slot, argument.expression).is_none(),
                     "constructor source supplies one actual slot twice",
                 )?;
             }
@@ -224,11 +221,9 @@ impl Replay<'_> {
                         "constructor source operand token is outside its arena".to_owned()
                     })?;
                 require(
-                    actual.span == actual_syntax.span
+                    actual.source_id.is_some()
+                        && actual.source_id == actual_syntax.hir_id
                         && token.allocation_epoch <= self.facts.allocation_history.len()
-                        && event
-                            .callee_expression
-                            .is_some_and(|callee| callee < token.expression)
                         && self
                             .facts
                             .invocation_expressions

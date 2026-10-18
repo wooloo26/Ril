@@ -215,20 +215,19 @@ impl Replay<'_> {
         let matching: Vec<_> = tokens
             .iter()
             .filter_map(|token| {
-                if token.span != event.span {
+                if !event.matches_source(token) {
                     return None;
                 }
-                let ExprKind::Call { callee, arguments } = &token.kind else {
-                    return None;
-                };
-                (callee.span == observed.span).then_some((callee, arguments))
+                let application = AstApplication::from_ast(token)?;
+                (observed.source_id.is_some() && observed.source_id == application.callee.hir_id)
+                    .then_some(application)
             })
             .collect();
         require(
             matching.len() == 1,
             "scoped caller edge has no unique real Call/callee source token",
         )?;
-        let (_, arguments) = matching[0];
+        let arguments = &matching[0].operands;
         require(
             arguments.len() == self.function(child.target)?.syntax.parameters.len()
                 && arguments.len() == child.arguments.len(),

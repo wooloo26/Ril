@@ -12,6 +12,7 @@ use ril_compiler_core::{
 };
 use ril_syntax::ast::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod applications;
 pub(crate) mod arrays;
 mod bindings;
 mod budget;
@@ -1302,9 +1303,6 @@ impl Checker {
         if let Some((recent, older)) = remap {
             self.recency_moves.push((recent, older));
             self.remap_concurrent_identity(recent, older);
-            for fact in &mut self.expression_facts {
-                copy::remap_value_origins(&mut fact.value, recent, older);
-            }
             for invocation in &mut self.invocations {
                 copy::remap_summary(invocation, recent, older);
             }
@@ -1661,6 +1659,7 @@ impl Checker {
                         );
                         self.record_copy_references(&value, binding.value.span, frame);
                         self.expression_facts.push(super::ExpressionFact {
+                            allocation_epoch: self.recency_moves.len(),
                             source_id: binding.value.hir_id,
                             span: binding.value.span,
                             value: value.clone(),

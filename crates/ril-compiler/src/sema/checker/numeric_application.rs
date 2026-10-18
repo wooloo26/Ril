@@ -3,7 +3,17 @@
 use super::super::copy_contract::CopyCallEventId;
 use super::super::numeric_selection::{ApplicationPhase, NumericPreparedApplication};
 use super::*;
+use crate::hir::application::Operand;
 use crate::numeric_literals::{ExactLiteral, NumberType, ParseLimit};
+
+pub(super) struct NumericInputContext<'a> {
+    pub event: CopyCallEventId,
+    pub expected_result: Option<&'a Ty>,
+    pub span: Span,
+    /// Present only when every operand was already evaluated. Never consult
+    /// the current lexical binding values to reinterpret these earlier inputs.
+    pub frozen: Option<&'a [(ParameterMode, Value, Span)]>,
+}
 
 pub(super) fn selected_type(ty: NumberType) -> Ty {
     let name = match ty {
@@ -27,12 +37,16 @@ impl Checker {
     pub(super) fn numeric_argument_contexts(
         &mut self,
         callee: &Value,
-        arguments: &[Argument],
-        expected_result: Option<&Ty>,
-        source_event: CopyCallEventId,
+        arguments: &[Operand<'_, &Expr>],
+        context: NumericInputContext<'_>,
         frame: &Frame,
-        span: Span,
     ) -> Vec<Option<Ty>> {
+        let NumericInputContext {
+            event: source_event,
+            expected_result,
+            span,
+            frozen,
+        } = context;
         if arguments.len() == 1
             && let [Callable::Builtin(name)] = callee.callables.as_slice()
         {
@@ -52,7 +66,7 @@ impl Checker {
             };
             let mut occupied = BTreeSet::new();
             return arguments.iter().map(|argument| {
-                let slot=if let Some(label)=&argument.label {
+                let slot=if let Some(label)=argument.label {
                     callee.signature.as_ref()?.iter().position(|parameter|matches!(&parameter.pattern.kind,PatternKind::Name(name) if name==label))
                 } else {(0..parameters.len()).find(|slot|!occupied.contains(slot))}?;
                 occupied.insert(slot);
@@ -159,18 +173,25 @@ impl Checker {
         let mut occupied = BTreeSet::new();
         let interface = callee.signature.as_ref().unwrap_or(&info.syntax.parameters);
         let slots:Vec<_>=arguments.iter().map(|argument|{
-            let slot=if let Some(label)=&argument.label {
+            let slot=if let Some(label)=argument.label {
                     interface.iter().position(|parameter|matches!(&parameter.pattern.kind,PatternKind::Name(name) if name==label))
             } else { (0..templates.len()).find(|slot|!occupied.contains(slot)) };
             let slot=slot?;
             occupied.insert(slot);
             Some(slot)
         }).collect();
-        for (argument, slot) in arguments.iter().zip(&slots) {
+        for (index, (argument, slot)) in arguments.iter().zip(&slots).enumerate() {
             let Some(template) = slot.and_then(|slot| templates[slot].as_ref()) else {
                 continue;
             };
-            let Some(actual) = self.rigid_numeric_argument(&argument.value, frame) else {
+            let actual = match frozen {
+                Some(values) => values.get(index).and_then(|(_, value, _)| {
+                    (!value.unsuffixed_numeric && super::numeric::numeric_type(&value.ty).is_some())
+                        .then(|| value.ty.clone())
+                }),
+                None => self.rigid_numeric_argument(argument.expression, frame),
+            };
+            let Some(actual) = actual else {
                 continue;
             };
             let mut mentioned = BTreeSet::new();
@@ -200,7 +221,14 @@ impl Checker {
                 (unresolved.is_disjoint(&binders) || !matches!(ty, Ty::Generic(_))).then_some(ty)
             })
             .collect();
-        if !binders.is_empty() || !selected.is_empty() {
+        if !binders.is_empty()
+            || !selected.is_empty()
+            || frozen.is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|(_, value, _)| matches!(value.ty, Ty::NumericHole(_)))
+            })
+        {
             self.numeric.applications.insert(
                 source_event,
                 NumericPreparedApplication {

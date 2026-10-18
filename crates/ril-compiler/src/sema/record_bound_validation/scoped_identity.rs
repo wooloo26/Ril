@@ -350,21 +350,17 @@ impl Replay<'_> {
                 && binding.value.participants == participants,
             "scoped original source is not its real readonly parameter reception",
         )?;
-        let root_observation = self
-            .facts
-            .invocation_expressions
-            .get(anchor.root_expression)
-            .filter(|observation| {
-                observation.context.invocation == Some(source.id)
-                    && observation.context.owner == Some(CallableOwner::Function(anchor.definition))
-            })
-            .ok_or_else(|| {
-                "scoped formal root has no actual original invocation occurrence".to_owned()
-            })?;
+        let root_observation = self.observations.row(anchor.root_expression, &mut 4096)?;
+        require(
+            root_observation.context.invocation == Some(source.id)
+                && root_observation.context.owner
+                    == Some(CallableOwner::Function(anchor.definition)),
+            "scoped formal root has no actual original invocation occurrence",
+        )?;
         let root = self
             .facts
             .expressions
-            .get(root_observation.expression)
+            .get(anchor.root_expression)
             .ok_or_else(|| "scoped original root expression is outside its arena".to_owned())?;
         let source_tokens = tokens::source_expressions(&source_function.syntax)?;
         let root_tokens: Vec<_> = source_tokens

@@ -182,6 +182,7 @@ impl Checker {
                 argument_of: None,
             });
         self.expression_facts.push(super::super::ExpressionFact {
+            allocation_epoch: continuation_epoch,
             source_id: suffix.resume_source,
             span: suffix.resume,
             value: answer.clone(),
@@ -254,6 +255,7 @@ impl Checker {
                 argument_of: None,
             });
         self.expression_facts.push(super::super::ExpressionFact {
+            allocation_epoch: self.recency_moves.len(),
             source_id: suffix.body_source,
             span: suffix.span,
             value: result.clone(),

@@ -1344,6 +1344,7 @@ impl Checker {
                     argument_of: None,
                 });
             self.expression_facts.push(super::super::ExpressionFact {
+                allocation_epoch: self.recency_moves.len(),
                 source_id: arm.operation.hir_id,
                 span: arm.operation.span,
                 value: target,

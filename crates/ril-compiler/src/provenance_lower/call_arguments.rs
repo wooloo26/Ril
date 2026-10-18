@@ -116,6 +116,22 @@ pub(super) fn lower(
         .map(|value| p::CallArguments {
             source_event: p::CopyCallEventId(value.source_event.0),
             target: value.target,
+            evaluated: value
+                .evaluated
+                .iter()
+                .map(|step| p::ApplicationEvaluation {
+                    role: match step.role {
+                        d::EvaluationRole::Callee => p::EvaluationRole::Callee,
+                        d::EvaluationRole::Piped => p::EvaluationRole::Piped,
+                        d::EvaluationRole::Written(index) => p::EvaluationRole::Written(index),
+                    },
+                    observation: p::SuppliedArgument {
+                        expression: step.observation.expression,
+                        allocation_epoch: step.observation.allocation_epoch as u64,
+                    },
+                })
+                .collect(),
+            slots_bound: value.slots_bound,
             slots: value
                 .slots
                 .iter()

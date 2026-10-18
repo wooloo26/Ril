@@ -89,6 +89,133 @@ impl Replay<'_> {
         Ok(&original.value)
     }
 
+    /// Reconstruct only the guaranteed member from the genuine Type UID's
+    /// source declaration. A bound never supplies a closed view of its parent
+    /// or an access permission; those obligations belong to separate replay.
+    fn storage_projection_source_key(
+        &self,
+        source: &ArgumentKey,
+        slot: &Slot,
+        context: InvocationContext,
+    ) -> Check<Option<ArgumentKey>> {
+        let (
+            ArgumentKey::Binder {
+                identity,
+                sort: StaticBinderSort::Type,
+            },
+            Slot::Field(label),
+        ) = (source, slot)
+        else {
+            return Ok(projection(source, std::slice::from_ref(slot)).cloned());
+        };
+        self.type_binder(identity)?;
+        let binder = &self.facts.generic_binders[identity];
+        let declaration = self.function(binder.definition)?;
+        let parameter = declaration
+            .syntax
+            .generics
+            .get(binder.index as usize)
+            .ok_or_else(|| "storage bound UID has no source parameter".to_owned())?;
+        let Some(TypeExpr {
+            kind: TypeKind::Record { fields, .. },
+            ..
+        }) = parameter.bound.as_ref()
+        else {
+            return Err("storage Type UID has no declared record constraint".into());
+        };
+        let declared: Vec<_> = fields.iter().filter(|field| field.name == *label).collect();
+        let [declared] = declared.as_slice() else {
+            return Err(
+                "storage member is not uniquely guaranteed by its source constraint".into(),
+            );
+        };
+        let bound = self
+            .bounds
+            .get(&(binder.definition, binder.index))
+            .ok_or_else(|| "storage bound UID lost its registered declaration".to_owned())?;
+        let scope = self.scope(binder.definition)?;
+        require(
+            bound.binder == *identity && bound.scope == scope,
+            "storage member borrowed a different bound UID or declaration environment",
+        )?;
+        let recorded: Vec<_> = bound
+            .fields
+            .iter()
+            .filter(|field| field.label == *label)
+            .collect();
+        let [recorded] = recorded.as_slice() else {
+            return Err("storage member lost its unique recorded declaration".into());
+        };
+        let key = self.normalized_key(&declared.ty, &scope)?;
+        require(
+            recorded.mutable == declared.mutable
+                && recorded.key == key
+                && self.normalized_key(&recorded.syntax, &scope)? == key,
+            "storage member changed the complete Source of its declared field",
+        )?;
+        let named = match context.owner {
+            Some(CallableOwner::Function(owner)) => {
+                let id = context
+                    .invocation
+                    .ok_or_else(|| "storage bound field has no actual named instance".to_owned())?;
+                let call = self
+                    .facts
+                    .copy_invocations
+                    .get(id.0 as usize)
+                    .ok_or_else(|| "storage bound field instance is absent".to_owned())?;
+                require(
+                    call.id == id && call.target == owner,
+                    "storage bound field borrowed another named instance",
+                )?;
+                Some(call)
+            }
+            Some(CallableOwner::Lambda(site)) => {
+                let invocation = context
+                    .closure_invocation
+                    .and_then(|id| {
+                        self.facts
+                            .closure_invocations
+                            .get(id.0 as usize)
+                            .filter(|call| call.id == id)
+                    })
+                    .ok_or_else(|| "storage bound field has no actual lambda entry".to_owned())?;
+                let closure = self
+                    .facts
+                    .closures
+                    .get(invocation.closure)
+                    .filter(|closure| {
+                        closure.site == Some(site) && context.closure == Some(invocation.closure)
+                    })
+                    .ok_or_else(|| {
+                        "storage bound field borrowed another lambda object".to_owned()
+                    })?;
+                closure
+                    .creation_invocation
+                    .map(|id| {
+                        self.facts
+                            .copy_invocations
+                            .get(id.0 as usize)
+                            .filter(|call| call.id == id)
+                            .ok_or_else(|| {
+                                "storage bound field lost its captured instance".to_owned()
+                            })
+                    })
+                    .transpose()?
+            }
+            _ => return Err("storage bound field has no callable declaration context".into()),
+        };
+        let selected = named
+            .map(|call| self.input_selected_keys(call))
+            .transpose()?
+            .unwrap_or_default();
+        let selected = super::call_input_source::input_select_key(&key, &selected, 0)?;
+        require(
+            source_reception::complete(&selected, &mut 4096).is_some(),
+            "storage declared field has incomplete selected Source coordinates",
+        )?;
+        Ok(Some(selected))
+    }
+
     fn storage_activation(&self, context: InvocationContext, activation: ScopeId) -> Check {
         require(
             self.facts.allocated_scopes.contains(&activation),
@@ -262,12 +389,10 @@ impl Replay<'_> {
             require(
                 caller.caller_owner == call.caller_owner
                     && self
-                        .facts
-                        .invocation_expressions
-                        .get(expression)
-                        .is_some_and(|row| {
-                            row.expression == expression
-                                && row.context.owner == caller.caller_owner
+                        .observations
+                        .row(expression, &mut 4096)
+                        .is_ok_and(|row| {
+                            row.context.owner == caller.caller_owner
                                 && row.context.invocation == call.parent
                                 && row.context.closure == caller.caller_closure
                                 && row.context.closure_invocation
@@ -662,8 +787,13 @@ impl Replay<'_> {
                             write.completed,
                             "normal storage field write was marked aborted",
                         )?;
-                        let key = self.original_source_key(base, source, write.context, &sites)?;
-                        projection(&key, std::slice::from_ref(slot)).cloned()
+                        let key = self.original_observed_source_key(
+                            base,
+                            receiver.expression,
+                            write.context,
+                            &sites,
+                        )?;
+                        self.storage_projection_source_key(&key, slot, write.context)?
                     }
                     (
                         ExprKind::Index { base, index, .. },
@@ -702,7 +832,12 @@ impl Replay<'_> {
                             write.completed,
                             "normal storage index write was marked aborted",
                         )?;
-                        let key = self.original_source_key(base, source, write.context, &sites)?;
+                        let key = self.original_observed_source_key(
+                            base,
+                            receiver.expression,
+                            write.context,
+                            &sites,
+                        )?;
                         let expected_slot = if matches!(key, ArgumentKey::Map { .. }) {
                             Slot::AnyIndex
                         } else if let Some(Constant::Integer(index)) = selected.constant {
@@ -725,7 +860,7 @@ impl Replay<'_> {
                                 "storage map selector does not fit its original key source",
                             )?;
                         }
-                        projection(&key, std::slice::from_ref(slot)).cloned()
+                        self.storage_projection_source_key(&key, slot, write.context)?
                     }
                     _ => return Err("storage write changed its real destination form".into()),
                 };
@@ -1061,6 +1196,7 @@ mod tests {
         let mut callee = Value::scalar(Ty::Unknown, None, CauseId(0));
         callee.callables.push(Callable::Named(1));
         facts.expressions.push(crate::sema::ExpressionFact {
+            allocation_epoch: 0,
             source_id: None,
             span: span(),
             value: callee,
@@ -1100,6 +1236,7 @@ mod tests {
     fn replay(facts: &SemanticFacts) -> Replay<'_> {
         Replay {
             facts,
+            observations: super::super::observation_index::ObservationIndex::new(facts).unwrap(),
             functions: BTreeMap::new(),
             bounds: BTreeMap::new(),
         }

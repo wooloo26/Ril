@@ -62,7 +62,6 @@ pub enum ValidationIssueKind {
     GeneratedSource(String),
     StorageSource(String),
     EvaluationIdentity(String),
-    CallResult(String),
     ClosureActivation(String),
     StaticArgument(String),
     InvalidResultProducer(u32),
@@ -128,52 +127,6 @@ pub fn solved_facts(facts: &SemanticFacts) -> Result<ValidatedStructure, Vec<Val
                 ),
                 Some(invocation.site),
                 None,
-            );
-        }
-    }
-    let mut call_results = std::collections::BTreeSet::new();
-    for event in &facts.copy_call_events {
-        let Some(result) = event.result_expression else {
-            validator.issue(
-                ValidationIssueKind::CallResult(
-                    "actual call lost its root expression observation".into(),
-                ),
-                Some(event.span),
-                None,
-            );
-            continue;
-        };
-        let callee_context = event
-            .callee_expression
-            .and_then(|expression| facts.invocation_expressions.get(expression))
-            .filter(|row| Some(row.expression) == event.callee_expression)
-            .map(|row| row.context);
-        let result_context = facts
-            .invocation_expressions
-            .get(result)
-            .filter(|row| row.expression == result)
-            .map(|row| row.context);
-        if !call_results.insert(result)
-            || event
-                .callee_expression
-                .is_none_or(|callee| callee >= result)
-            || !facts
-                .expressions
-                .get(result)
-                .is_some_and(|value| value.span == event.span)
-            || callee_context.is_none()
-            || callee_context != result_context
-            || !result_context.is_some_and(|context| {
-                context.owner == event.owner && context.invocation == event.parent
-            })
-        {
-            validator.issue(
-                ValidationIssueKind::CallResult(
-                    "call result is not its unique actual root in the original caller context"
-                        .into(),
-                ),
-                Some(event.span),
-                facts.expressions.get(result).map(|value| value.value.cause),
             );
         }
     }
@@ -644,7 +597,17 @@ impl Validator<'_> {
             self.value(&binding.value, Some(binding.span));
         }
         for expression in &facts.expressions {
-            self.value(&expression.value, Some(expression.span));
+            if let Some(value) =
+                expression.value_at(facts.allocation_history.len(), &facts.allocation_history)
+            {
+                self.value(&value, Some(expression.span));
+            } else {
+                self.issue(
+                    ValidationIssueKind::InvalidAllocationMove(expression.allocation_epoch),
+                    Some(expression.span),
+                    Some(expression.value.cause),
+                );
+            }
         }
         for constant in &facts.constant_values {
             self.value(&constant.value, Some(constant.span));

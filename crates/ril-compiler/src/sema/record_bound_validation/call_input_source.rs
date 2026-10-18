@@ -18,116 +18,136 @@ use crate::sema::{
     source_reception,
 };
 
-pub(super) fn original_operand_source_key(
-    facts: &SemanticFacts,
-    event_id: crate::sema::copy_contract::CopyCallEventId,
-    slot: u32,
-) -> Check<ArgumentKey> {
-    let replay = Replay::new(facts)?;
-    let sites = super::explicit_named::source_sites_base(facts)?;
-    let event = facts
-        .copy_call_events
-        .get(event_id.0 as usize)
-        .filter(|event| event.id == event_id)
-        .ok_or_else(|| "source operand origin event is absent".to_owned())?;
-    let origins: Vec<_> = sites
-        .calls
-        .iter()
-        .filter(|site| Some(site.owner) == event.owner && event.matches_source(site.expression))
-        .collect();
-    let [origin] = origins.as_slice() else {
-        return Err("source operand origin has no unique actual Call".into());
-    };
-    let ExprKind::Call { callee, arguments } = &origin.expression.kind else {
-        unreachable!()
-    };
-    let callee_token = event
-        .callee_expression
-        .ok_or_else(|| "source operand origin callee is absent".to_owned())?;
-    let callee_fact = facts
-        .expressions
-        .get(callee_token)
-        .ok_or_else(|| "source operand callee token is outside its arena".to_owned())?;
-    let contexts: Vec<_> = facts
-        .invocation_expressions
-        .iter()
-        .filter(|row| row.expression == callee_token)
-        .collect();
-    let [context] = contexts.as_slice() else {
-        return Err("source operand callee context is not unique".into());
-    };
-    let context = context.context;
-    require(
-        callee_fact.source_id.is_some()
-            && callee_fact.source_id == callee.hir_id
-            && context.owner == event.owner
-            && context.invocation == event.parent,
-        "source operand callee is borrowed from another occurrence",
-    )?;
-    let preparations: Vec<_> = facts
-        .call_arguments
-        .iter()
-        .filter(|row| row.source_event == event.id)
-        .collect();
-    let [preparation] = preparations.as_slice() else {
-        return Err("source operand preparation is not unique".into());
-    };
-    require(
-        preparation.target == event.target && preparation.evaluation_complete,
-        "source operand preparation changed its actual target or completion",
-    )?;
-    let mut occupied = BTreeSet::new();
-    let mut selected = None;
-    for argument in arguments {
-        let position=if let Some(label)=&argument.label {
+pub(crate) struct OriginalOperandSources<'a> {
+    replay: Replay<'a>,
+    sites: super::explicit_named::SourceSites<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct SourceVisit {
+    depth: usize,
+    observation: Option<usize>,
+}
+impl<'a> OriginalOperandSources<'a> {
+    pub(crate) fn new(facts: &'a SemanticFacts) -> Check<Self> {
+        Ok(Self {
+            replay: Replay::new(facts)?,
+            sites: super::explicit_named::source_sites_base(facts)?,
+        })
+    }
+    pub(crate) fn key(
+        &self,
+        event_id: crate::sema::copy_contract::CopyCallEventId,
+        slot: u32,
+    ) -> Check<ArgumentKey> {
+        let replay = &self.replay;
+        let facts = replay.facts;
+        let sites = &self.sites;
+        let event = facts
+            .copy_call_events
+            .get(event_id.0 as usize)
+            .filter(|event| event.id == event_id)
+            .ok_or_else(|| "source operand origin event is absent".to_owned())?;
+        let origins: Vec<_> = sites
+            .calls
+            .iter()
+            .filter(|site| Some(site.owner) == event.owner && event.matches_source(site.expression))
+            .collect();
+        let [origin] = origins.as_slice() else {
+            return Err("source operand origin has no unique actual Call".into());
+        };
+        let application = AstApplication::from_ast(origin.expression)
+            .ok_or_else(|| "source operand origin is not an application".to_owned())?;
+        let callee = application.callee;
+        let arguments = &application.operands;
+        let callee_token = event
+            .callee_expression
+            .ok_or_else(|| "source operand origin callee is absent".to_owned())?;
+        let callee_fact = facts
+            .expressions
+            .get(callee_token)
+            .ok_or_else(|| "source operand callee token is outside its arena".to_owned())?;
+        let contexts: Vec<_> = facts
+            .invocation_expressions
+            .iter()
+            .filter(|row| row.expression == callee_token)
+            .collect();
+        let [context] = contexts.as_slice() else {
+            return Err("source operand callee context is not unique".into());
+        };
+        let context = context.context;
+        require(
+            callee_fact.source_id.is_some()
+                && callee_fact.source_id == callee.hir_id
+                && context.owner == event.owner
+                && context.invocation == event.parent,
+            "source operand callee is borrowed from another occurrence",
+        )?;
+        let preparations: Vec<_> = facts
+            .call_arguments
+            .iter()
+            .filter(|row| row.source_event == event.id)
+            .collect();
+        let [preparation] = preparations.as_slice() else {
+            return Err("source operand preparation is not unique".into());
+        };
+        require(
+            preparation.target == event.target && preparation.evaluation_complete,
+            "source operand preparation changed its actual target or completion",
+        )?;
+        let mut occupied = BTreeSet::new();
+        let mut selected = None;
+        for argument in arguments {
+            let position=if let Some(label)=argument.label {
             callee_fact.value.signature.as_ref().and_then(|parameters|parameters.iter().position(|parameter|
-                matches!(&parameter.pattern.kind,ril_syntax::ast::PatternKind::Name(name) if name==label)))
+                matches!(&parameter.pattern.kind,ril_syntax::ast::PatternKind::Name(name) if name.as_str()==label)))
         } else {(0..preparation.slots.len()).find(|slot|!occupied.contains(slot))}
             .ok_or_else(||"source operand label is outside its original public signature".to_owned())?;
-        require(
-            occupied.insert(position),
-            "source operand position is written twice",
-        )?;
-        if position == slot as usize {
-            selected = Some(&argument.value);
+            require(
+                occupied.insert(position),
+                "source operand position is written twice",
+            )?;
+            if position == slot as usize {
+                selected = Some(argument.expression);
+            }
         }
+        require(
+            preparation.supplied.len() == occupied.len(),
+            "source operand preparation lost or added an actual input",
+        )?;
+        let syntax =
+            selected.ok_or_else(|| "source operand selected slot is not supplied".to_owned())?;
+        require(
+            preparation.slots.get(slot as usize) == Some(&ArgumentSource::Supplied),
+            "source operand selected slot is not its actual supplied input",
+        )?;
+        let token = preparation
+            .supplied
+            .get(&slot)
+            .ok_or_else(|| "source operand root token is absent".to_owned())?;
+        let value = facts
+            .expressions
+            .get(token.expression)
+            .ok_or_else(|| "source operand root token is outside its arena".to_owned())?;
+        require(
+            token.allocation_epoch <= facts.allocation_history.len()
+                && value.source_id.is_some()
+                && value.source_id == syntax.hir_id
+                && facts
+                    .invocation_expressions
+                    .iter()
+                    .filter(|row| {
+                        row.expression == token.expression
+                            && row.context == context
+                            && row.argument_of == Some((event.id, slot))
+                    })
+                    .count()
+                    == 1,
+            "source operand token borrowed another physical occurrence or context",
+        )?;
+        replay.input_operand_interval(event, slot as usize, token.expression, context, sites)?;
+        replay.original_source_key(syntax, &value.value, context, sites)
     }
-    require(
-        preparation.supplied.len() == occupied.len(),
-        "source operand preparation lost or added an actual input",
-    )?;
-    let syntax =
-        selected.ok_or_else(|| "source operand selected slot is not supplied".to_owned())?;
-    require(
-        preparation.slots.get(slot as usize) == Some(&ArgumentSource::Supplied),
-        "source operand selected slot is not its actual supplied input",
-    )?;
-    let token = preparation
-        .supplied
-        .get(&slot)
-        .ok_or_else(|| "source operand root token is absent".to_owned())?;
-    let value = facts
-        .expressions
-        .get(token.expression)
-        .ok_or_else(|| "source operand root token is outside its arena".to_owned())?;
-    require(
-        token.allocation_epoch <= facts.allocation_history.len()
-            && value.source_id.is_some()
-            && value.source_id == syntax.hir_id
-            && facts
-                .invocation_expressions
-                .iter()
-                .filter(|row| {
-                    row.expression == token.expression
-                        && row.context == context
-                        && row.argument_of == Some((event.id, slot))
-                })
-                .count()
-                == 1,
-        "source operand token borrowed another physical occurrence or context",
-    )?;
-    replay.input_operand_interval(event, slot as usize, token.expression, context, &sites)?;
-    replay.original_source_key(syntax, &value.value, context, &sites)
 }
 
 pub(super) fn input_select_key(
@@ -363,71 +383,54 @@ impl Replay<'_> {
         slot: usize,
         token: usize,
         context: InvocationContext,
-        sites: &super::explicit_named::SourceSites<'_>,
+        _sites: &super::explicit_named::SourceSites<'_>,
     ) -> Check {
-        require(
-            self.facts
-                .invocation_expressions
-                .iter()
-                .filter(|row| row.argument_of == Some((event.id, slot as u32)))
-                .count()
-                == 1,
-            "call input event/slot has missing or duplicate root emissions",
-        )?;
-        let current: Vec<_> = sites
-            .calls
+        // Replay construction has already checked the one canonical evaluation
+        // algorithm. This consumer selects its exact bound prefix observation;
+        // source spans and guessed callee-relative intervals play no role.
+        let preparations: Vec<_> = self
+            .facts
+            .call_arguments
             .iter()
-            .filter(|site| Some(site.owner) == event.owner && event.matches_source(site.expression))
+            .filter(|row| row.source_event == event.id)
             .collect();
-        let [current] = current.as_slice() else {
-            return Err("call input operand interval has no unique actual Source call".into());
+        let [preparation] = preparations.as_slice() else {
+            return Err("call input lost its unique application preparation".into());
         };
-        let lower = event
-            .callee_expression
-            .ok_or_else(|| "call input interval lost its actual callee".to_owned())?;
-        require(lower < token, "call input operand precedes its own callee")?;
-        for next in &self.facts.copy_call_events {
-            let Some(bound) = next.callee_expression.filter(|bound| *bound > lower) else {
-                continue;
-            };
-            if next.owner != event.owner || next.parent != event.parent {
-                continue;
-            }
-            if !self
-                .facts
-                .invocation_expressions
-                .iter()
-                .any(|row| row.expression == bound && row.context == context)
-            {
-                continue;
-            }
-            let later: Vec<_> = sites
-                .calls
-                .iter()
-                .filter(|site| {
-                    Some(site.owner) == next.owner && next.matches_source(site.expression)
-                })
-                .collect();
-            let [later] = later.as_slice() else {
-                return Err("call input interval has no unique following Source call".into());
-            };
-            let outer = current.expression.span;
-            let inner = later.expression.span;
-            // A genuine descendant call may run while this operand is being
-            // evaluated. Another occurrence of the same AST is a boundary,
-            // as is any following sibling; source span equality is not identity.
-            let descendant = !std::ptr::eq(current.expression, later.expression)
-                && outer.file == inner.file
-                && outer.start <= inner.start
-                && inner.end <= outer.end;
-            if !descendant {
-                require(
-                    token < bound,
-                    "call input operand borrowed a later sibling or repeated occurrence",
-                )?;
-            }
-        }
-        Ok(())
+        require(
+            preparation.slots_bound
+                && preparation
+                    .supplied
+                    .get(&(slot as u32))
+                    .is_some_and(|supplied| {
+                        supplied.expression == token
+                            && preparation
+                                .evaluated
+                                .iter()
+                                .filter(|step| {
+                                    step.role != crate::sema::default_uses::EvaluationRole::Callee
+                                        && step.observation == *supplied
+                                })
+                                .count()
+                                == 1
+                    }),
+            "call input slot lost its exact evaluated operand",
+        )?;
+        require(
+            event.result_expression.is_some_and(|result| token < result)
+                && self
+                    .facts
+                    .invocation_expressions
+                    .iter()
+                    .filter(|row| {
+                        row.expression == token
+                            && row.context == context
+                            && row.argument_of == Some((event.id, slot as u32))
+                    })
+                    .count()
+                    == 1,
+            "call input operand belongs to another actual invocation interval",
+        )
     }
     fn input_static_arguments<'a>(
         &'a self,
@@ -569,7 +572,132 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::explicit_named::SourceSites<'_>,
     ) -> Check<ArgumentKey> {
-        self.original_source_key_inner(expression, value, context, sites, &mut 4096, 0)
+        self.original_source_key_inner(
+            expression,
+            value,
+            context,
+            sites,
+            &mut 4096,
+            SourceVisit {
+                depth: 0,
+                observation: None,
+            },
+        )
+    }
+
+    pub(super) fn original_observed_source_key(
+        &self,
+        expression: &Expr,
+        observation: usize,
+        context: InvocationContext,
+        sites: &super::explicit_named::SourceSites<'_>,
+    ) -> Check<ArgumentKey> {
+        let mut work = 4096;
+        let fact =
+            self.facts.expressions.get(observation).ok_or_else(|| {
+                "original Source root is outside its observation arena".to_owned()
+            })?;
+        require(
+            fact.source_id.is_some()
+                && fact.source_id == expression.hir_id
+                && self.observations.row(observation, &mut work)?.context == context,
+            "original Source root borrowed another actual occurrence or context",
+        )?;
+        self.original_source_key_inner(
+            expression,
+            &fact.value,
+            context,
+            sites,
+            &mut work,
+            SourceVisit {
+                depth: 0,
+                observation: Some(observation),
+            },
+        )
+    }
+
+    /// Identify a physical root once. A known observation selects that exact
+    /// occurrence; a legacy value query still rejects equal repeated values.
+    fn original_source_root(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        observation: Option<usize>,
+        work: &mut usize,
+    ) -> Check<usize> {
+        let source = expression
+            .hir_id
+            .ok_or_else(|| "Source root has no genuine HIR identity".to_owned())?;
+        if let Some(index) = observation {
+            let row = self.observations.row(index, work)?;
+            let fact = self
+                .facts
+                .expressions
+                .get(index)
+                .ok_or_else(|| "Source root is outside its observation arena".to_owned())?;
+            require(
+                row.context == context && fact.source_id == Some(source) && fact.value == *value,
+                "Source root borrowed another physical occurrence or complete value",
+            )?;
+            return Ok(index);
+        }
+        let candidates = self
+            .observations
+            .range(source, context, 0..usize::MAX, work)?;
+        *work = work
+            .checked_sub(candidates.len())
+            .ok_or_else(|| "Source root candidates exceed their work bound".to_owned())?;
+        let mut matching = candidates
+            .iter()
+            .copied()
+            .filter(|index| self.facts.expressions[*index].value == *value);
+        let root = matching
+            .next()
+            .ok_or_else(|| "Source has no matching actual root observation".to_owned())?;
+        require(
+            matching.next().is_none(),
+            "Source has multiple matching physical root observations",
+        )?;
+        Ok(root)
+    }
+
+    /// Receiving an actual empty array needs no invented element Source. Its
+    /// element type comes from this boundary's complete, frozen declaration.
+    /// Opaque/stored values always require their own original Source key.
+    fn input_source_reception(
+        &self,
+        expected: &ArgumentKey,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        sites: &super::explicit_named::SourceSites<'_>,
+    ) -> Check<Option<ArgumentKey>> {
+        let fresh = source_reception::construction(expression, &mut 4096)
+            .ok_or_else(|| "call input construction Source exceeds its work bound".to_owned())?;
+        if let (
+            ArgumentKey::Array { length, element },
+            source_reception::Construction::Array(items),
+        ) = (expected, &fresh)
+            && items.is_empty()
+        {
+            source_reception::complete(element, &mut 4096).ok_or_else(|| {
+                "empty call input has no complete receiving element Source".to_owned()
+            })?;
+            require(
+                length
+                    .as_ref()
+                    .is_none_or(|length| length == "const(int:0)"),
+                "empty call input differs from its required outer dimension",
+            )?;
+            return Ok(None);
+        }
+        let actual = self.original_source_key(expression, value, context, sites)?;
+        require(
+            source_reception::compatible(expected, &actual, Some(&fresh), &mut 4096) == Some(true),
+            "call input original whole source does not prove its receiving coordinates",
+        )?;
+        Ok(Some(actual))
     }
 
     fn original_source_key_inner(
@@ -579,14 +707,15 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::explicit_named::SourceSites<'_>,
         work: &mut usize,
-        depth: usize,
+        visit: SourceVisit,
     ) -> Check<ArgumentKey> {
+        let SourceVisit { depth, .. } = visit;
         require(
             depth < 64 && *work > 0,
             "original Source reconstruction exceeds its bound",
         )?;
         *work -= 1;
-        let key = match self.raw_original_source_key(expression, value, context, sites, work, depth)
+        let key = match self.raw_original_source_key(expression, value, context, sites, work, visit)
         {
             Ok(key) => key,
             Err(message) => self
@@ -890,8 +1019,9 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::explicit_named::SourceSites<'_>,
         work: &mut usize,
-        depth: usize,
+        visit: SourceVisit,
     ) -> Check<ArgumentKey> {
+        let SourceVisit { depth, .. } = visit;
         if let Some(key) = self.storage_binding_source_key(expression, value, context, sites) {
             return key;
         }
@@ -1112,11 +1242,8 @@ impl Replay<'_> {
         if let Some(key) = self.inferred_lambda_source_key(expression, value, context, sites)? {
             return Ok(key);
         }
-        if let ExprKind::Call {
-            callee: callee_syntax,
-            ..
-        } = &expression.kind
-        {
+        if let Some(application) = AstApplication::from_ast(expression) {
+            let callee_syntax = application.callee;
             let calls: Vec<_> = self
                 .facts
                 .copy_call_events
@@ -1169,12 +1296,20 @@ impl Replay<'_> {
                                     == 1,
                             "call input returned Source borrowed another callee context",
                         )?;
-                        let mut base = callee_syntax.as_ref();
+                        let mut base = callee_syntax;
                         while let ExprKind::Generic { base: inner, .. } = &base.kind {
                             base = inner;
                         }
-                        let public =
-                            self.original_source_key(base, &callee.value, context, sites)?;
+                        let public = if base.hir_id == callee.source_id {
+                            self.original_observed_source_key(
+                                base,
+                                source.callee_expression.unwrap(),
+                                context,
+                                sites,
+                            )?
+                        } else {
+                            self.original_source_key(base, &callee.value, context, sites)?
+                        };
                         let ArgumentKey::Callable { result: public, .. } = public else {
                             return Err("call input returned Source has no public Fn result".into());
                         };
@@ -1195,7 +1330,7 @@ impl Replay<'_> {
         }
         if value.source_type_witness.is_none()
             && let Some(key) =
-                self.original_composite_source_key(expression, value, context, sites, work, depth)?
+                self.original_composite_source_key(expression, value, context, sites, work, visit)?
         {
             return Ok(key);
         }
@@ -1268,6 +1403,13 @@ impl Replay<'_> {
         // the coverage obligation. A deleted event/instance cannot make a real
         // invocation disappear from this replay.
         for site in &sites.calls {
+            if !self.facts.expressions.iter().any(|observed| {
+                observed.source_id.is_some() && observed.source_id == site.expression.hir_id
+            }) {
+                // An abrupt earlier operand can leave this static child
+                // unevaluated. Actual root coverage is checked independently.
+                continue;
+            }
             require(
                 self.facts.copy_call_events.iter().any(|event| {
                     event.owner == Some(site.owner) && event.matches_source(site.expression)
@@ -1290,9 +1432,33 @@ impl Replay<'_> {
                         "call input event has no unique genuine Call in its real owner".into(),
                     );
                 };
-                let ExprKind::Call { callee: syntax, .. } = &site.expression.kind else {
-                    unreachable!()
-                };
+                let application = AstApplication::from_ast(site.expression)
+                    .ok_or_else(|| "source application has no original shape".to_owned())?;
+                let syntax = application.callee;
+                let preparation = self
+                    .facts
+                    .call_arguments
+                    .iter()
+                    .find(|row| row.source_event == event.id)
+                    .ok_or_else(|| {
+                        "source application lost its evaluation preparation".to_owned()
+                    })?;
+                if !preparation.slots_bound || !preparation.evaluation_complete {
+                    require(
+                        !self
+                            .facts
+                            .copy_invocations
+                            .iter()
+                            .any(|call| call.source_event == Some(event.id))
+                            && !self
+                                .facts
+                                .closure_invocations
+                                .iter()
+                                .any(|call| call.source_event == Some(event.id)),
+                        "abrupt application prefix claims an entered callable body",
+                    )?;
+                    return Ok(());
+                }
                 let token = event
                     .callee_expression
                     .ok_or_else(|| "call input event lost its actual callee token".to_owned())?;
@@ -1382,11 +1548,7 @@ impl Replay<'_> {
                     require(
                         self.facts.copy_invocations.iter().any(|call| {
                             call.source_event == Some(event.id) && call.target == target
-                        }) || self.call_input_terminal_operand(
-                            event,
-                            site.expression,
-                            row.context,
-                        )?,
+                        }),
                         "call input Source lost an actual named body instance",
                     )?;
                 }
@@ -1517,9 +1679,9 @@ impl Replay<'_> {
                 let [site] = source_sites.as_slice() else {
                     return Err("call input has no unique real Call AST in its owner".into());
                 };
-                let ExprKind::Call { arguments, .. } = &site.expression.kind else {
-                    unreachable!()
-                };
+                let application = AstApplication::from_ast(site.expression)
+                    .ok_or_else(|| "source invocation has no actual application".to_owned())?;
+                let arguments = &application.operands;
                 let preparations: Vec<_> = self
                     .facts
                     .call_arguments
@@ -1547,12 +1709,12 @@ impl Replay<'_> {
                     .unwrap_or(&function.syntax.parameters);
                 let mut written = BTreeMap::new();
                 for argument in arguments {
-                    let index = if let Some(label) = &argument.label {
-                        parameters.iter().position(|parameter| matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name == label))
+                    let index = if let Some(label) = argument.label {
+                        parameters.iter().position(|parameter| matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name.as_str() == label))
                     } else { (0..parameters.len()).find(|index| !written.contains_key(index)) }
                         .ok_or_else(|| "call input label/position is outside its actual public signature".to_owned())?;
                     require(
-                        written.insert(index, &argument.value).is_none(),
+                        written.insert(index, argument.expression).is_none(),
                         "call input parameter is supplied twice",
                     )?;
                 }
@@ -1593,9 +1755,6 @@ impl Replay<'_> {
                             require(
                                 expression.source_id.is_some()
                                     && expression.source_id == syntax.hir_id
-                                    && event
-                                        .callee_expression
-                                        .is_some_and(|callee| callee < token.expression)
                                     && self
                                         .facts
                                         .invocation_expressions
@@ -1681,22 +1840,26 @@ impl Replay<'_> {
                         epoch,
                         call.entry_allocation_epoch,
                     )?;
-                    let actual =
-                        self.original_source_key(syntax, original, source_context, &sites)?;
-                    let raw = self.normalized_key(
-                        function.syntax.parameters[index].ty.as_ref().unwrap(),
-                        &scope,
-                    )?;
-                    self.input_row_equations(&raw, &actual, &selected, call.target, &mut 4096, 0)?;
-                    let fresh =
-                        source_reception::construction(syntax, &mut 4096).ok_or_else(|| {
-                            "call input construction Source exceeds its work bound".to_owned()
-                        })?;
-                    require(
-                        source_reception::compatible(expected, &actual, Some(&fresh), &mut 4096)
-                            == Some(true),
-                        "call input original whole source does not prove its receiving coordinates",
-                    )?;
+                    if let Some(actual) = self.input_source_reception(
+                        expected,
+                        syntax,
+                        original,
+                        source_context,
+                        &sites,
+                    )? {
+                        let raw = self.normalized_key(
+                            function.syntax.parameters[index].ty.as_ref().unwrap(),
+                            &scope,
+                        )?;
+                        self.input_row_equations(
+                            &raw,
+                            &actual,
+                            &selected,
+                            call.target,
+                            &mut 4096,
+                            0,
+                        )?;
+                    }
                 }
                 Ok(())
             };
@@ -1713,14 +1876,17 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::explicit_named::SourceSites<'_>,
     ) -> Check {
-        let ExprKind::Call {
-            callee: callee_syntax,
-            arguments,
-        } = &syntax.kind
-        else {
-            unreachable!()
-        };
-        let parameters = self.public_input_source_keys(callee_syntax, callee, context, sites)?;
+        let application = AstApplication::from_ast(syntax)
+            .ok_or_else(|| "public callable input has no actual application".to_owned())?;
+        let callee_syntax = application.callee;
+        let arguments = &application.operands;
+        let parameters = self.public_input_source_keys(
+            callee_syntax,
+            callee,
+            context,
+            sites,
+            event.callee_expression,
+        )?;
         if parameters.iter().all(|key| {
             key.as_ref()
                 .is_none_or(|key| source_reception::sensitive(key, &mut 4096) == Some(false))
@@ -1744,13 +1910,13 @@ impl Replay<'_> {
         )?;
         let mut written = BTreeMap::new();
         for argument in arguments {
-            let slot = if let Some(label) = &argument.label {
+            let slot = if let Some(label) = argument.label {
                 callee.signature.as_ref().and_then(|parameters| parameters.iter().position(|parameter|
-                    matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name == label)))
+                    matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name.as_str() == label)))
             } else { (0..parameters.len()).find(|slot| !written.contains_key(slot)) }
                 .ok_or_else(|| "public callable Source label is outside its actual signature".to_owned())?;
             require(
-                written.insert(slot, &argument.value).is_none(),
+                written.insert(slot, argument.expression).is_none(),
                 "public callable Source supplies one slot twice",
             )?;
         }
@@ -1782,9 +1948,6 @@ impl Replay<'_> {
                         value.source_id.is_some()
                             && value.source_id == actual_syntax.hir_id
                             && token.allocation_epoch <= self.facts.allocation_history.len()
-                            && event
-                                .callee_expression
-                                .is_some_and(|callee| callee < token.expression)
                             && self
                                 .facts
                                 .invocation_expressions
@@ -1851,16 +2014,7 @@ impl Replay<'_> {
                 }
                 _ => return Err("public callable input lacks a full-source operand".into()),
             };
-            let actual = self.original_source_key(actual_syntax, value, actual_context, sites)?;
-            let fresh =
-                source_reception::construction(actual_syntax, &mut 4096).ok_or_else(|| {
-                    "public callable construction Source exceeds its bound".to_owned()
-                })?;
-            require(
-                source_reception::compatible(expected, &actual, Some(&fresh), &mut 4096)
-                    == Some(true),
-                "public callable original input does not prove its receiving Source coordinates",
-            )?;
+            self.input_source_reception(expected, actual_syntax, value, actual_context, sites)?;
         }
         Ok(())
     }
@@ -1869,6 +2023,73 @@ impl Replay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_interval_rejects_a_later_real_operand_even_after_structure_is_calibrated() {
+        let source = ril_test::case_source(
+            "tests/regressions/evaluation-identity.ril::application-repeated-source-interval",
+        );
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let facts = program.facts();
+        let replay = Replay::new(facts).unwrap();
+        let sites = super::super::explicit_named::source_sites_base(facts).unwrap();
+        let take = facts
+            .functions
+            .iter()
+            .find(|function| function.syntax.name == "take")
+            .unwrap()
+            .definition;
+        let mut candidates = vec![];
+        for invocation in &facts.copy_invocations {
+            if invocation.target != take {
+                continue;
+            }
+            let Some(id) = invocation.source_event else {
+                continue;
+            };
+            let event = &facts.copy_call_events[id.0 as usize];
+            let prep = facts
+                .call_arguments
+                .iter()
+                .find(|row| row.source_event == id)
+                .unwrap();
+            let token = prep.supplied[&0];
+            let context = replay
+                .observations
+                .row(token.expression, &mut 4096)
+                .unwrap()
+                .context;
+            candidates.push((event, token, context));
+        }
+        let (earlier, later) = candidates
+            .iter()
+            .flat_map(|left| candidates.iter().map(move |right| (left, right)))
+            .find(|(left, right)| {
+                left.0.id != right.0.id
+                    && left.2 == right.2
+                    && left
+                        .0
+                        .result_expression
+                        .is_some_and(|end| end < right.1.expression)
+            })
+            .expect(
+                "real fixed-point repetitions must share a context but retain distinct intervals",
+            );
+        replay
+            .input_operand_interval(later.0, 0, later.1.expression, later.2, &sites)
+            .unwrap();
+        let mut shortened = later.0.clone();
+        shortened.result_expression = earlier.0.result_expression;
+        let error = replay
+            .input_operand_interval(&shortened, 0, later.1.expression, later.2, &sites)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "call input operand belongs to another actual invocation interval"
+        );
+    }
 
     fn binder(index: usize) -> ArgumentKey {
         ArgumentKey::Binder {

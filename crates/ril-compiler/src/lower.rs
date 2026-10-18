@@ -352,12 +352,19 @@ fn unsupported(detail: impl Into<String>) -> NotImplemented {
 }
 
 impl Lower<'_> {
-    fn record_call_signature(&mut self, callee: Span, call: Span) -> Result<(), NotImplemented> {
+    fn record_call_signature(
+        &mut self,
+        callee: &ast::Expr,
+        call: &ast::Expr,
+    ) -> Result<(), NotImplemented> {
+        let callee_id = callee
+            .hir_id
+            .ok_or_else(|| unsupported("call signature lost its HIR callee identity"))?;
         let observations: Vec<_> = self
             .facts
             .expressions
             .iter()
-            .filter(|fact| fact.span == callee)
+            .filter(|fact| fact.source_id == Some(callee_id))
             .collect();
         let mut signature: Option<Vec<ir::CallParameter>> = None;
         let mut unresolved = false;
@@ -391,11 +398,75 @@ impl Lower<'_> {
         // use positional arguments, but cannot infer a dynamic signature.
         if !unresolved && let Some(parameters) = signature {
             self.call_signatures.push(ir::CallSignature {
-                span: call,
+                span: call.span,
                 parameters,
             });
         }
         Ok(())
+    }
+
+    /// Call notation does not change target selection or effect dispatch.
+    /// Earlier pipeline computations have already been bound by the caller.
+    fn application_target(
+        &mut self,
+        callee: &ast::Expr,
+        arguments: Vec<ir::Argument>,
+        application: &ast::Expr,
+    ) -> Result<ir::ExprKind, NotImplemented> {
+        if let Some(&operation) = self.expression_operations.get(&(
+            callee.span.file.0,
+            callee.span.start,
+            callee.span.end,
+        )) {
+            if !matches!(
+                callee.kind,
+                ast::ExprKind::Name(_) | ast::ExprKind::Path(_) | ast::ExprKind::Generic { .. }
+            ) && !matches!(&callee.kind, ast::ExprKind::Field { base, safe: false, .. }
+                    if matches!(base.kind, ast::ExprKind::Generic { .. }))
+            {
+                return Err(unsupported("computed effect operation callee evaluation"));
+            }
+            return Ok(ir::ExprKind::Perform {
+                operation,
+                arguments,
+            });
+        }
+        let selected = self.specializations.call_target(
+            self.facts,
+            self.callable_owner,
+            self.specialization_context,
+            self.default_context,
+            application.span,
+        )?;
+        let callee = if let Some((definition, name)) = selected {
+            let mut base = callee;
+            while let ast::ExprKind::Generic { base: inner, .. } = &base.kind {
+                base = inner;
+            }
+            let actual = expression_name(base);
+            let declared = self
+                .facts
+                .functions
+                .iter()
+                .find(|info| info.definition == definition)
+                .map(|info| info.syntax.name.as_str());
+            if actual.as_deref() != declared {
+                return Err(unsupported(
+                    "generic effect call requires its exact direct declaration reference",
+                ));
+            }
+            ir::Expr {
+                span: callee.span,
+                kind: ir::ExprKind::Name(name),
+            }
+        } else {
+            self.expression(callee)?
+        };
+        Ok(ir::ExprKind::Call {
+            callback_entry: false,
+            callee: Box::new(callee),
+            arguments,
+        })
     }
     fn function(&mut self, function: &ast::Function) -> Result<ir::Function, NotImplemented> {
         if function.is_meta {
@@ -1257,51 +1328,47 @@ impl Lower<'_> {
                     });
                 }
                 if matches!(operator.as_str(), "|>" | "!>") {
-                    let temporary = format!("\0ril.pipeline.{}", self.next_temporary);
-                    self.next_temporary += 1;
-                    let input = self.expression(left)?;
-                    let (callee, written) =
-                        if let ast::ExprKind::Call { callee, arguments } = &right.kind {
-                            (callee.as_ref(), arguments.as_slice())
-                        } else {
-                            (right.as_ref(), &[][..])
-                        };
-                    self.record_call_signature(callee.span, expression.span)?;
-                    let mut arguments = vec![ir::Argument {
-                        label: None,
-                        value: ir::Expr {
-                            kind: ir::ExprKind::Name(temporary.clone()),
-                            span: left.span,
-                        },
-                    }];
-                    for argument in written {
+                    let application = crate::hir::application::AstApplication::from_ast(expression)
+                        .ok_or_else(|| {
+                            unsupported("pipeline has no bounded application structure")
+                        })?;
+                    self.record_call_signature(application.callee, expression)?;
+                    let mut statements = Vec::with_capacity(application.operands.len() + 1);
+                    let mut arguments = Vec::with_capacity(application.operands.len());
+                    // Freeze every earlier operand before evaluating the callee.
+                    // The Call's argument expressions below are only reads of
+                    // these temporaries, so suspension and Never cannot reorder
+                    // or repeat the actual source computations.
+                    for operand in &application.operands {
+                        let temporary = format!("\0ril.pipeline.{}", self.next_temporary);
+                        self.next_temporary += 1;
+                        statements.push(ir::Statement::Bind {
+                            pattern: ir::Pattern::Name(temporary.clone()),
+                            value: self.expression(operand.expression)?,
+                            scoped: false,
+                        });
                         arguments.push(ir::Argument {
-                            label: argument.label.clone(),
-                            value: self.expression(&argument.value)?,
+                            label: operand.label.map(str::to_owned),
+                            value: ir::Expr {
+                                kind: ir::ExprKind::Name(temporary),
+                                span: operand.expression.span,
+                            },
                         });
                     }
+                    statements.push(ir::Statement::Expr {
+                        expression: ir::Expr {
+                            kind: self.application_target(
+                                application.callee,
+                                arguments,
+                                expression,
+                            )?,
+                            span: expression.span,
+                        },
+                        terminated: false,
+                    });
                     return Ok(ir::Expr {
                         span: expression.span,
-                        kind: ir::ExprKind::Block(ir::Block {
-                            statements: vec![
-                                ir::Statement::Bind {
-                                    pattern: ir::Pattern::Name(temporary),
-                                    value: input,
-                                    scoped: false,
-                                },
-                                ir::Statement::Expr {
-                                    expression: ir::Expr {
-                                        kind: ir::ExprKind::Call {
-                                            callback_entry: false,
-                                            callee: Box::new(self.expression(callee)?),
-                                            arguments,
-                                        },
-                                        span: expression.span,
-                                    },
-                                    terminated: false,
-                                },
-                            ],
-                        }),
+                        kind: ir::ExprKind::Block(ir::Block { statements }),
                     });
                 }
                 ir::ExprKind::Binary {
@@ -1314,7 +1381,7 @@ impl Lower<'_> {
                 if let Some(budget) = self.budget_call(callee, arguments, expression.span)? {
                     budget
                 } else {
-                    self.record_call_signature(callee.span, expression.span)?;
+                    self.record_call_signature(callee, expression)?;
                     let arguments = arguments
                         .iter()
                         .map(|argument| {
@@ -1324,62 +1391,7 @@ impl Lower<'_> {
                             })
                         })
                         .collect::<Result<_, NotImplemented>>()?;
-                    if let Some(&operation) = self.expression_operations.get(&(
-                        callee.span.file.0,
-                        callee.span.start,
-                        callee.span.end,
-                    )) {
-                        if !matches!(
-                            callee.kind,
-                            ast::ExprKind::Name(_)
-                                | ast::ExprKind::Path(_)
-                                | ast::ExprKind::Generic { .. }
-                        ) && !matches!(&callee.kind, ast::ExprKind::Field { base, safe: false, .. } if matches!(base.kind, ast::ExprKind::Generic { .. }))
-                        {
-                            return Err(unsupported("computed effect operation callee evaluation"));
-                        }
-                        ir::ExprKind::Perform {
-                            operation,
-                            arguments,
-                        }
-                    } else {
-                        let selected = self.specializations.call_target(
-                            self.facts,
-                            self.callable_owner,
-                            self.specialization_context,
-                            self.default_context,
-                            expression.span,
-                        )?;
-                        let callee = if let Some((definition, name)) = selected {
-                            let mut base = callee.as_ref();
-                            while let ast::ExprKind::Generic { base: inner, .. } = &base.kind {
-                                base = inner;
-                            }
-                            let actual = expression_name(base);
-                            let declared = self
-                                .facts
-                                .functions
-                                .iter()
-                                .find(|info| info.definition == definition)
-                                .map(|info| info.syntax.name.as_str());
-                            if actual.as_deref() != declared {
-                                return Err(unsupported(
-                                    "generic effect call requires its exact direct declaration reference",
-                                ));
-                            }
-                            ir::Expr {
-                                span: callee.span,
-                                kind: ir::ExprKind::Name(name),
-                            }
-                        } else {
-                            self.expression(callee)?
-                        };
-                        ir::ExprKind::Call {
-                            callback_entry: false,
-                            callee: Box::new(callee),
-                            arguments,
-                        }
-                    }
+                    self.application_target(callee, arguments, expression)?
                 }
             }
             ast::ExprKind::Field {

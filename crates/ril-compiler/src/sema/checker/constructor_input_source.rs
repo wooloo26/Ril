@@ -58,7 +58,8 @@ impl Checker {
                 let [preparation] = preparations.as_slice() else {
                     return None;
                 };
-                if !preparation.evaluation_complete
+                if !preparation.slots_bound
+                    || !preparation.evaluation_complete
                     || preparation.target.is_some()
                     || preparation.slots.len() != args.len()
                     || preparation.slots.get(slot)
@@ -73,7 +74,14 @@ impl Checker {
                     || input.expression != Some(token.expression)
                     || input.allocation_epoch != token.allocation_epoch
                     || token.allocation_epoch > self.recency_moves.len()
-                    || event.callee_expression? >= token.expression
+                    || !preparation.evaluated.iter().any(|evaluation| {
+                        evaluation.role != EvaluationRole::Callee
+                            && evaluation.observation == *token
+                    })
+                    || !preparation.evaluated.iter().any(|evaluation| {
+                        evaluation.role == EvaluationRole::Callee
+                            && Some(evaluation.observation.expression) == event.callee_expression
+                    })
                 {
                     return None;
                 }
@@ -82,11 +90,12 @@ impl Checker {
                 if row.expression != token.expression
                     || row.context != context
                     || row.argument_of != Some((event_id, slot as u32))
-                    || observation.value.ty != value.ty
-                    || observation.value.cause != value.cause
-                    || observation.value.source_type_witness != value.source_type_witness
-                    || observation.value.callables != value.callables
                 {
+                    return None;
+                }
+                let mut transported = observation.value.clone();
+                self.transport_value_since(&mut transported, input.allocation_epoch);
+                if transported != *value {
                     return None;
                 }
                 input_compatible(expected, input)

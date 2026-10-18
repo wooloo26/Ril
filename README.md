@@ -21,25 +21,26 @@ Work proceeds in this order:
 4. Implement LSP and VS Code support on the analysis API.
 
 Git history preserves the unfinished implementation before this migration.
-The latest migration checkpoint is `identity-v5`: on each Windows and Linux
-host, 44 Rust targets report **827 passed, 50 failed and 1 ignored**.
-It combines the complete v4 run with one targeted rerun after adding the missing
-literal-pattern control to a new fixture. Original results and overrides remain
-separate in the machine reports. No existing test regresses from `refactor-v2`;
-17 new tests pass. Its 43 regressions against v51 remain active failures.
+The latest migration checkpoint is `application-v5`: on each Windows and Linux
+host, the complete 45-target source gate reports **869 passed, 30 failed and
+1 ignored**. It repairs 20 failures from `identity-v5`, with no new regressions.
+Of the original 43 v51 regressions, 23 remain active failures.
+The additional non-tail-reference target still has seven end-to-end failures;
+its separate resumption-epoch replay test passes without authorizing lowering.
 This is an intermediate checkpoint, not completed refactoring.
-Workspace all-target Clippy with warnings denied, formatting, registry tests and
-diff checks pass. Nine new CLI corpus cases pass on both hosts: eight compile
-and execute native programs, and one correctly rejects a stateful default.
-There are 99 bundles and 1,364 cases; structural validation passes on both hosts.
+Workspace all-target Clippy with warnings denied, formatting, corpus tooling's
+27 tests and diff checks pass. The 54 application cases pass on both hosts:
+34 compile and execute native programs, 19 correctly reject and one checks.
+There are 99 bundles and 1,410 cases; structural validation passes.
 
 The original corpus has 84 theme bundles and 1,067 case identities.
 The focused native cases do not certify full corpus conformance.
 Historical native reports cannot certify this newer compiler.
 
 Detailed development reports remain under `target/`, including
-`identity-v5-case-comparison-{windows,linux}.json`,
-`identity-native-corpus-{windows,linux}-v5.json` and matching build/test logs.
+`application-v2-case-comparison-{windows,linux}.json`,
+`application-native-corpus-{windows,linux}-v5.json`, `application-v5-checkpoint.json`
+and matching build/test logs. Non-tail-reference failures remain separate.
 Git preserves removed design documents and implementation history.
 New checkpoints identify the source revision, selected cases and platform.
 
@@ -221,7 +222,8 @@ mapping is explicitly Transformed; only generated nodes with an actual anchor
 are Generated. The checker still consumes ASTs while individual consumers move
 to structural child IDs. Origin metadata alone provides no semantic proof.
 Controlled AST clones retain HIR IDs; syntax equality deliberately ignores them.
-Ordinary call replay checks actual callee/operand/result IDs and dynamic contexts.
+Unified application replay checks callee/operand/result IDs, order and contexts.
+Historical values keep their allocation epoch; later views require explicit transport.
 Source type graphs retain shared coordinates and explicit unknowns; binding views
 reside in one immutable snapshot store rather than being rebuilt at each projection.
 
@@ -326,12 +328,12 @@ These are implementation gaps, not waived language requirements:
   frozen environments for captured contracts. Active Checker working tables,
   expression execution and most validators still need domain/typed-ID migration.
   Fixed fixture files are centralized; many older inline Rust programs remain.
-- Extend storage source/replay to pipelines, recursive schemas, inferred callback
+- Extend storage source/replay to recursive schemas, inferred callback
   inputs and every handler activation. The six focused dimension groups pass;
   broader storage coverage still causes explicit unresolved results.
 - Preserve open generic/row and callable sources through arguments, returns,
   captures, constructors, annotations and containers.
-- Record actual pipeline and generated I/O callback invocations.
+- Record generated I/O callbacks and resumed-answer binding sources.
   An enclosing ordinary call cannot supply their missing observations.
 - Complete generated iterator capture validation and successor-state handling.
 - Resolve the preserved nine-scope channel replay-state case with finite work.
@@ -354,6 +356,11 @@ No confirmed contradictory normative requirements are currently recorded.
 Record contradictions here with exact SPEC/STD sections, a minimal example,
 conservative interim behavior and the decision needed.
 Do not classify implementation defects as specification conflicts.
+
+**Computed pipeline callees.** SPEC's Pipeline Operators orders the left operand
+before written right arguments, but does not fix a computed right callee's place.
+For `x |> computed()(a)`, the implementation retains left, written arguments,
+then callee evaluation. This order is a pending clarification, not a new rule.
 
 **Runtime meta constants.** Compile-Time Computation permits immutable meta
 results at runtime; External State Tracking still requires named sources.

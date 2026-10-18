@@ -2,6 +2,7 @@
 //! cardinality is deliberately absent; only a real literal AST supplies fresh
 //! receiving context. This private state is replayed through CallArguments.
 use super::*;
+use crate::hir::application::EvaluationRole;
 use crate::sema::{
     copy_contract::CopyCallEventId,
     default_uses::DefaultUseId,
@@ -24,11 +25,6 @@ mod source_uid;
 mod storage_inputs;
 pub(super) use producing_result::storage_closed_source_syntax;
 
-pub(super) struct Callee<'a> {
-    pub value: &'a Value,
-    pub syntax: &'a Expr,
-}
-
 #[derive(Clone, Debug)]
 struct Input {
     context: InvocationContext,
@@ -41,6 +37,7 @@ struct Input {
 
 #[derive(Default)]
 pub(super) struct State {
+    evaluated: BTreeMap<(CopyCallEventId, EvaluationRole), Input>,
     supplied: BTreeMap<CopyCallEventId, BTreeMap<usize, Input>>,
     defaults: BTreeMap<(CopyCallEventId, usize), Input>,
     operands: Vec<Operand>,
@@ -315,10 +312,10 @@ impl Checker {
         crate::static_eval::effects::bounded_argument_key(&syntax, &self.effect_type_binders)
     }
 
-    pub(super) fn record_call_input_source(
+    pub(super) fn capture_call_input_source(
         &mut self,
         event: CopyCallEventId,
-        slot: usize,
+        role: EvaluationRole,
         syntax: &Expr,
         observed: Option<usize>,
         frame: &Frame,
@@ -334,12 +331,24 @@ impl Checker {
             || !self
                 .invocation_expressions
                 .get(expression)
-                .is_some_and(|row| {
-                    row.expression == expression
-                        && row.context == context
-                        && row.argument_of == Some((event, slot as u32))
-                })
+                .is_some_and(|row| row.expression == expression && row.context == context)
         {
+            return;
+        }
+        let observations: Vec<_> = self
+            .call_arguments
+            .iter()
+            .filter(|preparation| preparation.source_event == event)
+            .flat_map(|preparation| preparation.evaluated.iter())
+            .filter(|evaluated| {
+                evaluated.role == role && evaluated.observation.expression == expression
+            })
+            .collect();
+        let [evaluated] = observations.as_slice() else {
+            return;
+        };
+        let allocation_epoch = evaluated.observation.allocation_epoch;
+        if allocation_epoch != self.recency_moves.len() {
             return;
         }
         let value = observation.value.clone();
@@ -350,23 +359,60 @@ impl Checker {
             );
             return;
         };
-        let allocation_epoch = self.recency_moves.len();
         let key = self.original_source_receiving_key(&value, syntax, frame);
+        self.call_input_source.evaluated.insert(
+            (event, role),
+            Input {
+                context,
+                expression: Some(expression),
+                allocation_epoch,
+                key,
+                fresh,
+                default: None,
+            },
+        );
+    }
+
+    /// Bind an already evaluated Source; this operation never rereads a Name,
+    /// receiver graph, annotation or inferred type after the callee runs.
+    pub(super) fn bind_call_input_source(
+        &mut self,
+        event: CopyCallEventId,
+        role: EvaluationRole,
+        slot: usize,
+        frame: &Frame,
+    ) -> bool {
+        let Some(input) = self
+            .call_input_source
+            .evaluated
+            .get(&(event, role))
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(expression) = input.expression else {
+            return false;
+        };
+        if input.context != self.invocation_context(frame.callable_owner) {
+            return false;
+        }
+        let Some(row) = self.invocation_expressions.get_mut(expression) else {
+            return false;
+        };
+        let mapped = (event, slot as u32);
+        if row.expression != expression
+            || row.context != input.context
+            || row.argument_of.is_some_and(|old| old != mapped)
+        {
+            return false;
+        }
+        row.argument_of = Some(mapped);
         self.call_input_source
             .supplied
             .entry(event)
             .or_default()
-            .insert(
-                slot,
-                Input {
-                    context,
-                    expression: Some(expression),
-                    allocation_epoch,
-                    key,
-                    fresh,
-                    default: None,
-                },
-            );
+            .insert(slot, input)
+            .is_none()
     }
 
     pub(super) fn record_default_call_input_source(

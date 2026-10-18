@@ -1,5 +1,6 @@
 //! Frontend definitions and the semantic verification boundary.
 use ril_compiler_core::{ids::DefinitionId, source::Span};
+pub mod application;
 pub mod nodes;
 pub use nodes::HirProgram;
 use std::sync::Arc;

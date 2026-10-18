@@ -120,8 +120,41 @@ fn removing_an_unused_explicit_own_row_or_its_application_is_not_vacuous() {
     explicit_damaged(&missing);
     let mut missing = facts.clone();
     let event = instance.source_event.unwrap();
+    let preparation = facts
+        .call_arguments
+        .iter()
+        .find(|row| row.source_event == event)
+        .unwrap();
+    assert_eq!(preparation.target, Some(target));
+    assert!(!preparation.evaluated.is_empty());
+    assert!(
+        facts.copy_call_events[event.0 as usize]
+            .callee_expression
+            .is_some()
+    );
+    assert!(
+        facts.copy_call_events[event.0 as usize]
+            .result_expression
+            .is_some()
+    );
     let row = &mut missing.copy_call_events[event.0 as usize];
     row.target = None;
+    let errors = solved_facts(&missing).unwrap_err();
+    assert!(
+        errors.iter().any(|issue| matches!(&issue.kind,
+        ValidationIssueKind::EvaluationIdentity(message)
+        if message == "application preparation resolved target differs from its actual event")
+            && issue.span == Some(facts.copy_call_events[event.0 as usize].span)),
+        "{errors:?}"
+    );
+    // Keep the explicit-source obligation covered after coordinating both
+    // application descriptors; target agreement alone cannot replace it.
+    missing
+        .call_arguments
+        .iter_mut()
+        .find(|row| row.source_event == event)
+        .unwrap()
+        .target = None;
     explicit_damaged(&missing);
 }
 

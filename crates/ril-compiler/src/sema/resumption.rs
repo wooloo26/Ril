@@ -59,7 +59,7 @@ pub struct ContinuationScopeExit {
 use super::{
     SemanticFacts,
     copy_contract::CopyInvocationStatus,
-    facts::{NodeId, Participant},
+    facts::Participant,
     model::{AnswerTransport, Ty, Value},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,30 +82,6 @@ fn nested(value: &Value) -> impl Iterator<Item = &Value> {
     .flatten()
     .map(Box::as_ref)
     .chain(value.variant_witnesses.values().map(Box::as_ref))
-}
-
-fn transported(value: &Value, moves: &[(NodeId, NodeId)]) -> Value {
-    fn remap(value: &mut Value, recent: NodeId, older: NodeId) {
-        value.origins.remap(recent, older);
-        for payload in [
-            &mut value.option_payload,
-            &mut value.result_payload,
-            &mut value.result_success,
-            &mut value.result_error,
-            &mut value.variant_payload,
-        ]
-        .into_iter()
-        .flatten()
-        .chain(value.variant_witnesses.values_mut())
-        {
-            remap(payload, recent, older);
-        }
-    }
-    let mut result = value.clone();
-    for &(recent, older) in moves {
-        remap(&mut result, recent, older);
-    }
-    result
 }
 
 fn context_valid(context: InvocationContext, facts: &SemanticFacts) -> bool {
@@ -901,12 +877,12 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             .expressions
             .get(step.continuation_expression)
             .ok_or_else(|| bad("resumption continuation expression is missing"))?;
+        // Both records were emitted at this exact point. Comparing only their
+        // final transported graphs would hide a forged historical identity
+        // when multiple recent allocations collapse into the same older node.
         if expression.span != step.span
-            || expression.value
-                != transported(
-                    &step.continuation_value.value,
-                    &facts.allocation_history[step.continuation_epoch..],
-                )
+            || expression.allocation_epoch != step.continuation_epoch
+            || expression.value != step.continuation_value.value
             || !facts.invocation_expressions.iter().any(|event| {
                 event.expression == step.continuation_expression && event.context == step.context
             })
@@ -919,11 +895,8 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             .expressions
             .get(step.arm_expression)
             .ok_or_else(|| bad("resumption suffix expression is missing"))?;
-        if output.value
-            != transported(
-                &step.arm_value.value,
-                &facts.allocation_history[step.completion_epoch..],
-            )
+        if output.allocation_epoch != step.completion_epoch
+            || output.value != step.arm_value.value
             || !facts.invocation_expressions.iter().any(|event| {
                 event.expression == step.arm_expression && event.context == step.context
             })

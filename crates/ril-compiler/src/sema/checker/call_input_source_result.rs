@@ -1,5 +1,6 @@
 //! Result Type selection keeps the original declaration's source coordinates.
 use super::*;
+use crate::hir::application::AstApplication;
 use crate::sema::{effect_identity::StaticBinderSort, record_bounds::BoundScope};
 impl Checker {
     /// Resolve only the actual producing result's flexible leaves before the
@@ -14,7 +15,7 @@ impl Checker {
     ) {
         let Some(expected) = expected else { return };
         self.prepare_original_carrier_context(syntax, value, expected, source, frame);
-        if !matches!(syntax.kind, ExprKind::Call { .. })
+        if AstApplication::from_ast(syntax).is_none()
             || self.pending_result_binders(value).is_empty()
         {
             return;
@@ -58,9 +59,10 @@ impl Checker {
         source: Option<&source_reception::Target>,
         frame: &Frame,
     ) {
-        let ExprKind::Call { callee, arguments } = &syntax.kind else {
+        let Some(application) = AstApplication::from_ast(syntax) else {
             return;
         };
+        let (callee, arguments) = (application.callee, &application.operands);
         let Some(&(event, context)) = self.call_input_source.carriers.get(&value.cause.0) else {
             return;
         };
@@ -127,7 +129,7 @@ impl Checker {
                 let actual = self.expression_facts.get(token)?;
                 (input.context == context
                     && actual.source_id.is_some()
-                    && actual.source_id == arguments[0].value.hir_id
+                    && actual.source_id == arguments[0].expression.hir_id
                     && actual.value.cause == payload.cause
                     && self.invocation_expressions.get(token).is_some_and(|row| {
                         row.expression == token
@@ -189,10 +191,8 @@ impl Checker {
         syntax: &Expr,
         frame: &Frame,
     ) -> Option<ArgumentKey> {
-        let ExprKind::Call { arguments, .. } = &syntax.kind else {
-            return None;
-        };
-        if arguments.len() != 1 {
+        let application = AstApplication::from_ast(syntax)?;
+        if application.operands.len() != 1 {
             return None;
         }
         let (event, context) = self.call_input_source.carriers.get(&value.cause.0)?;
@@ -302,9 +302,8 @@ impl Checker {
         syntax: &Expr,
         frame: &Frame,
     ) -> Option<ArgumentKey> {
-        let ExprKind::Call { callee, .. } = &syntax.kind else {
-            return None;
-        };
+        let application = AstApplication::from_ast(syntax)?;
+        let callee = application.callee;
         let context = self.invocation_context(frame.callable_owner);
         let causes = result_causes(self, value.cause)?;
         let calls: Vec<_> = self

@@ -547,6 +547,24 @@ pub struct Value {
     pub variant_witnesses: BTreeMap<String, Box<Value>>,
 }
 impl Value {
+    /// Rebase node references only. Access, retention, Result and type duties
+    /// belong to the original value and are never reconstructed by transport.
+    pub(crate) fn remap_origins(&mut self, recent: NodeId, older: NodeId) {
+        self.origins.remap(recent, older);
+        for payload in [
+            &mut self.variant_payload,
+            &mut self.option_payload,
+            &mut self.result_payload,
+            &mut self.result_success,
+            &mut self.result_error,
+        ]
+        .into_iter()
+        .flatten()
+        .chain(self.variant_witnesses.values_mut())
+        {
+            payload.remap_origins(recent, older);
+        }
+    }
     pub fn inherit_copy_dependencies(
         &mut self,
         dependencies: &BTreeSet<super::copy_contract::CopyBoundaryId>,

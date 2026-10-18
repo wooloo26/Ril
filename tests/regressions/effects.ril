@@ -43,3 +43,15 @@ pub fn test_native(){let answer=ordinary_answer();assert(answer==[7])}
 --@ entry: test_native
 --@ use-source: source-non-tail-reference-answer
 --@ end-case
+
+--@ case: non-tail-reference-answer-recency
+--@ mode: check-pass
+--@ spec: SPEC#effect-handlers
+--@ file: source.ril
+
+eff Read{get()->int}
+fn data(number:int)->[]int{[number]}
+fn answer()->[]int{with Read::get()->{let answer=resume 7;let other=data(99);assert(other[0]==99&&answer[0]==7);clone(answer)};data(Read::get())}
+fn example(){for [0,1] as index{let values=answer();assert(values[0]==7)}}
+--@ end-file
+--@ end-case

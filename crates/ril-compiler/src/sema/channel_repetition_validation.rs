@@ -1,6 +1,7 @@
 //! Physical entry bounds reconstructed from actual application identities.
 //! Source spans locate syntax only after the dynamic call/closure ancestry has
 //! selected its callable. A representative body never proves event count.
+use crate::hir::application::AstApplication;
 use crate::sema::{
     SemanticFacts, channel_messages::*, copy_contract::CopyCallEventId,
     effect_identity::InvocationContext, model::Callable,
@@ -410,11 +411,10 @@ impl<'a> Analysis<'a> {
         if expression.value.callables.len() != 1 {
             return Err("channel application has no single selected actual callee".into());
         }
-        let (syntax, mut bounds) = self.syntax(call.owner, call.span, true)?;
-        let ExprKind::Call { callee, .. } = &syntax.kind else {
-            unreachable!()
-        };
-        if expression.span != callee.span {
+        let (syntax, mut bounds) = self.source_index.application_syntax(id, &mut self.work)?;
+        let application = AstApplication::from_ast(syntax)
+            .ok_or("channel application source has no complete structure")?;
+        if expression.source_id.is_none() || expression.source_id != application.callee.hir_id {
             return Err(
                 "channel source callee does not belong to this application occurrence".into(),
             );
@@ -425,14 +425,51 @@ impl<'a> Analysis<'a> {
                 let callback = match name.as_str() {
                     "Array::map" | "Array::filter" | "Array::fold" | "Array::find"
                     | "Array::any" | "Array::all" | "Array::for_each" => {
-                        let ExprKind::Call { arguments, .. } = &syntax.kind else {
-                            unreachable!()
+                        let mut preparations = facts
+                            .call_arguments
+                            .iter()
+                            .filter(|row| row.source_event == id);
+                        let preparation = preparations
+                            .next()
+                            .ok_or("channel callback lacks its actual parameter mapping")?;
+                        if preparations.next().is_some()
+                            || !preparation.slots_bound
+                            || !preparation.evaluation_complete
+                        {
+                            return Err(
+                                "channel callback parameter mapping is incomplete or ambiguous"
+                                    .into(),
+                            );
+                        }
+                        let count = if let Some(actual) = preparation.supplied.get(&0) {
+                            let mut steps = preparation
+                                .evaluated
+                                .iter()
+                                .filter(|step| step.observation == *actual);
+                            let step = steps
+                                .next()
+                                .ok_or("channel input has no actual evaluation step")?;
+                            if steps.next().is_some() {
+                                return Err("channel input step is ambiguous".into());
+                            }
+                            let operand = application
+                                .operand(step.role)
+                                .ok_or("channel input is not an operand")?;
+                            if operand.expression.hir_id.is_none()
+                                || !facts
+                                    .expressions
+                                    .get(actual.expression)
+                                    .is_some_and(|fact| fact.source_id == operand.expression.hir_id)
+                            {
+                                return Err(
+                                    "channel input differs from its original HIR operand".into()
+                                );
+                            }
+                            cardinality(operand.expression)
+                        } else {
+                            None
                         };
-                        Some(Bounds::count(
-                            arguments
-                                .first()
-                                .and_then(|argument| cardinality(&argument.value)),
-                        ))
+                        Some(Bounds::count(count))
                     }
                     "Io::read_all" | "Io::write_all" => Some(Bounds {
                         once: false,
@@ -535,7 +572,7 @@ impl<'a> Analysis<'a> {
             match node {
                 Node::Expr(expression, bounds) => {
                     if expression.span == span
-                        && (!call_only || matches!(expression.kind, ExprKind::Call { .. }))
+                        && (!call_only || AstApplication::from_ast(expression).is_some())
                     {
                         if found.is_some() {
                             return Err("channel source application syntax is ambiguous".into());

@@ -1,6 +1,7 @@
 //! Complete-evaluation truth from frozen Source and physical observations.
 //! Missing premises supply no truth. No final inspection bit is consumed.
 use super::*;
+use crate::hir::application::AstApplication;
 use crate::sema::{
     copy_contract::{CopyInvocation, CopyInvocationStatus},
     model::{Callable, ClosureInfo, Mode, Ty},
@@ -198,20 +199,29 @@ impl<'a> Analysis<'a> {
                         else {
                             return Ok(None);
                         };
-                        let ExprKind::Call { callee, arguments } = &expression.kind else {
+                        let Some(scope) = AstApplication::from_ast(expression) else {
                             return Ok(None);
                         };
                         let Some(program) = facts.source_program.as_deref() else {
                             return Ok(None);
                         };
-                        if !source::canonical_scope_callee(program, header, callee, &mut self.work)
-                            .map_err(str::to_owned)?
+                        if !source::canonical_scope_callee(
+                            program,
+                            header,
+                            scope.callee,
+                            &mut self.work,
+                        )
+                        .map_err(str::to_owned)?
                         {
                             return Ok(None);
                         }
-                        if arguments.len() != 1
-                            || arguments[0].value.span != lambdas[0].span
-                            || !matches!(arguments[0].value.kind, ExprKind::Lambda { .. })
+                        if scope.operands.len() != 1
+                            || scope.operands[0].expression.hir_id.is_none()
+                            || scope.operands[0].expression.hir_id != objects[0].hir_id
+                            || scope.operands[0].expression.span != lambdas[0].span
+                            || !matches!(scope.operands[0].expression.kind, ExprKind::Lambda { .. })
+                            || application.source_id.is_none()
+                            || application.source_id != expression.hir_id
                             || application.span != expression.span
                             || application.owner != Some(owner)
                             || application.parent != Some(invocation.id)
@@ -241,7 +251,8 @@ impl<'a> Analysis<'a> {
                                 callee_rows += 1;
                             }
                         }
-                        if callee_value.span != callee.span
+                        if callee_value.source_id.is_none()
+                            || callee_value.source_id != scope.callee.hir_id
                             || !matches!(callee_value.value.callables.as_slice(), [Callable::Builtin(name)] if name == "Concurrent::scope")
                             || callee_rows != 1
                         {

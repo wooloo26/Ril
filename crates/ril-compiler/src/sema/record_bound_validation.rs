@@ -11,6 +11,7 @@ use super::{
     },
     record_bounds::*,
 };
+use crate::hir::application::AstApplication;
 use ril_compiler_core::{
     diagnostic::CauseId,
     ids::{CallableOwner, DefinitionId},
@@ -23,10 +24,10 @@ use ril_syntax::ast::{
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 mod call_input_source;
-mod call_input_source_terminal;
 mod default_source_receiving;
 mod dependencies;
 mod explicit_named;
+mod observation_index;
 mod rigid;
 mod scoped_identity;
 mod scoped_members;
@@ -63,13 +64,7 @@ pub(crate) fn ordinary_source_coordinates(
         .collect())
 }
 
-pub(crate) fn original_operand_source_key(
-    facts: &SemanticFacts,
-    event: super::copy_contract::CopyCallEventId,
-    slot: u32,
-) -> Result<ArgumentKey, String> {
-    call_input_source::original_operand_source_key(facts, event, slot)
-}
+pub(crate) use call_input_source::OriginalOperandSources;
 
 pub(crate) fn ordinary_lambda_coordinates(
     facts: &SemanticFacts,
@@ -85,6 +80,7 @@ const LIMIT: usize = 65_536;
 
 struct Replay<'a> {
     facts: &'a SemanticFacts,
+    observations: observation_index::ObservationIndex<'a>,
     functions: BTreeMap<DefinitionId, &'a FunctionInfo>,
     bounds: BTreeMap<(DefinitionId, u32), &'a GenericRecordBound>,
 }
@@ -97,6 +93,9 @@ fn require(condition: bool, description: &str) -> Check {
 
 impl<'a> Replay<'a> {
     fn new(facts: &'a SemanticFacts) -> Check<Self> {
+        crate::sema::evaluation_identity::validate(facts)
+            .map_err(|(_, _, message)| format!("application evaluation structure: {message}"))?;
+        let observations = observation_index::ObservationIndex::new(facts)?;
         require(
             facts.functions.len() <= LIMIT
                 && facts.record_bounds.len() <= LIMIT
@@ -164,6 +163,7 @@ impl<'a> Replay<'a> {
         }
         Ok(Self {
             facts,
+            observations,
             functions,
             bounds,
         })
@@ -2589,10 +2589,9 @@ impl Replay<'_> {
                                         && projection.source.value == *source
                                 })
                                 && self
-                                    .facts
-                                    .invocation_expressions
-                                    .get(write.receiver_expression)
-                                    .is_some_and(|receiver| std::ptr::eq(receiver, base))
+                                    .observations
+                                    .row(write.receiver_expression, &mut 4096)
+                                    .is_ok_and(|receiver| std::ptr::eq(receiver, base))
                         })
                         .count();
                     if covered != 1 {

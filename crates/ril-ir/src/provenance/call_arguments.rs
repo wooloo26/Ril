@@ -18,6 +18,19 @@ pub struct SuppliedArgument {
     pub allocation_epoch: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvaluationRole {
+    Callee,
+    Piped,
+    Written(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplicationEvaluation {
+    pub role: EvaluationRole,
+    pub observation: SuppliedArgument,
+}
+
 #[derive(Debug, Clone)]
 pub struct InvocationExpression {
     pub context: ResumptionContext,
@@ -50,6 +63,8 @@ pub enum ArgumentSource {
 pub struct CallArguments {
     pub source_event: CopyCallEventId,
     pub target: Option<DefinitionId>,
+    pub evaluated: Vec<ApplicationEvaluation>,
+    pub slots_bound: bool,
     pub slots: Vec<ArgumentSource>,
     pub supplied: BTreeMap<u32, SuppliedArgument>,
     pub evaluation_complete: bool,

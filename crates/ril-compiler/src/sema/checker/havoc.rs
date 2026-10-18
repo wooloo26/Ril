@@ -80,9 +80,13 @@ impl Checker {
         for (node, ty) in typed {
             self.invalidate_opaque_collection_members(node);
             if matches!(self.expanded(&ty, &mut BTreeSet::new()), Ty::Array(_)) {
-                self.array_lengths.insert(node, None);
-                if self.fixed_arrays.contains(&node) {
-                    self.unsupported(Span{file:self.file,start:0,end:0},"unknown callable must prove preservation of fixed array storage cardinality");
+                // Fixed cardinality is a storage-type invariant, not an
+                // observed element value. A lawful alias cannot resize that
+                // storage; concrete length-changing calls remain rejected by
+                // invalidate_array_length even through a dynamic view.
+                // Contents and reachable aliases still become uncertain.
+                if !self.fixed_arrays.contains(&node) {
+                    self.array_lengths.insert(node, None);
                 }
             }
             match self.expanded(&ty, &mut BTreeSet::new()) {

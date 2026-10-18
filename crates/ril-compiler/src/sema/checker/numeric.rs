@@ -191,6 +191,7 @@ impl Checker {
                     argument_of: None,
                 });
             self.expression_facts.push(super::super::ExpressionFact {
+                allocation_epoch: self.recency_moves.len(),
                 source_id: match &expression.kind {
                     ExprKind::Unary { operand, .. } => operand.hir_id,
                     _ => None,

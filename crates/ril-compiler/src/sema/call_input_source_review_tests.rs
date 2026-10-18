@@ -284,9 +284,9 @@ fn default_completion_epoch_and_identity_cannot_be_removed_or_borrowed() {
 
 #[test]
 fn later_same_span_and_caller_operand_cannot_pay_an_earlier_physical_application() {
-    let baseline = checked(
-        "fn take(value:[2]int){}\nfn repeat(values:[2]int){var count=0;for [0,1] as step{take(values);count+=1};assert(count>=0)}\nfn example(){repeat([7,9])}",
-    );
+    let baseline = checked(ril_test::case_source(
+        "tests/regressions/evaluation-identity.ril::application-repeated-source-interval",
+    ));
     accepts(&baseline);
     let take = baseline
         .functions
@@ -328,7 +328,7 @@ fn later_same_span_and_caller_operand_cannot_pay_an_earlier_physical_application
                 && baseline.expressions[earlier_token.expression].span
                     == baseline.expressions[later_token.expression].span
             {
-                pair = Some((*earlier_event, *later_token));
+                pair = Some((*earlier_event, *later_event, *later_token));
                 break;
             }
         }
@@ -338,7 +338,8 @@ fn later_same_span_and_caller_operand_cannot_pay_an_earlier_physical_application
     // If ordinary loop analysis changes its observation policy, replace the
     // fixture with an equivalent real repeated occurrence; do not fabricate
     // same-span physical receipts or silently skip this prerequisite.
-    let (event, later_token) = pair.expect("fixture needs two real same-context loop observations");
+    let (event, later_event, later_token) =
+        pair.expect("fixture needs two real same-context loop observations");
     let earlier_token = baseline
         .call_arguments
         .iter()
@@ -359,10 +360,9 @@ fn later_same_span_and_caller_operand_cannot_pay_an_earlier_physical_application
         "later equal-span/context supplied operand grafted into an earlier event",
     );
 
-    // Coordinated metadata mutation also retags the later physical root and
-    // removes the original tag, preserving exact event/slot cardinality. The
-    // independent source interval must reject before a subsequent receipt's
-    // own tag check can become the only reason for rejection.
+    // Swap both physical operands, their prefix tokens and their slot tags.
+    // Global uniqueness and slot cardinality remain intact; the canonical
+    // evaluation interval must still reject the later root at the earlier call.
     let mut changed = baseline;
     *changed
         .call_arguments
@@ -372,20 +372,48 @@ fn later_same_span_and_caller_operand_cannot_pay_an_earlier_physical_application
         .supplied
         .get_mut(&0)
         .unwrap() = later_token;
+    *changed
+        .call_arguments
+        .iter_mut()
+        .find(|row| row.source_event == later_event)
+        .unwrap()
+        .supplied
+        .get_mut(&0)
+        .unwrap() = earlier_token;
     for row in &mut changed.invocation_expressions {
         if row.expression == earlier_token.expression {
-            row.argument_of = None;
+            row.argument_of = Some((later_event, 0));
         }
         if row.expression == later_token.expression {
             row.argument_of = Some((event, 0));
         }
     }
+    let step = changed
+        .call_arguments
+        .iter_mut()
+        .find(|row| row.source_event == event)
+        .unwrap()
+        .evaluated
+        .iter_mut()
+        .find(|step| step.observation == earlier_token)
+        .unwrap();
+    step.observation = later_token;
+    let step = changed
+        .call_arguments
+        .iter_mut()
+        .find(|row| row.source_event == later_event)
+        .unwrap()
+        .evaluated
+        .iter_mut()
+        .find(|step| step.observation == later_token)
+        .unwrap();
+    step.observation = earlier_token;
     let failure = record_bound_validation::validate(&changed)
         .expect_err("joint retagging cannot move a later operand before its own Source boundary");
     assert!(
         failure
             .2
-            .contains("operand borrowed a later sibling or repeated occurrence"),
-        "coordinated metadata mutation must exercise the independent source upper bound: {failure:?}"
+            .contains("application prefix changed its physical order or allocation epoch"),
+        "coordinated metadata mutation must fail at the canonical physical upper bound: {failure:?}"
     );
 }

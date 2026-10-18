@@ -29,6 +29,8 @@ pub struct Graph {
     /// Static HIR identities indexed exactly like `values`. Dynamic invocation
     /// identity remains in `invocation_expressions` and call records.
     pub expression_sources: Vec<Option<ril_compiler_core::ids::ExprId>>,
+    /// Allocation epochs of the corresponding original values.
+    pub expression_epochs: Vec<u64>,
     pub call_arguments: Vec<CallArguments>,
     pub invocation_expressions: Vec<InvocationExpression>,
     pub builtin_source_observations: Vec<BuiltinSourceObservation>,

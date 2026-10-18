@@ -4,6 +4,7 @@ use super::{
     copy_templates::InstanceId,
     effect_identity::{InvocationContext, StaticArgumentWitness},
 };
+pub use crate::hir::application::EvaluationRole;
 use ril_compiler_core::{
     ids::{CallableOwner, DefinitionId},
     source::Span,
@@ -59,10 +60,22 @@ pub struct SuppliedArgument {
     pub allocation_epoch: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplicationEvaluation {
+    pub role: EvaluationRole,
+    pub observation: SuppliedArgument,
+}
+
 #[derive(Debug, Clone)]
 pub struct CallArguments {
     pub source_event: CopyCallEventId,
     pub target: Option<DefinitionId>,
+    /// Exact evaluated prefix, including the callee's own root and epoch.
+    /// It survives an abrupt piped operand even when no callee was evaluated.
+    pub evaluated: Vec<ApplicationEvaluation>,
+    /// Mapping to parameter slots exists only after the actual callee is known.
+    /// False requires empty slots/supplied; it does not erase evaluated work.
+    pub slots_bound: bool,
     pub slots: Vec<ArgumentSource>,
     /// Actual parameter slot after the original public label/position mapping.
     /// Missing observations cannot be replaced by equal-span/value searches.

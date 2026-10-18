@@ -1,3 +1,48 @@
+--@ case: application-repeated-source-interval
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ file: source.ril no-final-newline
+fn take(value:[2]int){}
+fn repeat(values:[2]int){var count=0;for [0,1] as step{take(values);count+=1};assert(count>=0)}
+fn example(){repeat([7,9])}
+--@ end-file
+--@ end-case
+
+--@ case: application-public-pipeline-dynamic-rejected
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: application-public-pipeline-fixed
+-- Error [E0301]: A stored dynamic array cannot acquire a fixed callable input type.
+--@ file: source.ril no-final-newline
+fn run(callback:fn([2]int)->int,values:[]int)->int{values |> callback}
+fn example(){}
+--@ end-file
+--@ end-case
+
+--@ case: application-public-pipeline-fixed
+--@ mode: run-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ entry: test_native
+--@ companion: application-public-pipeline-dynamic-rejected
+--@ file: source.ril
+fn sum(values:[2]int)->int{values[0]+values[1]}
+fn run(callback:fn([2]int)->int,values:[2]int)->int{values |> callback}
+pub fn test_native(){assert(run(sum,[7,9])==16)}
+--@ end-file
+--@ end-case
+
+--@ case: application-public-pipeline-fresh
+--@ mode: run-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ entry: test_native
+--@ companion: application-public-pipeline-dynamic-rejected
+--@ file: source.ril
+fn sum(values:[2]int)->int{values[0]+values[1]}
+fn run(callback:fn([2]int)->int)->int{[7,9] |> callback}
+pub fn test_native(){assert(run(sum)==16)}
+--@ end-file
+--@ end-case
+
 --@ case: repeated-named-call
 --@ mode: run-pass
 --@ spec: SPEC#abstract-machine-and-memory-semantics
@@ -12,6 +57,33 @@ pub fn test_native(){
         index+=1
     }
     assert(total==6)
+}
+--@ end-file
+--@ end-case
+
+--@ case: application-fixed-storage-rejects-opaque-resizer
+--@ mode: check-fail
+--@ spec: SPEC#array-map-and-tuple-types
+--@ companion: application-public-pipeline-fixed
+-- Error [E0301]: A dynamic receiving view cannot authorize resizing fixed storage.
+--@ file: source.ril
+fn grow(mut values:[]int)&mut{values !> Array::push(3)}
+fn forward(action:fn(mut []int)->(),mut values:[2]int)&mut{action(mut values)}
+fn example(){let mut values:[2]int=[1,2];forward(grow,mut values)}
+--@ end-file
+--@ end-case
+
+--@ case: application-fixed-storage-keeps-mutable-elements
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_native
+--@ file: source.ril
+fn change(mut values:[2]int)&mut{values[0]=9}
+fn forward(action:fn(mut [2]int)->(),mut values:[2]int)&mut{action(mut values)}
+pub fn test_native(){
+    let mut values:[2]int=[1,2]
+    forward(change,mut values)
+    assert(values[0]==9 && len(values)==2)
 }
 --@ end-file
 --@ end-case
@@ -149,6 +221,534 @@ fn is_one(value:int)->bool{value is 1}
 pub fn test_native(){
     assert(same_value(1,1));assert(!same_value(2,1));assert(same_value(3,3))
     assert(is_one(1));assert(!is_one(2));assert(is_one(1))
+}
+--@ end-file
+--@ end-case
+
+--@ source: application-prefix-control
+--@ file: source.ril
+var trace=0
+fn mark(digit:int)->int &{mut trace}{trace=trace*10+digit;digit}
+fn combine(left:int,right:int)->int &{mut trace}{mark(4);left*10+right}
+fn ordinary_callee_stop()->int &{mut trace}{
+    ({mark(1);return 7})(mark(2),mark(3))
+}
+fn ordinary_first_stop()->int &{mut trace}{
+    ({mark(1);combine})({mark(2);return 7},mark(3))
+}
+fn ordinary_last_stop()->int &{mut trace}{
+    ({mark(1);combine})(mark(2),{mark(3);return 7})
+}
+fn pipeline_left_stop()->int &{mut trace}{
+    ({mark(1);return 7}) |> ({mark(3);combine})(mark(2))
+}
+fn pipeline_written_stop()->int &{mut trace}{
+    mark(1) |> ({mark(3);combine})({mark(2);return 7})
+}
+fn pipeline_callee_stop()->int &{mut trace}{
+    mark(1) |> ({mark(3);return 7})(mark(2))
+}
+pub fn test_ordinary_callee_never() &{mut trace}{trace=0;assert(ordinary_callee_stop()==7 && trace==1)}
+pub fn test_ordinary_first_never() &{mut trace}{trace=0;assert(ordinary_first_stop()==7 && trace==12)}
+pub fn test_ordinary_last_never() &{mut trace}{trace=0;assert(ordinary_last_stop()==7 && trace==123)}
+pub fn test_pipeline_left_never() &{mut trace}{trace=0;assert(pipeline_left_stop()==7 && trace==1)}
+pub fn test_pipeline_written_never() &{mut trace}{trace=0;assert(pipeline_written_stop()==7 && trace==12)}
+pub fn test_pipeline_callee_never() &{mut trace}{trace=0;assert(pipeline_callee_stop()==7 && trace==123)}
+pub fn test_ordinary_order() &{mut trace}{
+    trace=0
+    let result=({mark(9);combine})(mark(1),mark(2))
+    assert(result==12 && trace==9124)
+}
+pub fn test_pipeline_order() &{mut trace}{
+    trace=0
+    let result=mark(1) |> ({mark(9);combine})(mark(2))
+    assert(result==12 && trace==1294)
+}
+--@ end-file
+--@ end-source
+
+--@ case: application-ordinary-callee-never
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_ordinary_callee_never
+--@ use-source: application-prefix-control
+--@ end-case
+
+--@ case: application-ordinary-first-never
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_ordinary_first_never
+--@ use-source: application-prefix-control
+--@ end-case
+
+--@ case: application-ordinary-last-never
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_ordinary_last_never
+--@ use-source: application-prefix-control
+--@ end-case
+
+--@ case: application-pipeline-left-never
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_left_never
+--@ use-source: application-prefix-control
+--@ end-case
+
+--@ case: application-pipeline-written-never
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_written_never
+--@ use-source: application-prefix-control
+--@ end-case
+
+--@ case: application-pipeline-callee-never
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_callee_never
+-- Computed callees currently follow written arguments; README tracks the specification question.
+--@ use-source: application-prefix-control
+--@ end-case
+
+--@ case: application-ordinary-complete-order
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_ordinary_order
+--@ companion: application-pipeline-complete-order
+--@ use-source: application-prefix-control
+--@ end-case
+
+--@ case: application-pipeline-complete-order
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_order
+--@ companion: application-ordinary-complete-order
+-- Computed callee position follows the current implementation agreement, pending specification clarification.
+--@ use-source: application-prefix-control
+--@ end-case
+
+--@ source: application-named-defaults
+--@ file: source.ril
+var trace=0
+fn mark(digit:int)->int &{mut trace}{trace=trace*10+digit;digit}
+fn combine(first:int,middle:int=first+1,third:int=middle+1)->int{first*100+middle*10+third}
+pub fn test_ordinary_named() &{mut trace}{
+    trace=0
+    assert(combine(third:mark(2),mark(1))==122 && trace==21)
+}
+pub fn test_pipeline_named() &{mut trace}{
+    trace=0
+    assert((mark(1) |> combine(third:mark(2)))==122 && trace==12)
+    assert((7 |> combine())==789)
+}
+--@ end-file
+--@ end-source
+
+--@ case: application-ordinary-named-default
+--@ mode: run-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ entry: test_ordinary_named
+--@ companion: application-pipeline-named-default
+--@ use-source: application-named-defaults
+--@ end-case
+
+--@ case: application-pipeline-named-default
+--@ mode: run-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_named
+--@ companion: application-ordinary-named-default
+--@ use-source: application-named-defaults
+--@ end-case
+
+--@ source: application-fresh-dimensions
+--@ file: source.ril
+fn first(values:[2]int)->int{values[0]}
+fn empty(values:[0][2]int)->int{len(values)}
+pub fn test_ordinary_fresh(){assert(first([7,9])==7);assert(empty([])==0)}
+pub fn test_pipeline_fresh(){assert(([7,9] |> first)==7);assert(([] |> empty)==0)}
+--@ end-file
+--@ end-source
+
+--@ case: application-ordinary-fresh-fixed
+--@ mode: run-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_ordinary_fresh
+--@ companion: application-ordinary-stored-dynamic
+--@ use-source: application-fresh-dimensions
+--@ end-case
+
+--@ case: application-pipeline-fresh-fixed
+--@ mode: run-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_pipeline_fresh
+--@ companion: application-pipeline-stored-dynamic
+--@ use-source: application-fresh-dimensions
+--@ end-case
+
+--@ case: application-ordinary-stored-dynamic
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: application-ordinary-fresh-fixed
+-- Error [E0301]: Stored dynamic source does not acquire a fixed dimension from its backing count.
+--@ file: source.ril
+fn first(values:[2]int)->int{values[0]}
+fn example()->int{let values:[]int=[7,9];first(values)}
+--@ end-file
+--@ end-case
+
+--@ case: application-pipeline-stored-dynamic
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: application-pipeline-fresh-fixed
+-- Error [E0301]: A pipeline preserves the original dynamic source of its left operand.
+--@ file: source.ril
+fn first(values:[2]int)->int{values[0]}
+fn example()->int{let values:[]int=[7,9];values |> first}
+--@ end-file
+--@ end-case
+
+--@ case: application-ordinary-stored-inner-dimension
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+-- Error [E0301]: An empty stored outer array retains its declared inner dimension.
+--@ file: source.ril
+fn empty(values:[0][2]int)->int{len(values)}
+fn example()->int{let values:[0][3]int=[];empty(values)}
+--@ end-file
+--@ end-case
+
+--@ case: application-pipeline-stored-inner-dimension
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+-- Error [E0301]: Pipeline argument binding cannot erase an empty array's inner dimension.
+--@ file: source.ril
+fn empty(values:[0][2]int)->int{len(values)}
+fn example()->int{let values:[0][3]int=[];values |> empty}
+--@ end-file
+--@ end-case
+
+--@ source: application-callee-reassignment
+--@ file: source.ril
+fn first(values:[]int)->int{values[0]}
+pub fn test_ordinary_reassignment(){
+    var values:[]int=[7,9]
+    let result=({values=[11,13];first})(values)
+    assert(result==11 && values[0]==11)
+}
+pub fn test_pipeline_reassignment(){
+    var values:[]int=[7,9]
+    let result=values |> ({values=[11,13];first})
+    assert(result==7 && values[0]==11)
+}
+--@ end-file
+--@ end-source
+
+--@ case: application-ordinary-callee-reassignment
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_ordinary_reassignment
+--@ companion: application-pipeline-callee-reassignment
+--@ use-source: application-callee-reassignment
+--@ end-case
+
+--@ case: application-pipeline-callee-reassignment
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_reassignment
+--@ companion: application-ordinary-callee-reassignment
+-- The already evaluated left value survives a later computed-callee assignment.
+--@ use-source: application-callee-reassignment
+--@ end-case
+
+--@ case: application-ordinary-callee-cannot-strengthen-source
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+-- Error [E0301]: Reassigning a dynamic variable does not replace its declared source view.
+--@ file: source.ril
+fn exact(values:[2]int)->int{values[0]}
+fn example()->int{var values:[]int=[7,9];({values=[11,13];exact})(values)}
+--@ end-file
+--@ end-case
+
+--@ case: application-pipeline-callee-cannot-strengthen-source
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+-- Error [E0301]: A later callee evaluation cannot strengthen the previously evaluated argument's source.
+--@ file: source.ril
+fn exact(values:[2]int)->int{values[0]}
+fn example()->int{var values:[]int=[7,9];values |> ({values=[11,13];exact})}
+--@ end-file
+--@ end-case
+
+--@ source: application-mutable-reception
+--@ file: source.ril
+type Cell={mut value:int}
+fn bump(mut cell:Cell)&mut{cell.value+=1}
+fn retain(^mut cell:Cell)->Cell &^mut{cell}
+pub fn test_pipeline_mut(){let mut cell=Cell.{value:1};cell !> bump;assert(cell.value==2)}
+pub fn test_ordinary_retained(){
+    let mut cell=Cell.{value:1}
+    let mut returned=retain(^mut cell)
+    returned.value+=1
+    assert(cell.value==2)
+}
+--@ end-file
+--@ end-source
+
+--@ case: application-pipeline-temporary-mut
+--@ mode: run-pass
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_mut
+--@ use-source: application-mutable-reception
+--@ end-case
+
+--@ case: application-ordinary-explicit-retention
+--@ mode: run-pass
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ entry: test_ordinary_retained
+--@ use-source: application-mutable-reception
+--@ end-case
+
+--@ case: application-ordinary-mut-is-not-retention
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- Error [E0406]: An explicit temporary borrow does not satisfy a retained parameter mode.
+--@ file: source.ril
+type Cell={mut value:int}
+fn retain(^mut cell:Cell)->Cell &^mut{cell}
+fn example(){let mut cell=Cell.{value:1};let mut returned=retain(mut cell);returned.value+=1}
+--@ end-file
+--@ end-case
+
+--@ case: application-pipeline-mut-is-not-retention
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ spec: SPEC#pipeline-operators
+-- Error [E0406]: A mutating pipeline supplies mut, never an implicit retained-sharing marker.
+--@ file: source.ril
+type Cell={mut value:int}
+fn retain(^mut cell:Cell)->Cell &^mut{cell}
+fn example(){let mut cell=Cell.{value:1};let mut returned=cell !> retain;returned.value+=1}
+--@ end-file
+--@ end-case
+
+--@ case: application-ordinary-mut-requires-place
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- Error [E0410]: Mutable arguments designate addressable targets.
+--@ file: source.ril
+type Cell={mut value:int}
+fn bump(mut cell:Cell)&mut{cell.value+=1}
+fn example(){bump(mut Cell.{value:1})}
+--@ end-file
+--@ end-case
+
+--@ case: application-pipeline-mut-requires-place
+--@ mode: check-fail
+--@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
+--@ spec: SPEC#pipeline-operators
+-- Error [E0410]: The implicit mutable pipeline operand must be an addressable target.
+--@ file: source.ril
+type Cell={mut value:int}
+fn bump(mut cell:Cell)&mut{cell.value+=1}
+fn example(){Cell.{value:1} !> bump}
+--@ end-file
+--@ end-case
+
+--@ case: application-repeated-ordinary-and-pipeline
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_native
+--@ file: source.ril
+fn combine(first:int,second:int)->int{first*10+second}
+fn ordinary(first:int)->int{combine(first,2)}
+fn piped(first:int)->int{first |> combine(2)}
+pub fn test_native(){
+    assert(ordinary(1)==12 && ordinary(3)==32)
+    assert(piped(1)==12 && piped(3)==32)
+}
+--@ end-file
+--@ end-case
+
+--@ source: application-suspending-prefixes
+--@ file: source.ril
+eff Read{get()->int}
+var trace=0
+fn mark(digit:int)->int &{mut trace}{trace=trace*10+digit;digit}
+fn combine(left:int,right:int)->int &{mut trace}{mark(4);left*10+right}
+fn ordinary_suspended()->int @Read &{mut trace}{
+    ({let ignored=Read::get();mark(3);combine})(mark(1),mark(2))
+}
+fn pipeline_left_suspended()->int @Read &{mut trace}{
+    Read::get() |> ({mark(3);combine})(mark(2))
+}
+fn pipeline_written_suspended()->int @Read &{mut trace}{
+    mark(1) |> ({mark(3);combine})({let value=Read::get();mark(2);value})
+}
+fn pipeline_callee_suspended()->int @Read &{mut trace}{
+    mark(1) |> ({let ignored=Read::get();mark(3);combine})(mark(2))
+}
+pub fn test_ordinary_suspended() &{mut trace}{
+    trace=0
+    with Read::get()->resume 0
+    assert(ordinary_suspended()==12 && trace==3124)
+}
+pub fn test_pipeline_left_suspended() &{mut trace}{
+    trace=0
+    with Read::get()->{mark(1);resume 1}
+    assert(pipeline_left_suspended()==12 && trace==1234)
+}
+pub fn test_pipeline_written_suspended() &{mut trace}{
+    trace=0
+    with Read::get()->resume 2
+    assert(pipeline_written_suspended()==12 && trace==1234)
+}
+pub fn test_pipeline_callee_suspended() &{mut trace}{
+    trace=0
+    with Read::get()->resume 0
+    assert(pipeline_callee_suspended()==12 && trace==1234)
+}
+--@ end-file
+--@ end-source
+
+--@ case: application-ordinary-suspending-callee
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ entry: test_ordinary_suspended
+--@ companion: application-pipeline-suspending-callee
+--@ use-source: application-suspending-prefixes
+--@ end-case
+
+--@ case: application-pipeline-suspending-left
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_left_suspended
+--@ use-source: application-suspending-prefixes
+--@ end-case
+
+--@ case: application-pipeline-suspending-written
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_written_suspended
+--@ use-source: application-suspending-prefixes
+--@ end-case
+
+--@ case: application-pipeline-suspending-callee
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_pipeline_callee_suspended
+--@ companion: application-ordinary-suspending-callee
+-- Computed callees follow written arguments under the current implementation agreement.
+--@ use-source: application-suspending-prefixes
+--@ end-case
+
+--@ case: application-default-binding-control
+--@ mode: run-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ entry: test_native
+--@ file: source.ril
+fn selected(value:int=7)->int{value}
+pub fn test_native(){
+    assert(selected()==7)
+    assert(selected(value:9)==9)
+    assert((11 |> selected)==11)
+}
+--@ end-file
+--@ end-case
+
+--@ case: application-ordinary-unknown-label-before-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: application-default-binding-control
+-- Error [E0339]: An unknown label rejects binding before omitted defaults or body entry.
+--@ file: source.ril
+fn selected(value:int=7)->int{value}
+fn example()->int{selected(unknown:9)}
+--@ end-file
+--@ end-case
+
+--@ case: application-pipeline-unknown-label-before-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ spec: SPEC#pipeline-operators
+--@ companion: application-default-binding-control
+-- Error [E0339]: Pipeline argument labels must bind before any defaults or body entry.
+--@ file: source.ril
+fn selected(value:int=7)->int{value}
+fn example()->int{7 |> selected(unknown:9)}
+--@ end-file
+--@ end-case
+
+--@ case: application-ordinary-duplicate-label-before-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: application-default-binding-control
+-- Error [E0325]: A repeated selection rejects the application even when defaults exist.
+--@ file: source.ril
+fn selected(value:int=7)->int{value}
+fn example()->int{selected(7,value:9)}
+--@ end-file
+--@ end-case
+
+--@ case: application-pipeline-duplicate-label-before-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ spec: SPEC#pipeline-operators
+--@ companion: application-default-binding-control
+-- Error [E0325]: A written label cannot select the parameter already bound by the piped value.
+--@ file: source.ril
+fn selected(value:int=7)->int{value}
+fn example()->int{7 |> selected(value:9)}
+--@ end-file
+--@ end-case
+
+--@ case: application-ordinary-excess-before-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: application-default-binding-control
+-- Error [E0314]: Excess arguments reject binding before defaults or the body are evaluated.
+--@ file: source.ril
+fn selected(value:int=7)->int{value}
+fn example()->int{selected(7,9)}
+--@ end-file
+--@ end-case
+
+--@ case: application-pipeline-excess-before-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ spec: SPEC#pipeline-operators
+--@ companion: application-default-binding-control
+-- Error [E0314]: The implicit piped argument counts toward ordinary application arity.
+--@ file: source.ril
+fn selected(value:int=7)->int{value}
+fn example()->int{7 |> selected(9)}
+--@ end-file
+--@ end-case
+
+--@ case: application-loop-computed-callee-fixed-empty
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ spec: SPEC#pipeline-operators
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_native
+--@ file: source.ril
+fn take(values:[0][2]int)->int{len(values)+1}
+pub fn test_native(){
+    var index=0
+    var total=0
+    while index<3{
+        total+=({take})([])
+        total+=([] |> ({take}))
+        index+=1
+    }
+    assert(index==3 && total==6)
 }
 --@ end-file
 --@ end-case

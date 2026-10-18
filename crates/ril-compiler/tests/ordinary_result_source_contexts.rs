@@ -85,13 +85,79 @@ fn deleting_a_producing_meta_resolution_cannot_erase_its_source_obligation() {
 
 #[test]
 fn an_unrecorded_pipeline_cannot_authorize_sensitive_public_inputs() {
-    let source =
-        "fn run(callback:fn([2]int)->int,values:[]int)->int{values |> callback}\nfn example(){}";
-    let outcome = Session::new(source.as_bytes().to_vec()).check();
-    assert!(
-        matches!(outcome, CompilationOutcome::NotImplemented { .. }),
-        "{source}\n{outcome:?}"
-    );
+    use ril_compiler::sema::validate::ValidationIssueKind;
+    let prefix = "tests/regressions/evaluation-identity.ril::";
+    let source = ril_test::case_source(&format!(
+        "{prefix}application-public-pipeline-dynamic-rejected"
+    ));
+    for target in ["pointer32", "pointer64"] {
+        let outcome = Session::with_options(
+            source.as_bytes().to_vec(),
+            CheckOptions {
+                target: target.into(),
+                ..Default::default()
+            },
+        )
+        .check();
+        assert!(
+            matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+            if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0301")),
+            "{outcome:?}"
+        );
+    }
+    for case in [
+        "application-public-pipeline-fixed",
+        "application-public-pipeline-fresh",
+    ] {
+        let facts = checked(ril_test::case_source(&format!("{prefix}{case}")));
+        let event = facts
+            .copy_call_events
+            .iter()
+            .find(|event| {
+                event
+                    .source_id
+                    .and_then(|id| facts.semantic_hir.as_ref()?.application(id).ok()?)
+                    .is_some_and(|application| {
+                        application.kind
+                            == ril_compiler::hir::application::ApplicationKind::Pipeline
+                    })
+            })
+            .unwrap();
+        let mut missing = facts.clone();
+        missing
+            .call_arguments
+            .retain(|row| row.source_event != event.id);
+        let errors = solved_facts(&missing).unwrap_err();
+        assert!(
+            errors.iter().any(
+                |issue| matches!(&issue.kind, ValidationIssueKind::EvaluationIdentity(message)
+            if message == "an incomplete application preparation claims an entered callable body"
+                || message == "an actual argument root lost its exact call/slot preparation")
+            ),
+            "{errors:?}"
+        );
+        let mut erased = facts.clone();
+        erased.copy_call_events.clear();
+        erased.call_arguments.clear();
+        erased.default_uses.clear();
+        for invocation in &mut erased.copy_invocations {
+            invocation.source_event = None;
+        }
+        for invocation in &mut erased.closure_invocations {
+            invocation.source_event = None;
+        }
+        for row in &mut erased.invocation_expressions {
+            row.argument_of = None;
+        }
+        let errors = solved_facts(&erased).unwrap_err();
+        assert!(
+            errors.iter().any(
+                |issue| matches!(&issue.kind, ValidationIssueKind::EvaluationIdentity(message)
+            if message == "an actual HIR Call root lost its dynamic call event")
+            ),
+            "{errors:?}"
+        );
+    }
 }
 
 #[test]

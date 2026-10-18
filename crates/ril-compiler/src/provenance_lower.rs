@@ -1409,6 +1409,11 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .iter()
         .map(|expression| expression.source_id)
         .collect();
+    graph.expression_epochs = facts
+        .expressions
+        .iter()
+        .map(|expression| expression.allocation_epoch as u64)
+        .collect();
     graph.values = facts
         .expressions
         .iter()
@@ -2898,6 +2903,7 @@ mod contract_graph_tests {
         input.source_type_witness = Some(tampered);
         let facts = SemanticFacts {
             expressions: vec![crate::sema::ExpressionFact {
+                allocation_epoch: 0,
                 source_id: None,
                 span: declaration.span,
                 value: input,
@@ -3060,6 +3066,7 @@ mod contract_graph_tests {
                 argument_of: Some((c::CopyCallEventId(8), 0)),
             }],
             expressions: vec![crate::sema::ExpressionFact {
+                allocation_epoch: 0,
                 source_id: None,
                 span,
                 value: input.clone(),
@@ -3067,6 +3074,14 @@ mod contract_graph_tests {
             call_arguments: vec![d::CallArguments {
                 source_event: c::CopyCallEventId(8),
                 target: Some(DefinitionId(7)),
+                evaluated: vec![d::ApplicationEvaluation {
+                    role: d::EvaluationRole::Written(0),
+                    observation: d::SuppliedArgument {
+                        expression: 0,
+                        allocation_epoch: 2,
+                    },
+                }],
+                slots_bound: true,
                 slots: vec![
                     d::ArgumentSource::Supplied,
                     d::ArgumentSource::Default(d::DefaultUseId(0)),
@@ -3131,6 +3146,9 @@ mod contract_graph_tests {
         );
         let call = &graph.call_arguments[0];
         assert_eq!(call.source_event, p::CopyCallEventId(8));
+        assert!(call.slots_bound);
+        assert_eq!(call.evaluated[0].role, p::EvaluationRole::Written(0));
+        assert_eq!(call.evaluated[0].observation, call.supplied[&0]);
         assert_eq!(call.supplied[&0].expression, 0);
         assert_eq!(call.supplied[&0].allocation_epoch, 2);
         assert_eq!(

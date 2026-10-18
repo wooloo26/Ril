@@ -381,15 +381,29 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
                         operator,
                         right,
                     } if matches!(operator.as_str(), "!>" | "|>") => {
+                        let application = AstApplication::from_ast(expression);
+                        if application.is_some() {
+                            calls.push(CallSite { owner, expression });
+                        }
                         children.push(left.as_ref());
                         if let ExprKind::Call { callee, arguments } = &right.kind {
                             // This is the pipeline's application notation. Its
                             // callee and real operands are evaluated directly;
                             // the wrapper is not a separate Call occurrence.
-                            children.push(callee.as_ref());
+                            pending.push(Pending::Expression(
+                                owner,
+                                callee,
+                                application.as_ref().map(|_| expression),
+                                depth + 1,
+                            ));
                             children.extend(arguments.iter().map(|argument| &argument.value));
                         } else {
-                            children.push(right.as_ref());
+                            pending.push(Pending::Expression(
+                                owner,
+                                right,
+                                application.as_ref().map(|_| expression),
+                                depth + 1,
+                            ));
                         }
                     }
                     ExprKind::Binary { left, right, .. }
@@ -698,6 +712,11 @@ impl Replay<'_> {
             .generic
         {
             let check = || -> Check {
+                if !self.facts.expressions.iter().any(|observed| {
+                    observed.source_id.is_some() && observed.source_id == site.generic.hir_id
+                }) {
+                    return Ok(());
+                }
                 let Some(target) = self.explicit_source_target(&site)? else {
                     return Ok(());
                 };
@@ -718,6 +737,25 @@ impl Replay<'_> {
                     "actual explicit named source has no physical application coverage",
                 )?;
                 for event in events {
+                    let preparation = self
+                        .facts
+                        .call_arguments
+                        .iter()
+                        .find(|row| row.source_event == event.id)
+                        .ok_or_else(|| {
+                            "explicit application has no evaluation preparation".to_owned()
+                        })?;
+                    if !preparation.evaluation_complete {
+                        require(
+                            !self
+                                .facts
+                                .copy_invocations
+                                .iter()
+                                .any(|call| call.source_event == Some(event.id)),
+                            "abrupt explicit application claims a body instance",
+                        )?;
+                        continue;
+                    }
                     require(
                         event.direct && event.target == Some(target),
                         "explicit named source changed its real declaration target",

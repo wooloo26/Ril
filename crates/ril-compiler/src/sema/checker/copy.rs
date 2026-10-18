@@ -1,19 +1,6 @@
 use super::*;
 pub(super) fn remap_value_origins(value: &mut Value, recent: NodeId, older: NodeId) {
-    value.origins.remap(recent, older);
-    for payload in [
-        &mut value.variant_payload,
-        &mut value.option_payload,
-        &mut value.result_payload,
-        &mut value.result_success,
-        &mut value.result_error,
-    ]
-    .into_iter()
-    .flatten()
-    .chain(value.variant_witnesses.values_mut())
-    {
-        remap_value_origins(payload, recent, older);
-    }
+    value.remap_origins(recent, older);
 }
 pub(super) fn remap_summary(
     summary: &mut super::super::summary::InvocationSummary,

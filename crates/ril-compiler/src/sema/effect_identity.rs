@@ -107,7 +107,7 @@ pub struct StaticArgumentWitness {
     pub syntax: Option<ril_syntax::ast::TypeExpr>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InvocationContext {
     pub invocation: Option<super::copy_templates::InstanceId>,
     pub owner: Option<ril_compiler_core::ids::CallableOwner>,

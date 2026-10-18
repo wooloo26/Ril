@@ -21,16 +21,15 @@ impl Replay<'_> {
         context: super::super::effect_identity::InvocationContext,
         syntax: &Expr,
     ) -> Check<&Value> {
-        let observation = self
-            .facts
-            .invocation_expressions
-            .get(index)
-            .filter(|observation| observation.context == context)
-            .ok_or_else(|| "bounded write borrowed another invocation's expression".to_owned())?;
+        let observation = self.observations.row(index, &mut 4096)?;
+        require(
+            observation.context == context,
+            "bounded write borrowed another invocation's expression",
+        )?;
         let expression = self
             .facts
             .expressions
-            .get(observation.expression)
+            .get(index)
             .filter(|expression| expression.span == syntax.span)
             .ok_or_else(|| "bounded write expression is not its actual source token".to_owned())?;
         Ok(&expression.value)
