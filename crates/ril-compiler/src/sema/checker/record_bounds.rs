@@ -760,103 +760,39 @@ impl Checker {
         &self,
         key: &super::super::effect_identity::ArgumentKey,
     ) -> Option<super::super::effect_identity::ArgumentKey> {
-        use super::super::effect_identity::ArgumentKey;
-        fn select(
-            checker: &Checker,
-            key: &ArgumentKey,
-            active: &mut BTreeSet<String>,
-            depth: usize,
-            work: &mut usize,
-        ) -> Option<ArgumentKey> {
-            *work += 1;
-            if depth >= 64 || *work > 4096 {
-                return None;
-            }
-            if let ArgumentKey::Binder { identity, sort } = key {
-                if let Some(witness) = checker
-                    .type_source
-                    .environment
-                    .generic_type_witnesses
-                    .get(identity)
-                {
-                    return crate::static_eval::effects::bounded_argument_key(
+        use crate::sema::{
+            effect_identity::{ArgumentKey, StaticBinderSort},
+            source_types::{SourceTypesError, WorkLimit, substitute_key_with},
+        };
+        use std::borrow::Cow;
+        let environment = &self.type_source.environment;
+        substitute_key_with(
+            key,
+            |identity, work| {
+                if let Some(witness) = environment.generic_type_witnesses.get(identity) {
+                    let key = crate::static_eval::effects::bounded_argument_key(
                         &witness.syntax,
                         &BTreeMap::new(),
-                    );
+                    )
+                    .ok_or(SourceTypesError::Unresolved)?;
+                    return Ok(Some(Cow::Owned(key)));
                 }
-                return match checker
-                    .type_source
-                    .environment
-                    .generic_substitutions
-                    .get(identity)
-                {
+                match environment.generic_substitutions.get(identity) {
                     Some(Ty::Generic(actual)) if actual != identity => {
-                        if !active.insert(identity.clone()) {
-                            return None;
-                        }
-                        let output = select(
-                            checker,
-                            &ArgumentKey::Binder {
-                                identity: actual.clone(),
-                                sort: *sort,
-                            },
-                            active,
-                            depth + 1,
-                            work,
-                        );
-                        active.remove(identity);
-                        output
+                        work.charge(1 + actual.len().div_ceil(32))?;
+                        Ok(Some(Cow::Owned(ArgumentKey::Binder {
+                            identity: actual.clone(),
+                            sort: StaticBinderSort::Type,
+                        })))
                     }
-                    Some(Ty::Generic(_)) | None => Some(key.clone()),
-                    // An erased semantic type never replaces missing complete
-                    // actual dimensions, callable modes or a still-open row.
-                    Some(_) => None,
-                };
-            }
-            let mut child = |key: &ArgumentKey| select(checker, key, active, depth + 1, work);
-            Some(match key {
-                ArgumentKey::Closed(_) | ArgumentKey::GenericBuiltin(_) => key.clone(),
-                ArgumentKey::Name { name, arguments } => ArgumentKey::Name {
-                    name: name.clone(),
-                    arguments: arguments.iter().map(&mut child).collect::<Option<_>>()?,
-                },
-                ArgumentKey::Array { length, element } => ArgumentKey::Array {
-                    length: length.clone(),
-                    element: Box::new(child(element)?),
-                },
-                ArgumentKey::Map { key, value } => ArgumentKey::Map {
-                    key: Box::new(child(key)?),
-                    value: Box::new(child(value)?),
-                },
-                ArgumentKey::Tuple(items) => {
-                    ArgumentKey::Tuple(items.iter().map(&mut child).collect::<Option<_>>()?)
+                    Some(Ty::Generic(_)) | None => Ok(None),
+                    // Runtime shape cannot supply missing source coordinates.
+                    Some(_) => Err(SourceTypesError::Unresolved),
                 }
-                ArgumentKey::Record { fields, row } => ArgumentKey::Record {
-                    fields: fields
-                        .iter()
-                        .map(|(label, mutable, ty)| Some((label.clone(), *mutable, child(ty)?)))
-                        .collect::<Option<_>>()?,
-                    row: match row {
-                        Some(row) => Some(Box::new(child(row)?)),
-                        None => None,
-                    },
-                },
-                ArgumentKey::Callable {
-                    parameters,
-                    result,
-                    annotations,
-                } => ArgumentKey::Callable {
-                    parameters: parameters
-                        .iter()
-                        .map(|(mode, ty)| Some((*mode, child(ty)?)))
-                        .collect::<Option<_>>()?,
-                    result: Box::new(child(result)?),
-                    annotations: annotations.clone(),
-                },
-                ArgumentKey::Binder { .. } => unreachable!(),
-            })
-        }
-        select(self, key, &mut BTreeSet::new(), 0, &mut 0)
+            },
+            &mut WorkLimit::new(16384),
+        )
+        .ok()
     }
 
     /// Exact products select existing values while retaining the whole actual

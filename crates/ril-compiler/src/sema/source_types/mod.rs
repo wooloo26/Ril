@@ -28,7 +28,7 @@ pub use queries::{SourcePath, SourceSensitivity};
 pub(crate) use schema::SourceSchema;
 pub(crate) use substitution::LegacySourceExport;
 pub(crate) use substitution::scalar_name;
-pub(crate) use substitution::substitute_key;
+pub(crate) use substitution::{substitute_key, substitute_key_with};
 
 pub(crate) fn key_is_coordinate_free_with_declarations(
     key: &crate::sema::effect_identity::ArgumentKey,

@@ -1,7 +1,9 @@
 //! One bounded substitution implementation for production and replay. Legacy
 //! trees are only ingress/egress; recursive sources stay in the graph arena.
+use super::graph::SourceGraph;
 use super::*;
 use crate::sema::effect_identity::{ArgumentKey, StaticBinderSort};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn substitute_key(
@@ -9,15 +11,54 @@ pub(crate) fn substitute_key(
     selected: &BTreeMap<String, ArgumentKey>,
     work: &mut WorkLimit,
 ) -> Result<ArgumentKey, SourceTypesError> {
+    substitute_key_with(
+        key,
+        |identity, _| Ok(selected.get(identity).map(Cow::Borrowed)),
+        work,
+    )
+}
+
+/// Resolve only reachable selections. The callback supplies complete source
+/// coordinates from its own environment, never an erased runtime type.
+pub(crate) fn substitute_key_with<'a>(
+    key: &ArgumentKey,
+    mut resolve: impl FnMut(
+        &str,
+        &mut WorkLimit,
+    ) -> Result<Option<Cow<'a, ArgumentKey>>, SourceTypesError>,
+    work: &mut WorkLimit,
+) -> Result<ArgumentKey, SourceTypesError> {
+    fn enqueue(
+        builder: &SourceBuilder,
+        root: SourceTypeId,
+        pending: &mut Vec<String>,
+        work: &mut WorkLimit,
+    ) -> Result<(), SourceTypesError> {
+        for id in builder.reachable([root], work)? {
+            if let SourceNode::Binder(identity) = builder.get(id)? {
+                work.text(identity)?;
+                pending.push(identity.clone());
+            }
+        }
+        Ok(())
+    }
     let mut builder = SourceBuilder::new()?;
     let root = super::legacy::import_node(key, &mut builder, work, 0)?;
+    let mut pending = Vec::new();
+    enqueue(&builder, root, &mut pending, work)?;
+    let mut seen = BTreeSet::new();
     let mut selections = BTreeMap::new();
-    for (identity, key) in selected {
-        work.text(identity)?;
-        selections.insert(
-            identity.clone(),
-            super::legacy::import_node(key, &mut builder, work, 0)?,
-        );
+    while let Some(identity) = pending.pop() {
+        work.text(&identity)?;
+        if !seen.insert(identity.clone()) {
+            continue;
+        }
+        let Some(key) = resolve(&identity, work)? else {
+            continue;
+        };
+        let selected = super::legacy::import_node(&key, &mut builder, work, 0)?;
+        enqueue(&builder, selected, &mut pending, work)?;
+        selections.insert(identity, selected);
     }
     let types = builder.freeze(work)?;
     let result = types.substitute(root, &selections, work)?;
@@ -232,5 +273,128 @@ fn container_name(kind: SourceContainer) -> &'static str {
         SourceContainer::Range => "Range",
         SourceContainer::Heap => "Heap::Heap",
         SourceContainer::Deque => "Deque::Deque",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ril_syntax::ast::ParameterMode;
+
+    fn binder(name: &str) -> ArgumentKey {
+        ArgumentKey::Binder {
+            identity: name.into(),
+            sort: StaticBinderSort::Type,
+        }
+    }
+    fn named(name: &str) -> ArgumentKey {
+        ArgumentKey::Name {
+            name: name.into(),
+            arguments: vec![],
+        }
+    }
+    fn array(length: u64, element: ArgumentKey) -> ArgumentKey {
+        ArgumentKey::Array {
+            length: Some(format!("const(int:{length})")),
+            element: Box::new(element),
+        }
+    }
+
+    #[test]
+    fn chained_selection_retains_empty_dimensions_callable_modes_and_row_fields() {
+        let source = ArgumentKey::Record {
+            fields: vec![
+                ("rows".into(), false, array(0, array(2, binder("callee:T")))),
+                (
+                    "step".into(),
+                    false,
+                    ArgumentKey::Callable {
+                        parameters: vec![(ParameterMode::Mut, array(2, binder("callee:T")))],
+                        result: Box::new(binder("callee:U")),
+                        annotations: vec!["@Clock".into()],
+                    },
+                ),
+            ],
+            row: Some(Box::new(binder("callee:R"))),
+        };
+        let selected = BTreeMap::from([
+            ("callee:T".into(), binder("caller:T")),
+            ("caller:T".into(), named("int")),
+            ("callee:U".into(), named("str")),
+            (
+                "callee:R".into(),
+                ArgumentKey::Record {
+                    fields: vec![("extra".into(), false, array(0, array(3, named("int"))))],
+                    row: None,
+                },
+            ),
+        ]);
+        let actual = substitute_key(&source, &selected, &mut WorkLimit::new(8192)).unwrap();
+        assert_eq!(
+            actual,
+            ArgumentKey::Record {
+                fields: vec![
+                    ("extra".into(), false, array(0, array(3, named("int")))),
+                    ("rows".into(), false, array(0, array(2, named("int")))),
+                    (
+                        "step".into(),
+                        false,
+                        ArgumentKey::Callable {
+                            parameters: vec![(ParameterMode::Mut, array(2, named("int")))],
+                            result: Box::new(named("str")),
+                            annotations: vec!["@Clock".into()],
+                        }
+                    ),
+                ],
+                row: None,
+            }
+        );
+    }
+
+    #[test]
+    fn only_reachable_binders_consume_selections_and_cycles_stay_unresolved() {
+        let mut unused = named("str");
+        for _ in 0..80 {
+            unused = array(0, unused);
+        }
+        let selected = BTreeMap::from([("T".into(), named("int")), ("unused".into(), unused)]);
+        assert_eq!(
+            substitute_key(&binder("T"), &selected, &mut WorkLimit::new(1024)),
+            Ok(named("int")),
+        );
+        let selected = BTreeMap::from([("T".into(), binder("U")), ("U".into(), binder("T"))]);
+        assert_eq!(
+            substitute_key(&binder("T"), &selected, &mut WorkLimit::new(1024)),
+            Err(SourceTypesError::CyclicSubstitution),
+        );
+        assert_eq!(
+            substitute_key(&binder("T"), &BTreeMap::new(), &mut WorkLimit::new(1024)),
+            Ok(binder("T")),
+        );
+    }
+
+    #[test]
+    fn absent_source_evidence_and_exhausted_work_do_not_supply_a_replacement() {
+        assert_eq!(
+            substitute_key_with(
+                &binder("T"),
+                |_, _| Err(SourceTypesError::Unresolved),
+                &mut WorkLimit::new(1024)
+            ),
+            Err(SourceTypesError::Unresolved),
+        );
+        let mut called = false;
+        assert_eq!(
+            substitute_key_with(
+                &binder("T"),
+                |_, _| {
+                    called = true;
+                    Ok(Some(Cow::Owned(named("int"))))
+                },
+                &mut WorkLimit::new(0)
+            ),
+            Err(SourceTypesError::BudgetExceeded),
+        );
+        assert!(!called);
     }
 }

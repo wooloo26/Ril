@@ -1654,51 +1654,12 @@ fn select_key(
         depth < 64,
         "record-bound static substitution is cyclic or too deep",
     )?;
-    let mut child = |key: &ArgumentKey| select_key(key, substitutions, depth + 1);
-    Ok(match key {
-        ArgumentKey::Binder { identity, .. } => match substitutions.get(identity) {
-            Some(selected) if selected != key => child(selected)?,
-            _ => key.clone(),
-        },
-        ArgumentKey::Closed(_) | ArgumentKey::GenericBuiltin(_) => key.clone(),
-        ArgumentKey::Name { name, arguments } => ArgumentKey::Name {
-            name: name.clone(),
-            arguments: arguments.iter().map(&mut child).collect::<Check<_>>()?,
-        },
-        ArgumentKey::Array { length, element } => ArgumentKey::Array {
-            length: length.clone(),
-            element: Box::new(child(element)?),
-        },
-        ArgumentKey::Map { key, value } => ArgumentKey::Map {
-            key: Box::new(child(key)?),
-            value: Box::new(child(value)?),
-        },
-        ArgumentKey::Tuple(items) => {
-            ArgumentKey::Tuple(items.iter().map(&mut child).collect::<Check<_>>()?)
-        }
-        ArgumentKey::Record { fields, row } => ArgumentKey::Record {
-            fields: fields
-                .iter()
-                .map(|(name, mode, key)| Ok((name.clone(), *mode, child(key)?)))
-                .collect::<Check<_>>()?,
-            row: row
-                .as_ref()
-                .map(|row| child(row).map(Box::new))
-                .transpose()?,
-        },
-        ArgumentKey::Callable {
-            parameters,
-            result,
-            annotations,
-        } => ArgumentKey::Callable {
-            parameters: parameters
-                .iter()
-                .map(|(mode, key)| Ok((*mode, child(key)?)))
-                .collect::<Check<_>>()?,
-            result: Box::new(child(result)?),
-            annotations: annotations.clone(),
-        },
-    })
+    super::source_types::substitute_key(
+        key,
+        substitutions,
+        &mut super::source_types::WorkLimit::new(16384),
+    )
+    .map_err(|error| format!("record-bound source substitution: {error}"))
 }
 
 #[derive(Clone)]
