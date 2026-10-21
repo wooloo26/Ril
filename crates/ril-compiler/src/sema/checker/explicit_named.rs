@@ -168,12 +168,14 @@ impl Checker {
                     );
                     return true;
                 };
-                if !self
-                    .type_source
-                    .environment
-                    .generic_context
-                    .values()
-                    .any(|identity| identity == caller)
+                // The written argument belongs to this lexical scope, while
+                // its selected Type may come from an enclosing invocation.
+                // Follow that complete source substitution instead of requiring
+                // the selected binder to be declared again in this frame.
+                let source = self
+                    .record_bound_key(argument, &self.record_bound_scope())
+                    .and_then(|key| self.selected_bound_key(&key));
+                if !matches!(&source, Some(ArgumentKey::Binder { identity, sort: StaticBinderSort::Type }) if identity == caller)
                 {
                     self.unsupported(
                         argument.span,

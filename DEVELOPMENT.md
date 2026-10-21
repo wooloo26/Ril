@@ -109,8 +109,8 @@ duplicate source trees and historical verification reports.
   symbol and capability introspection through immutable analysis snapshots.
 
 `cargo test --locked -p ril-compiler --test source_transport` still exposes
-`composed_row_with_array_and_callback`: forwarding a composed row lacks complete
-open Source schemas and captured symbolic binder transport.
+`composed_row_with_array_and_callback`: selected open composite Types still lack
+complete Source views at input and return boundaries.
 
 Their programs are in `tests/regressions/source-transport.ril`.
 

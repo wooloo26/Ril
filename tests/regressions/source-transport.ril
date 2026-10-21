@@ -126,6 +126,37 @@ fn wrong<U,V>(value:U)->V{value}
 --@ end-file
 --@ end-case
 
+--@ source: symbolic-type-through-three-frames
+--@ file: source.ril
+fn identity<T>(value:T)->T{value}
+fn forward<U>(value:U)->U{identity<U>(value)}
+fn outer<V>(value:V)->V{forward<V>(value)}
+pub fn test_native(){
+    assert(outer(7)==7)
+    let input:[2]int=[7,9]
+    let output:[2]int=outer(input)
+    let empty:[0][3]int=[]
+    let received:[0][3]int=outer(empty)
+    assert(output==[7,9] && len(received)==0)
+}
+--@ end-file
+--@ end-source
+
+--@ case: symbolic-type-through-three-frames
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: unrelated-generic-return
+--@ use-source: symbolic-type-through-three-frames
+--@ end-case
+
+--@ case: symbolic-type-through-three-frames-native
+--@ mode: run-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: symbolic-type-through-three-frames
+--@ entry: test_native
+--@ use-source: symbolic-type-through-three-frames
+--@ end-case
+
 --@ case: composed-row-with-array-and-callback
 --@ mode: check-pass
 --@ spec: SPEC#record-types-and-row-polymorphism
