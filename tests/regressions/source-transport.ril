@@ -157,9 +157,7 @@ pub fn test_native(){
 --@ use-source: symbolic-type-through-three-frames
 --@ end-case
 
---@ case: composed-row-with-array-and-callback
---@ mode: check-pass
---@ spec: SPEC#record-types-and-row-polymorphism
+--@ source: composed-row-with-array-and-callback
 --@ file: source.ril
 fn same(value:int)->int{value}
 fn pass<U,T:{items:[2]U,..R}>(value:T)->T{value}
@@ -170,6 +168,53 @@ fn example(){
     let extra:[0][3]int=[]
     let received=outer(.{items:values,tag:"same",extra:extra,action:same})
     assert(received.action(received.items[0])==7)
+}
+pub fn test_native(){example()}
+--@ end-file
+--@ end-source
+
+--@ case: composed-row-with-array-and-callback
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: composed-row-with-array-and-callback-native
+--@ use-source: composed-row-with-array-and-callback
+--@ end-case
+
+--@ case: composed-row-with-array-and-callback-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: composed-row-with-array-and-callback
+--@ entry: test_native
+--@ use-source: composed-row-with-array-and-callback
+--@ end-case
+
+--@ case: row-remainder-empty-inner-dimension-conflict
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: composed-row-with-array-and-callback
+-- Error [E0301]: Equal erased record shapes cannot unify different hidden row extents.
+--@ file: source.ril
+fn pair<U,S>(left:{items:[2]U,..S},right:{items:[2]U,..S}){}
+fn example(){
+    let items:[2]int=[7,9]
+    let first:[0][3]int=[]
+    let second:[0][4]int=[]
+    pair(.{items:items,empty:first},.{items:items,empty:second})
+}
+--@ end-file
+--@ end-case
+
+--@ case: explicit-row-remainder-dimension-conflict
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: composed-row-with-array-and-callback
+-- Error [E0301]: An explicit row Type cannot override the actual hidden extent.
+--@ file: source.ril
+fn accept<U,S>(value:{items:[2]U,..S}){}
+fn example(){
+    let items:[2]int=[7,9]
+    let extra:[0][3]int=[]
+    accept<int,{extra:[0][2]int}>(.{items:items,extra:extra})
 }
 --@ end-file
 --@ end-case

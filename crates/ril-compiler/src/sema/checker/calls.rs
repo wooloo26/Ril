@@ -1275,7 +1275,7 @@ impl Checker {
             })
             .map(|(binder, ty)| (binder.clone(), ty.clone()))
             .collect();
-        self.select_generic_source_types(&templates, args, &binders, &schema_selected);
+        self.select_generic_source_types(&templates, args, &binders, &schema_selected, explicit);
         self.type_source
             .environment
             .generic_substitutions

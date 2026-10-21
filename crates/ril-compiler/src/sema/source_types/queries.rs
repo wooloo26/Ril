@@ -251,6 +251,33 @@ pub(crate) trait SourceTypeQueries: SourceGraph {
         Ok(seen)
     }
 
+    /// Copy only the selected reachable graph, preserving finite declaration
+    /// cycles and sharing. No legacy syntax or erased runtime shape is read.
+    fn copy_into(
+        &self,
+        roots: impl IntoIterator<Item = SourceTypeId>,
+        builder: &mut SourceBuilder,
+        work: &mut WorkLimit,
+    ) -> Result<BTreeMap<SourceTypeId, SourceTypeId>, SourceTypesError> {
+        let reachable = self.reachable(roots, work)?;
+        let mut mapping = BTreeMap::new();
+        for id in &reachable {
+            mapping.insert(*id, builder.reserve(work)?);
+        }
+        for id in reachable {
+            let node = self.get(id)?;
+            node.charge(work)?;
+            let node = node.map_children(|child| {
+                mapping
+                    .get(&child)
+                    .copied()
+                    .ok_or(SourceTypesError::MissingNode)
+            })?;
+            builder.define(mapping[&id], node, work)?;
+        }
+        Ok(mapping)
+    }
+
     /// Replacement operates on complete source nodes, never semantic Ty. A
     /// circular binder equation is rejected, while existing declaration cycles
     /// and sharing are copied with their original finite graph structure.

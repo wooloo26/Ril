@@ -110,11 +110,8 @@ duplicate source trees and historical verification reports.
 - Resolve compiler and native acceptance failures on both platforms, then expose
   symbol and capability introspection through immutable analysis snapshots.
 
-`cargo test --locked -p ril-compiler --test source_transport` still exposes
-`composed_row_with_array_and_callback`: selected open composite Types still lack
-complete Source views at input and return boundaries.
-
-Their programs are in `tests/regressions/source-transport.ril`.
+Source transport regressions, including open row composition with fixed arrays
+and callbacks, are in `tests/regressions/source-transport.ril`.
 
 ## Unicode regeneration
 

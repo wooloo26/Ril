@@ -1354,6 +1354,7 @@ mod tests {
             observations: super::super::observation_index::ObservationIndex::new(facts).unwrap(),
             functions: BTreeMap::new(),
             bounds: BTreeMap::new(),
+            parameter_sources: BTreeMap::new(),
         }
     }
 

@@ -485,6 +485,20 @@ pub(crate) fn equivalent(
     )
 }
 
+/// Transitional Type-key ingress for consumers that have not retained graph
+/// IDs yet. The graph relation compares complete schemas, including closed
+/// row composition; syntax-tree layout is not a Type identity.
+pub(crate) fn equivalent_keys(
+    expected: &ArgumentKey,
+    actual: &ArgumentKey,
+    work: &mut WorkLimit,
+) -> Result<bool, SourceTypesError> {
+    let mut builder = SourceBuilder::new()?;
+    let expected = builder.import_key(expected, work)?;
+    let actual = builder.import_key(actual, work)?;
+    equivalent_in(&builder, expected, actual, work)
+}
+
 /// One transitional ingress; the relation itself never parses a key or erases
 /// dimensions. Callers that already own graph IDs invoke `receive` directly.
 pub(crate) fn receive_keys(
@@ -507,6 +521,44 @@ pub(crate) fn receive_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composed_type_keys_compare_graphs_without_erasing_empty_inner_dimensions() {
+        let int = ArgumentKey::Name {
+            name: "int".into(),
+            arguments: vec![],
+        };
+        let hidden = |n| ArgumentKey::Array {
+            length: Some("const(int:0)".into()),
+            element: Box::new(ArgumentKey::Array {
+                length: Some(format!("const(int:{n})")),
+                element: Box::new(int.clone()),
+            }),
+        };
+        let flat = ArgumentKey::Record {
+            fields: vec![("empty".into(), false, hidden(3))],
+            row: None,
+        };
+        let composed = |n| ArgumentKey::Record {
+            fields: vec![],
+            row: Some(Box::new(ArgumentKey::Record {
+                fields: vec![("empty".into(), false, hidden(n))],
+                row: None,
+            })),
+        };
+        assert_eq!(
+            equivalent_keys(&flat, &composed(3), &mut WorkLimit::new(4096)),
+            Ok(true)
+        );
+        assert_eq!(
+            equivalent_keys(&flat, &composed(4), &mut WorkLimit::new(4096)),
+            Ok(false)
+        );
+        assert_eq!(
+            equivalent_keys(&flat, &composed(3), &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+    }
 
     #[test]
     fn recursive_receiving_checks_the_whole_regular_schema() {

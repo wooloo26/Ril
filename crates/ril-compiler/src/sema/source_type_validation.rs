@@ -93,6 +93,103 @@ pub(super) fn resolved_names(
     true
 }
 
+/// Reconstruct a captured whole-parameter Source from its actual operand and
+/// original declaration. All consumers share this independent replay.
+pub(crate) fn validate_parameter_selection<'a>(
+    facts: &'a SemanticFacts,
+    selection: &super::source_types::TypeSourceSelection,
+    original_sources: &mut Option<super::record_bound_validation::OriginalOperandSources<'a>>,
+) -> bool {
+    use ril_compiler_core::ids::CallableOwner;
+    if selection.environment.is_poisoned() || selection.closed().is_some() {
+        return false;
+    }
+    let Some(origin) = selection.input else {
+        return false;
+    };
+    let Some(call) = facts.copy_invocations.get(origin.invocation.0 as usize) else {
+        return false;
+    };
+    if call.id != origin.invocation || call.source_event != Some(origin.event) {
+        return false;
+    }
+    let Some(binding) = facts.bindings.get(origin.binding) else {
+        return false;
+    };
+    if !binding.parameter
+        || selection.environment.id() != binding.typing_environment.id()
+        || facts.source_types.binding_environment(origin.binding)
+            != Some(selection.environment.id())
+    {
+        return false;
+    }
+    let parameters = match binding.context.owner {
+        Some(CallableOwner::Function(definition)) => facts
+            .functions
+            .iter()
+            .find(|function| function.definition == definition)
+            .map(|function| &function.syntax.parameters),
+        Some(CallableOwner::Lambda(_)) => binding
+            .context
+            .closure_invocation
+            .and_then(|id| facts.closure_invocations.get(id.0 as usize))
+            .and_then(|invocation| facts.closures.get(invocation.closure))
+            .map(|closure| &closure.parameters),
+        _ => None,
+    };
+    let Some(original) = parameters.and_then(|parameters| parameters.iter().find(|parameter| {
+        binding.pattern.is_some() && parameter.pattern.hir_id == binding.pattern
+            && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name == &binding.name)
+    })).and_then(|parameter| parameter.ty.as_ref()) else { return false; };
+    if original.hir_id.is_none()
+        || original.hir_id != selection.schema.original()
+        || original != selection.syntax.as_ref()
+    {
+        return false;
+    }
+    let Some(preparation) = facts
+        .call_arguments
+        .iter()
+        .find(|row| row.source_event == origin.event)
+    else {
+        return false;
+    };
+    if preparation
+        .supplied
+        .get(&origin.slot)
+        .is_none_or(|token| token.expression != origin.observation)
+    {
+        return false;
+    }
+    let Some(fact) = facts.expressions.get(origin.observation) else {
+        return false;
+    };
+    if fact.value.sources != BTreeSet::from([origin.binding]) {
+        return false;
+    }
+    if !fact.source_id.and_then(|id| facts.semantic_hir.as_ref()?.expression(id))
+        .is_some_and(|node| matches!(&node.kind, crate::hir::nodes::ExprKind::Name(name) if name == &binding.name))
+    {
+        return false;
+    }
+    if (*original_sources).is_none() {
+        let Ok(sources) = super::record_bound_validation::OriginalOperandSources::new(facts) else {
+            return false;
+        };
+        (*original_sources) = Some(sources);
+    }
+    (*original_sources)
+        .as_ref()
+        .unwrap()
+        .key(origin.event, origin.slot)
+        .is_ok_and(|key| {
+            selection
+                .schema
+                .equivalent_key(&key, &mut super::source_types::WorkLimit::new(16384))
+                == Ok(true)
+        })
+}
+
 pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
     struct Walk<'a> {
         facts: &'a SemanticFacts,
@@ -124,94 +221,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
             &mut self,
             selection: &super::source_types::TypeSourceSelection,
         ) -> bool {
-            use ril_compiler_core::ids::CallableOwner;
-            let Some(origin) = selection.input else {
-                return false;
-            };
-            let Some(call) = self
-                .facts
-                .copy_invocations
-                .get(origin.invocation.0 as usize)
-            else {
-                return false;
-            };
-            if call.source_event != Some(origin.event) {
-                return false;
-            }
-            let Some(binding) = self.facts.bindings.get(origin.binding) else {
-                return false;
-            };
-            if !binding.parameter
-                || selection.environment.id() != binding.typing_environment.id()
-                || self.facts.source_types.binding_environment(origin.binding)
-                    != Some(selection.environment.id())
-            {
-                return false;
-            }
-            let parameters = match binding.context.owner {
-                Some(CallableOwner::Function(definition)) => self
-                    .facts
-                    .functions
-                    .iter()
-                    .find(|function| function.definition == definition)
-                    .map(|function| &function.syntax.parameters),
-                Some(CallableOwner::Lambda(_)) => binding
-                    .context
-                    .closure_invocation
-                    .and_then(|id| self.facts.closure_invocations.get(id.0 as usize))
-                    .and_then(|invocation| self.facts.closures.get(invocation.closure))
-                    .map(|closure| &closure.parameters),
-                _ => None,
-            };
-            let Some(original) = parameters.and_then(|parameters| parameters.iter().find(|parameter| {
-                binding.pattern.is_some() && parameter.pattern.hir_id == binding.pattern
-                    && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name == &binding.name)
-            })).and_then(|parameter| parameter.ty.as_ref()) else { return false; };
-            if original.hir_id.is_none()
-                || original.hir_id != selection.schema.original()
-                || original != selection.syntax.as_ref()
-            {
-                return false;
-            }
-            let Some(preparation) = self
-                .facts
-                .call_arguments
-                .iter()
-                .find(|row| row.source_event == origin.event)
-            else {
-                return false;
-            };
-            if preparation
-                .supplied
-                .get(&origin.slot)
-                .is_none_or(|token| token.expression != origin.observation)
-            {
-                return false;
-            }
-            let Some(fact) = self.facts.expressions.get(origin.observation) else {
-                return false;
-            };
-            if fact.value.sources != BTreeSet::from([origin.binding]) {
-                return false;
-            }
-            if self.original_sources.is_none() {
-                let Ok(sources) =
-                    super::record_bound_validation::OriginalOperandSources::new(self.facts)
-                else {
-                    return false;
-                };
-                self.original_sources = Some(sources);
-            }
-            self.original_sources
-                .as_ref()
-                .unwrap()
-                .key(origin.event, origin.slot)
-                .is_ok_and(|key| {
-                    selection
-                        .schema
-                        .equivalent_key(&key, &mut super::source_types::WorkLimit::new(16384))
-                        == Ok(true)
-                })
+            validate_parameter_selection(self.facts, selection, &mut self.original_sources)
         }
         fn environment(&mut self, environment: &super::context::FrozenEnvironment) -> bool {
             let mut pending = vec![environment];

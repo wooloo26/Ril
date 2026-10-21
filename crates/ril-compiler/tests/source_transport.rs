@@ -207,3 +207,9 @@ fn unrelated_generic_return() {
 fn composed_row_with_array_and_callback() {
     accepts("composed-row-with-array-and-callback");
 }
+
+#[test]
+fn row_remainders_cannot_forget_empty_inner_dimensions() {
+    rejects("row-remainder-empty-inner-dimension-conflict", "E0301");
+    rejects("explicit-row-remainder-dimension-conflict", "E0301");
+}

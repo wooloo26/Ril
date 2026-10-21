@@ -91,6 +91,10 @@ struct Replay<'a> {
     blocks: Option<crate::hir::blocks::BlockIndex>,
     functions: BTreeMap<DefinitionId, &'a FunctionInfo>,
     bounds: BTreeMap<(DefinitionId, u32), &'a GenericRecordBound>,
+    parameter_sources: BTreeMap<
+        (super::copy_templates::InstanceId, &'a str),
+        &'a std::sync::Arc<super::source_types::TypeSourceSelection>,
+    >,
 }
 
 fn require(condition: bool, description: &str) -> Check {
@@ -175,12 +179,35 @@ impl<'a> Replay<'a> {
                 "record-bound registry has duplicate or misplaced declaration identities",
             )?;
         }
+        let mut parameter_sources = BTreeMap::new();
+        let mut work = super::source_types::WorkLimit::new(LIMIT);
+        for binding in facts.bindings.iter().filter(|binding| binding.parameter) {
+            work.charge(1)
+                .map_err(|error| format!("parameter Source index: {error}"))?;
+            for (binder, source) in &binding.typing_environment.generic_sources {
+                work.charge(1 + binder.len().div_ceil(32))
+                    .map_err(|error| format!("parameter Source index: {error}"))?;
+                let Some(origin) = source.input else { continue };
+                if binding.context.invocation != Some(origin.invocation) {
+                    continue;
+                }
+                if let Some(previous) =
+                    parameter_sources.insert((origin.invocation, binder.as_str()), source)
+                {
+                    require(
+                        std::sync::Arc::ptr_eq(previous, source),
+                        "one actual generic parameter has conflicting Source selections",
+                    )?;
+                }
+            }
+        }
         Ok(Self {
             facts,
             observations,
             blocks,
             functions,
             bounds,
+            parameter_sources,
         })
     }
 
@@ -3630,8 +3657,19 @@ impl Replay<'_> {
             check.actual_schema.source,
             StructuralSchemaSource::RigidParameter { .. }
         ) && !check.substitutions.contains_key(&bound.binder);
+        let equivalent = |left: &ArgumentKey, right: &ArgumentKey| {
+            super::source_types::reception::equivalent_keys(
+                left,
+                right,
+                &mut super::source_types::WorkLimit::new(16384),
+            ) == Ok(true)
+        };
         require(
-            rigid_missing || check.substitutions.get(&bound.binder) == Some(&actual_key),
+            rigid_missing
+                || check
+                    .substitutions
+                    .get(&bound.binder)
+                    .is_some_and(|key| equivalent(key, &actual_key)),
             "structural application T substitution differs from its actual argument identity",
         )?;
         let observed: Vec<_> = self
@@ -3732,7 +3770,11 @@ impl Replay<'_> {
                             .chain(&invocation.captured_arguments)
                     })
                     .find(|argument| {
-                        &argument.binder == binder && argument.key.as_ref() == Some(key)
+                        &argument.binder == binder
+                            && argument
+                                .key
+                                .as_ref()
+                                .is_some_and(|actual| equivalent(actual, key))
                     });
                 parent = entry.parent;
             }
@@ -3760,14 +3802,17 @@ impl Replay<'_> {
             }
             let argument=argument.ok_or_else(||format!("structural substitution {binder} has no actual or captured argument observation"))?;
             require(
-                argument.key.as_ref() == Some(key),
+                argument
+                    .key
+                    .as_ref()
+                    .is_some_and(|actual| equivalent(actual, key)),
                 "structural substitution differs from the frozen actual invocation",
             )?;
             let syntax = argument.syntax.as_ref().ok_or_else(|| {
                 "structural substitution has no complete source syntax".to_owned()
             })?;
             require(
-                self.normalized_key(syntax, &tokens)? == *key,
+                equivalent(&self.normalized_key(syntax, &tokens)?, key),
                 "structural argument syntax and key disagree",
             )?;
         }

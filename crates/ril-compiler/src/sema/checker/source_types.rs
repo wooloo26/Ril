@@ -421,6 +421,7 @@ impl Checker {
         args: &[(ParameterMode, Value, Span)],
         binders: &BTreeSet<String>,
         selected: &BTreeMap<String, Ty>,
+        explicit: Option<&super::explicit_named::Prepared>,
     ) {
         let mut schemas = BTreeMap::new();
         let mut captured = BTreeMap::new();
@@ -484,6 +485,18 @@ impl Checker {
         for (identity, ty) in selected {
             if captured.contains_key(identity) {
                 continue;
+            }
+            // Preserve a genuine explicit Source when the actual value has
+            // no closed projection. Do this after operand inference: fresh
+            // literals still receive context through the common input gate.
+            if !schemas.contains_key(identity)
+                && let Some(witness) = explicit
+                    .into_iter()
+                    .flat_map(|prepared| &prepared.selections)
+                    .find(|selection| &selection.binder == identity)
+                    .and_then(|selection| selection.witness.as_ref())
+            {
+                schemas.insert(identity.clone(), witness.clone());
             }
             if !schemas.contains_key(identity)
                 && let Some(witness) = self.closed_product_bound_identity(identity, templates)
@@ -573,6 +586,26 @@ impl Checker {
                         children.push((ty, &field.ty));
                     }
                 }
+                if let Ty::OpenRecord { row, .. } = template
+                    && let crate::sema::model::rows::RowIdentity::Binder(identity) = &row.identity
+                    && selection.binders.contains(identity)
+                    && let Some(witness) = self.closed_row_source_remainder(actual, types.keys())
+                {
+                    if selection
+                        .schemas
+                        .get(identity)
+                        .is_some_and(|old| old.key != witness.key)
+                    {
+                        self.error(
+                            "E0301",
+                            selection.span,
+                            "arguments select inconsistent complete row Sources",
+                            [selection.cause],
+                        );
+                    } else {
+                        selection.schemas.insert(identity.clone(), witness);
+                    }
+                }
             }
             (
                 Ty::Callable(types, result),
@@ -617,6 +650,47 @@ impl Checker {
         for (template, actual) in children {
             self.select_source_schema(template, actual, selection, depth + 1);
         }
+    }
+
+    /// The graph determines the residual. Retaining a closed syntax projection
+    /// only supports the legacy static-argument reifier until it is retired.
+    fn closed_row_source_remainder<'a>(
+        &mut self,
+        actual: &TypeExpr,
+        excluded: impl IntoIterator<Item = &'a String>,
+    ) -> Option<Arc<SourceTypeWitness>> {
+        use crate::sema::source_types::{SourceSchema, WorkLimit};
+        let mut work = WorkLimit::new(16384);
+        let mut labels = BTreeSet::new();
+        for label in excluded {
+            work.charge(1 + label.len().div_ceil(32)).ok()?;
+            labels.insert(label.clone());
+        }
+        let excluded = labels;
+        let key = crate::static_eval::effects::bounded_argument_key(actual, &BTreeMap::new())?;
+        let source = SourceSchema::import(&key, actual.hir_id, &mut work).ok()?;
+        let remainder = source.record_remainder(&excluded, &mut work).ok()?;
+        let TypeKind::Record { fields, row: None } = &actual.kind else {
+            return None;
+        };
+        // The derived closed projection has no genuine whole-header HIR root.
+        let syntax = TypeExpr {
+            hir_id: None,
+            text: String::new(),
+            span: actual.span,
+            kind: TypeKind::Record {
+                fields: fields
+                    .iter()
+                    .filter(|field| !excluded.contains(&field.name))
+                    .cloned()
+                    .collect(),
+                row: None,
+            },
+        };
+        let witness = self.source_type_from_frozen_syntax(&syntax)?;
+        let projected =
+            crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new())?;
+        (remainder.equivalent_key(&projected, &mut work) == Ok(true)).then_some(witness)
     }
 
     pub(super) fn project_source_type(&mut self, base: &Value, slot: &Slot, result: &mut Value) {

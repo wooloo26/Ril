@@ -70,6 +70,81 @@ impl SourceSchema {
         self.original
     }
 
+    /// A row selection removes declared members from the complete actual
+    /// record. Retain every other member and its original rigid tail; an
+    /// unavailable field or cyclic/unknown row cannot become an empty row.
+    pub(crate) fn record_remainder(
+        &self,
+        excluded: &std::collections::BTreeSet<String>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut cursor = Some(self.root);
+        let mut seen = BTreeSet::new();
+        let mut fields = BTreeMap::new();
+        let tail = loop {
+            work.charge(1)?;
+            let Some(id) = cursor else { break None };
+            let id = self.types.unalias(id, work)?;
+            if !seen.insert(id) {
+                return Err(SourceTypesError::RowCycle);
+            }
+            match self.types.get(id)? {
+                SourceNode::Record { fields: next, row } => {
+                    for field in next {
+                        work.charge(1)?;
+                        work.text(&field.label)?;
+                        if fields
+                            .insert(field.label.clone(), (field.mutable, field.value))
+                            .is_some()
+                        {
+                            return Err(SourceTypesError::DuplicateField);
+                        }
+                    }
+                    cursor = *row;
+                }
+                SourceNode::Binder(_) if seen.len() > 1 => break Some(id),
+                _ => return Err(SourceTypesError::Unresolved),
+            }
+        };
+        for label in excluded {
+            work.text(label)?;
+            if fields.remove(label).is_none() {
+                return Err(SourceTypesError::MissingProjection);
+            }
+        }
+        let mut builder = SourceBuilder::new()?;
+        let mapping = self.types.copy_into(
+            fields.values().map(|(_, id)| *id).chain(tail),
+            &mut builder,
+            work,
+        )?;
+        let root = if let Some(tail) = tail.filter(|_| fields.is_empty()) {
+            mapping[&tail]
+        } else {
+            work.charge(fields.len())?;
+            builder.insert(
+                SourceNode::Record {
+                    fields: fields
+                        .into_iter()
+                        .map(|(label, (mutable, value))| SourceField {
+                            label,
+                            mutable,
+                            value: mapping[&value],
+                        })
+                        .collect(),
+                    row: tail.map(|id| mapping[&id]),
+                },
+                work,
+            )?
+        };
+        Ok(Self {
+            types: builder.freeze(work)?,
+            root,
+            original: self.original,
+        })
+    }
+
     pub(crate) fn project_field(&self, name: &str) -> Result<Self, SourceTypesError> {
         let mut work = WorkLimit::new(4096);
         work.text(name)?;
@@ -137,6 +212,139 @@ mod tests {
             Ok(false)
         );
         assert_eq!(schema.key().unwrap(), key);
+    }
+
+    #[test]
+    fn row_remainders_keep_dimensions_callable_contracts_and_rigid_tails() {
+        use crate::sema::effect_identity::StaticBinderSort;
+        use std::collections::BTreeSet;
+        let tail = ArgumentKey::Binder {
+            identity: "caller:S".into(),
+            sort: StaticBinderSort::Type,
+        };
+        let action = ArgumentKey::Callable {
+            parameters: vec![(ril_syntax::ast::ParameterMode::Read, int())],
+            result: Box::new(int()),
+            annotations: vec!["Source(value)".into()],
+        };
+        let retained = vec![
+            ("action".into(), false, action),
+            ("empty".into(), true, array(Some(0), array(Some(3), int()))),
+        ];
+        let mut fields = retained.clone();
+        fields.push(("items".into(), true, array(Some(2), int())));
+        let source = SourceSchema::import(
+            &ArgumentKey::Record {
+                fields,
+                row: Some(Box::new(tail.clone())),
+            },
+            Some(TypeExprId(19)),
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        let remainder = source
+            .record_remainder(&BTreeSet::from(["items".into()]), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_eq!(remainder.original(), source.original());
+        assert_eq!(
+            remainder.key().unwrap(),
+            ArgumentKey::Record {
+                fields: retained,
+                row: Some(Box::new(tail.clone()))
+            }
+        );
+        let all = BTreeSet::from(["action".into(), "empty".into(), "items".into()]);
+        assert_eq!(
+            source
+                .record_remainder(&all, &mut WorkLimit::new(4096))
+                .unwrap()
+                .key()
+                .unwrap(),
+            tail
+        );
+        assert!(matches!(
+            source.record_remainder(
+                &BTreeSet::from(["unknown".into()]),
+                &mut WorkLimit::new(4096)
+            ),
+            Err(SourceTypesError::MissingProjection)
+        ));
+        assert!(matches!(
+            source.record_remainder(&all, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+    }
+
+    #[test]
+    fn row_remainders_copy_recursive_members_but_reject_circular_rows() {
+        use std::collections::BTreeSet;
+        let mut builder = SourceBuilder::new().unwrap();
+        let mut work = WorkLimit::new(4096);
+        let root = builder.reserve(&mut work).unwrap();
+        let scalar = builder
+            .insert(SourceNode::Scalar(SourceScalar::Int), &mut work)
+            .unwrap();
+        builder
+            .define(
+                root,
+                SourceNode::Record {
+                    fields: vec![
+                        SourceField {
+                            label: "value".into(),
+                            mutable: true,
+                            value: scalar,
+                        },
+                        SourceField {
+                            label: "next".into(),
+                            mutable: false,
+                            value: root,
+                        },
+                    ],
+                    row: None,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let source = SourceSchema {
+            types: builder.freeze(&mut work).unwrap(),
+            root,
+            original: None,
+        };
+        let remainder = source
+            .record_remainder(&BTreeSet::from(["value".into()]), &mut work)
+            .unwrap();
+        assert_eq!(
+            remainder
+                .project(&[
+                    SourcePath::Field("next".into()),
+                    SourcePath::Field("value".into())
+                ])
+                .unwrap()
+                .key()
+                .unwrap(),
+            int()
+        );
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder.reserve(&mut work).unwrap();
+        builder
+            .define(
+                root,
+                SourceNode::Record {
+                    fields: vec![],
+                    row: Some(root),
+                },
+                &mut work,
+            )
+            .unwrap();
+        let cyclic = SourceSchema {
+            types: builder.freeze(&mut work).unwrap(),
+            root,
+            original: None,
+        };
+        assert!(matches!(
+            cyclic.record_remainder(&BTreeSet::new(), &mut work),
+            Err(SourceTypesError::RowCycle)
+        ));
     }
 
     #[test]

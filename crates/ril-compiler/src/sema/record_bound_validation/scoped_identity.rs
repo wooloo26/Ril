@@ -112,8 +112,9 @@ impl Replay<'_> {
             };
             check().map_err(|message| (identity.span, Some(identity.cause), message))?;
         }
+        let mut original_sources = None;
         for call in &self.facts.copy_invocations {
-            let check = || -> Check {
+            let mut check = || -> Check {
                 let function = self.function(call.target)?;
                 // The real generic header is the authority for required binders.
                 // Deleting a registry row or flipping invocation/probe metadata
@@ -173,7 +174,14 @@ impl Replay<'_> {
                                 && identity.context.invocation == Some(call.id)
                         })
                         .collect();
-                    if needed || !certificates.is_empty() {
+                    let canonical = self.parameter_sources.get(&(call.id, binder.as_str())).is_some_and(|source| {
+                        source.input.is_some_and(|origin| {
+                            paths.len() == 1 && paths[0].0 == origin.slot as usize && paths[0].1.is_empty()
+                        }) && super::super::source_type_validation::validate_parameter_selection(
+                            self.facts, source, &mut original_sources,
+                        )
+                    });
+                    if needed && !canonical || !certificates.is_empty() {
                         self.every_scoped_occurrence_is_material(call.target, binder)?;
                         require(
                             !paths.is_empty() && certificates.len() == 1,

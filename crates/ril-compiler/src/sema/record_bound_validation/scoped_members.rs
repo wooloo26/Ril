@@ -3,8 +3,9 @@
 //! Results, resources, capture, copy eligibility, retained sharing or escape.
 use super::*;
 use crate::sema::{
-    copy_contract::CopyInvocation, effect_identity::InvocationContext,
-    scoped_source_identity::ScopedSourceIdentity,
+    copy_contract::CopyInvocation,
+    effect_identity::InvocationContext,
+    scoped_source_identity::{FormalSourceAnchor, ScopedSourceIdentity, ScopedSourceOccurrence},
 };
 
 /// Stages are constructed only by replay below. Their fields are private: a
@@ -31,10 +32,25 @@ struct ScopedHeaderOccurrence<'a> {
 /// formal receptions. It deliberately does not claim stored-schema completion:
 /// each existing member is checked only after this stage has been established.
 pub(super) struct ScopedOriginalFormal<'a> {
-    identity: &'a ScopedSourceIdentity,
+    required: GenericBoundId,
+    key: ArgumentKey,
+    source_paths: Vec<ScopedSourceOccurrence>,
     context: InvocationContext,
     entry_epoch: usize,
     occurrences: Vec<ScopedHeaderOccurrence<'a>>,
+}
+
+/// Borrowed inputs to independent formal reception replay. A legacy arena
+/// entry and a graph selection enter the same derivation with their real IDs.
+struct ScopedReceptionSource<'a> {
+    required: GenericBoundId,
+    binder: &'a str,
+    context: InvocationContext,
+    syntax: &'a TypeExpr,
+    typing_environment: &'a crate::sema::context::FrozenEnvironment,
+    key: &'a ArgumentKey,
+    occurrences: &'a [ScopedSourceOccurrence],
+    cause: CauseId,
 }
 
 #[derive(Clone, Copy)]
@@ -167,7 +183,7 @@ impl Replay<'_> {
                     })
                 })
                 .collect::<Check<Vec<_>>>()?;
-            let anchor = &reception.identity.occurrences[ordinal].formal;
+            let anchor = &reception.source_paths[ordinal].formal;
             let tail = RowTail::Open(OpenTail {
                 identity: RowIdentity::Binder(row_id.clone()),
                 lacks: self.signature_lacks(anchor.definition, &occurrence.scope, &row_id)?,
@@ -233,6 +249,18 @@ impl Replay<'_> {
         {
             return Ok(None);
         }
+        if let Some(source) = check.context.invocation.and_then(|invocation| {
+            self.parameter_sources.get(&(
+                invocation,
+                self.facts
+                    .record_bounds
+                    .get(check.required.0 as usize)?
+                    .binder
+                    .as_str(),
+            ))
+        }) {
+            return self.graph_formal_reception(check, source).map(Some);
+        }
         let matching: Vec<_> = self
             .facts
             .scoped_source_identities
@@ -246,6 +274,178 @@ impl Replay<'_> {
             "symbolic schema has no unique complete scoped source",
         )?;
         self.scoped_original_formal(matching[0]).map(Some)
+    }
+
+    fn graph_formal_reception<'a>(
+        &'a self,
+        check: &GenericBoundCheck,
+        source: &crate::sema::source_types::TypeSourceSelection,
+    ) -> Check<ScopedOriginalFormal<'a>> {
+        let mut original_sources = None;
+        require(
+            super::super::source_type_validation::validate_parameter_selection(
+                self.facts,
+                source,
+                &mut original_sources,
+            ),
+            "graph formal reception lost its original Source operand",
+        )?;
+        let origin = source
+            .input
+            .ok_or_else(|| "graph formal reception has no input".to_owned())?;
+        let bound = self
+            .facts
+            .record_bounds
+            .get(check.required.0 as usize)
+            .ok_or_else(|| "graph formal reception lost its actual bound".to_owned())?;
+        let paths = self.declared_type_paths(bound.definition, &bound.binder)?;
+        require(
+            check.context.invocation == Some(origin.invocation)
+                && paths.len() == 1
+                && paths[0].0 == origin.slot as usize
+                && paths[0].1.is_empty(),
+            "graph formal reception does not cover every actual T position",
+        )?;
+        let StructuralSchemaSource::RigidParameter {
+            definition: required_owner,
+            parameter_index: required_parameter,
+            ..
+        } = &check.actual_schema.source
+        else {
+            return Err("graph formal reception has no original stored parameter view".into());
+        };
+        // A received Name can transparently forward another parameter. Follow
+        // only genuine supplied Name observations, never an equal erased type
+        // or a search for a convenient same-shaped header.
+        let mut binding_id = origin.binding;
+        let mut root_expression = origin.observation;
+        let mut visited = BTreeSet::new();
+        let (binding, definition, original, parameter_index, syntax, key) = loop {
+            require(
+                visited.len() < 256 && visited.insert(binding_id),
+                "graph parameter forwarding is cyclic or exceeds its work bound",
+            )?;
+            let binding = self
+                .facts
+                .bindings
+                .get(binding_id)
+                .ok_or_else(|| "graph formal reception lost its binding".to_owned())?;
+            let Some(CallableOwner::Function(definition)) = binding.context.owner else {
+                return Err("graph formal reception needs a named original owner".into());
+            };
+            let original = binding
+                .context
+                .invocation
+                .and_then(|id| self.facts.copy_invocations.get(id.0 as usize))
+                .ok_or_else(|| "graph formal reception has no original invocation".to_owned())?;
+            let function = self.function(definition)?;
+            let parameter_index = function
+                .syntax
+                .parameters
+                .iter()
+                .position(|parameter| {
+                    parameter.pattern.hir_id.is_some()
+                        && parameter.pattern.hir_id == binding.pattern
+                })
+                .ok_or_else(|| "graph formal reception lost its original parameter".to_owned())?;
+            let parameter = &function.syntax.parameters[parameter_index];
+            let syntax = parameter
+                .ty
+                .as_ref()
+                .ok_or_else(|| "graph formal parameter has no original header".to_owned())?;
+            let (mode, entry) = original
+                .entry
+                .arguments
+                .get(parameter_index)
+                .ok_or_else(|| "graph formal parameter has no actual entry".to_owned())?;
+            require(
+                binding.parameter
+                    && parameter.mode == ril_syntax::ast::ParameterMode::Read
+                    && *mode == super::super::model::Mode::Read
+                    && entry.value.sources == binding.forwarded
+                    && self.facts.source_types.binding_environment(binding_id)
+                        == Some(binding.typing_environment.id()),
+                "graph forwarding lost its original readonly parameter reception",
+            )?;
+            let key = self.normalized_key(syntax, &self.scope(definition)?)?;
+            if definition == *required_owner && parameter_index == *required_parameter as usize {
+                require(
+                    source.schema.equivalent_key(
+                        &key,
+                        &mut super::super::source_types::WorkLimit::new(16384),
+                    ) == Ok(true),
+                    "graph forwarding changed the complete stored source interpretation",
+                )?;
+                break (binding, definition, original, parameter_index, syntax, key);
+            }
+            require(
+                binding.forwarded.len() == 1,
+                "graph forwarding has no unique actual parameter Name",
+            )?;
+            let next = *binding.forwarded.first().unwrap();
+            let event = original
+                .source_event
+                .ok_or_else(|| "graph forwarding has no actual source call".to_owned())?;
+            let token = self
+                .facts
+                .call_arguments
+                .iter()
+                .find(|row| row.source_event == event)
+                .and_then(|row| row.supplied.get(&(parameter_index as u32)))
+                .ok_or_else(|| "graph forwarding lost its supplied input token".to_owned())?;
+            let observed = self
+                .facts
+                .expressions
+                .get(token.expression)
+                .ok_or_else(|| "graph forwarding token is outside its arena".to_owned())?;
+            let next_binding = self
+                .facts
+                .bindings
+                .get(next)
+                .ok_or_else(|| "graph forwarding names a missing parameter".to_owned())?;
+            require(observed.value.sources == BTreeSet::from([next])
+                && observed.source_id.and_then(|id| self.facts.semantic_hir.as_ref()?.expression(id)).is_some_and(|node|
+                    matches!(&node.kind, crate::hir::nodes::ExprKind::Name(name) if name == &next_binding.name)),
+                "graph forwarding borrowed another original Name observation")?;
+            let operand = original_sources
+                .as_ref()
+                .unwrap()
+                .key(event, parameter_index as u32)?;
+            require(
+                source.schema.equivalent_key(
+                    &operand,
+                    &mut super::super::source_types::WorkLimit::new(16384),
+                ) == Ok(true),
+                "graph forwarding changed its actual complete operand",
+            )?;
+            binding_id = next;
+            root_expression = token.expression;
+        };
+        let occurrence = ScopedSourceOccurrence {
+            argument_index: origin.slot,
+            selection_path: vec![],
+            formal: FormalSourceAnchor {
+                definition,
+                invocation: original.id,
+                parameter_index: u32::try_from(parameter_index)
+                    .map_err(|_| "graph formal parameter index overflow")?,
+                type_path: vec![],
+                activation: binding.owner,
+                binding: binding_id,
+                root_expression,
+                entry_allocation_epoch: original.entry.allocation_epoch,
+            },
+        };
+        self.scoped_formal_source(&ScopedReceptionSource {
+            required: check.required,
+            binder: &bound.binder,
+            context: check.context,
+            syntax,
+            typing_environment: &binding.typing_environment,
+            key: &key,
+            occurrences: &[occurrence],
+            cause: check.actual.value.cause,
+        })
     }
 
     pub(super) fn verify_symbolic_field(
@@ -567,6 +767,22 @@ impl Replay<'_> {
                 .is_some_and(|registered| std::ptr::eq(registered, identity)),
             "symbolic source stage has no actual arena occurrence",
         )?;
+        self.scoped_formal_source(&ScopedReceptionSource {
+            required: identity.required,
+            binder: &identity.binder,
+            context: identity.context,
+            syntax: &identity.syntax,
+            typing_environment: &identity.typing_environment,
+            key: &identity.key,
+            occurrences: &identity.occurrences,
+            cause: identity.cause,
+        })
+    }
+
+    fn scoped_formal_source<'a>(
+        &'a self,
+        identity: &ScopedReceptionSource<'_>,
+    ) -> Check<ScopedOriginalFormal<'a>> {
         let bound = self
             .facts
             .record_bounds
@@ -615,8 +831,8 @@ impl Replay<'_> {
                     .is_some_and(|activation| self.facts.allocated_scopes.contains(&activation)),
             "symbolic source stage has no unique registered invocation activation",
         )?;
-        self.every_scoped_occurrence_is_material(call.target, &identity.binder)?;
-        let paths = self.declared_type_paths(call.target, &identity.binder)?;
+        self.every_scoped_occurrence_is_material(call.target, identity.binder)?;
+        let paths = self.declared_type_paths(call.target, identity.binder)?;
         require(
             !paths.is_empty() && paths.len() == identity.occurrences.len(),
             "symbolic source stage has incomplete real T path coverage",
@@ -637,7 +853,7 @@ impl Replay<'_> {
             })?;
         require(
             identity.typing_environment.id() == binding.typing_environment.id()
-                && identity.typing_environment == binding.typing_environment
+                && identity.typing_environment == &binding.typing_environment
                 && self
                     .facts
                     .source_types
@@ -652,13 +868,13 @@ impl Replay<'_> {
             "symbolic source capture differs from its original declaration namespace",
         )?;
         require(
-            self.normalized_key(&identity.syntax, &identity_scope)? == identity.key,
+            self.normalized_key(identity.syntax, &identity_scope)? == *identity.key,
             "symbolic source descriptor differs from its complete key",
         )?;
-        self.member_coordinates(&identity.key, &identity_scope)?;
+        self.member_coordinates(identity.key, &identity_scope)?;
         let mut occurrences = Vec::new();
         for (ordinal, ((argument, path), occurrence)) in
-            paths.iter().zip(&identity.occurrences).enumerate()
+            paths.iter().zip(identity.occurrences.iter()).enumerate()
         {
             require(
                 *argument == occurrence.argument_index as usize
@@ -685,7 +901,7 @@ impl Replay<'_> {
                 self.original_formal_view(call, &occurrence.formal)?;
             let key = self.normalized_key(header, &scope)?;
             require(
-                original_receiver.origins == actual_receiver.origins && key == identity.key,
+                original_receiver.origins == actual_receiver.origins && key == *identity.key,
                 "symbolic source stage changed the object or complete original identity",
             )?;
             self.member_coordinates(&key, &scope)?;
@@ -747,7 +963,9 @@ impl Replay<'_> {
             });
         }
         Ok(ScopedOriginalFormal {
-            identity,
+            required: identity.required,
+            key: (*identity.key).clone(),
+            source_paths: identity.occurrences.to_vec(),
             context: identity.context,
             entry_epoch: call.entry.allocation_epoch,
             occurrences,
@@ -815,7 +1033,7 @@ impl Replay<'_> {
                 .generic_bound_checks
                 .get(check.id.0 as usize)
                 .is_some_and(|registered| std::ptr::eq(registered, check))
-                && check.required == reception.identity.required
+                && check.required == reception.required
                 && check.context == reception.context
                 && check.allocation_epoch == reception.entry_epoch,
             "symbolic schema member borrowed another actual check or entry epoch",
@@ -825,8 +1043,7 @@ impl Replay<'_> {
             .first()
             .ok_or_else(|| "symbolic schema member has no complete T path coverage".to_owned())?;
         let actual_path = reception
-            .identity
-            .occurrences
+            .source_paths
             .first()
             .ok_or_else(|| "symbolic schema member has no real primary T path".to_owned())?;
         require(
@@ -853,7 +1070,7 @@ impl Replay<'_> {
                 && *parameter_index == actual_path.formal.parameter_index
                 && scope == &occurrence.scope
                 && syntax.span == occurrence.header.span
-                && self.normalized_key(syntax, scope)? == reception.identity.key,
+                && self.normalized_key(syntax, scope)? == reception.key,
             "symbolic schema member borrowed another rigid header or namespace",
         )?;
         let TypeKind::Record { fields, .. } = &occurrence.header.kind else {
