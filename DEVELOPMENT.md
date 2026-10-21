@@ -108,12 +108,9 @@ duplicate source trees and historical verification reports.
 - Resolve compiler and native acceptance failures on both platforms, then expose
   symbol and capability introspection through immutable analysis snapshots.
 
-`cargo test --locked -p ril-compiler --test source_transport` currently exposes:
-
-- `bounded_record_tuple_return`: a nested bound projection lacks an original
-  frozen stored edge.
-- `composed_row_with_array_and_callback`: forwarding a composed row infers
-  inconsistent generic arguments.
+`cargo test --locked -p ril-compiler --test source_transport` still exposes
+`composed_row_with_array_and_callback`: forwarding a composed row lacks complete
+open Source schemas and captured symbolic binder transport.
 
 Their programs are in `tests/regressions/source-transport.ril`.
 

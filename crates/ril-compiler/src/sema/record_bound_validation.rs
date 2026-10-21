@@ -2986,7 +2986,7 @@ impl Replay<'_> {
                 .ok_or_else(|| "nested read path has no original frozen stored edge".to_owned())?;
             let output = self.observed_product_value(context, expression)?;
             self.product_key_observation(context, expression, &step)?;
-            self.received_product_projection(parent, stored, output, origin, expression.span)?;
+            self.received_product_projection(parent, stored, output, origin)?;
             parent = output;
         }
         require(
@@ -3016,24 +3016,22 @@ impl Replay<'_> {
         context: super::effect_identity::InvocationContext,
         expression: &Expr,
     ) -> Check<&Value> {
-        let mut matching = self
-            .facts
-            .invocation_expressions
-            .iter()
-            .filter_map(|observation| {
-                (observation.context == context)
-                    .then(|| self.facts.expressions.get(observation.expression))
-                    .flatten()
-                    .filter(|observed| observed.span == expression.span)
-            });
-        let observed = matching.next().ok_or_else(|| {
-            "received product path has no actual expression observation".to_owned()
-        })?;
-        require(
-            matching.next().is_none(),
-            "received product path has multiple actual expression observations",
-        )?;
-        Ok(&observed.value)
+        let source = expression
+            .hir_id
+            .ok_or_else(|| "received product path has no original HIR identity".to_owned())?;
+        let mut work = LIMIT;
+        let matching =
+            self.observations
+                .range(source, context, 0..self.facts.expressions.len(), &mut work)?;
+        let [index] = matching else {
+            return Err(if matching.is_empty() {
+                "received product path has no actual expression observation"
+            } else {
+                "received product path has multiple actual expression observations"
+            }
+            .into());
+        };
+        Ok(&self.facts.expressions[*index].value)
     }
 
     fn product_key_observation(
@@ -3071,7 +3069,6 @@ impl Replay<'_> {
         stored: &Value,
         output: &Value,
         origin: super::facts::NodeId,
-        span: Span,
     ) -> Check {
         let cause = self
             .facts
@@ -3082,7 +3079,6 @@ impl Replay<'_> {
         require(
             self.facts.explanations.kinds.get(output.cause.0 as usize)
                 == Some(&super::facts::CauseKind::Projection)
-                && cause.span == Some(span)
                 && cause.parents == [parent.cause, stored.cause],
             "received product projection borrowed another stored constituent",
         )?;
@@ -3170,7 +3166,13 @@ fn product_expression_path<'a>(
                 base,
                 field,
                 safe: false,
-            } => (base.as_ref(), BoundTypeSelectionStep::Field(field.clone())),
+            } => (
+                base.as_ref(),
+                field
+                    .parse()
+                    .map(BoundTypeSelectionStep::Tuple)
+                    .unwrap_or_else(|_| BoundTypeSelectionStep::Field(field.clone())),
+            ),
             ExprKind::ComputedField { base, key } => {
                 let step = if let Some(label) = literal_field(key) {
                     BoundTypeSelectionStep::Field(label)

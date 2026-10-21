@@ -203,6 +203,18 @@ pub(super) fn unify_call_types(
                 let previous = match previous {
                     Ty::Record(fields) => Row::closed(fields.clone()),
                     Ty::OpenRecord { fields, row } => Row::open(fields.clone(), row.clone()),
+                    Ty::Generic(identity) => {
+                        let RowTail::Open(tail) = &actual_row.tail else {
+                            return false;
+                        };
+                        if tail.identity != RowIdentity::Binder(identity.clone()) {
+                            return false;
+                        }
+                        // An explicit Type prefix may name the caller's rigid
+                        // residual. Its row interpretation comes from this
+                        // actual argument, including the declared absences.
+                        Row::open(BTreeMap::new(), tail.clone())
+                    }
                     _ => return false,
                 };
                 if solver
@@ -221,6 +233,14 @@ pub(super) fn unify_call_types(
             let Ok(selected) = solver.normalize(selected) else {
                 return false;
             };
+            if let Some(Ty::Generic(previous)) = substitutions.get(identity) {
+                // The row equation checks a view of this explicit Type. Keep
+                // the original Type identity instead of replacing it with its
+                // structural row interpretation.
+                return selected.fields.is_empty()
+                    && matches!(&selected.tail, RowTail::Open(tail)
+                        if tail.identity == RowIdentity::Binder(previous.clone()));
+            }
             substitutions.insert(identity.clone(), Checker::row_type(selected));
             return true;
         }
@@ -2660,6 +2680,72 @@ mod tests {
             substitute_inferred_type(&template, &corrupted),
             Ty::OpenRecord { .. }
         ));
+    }
+    #[test]
+    fn an_explicit_symbolic_type_keeps_its_identity_when_used_as_a_rigid_row() {
+        use crate::sema::model::rows::{OpenTail, RowIdentity};
+        let template = Ty::OpenRecord {
+            fields: [("item".into(), (false, Ty::Generic("callee:T".into())))].into(),
+            row: OpenTail {
+                identity: RowIdentity::Binder("callee:R".into()),
+                lacks: ["item".into(), "reserved".into()].into(),
+            },
+        };
+        let actual = Ty::OpenRecord {
+            fields: [("item".into(), (false, Ty::Generic("caller:T".into())))].into(),
+            row: OpenTail {
+                identity: RowIdentity::Binder("caller:R".into()),
+                lacks: ["item".into(), "reserved".into()].into(),
+            },
+        };
+        let binders = ["callee:T".into(), "callee:R".into()].into();
+        let explicit = BTreeMap::from([
+            ("callee:T".into(), Ty::Generic("caller:T".into())),
+            ("callee:R".into(), Ty::Generic("caller:R".into())),
+        ]);
+        let mut selected = explicit.clone();
+        assert!(unify_call_types(
+            &template,
+            &actual,
+            &binders,
+            &mut selected
+        ));
+        assert_eq!(selected, explicit);
+
+        let mut other = explicit.clone();
+        other.insert("callee:R".into(), Ty::Generic("other:R".into()));
+        let before = other.clone();
+        assert!(!unify_call_types(&template, &actual, &binders, &mut other));
+        assert_eq!(other, before);
+
+        let Ty::OpenRecord {
+            mut fields,
+            mut row,
+        } = actual
+        else {
+            unreachable!()
+        };
+        row.lacks.remove("reserved");
+        assert!(!unify_call_types(
+            &template,
+            &Ty::OpenRecord {
+                fields: fields.clone(),
+                row: row.clone()
+            },
+            &binders,
+            &mut selected,
+        ));
+        assert_eq!(selected, explicit);
+        row.lacks.insert("reserved".into());
+        fields.insert("extra".into(), (false, Ty::Str));
+        row.lacks.insert("extra".into());
+        assert!(!unify_call_types(
+            &template,
+            &Ty::OpenRecord { fields, row },
+            &binders,
+            &mut selected,
+        ));
+        assert_eq!(selected, explicit);
     }
     #[test]
     fn call_unification_uses_one_strict_binding_per_parameter() {

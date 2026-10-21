@@ -90,17 +90,30 @@ fn example(){let values:[2]int=[7,9];let received:[2]int=forward(values)}
 --@ end-file
 --@ end-case
 
---@ case: bounded-record-tuple-return
---@ mode: check-pass
---@ spec: SPEC#record-types-and-row-polymorphism
+--@ source: bounded-record-tuple-return
 --@ file: source.ril
 fn first<U,T:{items:[2]U,..R}>(value:(T,int))->U{value.0.items[0]}
 fn forward<U,S>(value:({items:[2]U,tag:str,..S},int))->U{first<U>(value)}
-fn example(){
+pub fn test_native(){
     let values:[2]int=[7,9]
     assert(forward((.{items:values,tag:"same"},0))==7)
 }
 --@ end-file
+--@ end-source
+
+--@ case: bounded-record-tuple-return
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: bounded-record-tuple-native
+--@ use-source: bounded-record-tuple-return
+--@ end-case
+
+--@ case: bounded-record-tuple-native
+--@ mode: run-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ companion: bounded-record-tuple-return
+--@ entry: test_native
+--@ use-source: bounded-record-tuple-return
 --@ end-case
 
 --@ case: unrelated-generic-return

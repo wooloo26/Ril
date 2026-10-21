@@ -255,7 +255,7 @@ fn nested_read_reception_cannot_gain_authority_or_lose_its_root_observation() {
         .unwrap();
     let context = projection.context;
     let cause = projection.source.value.cause;
-    for mutation in 0..4 {
+    for mutation in 0..6 {
         let mut copy = facts.clone();
         if mutation == 3 {
             copy.invocation_expressions.retain(|observation| {
@@ -265,6 +265,31 @@ fn nested_read_reception_cannot_gain_authority_or_lose_its_root_observation() {
                         ril_compiler::sema::model::Ty::Tuple(_)
                     )
             });
+        } else if mutation >= 4 {
+            let root = copy
+                .invocation_expressions
+                .iter()
+                .find(|observation| {
+                    observation.context == context
+                        && matches!(
+                            copy.expressions[observation.expression].value.ty,
+                            ril_compiler::sema::model::Ty::Tuple(_)
+                        )
+                })
+                .unwrap()
+                .expression;
+            let other = copy
+                .invocation_expressions
+                .iter()
+                .filter(|observation| observation.context == context)
+                .map(|observation| &copy.expressions[observation.expression])
+                .find(|expression| {
+                    expression.source_id.is_some()
+                        && expression.source_id != copy.expressions[root].source_id
+                })
+                .unwrap()
+                .source_id;
+            copy.expressions[root].source_id = if mutation == 4 { None } else { other };
         } else {
             for value in copy
                 .expressions
