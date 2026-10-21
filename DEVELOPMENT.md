@@ -107,8 +107,9 @@ duplicate source trees and historical verification reports.
 - Finish generated I/O and iterator observations, channel payloads, handler
   activations and resumption transport. Resolve the nine-scope channel replay
   case with finite work while preserving unknown guard/history obligations.
-- Implement conditional pattern bindings (`if let`, `while let`) and complete
-  nested closure/default and retained-handler transport covered by the corpus.
+- Implement conditional bindings (`if let`, `while let`), array/tuple rest
+  patterns and contextual `capture`. Complete record-rest, nested closure/default
+  and retained-handler transport covered by the corpus.
 - Complete static extent/sort contexts, shared-constant audits and builtin source
   declarations. Keep object identity separate from each reference's declared view.
 - Resolve compiler and native acceptance failures on both platforms, then expose

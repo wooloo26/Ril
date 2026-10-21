@@ -173,18 +173,17 @@ type Record = { as: int }
 --@ case: accept-reserved-capture
 --@ mode: check-pass
 --@ spec: SPEC#keywords
---@ companion: reject-reserved-capture
+--@ companion: capture-field
 --@ file: accept-reserved-capture.ril
 type Record = { capture_value: int }
 --@ end-file
 --@ end-case
 
---@ case: reject-reserved-capture
---@ mode: check-fail
+--@ case: capture-field
+--@ mode: check-pass
 --@ spec: SPEC#keywords
 --@ companion: accept-reserved-capture
--- Error [E0113]: reject reserved capture
---@ file: reject-reserved-capture.ril
+--@ file: capture-field.ril
 type Record = { capture: int }
 --@ end-file
 --@ end-case

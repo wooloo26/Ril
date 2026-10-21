@@ -1,0 +1,417 @@
+--@ source: tuple-rest-positions
+--@ file: source.ril
+pub fn test_native() {
+    let values = (10, "discarded", false, 50)
+    let (first, .., final) = values
+    let (head, ..) = (9,)
+    let (.., suffix) = (true, 2)
+    let (left, .., right) = (3, 4)
+    assert(first == 10 && final == 50 && head == 9 && suffix == 2)
+    assert(left == 3 && right == 4)
+    let nested = (Some((6, "middle", 8)), 99)
+    let (Some((start, .., end)), tag) = nested else { panic("missing tuple") }
+    assert(start == 6 && end == 8 && tag == 99)
+    assert((match () { (..) -> 7 }) == 7)
+}
+--@ end-file
+--@ end-source
+
+--@ case: tuple-rest-positions-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ companion: reject-multiple-tuple-rests
+--@ use-source: tuple-rest-positions
+--@ end-case
+
+--@ case: tuple-rest-positions-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: tuple-rest-positions-native
+--@ use-source: tuple-rest-positions
+--@ end-case
+
+--@ case: tuple-rest-positions-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ use-source: tuple-rest-positions
+--@ end-case
+
+--@ source: array-rest-lengths
+--@ file: source.ril
+fn classify(values: []int) -> int {
+    match values {
+        [] -> 0,
+        [single] -> single,
+        [front, ..middle, back] -> front + back + len(middle) * 10,
+    }
+}
+fn tail_length(values: []int) -> int {
+    match values { [head, ..tail] -> head + len(tail), [] -> 0 }
+}
+pub fn test_native() {
+    let fixed: [3]int = [10, 20, 30]
+    let [x, y, z] = fixed
+    assert(x == 10 && y == 20 && z == 30)
+    assert(classify([]) == 0 && classify([7]) == 7)
+    assert(classify([2, 8]) == 10 && classify([1, 2, 3, 4]) == 25)
+    assert(tail_length([]) == 0 && tail_length([9]) == 9)
+    assert(tail_length([9, 8, 7]) == 11)
+}
+--@ end-file
+--@ end-source
+
+--@ case: array-rest-lengths-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ companion: reject-multiple-array-rests
+--@ use-source: array-rest-lengths
+--@ end-case
+
+--@ case: array-rest-lengths-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: array-rest-lengths-native
+--@ use-source: array-rest-lengths
+--@ end-case
+
+--@ case: array-rest-lengths-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ use-source: array-rest-lengths
+--@ end-case
+
+--@ source: record-rest-schema
+--@ file: source.ril
+type Packet = { id: int, items: [0][2]int, tag: str }
+fn exact(items: [0][2]int) -> int { len(items) }
+pub fn test_native() {
+    let items: [0][2]int = []
+    let packet = Packet.{ id: 7, items, tag: "saved" }
+    let .{ id, ..rest } = packet
+    let .{ tag, .. } = packet
+    assert(id == 7 && rest.tag == "saved" && tag == "saved")
+    assert(exact(rest.items) == 0)
+}
+--@ end-file
+--@ end-source
+
+--@ case: record-rest-schema-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: reject-record-rest-hidden-dimension
+--@ use-source: record-rest-schema
+--@ end-case
+
+--@ case: record-rest-schema-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: record-rest-schema-native
+--@ use-source: record-rest-schema
+--@ end-case
+
+--@ case: record-rest-schema-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ use-source: record-rest-schema
+--@ end-case
+
+--@ source: record-rest-result-duty
+--@ file: source.ril
+pub fn test_native() {
+    let pending: Result<int, str> = Err("saved")
+    let packet = .{ id: 7, pending }
+    let .{ id, ..rest } = packet
+    assert(id == 7 && rest.pending is Err("saved"))
+}
+--@ end-file
+--@ end-source
+
+--@ case: record-rest-result-duty-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#mandatory-inspection-of-fallible-results
+--@ companion: reject-record-rest-result-discard
+--@ use-source: record-rest-result-duty
+--@ end-case
+
+--@ case: record-rest-result-duty-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: record-rest-result-duty-native
+--@ use-source: record-rest-result-duty
+--@ end-case
+
+--@ case: record-rest-result-duty-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#mandatory-inspection-of-fallible-results
+--@ entry: test_native
+--@ use-source: record-rest-result-duty
+--@ end-case
+
+--@ source: nested-array-closures
+--@ file: source.ril
+type Reader = fn() -> int &closure
+fn make(values: []int) -> Reader &capture {
+    match values {
+        [first, ..middle, final] -> {
+            let count = len(middle)
+            \-> (\-> first + final + count)()
+        },
+        _ -> \-> -1,
+    }
+}
+pub fn test_native() {
+    let first = make([1, 2, 3, 4])
+    let second = make([10, 20])
+    let absent = make([7])
+    assert(first() == 7 && second() == 30 && absent() == -1)
+    assert(second() == 30 && first() == 7)
+}
+--@ end-file
+--@ end-source
+
+--@ case: nested-array-closures-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ use-source: nested-array-closures
+--@ end-case
+
+--@ case: nested-array-closures-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: nested-array-closures-native
+--@ use-source: nested-array-closures
+--@ end-case
+
+--@ case: nested-array-closures-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ use-source: nested-array-closures
+--@ end-case
+
+--@ source: conditional-array-rests
+--@ file: source.ril
+pub fn test_native() {
+    let mut values = [1, 2, 3, 4]
+    var total = 0
+    while let [front, .., back] = values {
+        total += front + back
+        let _ = Array::pop(mut values)
+    }
+    assert(total == 12 && values == [1])
+    let remaining = if let [head, ..tail] = values { head + len(tail) } else { 0 }
+    assert(remaining == 1)
+}
+--@ end-file
+--@ end-source
+
+--@ case: conditional-array-rests-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#conditional-expressions
+--@ spec: SPEC#loop-expressions
+--@ spec: SPEC#pattern-matching
+--@ use-source: conditional-array-rests
+--@ end-case
+
+--@ case: conditional-array-rests-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#loop-expressions
+--@ companion: conditional-array-rests-native
+--@ use-source: conditional-array-rests
+--@ end-case
+
+--@ case: conditional-array-rests-native
+--@ mode: run-pass
+--@ spec: SPEC#loop-expressions
+--@ entry: test_native
+--@ use-source: conditional-array-rests
+--@ end-case
+
+--@ case: reject-multiple-tuple-rests
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: tuple-rest-positions-pointer32
+-- Error [E0347]: One tuple pattern cannot contain two rest positions.
+--@ file: source.ril
+fn example() { let (first, .., middle, .., final) = (1, 2, 3, 4, 5) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-multiple-array-rests
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: array-rest-lengths-pointer32
+-- Error [E0347]: One array pattern cannot contain two rest positions.
+--@ file: source.ril
+fn example(values: []int) {
+    match values { [first, ..left, ..right] -> (), _ -> () }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-multiple-record-rests
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: record-rest-schema-pointer32
+-- Error [E0347]: One record pattern cannot contain two rest bindings.
+--@ file: source.ril
+fn example() { let .{ id, ..left, ..right } = .{ id: 1, other: 2 } }
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-rest-duplicate-binder
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: array-rest-lengths-pointer64
+-- Error [E0347]: A rest binder cannot reuse a positional binder's name.
+--@ file: source.ril
+fn example(values: []int) {
+    match values { [head, ..head] -> (), _ -> () }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-record-rest-duplicate-binder
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: record-rest-schema-pointer64
+-- Error [E0347]: A rest binder cannot reuse a selected field binder's name.
+--@ file: source.ril
+fn example() { let .{ item, ..item } = .{ item: 1, other: 2 } }
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-rest-alternative-binders
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: array-rest-lengths-pointer64
+-- Error [E0346]: Rest bindings participate in the common alternative binding contract.
+--@ file: source.ril
+fn example(values: []int) {
+    match values { [head, ..tail] | [head, ..other] -> (), _ -> () }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-rest-subject-type
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: array-rest-lengths-pointer32
+-- Error [E0301]: An array rest pattern still requires an array subject.
+--@ file: source.ril
+fn example(value: int) { match value { [..rest] -> () } }
+--@ end-file
+--@ end-case
+
+--@ case: reject-tuple-rest-subject-type
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: tuple-rest-positions-pointer64
+-- Error [E0301]: A tuple rest pattern still requires a tuple subject.
+--@ file: source.ril
+fn example(value: int) { let (head, ..) = value }
+--@ end-file
+--@ end-case
+
+--@ case: reject-refutable-array-binding
+--@ mode: check-fail
+--@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+--@ companion: array-rest-lengths-pointer32
+-- Error [E0345]: An unknown-length array can be empty and needs a guarded binding.
+--@ file: source.ril
+fn example(values: []int) { let [head, ..tail] = values }
+--@ end-file
+--@ end-case
+
+--@ case: reject-refutable-array-for-pattern
+--@ mode: check-fail
+--@ spec: SPEC#loop-expressions
+--@ companion: array-rest-lengths-pointer64
+-- Error [E0345]: A for pattern must not silently filter empty rows.
+--@ file: source.ril
+fn example(rows: [][]int) { for rows as [head, ..tail] { assert(head == head) } }
+--@ end-file
+--@ end-case
+
+--@ case: reject-record-rest-hidden-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: record-rest-schema-pointer32
+-- Error [E0301]: Removing another field does not change a stored inner array extent.
+--@ file: source.ril
+fn example() {
+    let items: [0][3]int = []
+    let packet = .{ id: 1, items }
+    let .{ id, ..rest } = packet
+    let invalid: [0][2]int = rest.items
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-record-rest-result-discard
+--@ mode: check-fail
+--@ spec: SPEC#mandatory-inspection-of-fallible-results
+--@ companion: record-rest-result-duty-pointer32
+-- Error [E0720]: Discarding the rest of a record does not inspect its Result field.
+--@ file: source.ril
+fn example() {
+    let pending: Result<int, str> = Err("saved")
+    let packet = .{ id: 7, pending }
+    let .{ id, .. } = packet
+    assert(id == 7)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-rest-guard-exhaustiveness
+--@ mode: check-fail
+--@ spec: SPEC#pattern-syntax-or-patterns-and-exhaustiveness
+--@ companion: array-rest-lengths-pointer64
+-- Error [E0303]: A guarded rest pattern does not establish exhaustiveness.
+--@ file: source.ril
+fn example(values: []int) -> int {
+    match values { [..rest] if len(rest) > 0 -> 1 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-after-universal-rest
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ companion: array-rest-lengths-pointer32
+-- Error [E0304]: A rest-only array pattern already covers the empty array.
+--@ file: source.ril
+fn example(values: []int) -> int {
+    match values { [..rest] -> len(rest), [] -> 0 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-vacuous-tuple-rest-binding
+--@ mode: check-fail
+--@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+--@ companion: tuple-rest-positions-pointer32
+-- Error [E0309]: A rest-only discard is not the special unguarded wildcard binding.
+--@ file: source.ril
+fn example() { let (..) = (1, 2) }
+--@ end-file
+--@ end-case

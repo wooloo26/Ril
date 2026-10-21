@@ -2871,7 +2871,7 @@ let (first, second) = (1, 2)           -- OK
 
 -- Tuple pattern with ellipsis ('..'):
 let tuple_val = (10, 20, 30, 40, 50)
-let (first, .., last) = tuple_val              -- OK: first = 10, last = 50
+let (first, .., final) = tuple_val             -- OK: first = 10, final = 50
 let (head, ..) = tuple_val                     -- OK: head = 10; trailing elements discarded
 -- let (a, .., b, ..) = tuple_val             -- Error [E0347]: at most one '..' permitted in a tuple pattern
 
