@@ -957,6 +957,9 @@ impl Value {
 pub struct BindingInfo {
     /// Actual HIR pattern introducing this binding, independent of its span.
     pub pattern: Option<ril_compiler_core::ids::PatternId>,
+    /// Actual initializer or pattern-receiver activation selecting this birth.
+    /// Source identity and physical occurrence are checked together on replay.
+    pub birth: Option<super::application_effect::OccurrenceIdentity>,
     /// Declaration interpretation belongs to this binding's own activation,
     /// including when a later closure or handler reads the captured binding.
     pub context: super::effect_identity::InvocationContext,

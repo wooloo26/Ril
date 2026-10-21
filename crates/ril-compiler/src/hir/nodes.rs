@@ -15,7 +15,9 @@ use ril_syntax::ast::{
 
 mod identify;
 mod lower;
+mod patterns;
 mod walk;
+pub use patterns::PatternBinding;
 pub use walk::WalkError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,6 +28,9 @@ pub enum NodeId {
     Generic(GenericParamId),
     Type(TypeExprId),
 }
+
+#[cfg(test)]
+mod input_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LexicalOwner {
@@ -45,6 +50,8 @@ pub enum GeneratedKind {
     Desugaring,
     /// Reading the expected value of a Name, literal, or nullary tag pattern.
     PatternValue,
+    /// A compiler-owned resource receiver introduced by an actual builtin call.
+    ResourceLease,
 }
 
 /// The selected input phase, before any semantic authorization.
@@ -473,12 +480,16 @@ pub enum LowerError {
 #[derive(Debug, Clone, Default)]
 pub struct HirProgram {
     roots: Vec<StmtId>,
+    /// Original top-level roots classified as declaration units by the loader.
+    /// This input provenance covers functions, types and data alike; it is not
+    /// a successful-check flag or a value/permission certificate.
+    declaration_roots: std::collections::BTreeSet<StmtId>,
     expressions: Vec<Expr>,
     statements: Vec<Stmt>,
     patterns: Vec<Pattern>,
     generics: Vec<GenericParam>,
     types: Vec<TypeExpr>,
-    generated_roots: Vec<ExprId>,
+    generated_roots: Vec<NodeId>,
 }
 impl HirProgram {
     pub fn lower(source: &ast::Program) -> Result<Self, LowerError> {
@@ -535,7 +546,33 @@ impl HirProgram {
     pub fn roots(&self) -> &[StmtId] {
         &self.roots
     }
-    pub fn generated_roots(&self) -> &[ExprId] {
+    pub fn declaration_roots(&self) -> &std::collections::BTreeSet<StmtId> {
+        &self.declaration_roots
+    }
+    /// Resolve the caller's input-unit classification to canonical root IDs
+    /// once, before semantic evaluation. No FileId/Span lookup is retained.
+    pub(crate) fn classify_declaration_units(
+        &mut self,
+        files: &std::collections::BTreeSet<u32>,
+        work: &mut usize,
+    ) -> Result<(), LowerError> {
+        *work = work
+            .checked_sub(self.roots.len())
+            .ok_or(LowerError::Budget("input roots"))?;
+        let mut declarations = std::collections::BTreeSet::new();
+        for root in &self.roots {
+            let statement = self.statement(*root).ok_or(LowerError::Correspondence)?;
+            if files.contains(&statement.info.span.file.0) {
+                *work = work
+                    .checked_sub(1)
+                    .ok_or(LowerError::Budget("declaration input roots"))?;
+                declarations.insert(*root);
+            }
+        }
+        self.declaration_roots = declarations;
+        Ok(())
+    }
+    pub fn generated_roots(&self) -> &[NodeId] {
         &self.generated_roots
     }
     pub fn expression(&self, id: ExprId) -> Option<&Expr> {
@@ -607,6 +644,45 @@ impl HirProgram {
         limits: HirLimits,
     ) -> Result<ExprId, LowerError> {
         lower::generated(self, source, anchor, kind, owner, limits)
+    }
+    /// Admit a native generated binder without manufacturing a source AST.
+    /// All fallible identity and work checks precede either arena mutation.
+    /// Expressions and patterns share the canonical generation/root sequence.
+    pub(crate) fn mint_generated_name_pattern(
+        &mut self,
+        anchor: NodeId,
+        kind: GeneratedKind,
+        name: &str,
+        limits: HirLimits,
+    ) -> Result<PatternId, LowerError> {
+        let original = self.info(anchor).ok_or(LowerError::MissingAnchor)?;
+        if limits.nodes < 2 || limits.depth == 0 {
+            return Err(LowerError::Budget("generated binding nodes"));
+        }
+        if limits.text_items == 0 || limits.text_bytes < name.len() {
+            return Err(LowerError::Budget("generated binding text"));
+        }
+        let generation =
+            u32::try_from(self.generated_roots.len()).map_err(|_| LowerError::IdentitySpace)?;
+        let id =
+            PatternId(u32::try_from(self.patterns.len()).map_err(|_| LowerError::IdentitySpace)?);
+        let info = NodeInfo {
+            span: original.span,
+            owner: original.owner,
+            origin: NodeOrigin::Generated {
+                generation,
+                anchor,
+                kind,
+            },
+            analyzed_type: None,
+        };
+        let pattern = Pattern {
+            info,
+            kind: PatternKind::Name(name.to_owned()),
+        };
+        self.patterns.push(pattern);
+        self.generated_roots.push(NodeId::Pattern(id));
+        Ok(id)
     }
     /// Register and identify the generated AST as one transaction. The original
     /// AST is untouched if allocation or structural admission fails. Canonical

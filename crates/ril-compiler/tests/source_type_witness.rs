@@ -54,7 +54,8 @@ fn failed_source_reception_preserves_later_independent_declarations_in_the_snaps
                 facts
                     .binding_sources
                     .iter()
-                    .any(|binding| binding.binding == id && binding.key.is_some())
+                    .any(|binding| binding.binding == id
+                        && facts.source_types.binding_type(id).is_some())
             );
             assert!(snapshot.into_verified().is_err());
         }

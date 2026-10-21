@@ -334,6 +334,8 @@ pub struct StaticKeyCheck {
 }
 #[derive(Debug, Clone)]
 pub struct ImplicitUnwrap {
+    /// Actual original read at which the dominating predicate was consumed.
+    pub occurrence: application_effect::OccurrenceIdentity,
     pub cause: ril_compiler_core::diagnostic::CauseId,
     pub depth: u32,
     pub tags: Vec<String>,

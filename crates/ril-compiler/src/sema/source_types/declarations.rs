@@ -1,7 +1,9 @@
 //! Resolve transparent global declarations into finite source graphs. Only
 //! original HIR declaration edges can turn an opaque name into structural
 //! evidence. Generic, opaque and captured interpretations stay unresolved.
-use super::{LegacySourceExport, SourceSensitivity, SourceTypeQueries, graph::*, legacy};
+use super::{
+    LegacySourceExport, SourceSchema, SourceSensitivity, SourceTypeQueries, graph::*, legacy,
+};
 use crate::hir::nodes::{self as hir, HirProgram};
 use crate::sema::effect_identity::ArgumentKey;
 use ril_compiler_core::ids::{StmtId, TypeExprId};
@@ -35,6 +37,33 @@ struct DeclaredGraph {
     types: SourceTypes,
     root: SourceTypeId,
     declarations: BTreeSet<SourceTypeId>,
+}
+
+/// Resolve the original declaration graph directly into a complete schema.
+/// Recursive declaration edges are copied as graph edges, never exported to a
+/// finite legacy key merely to import the same coordinates again.
+pub(crate) fn schema(
+    key: &ArgumentKey,
+    hir: &HirProgram,
+    work: &mut WorkLimit,
+) -> Result<SourceSchema, SourceTypesError> {
+    let graph = resolve(key, hir, work)?;
+    SourceSchema::copy_from(&graph.types, graph.root, None, work)
+}
+
+/// Resolve only original declaration edges in an already captured graph. The
+/// caller keeps its frozen environment; neither graph copying nor expansion
+/// can replace that environment with a later lexical interpretation.
+pub(crate) fn resolve_schema(
+    source: &SourceSchema,
+    hir: &HirProgram,
+    work: &mut WorkLimit,
+) -> Result<SourceSchema, SourceTypesError> {
+    let (types, root) = source.graph();
+    let mut resolver = Resolve::new(hir, work)?;
+    let root = resolver.copy(types, root, work, 0)?;
+    let graph = resolver.freeze(root, work)?;
+    SourceSchema::copy_from(&graph.types, graph.root, source.original(), work)
 }
 
 /// Expand only actual transparent module declarations. Recursive, captured or
@@ -466,6 +495,44 @@ mod tests {
             name: "Node".into(),
             arguments: vec![],
         }
+    }
+
+    #[test]
+    fn complete_declaration_schemas_keep_recursive_graphs_and_original_annotations() {
+        let hir = HirProgram::lower(&original()).unwrap();
+        let input =
+            SourceSchema::import(&key(), Some(TypeExprId(37)), &mut WorkLimit::new(4096)).unwrap();
+        let selected = resolve_schema(&input, &hir, &mut WorkLimit::new(4096)).unwrap();
+        let direct = schema(&key(), &hir, &mut WorkLimit::new(4096)).unwrap();
+        assert_eq!(selected.original(), input.original());
+        assert_eq!(
+            selected.equivalent(&direct, &mut WorkLimit::new(4096)),
+            Ok(true)
+        );
+        let member = selected
+            .project_steps(
+                &[
+                    super::super::SourcePath::Field("left".into()),
+                    super::super::SourcePath::OptionalPayload,
+                    super::super::SourcePath::Field("value".into()),
+                ],
+                &mut WorkLimit::new(4096),
+            )
+            .unwrap();
+        assert_eq!(
+            member.equivalent_key(
+                &ArgumentKey::Name {
+                    name: "int".into(),
+                    arguments: vec![]
+                },
+                &mut WorkLimit::new(4096)
+            ),
+            Ok(true)
+        );
+        assert!(matches!(
+            resolve_schema(&input, &hir, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
     }
 
     #[test]

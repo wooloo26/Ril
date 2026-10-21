@@ -123,7 +123,7 @@ impl Replay<'_> {
     /// A read uses its binding's declaration activation. Captures must be
     /// grounded in the actual reading environment, never inferred from an
     /// equal name or the invocation which happens to be on top of the stack.
-    pub(super) fn parameter_declaration_context(
+    pub(in crate::sema::record_bound_validation) fn parameter_declaration_context(
         &self,
         expression: &Expr,
         value: &Value,

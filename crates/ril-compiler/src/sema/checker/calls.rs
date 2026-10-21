@@ -2229,24 +2229,14 @@ impl Checker {
                     [],
                 ),
                 _ if text.starts_with("&{") => {
-                    let inner = text.trim_start_matches("&{").trim_end_matches('}');
-                    let parts: Vec<_> = inner.split(',').map(str::trim).collect();
-                    let captured = parts
-                        .first()
-                        .is_some_and(|item| *item == "closure" || item.starts_with("closure "));
-                    let start = usize::from(captured);
+                    let Some(group) = super::contracts::state_group(text) else {
+                        self.error("E0538", annotation.span, "malformed state group", []);
+                        continue;
+                    };
+                    let captured = group.capture_owner.is_some();
+                    let header = group.capture_owner.unwrap_or("");
                     let mut owner = None;
-                    for item in &parts[start..] {
-                        if item.is_empty() {
-                            continue;
-                        }
-                        let (mode, name) = if let Some(name) = item.strip_prefix("^mut ") {
-                            (Mode::Retain, name.trim())
-                        } else if let Some(name) = item.strip_prefix("mut ") {
-                            (Mode::Write, name.trim())
-                        } else {
-                            (Mode::Read, *item)
-                        };
+                    for super::contracts::StateItem { mode, name } in group.items() {
                         let Some(&binding) = frame.env.get(name) else {
                             self.error(
                                 "E0204",
@@ -2270,7 +2260,6 @@ impl Checker {
                                 );
                             }
                             owner = Some(actual_owner);
-                            let header = parts[0].trim_start_matches("closure").trim();
                             let owner_name = self.scope_names.get(&actual_owner).cloned().flatten();
                             if header.is_empty()
                                 && owner_name.is_some()
@@ -2481,24 +2470,11 @@ impl Checker {
             .annotations
             .iter()
             .filter(|a| a.kind == AnnotationKind::Capability && a.text.starts_with("&{"))
-            .any(|annotation| {
-                annotation
-                    .text
-                    .trim_start_matches("&{")
-                    .trim_end_matches('}')
-                    .split(',')
-                    .map(str::trim)
-                    .any(|item| {
-                        if required == Mode::Retain {
-                            item == format!("^mut {name}")
-                        } else if required == Mode::Write {
-                            item == format!("mut {name}") || item == format!("^mut {name}")
-                        } else {
-                            item == name
-                                || item == format!("mut {name}")
-                                || item == format!("^mut {name}")
-                        }
-                    })
+            .filter_map(|annotation| super::contracts::state_group(annotation.text.trim()))
+            .any(|group| {
+                group
+                    .items()
+                    .any(|item| item.name == name && item.mode >= required)
             })
     }
     fn ty_readonly_public(&self, syntax: &TypeExpr) -> Ty {

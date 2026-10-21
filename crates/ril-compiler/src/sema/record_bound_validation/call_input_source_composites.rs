@@ -3,6 +3,9 @@ use super::*;
 use ril_syntax::ast::RecordMember;
 
 impl Replay<'_> {
+    /// Outer None means that this is not a copy source. A recognized copy
+    /// keeps an unresolved original view as Some(None), after checking its
+    /// physical operands; later output metadata cannot fill that missing view.
     pub(super) fn original_copy_source_key(
         &self,
         expression: &Expr,
@@ -11,7 +14,7 @@ impl Replay<'_> {
         sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
         visit: SourceVisit,
-    ) -> Check<Option<ArgumentKey>> {
+    ) -> Check<Option<Option<ArgumentKey>>> {
         if let ExprKind::Binary {
             operator,
             left,
@@ -49,7 +52,7 @@ impl Replay<'_> {
                 operands.next().is_none(),
                 "copy publication borrowed an ambiguous input root",
             )?;
-            let key = self.original_source_key_inner(
+            let key = self.original_source_key_inner_if_known(
                 left,
                 &self.facts.expressions[operand].value,
                 context,
@@ -60,13 +63,17 @@ impl Replay<'_> {
                     observation: Some(operand),
                 },
             )?;
-            return source_reception::copy_view(
-                key,
-                crate::sema::copy_contract::CopyMode::Immutable,
-                work,
-            )
-            .map(Some)
-            .ok_or("copy publication Source exceeds its work bound".into());
+            return key
+                .map(|key| {
+                    source_reception::copy_view(
+                        key,
+                        crate::sema::copy_contract::CopyMode::Immutable,
+                        work,
+                    )
+                    .ok_or_else(|| "copy publication Source exceeds its work bound".to_owned())
+                })
+                .transpose()
+                .map(Some);
         }
         let Some(application) = AstApplication::from_ast(expression) else {
             return Ok(None);
@@ -161,7 +168,7 @@ impl Replay<'_> {
             "copy Source input borrowed another physical operand",
         )?;
         self.input_operand_interval(event, 0, token.expression, context, sites)?;
-        let key = self.original_source_key_inner(
+        let key = self.original_source_key_inner_if_known(
             application.operands[0].expression,
             &original.value,
             context,
@@ -172,9 +179,12 @@ impl Replay<'_> {
                 observation: Some(token.expression),
             },
         )?;
-        source_reception::copy_view(key, mode, work)
-            .map(Some)
-            .ok_or_else(|| "copy Source transformation exceeds its work bound".to_owned())
+        key.map(|key| {
+            source_reception::copy_view(key, mode, work)
+                .ok_or_else(|| "copy Source transformation exceeds its work bound".to_owned())
+        })
+        .transpose()
+        .map(Some)
     }
 
     pub(super) fn original_composite_source_key(
@@ -406,6 +416,80 @@ impl Replay<'_> {
                     .collect(),
                 row: None,
             }))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_copy_source_requires_its_primitive_and_physical_supplied_operand() {
+        let source = ril_test::case_source("tests/stdlib/random.ril::seed-and-clone");
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let facts = program.facts();
+        let row = facts
+            .binding_sources
+            .iter()
+            .find(|row| facts.bindings[row.binding].name == "independent")
+            .unwrap();
+        let root = row.initializer.expression;
+        assert!(facts.source_types.binding_type(row.binding).is_none());
+        let sites =
+            crate::sema::record_bound_validation::explicit_named::source_sites_base(facts).unwrap();
+        let syntax = sites
+            .bindings
+            .iter()
+            .find(|site| site.binding.pattern.hir_id == Some(row.declaration))
+            .map(|site| &site.binding.value)
+            .unwrap();
+        let replay = Replay::new(facts).unwrap();
+        assert_eq!(
+            replay
+                .original_copy_source_key(
+                    syntax,
+                    &facts.expressions[root].value,
+                    row.context,
+                    &sites,
+                    &mut 4096,
+                    SourceVisit {
+                        depth: 0,
+                        observation: Some(root),
+                    },
+                )
+                .unwrap(),
+            Some(None)
+        );
+        let event = facts
+            .copy_call_events
+            .iter()
+            .position(|event| event.result_expression == Some(root))
+            .unwrap();
+        for mutation in 0..3 {
+            let mut changed = facts.clone();
+            match mutation {
+                0 => {
+                    changed.copy_call_events[event].copy_operation =
+                        Some(crate::sema::copy_contract::CopyMode::Immutable);
+                }
+                1 => {
+                    let id = changed.copy_call_events[event].id;
+                    changed
+                        .call_arguments
+                        .retain(|preparation| preparation.source_event != id);
+                }
+                _ => changed.copy_call_events[event].callee_expression = Some(root),
+            }
+            let result = Replay::new(&changed).and_then(|replay| {
+                replay.original_observed_source_key_if_known(syntax, root, row.context, &sites)
+            });
+            assert!(
+                result.is_err(),
+                "mutation {mutation} hid an invalid copy behind unavailable Source"
+            );
         }
     }
 }

@@ -6,20 +6,712 @@ use crate::sema::{
     facts::ScopeId,
     model::{BindingId, Callable, Constant, HandlerFact},
     source_reception::{self, Construction},
+    source_types::projection_receipts::{
+        self, ProjectionOccurrence, ProjectionReceipts, SourceRead,
+    },
     storage_sources::{BindingSource, StorageDestination, StorageObservation},
 };
-use ril_syntax::ast::{Pattern, PatternKind};
+
+type PatternPlan = BTreeMap<
+    ril_compiler_core::ids::PatternId,
+    BTreeMap<String, Option<Vec<ril_compiler_core::projection::TypeProjection>>>,
+>;
+type SourceRoots = BTreeMap<
+    (
+        ril_compiler_core::ids::PatternId,
+        usize,
+        crate::sema::context::FrozenEnvId,
+    ),
+    Option<crate::sema::source_types::SourceSchema>,
+>;
+
+fn origin_work(work: &mut usize, units: usize) -> Check {
+    *work = work
+        .checked_sub(units)
+        .ok_or("binding origin replay work exhausted")?;
+    Ok(())
+}
+
+type DeclarationInputs = BTreeMap<ril_compiler_core::ids::ExprId, ril_compiler_core::ids::StmtId>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StorageBirthRole {
+    Expression,
+    Declaration,
+    ProtectedAnswer,
+}
+
+/// Unknown tags retain the success-path reception obligation. Only a known
+/// incompatible tag can rule that path out; no name census or producer ID can
+/// erase the obligation of an actually evaluated guarded initializer.
+fn initializer_may_bind(
+    hir: &crate::hir::nodes::HirProgram,
+    pattern: ril_compiler_core::ids::PatternId,
+    value: &Value,
+    work: &mut usize,
+    depth: usize,
+) -> Check<bool> {
+    use crate::hir::nodes::PatternKind;
+    *work = work
+        .checked_sub(1)
+        .ok_or("guarded reception tag work exhausted")?;
+    require(depth < 128, "guarded reception pattern depth exceeded")?;
+    let original = hir
+        .pattern(pattern)
+        .ok_or("guarded reception lost its original pattern")?;
+    Ok(match &original.kind {
+        PatternKind::Constructor { path, .. } => {
+            *work = work
+                .checked_sub(path.len())
+                .ok_or("guarded constructor work exhausted")?;
+            for name in path {
+                *work = work
+                    .checked_sub(name.len().div_ceil(32))
+                    .ok_or("guarded constructor text work exhausted")?;
+            }
+            let standard = match path.as_slice() {
+                [name] => Some(name.strip_prefix("Prelude::").unwrap_or(name)),
+                [module, name] if module == "Prelude" => Some(name.as_str()),
+                _ => None,
+            };
+            match standard {
+                Some("Some") => value.option_tag != Some(false),
+                Some("None") => value.option_tag != Some(true),
+                Some("Ok") => value.result_tag != Some(false),
+                Some("Err") => value.result_tag != Some(true),
+                _ => value
+                    .variant_tag
+                    .as_ref()
+                    .is_none_or(|tag| tag == &path.join("::")),
+            }
+        }
+        PatternKind::Literal(Literal::Bool(expected)) => value
+            .constant
+            .as_ref()
+            .is_none_or(|actual| actual != &Constant::Bool(!expected)),
+        PatternKind::Mode { pattern, .. } => {
+            initializer_may_bind(hir, *pattern, value, work, depth + 1)?
+        }
+        PatternKind::Alternative(alternatives) => {
+            let mut possible = false;
+            for alternative in alternatives {
+                possible |= initializer_may_bind(hir, *alternative, value, work, depth + 1)?;
+            }
+            possible
+        }
+        _ => true,
+    })
+}
 
 impl Replay<'_> {
-    pub(super) fn storage_binding_source_key(
+    fn storage_declaration_inputs(&self, work: &mut usize) -> Check<DeclarationInputs> {
+        use crate::hir::nodes::{ExprKind as HirExpr, LexicalOwner, StmtKind as HirStmt};
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("declaration inputs have no HIR")?;
+        origin_work(work, hir.roots().len() + hir.declaration_roots().len())?;
+        let roots: BTreeSet<_> = hir.roots().iter().copied().collect();
+        let mut inputs = BTreeMap::new();
+        for root in hir.declaration_roots() {
+            require(
+                roots.contains(root),
+                "declaration input is not an original unit root",
+            )?;
+            let statement = hir
+                .statement(*root)
+                .ok_or("declaration input root is absent")?;
+            if let HirStmt::Binding {
+                is_meta: false,
+                mode: ril_syntax::ast::BindingMode::Let,
+                ty: Some(_),
+                value,
+                fallback: None,
+                ..
+            } = &statement.kind
+                && matches!(
+                    hir.expression(*value).map(|value| &value.kind),
+                    Some(HirExpr::Ambient)
+                )
+            {
+                require(
+                    statement.info.owner == LexicalOwner::Module,
+                    "declaration data belongs to another lexical owner",
+                )?;
+                origin_work(work, 1)?;
+                require(
+                    inputs.insert(*value, *root).is_none(),
+                    "declaration inputs share one ambient source",
+                )?;
+            }
+        }
+        Ok(inputs)
+    }
+
+    /// Interpret physical observations through their actual source role.
+    /// In particular, a Resume request is not its later continuation answer,
+    /// and an arbitrary emission is never an executable initializer.
+    fn storage_birth_role(
+        &self,
+        activation: &crate::sema::application_effect::EvaluationActivation,
+        declarations: &DeclarationInputs,
+        work: &mut usize,
+    ) -> Check<Option<StorageBirthRole>> {
+        use crate::hir::nodes::ExprKind as HirExpr;
+        use crate::sema::application_effect::ActivationKind;
+        origin_work(work, 1)?;
+        let source = activation
+            .source
+            .ok_or("binding birth has no original source")?;
+        let result = activation
+            .result
+            .ok_or("binding birth has no physical result")?;
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("binding birth has no HIR")?;
+        let syntax = hir
+            .expression(source)
+            .ok_or("binding birth source is outside HIR")?;
+        let record = self
+            .facts
+            .evaluations
+            .get(result.0 as usize)
+            .ok_or("binding birth result is absent")?;
+        let fact = self
+            .facts
+            .expressions
+            .get(result.0 as usize)
+            .ok_or("binding birth value is absent")?;
+        require(
+            self.facts
+                .activations
+                .get(activation.id.0 as usize)
+                .is_some_and(|actual| actual.id == activation.id)
+                && record.id == result
+                && record.identity
+                    == Some(crate::sema::application_effect::OccurrenceIdentity {
+                        source,
+                        activation: activation.id,
+                    })
+                && record.scope == activation.scope
+                && record.context == activation.context
+                && record.allocation_epoch == fact.allocation_epoch
+                && fact.source_id == Some(source),
+            "binding birth borrowed another physical result",
+        )?;
+        let resume = matches!(
+            syntax.kind,
+            HirExpr::Control {
+                operation: ril_syntax::ast::ControlOperation::Resume,
+                ..
+            }
+        );
+        match activation.kind {
+            ActivationKind::Expression => {
+                require(
+                    !resume && !matches!(syntax.kind, HirExpr::Ambient),
+                    "declaration data or a Resume request borrowed an ordinary expression role",
+                )?;
+                Ok(Some(StorageBirthRole::Expression))
+            }
+            ActivationKind::ControlTransfer => {
+                require(
+                    resume,
+                    "control-transfer birth is not an original Resume request",
+                )?;
+                Ok(None)
+            }
+            ActivationKind::Emission if matches!(syntax.kind, HirExpr::Ambient) => {
+                require(
+                    declarations.contains_key(&source),
+                    "ambient declaration lost its canonical input authorization",
+                )?;
+                require(
+                    activation.scope == ScopeId(0)
+                        && activation.context.owner == Some(CallableOwner::Global)
+                        && activation.context.invocation.is_none()
+                        && activation.context.closure.is_none()
+                        && activation.context.closure_invocation.is_none()
+                        && activation.context.default_use.is_none()
+                        && !activation.context.budget_validation
+                        && fact.value.permission == crate::sema::facts::Permission::Read
+                        && fact.value.publication == Publication::Immutable
+                        && !fact.value.construction,
+                    "declaration data lost its immutable module reception",
+                )?;
+                Ok(Some(StorageBirthRole::Declaration))
+            }
+            ActivationKind::Emission if resume => {
+                origin_work(work, self.facts.resumption_steps.len())?;
+                let mut steps = self
+                    .facts
+                    .resumption_steps
+                    .iter()
+                    .filter(|step| step.continuation_expression == result.0 as usize);
+                let Some(step) = steps.next() else {
+                    return Ok(None);
+                };
+                require(
+                    steps.next().is_none()
+                        && step.id.0 == result.0
+                        && step.resume_source == source
+                        && step.owner == activation.scope
+                        && step.context == activation.context
+                        && step.continuation_epoch == fact.allocation_epoch
+                        && step.continuation == fact.value.cause
+                        && step.continuation_value.value.cause == fact.value.cause,
+                    "protected answer birth lost its unique actual resumption step",
+                )?;
+                Ok(Some(StorageBirthRole::ProtectedAnswer))
+            }
+            ActivationKind::Emission => Ok(None),
+        }
+    }
+
+    fn storage_resource_lease_origin(
+        &self,
+        id: BindingId,
+        pattern: ril_compiler_core::ids::PatternId,
+        work: &mut usize,
+    ) -> Check<bool> {
+        use crate::hir::nodes::{GeneratedKind, NodeId, NodeOrigin, PatternKind};
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("resource receiver has no HIR")?;
+        let original = hir
+            .pattern(pattern)
+            .ok_or("binding pattern is outside its original HIR")?;
+        let NodeOrigin::Generated {
+            generation,
+            anchor: NodeId::Expr(source),
+            kind: GeneratedKind::ResourceLease,
+        } = original.info.origin
+        else {
+            return Ok(false);
+        };
+        let binding = self
+            .facts
+            .bindings
+            .get(id)
+            .ok_or("resource receiver binding is absent")?;
+        require(
+            hir.generated_roots().get(generation as usize) == Some(&NodeId::Pattern(pattern))
+                && hir
+                    .expression(source)
+                    .is_some_and(|anchor| anchor.info.owner == original.info.owner)
+                && matches!(&original.kind, PatternKind::Name(name) if name == &binding.name),
+            "resource receiver lost its canonical generated root",
+        )?;
+        let mut parents = BTreeSet::new();
+        origin_work(
+            work,
+            self.facts.copy_invocations.len() + self.facts.closure_invocations.len(),
+        )?;
+        for call in &self.facts.copy_invocations {
+            if call.caller_activation == Some(binding.owner)
+                && call.entry.caller_context == binding.context
+                && call.entry.arguments.first().is_some_and(|(mode, input)| {
+                    *mode == crate::sema::model::Mode::Write
+                        && input.value.sources == BTreeSet::from([id])
+                        && input.value.temporary
+                        && input.value.scoped.contains(&id)
+                })
+                && let Some(parent) = call.entry.parent
+            {
+                parents.insert(parent);
+            }
+        }
+        for call in &self.facts.closure_invocations {
+            if call.caller_activation == binding.owner
+                && call.entry.caller_context == binding.context
+                && call
+                    .entry
+                    .arguments
+                    .first()
+                    .is_some_and(|(mode, input, _)| {
+                        *mode == ril_syntax::ast::ParameterMode::Mut
+                            && input.sources == BTreeSet::from([id])
+                            && input.temporary
+                            && input.scoped.contains(&id)
+                    })
+                && let Some(parent) = call.entry.parent
+            {
+                parents.insert(parent);
+            }
+        }
+        require(
+            parents.len() == 1,
+            "resource receiver lost its unique actual callback origin",
+        )?;
+        let parent = self
+            .facts
+            .activations
+            .get(parents.first().unwrap().0 as usize)
+            .ok_or("resource receiver call activation is absent")?;
+        require(
+            parent.source == Some(source)
+                && binding.birth
+                    == Some(crate::sema::application_effect::OccurrenceIdentity {
+                        source,
+                        activation: parent.id,
+                    })
+                && parent.kind == crate::sema::application_effect::ActivationKind::Expression
+                && self.facts.scopes.parent(&binding.owner) == Some(&parent.scope),
+            "resource receiver borrowed another builtin call or helper frame",
+        )?;
+        let mut builtin = None;
+        origin_work(work, self.facts.copy_call_events.len())?;
+        for event in &self.facts.copy_call_events {
+            if event.source_id != Some(source) {
+                continue;
+            }
+            let Some(index) = event.callee_expression else {
+                continue;
+            };
+            let Some(record) = self.facts.evaluations.get(index) else {
+                continue;
+            };
+            let Some(entered) = record
+                .identity
+                .and_then(|identity| self.facts.activations.get(identity.activation.0 as usize))
+            else {
+                continue;
+            };
+            if entered.parent != Some(parent.id) || record.context != parent.context {
+                continue;
+            }
+            let Some(callee) = self.facts.expressions.get(index) else {
+                continue;
+            };
+            let [Callable::Builtin(name)] = callee.value.callables.as_slice() else {
+                continue;
+            };
+            require(
+                builtin.replace(name.as_str()).is_none(),
+                "resource receiver has ambiguous physical builtin calls",
+            )?;
+        }
+        let (name, mode) = match builtin {
+            Some("File::with_file") => (
+                "ril__with_file_lease",
+                ril_syntax::ast::BindingMode::ScopedMut,
+            ),
+            Some("Process::with_child") => (
+                "ril__with_child_lease",
+                ril_syntax::ast::BindingMode::LetMut,
+            ),
+            _ => return Err("resource receiver is not a compiler-owned builtin lease".into()),
+        };
+        origin_work(
+            work,
+            binding.value.origins.nodes.len() + self.facts.cleanup_events.len(),
+        )?;
+        require(
+            binding.name == name
+                && binding.mode == mode
+                && binding.context.owner.is_none()
+                && binding.value.scoped.contains(&id)
+                && !binding.value.origins.nodes.is_empty()
+                && binding.value.origins.nodes.iter().all(|node| {
+                    self.facts
+                        .heap
+                        .nodes
+                        .get(node.0 as usize)
+                        .is_some_and(|node| {
+                            node.owner == binding.owner
+                                && matches!(
+                                    node.kind,
+                                    crate::sema::facts::OriginKind::Fresh(_)
+                                        | crate::sema::facts::OriginKind::Older(_)
+                                )
+                        })
+                })
+                && self.facts.cleanup_events.iter().any(|cleanup| {
+                    cleanup.binding == id
+                        && cleanup.owner == binding.owner
+                        && self.facts.explanations.kinds.get(cleanup.cause.0 as usize)
+                            == Some(&crate::sema::facts::CauseKind::Cleanup)
+                }),
+            "resource receiver lost its actual resource or cleanup origin",
+        )?;
+        Ok(true)
+    }
+
+    /// Every actual source-pattern birth has an introducer, independently of
+    /// optional Source caches, receiving rows and the initializer's mutable
+    /// abstract tags. Missing metadata cannot turn a receiver into a failure.
+    fn storage_binding_origins(
+        &self,
+        sites: &super::explicit_named::SourceSites<'_>,
+        introduced: &BTreeMap<
+            (CallableOwner, ril_compiler_core::ids::ExprId),
+            BTreeMap<ril_compiler_core::ids::PatternId, BTreeSet<String>>,
+        >,
+        declaration_inputs: &DeclarationInputs,
+        work: &mut usize,
+    ) -> Check {
+        use crate::hir::nodes::ExprKind as HirExpr;
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("binding origins have no HIR")?;
+        let mut generated_binders = BTreeMap::<_, Vec<_>>::new();
+        origin_work(work, self.facts.bindings.len())?;
+        for (id, binding) in self.facts.bindings.iter().enumerate() {
+            if let Some(pattern) = binding.pattern {
+                origin_work(work, 1)?;
+                generated_binders.entry(pattern).or_default().push(id);
+            }
+        }
+        for (ordinal, root) in hir.generated_roots().iter().enumerate() {
+            origin_work(work, 1)?;
+            let crate::hir::nodes::NodeId::Pattern(pattern) = root else {
+                continue;
+            };
+            let original = hir
+                .pattern(*pattern)
+                .ok_or("generated receiver root has no pattern")?;
+            require(
+                matches!(original.info.origin,
+                crate::hir::nodes::NodeOrigin::Generated {
+                    generation, anchor: crate::hir::nodes::NodeId::Expr(_),
+                    kind: crate::hir::nodes::GeneratedKind::ResourceLease,
+                } if generation as usize == ordinal),
+                "generated receiver root changed its generation or anchor",
+            )?;
+            let bindings = generated_binders
+                .get(pattern)
+                .ok_or("generated receiver has no actual binding")?;
+            require(
+                bindings.len() == 1,
+                "generated receiver reused one introducer for multiple births",
+            )?;
+            self.storage_resource_lease_origin(bindings[0], *pattern, work)?;
+        }
+        let mut aliases = BTreeMap::<_, BTreeMap<String, BTreeSet<_>>>::new();
+        for source in sites.expressions.keys() {
+            origin_work(work, 1)?;
+            let expression = hir
+                .expression(*source)
+                .ok_or("alias origin has no HIR expression")?;
+            let roots = match &expression.kind {
+                HirExpr::Match {
+                    arms,
+                    type_match: false,
+                    ..
+                } => {
+                    origin_work(work, arms.len())?;
+                    arms.iter().map(|arm| arm.pattern).collect::<Vec<_>>()
+                }
+                HirExpr::For { pattern, .. } => {
+                    origin_work(work, 1)?;
+                    vec![*pattern]
+                }
+                _ => continue,
+            };
+            for root in roots {
+                let plan = hir
+                    .pattern_bindings(root, work)
+                    .map_err(|error| error.to_string())?;
+                origin_work(work, plan.len().saturating_mul(3))?;
+                for binding in plan {
+                    aliases
+                        .entry(binding.pattern)
+                        .or_default()
+                        .entry(binding.name)
+                        .or_default()
+                        .insert(*source);
+                }
+            }
+        }
+        let mut declarations = BTreeSet::new();
+        let mut static_parameters = BTreeMap::<_, BTreeSet<_>>::new();
+        for (index, function) in self.facts.functions.iter().enumerate() {
+            origin_work(work, 1)?;
+            let Some(statement) = function.hir_id.and_then(|id| hir.statement(id)) else {
+                continue;
+            };
+            let crate::hir::nodes::StmtKind::Function(original) = &statement.kind else {
+                continue;
+            };
+            if let Some(&id) = function.lexical.get(&function.syntax.name)
+                && let Some(binding) = self.facts.bindings.get(id)
+                && binding.name == original.name
+                && binding.value.callables == [Callable::Named(index)]
+                && binding.owner == function.owner.unwrap_or(ScopeId(0))
+                && binding.lexical_scope == function.lexical_scope
+                && binding.context.owner == function.lexical_owner.or(Some(CallableOwner::Global))
+            {
+                origin_work(work, 1)?;
+                declarations.insert(id);
+            }
+            if original.body.is_none() {
+                origin_work(work, original.generics.len())?;
+                for generic in &original.generics {
+                    let generic = hir
+                        .generic(*generic)
+                        .ok_or("static binding generic origin is absent")?;
+                    origin_work(work, 1 + generic.name.len().div_ceil(32))?;
+                    static_parameters
+                        .entry(CallableOwner::Function(function.definition))
+                        .or_default()
+                        .insert(generic.name.clone());
+                }
+            }
+        }
+        // source_sites has already independently checked each generated recipe,
+        // its actual operand tokens, the capture IDs and their receiver frame.
+        let mut generated = BTreeSet::new();
+        for source in &self.facts.generated_sources {
+            origin_work(work, 1 + source.captures.len())?;
+            generated.extend(source.captures.iter().map(|capture| capture.binding));
+        }
+        let mut receiving_rows = BTreeMap::new();
+        origin_work(work, self.facts.binding_sources.len())?;
+        for row in &self.facts.binding_sources {
+            require(
+                receiving_rows.insert(row.binding, row).is_none(),
+                "binding birth has duplicate receiving rows",
+            )?;
+        }
+        let mut births = BTreeSet::new();
+        for (id, binding) in self
+            .facts
+            .bindings
+            .iter()
+            .enumerate()
+            .filter(|(_, binding)| !binding.parameter)
+        {
+            origin_work(work, 1 + binding.name.len().div_ceil(32))?;
+            if let Some(pattern) = binding.pattern {
+                let birth = binding
+                    .birth
+                    .ok_or("binding lost its actual birth occurrence")?;
+                require(
+                    births.insert((pattern, birth, binding.name.as_str())),
+                    "two bindings borrowed one original receiver birth",
+                )?;
+                let activation = self
+                    .facts
+                    .activations
+                    .get(birth.activation.0 as usize)
+                    .ok_or("binding birth activation is absent")?;
+                require(
+                    activation.id == birth.activation
+                        && activation.source == Some(birth.source)
+                        && activation.result.is_some(),
+                    "binding birth lost its actual HIR occurrence",
+                )?;
+                let role = self
+                    .storage_birth_role(activation, declaration_inputs, work)?
+                    .ok_or(
+                        "binding birth is not an initializer or an independently received answer",
+                    )?;
+                require(
+                    self.facts
+                        .evaluations
+                        .get(activation.result.unwrap().0 as usize)
+                        .is_some_and(|record| {
+                            record.identity == Some(birth)
+                                && record.scope == activation.scope
+                                && record.context == activation.context
+                        }),
+                    "binding birth borrowed another physical result",
+                )?;
+                let same_frame =
+                    activation.scope == binding.owner && activation.context == binding.context;
+                let storage = binding
+                    .context
+                    .owner
+                    .and_then(|owner| introduced.get(&(owner, birth.source)))
+                    .and_then(|patterns| patterns.get(&pattern))
+                    .is_some_and(|names| names.contains(&binding.name))
+                    && same_frame;
+                let sources = aliases
+                    .get(&pattern)
+                    .and_then(|names| names.get(&binding.name));
+                origin_work(work, sources.map_or(0, BTreeSet::len))?;
+                let alias = sources.is_some_and(|sources| sources.contains(&birth.source))
+                    && same_frame
+                    && role == StorageBirthRole::Expression;
+                require(
+                    storage || alias || self.storage_resource_lease_origin(id, pattern, work)?,
+                    "binding introducer is not its actual storage, pattern or generated receiver role",
+                )?;
+                if storage {
+                    let row = receiving_rows
+                        .get(&id)
+                        .ok_or("an actual binding lost its immutable storage source")?;
+                    require(
+                        row.initializer.expression == activation.result.unwrap().0 as usize
+                            && row.activation == binding.owner
+                            && row.context == binding.context,
+                        "storage receipt borrowed another actual binding birth",
+                    )?;
+                }
+            } else {
+                let static_parameter = binding
+                    .context
+                    .owner
+                    .and_then(|owner| static_parameters.get(&owner))
+                    .is_some_and(|names| names.contains(&binding.name))
+                    && binding.context.invocation.is_none()
+                    && binding.context.closure_invocation.is_none()
+                    && self.facts.scopes.get(&binding.owner).is_some_and(|scope| {
+                        matches!(scope.origin, crate::sema::scopes::ScopeOrigin::Unresolved)
+                    });
+                require(
+                    binding.birth.is_none()
+                        && (declarations.contains(&id)
+                            || generated.contains(&id)
+                            || static_parameter),
+                    "an actual binding lost its original HIR introducer",
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn storage_binding_source_key_if_known(
         &self,
         expression: &Expr,
         value: &Value,
-        _context: InvocationContext,
-        _sites: &super::explicit_named::SourceSites<'_>,
-    ) -> Option<Check<ArgumentKey>> {
-        let mut path = Vec::new();
-        let name = expression_path(expression, &mut path, &mut 4096)?;
+        context: InvocationContext,
+        observation: Option<usize>,
+    ) -> Option<Check<Option<ArgumentKey>>> {
+        self.storage_binding_source_schema(expression, value, context, observation, SourceRead::Raw)
+            .map(|result| {
+                result?
+                    .map(|(schema, _)| {
+                        schema.key().map_err(|error| {
+                            format!("storage path has no legacy Source export: {error}")
+                        })
+                    })
+                    .transpose()
+            })
+    }
+
+    fn storage_binding_source_schema(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        observation: Option<usize>,
+        view: SourceRead,
+    ) -> Option<
+        Check<
+            Option<(
+                crate::sema::source_types::SourceSchema,
+                crate::sema::context::FrozenEnvironment,
+            )>,
+        >,
+    > {
         if value.sources.len() != 1 {
             return None;
         }
@@ -30,10 +722,84 @@ impl Replay<'_> {
             .iter()
             .filter(|row| row.binding == id)
             .collect();
-        if rows.is_empty() {
+        let named_parameter = self.facts.bindings.get(id).is_some_and(|binding| {
+            binding.parameter
+                && self.facts.scopes.get(&binding.owner).is_some_and(|scope| {
+                    matches!(scope.origin, crate::sema::scopes::ScopeOrigin::Named(_))
+                })
+        });
+        if rows.is_empty() && !named_parameter {
             return None;
         }
-        Some((|| {
+        let source = expression.hir_id?;
+        let hir = self.facts.semantic_hir.as_deref()?;
+        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+        let plan = match projection_receipts::projection_path(hir, source, &mut work) {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return None,
+            Err(error) => return Some(Err(error.to_string())),
+        };
+        if named_parameter {
+            let projected = (|| -> Check<_> {
+                let root =
+                    self.original_source_root(expression, value, context, observation, &mut 4096)?;
+                let read = self
+                    .facts
+                    .evaluations
+                    .get(root)
+                    .ok_or("parameter Source read is absent")?;
+                let projection = ProjectionReceipts::from_facts(self.facts)
+                    .project(
+                        &plan,
+                        ProjectionOccurrence {
+                            identity: read
+                                .identity
+                                .ok_or("parameter Source has no original occurrence")?,
+                            context,
+                            cause: value.cause,
+                        },
+                        view,
+                        &mut work,
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut root_ast = expression;
+                for _ in 0..128 {
+                    work.charge(1).map_err(|error| error.to_string())?;
+                    if root_ast.hir_id == Some(plan.root()) {
+                        break;
+                    }
+                    root_ast = match &root_ast.kind {
+                        ExprKind::Field { base, .. }
+                        | ExprKind::Index { base, .. }
+                        | ExprKind::ComputedField { base, .. } => base,
+                        _ => return Err("parameter Source path lost its original Name".into()),
+                    };
+                }
+                require(
+                    root_ast.hir_id == Some(plan.root()),
+                    "parameter Source root exceeds its bound",
+                )?;
+                let Some((schema, environment)) = self.parameter_declaration_schema(
+                    root_ast,
+                    id,
+                    context,
+                    projection.root.0 as usize,
+                    &mut work,
+                )?
+                else {
+                    return Ok(None);
+                };
+                Ok(schema
+                    .project_steps_if_structural(&projection.steps, &mut work)
+                    .map_err(|error| error.to_string())?
+                    .map(|schema| (schema, environment)))
+            })();
+            return match projected {
+                Ok(None) => None,
+                other => Some(other),
+            };
+        }
+        let original = (|| {
             require(
                 rows.len() == 1,
                 "storage Name has duplicate declaration sources",
@@ -42,26 +808,80 @@ impl Replay<'_> {
                 .facts
                 .bindings
                 .get(id)
-                .ok_or_else(|| "storage Name binding is absent".to_owned())?;
+                .ok_or("storage Name binding is absent")?;
             require(
-                binding.name == name,
+                binding.name == plan.name(),
                 "storage source borrowed another named binding",
             )?;
+            let root =
+                self.original_source_root(expression, value, context, observation, &mut 4096)?;
+            let read = self
+                .facts
+                .evaluations
+                .get(root)
+                .ok_or("storage read lost its actual scope")?;
             require(
-                self.facts.source_types.validate_binding(
-                    id,
-                    rows[0].key.as_ref(),
-                    binding.typing_environment.id(),
-                ),
+                (read.scope == rows[0].activation && context == rows[0].context)
+                    || self.storage_captured_binding(
+                        context,
+                        read.scope,
+                        plan.name(),
+                        id,
+                        rows[0],
+                    )?,
+                "storage input borrowed a binding from another lexical activation",
+            )?;
+            require(
+                self.facts.source_types.contains_binding(id)
+                    && self.facts.source_types.binding_environment(id)
+                        == Some(binding.typing_environment.id()),
                 "storage source index differs from the original binding view",
             )?;
-            self.facts
+            let Some((schema, environment)) = self
+                .facts
                 .source_types
-                .projected_binding_key(id, &path, self.facts.semantic_hir.as_deref())
-                .map_err(|error| {
-                    format!("storage path has no original declared source coordinate: {error:?}")
-                })
-        })())
+                .binding_schema_if_known(id, None, &mut work)
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            let projection = ProjectionReceipts::from_facts(self.facts)
+                .project(
+                    &plan,
+                    ProjectionOccurrence {
+                        identity: read
+                            .identity
+                            .ok_or("storage read has no original occurrence")?,
+                        context,
+                        cause: value.cause,
+                    },
+                    view,
+                    &mut work,
+                )
+                .map_err(|error| error.to_string())?;
+            require(
+                self.facts
+                    .expressions
+                    .get(projection.root.0 as usize)
+                    .is_some_and(|fact| {
+                        fact.source_id == Some(plan.root())
+                            && fact.value.sources == BTreeSet::from([id])
+                    }),
+                "storage path root borrowed another binding",
+            )?;
+            Ok(Some((schema, environment, projection.steps)))
+        })();
+        match original {
+            Ok(Some((schema, environment, path))) => {
+                match schema.project_steps_if_structural(&path, &mut work) {
+                    Ok(None) => None,
+                    Ok(Some(projected)) => Some(Ok(Some((projected, environment)))),
+                    Err(error) => Some(Err(error.to_string())),
+                }
+            }
+            Ok(None) => Some(Ok(None)),
+            Err(error) => Some(Err(error)),
+        }
     }
 
     fn storage_observation(
@@ -79,7 +899,6 @@ impl Replay<'_> {
         require(
             original.source_id.is_some()
                 && original.source_id == syntax.hir_id
-                && original.span == syntax.span
                 && original.allocation_epoch == observed.allocation_epoch
                 && self
                     .facts
@@ -96,12 +915,10 @@ impl Replay<'_> {
                     })
                 && observed.allocation_epoch <= self.facts.allocation_history.len()
                 && self
-                    .facts
-                    .invocation_expressions
-                    .iter()
-                    .filter(|row| row.expression == observed.expression && row.context == context)
-                    .count()
-                    == 1,
+                    .observations
+                    .row(observed.expression, &mut 4096)?
+                    .context
+                    == context,
             "storage operand belongs to another syntax, epoch or full invocation context",
         )?;
         Ok(&original.value)
@@ -353,7 +1170,6 @@ impl Replay<'_> {
                     event.id == id
                         && event.parent == call.parent
                         && event.owner == call.caller_owner
-                        && event.span == call.span
                 })
                 .ok_or_else(|| "storage environment lost its actual calling event".to_owned())?;
             let expression = event
@@ -475,57 +1291,37 @@ impl Replay<'_> {
         }
     }
 
-    fn storage_declared_key(
+    fn storage_declared_schema(
         &self,
         row: &BindingSource,
         sites: &super::explicit_named::SourceSites<'_>,
-    ) -> Check<Option<ArgumentKey>> {
+        declaration: &super::explicit_named::BindingSite<'_>,
+        plan: &PatternPlan,
+        roots: &mut SourceRoots,
+    ) -> Check<Option<crate::sema::source_types::SourceSchema>> {
         let binding = self
             .facts
             .bindings
             .get(row.binding)
             .ok_or_else(|| "storage declaration binding is absent".to_owned())?;
         require(
-            !binding.parameter
-                && binding.owner == row.activation
-                && binding.context == row.context
-                && binding.pattern == Some(row.declaration),
+            !binding.parameter && binding.owner == row.activation && binding.context == row.context,
             "storage declaration borrowed a parameter or another frame",
         )?;
         self.storage_activation(row.context, row.activation)?;
-        let declarations: Vec<_> = sites
-            .bindings
-            .iter()
-            .filter(|site| {
-                Some(site.owner) == row.context.owner
-                    && site.binding.pattern.hir_id == Some(row.declaration)
-            })
-            .collect();
-        let [declaration] = declarations.as_slice() else {
-            return Err("storage declaration is not a unique original binding AST".into());
-        };
+        let owner = declaration.owner;
         let declaration = declaration.binding;
         require(
             row.declared == declaration.ty.is_some(),
             "storage declaration changed written/inferred origin",
         )?;
-        let mut names = Vec::new();
-        pattern_paths(
-            &declaration.pattern,
-            &mut Vec::new(),
-            true,
-            &mut names,
-            &mut 4096,
-        )?;
-        let names: Vec<_> = names
-            .iter()
-            .filter(|(span, name, _, _)| *span == binding.span && *name == binding.name)
-            .collect();
-        let [(_, _, path, known)] = names.as_slice() else {
-            return Err("storage binding does not belong to its original pattern".into());
-        };
+        let selected = binding
+            .pattern
+            .and_then(|pattern| plan.get(&pattern))
+            .and_then(|names| names.get(binding.name.as_str()))
+            .ok_or("storage binding does not belong to its original HIR pattern")?;
         require(
-            row.path == *path,
+            row.path == *selected,
             "storage binding changed its declared pattern projection",
         )?;
         let initial = self.storage_observation(
@@ -538,35 +1334,75 @@ impl Replay<'_> {
             initial.ty != Ty::Never && initial.sources.iter().all(|source| *source < row.binding),
             "storage initializer is abrupt or creates a forward declaration cycle",
         )?;
-        if !known {
+        let Some(path) = selected else {
             return Ok(None);
-        }
-        let key = if let Some(syntax) = &declaration.ty {
-            let scope = self.lambda_input_scope(declarations[0].owner)?;
-            let key = self.input_callable_source_key(syntax, &scope)?;
-            super::call_input_source::input_select_key(
-                &key,
-                &self.binding_source_selections(binding, declarations[0].owner)?,
-                0,
-            )?
-        } else {
-            self.original_observed_source_key(
-                &declaration.value,
-                row.initializer.expression,
-                row.context,
-                sites,
-            )?
         };
-        Ok(crate::sema::source_types::declarations::project(
-            &key,
-            path,
-            self.facts
-                .semantic_hir
-                .as_deref()
-                .ok_or_else(|| "storage pattern Source has no canonical HIR".to_owned())?,
-            &mut crate::sema::source_types::WorkLimit::new(4096),
-        )
-        .ok())
+        let identity = (
+            row.declaration,
+            row.initializer.expression,
+            binding.typing_environment.id(),
+        );
+        if let std::collections::btree_map::Entry::Vacant(entry) = roots.entry(identity) {
+            let original = if declaration.ty.is_none() {
+                self.storage_binding_source_schema(
+                    &declaration.value,
+                    initial,
+                    row.context,
+                    Some(row.initializer.expression),
+                    SourceRead::Received,
+                )
+            } else {
+                None
+            };
+            let schema = if let Some(original) = original {
+                let original = original?;
+                if let Some((_, environment)) = &original {
+                    require(
+                        environment.id() == binding.typing_environment.id(),
+                        "storage alias replaced its original frozen Source environment",
+                    )?;
+                }
+                original.map(|(schema, _)| schema)
+            } else {
+                let key = if let Some(syntax) = &declaration.ty {
+                    let scope = self.lambda_input_scope(owner)?;
+                    let key = self.input_callable_source_key(syntax, &scope)?;
+                    Some(super::call_input_source::input_select_key(
+                        &key,
+                        &self.binding_source_selections(binding, owner)?,
+                        0,
+                    )?)
+                } else {
+                    self.original_observed_source_key_if_known(
+                        &declaration.value,
+                        row.initializer.expression,
+                        row.context,
+                        sites,
+                    )?
+                };
+                key.as_ref()
+                    .map(|key| {
+                        crate::sema::source_types::declarations::schema(
+                            key,
+                            self.facts
+                                .semantic_hir
+                                .as_deref()
+                                .ok_or("storage Source has no canonical HIR")?,
+                            &mut crate::sema::source_types::WorkLimit::new(16384),
+                        )
+                        .map_err(|error| error.to_string())
+                    })
+                    .transpose()?
+            };
+            entry.insert(schema);
+        }
+        roots[&identity]
+            .as_ref()
+            .map(|root| {
+                root.project_steps(path, &mut crate::sema::source_types::WorkLimit::new(16384))
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()
     }
 
     pub(super) fn storage_sources(&self) -> Result<(), Failure> {
@@ -588,111 +1424,194 @@ impl Replay<'_> {
                     && self.facts.storage_writes.len() <= LIMIT,
                 "storage source replay budget exhausted",
             )?;
-            let mut declarations = BTreeMap::new();
-            for row in &self.facts.binding_sources {
+            let mut originals = BTreeMap::new();
+            let mut introduced = BTreeMap::<_, BTreeMap<_, BTreeSet<_>>>::new();
+            let mut initializers = BTreeMap::new();
+            let mut plan_work = 4_000_000usize;
+            let declaration_inputs = self.storage_declaration_inputs(&mut plan_work)?;
+            let hir = self
+                .facts
+                .semantic_hir
+                .as_deref()
+                .ok_or("storage declarations have no canonical HIR")?;
+            for site in &sites.bindings {
+                let Some(root) = site.binding.pattern.hir_id else {
+                    return Err("storage declaration lost its original HIR root".into());
+                };
+                let hir = self
+                    .facts
+                    .semantic_hir
+                    .as_deref()
+                    .ok_or("storage pattern has no canonical HIR")?;
+                let plan = hir
+                    .pattern_bindings(root, &mut plan_work)
+                    .map_err(|error| error.to_string())?;
+                plan_work = plan_work
+                    .checked_sub(1 + plan.len())
+                    .ok_or("storage binding plan index exceeds its budget")?;
+                for binding in &plan {
+                    plan_work = plan_work
+                        .checked_sub(binding.name.len().div_ceil(32))
+                        .ok_or("storage binding name exceeds its budget")?;
+                    if !site.binding.is_meta {
+                        introduced
+                            .entry((
+                                site.owner,
+                                site.binding
+                                    .value
+                                    .hir_id
+                                    .ok_or("storage initializer lost its original HIR identity")?,
+                            ))
+                            .or_default()
+                            .entry(binding.pattern)
+                            .or_default()
+                            .insert(binding.name.clone());
+                    }
+                }
+                if !site.binding.is_meta {
+                    let source = site
+                        .binding
+                        .value
+                        .hir_id
+                        .ok_or("storage initializer lost its original HIR identity")?;
+                    require(
+                        initializers.insert(source, (site.owner, root)).is_none(),
+                        "storage initializer belongs to more than one HIR declaration",
+                    )?;
+                }
+                plan_work = plan_work
+                    .checked_sub(plan.len().saturating_mul(2))
+                    .ok_or("storage projection index exceeds its work bound")?;
+                let mut projections = PatternPlan::new();
+                for binder in plan {
+                    projections
+                        .entry(binder.pattern)
+                        .or_default()
+                        .insert(binder.name, binder.projection);
+                }
                 require(
-                    self.facts.source_types.validate_binding(
-                        row.binding,
-                        row.key.as_ref(),
-                        self.facts
-                            .bindings
-                            .get(row.binding)
-                            .ok_or_else(|| "storage Source view has no binding".to_owned())?
-                            .typing_environment
-                            .id(),
-                    ),
-                    "storage source index lost or changed its original binding schema",
+                    originals
+                        .insert((site.owner, root), (site, projections))
+                        .is_none(),
+                    "storage declaration is not a unique original binding AST",
                 )?;
+            }
+            // Validate all actual binding origins before any tag-based pruning
+            // or optional Source-table lookup can omit a guarded obligation.
+            self.storage_binding_origins(&sites, &introduced, &declaration_inputs, &mut plan_work)?;
+            let mut declarations = BTreeMap::new();
+            let mut roots = BTreeMap::new();
+            let mut receipts = BTreeMap::<_, BTreeSet<_>>::new();
+            for row in &self.facts.binding_sources {
                 require(
                     declarations.insert(row.binding, row).is_none(),
                     "storage declaration was recorded twice",
                 )?;
-                // An unresolved source stays conservative. A present key must
-                // independently equal its actual source declaration/initializer.
-                let reconstructed = self.storage_declared_key(row, &sites);
-                if let Some(key) = &row.key {
-                    require(
-                        source_reception::complete(key, &mut 4096).is_some()
-                            && reconstructed? == Some(key.clone()),
-                        "storage declaration key differs from its original complete source",
-                    )?;
-                } else {
-                    // Structural identity still has to validate even when the
-                    // source key itself is legitimately unavailable.
-                    let binding = self.facts.bindings.get(row.binding).ok_or_else(|| {
-                        "unknown storage declaration binding is absent".to_owned()
-                    })?;
-                    require(
-                        !binding.parameter
-                            && binding.owner == row.activation
-                            && binding.context == row.context
-                            && binding.pattern == Some(row.declaration),
-                        "unknown storage declaration borrowed another binding",
-                    )?;
-                    self.storage_activation(row.context, row.activation)?;
-                    let originals: Vec<_> = sites
-                        .bindings
-                        .iter()
-                        .filter(|site| {
-                            Some(site.owner) == row.context.owner
-                                && site.binding.pattern.hir_id == Some(row.declaration)
-                        })
-                        .collect();
-                    require(
-                        originals.len() == 1 && row.declared == originals[0].binding.ty.is_some(),
-                        "unknown storage declaration lost its original AST",
-                    )?;
-                    self.storage_observation(
-                        row.initializer,
-                        &originals[0].binding.value,
-                        row.context,
+                let owner = row
+                    .context
+                    .owner
+                    .ok_or("storage declaration lost its callable owner")?;
+                let (site, plan) = originals
+                    .get(&(owner, row.declaration))
+                    .ok_or("storage declaration lost its original HIR binding root")?;
+                let reconstructed =
+                    self.storage_declared_schema(row, &sites, site, plan, &mut roots)?;
+                let binding = self
+                    .facts
+                    .bindings
+                    .get(row.binding)
+                    .ok_or("storage Source view has no binding")?;
+                require(
+                    self.facts.source_types.validate_binding_schema(
+                        row.binding,
+                        reconstructed.as_ref(),
+                        binding.typing_environment.id(),
+                    ),
+                    "storage source index lost or changed its original binding schema",
+                )?;
+                let introducer = binding
+                    .pattern
+                    .ok_or("storage receipt lost its HIR introducer")?;
+                plan_work = plan_work
+                    .checked_sub(2 + binding.name.len().div_ceil(32))
+                    .ok_or("storage receipt index exceeds its work bound")?;
+                receipts
+                    .entry((
+                        row.declaration,
+                        row.initializer.expression,
                         row.activation,
-                    )?;
-                    let mut names = Vec::new();
-                    pattern_paths(
-                        &originals[0].binding.pattern,
-                        &mut Vec::new(),
-                        true,
-                        &mut names,
-                        &mut 4096,
-                    )?;
-                    require(
-                        names.iter().any(|(span, name, path, _)| {
-                            *span == binding.span && *name == binding.name && *path == row.path
-                        }),
-                        "unknown storage declaration changed its actual pattern path",
-                    )?;
-                }
+                        row.context,
+                    ))
+                    .or_default()
+                    .insert((introducer, binding.name.clone()));
             }
-            // The original binding arena independently requires ledger rows.
-            // Removing a ledger and every later write certificate cannot hide
-            // a local declaration that was actually introduced by the program.
-            for (id, binding) in self
-                .facts
-                .bindings
-                .iter()
-                .enumerate()
-                .filter(|(_, binding)| !binding.parameter)
-            {
-                let mut matches = false;
-                for site in &sites.bindings {
-                    let mut names = Vec::new();
-                    pattern_paths(
-                        &site.binding.pattern,
-                        &mut Vec::new(),
-                        true,
-                        &mut names,
-                        &mut 4096,
-                    )?;
-                    matches |= binding.pattern.is_some()
-                        && binding.pattern == site.binding.pattern.hir_id
-                        && names.iter().any(|(_, name, _, _)| *name == binding.name);
+            // An actual normal initialization requires its HIR binders even
+            // when an attacker deletes both receipts and optional producer IDs.
+            for activation in &self.facts.activations {
+                plan_work = plan_work
+                    .checked_sub(1)
+                    .ok_or("storage initialization coverage exceeds its work bound")?;
+                let Some((owner, declaration)) = activation
+                    .source
+                    .and_then(|source| initializers.get(&source))
+                else {
+                    continue;
+                };
+                if activation.context.owner != Some(*owner) {
+                    continue;
                 }
-                if matches {
-                    require(
-                        declarations.contains_key(&id),
-                        "an actual binding lost its immutable storage source",
-                    )?;
+                if self
+                    .storage_birth_role(activation, &declaration_inputs, &mut plan_work)?
+                    .is_none()
+                {
+                    continue;
+                }
+                let Some(result) = activation.result else {
+                    continue;
+                };
+                if self
+                    .facts
+                    .expressions
+                    .get(result.0 as usize)
+                    .is_some_and(|fact| fact.value.ty == Ty::Never)
+                {
+                    continue;
+                }
+                let (site, plan) = &originals[&(*owner, *declaration)];
+                if site.binding.fallback.is_some()
+                    && !initializer_may_bind(
+                        hir,
+                        *declaration,
+                        &self
+                            .facts
+                            .expressions
+                            .get(result.0 as usize)
+                            .ok_or("guarded initializer has no result")?
+                            .value,
+                        &mut plan_work,
+                        0,
+                    )?
+                {
+                    continue;
+                }
+                let received = receipts.get(&(
+                    *declaration,
+                    result.0 as usize,
+                    activation.scope,
+                    activation.context,
+                ));
+                for (pattern, names) in plan {
+                    for name in names.keys() {
+                        plan_work = plan_work
+                            .checked_sub(1 + name.len().div_ceil(32))
+                            .ok_or("storage initialization binders exceed their work bound")?;
+                        require(
+                            received.is_some_and(|received| {
+                                received.contains(&(*pattern, name.clone()))
+                            }),
+                            "an actual HIR initialization lost its binding reception",
+                        )?;
+                    }
                 }
             }
             let mut covered = BTreeSet::new();
@@ -1057,80 +1976,6 @@ fn contains_callable(key: &ArgumentKey, work: &mut usize) -> Option<bool> {
     Some(false)
 }
 
-fn expression_path<'a>(
-    expression: &'a Expr,
-    path: &mut Vec<Slot>,
-    work: &mut usize,
-) -> Option<&'a str> {
-    *work = work.checked_sub(1)?;
-    match &expression.kind {
-        ExprKind::Name(name) => Some(name),
-        ExprKind::Field { base, field, .. } => {
-            let root = expression_path(base, path, work)?;
-            path.push(
-                field
-                    .parse()
-                    .map(Slot::Tuple)
-                    .unwrap_or_else(|_| Slot::Field(field.clone())),
-            );
-            Some(root)
-        }
-        ExprKind::Index { base, .. } => {
-            let root = expression_path(base, path, work)?;
-            path.push(Slot::AnyIndex);
-            Some(root)
-        }
-        _ => None,
-    }
-}
-
-fn pattern_paths(
-    pattern: &Pattern,
-    path: &mut Vec<Slot>,
-    known: bool,
-    out: &mut Vec<(Span, String, Vec<Slot>, bool)>,
-    work: &mut usize,
-) -> Check {
-    *work = work
-        .checked_sub(1)
-        .ok_or_else(|| "storage pattern replay exceeds its budget".to_owned())?;
-    match &pattern.kind {
-        PatternKind::Name(name) => out.push((pattern.span, name.clone(), path.clone(), known)),
-        PatternKind::Mode { pattern, .. } => pattern_paths(pattern, path, known, out, work)?,
-        PatternKind::Tuple(items) => {
-            for (index, item) in items.iter().enumerate() {
-                path.push(Slot::Tuple(index as u32));
-                pattern_paths(item, path, known, out, work)?;
-                path.pop();
-            }
-        }
-        PatternKind::Record {
-            fields,
-            rest_binding,
-            ..
-        } => {
-            for field in fields {
-                path.push(Slot::Field(field.name.clone()));
-                pattern_paths(&field.pattern, path, known, out, work)?;
-                path.pop();
-            }
-            if let Some(name) = rest_binding {
-                out.push((pattern.span, name.clone(), Vec::new(), false));
-            }
-        }
-        PatternKind::Constructor { arguments, .. } | PatternKind::Alternative(arguments) => {
-            for argument in arguments {
-                pattern_paths(argument, &mut Vec::new(), false, out, work)?;
-            }
-        }
-        PatternKind::Type {
-            binder: Some(name), ..
-        } => out.push((pattern.span, name.clone(), Vec::new(), false)),
-        _ => {}
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1198,6 +2043,7 @@ mod tests {
     fn binding(id: BindingId) -> BindingInfo {
         BindingInfo {
             pattern: None,
+            birth: None,
             context: context(CallableOwner::Global),
             typing_environment: Default::default(),
             name: "counter".into(),
@@ -1227,8 +2073,7 @@ mod tests {
                 expression: 0,
                 allocation_epoch: 0,
             },
-            path: vec![],
-            key: None,
+            path: Some(vec![]),
         }
     }
     fn model() -> (SemanticFacts, InvocationContext) {

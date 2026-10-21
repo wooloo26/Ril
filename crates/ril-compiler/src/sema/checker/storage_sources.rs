@@ -1,11 +1,17 @@
 //! Immutable declaration views and physical receipts for storage reception.
 //! The current value of a mutable binding is never its declaration schema.
 use super::*;
+use crate::sema::source_types::{
+    SourceSchema, SourceTypesError, WorkLimit,
+    projection_receipts::{self, ProjectionOccurrence, ProjectionReceipts, SourceRead},
+};
 use crate::sema::{
     effect_identity::ArgumentKey,
     source_reception,
     storage_sources::{BindingSource, StorageDestination, StorageObservation, StorageWrite},
 };
+type BindingSchema =
+    Result<Option<(SourceSchema, crate::sema::context::FrozenEnvironment)>, SourceTypesError>;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -30,7 +36,7 @@ impl State {
 pub(super) struct PreparedBindingSource {
     context: crate::sema::effect_identity::InvocationContext,
     activation: ScopeId,
-    root: Option<ArgumentKey>,
+    root: Option<crate::sema::source_types::SourceSchema>,
     environment: crate::sema::context::FrozenEnvironment,
 }
 
@@ -64,6 +70,36 @@ impl Checker {
     }
     pub(super) fn record_parameter_source(&mut self, binding: BindingId, name: &str, span: Span) {
         let environment = self.bindings[binding].typing_environment.clone();
+        let named = self
+            .scopes
+            .get(&self.bindings[binding].owner)
+            .is_some_and(|scope| {
+                matches!(scope.origin, crate::sema::scopes::ScopeOrigin::Named(_))
+            });
+        if named {
+            let schema = match self.named_parameter_declaration_schema(binding, name) {
+                Ok(schema) => schema,
+                Err(error) => {
+                    self.unsupported(
+                        span,
+                        format!("named parameter lost its original declaration graph: {error}"),
+                    );
+                    return;
+                }
+            };
+            if let Err(error) =
+                self.type_source
+                    .storage
+                    .types
+                    .record_schema(binding, schema.as_ref(), environment)
+            {
+                self.unsupported(
+                    span,
+                    format!("parameter Source graph admission failed: {error}"),
+                );
+            }
+            return;
+        }
         let key = self.declared_formal_source(binding, name);
         if self
             .type_source
@@ -74,6 +110,148 @@ impl Checker {
         {
             self.unsupported(span, "parameter source view exceeded its metadata budget");
         }
+    }
+
+    fn named_parameter_declaration_schema(
+        &mut self,
+        binding: BindingId,
+        name: &str,
+    ) -> Result<Option<SourceSchema>, SourceTypesError> {
+        use crate::sema::{effect_identity::ArgumentKey, source_types::substitute_key};
+        let Some((syntax, environment)) = self.formal_binding_declaration(binding, name) else {
+            return Ok(None);
+        };
+        if environment.is_poisoned()
+            || environment.id() != self.bindings[binding].typing_environment.id()
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        self.with_typing_environment(&environment, |checker| {
+            let mut work = WorkLimit::new(16384);
+            work.charge(
+                checker.type_source.environment.generic_context.len()
+                    + checker.type_source.environment.bound_row_context.len(),
+            )?;
+            let scope = checker.record_bound_scope();
+            let key = checker
+                .record_bound_key(&syntax, &scope)
+                .ok_or(SourceTypesError::BudgetExceeded)?;
+            let mut pending = vec![&key];
+            let mut has_binder = false;
+            while let Some(part) = pending.pop() {
+                work.charge(1)?;
+                match part {
+                    ArgumentKey::Binder { identity, .. } => {
+                        work.charge(identity.len().div_ceil(32))?;
+                        if let Some(binder) = checker.generic_binders.get(identity) {
+                            work.charge(checker.functions.len())?;
+                            let parameter = checker
+                                .functions
+                                .iter()
+                                .find(|function| function.definition == binder.definition)
+                                .and_then(|function| function.syntax.generics.get(binder.index as usize))
+                                .ok_or(SourceTypesError::Unresolved)?;
+                            if !crate::sema::record_bounds::certifies_type_sort(
+                                identity,
+                                binder,
+                                parameter,
+                                &checker.record_bounds,
+                            ) {
+                                // A genuine Key coordinate is not an ordinary
+                                // Type Source, even though it has a binder UID.
+                                return Ok(None);
+                            }
+                        } else {
+                            work.charge(scope.rows.len())?;
+                            if !scope.rows.values().any(|id| {
+                                checker.bound_rows.get(id.0 as usize).is_some_and(|row| {
+                                    row.id == *id && matches!(&row.identity,
+                                        crate::sema::model::rows::RowIdentity::Binder(actual) if actual == identity)
+                                })
+                            }) {
+                                return Err(SourceTypesError::Unresolved);
+                            }
+                        }
+                        has_binder = true;
+                    }
+                    ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {
+                        work.charge(arguments.len())?;
+                        pending.extend(arguments);
+                    }
+                    ArgumentKey::Array { element, .. } => {
+                        work.charge(1)?;
+                        pending.push(element);
+                    }
+                    ArgumentKey::Map { key, value } => {
+                        work.charge(2)?;
+                        pending.extend([&**key, &**value]);
+                    }
+                    ArgumentKey::Record { fields, row } => {
+                        work.charge(fields.len() + usize::from(row.is_some()))?;
+                        pending.extend(fields.iter().map(|field| &field.2));
+                        pending.extend(row.as_deref());
+                    }
+                    ArgumentKey::Callable { parameters, result, .. } => {
+                        work.charge(parameters.len() + 1)?;
+                        pending.extend(parameters.iter().map(|parameter| &parameter.1));
+                        pending.push(result);
+                    }
+                    ArgumentKey::Closed(_) | ArgumentKey::GenericBuiltin(_) => {}
+                }
+            }
+            let selected = if has_binder {
+                let owner = checker.bindings[binding]
+                    .context
+                    .owner
+                    .ok_or(SourceTypesError::Unresolved)?;
+                let CallableOwner::Function(definition) = owner else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                let invocation = checker.bindings[binding]
+                    .context
+                    .invocation
+                    .ok_or(SourceTypesError::Unresolved)?;
+                if checker.copy_invocation_stack.last() != Some(&invocation) {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                let call = checker
+                    .copy_invocations
+                    .get(invocation.0 as usize)
+                    .filter(|call| call.id == invocation && call.target == definition)
+                    .ok_or(SourceTypesError::Unresolved)?;
+                let (event, span) = (call.source_event, call.span);
+                work.charge(
+                    checker.functions.len()
+                        + checker.scoped_source_identities.len()
+                        + checker.generic_bound_checks.len(),
+                )?;
+                let info = checker
+                    .functions
+                    .iter()
+                    .find(|info| info.definition == definition)
+                    .ok_or(SourceTypesError::Unresolved)?
+                    .clone();
+                // The actual selection can come from a nested product's
+                // independently recorded scoped identity. An erased ordinary
+                // substitution never reconstructs its missing Source.
+                let actual = checker
+                    .actual_input_source_selections(&info, event, span)
+                    .ok_or(SourceTypesError::Unresolved)?;
+                substitute_key(&key, &actual, &mut work)?
+            } else {
+                let Some(key) = checker.freeze_source_receiving_target(&syntax).key() else {
+                    return Ok(None);
+                };
+                key
+            };
+            let schema = SourceSchema::import(&selected, syntax.hir_id, &mut work)?;
+            crate::sema::source_types::declarations::resolve_schema(
+                &schema,
+                &checker.semantic_hir,
+                &mut work,
+            )
+            .map(Some)
+        })
     }
 
     /// Static constraint lookup only. This projects the immutable declaration
@@ -107,7 +285,7 @@ impl Checker {
         frame: &Frame,
     ) -> PreparedBindingSource {
         let context = self.invocation_context(frame.callable_owner);
-        let environment = target
+        let mut environment = target
             .map(|target| target.environment.clone())
             .unwrap_or_else(|| self.capture_typing_environment_with_bindings(&frame.env));
         let original = self
@@ -115,11 +293,69 @@ impl Checker {
             .expressions
             .get(initializer.expression)
             .cloned();
+        let mut work = crate::sema::source_types::WorkLimit::new(16384);
         let root = if let Some(target) = target {
-            target.key()
+            match target
+                .schema
+                .as_ref()
+                .map(|schema| {
+                    crate::sema::source_types::declarations::resolve_schema(
+                        schema,
+                        &self.semantic_hir,
+                        &mut work,
+                    )
+                })
+                .transpose()
+            {
+                Ok(schema) => schema,
+                Err(_) => {
+                    self.unsupported(
+                        binding.value.span,
+                        "storage receiving graph could not retain its original declaration",
+                    );
+                    None
+                }
+            }
+        } else if let Some(source) = original.as_ref().and_then(|original| {
+            self.storage_binding_source_schema_view(
+                &original.value,
+                &binding.value,
+                frame,
+                SourceRead::Received,
+            )
+        }) {
+            match source {
+                Ok(Some((schema, captured))) => {
+                    environment = captured;
+                    Some(schema)
+                }
+                Ok(None) => None,
+                Err(_) => {
+                    self.unsupported(
+                        binding.value.span,
+                        "storage input lost its original Source graph or work budget",
+                    );
+                    None
+                }
+            }
         } else {
             original.as_ref().and_then(|original| {
-                self.original_source_receiving_key(&original.value, &binding.value, frame)
+                let key =
+                    self.original_source_receiving_key(&original.value, &binding.value, frame)?;
+                match crate::sema::source_types::declarations::schema(
+                    &key,
+                    &self.semantic_hir,
+                    &mut work,
+                ) {
+                    Ok(schema) => Some(schema),
+                    Err(_) => {
+                        self.unsupported(
+                            binding.value.span,
+                            "storage input Source graph could not be admitted",
+                        );
+                        None
+                    }
+                }
             })
         };
         PreparedBindingSource {
@@ -156,70 +392,68 @@ impl Checker {
             );
             return;
         }
-        let mut names = Vec::new();
-        let _ = pattern_paths(
-            &binding.pattern,
-            &mut Vec::new(),
-            true,
-            &mut names,
-            &mut 4096,
-        );
+        let mut plan_work = 16384usize;
+        let plan = match self
+            .semantic_hir
+            .pattern_bindings(declaration, &mut plan_work)
+        {
+            Ok(plan) => plan,
+            Err(_) => {
+                self.unsupported(
+                    binding.pattern.span,
+                    "storage declaration lost its bounded original HIR binding plan",
+                );
+                return;
+            }
+        };
+        let Some(_) = plan_work.checked_sub(plan.len().saturating_mul(3)) else {
+            self.unsupported(
+                binding.pattern.span,
+                "storage binding plan index exceeds its work bound",
+            );
+            return;
+        };
+        let mut plans = BTreeMap::<_, BTreeMap<_, _>>::new();
+        for site in plan {
+            plans
+                .entry(site.pattern)
+                .or_default()
+                .insert(site.name, site.projection);
+        }
         for id in start..self.bindings.len() {
             let actual = &self.bindings[id];
             if actual.parameter || actual.owner != frame.owner {
                 continue;
             }
-            self.bindings[id].pattern = Some(declaration);
-            self.bindings[id].typing_environment = prepared.environment.clone();
-            let actual = &self.bindings[id];
-            let candidates: Vec<_> = names
-                .iter()
-                .filter(|(span, name, _, _)| *span == actual.span && *name == actual.name)
-                .collect();
-            let [(_, _, path, known)] = candidates.as_slice() else {
-                // A real introduced binding remains an unknown declaration,
-                // including guarded/rest patterns not represented by Slots.
-                self.type_source
-                    .storage
-                    .by_binding
-                    .insert(id, self.type_source.storage.bindings.len());
-                self.type_source.storage.bindings.push(BindingSource {
-                    binding: id,
-                    context,
-                    activation: frame.owner,
-                    declaration,
-                    declared: binding.ty.is_some(),
-                    initializer,
-                    path: Vec::new(),
-                    key: None,
-                });
-                if self
-                    .type_source
-                    .storage
-                    .types
-                    .record(id, None, prepared.environment.clone())
-                    .is_err()
-                {
-                    self.unsupported(
-                        binding.pattern.span,
-                        "storage source index could not record the original unknown view",
-                    );
-                }
+            let selected = actual
+                .pattern
+                .and_then(|pattern| plans.get_mut(&pattern))
+                .and_then(|names| names.remove(actual.name.as_str()));
+            let Some(path) = selected else {
+                self.unsupported(
+                    binding.pattern.span,
+                    "storage binding has no original HIR introducer",
+                );
                 continue;
             };
-            let key = if *known {
-                root.as_ref().and_then(|root| {
-                    crate::sema::source_types::declarations::project(
-                        root,
-                        path,
-                        &self.semantic_hir,
-                        &mut crate::sema::source_types::WorkLimit::new(4096),
-                    )
-                    .ok()
+            let schema = match root
+                .as_ref()
+                .zip(path.as_ref())
+                .map(|(root, path)| {
+                    root.project_steps(path, &mut crate::sema::source_types::WorkLimit::new(16384))
                 })
-            } else {
-                None
+                .transpose()
+            {
+                Ok(schema) => schema,
+                Err(_) => {
+                    self.unsupported(
+                        binding.pattern.span,
+                        "storage projection lost its original Source graph or work budget",
+                    );
+                    None
+                }
             };
+            self.bindings[id].typing_environment = prepared.environment.clone();
             self.type_source
                 .storage
                 .by_binding
@@ -228,7 +462,7 @@ impl Checker {
                 .type_source
                 .storage
                 .types
-                .record(id, key.as_ref(), prepared.environment.clone())
+                .record_schema(id, schema.as_ref(), prepared.environment.clone())
                 .is_err()
             {
                 self.unsupported(
@@ -243,44 +477,196 @@ impl Checker {
                 declaration,
                 declared: binding.ty.is_some(),
                 initializer,
-                path: path.clone(),
-                key,
+                path,
             });
         }
     }
 
-    /// The outer option distinguishes absence of a ledger entry from an entry
-    /// whose schema is unknown. The latter must not fall back to a current RHS.
-    pub(super) fn storage_binding_source_key(
+    /// A real declaration graph is transported without exporting a legacy
+    /// tree. Its frozen interpretation follows the graph through aliases.
+    pub(super) fn storage_binding_source_schema(
         &self,
         value: &Value,
         syntax: &Expr,
-        _frame: &Frame,
-    ) -> Option<Option<ArgumentKey>> {
-        let mut path = Vec::new();
-        let name = source_path(syntax, &mut path, &mut 4096)?;
+        frame: &Frame,
+    ) -> Option<BindingSchema> {
+        self.storage_binding_source_schema_view(value, syntax, frame, SourceRead::Raw)
+    }
+
+    pub(super) fn source_projection_receipts(&self) -> ProjectionReceipts<'_> {
+        ProjectionReceipts {
+            activations: &self.application_effect.activations,
+            evaluations: &self.application_effect.evaluations,
+            expressions: &self.application_effect.expressions,
+            witnesses: &self.invocation_witnesses,
+            explanations: &self.explanations,
+            open: self.application_effect.current_activation(),
+        }
+    }
+
+    pub(super) fn source_projection_occurrence(
+        &self,
+        source: ril_compiler_core::ids::ExprId,
+        value: &Value,
+        context: crate::sema::effect_identity::InvocationContext,
+        work: &mut WorkLimit,
+    ) -> Result<ProjectionOccurrence, SourceTypesError> {
+        for &index in self
+            .application_effect
+            .occurrences(source, context)
+            .iter()
+            .rev()
+        {
+            work.charge(1)?;
+            let fact = self
+                .application_effect
+                .expressions
+                .get(index)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let record = self
+                .application_effect
+                .evaluations
+                .get(index)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let identity = record.identity.ok_or(SourceTypesError::MissingNode)?;
+            let activation = self
+                .application_effect
+                .activations
+                .get(identity.activation.0 as usize)
+                .ok_or(SourceTypesError::MissingNode)?;
+            if fact.value.cause == value.cause
+                && activation.kind == crate::sema::application_effect::ActivationKind::Expression
+                && identity.source == source
+                && record.context == context
+            {
+                return Ok(ProjectionOccurrence {
+                    identity,
+                    context,
+                    cause: value.cause,
+                });
+            }
+        }
+        Err(SourceTypesError::MissingNode)
+    }
+
+    fn storage_binding_source_schema_view(
+        &self,
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+        view: SourceRead,
+    ) -> Option<BindingSchema> {
         if value.sources.len() != 1 {
             return None;
         }
         let id = *value.sources.first()?;
-        self.type_source
-            .storage
-            .bindings
-            .get(*self.type_source.storage.by_binding.get(&id)?)?;
-        if value.sources != BTreeSet::from([id])
+        let named_parameter = self.bindings.get(id).is_some_and(|binding| {
+            binding.parameter
+                && matches!(binding.context.owner, Some(CallableOwner::Function(_)))
+                && self.scopes.get(&binding.owner).is_some_and(|scope| {
+                    matches!(scope.origin, crate::sema::scopes::ScopeOrigin::Named(invocation)
+                        if binding.context.invocation == Some(invocation))
+                })
+        });
+        if !named_parameter && !self.type_source.storage.by_binding.contains_key(&id) {
+            return None;
+        }
+        let source = syntax.hir_id?;
+        let mut work = WorkLimit::new(16384);
+        let plan = match projection_receipts::projection_path(&self.semantic_hir, source, &mut work)
+        {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return None,
+            Err(error) => return Some(Err(error)),
+        };
+        if frame.env.get(plan.name()) != Some(&id)
             || self
                 .bindings
                 .get(id)
-                .is_none_or(|binding| binding.name != name)
+                .is_none_or(|binding| binding.name != plan.name())
         {
-            return Some(None);
+            return Some(Err(SourceTypesError::Unresolved));
         }
+        let stored = match self
+            .type_source
+            .storage
+            .types
+            .binding_schema_if_known(id, None, &mut work)
+        {
+            Ok(stored) => stored,
+            Err(error) => return Some(Err(error)),
+        };
+        let stored = if named_parameter {
+            match stored
+                .map(|(schema, environment)| {
+                    let schema = crate::sema::source_types::declarations::resolve_schema(
+                        &schema,
+                        &self.semantic_hir,
+                        &mut work,
+                    )?;
+                    Ok((schema, environment))
+                })
+                .transpose()
+            {
+                Ok(stored) => stored,
+                Err(error) => return Some(Err(error)),
+            }
+        } else {
+            stored
+        };
+        let known_source = stored.is_some();
+        let result = (|| {
+            let context = self.invocation_context(frame.callable_owner);
+            let occurrence =
+                self.source_projection_occurrence(source, value, context, &mut work)?;
+            let projection = self
+                .source_projection_receipts()
+                .project(&plan, occurrence, view, &mut work)?;
+            if self
+                .application_effect
+                .expressions
+                .get(projection.root.0 as usize)
+                .is_none_or(|fact| {
+                    fact.source_id != Some(plan.root())
+                        || fact.value.sources != BTreeSet::from([id])
+                })
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let Some((schema, environment)) = stored else {
+                return Ok(None);
+            };
+            Ok(schema
+                .project_steps_if_structural(&projection.steps, &mut work)?
+                .map(|schema| (schema, environment)))
+        })();
+        match result {
+            Ok(None) if known_source => None,
+            result => Some(result),
+        }
+    }
+
+    /// A recorded declaration can be unknown, but an admission failure remains
+    /// an error. The caller must establish the original read occurrence.
+    pub(super) fn recorded_binding_source_schema(
+        &self,
+        binding: BindingId,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Option<
+        Result<
+            Option<(
+                crate::sema::source_types::SourceSchema,
+                crate::sema::context::FrozenEnvironment,
+            )>,
+            crate::sema::source_types::SourceTypesError,
+        >,
+    > {
+        self.type_source.storage.by_binding.get(&binding)?;
         Some(
             self.type_source
                 .storage
                 .types
-                .projected_binding_key(id, &path, Some(&self.semantic_hir))
-                .ok(),
+                .binding_schema_if_known(binding, None, work),
         )
     }
 
@@ -548,51 +934,4 @@ fn source_path<'a>(syntax: &'a Expr, path: &mut Vec<Slot>, work: &mut usize) -> 
         }
         _ => None,
     }
-}
-
-fn pattern_paths(
-    pattern: &Pattern,
-    path: &mut Vec<Slot>,
-    known: bool,
-    out: &mut Vec<(Span, String, Vec<Slot>, bool)>,
-    work: &mut usize,
-) -> Option<()> {
-    *work = work.checked_sub(1)?;
-    match &pattern.kind {
-        PatternKind::Name(name) => out.push((pattern.span, name.clone(), path.clone(), known)),
-        PatternKind::Mode { pattern, .. } => {
-            pattern_paths(pattern, path, known, out, work)?;
-        }
-        PatternKind::Tuple(items) => {
-            for (index, item) in items.iter().enumerate() {
-                path.push(Slot::Tuple(index as u32));
-                pattern_paths(item, path, known, out, work)?;
-                path.pop();
-            }
-        }
-        PatternKind::Record {
-            fields,
-            rest_binding,
-            ..
-        } => {
-            for field in fields {
-                path.push(Slot::Field(field.name.clone()));
-                pattern_paths(&field.pattern, path, known, out, work)?;
-                path.pop();
-            }
-            if let Some(name) = rest_binding {
-                out.push((pattern.span, name.clone(), Vec::new(), false));
-            }
-        }
-        PatternKind::Constructor { arguments, .. } | PatternKind::Alternative(arguments) => {
-            for argument in arguments {
-                pattern_paths(argument, &mut Vec::new(), false, out, work)?;
-            }
-        }
-        PatternKind::Type {
-            binder: Some(name), ..
-        } => out.push((pattern.span, name.clone(), Vec::new(), false)),
-        _ => {}
-    }
-    Some(())
 }

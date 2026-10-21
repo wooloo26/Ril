@@ -39,7 +39,7 @@ impl HirProgram {
             .iter()
             .copied()
             .map(NodeId::Stmt)
-            .chain(self.generated_roots.iter().copied().map(NodeId::Expr));
+            .chain(self.generated_roots.iter().copied());
         self.walk_from(roots, budget, visit)
     }
     pub fn walk_from(

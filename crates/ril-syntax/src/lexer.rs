@@ -37,8 +37,7 @@ pub(crate) fn diagnostic(
 pub(crate) fn keyword(text: &str) -> bool {
     matches!(
         text,
-        "as" | "capture"
-            | "eff"
+        "as" | "eff"
             | "else"
             | "false"
             | "fn"

@@ -1,5 +1,6 @@
 //! Storage source obligations retained for diagnostics and tooling.
-use super::{Projection, RecordBoundKey, ResumptionContext};
+use super::{Projection, RecordBoundKey, ResumptionContext, SourceTypeId};
+use ril_compiler_core::projection::TypeProjection;
 use ril_compiler_core::source::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,8 +17,8 @@ pub struct BindingSource {
     pub declaration: ril_compiler_core::ids::PatternId,
     pub declared: bool,
     pub initializer: StorageObservation,
-    pub path: Vec<Projection>,
-    pub key: Option<RecordBoundKey>,
+    pub path: Option<Vec<TypeProjection>>,
+    pub root: Option<SourceTypeId>,
 }
 
 #[derive(Debug, Clone)]

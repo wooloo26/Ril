@@ -28,7 +28,7 @@ pub(super) fn lower(
     graph: &mut p::Graph,
     contracts: &mut ReturnContracts,
 ) -> Result<(), NotImplemented> {
-    super::storage_sources::lower(facts, graph);
+    super::storage_sources::lower(facts, graph)?;
     graph.generated_sources = facts
         .generated_sources
         .iter()

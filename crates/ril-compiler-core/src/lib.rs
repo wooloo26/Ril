@@ -4,5 +4,6 @@ pub mod builtin_types;
 pub mod diagnostic;
 pub mod ids;
 pub mod phase;
+pub mod projection;
 pub mod source;
 pub mod target;

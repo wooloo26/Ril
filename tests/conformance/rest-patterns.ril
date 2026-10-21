@@ -415,3 +415,93 @@ fn example(values: []int) -> int {
 fn example() { let (..) = (1, 2) }
 --@ end-file
 --@ end-case
+
+--@ source: nested-record-rest-view
+--@ file: source.ril
+fn exact(items: [0][2]int) -> int { len(items) }
+pub fn test_native() {
+    let items: [0][2]int = []
+    let packet = (.{ id: 7, items }, 9)
+    let (.{ id, ..rest }, tag) = packet
+    let alias = rest
+    assert(id == 7 && tag == 9 && exact(alias.items) == 0)
+}
+--@ end-file
+--@ end-source
+
+--@ case: nested-record-rest-view-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: reject-nested-record-rest-hidden-dimension
+--@ use-source: nested-record-rest-view
+--@ end-case
+
+--@ case: nested-record-rest-view-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: nested-record-rest-view-native
+--@ use-source: nested-record-rest-view
+--@ end-case
+
+--@ case: nested-record-rest-view-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ use-source: nested-record-rest-view
+--@ end-case
+
+--@ case: reject-nested-record-rest-hidden-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: nested-record-rest-view-pointer32
+-- Error [E0301]: Nested projection and a new name retain the original inner extent.
+--@ file: source.ril
+fn exact(items: [0][2]int) -> int { len(items) }
+fn example() {
+    let items: [0][3]int = []
+    let packet = (.{ id: 7, items }, 9)
+    let (.{ id, ..rest }, tag) = packet
+    let alias = rest
+    let invalid = exact(alias.items)
+}
+--@ end-file
+--@ end-case
+
+--@ source: repeated-record-rest-views
+--@ file: source.ril
+fn pick(value: int) -> int {
+    let items: [0][2]int = []
+    let packet = .{ id: value, items }
+    let .{ id, ..rest } = packet
+    let alias = rest
+    id + len(alias.items)
+}
+pub fn test_native() { assert(pick(7) == 7 && pick(9) == 9 && pick(7) == 7) }
+--@ end-file
+--@ end-source
+
+--@ case: repeated-record-rest-views-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ spec: SPEC#pattern-matching
+--@ use-source: repeated-record-rest-views
+--@ end-case
+
+--@ case: repeated-record-rest-views-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: repeated-record-rest-views-native
+--@ use-source: repeated-record-rest-views
+--@ end-case
+
+--@ case: repeated-record-rest-views-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ use-source: repeated-record-rest-views
+--@ end-case

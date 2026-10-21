@@ -95,6 +95,18 @@ pub fn solved_facts(facts: &SemanticFacts) -> Result<ValidatedStructure, Vec<Val
     };
     validator.structure();
     validator.boundaries();
+    if let Err(error) = facts
+        .source_types
+        .validate(&mut super::source_types::WorkLimit::new(4_000_000))
+    {
+        validator.issue(
+            ValidationIssueKind::StorageSource(format!(
+                "source type index admission or retention failed: {error:?}"
+            )),
+            None,
+            None,
+        );
+    }
     if let Err(message) = super::symbolic_rows::validate(facts) {
         validator.issue(ValidationIssueKind::SymbolicRow(message), None, None);
     }

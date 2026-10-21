@@ -27,6 +27,7 @@ mod call_input_source;
 mod default_source_receiving;
 mod dependencies;
 mod explicit_named;
+mod formal_source_graph;
 mod observation_index;
 mod rigid;
 mod scoped_identity;

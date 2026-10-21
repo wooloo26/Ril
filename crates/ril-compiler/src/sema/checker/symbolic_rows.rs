@@ -22,23 +22,10 @@ fn named_constraint(
                 .get(target)
                 .is_some_and(|binding| binding.owner != ScopeId(0));
         }
-        let Some(inner) = text
-            .strip_prefix("&{")
-            .and_then(|text| text.strip_suffix('}'))
-        else {
+        let Some(group) = super::contracts::state_group(text) else {
             continue;
         };
-        for item in inner.split(',').map(str::trim) {
-            if item == "closure" || item.starts_with("closure ") {
-                continue;
-            }
-            let (mode, name) = if let Some(name) = item.strip_prefix("^mut ") {
-                (Mode::Retain, name.trim())
-            } else if let Some(name) = item.strip_prefix("mut ") {
-                (Mode::Write, name.trim())
-            } else {
-                (Mode::Read, item)
-            };
+        for super::contracts::StateItem { mode, name } in group.items() {
             if bound.source.is_some()
                 && !bound.typing_environment.is_poisoned()
                 && bound.typing_environment.contract_bindings.get(name) == Some(&target)

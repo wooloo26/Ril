@@ -1,40 +1,8 @@
-//! Source views for immutable local bindings and completed lambda bodies.
+//! Source views for formal declarations and completed lambda bodies.
 //! These type coordinates do not grant publication, loans or callable rows.
 use super::*;
 
 impl Checker {
-    pub(in crate::sema::checker) fn record_typed_local_source(
-        &mut self,
-        binding: &Binding,
-        target: Option<&source_reception::Target>,
-        start: usize,
-        frame: &Frame,
-    ) {
-        if binding.ty.is_none() || binding.mode != BindingMode::Let {
-            return;
-        }
-        let mut paths = Vec::new();
-        let source_key = target.and_then(|target| target.key());
-        pattern_sources(&binding.pattern, source_key.as_ref(), &mut paths, &mut 4096);
-        for id in start..self.bindings.len() {
-            let actual = &self.bindings[id];
-            if actual.parameter
-                || actual.owner != frame.owner
-                || actual.mode != BindingMode::Let
-                || actual.value.permission != Permission::Read
-                || actual.value.publication != Publication::Immutable
-            {
-                continue;
-            }
-            let key = paths
-                .iter()
-                .find(|(span, name, _)| *span == actual.span && *name == actual.name)
-                .and_then(|(_, _, key)| key.clone());
-            // A known declaration with an unavailable key stays unavailable.
-            self.call_input_source.local_views.insert(id, key);
-        }
-    }
-
     pub(super) fn formal_source_type_key(
         &mut self,
         value: &Value,
@@ -367,43 +335,5 @@ impl Checker {
             }
         }
         Some(true)
-    }
-}
-
-fn pattern_sources(
-    pattern: &Pattern,
-    key: Option<&ArgumentKey>,
-    out: &mut Vec<(Span, String, Option<ArgumentKey>)>,
-    work: &mut usize,
-) {
-    let Some(next) = work.checked_sub(1) else {
-        return;
-    };
-    *work = next;
-    match &pattern.kind {
-        PatternKind::Name(name) => out.push((pattern.span, name.clone(), key.cloned())),
-        PatternKind::Mode { pattern, .. } => pattern_sources(pattern, key, out, work),
-        PatternKind::Tuple(items) => {
-            for (index, pattern) in items.iter().enumerate() {
-                let child = key.and_then(|key| match key {
-                    ArgumentKey::Tuple(items) => items.get(index),
-                    _ => None,
-                });
-                pattern_sources(pattern, child, out, work);
-            }
-        }
-        PatternKind::Record { fields, .. } => {
-            for field in fields {
-                let child = key.and_then(|key| match key {
-                    ArgumentKey::Record { fields, .. } => fields
-                        .iter()
-                        .find(|(name, ..)| name == &field.name)
-                        .map(|(_, _, key)| key),
-                    _ => None,
-                });
-                pattern_sources(&field.pattern, child, out, work);
-            }
-        }
-        _ => {}
     }
 }

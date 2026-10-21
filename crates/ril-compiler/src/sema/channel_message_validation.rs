@@ -12,7 +12,10 @@ use super::{
     model::Value,
 };
 use ril_compiler_core::{diagnostic::CauseId, source::Span};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cell::OnceCell,
+    collections::{BTreeMap, BTreeSet},
+};
 #[path = "channel_condition_validation.rs"]
 mod conditions;
 #[path = "channel_optional_validation.rs"]
@@ -25,6 +28,13 @@ mod state_observer;
 
 type Failure = (Span, Option<CauseId>, String);
 type Check<T = ()> = Result<T, String>;
+
+/// Temporary immutable queries for one record, never retained in replay state.
+#[derive(Default)]
+struct PayloadQueries {
+    snapshot: OnceCell<Check>,
+    production: OnceCell<Option<Vec<super::channel_production::ProductionCase>>>,
+}
 type Clock = BTreeMap<Option<NodeId>, u64>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -238,6 +248,22 @@ fn record_guard<'a>(record: Record<'a>) -> &'a ChannelGuard {
         Record::Event(e) => &e.guard,
         Record::Exit(e) => &e.guard,
     }
+}
+
+/// One record has one frozen payload and producer-version interpretation.
+/// Share only that immutable query across its active cases; an unavailable
+/// result remains an error, and a new record starts with an empty query cell.
+fn payload_cases<'a>(
+    payload: &CopyValueSnapshot,
+    versions: &BTreeMap<u32, u32>,
+    missing: &str,
+    prepared: &'a PayloadQueries,
+) -> Check<&'a [super::channel_production::ProductionCase]> {
+    prepared
+        .production
+        .get_or_init(|| super::channel_production::cases(payload, versions))
+        .as_deref()
+        .ok_or_else(|| missing.to_owned())
 }
 
 fn merge_cases(cases: Vec<Case>) -> Check<Vec<Case>> {
@@ -1071,6 +1097,10 @@ impl Replay {
                 _ => {}
             }
         }
+        // Both queries are independent of the mutable Case. Initialize them
+        // lazily so an unreachable record still owes no payload evaluation.
+        let complement = OnceCell::new();
+        let payload = PayloadQueries::default();
         let mut next = Vec::new();
         for case in std::mem::take(&mut self.cases) {
             let mut active = case
@@ -1099,8 +1129,9 @@ impl Replay {
             let inactive = case
                 .guard
                 .and(
-                    &guard
-                        .not()
+                    complement
+                        .get_or_init(|| guard.not())
+                        .as_ref()
                         .ok_or("bounded event complement is unavailable")?,
                 )
                 .ok_or("bounded inactive event intersection is unavailable")?;
@@ -1117,9 +1148,14 @@ impl Replay {
             let mut active_case = case;
             active_case.guard = active;
             match record {
-                Record::Event(event) => {
-                    self.event(facts, active_case, event, condition_truth, &mut next)?
-                }
+                Record::Event(event) => self.event(
+                    facts,
+                    active_case,
+                    event,
+                    condition_truth,
+                    &payload,
+                    &mut next,
+                )?,
                 Record::Exit(exit) => {
                     self.exit(facts, &mut active_case, exit)?;
                     next.push(active_case);
@@ -1139,6 +1175,7 @@ impl Replay {
         mut case: Case,
         event: &ChannelMessageFact,
         condition_truth: Option<bool>,
+        prepared: &PayloadQueries,
         next: &mut Vec<Case>,
     ) -> Check {
         if event
@@ -1174,14 +1211,22 @@ impl Replay {
                 original_owners,
                 ..
             } => {
-                snapshot(facts, payload)?;
+                prepared
+                    .snapshot
+                    .get_or_init(|| snapshot(facts, payload))
+                    .as_ref()
+                    .map_err(Clone::clone)?;
                 case.executed.insert(event.id);
                 if payload.value.results.is_empty() {
                     next.push(case);
                     return Ok(());
                 }
-                let production = super::channel_production::cases(payload, &self.versions)
-                    .ok_or("conditional send production cases are incomplete")?;
+                let production = payload_cases(
+                    payload,
+                    &self.versions,
+                    "conditional send production cases are incomplete",
+                    prepared,
+                )?;
                 for contents in production {
                     let mut case = case.clone();
                     case.guard = case
@@ -1248,7 +1293,11 @@ impl Replay {
                 sources,
                 ..
             } => {
-                snapshot(facts, payload)?;
+                prepared
+                    .snapshot
+                    .get_or_init(|| snapshot(facts, payload))
+                    .as_ref()
+                    .map_err(Clone::clone)?;
                 case.executed.insert(event.id);
                 if payload.value.results.is_empty() {
                     next.push(case);
@@ -1263,8 +1312,12 @@ impl Replay {
                 {
                     return Err("receive assumes global order between incomparable senders".into());
                 }
-                let production = super::channel_production::cases(payload, &self.versions)
-                    .ok_or("conditional receive production cases are incomplete")?;
+                let production = payload_cases(
+                    payload,
+                    &self.versions,
+                    "conditional receive production cases are incomplete",
+                    prepared,
+                )?;
                 for contents in production {
                     let mut case = case.clone();
                     case.guard = case

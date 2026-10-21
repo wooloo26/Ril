@@ -207,7 +207,7 @@ impl Replay<'_> {
         Err("call input static position has no independently known sort".into())
     }
 
-    pub(super) fn input_parameter_source_key(
+    pub(in crate::sema::record_bound_validation) fn input_parameter_source_key(
         &self,
         syntax: &TypeExpr,
         scope: &BoundScope,

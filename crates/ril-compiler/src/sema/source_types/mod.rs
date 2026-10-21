@@ -9,12 +9,15 @@ mod graph;
 mod index;
 mod legacy;
 pub(crate) mod polymorphic;
+pub(crate) mod projection_receipts;
 mod queries;
 pub(crate) mod reception;
+mod retained;
 mod schema;
 mod selection;
 pub(crate) mod standard_data;
 mod substitution;
+mod syntax_projection;
 
 pub(crate) use graph::{
     SourceBuilder, SourceContainer, SourceField, SourceLength, SourceNode, SourceScalar,

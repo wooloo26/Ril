@@ -6,6 +6,24 @@ use crate::sema::storage_sources::{StorageDestination, StorageObservation};
 pub(super) struct BindingSite {
     span: Span,
     pattern: Option<ril_compiler_core::ids::PatternId>,
+    birth: Option<crate::sema::application_effect::OccurrenceIdentity>,
+}
+
+impl BindingSite {
+    pub(super) fn original(span: Span, pattern: ril_compiler_core::ids::PatternId) -> Self {
+        Self {
+            span,
+            pattern: Some(pattern),
+            birth: None,
+        }
+    }
+    pub(super) fn at(
+        mut self,
+        birth: Option<crate::sema::application_effect::OccurrenceIdentity>,
+    ) -> Self {
+        self.birth = birth;
+        self
+    }
 }
 
 impl From<Span> for BindingSite {
@@ -13,6 +31,7 @@ impl From<Span> for BindingSite {
         Self {
             span,
             pattern: None,
+            birth: None,
         }
     }
 }
@@ -22,6 +41,7 @@ impl From<&Pattern> for BindingSite {
         Self {
             span: pattern.span,
             pattern: pattern.hir_id,
+            birth: None,
         }
     }
 }
@@ -39,6 +59,12 @@ impl Checker {
         frame: &mut Frame,
     ) -> Value {
         let span = binding.pattern.span;
+        let birth = initializer.and_then(|observed| {
+            self.application_effect
+                .evaluations
+                .get(observed.expression)
+                .and_then(|record| record.identity)
+        });
         let guarded = binding.fallback.is_some()
             || matches!(
                 binding.pattern.kind,
@@ -91,7 +117,7 @@ impl Checker {
         }
         if guarded {
             let binding_start = self.bindings.len();
-            let result = self.check_guarded_binding(binding, value, span, frame);
+            let result = self.check_guarded_binding(binding, value, span, frame, birth);
             if source_valid
                 && let (Some(initializer), Some(prepared)) =
                     (initializer, prepared_storage.as_ref())
@@ -107,18 +133,17 @@ impl Checker {
             return result;
         }
         let binding_start = self.bindings.len();
-        self.bind_pattern(&binding.pattern, binding.mode, value, frame, false);
-        if source_valid {
-            self.record_typed_local_source(binding, source_target, binding_start, frame);
-            if let (Some(initializer), Some(prepared)) = (initializer, prepared_storage.as_ref()) {
-                self.record_storage_binding_sources(
-                    binding,
-                    prepared,
-                    initializer,
-                    binding_start,
-                    frame,
-                );
-            }
+        self.bind_pattern_from(&binding.pattern, binding.mode, value, frame, false, birth);
+        if source_valid
+            && let (Some(initializer), Some(prepared)) = (initializer, prepared_storage.as_ref())
+        {
+            self.record_storage_binding_sources(
+                binding,
+                prepared,
+                initializer,
+                binding_start,
+                frame,
+            );
         }
         self.unit(span)
     }
@@ -130,22 +155,40 @@ impl Checker {
         frame: &mut Frame,
         parameter: bool,
     ) {
+        self.bind_pattern_from(pattern, mode, value, frame, parameter, None);
+    }
+    fn bind_pattern_from(
+        &mut self,
+        pattern: &Pattern,
+        mode: BindingMode,
+        value: Value,
+        frame: &mut Frame,
+        parameter: bool,
+        birth: Option<crate::sema::application_effect::OccurrenceIdentity>,
+    ) {
         if !self.check_pattern_binder_uniqueness(pattern) {
             return;
         }
         match &pattern.kind {
             PatternKind::Name(name) => {
-                self.bind_name(name, mode, value, pattern, frame, parameter);
+                self.bind_name(
+                    name,
+                    mode,
+                    value,
+                    BindingSite::from(pattern).at(birth),
+                    frame,
+                    parameter,
+                );
             }
             PatternKind::Wildcard => {}
             PatternKind::Mode { mode, pattern } => {
-                self.bind_pattern(pattern, *mode, value, frame, parameter)
+                self.bind_pattern_from(pattern, *mode, value, frame, parameter, birth)
             }
             PatternKind::Tuple(items) => {
                 for (i, pattern) in items.iter().enumerate() {
                     let child =
                         self.project(&value, Slot::Tuple(i as u32), pattern.span, frame, false);
-                    self.bind_pattern(pattern, mode, child, frame, parameter);
+                    self.bind_pattern_from(pattern, mode, child, frame, parameter, birth);
                 }
             }
             PatternKind::Record {
@@ -172,12 +215,19 @@ impl Checker {
                         );
                     }
                     child.marker |= value.marker;
-                    self.bind_pattern(&field.pattern, mode, child, frame, parameter);
+                    self.bind_pattern_from(&field.pattern, mode, child, frame, parameter, birth);
                 }
                 if let Some(name) = rest_binding
                     && let Some(rest) = self.record_rest_value(&value, fields, pattern.span, frame)
                 {
-                    self.bind_name(name, mode, rest, pattern.span, frame, parameter);
+                    self.bind_name(
+                        name,
+                        mode,
+                        rest,
+                        BindingSite::from(pattern).at(birth),
+                        frame,
+                        parameter,
+                    );
                 }
             }
             _ => self.unsupported(pattern.span, "refutable or computed pattern verification"),
@@ -273,7 +323,11 @@ impl Checker {
         frame: &mut Frame,
         parameter: bool,
     ) -> BindingId {
-        let BindingSite { span, pattern } = site.into();
+        let BindingSite {
+            span,
+            pattern,
+            birth,
+        } = site.into();
         if name == "_" {
             return usize::MAX;
         }
@@ -432,6 +486,7 @@ impl Checker {
         };
         self.bindings.push(BindingInfo {
             pattern,
+            birth,
             context: self.invocation_context(frame.callable_owner),
             typing_environment,
             name: name.into(),

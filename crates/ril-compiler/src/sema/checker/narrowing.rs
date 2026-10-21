@@ -338,6 +338,36 @@ impl Checker {
         let Ty::Optional(inner) = self.expanded(&value.ty, &mut BTreeSet::new()) else {
             return value;
         };
+        let Some((source_id, activation)) = expression
+            .hir_id
+            .zip(self.application_effect.current_activation())
+        else {
+            self.unsupported(
+                expression.span,
+                "implicit unwrap has no original read occurrence",
+            );
+            return value;
+        };
+        let context = self.invocation_context(frame.callable_owner);
+        if !self
+            .application_effect
+            .activations
+            .get(activation.0 as usize)
+            .is_some_and(|entry| {
+                entry.id == activation
+                    && entry.source == Some(source_id)
+                    && entry.kind == super::super::application_effect::ActivationKind::Expression
+                    && entry.scope == frame.owner
+                    && entry.context == context
+            })
+            || !self.application_effect.admit(2)
+        {
+            self.unsupported(
+                expression.span,
+                "implicit unwrap lost its actual entered read",
+            );
+            return value;
+        }
         let source = value.clone();
         value = source
             .option_payload
@@ -371,6 +401,10 @@ impl Checker {
             [source.cause, refinement.cause],
         );
         let unwrap = super::super::ImplicitUnwrap {
+            occurrence: super::super::application_effect::OccurrenceIdentity {
+                source: source_id,
+                activation,
+            },
             cause: value.cause,
             depth: 1,
             tags: vec!["Some".into()],

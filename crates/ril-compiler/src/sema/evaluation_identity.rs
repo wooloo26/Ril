@@ -47,7 +47,10 @@ impl Replay<'_> {
         )?;
         let mut patterns = BTreeMap::new();
         let mut values = BTreeSet::new();
-        for (ordinal, &id) in self.hir.generated_roots().iter().enumerate() {
+        for (ordinal, &node) in self.hir.generated_roots().iter().enumerate() {
+            let hir::NodeId::Expr(id) = node else {
+                continue;
+            };
             let expression = self
                 .hir
                 .expression(id)
@@ -351,10 +354,6 @@ impl Replay<'_> {
             .result_expression
             .ok_or("application lost its actual root observation")?;
         let (result_value, context) = self.observation(result_index, source)?;
-        require(
-            event.span == syntax.info.span && result_value.span == syntax.info.span,
-            "application location metadata differs from its identified HIR root",
-        )?;
         require(
             context.owner == event.owner && context.invocation == event.parent,
             "application result belongs to another full invocation context",
@@ -1133,7 +1132,10 @@ mod tests {
             ast::PatternKind::Name("expected".into()),
             ast::ExprKind::Name("expected".into()),
         );
-        let root = facts.semantic_hir.as_ref().unwrap().generated_roots()[0];
+        let hir::NodeId::Expr(root) = facts.semantic_hir.as_ref().unwrap().generated_roots()[0]
+        else {
+            unreachable!()
+        };
         let hir::NodeOrigin::Generated { anchor, .. } = facts
             .semantic_hir
             .as_ref()
@@ -1195,6 +1197,10 @@ mod tests {
             .generated_roots()
             .iter()
             .copied()
+            .filter_map(|node| match node {
+                hir::NodeId::Expr(id) => Some(id),
+                _ => None,
+            })
             .filter(|id| {
                 matches!(
                     hir.expression(*id).unwrap().info.origin,

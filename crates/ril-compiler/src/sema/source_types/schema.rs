@@ -11,6 +11,140 @@ pub(crate) struct SourceSchema {
 }
 
 impl SourceSchema {
+    pub(crate) fn syntax_projection(
+        &self,
+        span: ril_compiler_core::source::Span,
+        work: &mut WorkLimit,
+        binder: &mut impl FnMut(
+            &str,
+            bool,
+            &mut WorkLimit,
+        ) -> Result<ril_syntax::ast::TypeExpr, SourceTypesError>,
+    ) -> Result<ril_syntax::ast::TypeExpr, SourceTypesError> {
+        super::syntax_projection::project(&self.types, self.root, span, work, binder)
+    }
+
+    /// Only a binder at the current receiver needs its genuine constraint.
+    /// Binders in unrelated members or the selected result remain valid Source.
+    pub(crate) fn root_is_binder(&self, work: &mut WorkLimit) -> Result<bool, SourceTypesError> {
+        let mut root = self.root;
+        let mut seen = std::collections::BTreeSet::new();
+        loop {
+            work.charge(1)?;
+            root = self.types.unalias(root, work)?;
+            if !seen.insert(root) {
+                return Err(SourceTypesError::AliasCycle);
+            }
+            let node = self.types.get(root)?;
+            node.charge(work)?;
+            match node {
+                SourceNode::Container {
+                    kind: SourceContainer::Immutable,
+                    arguments,
+                } => {
+                    root = *arguments
+                        .first()
+                        .ok_or(SourceTypesError::InvalidContainer)?;
+                }
+                SourceNode::Binder(_) => return Ok(true),
+                _ => return Ok(false),
+            }
+        }
+    }
+
+    /// None delegates exactly a projection through a genuine binder receiver.
+    /// Missing members, invalid graphs and exhausted work remain errors.
+    pub(crate) fn project_steps_if_structural(
+        &self,
+        path: &[SourcePath],
+        work: &mut WorkLimit,
+    ) -> Result<Option<Self>, SourceTypesError> {
+        work.charge(1)?;
+        self.types.get(self.root)?;
+        let mut selected = self.clone();
+        for step in path {
+            if selected.root_is_binder(work)? {
+                return Ok(None);
+            }
+            selected = selected.project_steps(std::slice::from_ref(step), work)?;
+        }
+        Ok(Some(selected))
+    }
+
+    pub(crate) fn is_builtin_instance(
+        &self,
+        declaration: ril_compiler_core::builtin_calls::GenericBuiltin,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        let root = self.types.unalias(self.root, work)?;
+        let node = self.types.get(root)?;
+        node.charge(work)?;
+        if let SourceNode::GenericBuiltin(actual) = node {
+            return Ok(*actual == declaration);
+        }
+        let Some(instance) = super::polymorphic::instantiate(&self.types, declaration, root, work)?
+        else {
+            return Ok(false);
+        };
+        let SourceNode::Callable { annotations, .. } = node else {
+            return Ok(false);
+        };
+        Ok(instance.fits_bounds(annotations))
+    }
+
+    pub(super) fn graph(&self) -> (&SourceTypes, SourceTypeId) {
+        (&self.types, self.root)
+    }
+
+    /// An immutable snapshot can lend its existing arena without rebuilding
+    /// that arena or changing the selected node's identity.
+    pub(super) fn frozen_view(
+        types: &SourceTypes,
+        root: SourceTypeId,
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        types.get(root)?;
+        Ok(Self {
+            types: types.clone(),
+            root,
+            original,
+        })
+    }
+
+    /// Copy a complete graph into the existing live arena. A failed bounded
+    /// copy leaves that arena intact, without unfinished reserved nodes.
+    pub(crate) fn copy_into(
+        &self,
+        builder: &mut SourceBuilder,
+        work: &mut WorkLimit,
+    ) -> Result<SourceTypeId, SourceTypesError> {
+        work.charge(1)?;
+        let checkpoint = builder.checkpoint();
+        let result = self
+            .types
+            .copy_into([self.root], builder, work)
+            .and_then(|mapping| {
+                mapping
+                    .get(&self.root)
+                    .copied()
+                    .ok_or(SourceTypesError::MissingNode)
+            });
+        if result.is_err() {
+            builder.rollback(checkpoint);
+        }
+        result
+    }
+
+    pub(crate) fn equivalent(
+        &self,
+        other: &Self,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        super::reception::equivalent(&self.types, self.root, &other.types, other.root, work)
+    }
+
     pub(crate) fn copy_from(
         graph: &impl SourceTypeQueries,
         root: SourceTypeId,
@@ -56,18 +190,65 @@ impl SourceSchema {
     }
 
     pub(crate) fn project(&self, path: &[SourcePath]) -> Result<Self, SourceTypesError> {
-        let root = self
-            .types
-            .project(self.root, path, &mut WorkLimit::new(4096))?;
-        Ok(Self {
-            types: self.types.clone(),
-            root,
-            original: self.original,
-        })
+        self.project_steps(path, &mut WorkLimit::new(4096))
+    }
+
+    /// Project one immutable view at a time. Remainder steps can create a new
+    /// graph, while ordinary steps retain the selected graph's arena identity.
+    pub(crate) fn project_steps(
+        &self,
+        path: &[ril_compiler_core::projection::TypeProjection],
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        let mut selected = self.clone();
+        for step in path {
+            work.charge(1)?;
+            if let SourcePath::RecordRemainder(excluded) = step {
+                selected = selected.record_remainder(excluded, work)?;
+            } else {
+                selected.root =
+                    selected
+                        .types
+                        .project(selected.root, std::slice::from_ref(step), work)?;
+            }
+        }
+        Ok(selected)
     }
 
     pub(crate) fn original(&self) -> Option<TypeExprId> {
         self.original
+    }
+
+    /// The complete closed field domain of this view. A rigid, unresolved or
+    /// cyclic row cannot be lowered as an empty remainder.
+    pub(crate) fn closed_record_labels(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<std::collections::BTreeSet<String>, SourceTypesError> {
+        use std::collections::BTreeSet;
+        let mut cursor = Some(self.root);
+        let mut seen = BTreeSet::new();
+        let mut labels = BTreeSet::new();
+        while let Some(id) = cursor {
+            work.charge(1)?;
+            let id = self.types.unalias(id, work)?;
+            if !seen.insert(id) {
+                return Err(SourceTypesError::RowCycle);
+            }
+            let SourceNode::Record { fields, row } = self.types.get(id)? else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            work.charge(fields.len())?;
+            for field in fields {
+                work.text(&field.label)?;
+                if !labels.insert(field.label.clone()) {
+                    return Err(SourceTypesError::DuplicateField);
+                }
+            }
+            cursor = *row;
+        }
+        Ok(labels)
     }
 
     /// A row selection removes declared members from the complete actual
@@ -187,6 +368,203 @@ mod tests {
             name: "int".into(),
             arguments: vec![],
         }
+    }
+
+    #[test]
+    fn structural_projection_retains_quantified_results_and_unrelated_binders() {
+        use crate::sema::effect_identity::StaticBinderSort;
+        let binder = ArgumentKey::Binder {
+            identity: "declaration:U".into(),
+            sort: StaticBinderSort::Type,
+        };
+        let key = ArgumentKey::Tuple(vec![ArgumentKey::Record {
+            fields: vec![
+                ("items".into(), false, array(Some(2), binder.clone())),
+                ("other".into(), false, binder.clone()),
+            ],
+            row: None,
+        }]);
+        let schema = SourceSchema::import(&key, None, &mut WorkLimit::new(4096)).unwrap();
+        assert!(
+            schema
+                .project_steps_if_structural(&[], &mut WorkLimit::new(4096))
+                .unwrap()
+                .unwrap()
+                .equivalent_key(&key, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        let path = [
+            SourcePath::Tuple(0),
+            SourcePath::Field("items".into()),
+            SourcePath::Element,
+        ];
+        let selected = schema
+            .project_steps_if_structural(&path, &mut WorkLimit::new(4096))
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.key().unwrap(), binder);
+        assert!(selected.root_is_binder(&mut WorkLimit::new(4096)).unwrap());
+        assert!(
+            selected
+                .project_steps_if_structural(
+                    &[SourcePath::Field("requires_constraint".into())],
+                    &mut WorkLimit::new(4096),
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            schema.project_steps_if_structural(
+                &[SourcePath::Tuple(0), SourcePath::Field("absent".into())],
+                &mut WorkLimit::new(4096),
+            ),
+            Err(SourceTypesError::MissingProjection)
+        ));
+        assert!(matches!(
+            schema.project_steps_if_structural(&path, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        let immutable = SourceSchema::import(
+            &ArgumentKey::Name {
+                name: "Immut".into(),
+                arguments: vec![binder],
+            },
+            None,
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        assert!(immutable.root_is_binder(&mut WorkLimit::new(4096)).unwrap());
+        assert!(
+            immutable
+                .project_steps_if_structural(&[], &mut WorkLimit::new(4096))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn typed_projection_steps_compose_remainders_without_losing_hidden_dimensions() {
+        use std::collections::BTreeSet;
+        let original = Some(TypeExprId(31));
+        let nested = array(Some(0), array(Some(2), int()));
+        let key = ArgumentKey::Tuple(vec![
+            int(),
+            ArgumentKey::Record {
+                fields: vec![
+                    ("drop".into(), false, int()),
+                    ("rows".into(), true, nested.clone()),
+                ],
+                row: None,
+            },
+        ]);
+        let source = SourceSchema::import(&key, original, &mut WorkLimit::new(4096)).unwrap();
+        let selected = source
+            .project_steps(
+                &[
+                    SourcePath::Tuple(1),
+                    SourcePath::RecordRemainder(BTreeSet::from(["drop".into()])),
+                    SourcePath::Field("rows".into()),
+                ],
+                &mut WorkLimit::new(4096),
+            )
+            .unwrap();
+        assert_eq!(selected.original(), original);
+        assert_eq!(
+            selected.equivalent_key(&nested, &mut WorkLimit::new(4096)),
+            Ok(true)
+        );
+        assert_eq!(
+            selected.equivalent_key(
+                &array(Some(0), array(Some(3), int())),
+                &mut WorkLimit::new(4096)
+            ),
+            Ok(false)
+        );
+        assert_eq!(source.key().unwrap(), key);
+        assert!(matches!(
+            source.project_steps(&[SourcePath::Tuple(1)], &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(matches!(
+            source.project_steps(
+                &[
+                    SourcePath::Tuple(1),
+                    SourcePath::RecordRemainder(BTreeSet::from(["absent".into()])),
+                ],
+                &mut WorkLimit::new(4096)
+            ),
+            Err(SourceTypesError::MissingProjection)
+        ));
+    }
+
+    #[test]
+    fn bounded_graph_copy_rolls_back_every_partial_reservation() {
+        let source = SourceSchema::import(
+            &array(Some(0), array(Some(2), int())),
+            None,
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        let mut failures = 0;
+        for budget in 0..32 {
+            let mut builder = SourceBuilder::new().unwrap();
+            let preserved = builder
+                .insert(
+                    SourceNode::Scalar(SourceScalar::Bool),
+                    &mut WorkLimit::new(4096),
+                )
+                .unwrap();
+            let checkpoint = builder.checkpoint();
+            if let Err(reason) = source.copy_into(&mut builder, &mut WorkLimit::new(budget)) {
+                assert_eq!(reason, SourceTypesError::BudgetExceeded);
+                assert_eq!(builder.checkpoint(), checkpoint);
+                failures += 1;
+            }
+            let types = builder.freeze(&mut WorkLimit::new(4096)).unwrap();
+            assert!(matches!(
+                types.get(preserved),
+                Ok(SourceNode::Scalar(SourceScalar::Bool))
+            ));
+        }
+        assert!(failures > 1);
+    }
+
+    #[test]
+    fn graph_equivalence_preserves_recursive_edges_without_a_legacy_export() {
+        let mut builder = SourceBuilder::new().unwrap();
+        let mut work = WorkLimit::new(4096);
+        let root = builder.reserve(&mut work).unwrap();
+        builder
+            .define(
+                root,
+                SourceNode::Record {
+                    fields: vec![SourceField {
+                        label: "next".into(),
+                        mutable: false,
+                        value: root,
+                    }],
+                    row: None,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let source = SourceSchema {
+            types: builder.freeze(&mut work).unwrap(),
+            root,
+            original: Some(TypeExprId(32)),
+        };
+        assert!(matches!(
+            source.key(),
+            Err(SourceTypesError::RecursiveLegacyKey)
+        ));
+        let copy =
+            SourceSchema::copy_from(&source.types, source.root, source.original(), &mut work)
+                .unwrap();
+        assert_eq!(source.equivalent(&copy, &mut work), Ok(true));
+        assert!(matches!(
+            source.equivalent(&copy, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
     }
 
     #[test]

@@ -500,7 +500,7 @@ impl<'a> Parser<'a> {
                 span: self.span(start),
             }
         } else {
-            self.pattern(false)
+            self.pattern(true)
         };
         if plain_name
             && let PatternKind::Constructor {
@@ -2412,6 +2412,9 @@ impl<'a> Parser<'a> {
             let before = self.pos;
             let start = self.offset();
             if self.eat("..") {
+                if rest {
+                    self.error("E0347", "a record pattern permits at most one rest");
+                }
                 rest = true;
                 if self.kind() == Some(SyntaxKind::Identifier) {
                     rest_binding = Some(self.name());

@@ -107,8 +107,8 @@ duplicate source trees and historical verification reports.
 - Finish generated I/O and iterator observations, channel payloads, handler
   activations and resumption transport. Resolve the nine-scope channel replay
   case with finite work while preserving unknown guard/history obligations.
-- Implement conditional bindings (`if let`, `while let`), array/tuple rest
-  patterns and contextual `capture`. Complete record-rest, nested closure/default
+- Implement conditional bindings (`if let`, `while let`) and array/tuple rest
+  patterns. Complete record-rest, nested closure/default
   and retained-handler transport covered by the corpus.
 - Complete static extent/sort contexts, shared-constant audits and builtin source
   declarations. Keep object identity separate from each reference's declared view.
@@ -135,3 +135,9 @@ cargo run --locked -p xtask --bin unicode-data -- INPUT_DIRECTORY crates/ril-run
 Run the string/Unicode corpus after regeneration.
 
 ## Specification questions
+
+- Does the one-rest limit apply separately to each tuple/array/record pattern,
+  or to the whole alternative? For example, is `([a, ..xs], [b, ..ys])` valid?
+- Does a named array rest (`[head, ..tail]`) produce a shared read-only window
+  or a new array? Specify its object/slot identity, permissions and lifetime,
+  and whether a fixed input preserves the known remaining extent (`[N-k]T`).

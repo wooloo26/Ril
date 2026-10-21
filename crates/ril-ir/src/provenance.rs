@@ -18,6 +18,8 @@ mod generated_sources;
 pub use generated_sources::*;
 mod storage_sources;
 pub use storage_sources::*;
+mod source_types;
+pub use source_types::*;
 mod record_bounds;
 pub use record_bounds::*;
 mod bound_writes;
@@ -39,6 +41,7 @@ pub struct Graph {
     pub invocation_expressions: Vec<InvocationExpression>,
     pub builtin_source_observations: Vec<BuiltinSourceObservation>,
     pub generated_sources: Vec<GeneratedSource>,
+    pub source_types: SourceTypeGraph,
     pub binding_sources: Vec<BindingSource>,
     pub storage_writes: Vec<StorageWrite>,
     pub default_uses: Vec<DefaultUse>,
@@ -1063,6 +1066,7 @@ pub struct Field {
 pub struct Binding {
     pub id: u32,
     pub pattern: Option<ril_compiler_core::ids::PatternId>,
+    pub birth: Option<BindingBirth>,
     pub context: ResumptionContext,
     pub typing_environment: FrozenEnvironmentId,
     pub name: String,
@@ -1079,6 +1083,11 @@ pub struct Binding {
     pub forwarded: Vec<u32>,
     pub parameter: bool,
     pub value: Value,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct BindingBirth {
+    pub source: ril_compiler_core::ids::ExprId,
+    pub activation: ril_compiler_core::ids::ActivationEpochId,
 }
 #[derive(Debug, Clone)]
 pub struct Environment {

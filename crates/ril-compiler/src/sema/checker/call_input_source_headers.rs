@@ -47,7 +47,7 @@ impl Checker {
         Some(key)
     }
 
-    pub(super) fn actual_input_source_selections(
+    pub(in crate::sema::checker) fn actual_input_source_selections(
         &mut self,
         info: &FunctionInfo,
         event: Option<CopyCallEventId>,

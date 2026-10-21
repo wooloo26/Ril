@@ -125,19 +125,50 @@ impl Checker {
             node,
             self.heap.nodes[node.0 as usize].cause,
         );
+        let name = if child {
+            "ril__with_child_lease"
+        } else {
+            "ril__with_file_lease"
+        };
+        let birth = self
+            .application_effect
+            .current_activation()
+            .and_then(|id| self.application_effect.activations.get(id.0 as usize))
+            .and_then(|activation| {
+                activation.source.map(|source| {
+                    crate::sema::application_effect::OccurrenceIdentity {
+                        source,
+                        activation: activation.id,
+                    }
+                })
+            });
+        let introducer = birth
+            .map(|birth| birth.source)
+            .ok_or(crate::hir::nodes::LowerError::MissingAnchor)
+            .and_then(|source| {
+                self.semantic_hir.mint_generated_name_pattern(
+                    crate::hir::nodes::NodeId::Expr(source),
+                    crate::hir::nodes::GeneratedKind::ResourceLease,
+                    name,
+                    crate::hir::nodes::HirLimits::default(),
+                )
+            });
+        let Ok(introducer) = introducer else {
+            self.unsupported(
+                span,
+                "resource lease lost its actual builtin HIR introducer",
+            );
+            return self.unit(span);
+        };
         let lease = self.bind_name(
-            if child {
-                "ril__with_child_lease"
-            } else {
-                "ril__with_file_lease"
-            },
+            name,
             if child {
                 BindingMode::LetMut
             } else {
                 BindingMode::ScopedMut
             },
             handle,
-            span,
+            super::bindings::BindingSite::original(span, introducer).at(birth),
             &mut helper,
             false,
         );

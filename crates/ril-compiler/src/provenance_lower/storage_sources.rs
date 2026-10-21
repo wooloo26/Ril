@@ -9,21 +9,44 @@ fn observation(value: source::StorageObservation) -> p::StorageObservation {
     }
 }
 
-pub(super) fn lower(facts: &SemanticFacts, graph: &mut p::Graph) {
+pub(super) fn lower(facts: &SemanticFacts, graph: &mut p::Graph) -> Result<(), NotImplemented> {
+    let mut work = crate::sema::source_types::WorkLimit::new(4_000_000);
+    let retained = facts.source_types.retained(&mut work).map_err(|error| {
+        NotImplemented::new(
+            ril_compiler_core::phase::Stage::Lowering,
+            format!("binding Source graph could not be retained: {error}"),
+        )
+    })?;
+    work.charge(facts.binding_sources.len()).map_err(|error| {
+        NotImplemented::new(
+            ril_compiler_core::phase::Stage::Lowering,
+            format!("binding Source receipts could not be retained: {error}"),
+        )
+    })?;
     graph.binding_sources = facts
         .binding_sources
         .iter()
-        .map(|value| p::BindingSource {
-            binding: value.binding as u32,
-            context: resumption_context(value.context),
-            activation: value.activation.0,
-            declaration: value.declaration,
-            declared: value.declared,
-            initializer: observation(value.initializer),
-            path: value.path.iter().map(projection).collect(),
-            key: value.key.as_ref().map(record_bounds::key),
+        .map(|value| {
+            Ok(p::BindingSource {
+                binding: value.binding as u32,
+                context: resumption_context(value.context),
+                activation: value.activation.0,
+                declaration: value.declaration,
+                declared: value.declared,
+                initializer: observation(value.initializer),
+                path: value.path.clone(),
+                root: retained
+                    .binding_root(value.binding, &mut work)
+                    .map_err(|error| {
+                        NotImplemented::new(
+                            ril_compiler_core::phase::Stage::Lowering,
+                            format!("binding Source root could not be retained: {error}"),
+                        )
+                    })?,
+            })
         })
-        .collect();
+        .collect::<Result<_, NotImplemented>>()?;
+    graph.source_types = retained.graph;
     graph.storage_writes = facts
         .storage_writes
         .iter()
@@ -52,4 +75,5 @@ pub(super) fn lower(facts: &SemanticFacts, graph: &mut p::Graph) {
             completed: value.completed,
         })
         .collect();
+    Ok(())
 }

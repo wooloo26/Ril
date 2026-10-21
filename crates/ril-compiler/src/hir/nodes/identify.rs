@@ -1188,9 +1188,70 @@ mod tests {
             )
             .unwrap();
         assert_eq!(generated.hir_id, Some(id));
-        assert_eq!(hir.generated_roots(), &[id]);
+        assert_eq!(hir.generated_roots(), &[NodeId::Expr(id)]);
         assert!(
             matches!(hir.expression(id).unwrap().info.origin, NodeOrigin::Generated { generation: 0, anchor: actual, .. } if actual == anchor)
         );
+    }
+
+    #[test]
+    fn generated_patterns_share_transactional_roots_and_generations_with_expressions() {
+        let mut source = program(name("original"));
+        let mut hir = HirProgram::lower_identified(&mut source, InputOrigin::Source).unwrap();
+        let anchor = NodeId::Stmt(source.statements[0].hir_id.unwrap());
+        let before = hir.node_count();
+        let empty = HirLimits {
+            nodes: 0,
+            ..HirLimits::default()
+        };
+        assert!(
+            hir.mint_generated_name_pattern(anchor, GeneratedKind::ResourceLease, "lease", empty)
+                .is_err()
+        );
+        assert_eq!(hir.node_count(), before);
+        assert!(hir.generated_roots().is_empty());
+        assert!(
+            hir.mint_generated_name_pattern(
+                NodeId::Expr(ExprId(u32::MAX)),
+                GeneratedKind::ResourceLease,
+                "lease",
+                HirLimits::default()
+            )
+            .is_err()
+        );
+        assert_eq!(hir.node_count(), before);
+        let pattern = hir
+            .mint_generated_name_pattern(
+                anchor,
+                GeneratedKind::ResourceLease,
+                "lease",
+                HirLimits::default(),
+            )
+            .unwrap();
+        let expression = hir
+            .mint_generated_expr(
+                &name("value"),
+                anchor,
+                GeneratedKind::Desugaring,
+                LexicalOwner::Module,
+                HirLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            hir.generated_roots(),
+            &[NodeId::Pattern(pattern), NodeId::Expr(expression)]
+        );
+        assert!(matches!(
+            hir.pattern(pattern).unwrap().info.origin,
+            NodeOrigin::Generated { generation: 0, .. }
+        ));
+        assert!(matches!(
+            hir.expression(expression).unwrap().info.origin,
+            NodeOrigin::Generated { generation: 1, .. }
+        ));
+        let mut seen = false;
+        hir.walk(4096, |id, _| seen |= id == NodeId::Pattern(pattern))
+            .unwrap();
+        assert!(seen);
     }
 }

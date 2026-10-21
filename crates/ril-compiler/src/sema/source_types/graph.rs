@@ -13,49 +13,7 @@ pub struct SourceTypeId {
     pub(super) index: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceScalar {
-    Unit,
-    Bool,
-    Str,
-    Bytes,
-    Never,
-    Int,
-    I8,
-    I16,
-    I32,
-    I64,
-    I128,
-    Isize,
-    U8,
-    U16,
-    U32,
-    U64,
-    U128,
-    Usize,
-    BigInt,
-    F32,
-    F64,
-    /// Intrinsic immutable identity; it has no hidden source coordinates.
-    Intrinsic(ril_compiler_core::builtin_types::AtomicBuiltinType),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceLength {
-    Dynamic,
-    Fixed(u64),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceContainer {
-    Immutable,
-    Option,
-    Result,
-    Set,
-    Range,
-    Heap,
-    Deque,
-}
+pub(crate) use ril_ir::provenance::{SourceContainer, SourceLength, SourceScalar};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceField {
@@ -498,6 +456,20 @@ impl SourceGraph for SourceTypes {
 }
 
 impl SourceTypes {
+    pub(super) fn indexed_nodes(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (SourceTypeId, &SourceNode)> {
+        self.nodes.iter().enumerate().map(|(index, node)| {
+            (
+                SourceTypeId {
+                    arena: self.arena,
+                    index: index as u32,
+                },
+                node.as_ref(),
+            )
+        })
+    }
+
     pub(crate) fn get(&self, id: SourceTypeId) -> Result<&SourceNode, SourceTypesError> {
         if id.arena != self.arena {
             return Err(SourceTypesError::ForeignIdentity);

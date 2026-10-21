@@ -859,7 +859,7 @@ pub(super) fn generated(
     .expr(source, owner, 0);
     match result {
         Ok(id) => {
-            hir.generated_roots.push(id);
+            hir.generated_roots.push(NodeId::Expr(id));
             Ok(id)
         }
         Err(error) => {

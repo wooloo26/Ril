@@ -176,6 +176,15 @@ impl<'a> OriginalOperandSources<'a> {
         source: ril_compiler_core::ids::ExprId,
         observation: usize,
     ) -> Check<(Option<ArgumentKey>, source_reception::Construction)> {
+        self.observed_with_work(source, observation, &mut 4096)
+    }
+
+    fn observed_with_work(
+        &self,
+        source: ril_compiler_core::ids::ExprId,
+        observation: usize,
+        work: &mut usize,
+    ) -> Check<(Option<ArgumentKey>, source_reception::Construction)> {
         let syntax = self
             .sites
             .expressions
@@ -207,30 +216,18 @@ impl<'a> OriginalOperandSources<'a> {
                 }),
             "a resumption transfer is not its completed expression value",
         )?;
-        let fresh = source_reception::construction(syntax, &mut 4096)
+        let fresh = source_reception::construction(syntax, work)
             .ok_or("receiver construction exceeded its work bound")?;
-        let key = self.replay.original_observed_source_key(
-            syntax,
-            observation,
-            record.context,
-            &self.sites,
-        );
-        match key {
-            Ok(key) => Ok((Some(key), fresh)),
-            Err(_)
-                if matches!((&fresh,&fact.value.ty),
-                (source_reception::Construction::Array(items),Ty::Array(_)) if items.is_empty()) =>
-            {
-                Ok((None, fresh))
-            }
-            Err(_)
-                if matches!((&fresh,&fact.value.ty),
-                (source_reception::Construction::Map(items),Ty::Map(..)) if items.is_empty()) =>
-            {
-                Ok((None, fresh))
-            }
-            Err(error) => Err(error),
-        }
+        let key = self
+            .replay
+            .original_observed_source_key_if_known_with_work(
+                syntax,
+                observation,
+                record.context,
+                &self.sites,
+                work,
+            )?;
+        Ok((key, fresh))
     }
 }
 
@@ -715,26 +712,56 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::explicit_named::SourceSites<'_>,
     ) -> Check<ArgumentKey> {
-        let mut work = 4096;
+        self.original_observed_source_key_if_known(expression, observation, context, sites)?
+            .ok_or_else(|| {
+                format!(
+                    "call input has no complete original source view at HIR {:?}",
+                    expression.hir_id
+                )
+            })
+    }
+
+    /// Absence is a genuine unresolved source view, such as a lambda whose
+    /// parameter types are selected only when it is later invoked. The exact
+    /// initializer occurrence is still required before reporting that absence.
+    pub(super) fn original_observed_source_key_if_known(
+        &self,
+        expression: &Expr,
+        observation: usize,
+        context: InvocationContext,
+        sites: &super::explicit_named::SourceSites<'_>,
+    ) -> Check<Option<ArgumentKey>> {
+        self.original_observed_source_key_if_known_with_work(
+            expression,
+            observation,
+            context,
+            sites,
+            &mut 4096,
+        )
+    }
+
+    fn original_observed_source_key_if_known_with_work(
+        &self,
+        expression: &Expr,
+        observation: usize,
+        context: InvocationContext,
+        sites: &super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+    ) -> Check<Option<ArgumentKey>> {
         let fact =
             self.facts.expressions.get(observation).ok_or_else(|| {
                 "original Source root is outside its observation arena".to_owned()
             })?;
-        require(
-            fact.source_id.is_some()
-                && fact.source_id == expression.hir_id
-                && self.observations.row(observation, &mut work)?.context == context,
-            "original Source root borrowed another actual occurrence or context",
-        )?;
+        self.original_source_root(expression, &fact.value, context, Some(observation), work)?;
         if let Some(key) = self.operation_result_source(observation)? {
-            return Ok(key);
+            return Ok(Some(key));
         }
-        self.original_source_key_inner(
+        self.original_source_key_inner_if_known(
             expression,
             &fact.value,
             context,
             sites,
-            &mut work,
+            work,
             SourceVisit {
                 depth: 0,
                 observation: Some(observation),
@@ -744,7 +771,7 @@ impl Replay<'_> {
 
     /// Identify a physical root once. A known observation selects that exact
     /// occurrence; a legacy value query still rejects equal repeated values.
-    fn original_source_root(
+    pub(super) fn original_source_root(
         &self,
         expression: &Expr,
         value: &Value,
@@ -828,27 +855,46 @@ impl Replay<'_> {
         work: &mut usize,
         visit: SourceVisit,
     ) -> Check<ArgumentKey> {
+        self.original_source_key_inner_if_known(expression, value, context, sites, work, visit)?
+            .ok_or_else(|| {
+                format!(
+                    "call input has no complete original source view at HIR {:?}",
+                    expression.hir_id
+                )
+            })
+    }
+
+    fn original_source_key_inner_if_known(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        sites: &super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+        visit: SourceVisit,
+    ) -> Check<Option<ArgumentKey>> {
         let SourceVisit { depth, .. } = visit;
         require(
             depth < 64 && *work > 0,
             "original Source reconstruction exceeds its bound",
         )?;
         *work -= 1;
-        let key = match self.raw_original_source_key(expression, value, context, sites, work, visit)
-        {
-            Ok(key) => key,
-            Err(message) => self
-                .symbolic_input_source_key(expression, value, context)
-                .map_err(|detail| format!("{message}; {detail}"))?,
-        };
-        if self.source_optional_projection(expression, value, context)
+        let key =
+            match self.raw_original_source_key(expression, value, context, sites, work, visit)? {
+                Some(key) => key,
+                None if matches!(&value.ty, Ty::Generic(_)) => {
+                    self.symbolic_input_source_key(expression, value, context)?
+                }
+                None => return Ok(None),
+            };
+        if self.source_optional_projection(expression, value, context, visit.observation, work)?
             && let ArgumentKey::Name { name, arguments } = &key
             && name == "Option"
             && arguments.len() == 1
         {
-            return Ok(arguments[0].clone());
+            return Ok(Some(arguments[0].clone()));
         }
-        Ok(key)
+        Ok(Some(key))
     }
 
     fn symbolic_input_source_key(
@@ -882,7 +928,8 @@ impl Replay<'_> {
                 == 1,
             "call input symbolic Source lost its exact actual expression observation",
         )?;
-        if let Ok(key) = self.formal_input_path_key(expression, value.cause, context, &mut 4096, 0)
+        if let Some(key) =
+            self.formal_input_path_key_if_known(expression, value, context, &mut 4096)?
         {
             let call = context
                 .invocation
@@ -958,6 +1005,63 @@ impl Replay<'_> {
         Ok(*element)
     }
 
+    /// A nonformal path has no result here. Once an actual named formal is
+    /// selected, its identity, source projection and work failures are errors.
+    fn formal_input_path_key_if_known(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        work: &mut usize,
+    ) -> Check<Option<ArgumentKey>> {
+        let Some(CallableOwner::Function(owner)) = context.owner else {
+            return Ok(None);
+        };
+        let mut root = expression;
+        let mut depth = 0usize;
+        loop {
+            require(
+                depth < 64 && *work > 0,
+                "call input formal Source applicability exceeds its bound",
+            )?;
+            *work -= 1;
+            depth += 1;
+            match &root.kind {
+                ExprKind::Field { base, .. }
+                | ExprKind::Index { base, .. }
+                | ExprKind::ComputedField { base, .. } => root = base,
+                ExprKind::Name(name) => {
+                    if value.sources.len() != 1 {
+                        return Ok(None);
+                    }
+                    let id = *value.sources.first().unwrap();
+                    let binding = self
+                        .facts
+                        .bindings
+                        .get(id)
+                        .ok_or("call input formal Source candidate binding is absent")?;
+                    if !binding.parameter
+                        || binding.context.owner != Some(CallableOwner::Function(owner))
+                        || !self.facts.scopes.get(&binding.owner).is_some_and(|scope| {
+                            matches!(scope.origin, crate::sema::scopes::ScopeOrigin::Named(invocation)
+                                if binding.context.invocation == Some(invocation))
+                        })
+                    {
+                        return Ok(None);
+                    }
+                    require(
+                        binding.name == *name,
+                        "call input formal Source candidate borrowed another Name",
+                    )?;
+                    return self
+                        .formal_input_path_key(expression, value.cause, context, work, 0)
+                        .map(Some);
+                }
+                _ => return Ok(None),
+            }
+        }
+    }
+
     fn formal_input_path_key(
         &self,
         expression: &Expr,
@@ -979,14 +1083,18 @@ impl Replay<'_> {
                 if row.context != context {
                     return None;
                 }
-                self.facts.expressions.get(row.expression).filter(|fact| {
-                    fact.source_id.is_some()
-                        && fact.source_id == expression.hir_id
-                        && fact.value.cause == cause
-                })
+                self.facts
+                    .expressions
+                    .get(row.expression)
+                    .filter(|fact| {
+                        fact.source_id.is_some()
+                            && fact.source_id == expression.hir_id
+                            && fact.value.cause == cause
+                    })
+                    .map(|fact| (row.expression, fact))
             })
             .collect();
-        let [fact] = matching.as_slice() else {
+        let [(observation, fact)] = matching.as_slice() else {
             return Err("call input formal Source path lost its exact observation".into());
         };
         if let ExprKind::Name(name) = &expression.kind {
@@ -1002,22 +1110,18 @@ impl Replay<'_> {
             let Some(CallableOwner::Function(owner)) = context.owner else {
                 return Err("call input formal Source has no named owner".into());
             };
+            self.parameter_declaration_context(
+                expression,
+                &fact.value,
+                context,
+                Some(*observation),
+            )?;
             let function = self.function(owner)?;
             let parameter = function.syntax.parameters.iter().find(|parameter| parameter.pattern.hir_id.is_some() && parameter.pattern.hir_id == binding.pattern
                 && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(actual) if actual == name))
                 .ok_or_else(|| "call input formal Source differs from its real header index".to_owned())?;
-            let call = context
-                .invocation
-                .and_then(|id| self.facts.copy_invocations.get(id.0 as usize))
-                .filter(|call| call.target == owner)
-                .ok_or_else(|| "call input formal Source root lacks its whole entry".to_owned())?;
-            self.read_parameter_reception(
-                &fact.value,
-                expression,
-                context,
-                binding.owner,
-                call.entry.allocation_epoch,
-            )?;
+            // This legacy constraint path selects only the written type. Its
+            // access mode and actual loan are independently replayed at entry.
             return self.input_callable_source_key(
                 parameter
                     .ty
@@ -1135,14 +1239,44 @@ impl Replay<'_> {
         expression: &Expr,
         value: &Value,
         context: InvocationContext,
-    ) -> bool {
-        self.facts.invocation_witnesses.iter().filter(|row| {
-            row.context == context && row.span == expression.span
+        observation: Option<usize>,
+        work: &mut usize,
+    ) -> Check<bool> {
+        *work = work
+            .checked_sub(self.facts.invocation_witnesses.len())
+            .ok_or("optional Source receipts exceed their work bound")?;
+        let projected = self.facts.invocation_witnesses.iter().any(|row| {
+            row.context == context
                 && matches!(&row.kind, super::super::effect_identity::InvocationWitnessKind::ImplicitUnwrap(proof)
-                    if proof.cause == value.cause && proof.depth == 1 && proof.tags == ["Some"])
-        }).count() == 1
-            && self.facts.explanations.kinds.get(value.cause.0 as usize)
-                == Some(&super::super::facts::CauseKind::Restriction)
+                    if Some(proof.occurrence.source) == expression.hir_id && proof.cause == value.cause)
+        });
+        if !projected {
+            return Ok(false);
+        }
+        let root = self.original_source_root(expression, value, context, observation, work)?;
+        let record = self
+            .facts
+            .evaluations
+            .get(root)
+            .ok_or("optional Source lost its read")?;
+        use crate::sema::source_types::{
+            WorkLimit,
+            projection_receipts::{ProjectionOccurrence, ProjectionReceipts},
+        };
+        let occurrence = ProjectionOccurrence {
+            identity: record
+                .identity
+                .ok_or("optional Source has no original occurrence")?,
+            context,
+            cause: value.cause,
+        };
+        let mut budget = WorkLimit::new(*work);
+        let result =
+            ProjectionReceipts::from_facts(self.facts).unwrap_depth(occurrence, &mut budget);
+        *work = budget.remaining();
+        result
+            .map(|depth| depth == 1)
+            .map_err(|error| error.to_string())
     }
 
     fn raw_original_source_key(
@@ -1153,9 +1287,11 @@ impl Replay<'_> {
         sites: &super::explicit_named::SourceSites<'_>,
         work: &mut usize,
         visit: SourceVisit,
-    ) -> Check<ArgumentKey> {
+    ) -> Check<Option<ArgumentKey>> {
         let SourceVisit { depth, .. } = visit;
-        if let Some(key) = self.storage_binding_source_key(expression, value, context, sites) {
+        if let Some(key) =
+            self.storage_binding_source_key_if_known(expression, value, context, visit.observation)
+        {
             return key;
         }
         if !matches!(&value.ty, Ty::Generic(_))
@@ -1163,30 +1299,28 @@ impl Replay<'_> {
                 &expression.kind,
                 ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::ComputedField { .. }
             )
+            && let Some(key) =
+                self.formal_input_path_key_if_known(expression, value, context, work)?
         {
-            let projected = self.formal_input_path_key(expression, value.cause, context, work, 0);
-            if let Ok(key) = projected {
-                let call = context
-                    .invocation
-                    .and_then(|id| self.facts.copy_invocations.get(id.0 as usize))
-                    .ok_or("projected formal Source has no actual invocation")?;
-                let key = input_select_key(&key, &self.input_selected_keys(call)?, 0)?;
-                if matches!(&key, ArgumentKey::Name { .. }) {
-                    let hir = self
-                        .facts
-                        .semantic_hir
-                        .as_deref()
-                        .ok_or("projected alias has no original HIR")?;
-                    let mut limit = crate::sema::source_types::WorkLimit::new(*work);
-                    let key = crate::sema::source_types::declarations::expanded_key(
-                        &key, hir, &mut limit,
-                    )
-                    .map_err(|error| format!("projected alias Source: {error}"))?;
-                    *work = limit.remaining();
-                    return Ok(key);
-                }
-                return Ok(key);
+            let call = context
+                .invocation
+                .and_then(|id| self.facts.copy_invocations.get(id.0 as usize))
+                .ok_or("projected formal Source has no actual invocation")?;
+            let key = input_select_key(&key, &self.input_selected_keys(call)?, 0)?;
+            if matches!(&key, ArgumentKey::Name { .. }) {
+                let hir = self
+                    .facts
+                    .semantic_hir
+                    .as_deref()
+                    .ok_or("projected alias has no original HIR")?;
+                let mut limit = crate::sema::source_types::WorkLimit::new(*work);
+                let key =
+                    crate::sema::source_types::declarations::expanded_key(&key, hir, &mut limit)
+                        .map_err(|error| format!("projected alias Source: {error}"))?;
+                *work = limit.remaining();
+                return Ok(Some(key));
             }
+            return Ok(Some(key));
         }
         if let Some((source, hir)) = expression.hir_id.zip(self.facts.semantic_hir.as_deref()) {
             let mut limit = crate::sema::source_types::WorkLimit::new(*work);
@@ -1197,7 +1331,7 @@ impl Replay<'_> {
                 declared.map_err(|error| format!("typed construction Source: {error}"))?
             {
                 self.original_source_root(expression, value, context, visit.observation, work)?;
-                return Ok(key);
+                return Ok(Some(key));
             }
         }
         if let Some(key) =
@@ -1209,7 +1343,7 @@ impl Replay<'_> {
             && let Some(key) =
                 self.original_carrier_source_key(expression, value, context, sites, work, depth)?
         {
-            return Ok(key);
+            return Ok(Some(key));
         }
         if let ExprKind::Name(name) = &expression.kind
             && self.facts.constant_pool.references.contains_key(name)
@@ -1226,12 +1360,14 @@ impl Replay<'_> {
                 original.validate_closed() && value.source_type_witness.as_ref() == Some(original),
                 "constant reference changed its original per-reference Source view",
             )?;
-            return self.input_callable_source_key(&original.syntax, &BoundScope::default());
+            return self
+                .input_callable_source_key(&original.syntax, &BoundScope::default())
+                .map(Some);
         }
         if let Some(key) = super::super::checker::original_canonical_builtin_source_key(
             self.facts, value, expression, context,
         ) {
-            return Ok(key);
+            return Ok(Some(key));
         }
         if let ExprKind::Name(name) = &expression.kind
             && value.sources.len() == 1
@@ -1254,11 +1390,12 @@ impl Replay<'_> {
                     visit.observation,
                 )?;
                 if let Some(key) = self.operation_formal_source_key(binding)? {
-                    return Ok(key);
+                    return Ok(Some(key));
                 }
                 if matches!(declaration.owner, Some(CallableOwner::Lambda(_))) {
                     return self
-                        .lambda_formal_source_key(expression, value, context, sites, work, visit);
+                        .lambda_formal_source_key(expression, value, context, sites, work, visit)
+                        .map(Some);
                 }
                 let Some(CallableOwner::Function(owner)) = declaration.owner else {
                     return Err("call input parameter has no genuine named header".into());
@@ -1290,7 +1427,8 @@ impl Replay<'_> {
                             &key,
                             &self.declaration_default_selections(owner, default)?,
                             0,
-                        );
+                        )
+                        .map(Some);
                     }
                     require(
                         default.status == CopyInvocationStatus::Completed,
@@ -1325,7 +1463,7 @@ impl Replay<'_> {
                             "call input default and body selected different source identities",
                         )?;
                     }
-                    return input_select_key(&key, &selected, 0);
+                    return input_select_key(&key, &selected, 0).map(Some);
                 }
                 let instance = declaration
                     .invocation
@@ -1345,7 +1483,13 @@ impl Replay<'_> {
                         instance.entry.allocation_epoch,
                     )?;
                     let original = &instance.entry.arguments[parameter_index].1.value;
-                    let original = if self.source_optional_projection(expression, value, context) {
+                    let original = if self.source_optional_projection(
+                        expression,
+                        value,
+                        context,
+                        visit.observation,
+                        work,
+                    )? {
                         original.option_payload.as_deref().ok_or_else(|| {
                             "call input optional projection lacks its original Some payload"
                                 .to_owned()
@@ -1396,7 +1540,7 @@ impl Replay<'_> {
                         "call input mutable formal changed its source or actual loan participant",
                     )?;
                 }
-                return input_select_key(&key, &self.input_selected_keys(instance)?, 0);
+                return input_select_key(&key, &self.input_selected_keys(instance)?, 0).map(Some);
             }
             let declared: Vec<_> = sites
                 .bindings
@@ -1409,7 +1553,7 @@ impl Replay<'_> {
                 let scope = self.lambda_input_scope(declaration.owner)?;
                 let key = self.input_callable_source_key(syntax, &scope)?;
                 let selected = self.binding_source_selections(binding, declaration.owner)?;
-                return input_select_key(&key, &selected, 0);
+                return input_select_key(&key, &selected, 0).map(Some);
             }
             if let [crate::sema::model::Callable::Named(index)] = value.callables.as_slice() {
                 let function = self
@@ -1435,11 +1579,13 @@ impl Replay<'_> {
                         annotations: function.syntax.annotations.clone(),
                     },
                 };
-                return self.input_callable_source_key(&syntax, &self.scope(function.definition)?);
+                return self
+                    .input_callable_source_key(&syntax, &self.scope(function.definition)?)
+                    .map(Some);
             }
         }
         if let Some(key) = self.inferred_lambda_source_key(expression, value, context, sites)? {
-            return Ok(key);
+            return Ok(Some(key));
         }
         if let Some(application) = AstApplication::from_ast(expression) {
             let callee_syntax = application.callee;
@@ -1458,16 +1604,16 @@ impl Replay<'_> {
             {
                 let function = self.function(target)?;
                 if let Some(result) = &function.syntax.return_type {
+                    let causes = self.producing_result_causes(value.cause)?;
                     let instances: Vec<_> = self
                         .facts
                         .copy_invocations
                         .iter()
                         .filter(|call| call.source_event == Some(source.id))
                         .filter(|call| {
-                            call.result.as_ref().is_some_and(|result| {
-                                self.producing_result_causes(value.cause)
-                                    .is_ok_and(|causes| causes.contains(&result.value.cause.0))
-                            })
+                            call.result
+                                .as_ref()
+                                .is_some_and(|result| causes.contains(&result.value.cause.0))
                         })
                         .collect();
                     if let [instance] = instances.as_slice() {
@@ -1522,7 +1668,7 @@ impl Replay<'_> {
                                 "call input returned Source differs from its genuine selected Type UID",
                             )?;
                         }
-                        return Ok(public);
+                        return Ok(Some(public));
                     }
                 }
             }
@@ -1531,14 +1677,11 @@ impl Replay<'_> {
             && let Some(key) =
                 self.original_composite_source_key(expression, value, context, sites, work, visit)?
         {
-            return Ok(key);
+            return Ok(Some(key));
         }
-        let witness = value.source_type_witness.as_ref().ok_or_else(|| {
-            format!(
-                "call input has no complete original source view at HIR {:?}",
-                expression.hir_id
-            )
-        })?;
+        let Some(witness) = value.source_type_witness.as_ref() else {
+            return Ok(None);
+        };
         require(
             witness.validate_closed()
                 && crate::sema::source_type_validation::resolved_names(
@@ -1548,6 +1691,7 @@ impl Replay<'_> {
             "call input complete witness has inconsistent or unresolved source names",
         )?;
         self.input_callable_source_key(&witness.syntax, &BoundScope::default())
+            .map(Some)
     }
 
     pub(super) fn input_value_transport(
@@ -2323,6 +2467,161 @@ impl Replay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_operand_sources_never_hide_missing_occurrences_or_exhausted_work() {
+        for case in [
+            "tests/regressions/source-observations.ril::matching-variable-replacement",
+            "tests/conformance/collections.ril::literal-and-lookup",
+        ] {
+            let source = ril_test::case_source(case);
+            let program = crate::Session::new(source.as_bytes().to_vec())
+                .verify()
+                .unwrap();
+            let facts = program.facts();
+            let sources = OriginalOperandSources::new(facts).unwrap();
+            let (observation, source) = facts
+                .expressions
+                .iter()
+                .enumerate()
+                .find_map(|(index, fact)| {
+                    let source = fact.source_id?;
+                    let syntax = sources.sites.expressions.get(&source)?;
+                    match &syntax.kind {
+                        ExprKind::Array(items) if items.is_empty() => Some((index, source)),
+                        ExprKind::Map(items) if items.is_empty() => Some((index, source)),
+                        _ => None,
+                    }
+                })
+                .expect("fixture must evaluate a real empty collection");
+            sources.observed(source, observation).unwrap();
+            for initial in [0, 1] {
+                let mut work = initial;
+                assert!(
+                    sources
+                        .observed_with_work(source, observation, &mut work)
+                        .is_err(),
+                    "{case}: empty construction cannot waive its observation work"
+                );
+                assert_eq!(work, 0);
+            }
+            let mut changed = facts.clone();
+            changed
+                .invocation_expressions
+                .retain(|row| row.expression != observation);
+            let missing = OriginalOperandSources::new(&changed).unwrap();
+            assert!(
+                missing.observed(source, observation).is_err(),
+                "{case}: erased element type cannot replace the missing physical occurrence"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_creation_source_still_requires_its_actual_observation_and_valid_evidence() {
+        let source = ril_test::case_source(
+            "tests/regressions/source-observations.ril::closure-captured-step",
+        );
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let facts = program.facts();
+        let row = facts
+            .binding_sources
+            .iter()
+            .find(|row| facts.bindings[row.binding].name == "callback")
+            .unwrap();
+        assert!(facts.source_types.binding_type(row.binding).is_none());
+        let replay = Replay::new(facts).unwrap();
+        let sites = super::super::explicit_named::source_sites_base(facts).unwrap();
+        let syntax = sites
+            .bindings
+            .iter()
+            .find(|site| site.binding.pattern.hir_id == Some(row.declaration))
+            .map(|site| &site.binding.value)
+            .unwrap();
+        assert!(
+            OriginalOperandSources::new(facts)
+                .unwrap()
+                .observed(syntax.hir_id.unwrap(), row.initializer.expression)
+                .unwrap()
+                .0
+                .is_none()
+        );
+        assert!(
+            replay
+                .original_observed_source_key_if_known(
+                    syntax,
+                    row.initializer.expression,
+                    row.context,
+                    &sites,
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            replay
+                .original_observed_source_key(
+                    syntax,
+                    row.initializer.expression,
+                    row.context,
+                    &sites,
+                )
+                .is_err()
+        );
+        assert!(
+            replay
+                .original_source_key_inner_if_known(
+                    syntax,
+                    &facts.expressions[row.initializer.expression].value,
+                    row.context,
+                    &sites,
+                    &mut 0,
+                    SourceVisit {
+                        depth: 0,
+                        observation: Some(row.initializer.expression),
+                    },
+                )
+                .is_err()
+        );
+        let mut changed = facts.clone();
+        changed.expressions[row.initializer.expression].source_id = None;
+        assert!(
+            Replay::new(&changed)
+                .and_then(|replay| {
+                    replay.original_observed_source_key_if_known(
+                        syntax,
+                        row.initializer.expression,
+                        row.context,
+                        &sites,
+                    )
+                })
+                .is_err()
+        );
+        let mut changed = facts.clone();
+        let mut witness = facts
+            .expressions
+            .iter()
+            .find_map(|fact| fact.value.source_type_witness.as_deref())
+            .unwrap()
+            .clone();
+        witness.key.push_str("invalid");
+        changed.expressions[row.initializer.expression]
+            .value
+            .source_type_witness = Some(std::sync::Arc::new(witness));
+        assert!(
+            Replay::new(&changed)
+                .and_then(|replay| {
+                    replay.original_observed_source_key_if_known(
+                        syntax,
+                        row.initializer.expression,
+                        row.context,
+                        &sites,
+                    )
+                })
+                .is_err()
+        );
+    }
 
     #[test]
     fn source_interval_rejects_a_later_real_operand_even_after_structure_is_calibrated() {

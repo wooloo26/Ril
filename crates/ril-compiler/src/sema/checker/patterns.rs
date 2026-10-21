@@ -146,9 +146,7 @@ impl Checker {
             return;
         }
         let bindings = self.checked_pattern_bindings(pattern, &value, None, frame);
-        for (name, (mode, value, binding_span)) in bindings {
-            self.bind_pattern_alias(&name, mode, value, binding_span, frame);
-        }
+        self.bind_pattern_aliases(pattern, bindings, frame);
     }
 
     pub(super) fn check_pattern_binder_uniqueness(&mut self, pattern: &Pattern) -> bool {
@@ -530,9 +528,7 @@ impl Checker {
                 );
             }
             let bindings = self.checked_pattern_bindings(&arm.pattern, &typed_subject, None, frame);
-            for (name, (mode, value, binding_span)) in bindings {
-                self.bind_pattern_alias(&name, mode, value, binding_span, frame);
-            }
+            self.bind_pattern_aliases(&arm.pattern, bindings, frame);
             if let Some(guard) = &arm.guard {
                 let guard = self.expression(guard, frame);
                 self.require_type(&guard, &Ty::Bool, arm.span);
@@ -731,6 +727,7 @@ impl Checker {
         value: Value,
         span: Span,
         frame: &mut Frame,
+        birth: Option<crate::sema::application_effect::OccurrenceIdentity>,
     ) -> Value {
         self.inspect_guaranteed_pattern_head(&value, &binding.pattern, span, frame);
         let bindings = self.checked_pattern_bindings(&binding.pattern, &value, None, frame);
@@ -829,12 +826,29 @@ impl Checker {
                 [value.cause],
             );
         }
+        let plan = binding
+            .pattern
+            .hir_id
+            .and_then(|id| self.semantic_hir.pattern_bindings(id, &mut 16384).ok());
         for (name, (mode, value, binding_span)) in bindings {
+            let site = plan
+                .as_ref()
+                .and_then(|plan| plan.iter().find(|site| site.name == name))
+                .map(|site| {
+                    super::bindings::BindingSite::original(binding_span, site.pattern).at(birth)
+                });
+            let Some(site) = site else {
+                self.unsupported(
+                    binding_span,
+                    "guarded binding lost its original HIR introducer",
+                );
+                continue;
+            };
             self.bind_name(
                 &name,
                 mode.unwrap_or(binding.mode),
                 value,
-                binding_span,
+                site,
                 frame,
                 false,
             );
@@ -889,18 +903,87 @@ impl Checker {
         }
     }
 
+    fn bind_pattern_aliases(
+        &mut self,
+        pattern: &Pattern,
+        bindings: BTreeMap<String, (Option<BindingMode>, Value, Span)>,
+        frame: &mut Frame,
+    ) {
+        let mut work = 16384usize;
+        let plan = pattern
+            .hir_id
+            .and_then(|root| self.semantic_hir.pattern_bindings(root, &mut work).ok());
+        let Some(plan) = plan else {
+            self.unsupported(
+                pattern.span,
+                "pattern aliases lost their original HIR binding plan",
+            );
+            return;
+        };
+        if work.checked_sub(plan.len().saturating_mul(2)).is_none() {
+            self.unsupported(pattern.span, "pattern alias index exceeds its work bound");
+            return;
+        }
+        let mut sites: BTreeMap<_, _> = plan
+            .into_iter()
+            .map(|binding| (binding.name, binding.pattern))
+            .collect();
+        let birth = self
+            .application_effect
+            .current_activation()
+            .and_then(|activation| {
+                self.application_effect
+                    .activations
+                    .get(activation.0 as usize)
+                    .and_then(|entry| {
+                        entry.source.map(|source| {
+                            crate::sema::application_effect::OccurrenceIdentity {
+                                source,
+                                activation,
+                            }
+                        })
+                    })
+            });
+        let Some(birth) = birth else {
+            self.unsupported(
+                pattern.span,
+                "pattern alias lost its actual receiver activation",
+            );
+            return;
+        };
+        for (name, (mode, value, span)) in bindings {
+            let Some(introducer) = sites.remove(&name) else {
+                self.unsupported(span, "pattern alias has no original HIR introducer");
+                continue;
+            };
+            self.bind_pattern_alias(&name, mode, value, (span, introducer, birth), frame);
+        }
+    }
+
     fn bind_pattern_alias(
         &mut self,
         name: &str,
         mode: Option<BindingMode>,
         mut value: Value,
-        span: Span,
+        site: (
+            Span,
+            ril_compiler_core::ids::PatternId,
+            crate::sema::application_effect::OccurrenceIdentity,
+        ),
         frame: &mut Frame,
     ) {
+        let (span, pattern, birth) = site;
         // An arm is a lexical binding scope, not a new callable environment layer.
         frame.env.remove(name);
         if let Some(mode) = mode {
-            self.bind_name(name, mode, value, span, frame, false);
+            self.bind_name(
+                name,
+                mode,
+                value,
+                super::bindings::BindingSite::original(span, pattern).at(Some(birth)),
+                frame,
+                false,
+            );
             return;
         }
         value.permission = Permission::Read;
@@ -915,7 +998,8 @@ impl Checker {
             value.participants.insert(Participant::Root(root));
         }
         self.bindings.push(BindingInfo {
-            pattern: None,
+            pattern: Some(pattern),
+            birth: Some(birth),
             context: self.invocation_context(frame.callable_owner),
             typing_environment: self.capture_typing_environment_with_bindings(&frame.env),
             name: name.into(),

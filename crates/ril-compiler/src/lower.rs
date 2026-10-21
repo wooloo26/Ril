@@ -11,6 +11,7 @@ mod budget;
 mod concurrent;
 mod constants;
 mod foreign;
+mod patterns;
 mod specialize;
 
 pub fn lower_core(program: &crate::hir::VerifiedProgram) -> Result<ir::Program, NotImplemented> {
@@ -155,7 +156,9 @@ pub fn lower_core_for(
             })
             .or_insert(current);
     }
+    let binding_patterns = patterns::BindingPatterns::new(program.facts())?;
     let mut lower = Lower {
+        binding_patterns: &binding_patterns,
         specializations: &specializations,
         specialization_context: None,
         default_context: None,
@@ -236,6 +239,12 @@ pub fn lower_core_for(
                 }
             }
             _ => {
+                if let ast::StmtKind::Binding(binding) = &statement.kind
+                    && let Some(expanded) = lower.binding_statements(binding, statement.span)?
+                {
+                    globals.extend(expanded);
+                    continue;
+                }
                 if let Some(statement) = lower.statement(statement)? {
                     globals.push(statement);
                 }
@@ -251,6 +260,7 @@ pub fn lower_core_for(
             .find(|info| info.definition == instance.record.template)
             .ok_or_else(|| unsupported("specialization template syntax is missing"))?;
         let mut selected = Lower {
+            binding_patterns: lower.binding_patterns,
             specializations: &specializations,
             specialization_context: Some(index),
             default_context: None,
@@ -327,6 +337,7 @@ pub fn lower_core_for(
     })
 }
 struct Lower<'a> {
+    binding_patterns: &'a patterns::BindingPatterns,
     specializations: &'a specialize::Plan,
     specialization_context: Option<usize>,
     default_context: Option<u32>,
@@ -569,6 +580,7 @@ impl Lower<'_> {
             });
         };
         let mut nested = Lower {
+            binding_patterns: self.binding_patterns,
             specializations: self.specializations,
             specialization_context: Some(index),
             default_context: Some(parameter_index),
@@ -609,139 +621,9 @@ impl Lower<'_> {
         let mut statements = Vec::new();
         for statement in block.where_items.iter().chain(&block.statements) {
             if let ast::StmtKind::Binding(binding) = &statement.kind
-                && let ast::PatternKind::Record {
-                    fields,
-                    rest_binding: Some(rest),
-                    ..
-                } = &binding.pattern.kind
+                && let Some(expanded) = self.binding_statements(binding, statement.span)?
             {
-                if self.specialization_context.is_some() {
-                    return Err(unsupported(
-                        "effect specialization record-rest bindings require invocation-owned shape witnesses",
-                    ));
-                }
-                if binding.fallback.is_some() || binding.is_meta {
-                    return Err(unsupported("guarded or static record-rest lowering"));
-                }
-                let mut keys = None;
-                for observed in self.facts.bindings.iter().filter(|observed| {
-                    observed.span == binding.pattern.span && observed.name == *rest
-                }) {
-                    let crate::sema::model::Ty::Record(shape) = &observed.value.ty else {
-                        return Err(unsupported("record-rest binding has no exact closed shape"));
-                    };
-                    let current: Vec<_> = shape.keys().cloned().collect();
-                    if keys.as_ref().is_some_and(|previous| *previous != current) {
-                        return Err(unsupported(
-                            "record-rest binding requires distinct field specializations",
-                        ));
-                    }
-                    keys = Some(current);
-                }
-                let keys =
-                    keys.ok_or_else(|| unsupported("verified record-rest binding is missing"))?;
-                let temporary = format!("\0ril.record_rest.{}", self.next_temporary);
-                self.next_temporary += 1;
-                statements.push(ir::Statement::Bind {
-                    pattern: ir::Pattern::Name(temporary.clone()),
-                    value: self.expression(&binding.value)?,
-                    scoped: false,
-                });
-                let reference = ir::Expr {
-                    kind: ir::ExprKind::Name(temporary),
-                    span: binding.value.span,
-                };
-                let scoped = matches!(
-                    binding.mode,
-                    ast::BindingMode::Scoped | ast::BindingMode::ScopedMut
-                );
-                statements.push(ir::Statement::Bind {
-                    pattern: ir::Pattern::Record(
-                        fields
-                            .iter()
-                            .map(|field| Ok((field.name.clone(), self.pattern(&field.pattern)?)))
-                            .collect::<Result<_, NotImplemented>>()?,
-                    ),
-                    value: reference.clone(),
-                    scoped,
-                });
-                let rest_fields: Vec<_> = keys
-                    .into_iter()
-                    .map(|field| {
-                        let value = ir::Expr {
-                            kind: ir::ExprKind::Field {
-                                base: Box::new(reference.clone()),
-                                field: field.clone(),
-                                safe: false,
-                            },
-                            span: binding.pattern.span,
-                        };
-                        (field, value)
-                    })
-                    .collect();
-                statements.push(ir::Statement::Bind {
-                    pattern: ir::Pattern::Name(rest.clone()),
-                    value: ir::Expr {
-                        kind: ir::ExprKind::Record {
-                            members: rest_fields
-                                .iter()
-                                .map(|(field, value)| {
-                                    ir::RecordMember::Field(field.clone(), value.clone())
-                                })
-                                .collect(),
-                            fields: rest_fields,
-                            spread: None,
-                        },
-                        span: binding.pattern.span,
-                    },
-                    scoped,
-                });
-                continue;
-            }
-            if let ast::StmtKind::Binding(binding) = &statement.kind
-                && let Some(fallback) = &binding.fallback
-            {
-                let temporary = format!("\0ril.guard.{}", self.next_temporary);
-                self.next_temporary += 1;
-                let pattern = self.pattern(&binding.pattern)?;
-                let value = self.expression(&binding.value)?;
-                statements.push(ir::Statement::Bind {
-                    pattern: ir::Pattern::Name(temporary.clone()),
-                    value,
-                    scoped: false,
-                });
-                let reference = ir::Expr {
-                    kind: ir::ExprKind::Name(temporary),
-                    span: binding.value.span,
-                };
-                statements.push(ir::Statement::Expr {
-                    expression: ir::Expr {
-                        kind: ir::ExprKind::If {
-                            condition: Box::new(ir::Expr {
-                                kind: ir::ExprKind::Is {
-                                    value: Box::new(reference.clone()),
-                                    pattern: binding_test(&pattern),
-                                },
-                                span: binding.pattern.span,
-                            }),
-                            then_branch: Box::new(ir::Expr {
-                                kind: ir::ExprKind::Literal(ir::Literal::Unit),
-                                span: statement.span,
-                            }),
-                            else_branch: Some(Box::new(self.expression(fallback)?)),
-                        },
-                        span: statement.span,
-                    },
-                    terminated: true,
-                });
-                statements.push(ir::Statement::Bind {
-                    pattern,
-                    value: reference,
-                    scoped: matches!(
-                        binding.mode,
-                        ast::BindingMode::Scoped | ast::BindingMode::ScopedMut
-                    ),
-                });
+                statements.extend(expanded);
                 continue;
             }
             if let Some(statement) = self.statement(statement)? {
@@ -840,6 +722,13 @@ impl Lower<'_> {
         }))
     }
     fn pattern(&mut self, pattern: &ast::Pattern) -> Result<ir::Pattern, NotImplemented> {
+        self.lower_pattern(pattern, false)
+    }
+    fn lower_pattern(
+        &mut self,
+        pattern: &ast::Pattern,
+        bind_remainders: bool,
+    ) -> Result<ir::Pattern, NotImplemented> {
         Ok(match &pattern.kind {
             ast::PatternKind::Name(name) => ir::Pattern::Name(name.clone()),
             ast::PatternKind::Wildcard => ir::Pattern::Wildcard,
@@ -852,21 +741,26 @@ impl Lower<'_> {
             ast::PatternKind::Tuple(items) => ir::Pattern::Tuple(
                 items
                     .iter()
-                    .map(|item| self.pattern(item))
+                    .map(|item| self.lower_pattern(item, bind_remainders))
                     .collect::<Result<_, _>>()?,
             ),
             ast::PatternKind::Record {
                 rest_binding: Some(_),
                 ..
-            } => {
+            } if !bind_remainders => {
                 return Err(unsupported(
-                    "record-rest lowering requires a standalone closed binding",
+                    "record-rest pattern requires its original binding projection",
                 ));
             }
             ast::PatternKind::Record { fields, .. } => ir::Pattern::Record(
                 fields
                     .iter()
-                    .map(|field| Ok((field.name.clone(), self.pattern(&field.pattern)?)))
+                    .map(|field| {
+                        Ok((
+                            field.name.clone(),
+                            self.lower_pattern(&field.pattern, bind_remainders)?,
+                        ))
+                    })
                     .collect::<Result<_, NotImplemented>>()?,
             ),
             ast::PatternKind::Constructor {
@@ -875,16 +769,18 @@ impl Lower<'_> {
                 tag: path.join("::"),
                 arguments: arguments
                     .iter()
-                    .map(|argument| self.pattern(argument))
+                    .map(|argument| self.lower_pattern(argument, bind_remainders))
                     .collect::<Result<_, _>>()?,
             },
             ast::PatternKind::Alternative(patterns) => ir::Pattern::Alternative(
                 patterns
                     .iter()
-                    .map(|pattern| self.pattern(pattern))
+                    .map(|pattern| self.lower_pattern(pattern, bind_remainders))
                     .collect::<Result<_, _>>()?,
             ),
-            ast::PatternKind::Mode { pattern, .. } => self.pattern(pattern)?,
+            ast::PatternKind::Mode { pattern, .. } => {
+                self.lower_pattern(pattern, bind_remainders)?
+            }
             _ => return Err(unsupported("static or computed pattern lowering")),
         })
     }
@@ -1531,6 +1427,7 @@ impl Lower<'_> {
                         .specializations
                         .closure_facts(self.all_facts, index, site)?;
                     let mut nested = Lower {
+                        binding_patterns: self.binding_patterns,
                         specializations: self.specializations,
                         specialization_context: Some(index),
                         default_context: None,

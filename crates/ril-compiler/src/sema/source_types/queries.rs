@@ -8,17 +8,7 @@ pub enum SourceSensitivity {
     Unknown { reason: SourceTypesError },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourcePath {
-    Field(String),
-    Tuple(u32),
-    Element,
-    MapKey,
-    MapValue,
-    OptionalPayload,
-    ResultSuccess,
-    ResultError,
-}
+pub use ril_compiler_core::projection::TypeProjection as SourcePath;
 
 pub(crate) struct Substitution {
     pub(crate) types: SourceTypes,
@@ -238,14 +228,19 @@ pub(crate) trait SourceTypeQueries: SourceGraph {
         roots: impl IntoIterator<Item = SourceTypeId>,
         work: &mut WorkLimit,
     ) -> Result<BTreeSet<SourceTypeId>, SourceTypesError> {
-        let mut pending: Vec<_> = roots.into_iter().collect();
+        let mut pending = Vec::new();
+        for root in roots {
+            work.charge(1)?;
+            pending.push(root);
+        }
         let mut seen = BTreeSet::new();
         while let Some(id) = pending.pop() {
-            if !seen.insert(id) {
+            if seen.contains(&id) {
                 continue;
             }
             let node = self.get(id)?;
             node.charge(work)?;
+            seen.insert(id);
             pending.extend(node.children());
         }
         Ok(seen)

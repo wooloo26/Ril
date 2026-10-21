@@ -1559,6 +1559,10 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .map(|(index, binding)| p::Binding {
             id: index as u32,
             pattern: binding.pattern,
+            birth: binding.birth.map(|birth| p::BindingBirth {
+                source: birth.source,
+                activation: birth.activation,
+            }),
             context: resumption_context(binding.context),
             typing_environment: contracts
                 .environment(&mut graph.types, &binding.typing_environment),

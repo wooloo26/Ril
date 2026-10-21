@@ -63,7 +63,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
     // Declaration sources survive even when a mutable binding's current value
     // has changed. Use the original initializer as well as its current view.
     for source in &facts.binding_sources {
-        if !source.path.is_empty() {
+        if !source.path.as_ref().is_some_and(|path| path.is_empty()) {
             continue;
         }
         let run = || -> Result<(), String> {
@@ -75,11 +75,22 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
                 .expressions
                 .get(source.initializer.expression)
                 .ok_or("primitive initializer is absent")?;
-            let Some(key) = &source.key else {
+            if facts.source_types.binding_type(source.binding).is_none() {
                 return Ok(());
-            };
+            }
+            let (schema, _) = facts
+                .source_types
+                .binding_schema(source.binding, None, &mut WorkLimit::new(16384))
+                .map_err(|error| format!("primitive view lost its frozen Source graph: {error}"))?;
             for id in ids(&original.value).chain(ids(&binding.value)) {
-                instance(id, key)?;
+                if !schema
+                    .is_builtin_instance(id, &mut WorkLimit::new(16384))
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(
+                        "primitive view exceeds its original complete Source declaration".into(),
+                    );
+                }
             }
             if ids(&binding.value).next().is_some()
                 && let Some(witness) = &binding.value.source_type_witness
@@ -89,15 +100,9 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
                     &BTreeMap::new(),
                 )
                 .ok_or("primitive view has an incomplete source witness")?;
-                let mut builder = SourceBuilder::new().map_err(|error| error.to_string())?;
                 let mut budget = WorkLimit::new(16384);
-                let expected = builder
-                    .import_key(key, &mut budget)
-                    .map_err(|error| error.to_string())?;
-                let actual = builder
-                    .import_key(&actual, &mut budget)
-                    .map_err(|error| error.to_string())?;
-                if !reception::equivalent_in(&builder, expected, actual, &mut budget)
+                if !schema
+                    .equivalent_key(&actual, &mut budget)
                     .map_err(|error| error.to_string())?
                 {
                     return Err("primitive view changed its frozen declaration Source".into());

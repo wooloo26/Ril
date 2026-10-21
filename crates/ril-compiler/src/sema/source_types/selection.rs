@@ -73,6 +73,24 @@ impl TypeSourceSelection {
         self.schema.key()
     }
 
+    pub(crate) fn quantified_syntax_projection(
+        &self,
+        span: ril_compiler_core::source::Span,
+        work: &mut WorkLimit,
+        binder: &mut impl FnMut(&str, bool, &mut WorkLimit) -> Result<TypeExpr, SourceTypesError>,
+    ) -> Result<TypeExpr, SourceTypesError> {
+        work.charge(1)?;
+        if self.closed.is_some()
+            || self.environment.is_poisoned()
+            || self.input.is_none()
+            || self.syntax.hir_id.is_none()
+            || self.schema.original() != self.syntax.hir_id
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        self.schema.syntax_projection(span, work, binder)
+    }
+
     pub(crate) fn closed(&self) -> Option<&Arc<SourceTypeWitness>> {
         self.closed.as_ref()
     }

@@ -1,6 +1,57 @@
 use super::*;
 use std::sync::Arc;
 
+/// The comma makes `closure` a contextual group header. Without it the
+/// same spelling is an ordinary module binding, even before name resolution.
+pub(super) struct StateGroup<'a> {
+    pub capture_owner: Option<&'a str>,
+    parts: std::str::Split<'a, char>,
+}
+
+pub(super) struct StateItem<'a> {
+    pub mode: Mode,
+    pub name: &'a str,
+}
+
+impl<'a> StateGroup<'a> {
+    pub fn items(self) -> impl Iterator<Item = StateItem<'a>> {
+        self.parts
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                let (mode, name) = if let Some(name) = item.strip_prefix("^mut ") {
+                    (Mode::Retain, name.trim())
+                } else if let Some(name) = item.strip_prefix("mut ") {
+                    (Mode::Write, name.trim())
+                } else {
+                    (Mode::Read, item)
+                };
+                StateItem { mode, name }
+            })
+    }
+}
+
+pub(super) fn state_group(text: &str) -> Option<StateGroup<'_>> {
+    let inner = text.strip_prefix("&{")?.strip_suffix('}')?;
+    let mut parts = inner.split(',');
+    let first = parts.next()?.trim();
+    let capture_owner = if inner.contains(',') {
+        first
+            .strip_prefix("closure")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+            .map(str::trim)
+    } else {
+        None
+    };
+    if capture_owner.is_none() {
+        parts = inner.split(',');
+    }
+    Some(StateGroup {
+        capture_owner,
+        parts,
+    })
+}
+
 /// Coverage of the actual latent summaries, separate from satisfaction of a
 /// particular bound. Complete never erases diagnostics or unresolved rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -927,29 +978,14 @@ impl Checker {
                 "&capture" => capture = true,
                 "&closure" => closure = true,
                 _ if text.starts_with("&{") => {
-                    let inner = text.trim_start_matches("&{").trim_end_matches('}');
-                    let mut parts = inner
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|item| !item.is_empty())
-                        .peekable();
-                    let captured = parts
-                        .peek()
-                        .is_some_and(|item| *item == "closure" || item.starts_with("closure "));
-                    let header = if captured {
-                        parts.next().unwrap().trim_start_matches("closure").trim()
-                    } else {
-                        ""
+                    let Some(group) = state_group(text) else {
+                        self.error("E0538", annotation.span, "malformed state group", []);
+                        continue;
                     };
+                    let captured = group.capture_owner.is_some();
+                    let header = group.capture_owner.unwrap_or("");
                     let mut layer = None;
-                    for item in parts {
-                        let (mode, name) = if let Some(name) = item.strip_prefix("^mut ") {
-                            (Mode::Retain, name.trim())
-                        } else if let Some(name) = item.strip_prefix("mut ") {
-                            (Mode::Write, name.trim())
-                        } else {
-                            (Mode::Read, item)
-                        };
+                    for StateItem { mode, name } in group.items() {
                         let Some(&binding) = bound.typing_environment.contract_bindings.get(name)
                         else {
                             self.error(

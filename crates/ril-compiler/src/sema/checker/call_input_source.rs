@@ -43,7 +43,6 @@ pub(super) struct State {
     operands: Vec<Operand>,
     carriers: BTreeMap<u32, (CopyCallEventId, InvocationContext)>,
     carrier_sources: BTreeMap<u32, ArgumentKey>,
-    local_views: BTreeMap<BindingId, Option<ArgumentKey>>,
     closure_views: BTreeMap<usize, (u32, ArgumentKey)>,
 }
 
@@ -55,6 +54,26 @@ struct Operand {
 }
 
 impl Checker {
+    /// This bridge serves only consumers which still require a legacy key.
+    /// A graph/export failure is an incomplete analysis, never an unknown view
+    /// which can fall back to a later value or another input witness.
+    fn input_graph_key(
+        &mut self,
+        source: Result<Option<ArgumentKey>, crate::sema::source_types::SourceTypesError>,
+        span: Span,
+    ) -> Option<ArgumentKey> {
+        match source {
+            Ok(key) => key,
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("input Source graph cannot supply its required key view: {error}"),
+                );
+                None
+            }
+        }
+    }
+
     pub(super) fn receive_application_source(
         &mut self,
         expected: &ArgumentKey,
@@ -283,11 +302,36 @@ impl Checker {
     ) -> Option<ArgumentKey> {
         let key = self.raw_original_source_receiving_key(value, syntax, frame)?;
         let context = self.invocation_context(frame.callable_owner);
-        let unwrap = self.invocation_witnesses.iter().filter(|row| {
-            row.context == context && row.span == syntax.span
+        let projected = self.invocation_witnesses.iter().any(|row| {
+            row.context == context
                 && matches!(&row.kind, crate::sema::effect_identity::InvocationWitnessKind::ImplicitUnwrap(proof)
-                    if proof.cause == value.cause && proof.depth == 1 && proof.tags == ["Some"])
-        }).count() == 1;
+                    if Some(proof.occurrence.source) == syntax.hir_id && proof.cause == value.cause)
+        });
+        let unwrap = if projected {
+            let mut work = crate::sema::source_types::WorkLimit::new(16384);
+            let depth = syntax
+                .hir_id
+                .ok_or(crate::sema::source_types::SourceTypesError::MissingNode)
+                .and_then(|source| {
+                    self.source_projection_occurrence(source, value, context, &mut work)
+                })
+                .and_then(|occurrence| {
+                    self.source_projection_receipts()
+                        .unwrap_depth(occurrence, &mut work)
+                });
+            match depth {
+                Ok(depth) => depth == 1,
+                Err(_) => {
+                    self.unsupported(
+                        syntax.span,
+                        "Source projection lost its original optional read occurrence",
+                    );
+                    return None;
+                }
+            }
+        } else {
+            false
+        };
         if unwrap
             && let ArgumentKey::Name { name, arguments } = &key
             && name == "Option"
@@ -319,8 +363,9 @@ impl Checker {
         if depth >= 64 {
             return None;
         }
-        if let Some(key) = self.storage_binding_source_key(value, syntax, frame) {
-            return key;
+        if let Some(source) = self.storage_binding_source_schema(value, syntax, frame) {
+            let key = source.and_then(|source| source.map(|(schema, _)| schema.key()).transpose());
+            return self.input_graph_key(key, syntax.span);
         }
         if let Some(source) = syntax.hir_id {
             let mut limit = crate::sema::source_types::WorkLimit::new(*work);
@@ -353,17 +398,6 @@ impl Checker {
                 &original.syntax,
                 &BTreeMap::new(),
             );
-        }
-        if let ExprKind::Name(name) = &syntax.kind
-            && value.sources.len() == 1
-            && let Some(id) = value.sources.first()
-            && self
-                .bindings
-                .get(*id)
-                .is_some_and(|binding| binding.name == *name)
-            && let Some(view) = self.call_input_source.local_views.get(id)
-        {
-            return view.clone();
         }
         if let Some(key) = self.original_carrier_source_key(value, syntax, frame) {
             return Some(key);
@@ -442,8 +476,9 @@ impl Checker {
         if let Some(key) = self.original_closure_source_key(value) {
             return Some(key);
         }
-        let syntax = io_types::receiver_type(value, &value.ty, syntax.span)?;
-        crate::static_eval::effects::bounded_argument_key(&syntax, &self.effect_type_binders)
+        // No original declaration or complete value view supplied a schema.
+        // Erased runtime shape cannot reconstruct missing Source coordinates.
+        None
     }
 
     pub(super) fn capture_call_input_source(
@@ -759,7 +794,7 @@ impl Checker {
         }
     }
 
-    fn generated_entry_source_key(&self, slot: usize) -> Option<ArgumentKey> {
+    fn generated_entry_source_key(&mut self, slot: usize) -> Option<ArgumentKey> {
         use crate::sema::application_effect::{EntryOrigin, InputOrigin};
         let call = self
             .copy_invocations
@@ -793,39 +828,61 @@ impl Checker {
             .get(observation.0 as usize)?;
         let source = original.source_id?;
         let node = self.semantic_hir.expression(source)?;
-        let key = if let crate::hir::nodes::ExprKind::Name(name) = &node.kind
+        let span = original.span;
+        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+        let stored = if let crate::hir::nodes::ExprKind::Name(name) = &node.kind
             && original.value.sources.len() == 1
             && let Some(binding) = original.value.sources.first()
             && self
                 .bindings
                 .get(*binding)
                 .is_some_and(|binding| binding.name == *name)
-            && let Some(view) = self.call_input_source.local_views.get(binding)
         {
-            let key = view.as_ref()?;
-            source_reception::complete(key, &mut 4096)?;
-            key.clone()
+            self.recorded_binding_source_schema(*binding, &mut work)
+        } else {
+            None
+        };
+        let key = if let Some(source) = stored {
+            source.and_then(|source| source.map(|(schema, _)| {
+                use crate::sema::source_types::{projection_receipts::ProjectionOccurrence, SourceTypesError};
+                let record = self.application_effect.evaluations.get(observation.0 as usize)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let occurrence = ProjectionOccurrence {
+                    identity: record.identity.ok_or(SourceTypesError::MissingNode)?,
+                    context: record.context,
+                    cause: original.value.cause,
+                };
+                let depth = self.source_projection_receipts().unwrap_depth(occurrence, &mut work)?;
+                if depth == 1 {
+                    schema.project_steps(&[ril_compiler_core::projection::TypeProjection::OptionalPayload], &mut work)?.key()
+                } else {
+                    schema.key()
+                }
+            }).transpose())
         } else {
             let mut limit = crate::sema::source_types::WorkLimit::new(4096);
-            if let Some(key) = crate::sema::source_types::declarations::construction(
+            match crate::sema::source_types::declarations::construction(
                 source,
                 &self.semantic_hir,
                 &mut limit,
-            )
-            .ok()?
-            {
-                key
-            } else {
-                let witness = original.value.source_type_witness.as_ref()?;
-                if !witness.validate_closed() {
-                    return None;
+            ) {
+                Ok(Some(key)) => Ok(Some(key)),
+                Ok(None) => {
+                    let witness = original.value.source_type_witness.as_ref()?;
+                    if !witness.validate_closed() {
+                        return None;
+                    }
+                    crate::static_eval::effects::bounded_argument_key(
+                        &witness.syntax,
+                        &BTreeMap::new(),
+                    )
+                    .map(Some)
+                    .ok_or(crate::sema::source_types::SourceTypesError::Unresolved)
                 }
-                crate::static_eval::effects::bounded_argument_key(
-                    &witness.syntax,
-                    &BTreeMap::new(),
-                )?
+                Err(error) => Err(error),
             }
         };
+        let key = self.input_graph_key(key, span)?;
         if let Some(boundary) = boundary {
             let proof = self
                 .copy_boundaries

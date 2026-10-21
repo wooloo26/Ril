@@ -933,7 +933,7 @@ impl Checker {
     }
     fn run(&mut self, program: &Program) {
         let mut identified = program.clone();
-        let hir = match crate::hir::HirProgram::lower_identified(
+        let mut hir = match crate::hir::HirProgram::lower_identified(
             &mut identified,
             crate::hir::nodes::InputOrigin::Transformed(
                 crate::hir::nodes::GeneratedKind::StaticMaterialization,
@@ -952,6 +952,18 @@ impl Checker {
                 return;
             }
         };
+        if let Err(error) = hir.classify_declaration_units(&self.declaration_files, &mut 1_000_000)
+        {
+            self.unsupported(
+                Span {
+                    file: self.file,
+                    start: 0,
+                    end: 0,
+                },
+                format!("semantic input classification is incomplete: {error}"),
+            );
+            return;
+        }
         self.semantic_hir = hir;
         let program = std::sync::Arc::new(identified);
         self.checked_source = Some(program.clone());
@@ -1642,7 +1654,9 @@ impl Checker {
                     .map(|syntax| self.freeze_source_receiving_target(syntax));
                 let (value, source_valid, initializer) =
                     if matches!(binding.value.kind, ExprKind::Ambient)
-                        && self.declaration_files.contains(&binding.value.span.file.0)
+                        && statement
+                            .hir_id
+                            .is_some_and(|id| self.semantic_hir.declaration_roots().contains(&id))
                         && binding.mode == BindingMode::Let
                         && let Some(syntax) = &binding.ty
                     {

@@ -313,3 +313,56 @@ pub fn test_guarded_binding() {
 }
 --@ end-file
 --@ end-case
+
+--@ case: guarded-binding-shadowed-receivers
+--@ mode: run-pass
+--@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+--@ entry: test_guarded_binding_shadowed_receivers
+--@ file: guarded-binding-shadowed-receivers.ril
+fn read_shadowed(item: ?int, first: bool) -> int {
+    let value = 100
+    match Some(1) { Some(value) -> assert(value == 1), None -> () }
+    for [1] as value { assert(value == 1) }
+    let result = if first {
+        let Some(value) = item else { return 1 }
+        value
+    } else {
+        let Some(value) = item else { return 2 }
+        let nested = {
+            let Some(value) = Some(value + 1) else { return 3 }
+            value
+        }
+        nested
+    }
+    assert(value == 100)
+    result
+}
+
+pub fn test_guarded_binding_shadowed_receivers() {
+    assert(read_shadowed(Some(7), true) == 7)
+    assert(read_shadowed(Some(7), false) == 8)
+    assert(read_shadowed(None, true) == 1)
+    assert(read_shadowed(None, false) == 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: guarded-binding-alternative-receivers
+--@ mode: run-pass
+--@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+--@ entry: test_guarded_binding_alternative_receivers
+--@ file: guarded-binding-alternative-receivers.ril
+type GuardedChoice { Left(int), Right(int), Empty }
+
+fn read_alternative(item: GuardedChoice) -> int {
+    let Left(value) | Right(value) = item else { return 0 }
+    value
+}
+
+pub fn test_guarded_binding_alternative_receivers() {
+    assert(read_alternative(Left(7)) == 7)
+    assert(read_alternative(Right(9)) == 9)
+    assert(read_alternative(Empty) == 0)
+}
+--@ end-file
+--@ end-case

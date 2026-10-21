@@ -23,21 +23,37 @@ fn a_registered_generic_requires_its_actual_source_observation() {
         panic!("the owner returns its actual formal")
     };
     assert!(expression.hir_id.is_some());
-    let actual = checker
+    let (observation, original) = checker
         .application_effect
         .expressions
         .iter()
-        .find(|fact| fact.source_id == expression.hir_id && matches!(fact.value.ty, Ty::Generic(_)))
-        .unwrap()
-        .value
-        .clone();
+        .enumerate()
+        .find(|(_, fact)| {
+            fact.source_id == expression.hir_id && matches!(fact.value.ty, Ty::Generic(_))
+        })
+        .unwrap();
+    let actual = original.value.clone();
+    let context = checker.application_effect.evaluations[observation].context;
     assert_eq!(actual.sources.len(), 1);
     let binding = *actual.sources.first().unwrap();
+    let (declaration, environment) = checker
+        .parameter_source_schema(binding, None)
+        .expect("a written generic formal retains its complete Binder graph at birth");
+    assert_eq!(
+        environment.id(),
+        checker.bindings[binding].typing_environment.id()
+    );
+    assert!(matches!(declaration.key().unwrap(),
+        crate::sema::effect_identity::ArgumentKey::Binder { identity, .. }
+            if matches!(&actual.ty, Ty::Generic(actual) if actual == &identity)));
     checker.generic_scope(owner);
     let mut frame = checker.frame(Env::from([("value".into(), binding)]), false);
     frame.owner = checker.bindings[binding].owner;
     frame.definition = Some(function.definition);
     frame.callable_owner = Some(CallableOwner::Function(function.definition));
+    assert_eq!(context.owner, frame.callable_owner);
+    let invocation = context.invocation.expect("the original named reception");
+    checker.copy_invocation_stack.push(invocation);
     assert!(
         checker
             .original_source_receiving_key(&actual, expression, &frame)
@@ -68,6 +84,7 @@ fn a_registered_generic_requires_its_actual_source_observation() {
             "registered {name}:{index} without Source minted a Type identity"
         );
     }
+    assert_eq!(checker.copy_invocation_stack.pop(), Some(invocation));
 }
 
 fn expression(source: &str) -> Expr {

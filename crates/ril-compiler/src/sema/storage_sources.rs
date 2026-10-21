@@ -5,6 +5,7 @@ use super::{
     facts::{ScopeId, Slot},
     model::BindingId,
 };
+use ril_compiler_core::projection::TypeProjection;
 use ril_compiler_core::source::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,10 +22,9 @@ pub struct BindingSource {
     pub declaration: ril_compiler_core::ids::PatternId,
     pub declared: bool,
     pub initializer: StorageObservation,
-    pub path: Vec<Slot>,
-    /// None is an unresolved original source, never permission to reconstruct
-    /// the declaration from a later mutable value or current heap contents.
-    pub key: Option<ArgumentKey>,
+    /// Derived from the original HIR introducer. None retains a projection
+    /// obligation; the immutable SourceTypeIndex owns the declaration schema.
+    pub path: Option<Vec<TypeProjection>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

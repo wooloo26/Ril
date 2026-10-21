@@ -204,3 +204,100 @@ fn example(){let mut values:[1][0][2]int=[[]];let old:[0][2]int=[];values[0]=old
 fn example(){let mut values:[][0][2]int=[];let old:[0][2]int=[];Array::push(mut values,old)}
 --@ end-file
 --@ end-case
+
+--@ source: optional-projection-paths
+--@ file: source.ril
+fn exact(values: [2]int) -> int { values[0] + values[1] }
+fn exercise(seed: int) -> int {
+    var total = 0
+    let values: [2]int = [seed, 9]
+    let value: ?[2]int = Some(values)
+    if value != None {
+        let named = value
+        total += exact(named)
+    }
+    let field_values: [2]int = [seed, 11]
+    let packet: ?{items: [2]int} = Some(.{ items: field_values })
+    if packet != None {
+        let field = packet.items
+        total += exact(field)
+        let computed = packet.("items")
+        total += exact(computed)
+    }
+    let first: [2]int = [seed, 13]
+    let second: [2]int = [seed, 15]
+    let pair: ?([2]int, [2]int) = Some((first, second))
+    if pair != None {
+        let member = pair.1
+        total += exact(member)
+        let selected = pair.(0)
+        total += exact(selected)
+    }
+    let final_row: [2]int = [seed, 17]
+    let matrix: [2][2]int = [first, final_row]
+    let rows: ?[2][2]int = Some(matrix)
+    if rows != None {
+        let indexed = rows[1]
+        total += exact(indexed)
+    }
+    let innermost: [2]int = [seed, 19]
+    let inner: ?[2]int = Some(innermost)
+    let nested: Option<Option<[2]int>> = Some(inner)
+    if nested != None {
+        let once = nested
+        if once != None {
+            let twice = once
+            total += exact(twice)
+        }
+    }
+    total
+}
+pub fn test_native() {
+    assert(exercise(7) == 144)
+    assert(exercise(3) == 116)
+    assert(exercise(7) == 144)
+}
+--@ end-file
+--@ end-source
+
+--@ case: optional-projection-paths-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: reject-optional-projection-hidden-dimension
+--@ use-source: optional-projection-paths
+--@ end-case
+
+--@ case: optional-projection-paths-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ companion: optional-projection-paths-native
+--@ use-source: optional-projection-paths
+--@ end-case
+
+--@ case: optional-projection-paths-native
+--@ mode: run-pass
+--@ entry: test_native
+--@ spec: SPEC#flow-sensitive-type-narrowing
+--@ use-source: optional-projection-paths
+--@ end-case
+
+--@ case: reject-optional-projection-hidden-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: optional-projection-paths-pointer32
+-- Error [E0301]: Unwrapping a base before a field keeps the hidden inner dimension.
+--@ file: source.ril
+fn exact(values: [0][2]int) -> int { len(values) }
+fn example() {
+    let values: [0][3]int = []
+    let packet: ?{items: [0][3]int} = Some(.{ items: values })
+    if packet != None {
+        let field = packet.items
+        let invalid = exact(field)
+    }
+}
+--@ end-file
+--@ end-case
