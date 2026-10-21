@@ -201,7 +201,7 @@ fn a_dependent_owned_u_requires_its_actual_static_argument_position() {
                 .get(binder)
                 .is_some_and(|owner| owner.definition == target)
                 && matches!(key, ArgumentKey::Binder { identity, .. } if identity != binder
-                && source.scope.types.values().any(|id| id == identity)))
+                && source.typing_environment.generic_context.values().any(|id| id == identity)))
             .then_some(binder.clone())
         })
         .expect("source did not select a real dependent owned U");
@@ -311,13 +311,18 @@ fn dependent_u_must_match_its_original_stored_field_and_complete_coordinates() {
             let ArgumentKey::Binder { identity, .. } = key else {
                 return None;
             };
-            (identity != binder && source.scope.types.values().any(|id| id == identity))
-                .then_some((binder.clone(), identity.clone()))
+            (identity != binder
+                && source
+                    .typing_environment
+                    .generic_context
+                    .values()
+                    .any(|id| id == identity))
+            .then_some((binder.clone(), identity.clone()))
         })
         .expect("source did not exercise an open dependent U selection");
     let other = source
-        .scope
-        .types
+        .typing_environment
+        .generic_context
         .values()
         .find(|id| **id != caller)
         .unwrap()

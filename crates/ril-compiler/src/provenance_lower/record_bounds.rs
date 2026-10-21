@@ -291,7 +291,7 @@ pub(super) fn project(
             binder: identity.binder.clone(),
             context: resumption_context(identity.context),
             syntax: contract(&identity.syntax),
-            scope: scope(&identity.scope),
+            environment: contracts.environment(&mut graph.types, &identity.typing_environment),
             key: key(&identity.key),
             occurrences: identity
                 .occurrences

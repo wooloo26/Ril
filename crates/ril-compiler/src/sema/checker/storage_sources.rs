@@ -44,6 +44,20 @@ pub(super) struct StoreReception<'a> {
 }
 
 impl Checker {
+    pub(super) fn record_parameter_source(&mut self, binding: BindingId, name: &str, span: Span) {
+        let environment = self.bindings[binding].typing_environment.clone();
+        let key = self.declared_formal_source(binding, name);
+        if self
+            .type_source
+            .storage
+            .types
+            .record(binding, key.as_ref(), environment)
+            .is_err()
+        {
+            self.unsupported(span, "parameter source view exceeded its metadata budget");
+        }
+    }
+
     /// Static constraint lookup only. This projects the immutable declaration
     /// view, never the binding's current value, heap contents or numeric data.
     pub(super) fn declared_operand_source(

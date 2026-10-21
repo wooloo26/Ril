@@ -378,7 +378,8 @@ impl Checker {
             binding.parameter
                 && binding.owner == activation
                 && &binding.name == name
-                && binding.span == parameter.pattern.span
+                && binding.pattern.is_some()
+                && binding.pattern == parameter.pattern.hir_id
         });
         let (binding_id, binding) = bindings.next()?;
         if bindings.next().is_some()
@@ -397,8 +398,7 @@ impl Checker {
             .application_effect
             .contexts
             .iter()
-            .enumerate()
-            .find_map(|(index, observation)| {
+            .find_map(|observation| {
                 let expression = self
                     .application_effect
                     .expressions
@@ -408,7 +408,7 @@ impl Checker {
                     && expression.value.sources == BTreeSet::from([binding_id])
                     && expression.value.origins == entry.value.origins
                     && expression.value.permission == Permission::Read)
-                    .then_some(index)
+                    .then_some(observation.expression)
             })?;
 
         // Pair source syntax with the immutable original argument graph. The
@@ -421,7 +421,10 @@ impl Checker {
                 return None;
             }
             work -= 1;
-            if value.origins == selected.origins && header.span == syntax.span {
+            if value.origins == selected.origins
+                && header.hir_id.is_some()
+                && header.hir_id == syntax.hir_id
+            {
                 // Scope is later reconstructed from the real declaration.
                 if self.record_bound_key(header, scope)? == self.record_bound_key(syntax, scope)? {
                     found.push(path.clone());
@@ -531,12 +534,19 @@ impl Checker {
                 }
                 return None;
             }
-            let StructuralSchemaSource::RigidParameter { syntax, scope, .. } = &schema.source
-            else {
+            let StructuralSchemaSource::RigidParameter { syntax, .. } = &schema.source else {
                 return None;
             };
             common = Some(key);
-            origin.get_or_insert_with(|| (syntax.clone(), scope.clone()));
+            let environment = self
+                .bindings
+                .get(formal.binding)?
+                .typing_environment
+                .clone();
+            if environment.is_poisoned() {
+                return None;
+            }
+            origin.get_or_insert_with(|| (syntax.clone(), environment));
             cause.get_or_insert(selected.cause);
             occurrences.push(ScopedSourceOccurrence {
                 argument_index: u32::try_from(argument_index).ok()?,
@@ -544,14 +554,14 @@ impl Checker {
                 formal,
             });
         }
-        let (syntax, scope) = origin?;
+        let (syntax, typing_environment) = origin?;
         Some(ScopedSourceIdentity {
             id,
             required,
             binder: binder.into(),
             context,
             syntax,
-            scope,
+            typing_environment,
             key: common?,
             occurrences,
             cause: cause?,

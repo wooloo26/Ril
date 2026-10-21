@@ -37,6 +37,12 @@ impl Default for SourceTypeIndex {
 }
 
 impl SourceTypeIndex {
+    /// The capture exists even when the original type remains unresolved.
+    /// An environment identity alone never supplies a missing type schema.
+    pub fn binding_environment(&self, binding: usize) -> Option<FrozenEnvId> {
+        let view = self.0.bindings.get(&binding)?;
+        (!view.environment.is_poisoned()).then_some(view.environment.id())
+    }
     pub fn binding_type(&self, binding: usize) -> Option<SourceTypeId> {
         self.0.bindings.get(&binding)?.ty
     }

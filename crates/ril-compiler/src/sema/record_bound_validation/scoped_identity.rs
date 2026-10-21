@@ -338,7 +338,8 @@ impl Replay<'_> {
                 && binding.mode == ril_syntax::ast::BindingMode::Let
                 && binding.owner == anchor.activation
                 && &binding.name == name
-                && binding.span == parameter.pattern.span
+                && binding.pattern.is_some()
+                && binding.pattern == parameter.pattern.hir_id
                 && u32::try_from(anchor.binding).ok() == Some(binding.root.0)
                 && binding.value.origins == entry.value.origins
                 && binding.forwarded == entry.value.sources
@@ -367,7 +368,8 @@ impl Replay<'_> {
         let root_tokens: Vec<_> = source_tokens
             .into_iter()
             .filter(|token| {
-                token.span == root.span
+                token.hir_id.is_some()
+                    && token.hir_id == root.source_id
                     && matches!(&token.kind, ExprKind::Name(actual) if actual == name)
             })
             .collect();
@@ -412,5 +414,33 @@ impl Replay<'_> {
     pub(super) fn replay_scoped_source_identity(&self, identity: &ScopedSourceIdentity) -> Check {
         let reception = self.scoped_original_formal(identity)?;
         self.replay_scoped_member_schemas(&reception)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scoped_reception_uses_hir_and_physical_observations_instead_of_diagnostic_spans() {
+        let source =
+            ril_test::case_source("tests/regressions/record-bounds.ril::nested-rigid-fixed");
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let mut facts = program.facts().clone();
+        assert!(!facts.scoped_source_identities.is_empty());
+        for identity in &mut facts.scoped_source_identities {
+            identity.span.start += 1;
+            identity.syntax.span.start += 1;
+            for occurrence in &identity.occurrences {
+                facts.bindings[occurrence.formal.binding].span.start += 1;
+            }
+        }
+        facts.invocation_expressions.reverse();
+        Replay::new(&facts)
+            .unwrap()
+            .scoped_source_coverage()
+            .unwrap();
     }
 }

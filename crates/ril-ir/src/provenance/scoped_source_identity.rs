@@ -1,6 +1,6 @@
 //! Complete lexical type identity carried without granting access authority.
 use super::{
-    BoundScope, BoundTypeSelectionStep, ContractSyntax, CopyInstanceId, GenericBoundId,
+    BoundTypeSelectionStep, ContractSyntax, CopyInstanceId, FrozenEnvironmentId, GenericBoundId,
     RecordBoundKey, ResumptionContext,
 };
 pub use ril_compiler_core::ids::ScopedSourceIdentityId;
@@ -34,7 +34,7 @@ pub struct ScopedSourceIdentity {
     pub binder: String,
     pub context: ResumptionContext,
     pub syntax: ContractSyntax,
-    pub scope: BoundScope,
+    pub environment: FrozenEnvironmentId,
     pub key: RecordBoundKey,
     pub occurrences: Vec<ScopedSourceOccurrence>,
     pub cause: CauseId,

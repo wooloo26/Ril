@@ -171,7 +171,11 @@ impl Replay<'_> {
         let _received = self.scoped_original_formal(identities[0])?;
         let source = identities[0];
         require(
-            source.scope.types.values().any(|id| id == caller),
+            source
+                .typing_environment
+                .generic_context
+                .values()
+                .any(|id| id == caller),
             "dependent input selected a binder outside its original header namespace",
         )?;
         let ArgumentKey::Record { fields, .. } = &source.key else {

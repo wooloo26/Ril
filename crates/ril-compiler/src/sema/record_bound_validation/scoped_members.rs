@@ -593,7 +593,6 @@ impl Replay<'_> {
         )?;
         require(
             identity.context.owner == Some(CallableOwner::Function(call.target))
-                && identity.span == call.span
                 && call.entry.allocation_epoch <= self.facts.allocation_history.len()
                 && self
                     .facts
@@ -623,10 +622,40 @@ impl Replay<'_> {
             "symbolic source stage has incomplete real T path coverage",
         )?;
         require(
-            self.normalized_key(&identity.syntax, &identity.scope)? == identity.key,
+            !identity.typing_environment.is_poisoned(),
+            "symbolic source descriptor has an exhausted captured environment",
+        )?;
+        let primary = identity.occurrences.first().ok_or_else(|| {
+            "symbolic source descriptor has no original captured reception".to_owned()
+        })?;
+        let binding = self
+            .facts
+            .bindings
+            .get(primary.formal.binding)
+            .ok_or_else(|| {
+                "symbolic source descriptor has no original captured binding".to_owned()
+            })?;
+        require(
+            identity.typing_environment.id() == binding.typing_environment.id()
+                && identity.typing_environment == binding.typing_environment
+                && self
+                    .facts
+                    .source_types
+                    .binding_environment(primary.formal.binding)
+                    == Some(identity.typing_environment.id()),
+            "symbolic source descriptor borrowed another frozen environment",
+        )?;
+        let identity_scope = self.scope(primary.formal.definition)?;
+        require(
+            identity.typing_environment.generic_context == identity_scope.types
+                && identity.typing_environment.bound_row_context == identity_scope.rows,
+            "symbolic source capture differs from its original declaration namespace",
+        )?;
+        require(
+            self.normalized_key(&identity.syntax, &identity_scope)? == identity.key,
             "symbolic source descriptor differs from its complete key",
         )?;
-        self.member_coordinates(&identity.key, &identity.scope)?;
+        self.member_coordinates(&identity.key, &identity_scope)?;
         let mut occurrences = Vec::new();
         for (ordinal, ((argument, path), occurrence)) in
             paths.iter().zip(&identity.occurrences).enumerate()
@@ -662,7 +691,9 @@ impl Replay<'_> {
             self.member_coordinates(&key, &scope)?;
             if ordinal == 0 {
                 require(
-                    scope == identity.scope && header.span == identity.syntax.span,
+                    scope == identity_scope
+                        && header.hir_id.is_some()
+                        && header.hir_id == identity.syntax.hir_id,
                     "symbolic source stage borrowed another primary header namespace",
                 )?;
             }

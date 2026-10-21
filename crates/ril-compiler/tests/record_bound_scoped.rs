@@ -42,6 +42,32 @@ fn verified(source: &str) -> SemanticFacts {
         assert_eq!(source.id, lowered.id);
         assert_eq!(source.cause, lowered.cause);
         assert_eq!(source.occurrences.len(), lowered.occurrences.len());
+        let original = &source.occurrences[0].formal;
+        let binding = core
+            .provenance
+            .bindings
+            .iter()
+            .find(|binding| binding.id as usize == original.binding)
+            .unwrap();
+        assert_eq!(lowered.environment, binding.typing_environment);
+        let environment = &core.provenance.frozen_environments[lowered.environment.0 as usize];
+        assert_eq!(
+            environment.generic_context,
+            source
+                .typing_environment
+                .generic_context
+                .iter()
+                .map(|(name, identity)| (name.clone(), identity.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            environment.generic_substitutions.len(),
+            source.typing_environment.generic_substitutions.len()
+        );
+        assert_eq!(
+            environment.generic_type_witnesses.len(),
+            source.typing_environment.generic_type_witnesses.len()
+        );
         for (source, lowered) in source.occurrences.iter().zip(&lowered.occurrences) {
             assert_eq!(
                 source.formal.root_expression,
@@ -289,6 +315,20 @@ fn scoped_identity_arena_context_and_epoch_require_real_registered_anchors() {
     damaged(&copy);
     let mut copy = facts.clone();
     copy.scoped_source_identities[0].context.invocation = None;
+    damaged(&copy);
+    let mut copy = facts.clone();
+    let original = copy.scoped_source_identities[0].typing_environment.clone();
+    let equal_contents = original.thaw().freeze();
+    assert_eq!(original, equal_contents);
+    assert_ne!(original.id(), equal_contents.id());
+    copy.scoped_source_identities[0].typing_environment = equal_contents;
+    damaged(&copy);
+    let mut copy = facts.clone();
+    let identity = &mut copy.scoped_source_identities[0];
+    let forged = identity.typing_environment.thaw().freeze();
+    identity.typing_environment = forged.clone();
+    let binding = identity.occurrences[0].formal.binding;
+    copy.bindings[binding].typing_environment = forged;
     damaged(&copy);
     let mut copy = facts;
     copy.scoped_source_identities[0].occurrences[0]

@@ -441,6 +441,9 @@ impl Checker {
             forwarded: BTreeSet::new(),
             parameter,
         });
+        if parameter {
+            self.record_parameter_source(id, name, span);
+        }
         self.update_named_lexical_binding(id);
         self.update_type_contract_environments(id);
         if !parameter && !self.bindings[id].value.callables.iter().any(|callable|matches!(callable,Callable::Named(function) if span==self.functions[*function].syntax.span)){

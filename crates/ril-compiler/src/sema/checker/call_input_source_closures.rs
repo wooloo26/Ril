@@ -126,7 +126,11 @@ impl Checker {
             parameter.pattern.hir_id == Some(pattern)
                 && matches!(&parameter.pattern.kind,PatternKind::Name(actual) if actual==name)
         })?;
-        Some((parameter.ty.clone()?, binding.typing_environment.clone()))
+        let syntax = parameter.ty.as_ref()?;
+        // Bound the original header before retaining an owned syntax copy.
+        // Its names are interpreted only after entering the captured environment.
+        crate::static_eval::effects::bounded_argument_key(syntax, &BTreeMap::new())?;
+        Some((syntax.clone(), binding.typing_environment.clone()))
     }
 
     pub(in crate::sema::checker) fn declared_formal_source(
