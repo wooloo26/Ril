@@ -489,10 +489,7 @@ impl Checker {
                     .environment
                     .generic_substitutions
                     .remove(binder);
-                self.type_source
-                    .environment
-                    .generic_type_witnesses
-                    .remove(binder);
+                self.type_source.environment.generic_sources.remove(binder);
                 self.type_source
                     .environment
                     .static_key_arguments

@@ -83,6 +83,11 @@ fn symbolic_type_through_three_frames() {
 }
 
 #[test]
+fn open_record_through_generic_identity() {
+    accepts("open-record-through-generic-identity");
+}
+
+#[test]
 fn nested_type_receipts_cannot_substitute_an_intermediate_frames_own_binder() {
     use ril_compiler::sema::{
         effect_identity::{ArgumentKey, StaticBinderSort},

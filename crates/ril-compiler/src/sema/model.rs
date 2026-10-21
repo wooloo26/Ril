@@ -1365,7 +1365,7 @@ mod callable_return_tests {
             typing_environment: super::super::context::TypingEnvironment {
                 generic_context: [("T".into(), identity.into())].into(),
                 generic_substitutions: [(identity.into(), Ty::Int("int".into()))].into(),
-                generic_type_witnesses: BTreeMap::new(),
+                generic_sources: BTreeMap::new(),
                 bound_row_context: BTreeMap::new(),
                 bound_row_selections: BTreeMap::new(),
                 static_key_arguments: [(

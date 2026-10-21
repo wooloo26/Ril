@@ -306,7 +306,7 @@ impl Checker {
         }
 
         let substitutions = std::mem::take(&mut self.type_source.environment.generic_substitutions);
-        let witnesses = std::mem::take(&mut self.type_source.environment.generic_type_witnesses);
+        let witnesses = std::mem::take(&mut self.type_source.environment.generic_sources);
         let scope = self.record_bound_scope();
         for (index, parameter) in function.generics.iter().enumerate() {
             let Some(
@@ -408,7 +408,7 @@ impl Checker {
             self.record_bounds_by_binder.insert(binder, id);
         }
         self.type_source.environment.generic_substitutions = substitutions;
-        self.type_source.environment.generic_type_witnesses = witnesses;
+        self.type_source.environment.generic_sources = witnesses;
     }
 
     fn declared_record_bound(&self, ty: &Ty) -> Option<&GenericRecordBound> {
@@ -769,12 +769,8 @@ impl Checker {
         substitute_key_with(
             key,
             |identity, work| {
-                if let Some(witness) = environment.generic_type_witnesses.get(identity) {
-                    let key = crate::static_eval::effects::bounded_argument_key(
-                        &witness.syntax,
-                        &BTreeMap::new(),
-                    )
-                    .ok_or(SourceTypesError::Unresolved)?;
+                if let Some(selection) = environment.generic_sources.get(identity) {
+                    let key = selection.key()?;
                     return Ok(Some(Cow::Owned(key)));
                 }
                 match environment.generic_substitutions.get(identity) {
@@ -807,7 +803,7 @@ impl Checker {
         span: Span,
     ) {
         let substitutions = self.type_source.environment.generic_substitutions.clone();
-        let witnesses = self.type_source.environment.generic_type_witnesses.clone();
+        let witnesses = self.type_source.environment.generic_sources.clone();
         let row_selections = self.type_source.environment.bound_row_selections.clone();
         let diagnostics = self.diagnostics.len();
         let unsupported = self.unsupported.len();
@@ -824,7 +820,7 @@ impl Checker {
             || self.unsupported.len() != unsupported
         {
             self.type_source.environment.generic_substitutions = substitutions;
-            self.type_source.environment.generic_type_witnesses = witnesses;
+            self.type_source.environment.generic_sources = witnesses;
             self.type_source.environment.bound_row_selections = row_selections;
         }
     }
@@ -1132,8 +1128,9 @@ impl Checker {
                         let witness = self
                             .type_source
                             .environment
-                            .generic_type_witnesses
+                            .generic_sources
                             .get(binder)?
+                            .closed()?
                             .clone();
                         let TypeKind::Record { fields, row: None } = &witness.syntax.kind else {
                             return None;
@@ -1330,11 +1327,8 @@ impl Checker {
                 rows.push(selection);
             }
             let mut substitutions = BTreeMap::new();
-            for (binder, witness) in &self.type_source.environment.generic_type_witnesses {
-                if let Some(key) = crate::static_eval::effects::bounded_argument_key(
-                    &witness.syntax,
-                    &BTreeMap::new(),
-                ) {
+            for (binder, selection) in &self.type_source.environment.generic_sources {
+                if let Ok(key) = selection.key() {
                     substitutions.insert(binder.clone(), key);
                 }
             }
@@ -1388,10 +1382,7 @@ impl Checker {
                     .generic_substitutions
                     .insert(binder.clone(), Self::row_type(selection.remainder.clone()));
                 if let Some(witness) = &selection.source_type_witness {
-                    self.type_source
-                        .environment
-                        .generic_type_witnesses
-                        .insert(binder.clone(), witness.clone());
+                    self.extend_closed_generic_sources([(binder.clone(), witness.clone())]);
                 }
             }
         }

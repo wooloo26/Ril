@@ -51,7 +51,7 @@ mod tests {
         TypingEnvironment {
             generic_context: [("T".into(), identity.into())].into(),
             generic_substitutions: [(identity.into(), selected)].into(),
-            generic_type_witnesses: BTreeMap::new(),
+            generic_sources: BTreeMap::new(),
             static_key_arguments: [("selected-key".into(), StaticCoordinate::Label(key.into()))]
                 .into(),
             bound_row_context: [("R".into(), BoundRowId(1))].into(),

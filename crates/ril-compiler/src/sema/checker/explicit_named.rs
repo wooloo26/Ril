@@ -334,10 +334,7 @@ impl Checker {
                 .generic_substitutions
                 .insert(selected.binder.clone(), selected.ty.clone());
             if let Some(witness) = &selected.witness {
-                self.type_source
-                    .environment
-                    .generic_type_witnesses
-                    .insert(selected.binder.clone(), witness.clone());
+                self.extend_closed_generic_sources([(selected.binder.clone(), witness.clone())]);
             }
         }
     }

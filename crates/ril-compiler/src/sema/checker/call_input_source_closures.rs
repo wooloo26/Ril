@@ -91,7 +91,7 @@ impl Checker {
         self.formal_binding_declaration(id, name)
     }
 
-    fn formal_binding_declaration(
+    pub(in crate::sema::checker) fn formal_binding_declaration(
         &self,
         id: BindingId,
         name: &str,
@@ -284,7 +284,7 @@ impl Checker {
             };
             *actual = annotations.clone();
             let mut selected = BTreeMap::new();
-            for (identity, witness) in &bound.typing_environment.generic_type_witnesses {
+            for (identity, witness) in &bound.typing_environment.generic_sources {
                 if !witness.validate_closed() {
                     return None;
                 }

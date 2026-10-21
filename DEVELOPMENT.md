@@ -98,10 +98,10 @@ duplicate source trees and historical verification reports.
 - Complete the canonical abstract value, frozen environments, ten receiving
   boundaries and five domains. Replace remaining Span tables, erased-type
   reconstruction and legacy witnesses as their consumers migrate.
-- Extend Source transport to local/generic recursive declarations. Replace
-  closed-only generic witnesses with graph views paired with frozen environments;
-  preserve open rows and qualified callables through inputs, returns, captures,
-  constructors and containers.
+- Extend Source transport to local/generic recursive declarations. Finish migrating
+  generic Source consumers to graph views paired with frozen environments; preserve
+  open rows and qualified callables through inputs, returns, captures, constructors
+  and containers, then remove the remaining closed-witness adapters.
 - Finish generated I/O and iterator observations, channel payloads, handler
   activations and resumption transport. Resolve the nine-scope channel replay
   case with finite work while preserving unknown guard/history obligations.

@@ -12,6 +12,7 @@ pub(crate) mod polymorphic;
 mod queries;
 pub(crate) mod reception;
 mod schema;
+mod selection;
 pub(crate) mod standard_data;
 mod substitution;
 
@@ -26,6 +27,7 @@ pub(crate) use legacy::key_is_coordinate_free;
 pub(crate) use queries::SourceTypeQueries;
 pub use queries::{SourcePath, SourceSensitivity};
 pub(crate) use schema::SourceSchema;
+pub use selection::{SourceSelectionInput, TypeSourceSelection};
 pub(crate) use substitution::LegacySourceExport;
 pub(crate) use substitution::scalar_name;
 pub(crate) use substitution::{substitute_key, substitute_key_with};

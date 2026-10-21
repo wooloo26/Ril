@@ -580,7 +580,7 @@ impl Replay<'_> {
             };
             *actual = annotations.clone();
             let mut selected = BTreeMap::new();
-            for (identity, witness) in &bound.typing_environment.generic_type_witnesses {
+            for (identity, witness) in &bound.typing_environment.generic_sources {
                 self.type_binder(identity)?;
                 require(
                     witness.validate_closed(),

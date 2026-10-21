@@ -168,7 +168,7 @@ pub(super) fn environment(value: &TypingEnvironment, work: &mut usize) -> Option
         text(work, name)?;
         ty(work, value, 0)?;
     }
-    for name in value.generic_type_witnesses.keys() {
+    for name in value.generic_sources.keys() {
         text(work, name)?;
     }
     for (name, value) in &value.static_key_arguments {

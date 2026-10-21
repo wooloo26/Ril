@@ -11,6 +11,29 @@ pub(crate) struct SourceSchema {
 }
 
 impl SourceSchema {
+    pub(crate) fn copy_from(
+        graph: &impl SourceTypeQueries,
+        root: SourceTypeId,
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        let copy = graph.substitute(root, &std::collections::BTreeMap::new(), work)?;
+        Ok(Self {
+            types: copy.types,
+            root: copy.root,
+            original,
+        })
+    }
+
+    pub(crate) fn equivalent_key(
+        &self,
+        key: &crate::sema::effect_identity::ArgumentKey,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        let mut builder = SourceBuilder::new()?;
+        let root = builder.import_key(key, work)?;
+        super::reception::equivalent(&self.types, self.root, &builder, root, work)
+    }
     pub(crate) fn import(
         key: &crate::sema::effect_identity::ArgumentKey,
         original: Option<TypeExprId>,

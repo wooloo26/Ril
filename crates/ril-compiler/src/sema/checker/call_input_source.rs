@@ -55,6 +55,53 @@ struct Operand {
 }
 
 impl Checker {
+    pub(super) fn supplied_parameter_source(
+        &self,
+        slot: usize,
+    ) -> Option<std::sync::Arc<crate::sema::source_types::TypeSourceSelection>> {
+        use crate::sema::source_types::{SourceSelectionInput, TypeSourceSelection, WorkLimit};
+        let invocation = *self.copy_invocation_stack.last()?;
+        let call = self.copy_invocations.get(invocation.0 as usize)?;
+        let event = call.source_event?;
+        let input = self.call_input_source.supplied.get(&event)?.get(&slot)?;
+        let observation = input.expression?;
+        let fact = self.application_effect.expressions.get(observation)?;
+        if fact.value.sources.len() != 1 {
+            return None;
+        }
+        let binding = *fact.value.sources.first()?;
+        let info = self.bindings.get(binding)?;
+        if !info.parameter {
+            return None;
+        }
+        let node = self.semantic_hir.expression(fact.source_id?)?;
+        if !matches!(&node.kind, crate::hir::nodes::ExprKind::Name(name) if name == &info.name) {
+            return None;
+        }
+        let (syntax, environment) = self.formal_binding_declaration(binding, &info.name)?;
+        let (schema, original_environment) =
+            self.parameter_source_schema(binding, syntax.hir_id)?;
+        if environment.id() != original_environment.id()
+            || !schema
+                .equivalent_key(input.key.as_ref()?, &mut WorkLimit::new(16384))
+                .ok()?
+        {
+            return None;
+        }
+        TypeSourceSelection::from_parameter(
+            schema,
+            syntax,
+            environment,
+            SourceSelectionInput {
+                invocation,
+                event,
+                slot: u32::try_from(slot).ok()?,
+                observation,
+                binding,
+            },
+        )
+        .ok()
+    }
     pub(super) fn evaluated_argument_source(
         &self,
         event: CopyCallEventId,
@@ -109,10 +156,7 @@ impl Checker {
                 .environment
                 .generic_substitutions
                 .remove(binder);
-            self.type_source
-                .environment
-                .generic_type_witnesses
-                .remove(binder);
+            self.type_source.environment.generic_sources.remove(binder);
             self.type_source
                 .environment
                 .static_key_arguments

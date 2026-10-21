@@ -62,6 +62,23 @@ impl Checker {
         &mut self,
         syntax: &TypeExpr,
     ) -> Result<TypeExpr, &'static str> {
+        crate::static_eval::effects::bounded_argument_key(syntax, &self.effect_type_binders)
+            .ok_or("effect Source syntax exceeds its work bound")?;
+        self.effect_argument_syntax_inner(syntax, 0, &mut 4096)
+    }
+
+    fn effect_argument_syntax_inner(
+        &mut self,
+        syntax: &TypeExpr,
+        depth: usize,
+        work: &mut usize,
+    ) -> Result<TypeExpr, &'static str> {
+        *work = work
+            .checked_sub(1)
+            .ok_or("effect Source interpretation exhausted its work bound")?;
+        if depth >= 64 {
+            return Err("effect Source capture chain exceeds its depth bound");
+        }
         let mut syntax = syntax.clone();
         if let TypeKind::Name { path, arguments } = &syntax.kind {
             let name = path.join("::");
@@ -79,13 +96,40 @@ impl Checker {
                 if !self.certified_effect_type_binder(&identity) {
                     return Err("symbolic effect argument requires a certified Type binder sort");
                 }
-                if let Some(witness) = self
+                if let Some(selection) = self
                     .type_source
                     .environment
-                    .generic_type_witnesses
+                    .generic_sources
                     .get(&identity)
+                    .cloned()
                 {
-                    return Ok(witness.syntax.clone());
+                    if selection.closed().is_some() {
+                        return Ok(selection.syntax.as_ref().clone());
+                    }
+                    let syntax =
+                        self.with_typing_environment(&selection.environment, |checker| {
+                            crate::static_eval::effects::bounded_argument_key(
+                                &selection.syntax,
+                                &checker.effect_type_binders,
+                            )
+                            .ok_or("captured Source syntax exceeds its work bound")?;
+                            checker.effect_argument_syntax_inner(&selection.syntax, depth + 1, work)
+                        })?;
+                    let key = crate::static_eval::effects::bounded_argument_key(
+                        &syntax,
+                        &self.effect_type_binders,
+                    )
+                    .ok_or("captured Source interpretation exceeds its work bound")?;
+                    if selection
+                        .schema
+                        .equivalent_key(&key, &mut crate::sema::source_types::WorkLimit::new(16384))
+                        != Ok(true)
+                    {
+                        return Err(
+                            "captured Source syntax changed its complete graph interpretation",
+                        );
+                    }
+                    return Ok(syntax);
                 }
                 return if let Some(selected) = self
                     .type_source
@@ -132,10 +176,12 @@ impl Checker {
         match &mut syntax.kind {
             TypeKind::Name { arguments, .. } | TypeKind::Tuple(arguments) => {
                 for argument in arguments {
-                    *argument = self.effect_argument_syntax(argument)?;
+                    *argument = self.effect_argument_syntax_inner(argument, depth + 1, work)?;
                 }
             }
-            TypeKind::Optional(inner) => **inner = self.effect_argument_syntax(inner)?,
+            TypeKind::Optional(inner) => {
+                **inner = self.effect_argument_syntax_inner(inner, depth + 1, work)?
+            }
             TypeKind::Array { length, element } => {
                 if let Some(length) = length {
                     let probe = TypeExpr {
@@ -146,18 +192,18 @@ impl Checker {
                     };
                     self.closed_effect_syntax(&probe)?;
                 }
-                **element = self.effect_argument_syntax(element)?;
+                **element = self.effect_argument_syntax_inner(element, depth + 1, work)?;
             }
             TypeKind::Map { key, value } => {
-                **key = self.effect_argument_syntax(key)?;
-                **value = self.effect_argument_syntax(value)?;
+                **key = self.effect_argument_syntax_inner(key, depth + 1, work)?;
+                **value = self.effect_argument_syntax_inner(value, depth + 1, work)?;
             }
             TypeKind::Record { fields, row } => {
                 for field in fields {
-                    field.ty = self.effect_argument_syntax(&field.ty)?;
+                    field.ty = self.effect_argument_syntax_inner(&field.ty, depth + 1, work)?;
                 }
                 if let Some(row) = row {
-                    **row = self.effect_argument_syntax(row)?;
+                    **row = self.effect_argument_syntax_inner(row, depth + 1, work)?;
                 }
             }
             TypeKind::Callable {
@@ -176,11 +222,11 @@ impl Checker {
                 }
                 for parameter in parameters {
                     if let Some(ty) = &mut parameter.ty {
-                        *ty = self.effect_argument_syntax(ty)?;
+                        *ty = self.effect_argument_syntax_inner(ty, depth + 1, work)?;
                     }
                 }
                 if let Some(result) = result {
-                    **result = self.effect_argument_syntax(result)?;
+                    **result = self.effect_argument_syntax_inner(result, depth + 1, work)?;
                 }
             }
             _ => self.closed_effect_syntax(&syntax)?,

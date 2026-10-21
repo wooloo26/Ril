@@ -3,8 +3,9 @@
 //! A frozen environment is a single immutable contract. Captured type, key and
 //! row identities cannot be restored independently or borrowed from a caller.
 use super::{
-    model::{Env, SourceTypeWitness, StaticCoordinate, Ty},
+    model::{Env, StaticCoordinate, Ty},
     record_bounds::BoundRowSelection,
+    source_types::TypeSourceSelection,
 };
 use ril_compiler_core::ids::BoundRowId;
 use std::{
@@ -27,7 +28,7 @@ pub struct FrozenEnvId(u64);
 pub struct TypingEnvironment {
     pub generic_context: BTreeMap<String, String>,
     pub generic_substitutions: BTreeMap<String, Ty>,
-    pub generic_type_witnesses: BTreeMap<String, Arc<SourceTypeWitness>>,
+    pub generic_sources: BTreeMap<String, Arc<TypeSourceSelection>>,
     pub static_key_arguments: BTreeMap<String, StaticCoordinate>,
     pub bound_row_context: BTreeMap<String, BoundRowId>,
     pub bound_row_selections: BTreeMap<BoundRowId, BoundRowSelection>,

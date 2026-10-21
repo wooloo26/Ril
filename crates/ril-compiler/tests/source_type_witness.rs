@@ -214,11 +214,11 @@ fn retained_return_contracts_export_each_creator_invocations_own_complete_schema
         .callable_return_contracts
         .iter()
         .map(|bound| &core.provenance.frozen_environments[bound.environment.0 as usize])
-        .flat_map(|environment| &environment.generic_type_witnesses)
+        .flat_map(|environment| &environment.generic_sources)
         .map(|(_, witness)| &witness.shape)
         .collect();
     for expected in ["const(int:0)", "const(int:2)", "const(int:3)"] {
-        assert!(schemas.iter().any(|schema|matches!(schema,ArgumentKey::Array {length:Some(length),..} if length==expected)),"{expected}: {schemas:?}");
+        assert!(schemas.iter().any(|schema|matches!(schema,ril_ir::provenance::RecordBoundKey::Array {length:Some(length),..} if length==expected)),"{expected}: {schemas:?}");
     }
 }
 

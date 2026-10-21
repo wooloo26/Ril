@@ -2435,7 +2435,7 @@ impl Checker {
                 .is_some_and(|binder| {
                     self.type_source
                         .environment
-                        .generic_type_witnesses
+                        .generic_sources
                         .contains_key(binder)
                 })
         {

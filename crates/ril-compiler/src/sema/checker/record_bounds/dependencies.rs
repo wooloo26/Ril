@@ -337,12 +337,7 @@ impl Checker {
         {
             return false;
         }
-        let Some(witness) = self
-            .type_source
-            .environment
-            .generic_type_witnesses
-            .get(binder)
-        else {
+        let Some(witness) = self.type_source.environment.generic_sources.get(binder) else {
             return false;
         };
         if !witness.validate_closed() {
@@ -595,10 +590,7 @@ impl Checker {
                 .environment
                 .generic_substitutions
                 .extend(types);
-            self.type_source
-                .environment
-                .generic_type_witnesses
-                .extend(witnesses);
+            self.extend_closed_generic_sources(witnesses);
         }
         valid
     }

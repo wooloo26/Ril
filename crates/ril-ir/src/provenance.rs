@@ -662,6 +662,25 @@ pub struct SourceTypeWitness {
 }
 
 #[derive(Debug, Clone)]
+pub struct TypeSourceSelection {
+    pub shape: RecordBoundKey,
+    pub origin: Option<ril_compiler_core::ids::TypeExprId>,
+    pub environment: FrozenEnvironmentId,
+    /// Compatibility projection for consumers requiring a closed native type.
+    pub closed: Option<std::sync::Arc<SourceTypeWitness>>,
+    pub input: Option<SourceSelectionInput>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SourceSelectionInput {
+    pub invocation: CopyInstanceId,
+    pub event: CopyCallEventId,
+    pub slot: u32,
+    pub observation: usize,
+    pub binding: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct OptionalTagFact {
     pub id: OptionalTagId,
     pub creation_owner: u32,
@@ -795,7 +814,7 @@ pub struct FrozenEnvironment {
     pub lexical: Vec<(String, u32)>,
     pub generic_context: Vec<(String, String)>,
     pub generic_substitutions: Vec<(String, TypeId)>,
-    pub generic_type_witnesses: Vec<(String, std::sync::Arc<SourceTypeWitness>)>,
+    pub generic_sources: Vec<(String, std::sync::Arc<TypeSourceSelection>)>,
     pub bound_row_context: Vec<(String, BoundRowId)>,
     pub bound_row_selections: Vec<BoundRowSelection>,
     pub static_key_arguments: Vec<(String, StaticCoordinate)>,

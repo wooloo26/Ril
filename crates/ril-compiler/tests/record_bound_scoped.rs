@@ -65,8 +65,8 @@ fn verified(source: &str) -> SemanticFacts {
             source.typing_environment.generic_substitutions.len()
         );
         assert_eq!(
-            environment.generic_type_witnesses.len(),
-            source.typing_environment.generic_type_witnesses.len()
+            environment.generic_sources.len(),
+            source.typing_environment.generic_sources.len()
         );
         for (source, lowered) in source.occurrences.iter().zip(&lowered.occurrences) {
             assert_eq!(

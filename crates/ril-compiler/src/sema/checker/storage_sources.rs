@@ -44,6 +44,24 @@ pub(super) struct StoreReception<'a> {
 }
 
 impl Checker {
+    pub(super) fn parameter_source_schema(
+        &self,
+        binding: BindingId,
+        original: Option<ril_compiler_core::ids::TypeExprId>,
+    ) -> Option<(
+        crate::sema::source_types::SourceSchema,
+        crate::sema::context::FrozenEnvironment,
+    )> {
+        self.type_source
+            .storage
+            .types
+            .binding_schema(
+                binding,
+                original,
+                &mut crate::sema::source_types::WorkLimit::new(16384),
+            )
+            .ok()
+    }
     pub(super) fn record_parameter_source(&mut self, binding: BindingId, name: &str, span: Span) {
         let environment = self.bindings[binding].typing_environment.clone();
         let key = self.declared_formal_source(binding, name);

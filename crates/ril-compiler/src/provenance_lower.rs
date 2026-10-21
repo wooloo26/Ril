@@ -2045,6 +2045,13 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
 struct ReturnContracts {
     type_witness_error: Option<NotImplemented>,
     source_types: std::collections::BTreeMap<String, std::sync::Arc<p::SourceTypeWitness>>,
+    generic_source_copies: std::collections::BTreeMap<
+        *const crate::sema::source_types::TypeSourceSelection,
+        (
+            std::sync::Arc<crate::sema::source_types::TypeSourceSelection>,
+            std::sync::Arc<p::TypeSourceSelection>,
+        ),
+    >,
     // Copy memo only. Retain each Arc so allocation-address reuse cannot skip
     // validation of a different witness with the same canonical key.
     checked_source_types: std::collections::BTreeMap<
@@ -2096,12 +2103,12 @@ impl ReturnContracts {
                 .iter()
                 .map(|(name, value)| (name.clone(), ty(types, value)))
                 .collect(),
-            generic_type_witnesses: environment
-                .generic_type_witnesses
+            generic_sources: environment
+                .generic_sources
                 .iter()
-                .filter_map(|(name, witness)| {
-                    self.source_type_witness(Some(witness))
-                        .map(|witness| (name.clone(), witness))
+                .filter_map(|(name, selection)| {
+                    self.generic_source(types, selection)
+                        .map(|selection| (name.clone(), selection))
                 })
                 .collect(),
             bound_row_context: environment
@@ -2132,6 +2139,56 @@ impl ReturnContracts {
         };
         self.environments[id.0 as usize] = converted;
         id
+    }
+
+    fn generic_source(
+        &mut self,
+        types: &mut Vec<p::Type>,
+        selection: &std::sync::Arc<crate::sema::source_types::TypeSourceSelection>,
+    ) -> Option<std::sync::Arc<p::TypeSourceSelection>> {
+        let pointer = std::sync::Arc::as_ptr(selection);
+        if let Some((_, output)) = self.generic_source_copies.get(&pointer) {
+            return Some(output.clone());
+        }
+        if selection.closed().is_some() && !selection.validate_closed() {
+            self.type_witness_error.get_or_insert_with(|| {
+                NotImplemented::new(
+                    ril_compiler_core::phase::Stage::Lowering,
+                    "generic Source graph differs from its original closed projection",
+                )
+            });
+            return None;
+        }
+        let key = match selection.key() {
+            Ok(key) => key,
+            Err(error) => {
+                self.type_witness_error.get_or_insert_with(|| {
+                    NotImplemented::new(
+                        ril_compiler_core::phase::Stage::Lowering,
+                        format!("incomplete generic Source graph: {error}"),
+                    )
+                });
+                return None;
+            }
+        };
+        let environment = self.environment(types, &selection.environment);
+        let closed = self.source_type_witness(selection.closed());
+        let output = std::sync::Arc::new(p::TypeSourceSelection {
+            shape: record_bounds::key(&key),
+            origin: selection.schema.original(),
+            environment,
+            closed,
+            input: selection.input.map(|origin| p::SourceSelectionInput {
+                invocation: p::CopyInstanceId(origin.invocation.0),
+                event: p::CopyCallEventId(origin.event.0),
+                slot: origin.slot,
+                observation: origin.observation,
+                binding: origin.binding as u32,
+            }),
+        });
+        self.generic_source_copies
+            .insert(pointer, (selection.clone(), output.clone()));
+        Some(output)
     }
 
     fn source_type_witness(
@@ -3004,16 +3061,23 @@ mod contract_graph_tests {
         bound.raw = false;
         bound.target = input.ty.clone();
         let mut environment = bound.typing_environment.thaw();
-        environment.generic_type_witnesses.insert(
+        environment.generic_sources.insert(
             "creator:T".into(),
-            input.source_type_witness.as_ref().unwrap().clone(),
+            crate::sema::source_types::TypeSourceSelection::from_closed(
+                input.source_type_witness.as_ref().unwrap().clone(),
+                bound.typing_environment.clone(),
+            )
+            .unwrap(),
         );
         bound.typing_environment = environment.freeze();
         let bound_id = context.intern(&mut types, &Arc::new(bound));
         let environment = context.nodes[bound_id.0 as usize].environment;
-        let captured = &context.environments[environment.0 as usize].generic_type_witnesses;
+        let captured = &context.environments[environment.0 as usize].generic_sources;
         assert_eq!(captured[0].0, "creator:T");
-        assert!(Arc::ptr_eq(&witness, &captured[0].1));
+        assert!(Arc::ptr_eq(
+            &witness,
+            captured[0].1.closed.as_ref().unwrap()
+        ));
         assert_eq!(output.origins, [OriginId(7)]);
         assert!(matches!(output.permission, p::Permission::Read));
         assert!(matches!(output.publication, p::Publication::Immutable));

@@ -11,6 +11,40 @@ struct SourceSelection<'a> {
 }
 
 impl Checker {
+    pub(super) fn extend_closed_generic_sources(
+        &mut self,
+        witnesses: impl IntoIterator<Item = (String, Arc<SourceTypeWitness>)>,
+    ) {
+        let environment = self.capture_typing_environment();
+        for (identity, witness) in witnesses {
+            if self
+                .type_source
+                .environment
+                .generic_sources
+                .get(&identity)
+                .and_then(|selection| selection.closed())
+                .is_some_and(|previous| Arc::ptr_eq(previous, &witness))
+            {
+                continue;
+            }
+            let span = witness.syntax.span;
+            match crate::sema::source_types::TypeSourceSelection::from_closed(
+                witness,
+                environment.clone(),
+            ) {
+                Ok(selection) => {
+                    self.type_source
+                        .environment
+                        .generic_sources
+                        .insert(identity, selection);
+                }
+                Err(_) => self.unsupported(
+                    span,
+                    "generic Source selection could not retain its complete graph and environment",
+                ),
+            }
+        }
+    }
     pub(super) fn source_type_from_frozen_syntax(
         &mut self,
         syntax: &TypeExpr,
@@ -250,8 +284,9 @@ impl Checker {
                 return checker
                     .type_source
                     .environment
-                    .generic_type_witnesses
+                    .generic_sources
                     .get(identity)
+                    .and_then(|selection| selection.closed())
                     .map(|witness| witness.syntax.clone());
             }
             let mut output = syntax.clone();
@@ -388,7 +423,8 @@ impl Checker {
         selected: &BTreeMap<String, Ty>,
     ) {
         let mut schemas = BTreeMap::new();
-        for ((_, value, span), template) in args.iter().zip(templates) {
+        let mut captured = BTreeMap::new();
+        for (slot, ((_, value, span), template)) in args.iter().zip(templates).enumerate() {
             let Some(template) = template else { continue };
             let mut mentioned = BTreeSet::new();
             template.generic_names(&mut mentioned);
@@ -423,8 +459,32 @@ impl Checker {
                     0,
                 );
             }
+            if let Ty::Generic(identity) = template
+                && binders.contains(identity)
+                && !schemas.contains_key(identity)
+                && requires_source_identity(&value.ty)
+                && let Some(source) = self.supplied_parameter_source(slot)
+            {
+                if captured.get(identity).is_some_and(
+                    |old: &Arc<crate::sema::source_types::TypeSourceSelection>| {
+                        old.key().ok() != source.key().ok()
+                    },
+                ) {
+                    self.error(
+                        "E0301",
+                        *span,
+                        "one generic type selected incompatible complete Source views",
+                        [value.cause],
+                    );
+                } else {
+                    captured.insert(identity.clone(), source);
+                }
+            }
         }
         for (identity, ty) in selected {
+            if captured.contains_key(identity) {
+                continue;
+            }
             if !schemas.contains_key(identity)
                 && let Some(witness) = self.closed_product_bound_identity(identity, templates)
             {
@@ -461,10 +521,11 @@ impl Checker {
                 self.unsupported(span, "a generic binder requires the complete source array dimensions and callable qualifications of its actual argument");
             }
         }
+        self.extend_closed_generic_sources(schemas);
         self.type_source
             .environment
-            .generic_type_witnesses
-            .extend(schemas);
+            .generic_sources
+            .extend(captured);
     }
 
     fn select_source_schema(

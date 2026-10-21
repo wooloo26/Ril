@@ -173,3 +173,30 @@ fn example(){
 }
 --@ end-file
 --@ end-case
+
+--@ source: open-record-through-generic-identity
+--@ file: source.ril
+fn identity<T>(value:T)->T{value}
+fn forward<U,R>(value:{items:[2]U,..R})->{items:[2]U,..R}{identity(value)}
+pub fn test_native(){
+    let values:[2]int=[7,9]
+    let received=forward(.{items:values,tag:"same"})
+    assert(received.items[0]==7 && received.tag=="same")
+}
+--@ end-file
+--@ end-source
+
+--@ case: open-record-through-generic-identity
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: open-record-through-generic-identity-native
+--@ use-source: open-record-through-generic-identity
+--@ end-case
+
+--@ case: open-record-through-generic-identity-native
+--@ mode: run-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: open-record-through-generic-identity
+--@ entry: test_native
+--@ use-source: open-record-through-generic-identity
+--@ end-case

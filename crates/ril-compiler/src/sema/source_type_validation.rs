@@ -99,6 +99,8 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         pending: Vec<&'a Value>,
         witnesses: BTreeSet<usize>,
         contracts: BTreeSet<usize>,
+        selections: BTreeSet<usize>,
+        original_sources: Option<super::record_bound_validation::OriginalOperandSources<'a>>,
         environments: BTreeSet<super::context::FrozenEnvId>,
     }
     impl<'a> Walk<'a> {
@@ -118,27 +120,141 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
                 || witness.validate_closed()
                     && resolved_names(witness, &self.facts.external_type_declarations)
         }
-        fn environment(&mut self, environment: &super::context::FrozenEnvironment) -> bool {
-            if environment.is_poisoned() {
+        fn parameter_selection(
+            &mut self,
+            selection: &super::source_types::TypeSourceSelection,
+        ) -> bool {
+            use ril_compiler_core::ids::CallableOwner;
+            let Some(origin) = selection.input else {
+                return false;
+            };
+            let Some(call) = self
+                .facts
+                .copy_invocations
+                .get(origin.invocation.0 as usize)
+            else {
+                return false;
+            };
+            if call.source_event != Some(origin.event) {
                 return false;
             }
-            if !self.environments.insert(environment.id()) {
-                return true;
+            let Some(binding) = self.facts.bindings.get(origin.binding) else {
+                return false;
+            };
+            if !binding.parameter
+                || selection.environment.id() != binding.typing_environment.id()
+                || self.facts.source_types.binding_environment(origin.binding)
+                    != Some(selection.environment.id())
+            {
+                return false;
             }
-            self.environments.len() <= 65536
-                && environment
-                    .contract_bindings
-                    .values()
-                    .all(|id| *id < self.facts.bindings.len())
-                && environment
-                    .generic_type_witnesses
-                    .values()
-                    .all(|witness| self.witness(witness))
-                && environment
+            let parameters = match binding.context.owner {
+                Some(CallableOwner::Function(definition)) => self
+                    .facts
+                    .functions
+                    .iter()
+                    .find(|function| function.definition == definition)
+                    .map(|function| &function.syntax.parameters),
+                Some(CallableOwner::Lambda(_)) => binding
+                    .context
+                    .closure_invocation
+                    .and_then(|id| self.facts.closure_invocations.get(id.0 as usize))
+                    .and_then(|invocation| self.facts.closures.get(invocation.closure))
+                    .map(|closure| &closure.parameters),
+                _ => None,
+            };
+            let Some(original) = parameters.and_then(|parameters| parameters.iter().find(|parameter| {
+                binding.pattern.is_some() && parameter.pattern.hir_id == binding.pattern
+                    && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name == &binding.name)
+            })).and_then(|parameter| parameter.ty.as_ref()) else { return false; };
+            if original.hir_id.is_none()
+                || original.hir_id != selection.schema.original()
+                || original != selection.syntax.as_ref()
+            {
+                return false;
+            }
+            let Some(preparation) = self
+                .facts
+                .call_arguments
+                .iter()
+                .find(|row| row.source_event == origin.event)
+            else {
+                return false;
+            };
+            if preparation
+                .supplied
+                .get(&origin.slot)
+                .is_none_or(|token| token.expression != origin.observation)
+            {
+                return false;
+            }
+            let Some(fact) = self.facts.expressions.get(origin.observation) else {
+                return false;
+            };
+            if fact.value.sources != BTreeSet::from([origin.binding]) {
+                return false;
+            }
+            if self.original_sources.is_none() {
+                let Ok(sources) =
+                    super::record_bound_validation::OriginalOperandSources::new(self.facts)
+                else {
+                    return false;
+                };
+                self.original_sources = Some(sources);
+            }
+            self.original_sources
+                .as_ref()
+                .unwrap()
+                .key(origin.event, origin.slot)
+                .is_ok_and(|key| {
+                    selection
+                        .schema
+                        .equivalent_key(&key, &mut super::source_types::WorkLimit::new(16384))
+                        == Ok(true)
+                })
+        }
+        fn environment(&mut self, environment: &super::context::FrozenEnvironment) -> bool {
+            let mut pending = vec![environment];
+            while let Some(environment) = pending.pop() {
+                if environment.is_poisoned() {
+                    return false;
+                }
+                if !self.environments.insert(environment.id()) {
+                    continue;
+                }
+                if self.environments.len() > 65536
+                    || !environment
+                        .contract_bindings
+                        .values()
+                        .all(|id| *id < self.facts.bindings.len())
+                {
+                    return false;
+                }
+                for selection in environment.generic_sources.values() {
+                    if !self.selections.insert(Arc::as_ptr(selection) as usize) {
+                        continue;
+                    }
+                    if self.selections.len() > 65536
+                        || !(if let Some(witness) = selection.closed() {
+                            selection.validate_closed() && self.witness(witness)
+                        } else {
+                            self.parameter_selection(selection)
+                        })
+                    {
+                        return false;
+                    }
+                    pending.push(&selection.environment);
+                }
+                if !environment
                     .bound_row_selections
                     .values()
                     .filter_map(|selection| selection.source_type_witness.as_ref())
                     .all(|witness| self.witness(witness))
+                {
+                    return false;
+                }
+            }
+            true
         }
         fn contract(&mut self, head: &Arc<CallableReturnBound>) -> bool {
             let mut pending = vec![head];
@@ -194,6 +310,8 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         pending: vec![],
         witnesses: BTreeSet::new(),
         contracts: BTreeSet::new(),
+        selections: BTreeSet::new(),
+        original_sources: None,
         environments: BTreeSet::new(),
     };
     walk.pending.extend(facts.fields.values());

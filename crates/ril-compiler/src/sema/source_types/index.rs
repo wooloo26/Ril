@@ -129,6 +129,26 @@ pub(crate) struct LiveSourceTypes {
 }
 
 impl LiveSourceTypes {
+    pub(crate) fn binding_schema(
+        &self,
+        binding: usize,
+        original: Option<ril_compiler_core::ids::TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
+        let view = self
+            .bindings
+            .get(&binding)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if view.environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let root = view.ty.ok_or(SourceTypesError::Unresolved)?;
+        let builder = self.builder.as_ref().ok_or(SourceTypesError::MissingNode)?;
+        Ok((
+            SourceSchema::copy_from(builder, root, original, work)?,
+            view.environment.clone(),
+        ))
+    }
     pub(crate) fn record(
         &mut self,
         binding: usize,
