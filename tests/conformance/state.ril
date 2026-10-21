@@ -324,15 +324,15 @@ where
 fn outer_layer() -> int {
     var count = 0
     middle()
+where
+    fn middle() -> int &{closure, mut count} {
+        inner()
     where
-        fn middle() -> int &{closure, mut count} {
-            inner()
-            where
-                fn inner() -> int &{closure outer_layer, mut count} {
-                    count += 1
-                    count
-                }
+        fn inner() -> int &{closure outer_layer, mut count} {
+            count += 1
+            count
         }
+    }
 }
 
 pub fn test_farther_named_capture_owner() {
@@ -350,15 +350,15 @@ pub fn test_farther_named_capture_owner() {
 fn outer_layer() -> int {
     var count = 0
     middle()
+where
+    fn middle() -> int &{closure, mut count} {
+        inner()
     where
-        fn middle() -> int &{closure, mut count} {
-            inner()
-            where
-                fn inner() -> int &{closure, mut count} {
-                    count += 1
-                    count
-                }
+        fn inner() -> int &{closure, mut count} {
+            count += 1
+            count
         }
+    }
 }
 --@ end-file
 --@ end-case
@@ -372,15 +372,15 @@ fn outer_layer() -> int {
 fn outer_layer() -> int {
     var count = 0
     middle()
+where
+    fn middle() -> int &{closure, mut count} {
+        inner()
     where
-        fn middle() -> int &{closure, mut count} {
-            inner()
-            where
-                fn inner() -> int &{closure middle, mut count} {
-                    count += 1
-                    count
-                }
+        fn inner() -> int &{closure middle, mut count} {
+            count += 1
+            count
         }
+    }
 }
 --@ end-file
 --@ end-case
@@ -397,12 +397,12 @@ pub fn test_separate_anonymous_capture_layers() {
         let mut nested = \-> {
             var y = 0
             leaf()
-            where
-                fn leaf() -> int &{closure, mut x} &{closure, mut y} {
-                    x += 1
-                    y += 1
-                    x + y
-                }
+        where
+            fn leaf() -> int &{closure, mut x} &{closure, mut y} {
+                x += 1
+                y += 1
+                x + y
+            }
         }
         nested()
     }
@@ -423,12 +423,12 @@ fn example() {
         let mut nested = \-> {
             var y = 0
             leaf()
-            where
-                fn leaf() -> int &{closure, mut x, mut y} {
-                    x += 1
-                    y += 1
-                    x + y
-                }
+        where
+            fn leaf() -> int &{closure, mut x, mut y} {
+                x += 1
+                y += 1
+                x + y
+            }
         }
         nested()
     }

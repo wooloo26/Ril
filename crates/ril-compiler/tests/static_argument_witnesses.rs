@@ -19,7 +19,8 @@ fn modes_fixture() -> &'static str {
 const CAPTURED: &str = r#"
 fn outer<T>(value:T)->T{
     inner(value)
-    where fn inner(item:T,other:T=item)->T{other}
+where
+    fn inner(item:T,other:T=item)->T{other}
 }
 fn example(){let input:[2]int=[1,2];let output=outer(input);assert(output[0]==1)}
 "#;

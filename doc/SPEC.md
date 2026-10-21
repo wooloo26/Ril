@@ -513,30 +513,30 @@ fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' is intentiona
 
 ### Keywords
 
-The following 35 tokens are reserved; they cannot be ordinary identifiers or field labels:
+The following 34 tokens are reserved; they cannot be ordinary identifiers or field labels:
 
 ```
-as       capture  eff      else     false
-fn       for      halt     if       in
-is       keyof    last     let      loop
-match    meta     module   mut      never
-next     opaque   pub      resume   return
-scoped   true     type     typeof   use
-var      view     where    while    with
+as       eff      else     false    fn
+for      halt     if       in       is
+keyof    last     let      loop     match
+meta     module   mut      never    next
+opaque   pub      resume   return   scoped
+true     type     typeof   use      var
+view     where    while    with
 ```
 
 ```ril
 -- let while = 1                     -- Error [E0113]: reserved keyword in a binding position
 -- type Record = { if: int }         -- Error [E0113]: reserved keyword as a field label
--- let capture = 1                   -- Error [E0113]: capture is reserved
--- fn capture() {}                   -- Error [E0113]: reserved function name
--- type Config = { capture: bool }   -- Error [E0113]: reserved field label
 let while_count = 1                   -- OK
+let capture = 1                       -- OK: capture is an ordinary identifier
+let closure = 1                       -- OK: closure is an ordinary identifier
+type Config = { capture: bool }       -- OK: capture is an ordinary field label
 ```
 
-A reserved keyword used as an ordinary identifier or field label is `E0113`. `&capture` remains a valid capability annotation.
+A reserved keyword used as an ordinary identifier or field label is `E0113`.
 
-`closure` remains an ordinary identifier. In a state group, a leading `closure` followed by a comma, or by a capture-owner name and a comma, is a contextual group header. This interpretation is fixed before name resolution; it never falls back to a list of global names. The state-group rules specify the remaining cases.
+`capture` and `closure` remain ordinary identifiers. They act as contextual keywords in capability and state-group annotations: `&capture` is a capability annotation, `&closure` is a callable-type capability bound, and in a state group, a leading `closure` followed by a comma, or by a capture-owner name and a comma, is a contextual group header. This interpretation is fixed before name resolution; it never falls back to a list of global names. The state-group rules specify the remaining cases.
 
 ```ril
 -- Reserved keywords in action:
@@ -2525,8 +2525,8 @@ fn read_after_init() -> int {
     -- read_value()                    -- Error [E0207]: value is not initialized
     let value = 1
     read_value()                       -- OK
-    where
-        fn read_value() -> int &{closure, value} { value }
+where
+    fn read_value() -> int &{closure, value} { value }
 }
 ```
 
@@ -2598,10 +2598,10 @@ where
 ### Conditional Expressions
 
 ```ebnf
-IfExpr          ::= "if" Expression Block [ "else" ( Block | IfExpr ) ]
+IfExpr          ::= "if" ( Expression | "let" Pattern "=" Expression ) Block [ "else" ( Block | IfExpr ) ]
 ```
 
-`if` requires a boolean condition (`E0350`). Its branches must have compatible types (`E0351`); a `never` branch imposes no returned-value constraint. An `if` without an `else` evaluates to `()` and requires its then branch to have type `()` or `never` (`E0301` otherwise).
+`if` evaluates a single boolean condition or a single refutable `if let` pattern binding (`E0350`). Pattern binders are scoped strictly to the then block (`E0204` outside). Branches must have compatible types (`E0351`); a `never` branch imposes no returned-value constraint. An `if` without an `else` evaluates to `()` and requires its then branch to have type `()` or `never` (`E0301` otherwise).
 
 ```ril
 -- let value = if 1 { 10 } else { 20 } -- Error [E0350]: condition must be bool
@@ -2615,6 +2615,21 @@ if logging_enabled {
     println("log message")             -- Evaluates to ()
 }
 
+let user_opt: ?User = Some(User.{ id: 1, name: "Ada" })
+let display = if let Some(u) = user_opt {
+    u.name                             -- OK: 'u' bound within then block
+} else {
+    "Anonymous"                        -- 'u' is not bound here
+}
+assert(display == "Ada")
+-- let outside = u                     -- Error [E0204]: unresolved identifier 'u'
+
+let avatar = if let Some(u) = fetch_cached_user(1)? {
+    u.name                             -- OK: propagates error via '?' or falls back on None
+} else {
+    "Anonymous"
+}
+
 -- Incompatible branch types are statically rejected:
 -- let bad = if true { 10 } else { "error" } -- Error [E0351]: if-else branches have incompatible types: expected 'int', found 'str'
 ```
@@ -2623,9 +2638,11 @@ if logging_enabled {
 
 ```ebnf
 LoopExpr  ::= "loop" Block
-WhileExpr ::= "while" Expression Block
+WhileExpr ::= "while" ( Expression | "let" Pattern "=" Expression ) Block
 ForExpr   ::= "for" Expression "as" Pattern Block
 ```
+
+`while` evaluates a single boolean condition or a single refutable `while let` pattern binding (`E0350`). Failure terminates the loop.
 
 ```ril
 -- 'loop' with 'last' yielding a value:
@@ -2636,9 +2653,21 @@ let found = loop {
     if i == 10 { last i * 2 }          -- Loop evaluates to 20 via 'last'
 }
 
--- 'while' loop:
+-- 'while' loop with boolean condition:
 while i > 0 {
     i -= 1
+}
+
+-- 'while let' matching refutable patterns:
+let mut queue: []int = [1, 2, 3]
+var total = 0
+while let Some(item) = Array::pop(mut queue) {
+    total += item                      -- OK: 'item' bound in body
+}
+assert(total == 6)
+
+while let Some(work) = active(runtime)? {
+    process(work)                      -- OK: propagates error via '?' or terminates on None
 }
 
 -- 'for' loop over ranges and collections:
@@ -2652,7 +2681,7 @@ assert(sum == 9)                       -- 1 + 3 + 5
 
 | Loop | Type / constraint |
 | :--- | :--- |
-| `while` | Boolean condition; result and `last` values are unit (`E0301`) |
+| `while` | Boolean condition (`E0350`) or `while let` pattern binding; result and `last` values are unit (`E0301`) |
 | `for` | Result and `last` values are unit (`E0301`); element pattern irrefutable (`E0345`), never an implicit filter |
 | `loop` | Common type of reachable `last` values, or `never` if none |
 
@@ -2755,6 +2784,9 @@ fn process_account(data: [str: str]) -> Result<str, str> {
     let Some(id) = data["account_id"] else {
         return Err("missing account_id") -- OK: diverges via 'return', binds variable 'id'
     }
+    let Some(user) = fetch_user(id)? else {
+        return Err("missing user")     -- OK: propagates error via '?' or diverges via 'return'
+    }
 
     -- Non-diverging 'else' is statically rejected:
     -- let Some(name) = data["name"] else {
@@ -2783,6 +2815,13 @@ for records as entry {
     process(val)
 }
 
+loop {
+    let Some(work) = active(runtime)? else {
+        last                           -- OK: propagates error via '?' or diverges via 'last'
+    }
+    process(work)
+}
+
 -- Guarded binding with tuple destructuring (Constructor-Tuple Equivalence):
 fn verify_session(cookie: str) -> Result<str, str> {
     let Ok(user_id, token) = authenticate(cookie) else {
@@ -2800,23 +2839,26 @@ MatchArm      ::= Pattern [ "if" Expression ] "->" Expression
 Pattern       ::= OrPattern
 OrPattern     ::= SinglePattern { "|" SinglePattern }
 SinglePattern      ::= LiteralPattern | VariablePattern | WildcardPattern
-                     | TuplePattern | RecordPattern | ConstructorPattern | RangePattern
+                     | TuplePattern | ArrayPattern | RecordPattern | ConstructorPattern | RangePattern
 BindingModifier    ::= "mut" | "var" [ "mut" ]
 VariablePattern    ::= [ BindingModifier ] Identifier
 ConstructorPattern ::= QualifiedName [ "(" [ PatternList ] ")" ]
 PatternList        ::= Pattern { "," Pattern } [ "," ]
-TuplePattern       ::= "(" Pattern "," Pattern { "," Pattern } [ "," ] ")" | "(" ")"
+TuplePattern       ::= "(" [ TuplePatternElement { "," TuplePatternElement } [ "," ] ] ")"
+TuplePatternElement ::= Pattern | ".."
+ArrayPattern       ::= "[" [ ArrayPatternElement { "," ArrayPatternElement } [ "," ] ] "]"
+ArrayPatternElement ::= Pattern | ".." [ Identifier ]
 RecordPattern      ::= [ TypeReference ] ".{" [ RecordPatternField { "," RecordPatternField } [ "," ] ] "}"
-RecordPatternField ::= [ BindingModifier ] FieldLabel [ ":" Pattern ] | ".." Identifier
+RecordPatternField ::= [ BindingModifier ] FieldLabel [ ":" Pattern ] | ".." [ Identifier ]
 NumericPattern  ::= [ "-" ] ( IntLiteral | FloatLiteral )
 LiteralPattern  ::= Literal | NumericPattern
 WildcardPattern ::= "_"
 RangePattern    ::= NumericPattern ( ".." | "..=" ) NumericPattern
 ```
 
-Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once (`E0347`). A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
+Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once, and at most one rest pattern is permitted (`E0347`). A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
 
-These binding patterns govern `match`, bindings, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
+These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
 
 ```ril
 type Choice { Left(int), Right(int) }
@@ -2826,6 +2868,24 @@ fn invalid_alternative(value: Choice) -> int {
 }
 -- let (same, same) = (1, 2)          -- Error [E0347]: duplicate binder in one pattern
 let (first, second) = (1, 2)           -- OK
+
+-- Tuple pattern with ellipsis ('..'):
+let tuple_val = (10, 20, 30, 40, 50)
+let (first, .., last) = tuple_val              -- OK: first = 10, last = 50
+let (head, ..) = tuple_val                     -- OK: head = 10; trailing elements discarded
+-- let (a, .., b, ..) = tuple_val             -- Error [E0347]: at most one '..' permitted in a tuple pattern
+
+-- Slice / array pattern matching:
+let numbers: []int = [1, 2, 3, 4, 5]
+let [x, y, z] = [10, 20, 30]                   -- OK: exact length matching on fixed array
+let desc = match numbers {
+    [] -> "empty",
+    [single] -> "one element",
+    [first, ..rest] -> "head and tail",        -- 'first' = 1, 'rest' = [2, 3, 4, 5]
+}
+if let [prefix, .., suffix] = numbers {
+    assert(prefix == 1 && suffix == 5)         -- OK: front and back extraction with middle discarded
+}
 fn invalid_range(value: int) -> int {
     match value {
         -- 5..=1 -> 1,               -- Error [E0348]: reversed pattern bounds
@@ -2938,7 +2998,7 @@ NarrowingExpr      ::= NarrowingPredicate
 #### Flow-Sensitive Type Narrowing Rules and Invariants
 
 - **Environment Splitting**: Predicate $P$ splits context $\Gamma$ into true/false environments: $\Gamma \vdash P \rightsquigarrow (\Gamma_t, \Gamma_f)$.
-- **Zero-Binding Refinement**: Narrowing refines existing bindings in-place across conditional branches without introducing new variable bindings (contrasting with `match` and `let ... else` which introduce new bindings).
+- **Zero-Binding Refinement**: Narrowing refines existing bindings in-place across conditional branches without introducing new variable bindings (contrasting with `match`, `if let`, and `let ... else` which introduce new bindings).
 - **Non-Binding Predicates**: `x is Variant(expected)` reads an existing expected value; an unresolved name is `E0204`. Use `match` or guarded bindings to introduce payload variables. `is` has no trailing guard.
 - **Value-Test Refinement**: A successful constructor test refines the tested stable path to that variant. Failure excludes the variant only when the payload test covers every payload (for example, a bare tag or all wildcards); a failed value comparison alone excludes no variant. Alternatives join their proven facts. Expected-expression writes invalidate affected facts (`E0310`, or `E0533` for unproved independence); completing the test does not restore them.
 - **Payload Projection ($S|_V$)**: Testing `x is V` refines sum type $S$ to variant $S|_V$ ([Sum Types and GADTs](#sum-types-and-gadts)):
@@ -4100,11 +4160,11 @@ fn tick() -> int &{mut global_count, GLOBAL_SCALE} {
 fn outer() -> int {
     var count = 0
     inner()
-    where
-        fn inner() -> int &{closure, mut count} {
-            count += 1
-            count
-        }
+where
+    fn inner() -> int &{closure, mut count} {
+        count += 1
+        count
+    }
 }
 ```
 
@@ -4118,16 +4178,16 @@ fn outer() -> int {
 fn outer_layer() -> int {
     var count = 0
     middle()
+where
+    fn middle() -> int &{closure, mut count} {
+        inner()
     where
-        fn middle() -> int &{closure, mut count} {
-            inner()
-            where
-                fn inner() -> int &{closure outer_layer, mut count} {
-                    count += 1
-                    count
-                }
-                -- Omitting outer_layer here is E0538: the source is a farther named layer.
+        fn inner() -> int &{closure outer_layer, mut count} {
+            count += 1
+            count
         }
+        -- Omitting outer_layer here is E0538: the source is a farther named layer.
+    }
 }
 
 let run = \-> {
@@ -4135,13 +4195,13 @@ let run = \-> {
     let mut nested = \-> {
         var y = 0
         leaf()
-        where
-            fn leaf() -> int &{closure, mut x} &{closure, mut y} {
-                x += 1
-                y += 1
-                x + y
-            }
-            -- &{closure, mut x, mut y} is E0538: the two sources belong to different anonymous layers.
+    where
+        fn leaf() -> int &{closure, mut x} &{closure, mut y} {
+            x += 1
+            y += 1
+            x + y
+        }
+        -- &{closure, mut x, mut y} is E0538: the two sources belong to different anonymous layers.
     }
     nested()
 }
@@ -4156,12 +4216,13 @@ fn bump_global() &{mut count} { count += 1 }
 fn shadowed() -> int {
     var count = 10
     inner()
-    where
-        fn inner() -> int &{closure, mut count} { count += 1; count }
-        -- Replacing the group with &{mut count} is E0538, not a reference to the global count.
+where
+    fn inner() -> int &{closure, mut count} { count += 1; count }
+    -- Replacing the group with &{mut count} is E0538, not a reference to the global count.
 }
 
--- closure is an ordinary module variable, not a reserved identifier:
+-- capture and closure are ordinary identifiers, not reserved keywords:
+let capture = 10
 var closure = 0
 var x = 0
 fn bump_names() &{mut closure, mut x} { closure += 1; x += 1 }
@@ -4265,8 +4326,8 @@ use counter
 type Cell = { mut count: int }
 fn outer(mut cell: Cell) &mut {
     inner()
-    where
-        fn inner() &{closure, mut cell} { cell.count += 1 }
+where
+    fn inner() &{closure, mut cell} { cell.count += 1 }
 }
 -- inner's named capture is derived from outer's parameter loan.
 
@@ -4669,15 +4730,15 @@ fn make_chained_reader() -> Reader &capture {
 fn same_block_helper() -> Deferred {
     with Read::get() -> resume 7
     helper
-    where
-        fn helper() -> int @Read { Read::get() }
+where
+    fn helper() -> int @Read { Read::get() }
 }
 fn nested_block_helper() -> Reader &capture {
     with Read::get() -> resume 7
     {
         helper
-        where
-            fn helper() -> int { Read::get() }
+    where
+        fn helper() -> int { Read::get() }
     }
 }
 let captured = make_indirect_reader()

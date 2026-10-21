@@ -60,6 +60,8 @@ concrete-graph oracle explicitly with bounded time and memory.
 Fixed Ril programs belong in `tests/`, grouped by behavior. Keep bundle paths
 and case IDs stable, link positive and negative controls with `companion`, and
 use existing SPEC/STD anchors. Each case has an independent compilation state.
+Align signature and body `where` clauses with their function's `fn`; indent
+helper declarations one level below `where`.
 
 Modes are `check-pass`, `check-fail`, `run-pass`, `run-panic` and `run-program`.
 Run-pass/run-panic select a public zero-argument `test_*` function. Run-program
@@ -105,6 +107,8 @@ duplicate source trees and historical verification reports.
 - Finish generated I/O and iterator observations, channel payloads, handler
   activations and resumption transport. Resolve the nine-scope channel replay
   case with finite work while preserving unknown guard/history obligations.
+- Implement conditional pattern bindings (`if let`, `while let`) and complete
+  nested closure/default and retained-handler transport covered by the corpus.
 - Complete static extent/sort contexts, shared-constant audits and builtin source
   declarations. Keep object identity separate from each reference's declared view.
 - Resolve compiler and native acceptance failures on both platforms, then expose
