@@ -156,10 +156,11 @@ impl Checker {
         let Match::Compatible(conditional) = self.conditional_constructor(tag, &owner) else {
             return None;
         };
+        let target_key = target.key();
         let ArgumentKey::Binder {
             identity,
             sort: StaticBinderSort::Type,
-        } = target.key.as_ref()?
+        } = target_key.as_ref()?
         else {
             return None;
         };
@@ -186,8 +187,16 @@ impl Checker {
         let key = crate::static_eval::effects::bounded_argument_key(&syntax, &BTreeMap::new())?;
         crate::sema::source_reception::complete(&key, &mut 4096)?;
         Some(crate::sema::source_reception::Target {
+            environment: target.environment.clone(),
             span: target.span,
-            key: Some(key),
+            schema: Some(
+                crate::sema::source_types::SourceSchema::import(
+                    &key,
+                    target.schema.as_ref()?.original(),
+                    &mut crate::sema::source_types::WorkLimit::new(16384),
+                )
+                .ok()?,
+            ),
             syntax: Some(std::sync::Arc::new(syntax)),
             empty_array_context: None,
             sensitivity: crate::sema::source_reception::SchemaSensitivity::NotRequired,

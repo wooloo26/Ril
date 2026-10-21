@@ -923,10 +923,16 @@ An invalid callback response causes a panic without advancing the helper's buffe
 -- ril/io; these are ordinary in-memory state, not owning resources.
 pub type ReadBuffer
 pub type WriteBuffer
+pub type ReadPosition
+pub fn read_position() -> ReadPosition
+pub fn guard_read(position: ReadPosition) -> ()
+pub fn guard_seek(position: ReadPosition) -> ()
 pub fn read_buffer(capacity: int) -> ReadBuffer
 pub fn write_buffer(capacity: int) -> WriteBuffer
 pub fn read_buffered<R>(mut buffer: ReadBuffer, mut reader: R,
     ops: ReadOps<R>, max_bytes: int) -> Result<ReadChunk, IoError> &mut
+pub fn read_buffered_at<R>(mut buffer: ReadBuffer, mut reader: R,
+    ops: ReadOps<R>, max_bytes: int, position: ReadPosition) -> Result<ReadChunk, IoError> &mut
 pub fn write_buffered<W>(mut buffer: WriteBuffer, mut writer: W,
     ops: WriteOps<W>, data: bytes) -> WriteProgress &mut
 pub fn flush<W>(mut buffer: WriteBuffer, mut writer: W,
@@ -937,7 +943,7 @@ pub fn flush<W>(mut buffer: WriteBuffer, mut writer: W,
 | :--- | :--- |
 | Capacity <= 0 | Panic before receiver access |
 | Read ahead | At most capacity; preserve stream byte/EOF/error behavior |
-| Unread data or deferred error | Reserve the reader's stream position; direct stream reads or switching reader/operation panic before another read |
+| Unread data or deferred error | Reserve the reader's stream position; direct stream reads, `File::seek`, or switching reader/operation panic before accessing or changing the reserved position |
 | WriteProgress.written | Bytes accepted from this call, including buffered bytes |
 | Flush | Send in order; remove confirmed prefixes; preserve the unwritten suffix after error |
 | Pending output | Switching destination/operation panics before another write; pending bytes remain |
@@ -947,6 +953,18 @@ pub fn flush<W>(mut buffer: WriteBuffer, mut writer: W,
 Buffers never retain resource authority or auto-flush on scope exit. Discarding a nonempty write buffer abandons its bytes; callers requiring delivery must explicitly inspect flush. Stream closure does not imply a successful flush. Writing bytes and ensuring durable filesystem storage are separate operations.
 
 Another alias to the same receiver with the same operation callable does not count as a switch. Empty buffers with no deferred input condition may be reused. Buffered calls require the declared receiver permissions and operation effects; a buffer does not keep its receiver open.
+
+**Stream position identity and Guarded Access.** A position reservation is checked against the receiver handle's identity, or a common explicit cursor identity when custom readers share or delegate a cursor. It is independent of the operation callable's identity: a different callback, wrapper, or alias cannot bypass the same reservation. Custom operations that inspect, consume, or change that cursor use Guarded Access against this identity before touching the position. `File::read_chunk` and `File::seek` are protected accesses; delegated file endpoints obey the same rule.
+
+Only the active buffered invocation has permission to perform its own read-ahead accesses. That permission does not bypass another buffer's reservation of the same cursor, and ends on completion, abort, or cancellation. Unread bytes and deferred errors keep the reservation; an empty buffer with neither releases it. Position identity carries no ownership, resource lifetime, or permission to keep a receiver open. An ordinary `ReadOps<R>` function signature alone does not prove that a custom operation obeys this cursor-access contract.
+
+`read_position` creates a fresh opaque immutable identity. Assignment and ordinary copying preserve that identity; a second `read_position` call creates a different one. The identity contains no receiver, resource authority, or mutable cursor state. Custom wrappers sharing one logical cursor share the same `ReadPosition` and use `read_buffered_at` to associate it with a buffer. While input is pending, changing that position, receiver, or operation is a switch and panics before invoking the callback. The ordinary `read_buffered` form uses its receiver identity instead. Both forms also protect any file endpoints reached by their callbacks.
+
+`ReadPosition` has no type arguments and occupies one handle word on the selected abstract target. It can be quoted, compared as a type, and inspected by `byte_size` in static/type computations. Creating identities and checking cursor access are ordinary runtime operations and retain `E0810` across a static/runtime call-family boundary.
+
+Copying a pending read buffer preserves an independent snapshot and reservation. Each copy may return its own cached bytes without accessing the cursor. Reading ahead or repositioning remains blocked by every other pending copy. Draining one copy releases only that copy's claim.
+
+Every conforming custom operation checks `guard_read` immediately before inspecting or consuming the shared cursor, and checks `guard_seek` immediately before repositioning it. The checks happen before any cursor access or related state change; they grant no data permission. `guard_read` accepts only the innermost active buffered invocation's own reservation. A nested invocation cannot borrow an outer buffer's permission, and another buffer's pending claim still blocks access. `guard_seek` rejects every pending claim, including the active invocation's own. Outside a buffered invocation, both reject a reserved position and otherwise return unit. Guarded delegation also associates the accessed identity with the current buffer. Omitting the guard or passing an unrelated identity violates this custom-reader contract; the function's type alone is not a guard or a proof of truthful external cursor behavior.
 
 ```ril
 use ril/io
@@ -1459,12 +1477,14 @@ pub fn for_each<T>(mut items: []T, action: fn(mut T) -> ()) &mut
 
 ```ril
 use ril/parallel
-halt fn square_all(numbers: []f64) -> []f64 {
+halt fn square_all(numbers: Immut<[]f64>) -> []f64 {
     numbers |> Parallel::map(\x -> x * x)
 }
 let first = [10, 20, 30, 40] |> Parallel::find(\x -> x > 25)
 assert(first == Some(30))
 ```
+
+An ordinary read-only `numbers: []f64` parameter can still be a live view and is not equivalent to `Immut<[]f64>`. A caller with live data may explicitly construct `clone_immut(numbers)` before passing it to a pure parallel collection operation.
 
 #### Callback Requirements
 

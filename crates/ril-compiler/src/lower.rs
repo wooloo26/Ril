@@ -369,21 +369,30 @@ impl Lower<'_> {
         let mut signature: Option<Vec<ir::CallParameter>> = None;
         let mut unresolved = false;
         for fact in observations {
-            let Some(parameters) = &fact.value.signature else {
+            let parameters: Vec<_> = if let Some(parameters) = &fact.value.signature {
+                parameters
+                    .iter()
+                    .map(|parameter| ir::CallParameter {
+                        label: if let ast::PatternKind::Name(name) = &parameter.pattern.kind {
+                            Some(name.clone())
+                        } else {
+                            None
+                        },
+                        has_default: parameter.default.is_some(),
+                    })
+                    .collect()
+            } else if let Some(id) = crate::sema::builtin_sources::generic_reference(&fact.value) {
+                crate::sema::source_types::polymorphic::parameter_labels(id)
+                    .into_iter()
+                    .map(|label| ir::CallParameter {
+                        label: label.map(str::to_owned),
+                        has_default: false,
+                    })
+                    .collect()
+            } else {
                 unresolved = true;
                 continue;
             };
-            let parameters: Vec<_> = parameters
-                .iter()
-                .map(|parameter| ir::CallParameter {
-                    label: if let ast::PatternKind::Name(name) = &parameter.pattern.kind {
-                        Some(name.clone())
-                    } else {
-                        None
-                    },
-                    has_default: parameter.default.is_some(),
-                })
-                .collect();
             if signature
                 .as_ref()
                 .is_some_and(|previous| previous != &parameters)
@@ -1333,26 +1342,31 @@ impl Lower<'_> {
                             unsupported("pipeline has no bounded application structure")
                         })?;
                     self.record_call_signature(application.callee, expression)?;
-                    let mut statements = Vec::with_capacity(application.operands.len() + 1);
+                    let mut statements = Vec::with_capacity(2);
                     let mut arguments = Vec::with_capacity(application.operands.len());
-                    // Freeze every earlier operand before evaluating the callee.
-                    // The Call's argument expressions below are only reads of
-                    // these temporaries, so suspension and Never cannot reorder
-                    // or repeat the actual source computations.
+                    // Freeze only the piped input. The ordinary Call evaluates
+                    // its callee before its written arguments; reading this
+                    // temporary cannot repeat or reorder the left computation.
                     for operand in &application.operands {
-                        let temporary = format!("\0ril.pipeline.{}", self.next_temporary);
-                        self.next_temporary += 1;
-                        statements.push(ir::Statement::Bind {
-                            pattern: ir::Pattern::Name(temporary.clone()),
-                            value: self.expression(operand.expression)?,
-                            scoped: false,
-                        });
+                        let value =
+                            if operand.role == crate::hir::application::EvaluationRole::Piped {
+                                let temporary = format!("\0ril.pipeline.{}", self.next_temporary);
+                                self.next_temporary += 1;
+                                statements.push(ir::Statement::Bind {
+                                    pattern: ir::Pattern::Name(temporary.clone()),
+                                    value: self.expression(operand.expression)?,
+                                    scoped: false,
+                                });
+                                ir::Expr {
+                                    kind: ir::ExprKind::Name(temporary),
+                                    span: operand.expression.span,
+                                }
+                            } else {
+                                self.expression(operand.expression)?
+                            };
                         arguments.push(ir::Argument {
                             label: operand.label.map(str::to_owned),
-                            value: ir::Expr {
-                                kind: ir::ExprKind::Name(temporary),
-                                span: operand.expression.span,
-                            },
+                            value,
                         });
                     }
                     statements.push(ir::Statement::Expr {
@@ -1495,7 +1509,8 @@ impl Lower<'_> {
                     .closure_sites
                     .iter()
                     .find(|site| {
-                        Some(site.owner) == self.callable_owner && site.span == expression.span
+                        Some(site.owner) == self.callable_owner
+                            && Some(site.source) == expression.hir_id
                     })
                     .map(|site| CallableOwner::Lambda(site.id));
                 let (parameters, body) = if let Some(index) = self.specialization_context {

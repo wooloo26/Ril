@@ -7,6 +7,7 @@ pub(super) struct HandlerDefinition {
     boundary: u32,
     arms: BTreeMap<String, HandlerArm>,
     lexical: Env,
+    typing_environment: crate::sema::context::FrozenEnvironment,
     span: Span,
     answer: Option<Ty>,
     owner: ScopeId,
@@ -392,8 +393,7 @@ impl Checker {
         } else {
             let span = match &callable {
                 Callable::Closure(id) => self
-                    .lambda_contracts
-                    .get(id)
+                    .lambda_contract(*id)
                     .map_or(span, |contract| contract.span),
                 Callable::Named(id) => self.functions[*id].syntax.span,
                 _ => span,
@@ -890,7 +890,13 @@ impl Checker {
                             }
                         }
                     }
-                } else if self.generic_context.contains_key(name) || name.contains('<') {
+                } else if self
+                    .type_source
+                    .environment
+                    .generic_context
+                    .contains_key(name)
+                    || name.contains('<')
+                {
                     self.unsupported(
                         span,
                         "symbolic effect row requires an instantiated effect identity",
@@ -945,9 +951,9 @@ impl Checker {
         if !effect.generics.is_empty() {
             // A generic family has no operation until a single instance is
             // selected. Never let its declaration stand for all instances.
-            let previous = self.generic_context.clone();
+            let previous = self.type_source.environment.generic_context.clone();
             for (index, parameter) in effect.generics.iter().enumerate() {
-                self.generic_context.insert(
+                self.type_source.environment.generic_context.insert(
                     parameter.name.clone(),
                     format!(
                         "{}:{}:effect:{index}:{}",
@@ -1009,11 +1015,16 @@ impl Checker {
                         &target,
                         arguments,
                         &self.types,
-                        &self.generic_context,
+                        &self.type_source.environment.generic_context,
                     ) {
                         let _ = self.effect_instance(&target.name, arguments, member.span);
                     }
-                } else if self.generic_context.contains_key(&path.join("::")) {
+                } else if self
+                    .type_source
+                    .environment
+                    .generic_context
+                    .contains_key(&path.join("::"))
+                {
                     self.unsupported(
                         member.span,
                         "effect-valued generic members require an effect-kind substitution proof",
@@ -1027,7 +1038,7 @@ impl Checker {
                     );
                 }
             }
-            self.generic_context = previous;
+            self.type_source.environment.generic_context = previous;
             return;
         }
         for operation in &effect.operations {
@@ -1151,7 +1162,7 @@ impl Checker {
             &declaration,
             &[],
             &self.types,
-            &self.generic_context,
+            &self.type_source.environment.generic_context,
         ) {
             self.unsupported(
                 span,
@@ -1190,7 +1201,7 @@ impl Checker {
             &instance.declaration,
             &instance.arguments,
             &self.types,
-            &self.generic_context,
+            &self.type_source.environment.generic_context,
         ) {
             self.unsupported(
                 span,
@@ -1337,18 +1348,18 @@ impl Checker {
                 cause,
             );
             target.callables.push(Callable::Builtin(name.clone()));
-            self.invocation_expressions
-                .push(super::super::effect_identity::InvocationExpression {
-                    context: self.invocation_context(frame.callable_owner),
-                    expression: self.expression_facts.len(),
-                    argument_of: None,
-                });
-            self.expression_facts.push(super::super::ExpressionFact {
-                allocation_epoch: self.recency_moves.len(),
-                source_id: arm.operation.hir_id,
-                span: arm.operation.span,
-                value: target,
-            });
+            let evaluation_context = self.invocation_context(frame.callable_owner);
+            let _ = self.application_effect.observe(
+                || super::super::ExpressionFact {
+                    allocation_epoch: self.recency_moves.len(),
+                    source_id: arm.operation.hir_id,
+                    span: arm.operation.span,
+                    value: target,
+                },
+                evaluation_context,
+                frame.owner,
+                None,
+            );
             if resolved.insert(name.clone(), arm.clone()).is_some() {
                 self.error(
                     "E0622",
@@ -1453,6 +1464,7 @@ impl Checker {
             boundary,
             arms: resolved,
             lexical: frame.env.clone(),
+            typing_environment: self.capture_typing_environment_with_bindings(&frame.env),
             span,
             answer: None,
             owner: frame.owner,
@@ -1605,6 +1617,7 @@ impl Checker {
         };
         caller.obligations.selected_handlers.insert(id);
         let definition = self.handler_definitions[id].clone();
+        let previous_typing = self.enter_typing_environment(&definition.typing_environment);
         let active = self.active_handlers.clone();
         self.active_handlers.truncate(position);
         let mut frame = self.frame(definition.lexical.clone(), true);
@@ -1761,12 +1774,14 @@ impl Checker {
                     boundary: definition.boundary,
                     target: definition.owner,
                     frame: continuation_frame,
+                    typing_environment: self.capture_typing_environment_with_bindings(&frame.env),
                     registrations: delayed,
                     loans: loans.clone(),
                     outer_handlers: active[..position].to_vec(),
                     suffix,
                 });
         }
+        self.restore_typing_environment(previous_typing);
         self.active_handlers = active;
         if let Some(mut supplied) = context.supplied {
             supplied.participants =
@@ -2047,6 +2062,7 @@ impl Checker {
                     .collect(),
                 arm_spans: definition.arms.values().map(|arm| arm.span).collect(),
                 lexical: definition.lexical.clone(),
+                typing_environment: definition.typing_environment.clone(),
                 answer: definition.answer.clone(),
                 arms: definition.arms.values().cloned().collect(),
                 outer: definition.outer.clone(),

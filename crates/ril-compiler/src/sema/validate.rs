@@ -64,6 +64,7 @@ pub enum ValidationIssueKind {
     EvaluationIdentity(String),
     ClosureActivation(String),
     StaticArgument(String),
+    SymbolicRow(String),
     InvalidResultProducer(u32),
     InvalidOptionalTag(u32, String),
     RecordBound(String),
@@ -94,6 +95,16 @@ pub fn solved_facts(facts: &SemanticFacts) -> Result<ValidatedStructure, Vec<Val
     };
     validator.structure();
     validator.boundaries();
+    if let Err(message) = super::symbolic_rows::validate(facts) {
+        validator.issue(ValidationIssueKind::SymbolicRow(message), None, None);
+    }
+    if let Err((span, message)) = super::application_effect::validate(facts) {
+        validator.issue(
+            ValidationIssueKind::EvaluationIdentity(message),
+            Some(span),
+            None,
+        );
+    }
     if let Err((span, cause, message)) = super::evaluation_identity::validate(facts) {
         validator.issue(
             ValidationIssueKind::EvaluationIdentity(message),
@@ -111,6 +122,9 @@ pub fn solved_facts(facts: &SemanticFacts) -> Result<ValidatedStructure, Vec<Val
         );
     }
     let mut closure_activations = std::collections::BTreeSet::new();
+    if let Err(message) = super::record_bound_validation::validate_callable_inputs(facts) {
+        validator.issue(ValidationIssueKind::ClosureActivation(message), None, None);
+    }
     for invocation in &facts.closure_invocations {
         let complete = invocation.status == super::copy_contract::CopyInvocationStatus::Completed;
         if (complete && invocation.activation.is_none())

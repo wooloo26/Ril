@@ -54,6 +54,7 @@ pub(crate) fn prepare(runtime: &Runtime, name: &str, args: &[Handle]) -> Result<
             Operation::Write(data.clone())
         }
         "File::seek" => {
+            runtime.check_reserved_seek(arg(0)?)?;
             let Object::Variant { tag, fields } = runtime.heap.get(arg(1)?)? else {
                 return Err(RuntimeError::internal("expected seek position"));
             };

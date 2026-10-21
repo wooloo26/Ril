@@ -106,7 +106,7 @@ impl Checker {
             if let Callable::Named(index) = callable {
                 self.copy_references.push(CopyReference {
                     id: CopyReferenceId(self.copy_references.len() as u32),
-                    expression: self.expression_facts.len(),
+                    expression: self.application_effect.expressions.len(),
                     owner: frame.callable_owner,
                     parent: self.copy_invocation_stack.last().copied(),
                     target: self.functions[*index].definition,
@@ -253,12 +253,46 @@ impl Checker {
         id: usize,
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
-        mut caller: Option<&mut Frame>,
+        caller: Option<&mut Frame>,
         verifying: bool,
     ) -> Value {
-        let source_event = caller
+        use crate::sema::application_effect::EntryOrigin;
+        let origin = if verifying {
+            EntryOrigin::DeclarationProbe
+        } else {
+            caller
+                .as_ref()
+                .and_then(|frame| frame.copy_call_event)
+                .map(EntryOrigin::Application)
+                .unwrap_or(EntryOrigin::Unresolved)
+        };
+        self.invoke_named_from(id, args, span, caller, origin)
+    }
+
+    pub(super) fn invoke_named_from(
+        &mut self,
+        id: usize,
+        args: Vec<(ParameterMode, Value, Span)>,
+        span: Span,
+        mut caller: Option<&mut Frame>,
+        origin: crate::sema::application_effect::EntryOrigin,
+    ) -> Value {
+        use crate::sema::application_effect::{CallableEntry, EntryOrigin};
+        let verifying = origin == EntryOrigin::DeclarationProbe;
+        if !self.application_effect.admit(1 + args.len()) {
+            self.unsupported(
+                span,
+                "named callable input recording exhausted its work bound",
+            );
+            return Value::scalar(Ty::Unknown, None, CauseId(0));
+        }
+        let supplied_event = caller
             .as_deref_mut()
             .and_then(|frame| frame.copy_call_event.take());
+        let source_event = match origin {
+            EntryOrigin::Application(id) if supplied_event == Some(id) => Some(id),
+            _ => None,
+        };
         let caller_owner = caller.as_ref().and_then(|frame| frame.callable_owner);
         let target = self.functions[id].definition;
         let direct = source_event
@@ -286,17 +320,22 @@ impl Checker {
             .collect();
         self.copy_invocations.push(CopyInvocation {
             id: instance,
+            entry: CallableEntry {
+                parent: self.application_effect.current_activation(),
+                caller_context: self.invocation_context(caller_owner),
+                origin,
+                allocation_epoch: self.recency_moves.len(),
+                arguments,
+            },
             parent: self.copy_invocation_stack.last().copied(),
             caller: caller.as_ref().and_then(|frame| frame.definition),
             caller_owner,
             caller_activation: caller.as_ref().map(|frame| frame.owner),
-            entry_allocation_epoch: self.recency_moves.len(),
             target,
             span,
             declaration_probe: verifying,
             direct,
             source_event,
-            arguments,
             boundaries,
             result: None,
             resource_copies: vec![],
@@ -396,11 +435,11 @@ mod tests {
             .collect();
         let good: Vec<_> = calls
             .iter()
-            .filter(|call| matches!(call.arguments[0].1.value.ty, Ty::Int(_)))
+            .filter(|call| matches!(call.entry.arguments[0].1.value.ty, Ty::Int(_)))
             .collect();
         let bad: Vec<_> = calls
             .iter()
-            .filter(|call| call.arguments[0].1.value.ty == Ty::Named("File::Handle".into()))
+            .filter(|call| call.entry.arguments[0].1.value.ty == Ty::Named("File::Handle".into()))
             .collect();
         assert_eq!((good.len(), bad.len()), (2, 2));
         assert!(

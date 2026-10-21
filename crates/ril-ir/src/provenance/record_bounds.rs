@@ -17,6 +17,7 @@ use std::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordBoundKey {
+    GenericBuiltin(ril_compiler_core::builtin_calls::GenericBuiltin),
     Closed(String),
     Binder {
         identity: String,

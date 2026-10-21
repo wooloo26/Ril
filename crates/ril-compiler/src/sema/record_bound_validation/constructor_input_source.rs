@@ -20,6 +20,33 @@ impl Replay<'_> {
             } => name,
             _ => return Err("constructor source has no nominal declaration family".into()),
         };
+        if let Some((declaration, payload)) =
+            crate::sema::source_types::standard_data::constructor_payload(&constructor.tag)
+        {
+            require(
+                family == declaration.name() && !constructor.nominal && constructor.has_payload,
+                "standard constructor changed its canonical family or kind",
+            )?;
+            let canonical = payload
+                .syntax(
+                    constructor.span,
+                    &mut crate::sema::source_types::WorkLimit::new(4096),
+                )
+                .map_err(|error| error.to_string())?;
+            let actual = constructor
+                .payload_syntax
+                .as_ref()
+                .ok_or("standard constructor lost its source payload")?;
+            let key =
+                crate::static_eval::effects::bounded_argument_key(&canonical, &BTreeMap::new())
+                    .ok_or("standard constructor payload exceeds its source bound")?;
+            require(
+                crate::static_eval::effects::bounded_argument_key(actual, &BTreeMap::new())
+                    == Some(key),
+                "standard constructor changed its original source declaration",
+            )?;
+            return Ok(canonical);
+        }
         let declaration = self
             .facts
             .external_type_declarations
@@ -238,7 +265,12 @@ impl Replay<'_> {
                     "constructor source operand belongs to another event, slot or Source occurrence",
                 )?;
                 self.input_operand_interval(event, slot, token.expression, context, sites)?;
-                let key = self.original_source_key(actual_syntax, &actual.value, context, sites);
+                let key = self.original_observed_source_key(
+                    actual_syntax,
+                    token.expression,
+                    context,
+                    sites,
+                );
                 let fresh =
                     source_reception::construction(actual_syntax, &mut 4096).ok_or_else(|| {
                         "constructor source construction exceeds its replay budget".to_owned()
@@ -247,18 +279,7 @@ impl Replay<'_> {
                     Ok(key) => {
                         source_reception::compatible(expected, &key, Some(&fresh), &mut 4096)
                     }
-                    Err(_) => match (expected, &fresh) {
-                        (
-                            ArgumentKey::Array { length, element },
-                            source_reception::Construction::Array(items),
-                        ) if items.is_empty() => source_reception::complete(element, &mut 4096)
-                            .map(|_| {
-                                length
-                                    .as_ref()
-                                    .is_none_or(|length| length == "const(int:0)")
-                            }),
-                        _ => None,
-                    },
+                    Err(_) => source_reception::empty_context(expected, &fresh, &mut 4096),
                 };
                 require(
                     answer == Some(true),

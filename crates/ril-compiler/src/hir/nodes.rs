@@ -544,6 +544,15 @@ impl HirProgram {
     pub fn statement(&self, id: StmtId) -> Option<&Stmt> {
         self.statements.get(id.0 as usize)
     }
+    pub(crate) fn statements(&self) -> impl ExactSizeIterator<Item = (StmtId, &Stmt)> {
+        self.statements
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (StmtId(index as u32), node))
+    }
+    pub(crate) fn generics(&self) -> impl ExactSizeIterator<Item = &GenericParam> {
+        self.generics.iter()
+    }
     pub fn pattern(&self, id: PatternId) -> Option<&Pattern> {
         self.patterns.get(id.0 as usize)
     }

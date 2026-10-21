@@ -25,6 +25,57 @@ fn proven(facts: &SemanticFacts) -> ChannelMessageFact {
         .clone()
 }
 
+fn optional_projection(guard: &ChannelGuard) -> ChannelGuard {
+    ChannelGuard {
+        terms: guard
+            .terms
+            .iter()
+            .map(|term| {
+                term.iter()
+                    .copied()
+                    .filter(|literal| matches!(literal, GuardLiteral::Optional { .. }))
+                    .collect()
+            })
+            .collect(),
+        incomplete: guard.incomplete,
+    }
+    .normalized()
+    .expect("a finite guard projection stays normalized")
+}
+
+#[test]
+fn physical_receipts_cannot_recover_jointly_weakened_control_guards() {
+    for body in [
+        "let ignored=(may_abort(flag),value is Ok(_)|Err(_));Ok()",
+        "match other{Some(_) if flag->(),Some(inner)->assert(inner is Ok(_)|Err(_)),None->()};Ok()",
+    ] {
+        let source = format!(
+            "fn may_abort(flag:bool){{if flag{{panic(\"aborted\")}}}}\nfn example(flag:bool,value:Result<int,str>,other:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{{Concurrent::scope \\mut _->{{{body}}}}}"
+        );
+        let mut facts = verified(&source);
+        // Preserve Optional literals while weakening physical observations and
+        // exits together. Some alone cannot prove a predecessor completed.
+        for event in &mut facts.channel_messages {
+            event.guard = optional_projection(&event.guard);
+        }
+        for exit in &mut facts.channel_exits {
+            exit.guard = optional_projection(&exit.guard);
+        }
+        let receipts: Vec<_> = facts
+            .channel_messages
+            .iter()
+            .filter(|event| matches!(event.action, ChannelAction::ConditionEvaluated { .. }))
+            .collect();
+        assert!(
+            !receipts.is_empty(),
+            "real condition observations are required"
+        );
+        for event in receipts {
+            assert_eq!(Analysis::new(&facts).truth(event).unwrap(), None);
+        }
+    }
+}
+
 #[test]
 fn a_real_scalar_formal_capture_and_single_some_path_prove_complete_evaluation() {
     let facts = verified(SOME);

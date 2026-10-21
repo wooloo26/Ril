@@ -4,12 +4,238 @@ use super::*;
 use crate::sema::model::Callable;
 
 impl Replay<'_> {
+    /// Preparation formals belong to the scope that evaluated the actual
+    /// default root. A captured read keeps that declaration scope even though
+    /// its current owner is a lambda or handler. An enclosing default does not
+    /// turn an ordinary nested function activation into a preparation scope.
+    pub(super) fn parameter_preparation(
+        &self,
+        binding: &crate::sema::model::BindingInfo,
+        reading: InvocationContext,
+    ) -> Check<Option<&crate::sema::default_uses::DefaultUse>> {
+        let Some(id) = reading.default_use else {
+            return Ok(None);
+        };
+        let receipt = self
+            .facts
+            .default_uses
+            .get(id.0 as usize)
+            .filter(|receipt| receipt.id == id)
+            .ok_or_else(|| "formal Source preparation receipt is absent".to_owned())?;
+        let token = receipt
+            .result_expression
+            .ok_or_else(|| "formal Source preparation root is absent".to_owned())?;
+        let root = self
+            .facts
+            .evaluations
+            .get(token)
+            .ok_or_else(|| "formal Source preparation root has no actual scope".to_owned())?;
+        if root.scope != binding.owner {
+            return Ok(None);
+        }
+        let declaration = InvocationContext {
+            owner: receipt.owner,
+            ..receipt.caller
+        };
+        let context = InvocationContext {
+            default_use: Some(id),
+            ..declaration
+        };
+        require(
+            binding.context == declaration
+                && root.context == context
+                && self
+                    .facts
+                    .invocation_expressions
+                    .get(token)
+                    .is_some_and(|row| row.expression == token && row.context == context)
+                && receipt.evaluation_complete
+                && !matches!(
+                    receipt.status,
+                    CopyInvocationStatus::Rejected | CopyInvocationStatus::Unsupported
+                ),
+            "formal Source preparation changed its declaration or root context",
+        )?;
+        let source = match receipt.owner {
+            Some(CallableOwner::Function(owner)) => {
+                require(
+                    receipt.target == Some(owner),
+                    "formal preparation changed its named header",
+                )?;
+                self.function(owner)?
+                    .syntax
+                    .parameters
+                    .get(receipt.parameter as usize)
+                    .and_then(|parameter| parameter.default.as_ref())
+                    .and_then(|default| default.hir_id)
+            }
+            Some(CallableOwner::Lambda(site)) => {
+                let hir = self
+                    .facts
+                    .semantic_hir
+                    .as_deref()
+                    .ok_or_else(|| "formal preparation has no original HIR".to_owned())?;
+                self.facts
+                    .closure_sites
+                    .get(site.0 as usize)
+                    .filter(|actual| actual.id == site)
+                    .and_then(|site| hir.expression(site.source))
+                    .and_then(|expression| match &expression.kind {
+                        crate::hir::nodes::ExprKind::Lambda { parameters, .. } => {
+                            parameters.get(receipt.parameter as usize)?.default
+                        }
+                        _ => None,
+                    })
+            }
+            _ => None,
+        };
+        require(
+            source.is_some()
+                && root
+                    .identity
+                    .is_some_and(|identity| Some(identity.source) == source)
+                && self
+                    .facts
+                    .expressions
+                    .get(token)
+                    .is_some_and(|fact| fact.source_id == source),
+            "formal preparation root differs from its original default HIR",
+        )?;
+        Ok(Some(receipt))
+    }
+
+    /// A read uses its binding's declaration activation. Captures must be
+    /// grounded in the actual reading environment, never inferred from an
+    /// equal name or the invocation which happens to be on top of the stack.
+    pub(super) fn parameter_declaration_context(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        observation: Option<usize>,
+    ) -> Check<InvocationContext> {
+        let binding_id = *value
+            .sources
+            .first()
+            .ok_or_else(|| "formal Source has no binding".to_owned())?;
+        let binding = self
+            .facts
+            .bindings
+            .get(binding_id)
+            .ok_or_else(|| "formal Source binding is absent".to_owned())?;
+        let pattern = binding
+            .pattern
+            .ok_or_else(|| "formal Source lost its HIR declaration".to_owned())?;
+        require(
+            self.facts.semantic_hir.as_deref().and_then(|hir| hir.pattern(pattern))
+                .is_some_and(|pattern| matches!(&pattern.kind,crate::hir::nodes::PatternKind::Name(name) if name == &binding.name)),
+            "formal Source declaration is not its actual HIR Name pattern",
+        )?;
+        let index =
+            self.original_source_root(expression, value, context, observation, &mut 4096)?;
+        let read = self
+            .facts
+            .evaluations
+            .get(index)
+            .ok_or_else(|| "formal Source read has no actual scope".to_owned())?;
+        let declaration = binding.context;
+        if self.parameter_preparation(binding, context)?.is_none() {
+            match declaration.owner {
+                Some(CallableOwner::Function(owner)) => require(
+                    self.facts
+                        .invocations
+                        .iter()
+                        .filter(|summary| {
+                            summary.activation == Some(binding.owner)
+                                && summary.context == Some(declaration)
+                        })
+                        .count()
+                        == 1
+                        && declaration
+                            .invocation
+                            .and_then(|id| self.facts.copy_invocations.get(id.0 as usize))
+                            .is_some_and(|call| {
+                                Some(call.id) == declaration.invocation
+                                    && call.target == owner
+                                    && call.status == CopyInvocationStatus::Completed
+                            }),
+                    "formal Source declaration borrowed another named activation",
+                )?,
+                Some(CallableOwner::Lambda(site)) => require(
+                    declaration
+                        .closure_invocation
+                        .and_then(|id| self.facts.closure_invocations.get(id.0 as usize))
+                        .is_some_and(|call| {
+                            Some(call.id) == declaration.closure_invocation
+                                && call.activation == Some(binding.owner)
+                                && Some(call.closure) == declaration.closure
+                                && call.status == CopyInvocationStatus::Completed
+                                && self
+                                    .facts
+                                    .closures
+                                    .get(call.closure)
+                                    .is_some_and(|closure| closure.site == Some(site))
+                        }),
+                    "formal Source declaration borrowed another lambda activation",
+                )?,
+                _ => return Err("formal Source declaration has no callable activation".into()),
+            }
+        }
+        if read.scope == binding.owner && (context == declaration || context.default_use.is_some())
+        {
+            return Ok(declaration);
+        }
+        if let Some(handler) = self.storage_handler(context, read.scope)? {
+            require(
+                handler.lexical.get(&binding.name) == Some(&binding_id),
+                "formal Source read is absent from its actual handler capture",
+            )?;
+            return Ok(declaration);
+        }
+        if matches!(context.owner, Some(CallableOwner::Lambda(_)))
+            && let Some(id) = context.closure_invocation
+        {
+            let call = self
+                .facts
+                .closure_invocations
+                .get(id.0 as usize)
+                .filter(|call| call.id == id && call.activation == Some(read.scope))
+                .ok_or_else(|| {
+                    "captured formal Source has no actual reading lambda activation".to_owned()
+                })?;
+            let closure = self
+                .facts
+                .closures
+                .get(call.closure)
+                .ok_or_else(|| "captured formal Source reading lambda is absent".to_owned())?;
+            require(
+                closure.lexical.get(&binding.name) == Some(&binding_id)
+                    && closure.captures.contains(&binding_id),
+                "formal Source borrowed an uncaptured binding from another environment",
+            )?;
+            return Ok(declaration);
+        }
+        let environments = self.storage_named_environments(context)?;
+        require(
+            self.facts.invocations.iter().any(|summary| {
+                summary.activation == Some(read.scope) && summary.context == Some(context)
+            }) && environments.iter().all(|function| {
+                function.lexical.get(&binding.name) == Some(&binding_id)
+                    && function.captures.contains(&binding_id)
+            }),
+            "formal Source read is absent from its actual named capture",
+        )?;
+        Ok(declaration)
+    }
+
     pub(super) fn lambda_formal_source_key(
         &self,
         expression: &Expr,
         value: &Value,
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+        visit: SourceVisit,
     ) -> Check<ArgumentKey> {
         let ExprKind::Name(name) = &expression.kind else {
             return Err("lambda formal Source is not a real Name".into());
@@ -23,6 +249,8 @@ impl Replay<'_> {
             .bindings
             .get(*value.sources.first().unwrap())
             .ok_or_else(|| "lambda formal Source binding is absent".to_owned())?;
+        let reading = context;
+        let context = binding.context;
         let id = context
             .closure_invocation
             .ok_or_else(|| "lambda formal Source has no actual body entry".to_owned())?;
@@ -67,17 +295,19 @@ impl Replay<'_> {
         let ExprKind::Lambda { parameters, .. } = &header.expression.kind else {
             unreachable!()
         };
-        let parameters:Vec<_>=parameters.iter().filter(|parameter|parameter.pattern.span==binding.span
+        let parameters:Vec<_>=parameters.iter().enumerate().filter(|(_,parameter)|binding.pattern.is_some() && parameter.pattern.hir_id==binding.pattern
             &&matches!(&parameter.pattern.kind,ril_syntax::ast::PatternKind::Name(actual) if actual==name)).collect();
-        let [parameter] = parameters.as_slice() else {
+        let [(slot, parameter)] = parameters.as_slice() else {
             return Err("lambda formal Source differs from its actual header".into());
         };
-        let key = self.input_callable_source_key(
-            parameter.ty.as_ref().ok_or_else(|| {
-                "inferred lambda formal needs its actual receiving Source context".to_owned()
-            })?,
-            &self.lambda_input_scope(site.owner)?,
-        )?;
+        let Some(annotation) = parameter.ty.as_ref() else {
+            let observation =
+                self.original_source_root(expression, value, reading, visit.observation, work)?;
+            self.inferred_lambda_receipt(invocation, *slot, value, observation, work)?;
+            return self.closure_entry_source_key(invocation, *slot, sites, work, visit.depth);
+        };
+        let key =
+            self.input_callable_source_key(annotation, &self.lambda_input_scope(site.owner)?)?;
         let selected = closure
             .creation_invocation
             .map(|id| {
@@ -265,16 +495,17 @@ impl Replay<'_> {
                         .expressions
                         .get(row.expression)
                         .filter(|fact| fact.source_id.is_some() && fact.source_id == body.hir_id)
-                        .map(|fact| (row.context, &fact.value))
+                        .map(|fact| (row.context, row.expression, &fact.value))
                 })
                 .collect();
-            let [(body_context, result)] = roots.as_slice() else {
+            let [(body_context, observation, result)] = roots.as_slice() else {
                 continue;
             };
             if result.ty == Ty::Never {
                 continue;
             }
-            let result = self.original_source_key(body, result, *body_context, sites)?;
+            let result =
+                self.original_observed_source_key(body, *observation, *body_context, sites)?;
             let key = ArgumentKey::Callable {
                 parameters: parameters.clone(),
                 result: Box::new(result),

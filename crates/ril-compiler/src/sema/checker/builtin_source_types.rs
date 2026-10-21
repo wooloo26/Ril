@@ -6,6 +6,8 @@
 //! standard_file.rs and `standard_process_builtin` in standard_process.rs record
 //! Mode::Write on formal zero and both effects/concrete_effects Fiber.
 use super::*;
+use crate::sema::builtin_sources::BuiltinDeclaration;
+use ril_compiler_core::builtin_calls::GenericBuiltin;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Identity {
@@ -13,6 +15,9 @@ pub(super) enum Identity {
     FileWrite,
     ProcessWait,
     ProcessTerminate,
+    Closed(crate::sema::source_types::builtins::BuiltinId),
+    Constant(crate::sema::source_types::builtins::ConstantId),
+    Generic(GenericBuiltin),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,9 +30,9 @@ pub(super) struct Contract {
     pub identity: Identity,
     /// Complete original header including its qualifications. Preserve this
     /// in the emitter receipt/Core reference, not just a coordinate view.
-    pub source: TypeExpr,
-    pub effects: [SystemEffect; 1],
-    pub written_formals: [u32; 1],
+    pub source: BuiltinDeclaration,
+    pub effects: &'static [SystemEffect],
+    pub written_formals: &'static [u32],
     /// These four primitives have no lexical captured annotation environment.
     pub captures: BTreeSet<BindingId>,
 }
@@ -39,6 +44,9 @@ impl Identity {
             Self::FileWrite => "File::write",
             Self::ProcessWait => "Process::wait",
             Self::ProcessTerminate => "Process::terminate",
+            Self::Closed(id) => id.definition().name,
+            Self::Constant(id) => id.definition().0,
+            Self::Generic(id) => id.name(),
         }
     }
 }
@@ -47,6 +55,43 @@ impl Identity {
 /// resolution. A spelling in an expected type or a later mutated signature is
 /// not this operation's source. Unsupported builtin schemas remain absent.
 pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
+    use crate::sema::source_types::{WorkLimit, builtins};
+    if let Some(id) = GenericBuiltin::lookup(canonical_name) {
+        return Some(Contract {
+            identity: Identity::Generic(id),
+            source: BuiltinDeclaration::Generic(id),
+            effects: &[],
+            written_formals: crate::sema::source_types::polymorphic::written_formals(id),
+            captures: BTreeSet::new(),
+        });
+    }
+    if let Some(id) = builtins::BuiltinId::lookup(canonical_name) {
+        return Some(Contract {
+            identity: Identity::Closed(id),
+            source: BuiltinDeclaration::Syntax(
+                id.definition()
+                    .syntax(span, &mut WorkLimit::new(4096))
+                    .ok()?,
+            ),
+            effects: &[],
+            written_formals: &[],
+            captures: BTreeSet::new(),
+        });
+    }
+    if let Some(id) = builtins::ConstantId::lookup(canonical_name) {
+        return Some(Contract {
+            identity: Identity::Constant(id),
+            source: BuiltinDeclaration::Syntax(
+                id.definition()
+                    .1
+                    .syntax(span, &mut WorkLimit::new(4096))
+                    .ok()?,
+            ),
+            effects: &[],
+            written_formals: &[],
+            captures: BTreeSet::new(),
+        });
+    }
     let identity = match canonical_name {
         "File::read_chunk" => Identity::FileReadChunk,
         "File::write" => Identity::FileWrite,
@@ -88,10 +133,11 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
             },
             "Process::ProcessError",
         ),
+        Identity::Closed(_) | Identity::Constant(_) | Identity::Generic(_) => unreachable!(),
     };
     Some(Contract {
         identity,
-        source: TypeExpr {
+        source: BuiltinDeclaration::Syntax(TypeExpr {
             hir_id: None,
             text: String::new(),
             span,
@@ -111,11 +157,28 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
                     },
                 ],
             },
-        },
-        effects: [SystemEffect::Fiber],
-        written_formals: [0],
+        }),
+        effects: &[SystemEffect::Fiber],
+        written_formals: &[0],
         captures: BTreeSet::new(),
     })
+}
+
+pub(super) fn source_key(
+    declaration: &BuiltinDeclaration,
+) -> Option<crate::sema::effect_identity::ArgumentKey> {
+    match declaration {
+        BuiltinDeclaration::Generic(id) => Some(
+            crate::sema::effect_identity::ArgumentKey::GenericBuiltin(*id),
+        ),
+        BuiltinDeclaration::Syntax(syntax) => {
+            let syntax =
+                super::source_types::expand_builtin_source_syntax(&BTreeMap::new(), syntax, 0)?;
+            let key = crate::static_eval::effects::bounded_argument_key(&syntax, &BTreeMap::new())?;
+            crate::sema::source_reception::complete(&key, &mut 4096)?;
+            Some(key)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -147,7 +210,7 @@ mod tests {
                 parameters,
                 result,
                 annotations,
-            } = &contract.source.kind
+            } = &contract.source.syntax().unwrap().kind
             else {
                 unreachable!()
             };
@@ -170,7 +233,12 @@ mod tests {
 
     #[test]
     fn canonical_qualified_header_does_not_claim_a_closed_raw_source_witness() {
-        let source = contract("File::write", span()).unwrap().source;
+        let source = contract("File::write", span())
+            .unwrap()
+            .source
+            .syntax()
+            .unwrap()
+            .clone();
         let witness = SourceTypeWitness {
             key: crate::static_eval::normalized_argument_key(&source),
             syntax: source,

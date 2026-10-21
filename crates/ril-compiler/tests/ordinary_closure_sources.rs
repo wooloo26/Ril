@@ -77,6 +77,17 @@ fn closure_activation_and_formal_owner_cannot_be_deleted_or_borrowed() {
         .unwrap()
         .owner = ScopeId(0);
     assert!(solved_facts(&changed).is_err());
+    let mut changed = facts.clone();
+    changed
+        .bindings
+        .iter_mut()
+        .find(|binding| {
+            binding.parameter && binding.owner == activation && binding.span == parameter
+        })
+        .unwrap()
+        .context
+        .closure_invocation = None;
+    assert!(solved_facts(&changed).is_err());
 }
 
 #[test]

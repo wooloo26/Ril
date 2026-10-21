@@ -14,6 +14,7 @@ pub(super) fn key(value: &crate::sema::effect_identity::ArgumentKey) -> p::Recor
     use crate::sema::effect_identity::ArgumentKey as K;
     use p::RecordBoundKey as O;
     match value {
+        K::GenericBuiltin(id) => O::GenericBuiltin(*id),
         K::Closed(value) => O::Closed(value.clone()),
         K::Binder { identity, .. } => O::Binder {
             identity: identity.clone(),

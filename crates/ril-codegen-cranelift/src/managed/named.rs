@@ -3,21 +3,18 @@ use super::*;
 
 pub(super) fn prepare(
     function: &core::Function,
+    found: &[discovery::Creation<'_>],
     prepared: &mut Prepared,
     known_cps: &mut BTreeSet<String>,
     operations: &[core::Operation],
     retained: &BTreeSet<(u32, u32, u32)>,
 ) -> Result<(), BackendError> {
-    let mut outer = BTreeSet::new();
-    for parameter in &function.parameters {
-        names(&parameter.pattern, &mut outer);
-    }
-    if let Some(captures) = prepared.captures.get(&function.name) {
-        outer.extend(captures.iter().cloned());
-    }
-    let mut found = Vec::new();
-    discover_block(&function.body, &outer, &mut found);
-    for (mut child, bound) in found {
+    for creation in found {
+        let discovery::Callable::Named(child) = creation.callable else {
+            continue;
+        };
+        let mut child = child.clone();
+        let bound = &creation.bound;
         let key = callable_key(&function.name, child.span);
         let site = key.span;
         let callable = CallableOwner::Function(child.definition);
@@ -33,7 +30,7 @@ pub(super) fn prepare(
             names(&parameter.pattern, &mut own);
         }
         free_block(&child.body, &own, &mut used);
-        let captures: Vec<_> = used.intersection(&bound).cloned().collect();
+        let captures: Vec<_> = used.intersection(bound).cloned().collect();
         let mut dynamic: BTreeSet<_> = captures.iter().cloned().collect();
         dynamic.extend(own);
         dynamic.extend(prepared.globals.iter().cloned());
@@ -98,82 +95,6 @@ pub(super) fn prepare(
         prepared.functions.push(native::Function { symbol, body });
     }
     Ok(())
-}
-
-fn discover_block(
-    block: &core::Block,
-    outer: &BTreeSet<String>,
-    found: &mut Vec<(core::Function, BTreeSet<String>)>,
-) {
-    let mut bound = outer.clone();
-    // Where declarations are hoisted, so their environments include later locals.
-    for statement in &block.statements {
-        match statement {
-            Statement::Bind { pattern, .. } => names(pattern, &mut bound),
-            Statement::Function(function) => {
-                bound.insert(function.name.clone());
-            }
-            _ => {}
-        }
-    }
-    for statement in &block.statements {
-        match statement {
-            Statement::Function(function) => found.push((function.clone(), bound.clone())),
-            Statement::Bind { value, .. } => discover_expr(value, &bound, found),
-            Statement::Assign { target, value, .. } => {
-                discover_expr(target, &bound, found);
-                discover_expr(value, &bound, found);
-            }
-            Statement::Expr { expression, .. } => discover_expr(expression, &bound, found),
-            Statement::Handle { .. } => {}
-        }
-    }
-}
-
-fn discover_expr(
-    expr: &Expr,
-    bound: &BTreeSet<String>,
-    found: &mut Vec<(core::Function, BTreeSet<String>)>,
-) {
-    visit_expr(expr, &mut |expr| match &expr.kind {
-        ExprKind::Lambda { .. } => false,
-        ExprKind::Block(block) | ExprKind::Loop { body: block, .. } => {
-            discover_block(block, bound, found);
-            false
-        }
-        ExprKind::While {
-            condition, body, ..
-        } => {
-            discover_expr(condition, bound, found);
-            discover_block(body, bound, found);
-            false
-        }
-        ExprKind::For {
-            iterable,
-            pattern,
-            body,
-            ..
-        } => {
-            discover_expr(iterable, bound, found);
-            let mut own = bound.clone();
-            names(pattern, &mut own);
-            discover_block(body, &own, found);
-            false
-        }
-        ExprKind::Match { value, arms } => {
-            discover_expr(value, bound, found);
-            for arm in arms {
-                let mut own = bound.clone();
-                names(&arm.pattern, &mut own);
-                if let Some(guard) = &arm.guard {
-                    discover_expr(guard, &own, found);
-                }
-                discover_expr(&arm.body, &own, found);
-            }
-            false
-        }
-        _ => true,
-    });
 }
 
 impl Emitter<'_, '_> {

@@ -5,6 +5,53 @@ use ril_compiler_core::{ids::ExprId, source::Span};
 use ril_syntax::ast::{self, ParameterMode};
 const MAX_OPERANDS: usize = 1_000_000;
 
+/// Bind in written order without changing evaluation order. The same public
+/// interface relation serves emission and independent argument replay.
+pub fn bind_slots<'p, 'a>(
+    parameters: &[Option<&'p str>],
+    arguments: impl IntoIterator<Item = Option<&'a str>>,
+) -> Vec<Result<usize, &'static str>> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut names = BTreeMap::new();
+    for (slot, name) in parameters.iter().enumerate() {
+        if let Some(name) = name {
+            names.entry(*name).or_insert(slot);
+        }
+    }
+    let mut occupied = BTreeSet::new();
+    let mut first = 0;
+    arguments
+        .into_iter()
+        .map(|label| {
+            let slot = if let Some(label) = label {
+                *names.get(label).ok_or("E0339")?
+            } else {
+                while occupied.contains(&first) {
+                    first += 1;
+                }
+                if first >= parameters.len() {
+                    return Err("E0314");
+                }
+                first
+            };
+            if !occupied.insert(slot) {
+                return Err("E0325");
+            }
+            Ok(slot)
+        })
+        .collect()
+}
+
+pub fn parameter_labels(parameters: &[ast::Parameter]) -> Vec<Option<&str>> {
+    parameters
+        .iter()
+        .map(|parameter| match &parameter.pattern.kind {
+            ast::PatternKind::Name(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationKind {
     Call,
@@ -65,15 +112,21 @@ impl<'a, E: Copy> Application<'a, E> {
         }
     }
 
-    /// Ordinary applications evaluate their callee first. Pipelines preserve
-    /// the implementation's left/written/callee order; the computed-callee
-    /// position is explicitly tracked as a specification question in README.
+    /// Pipelines evaluate the left operand, then the actual callee, then
+    /// written right operands. Ordinary calls start with their callee.
     pub fn evaluation_order(&self) -> impl Iterator<Item = EvaluationRole> + '_ {
-        (self.kind == ApplicationKind::Call)
-            .then_some(EvaluationRole::Callee)
+        (self.kind == ApplicationKind::Pipeline)
+            .then_some(EvaluationRole::Piped)
             .into_iter()
-            .chain(self.operands.iter().map(|operand| operand.role))
-            .chain((self.kind == ApplicationKind::Pipeline).then_some(EvaluationRole::Callee))
+            .chain(std::iter::once(EvaluationRole::Callee))
+            .chain(
+                self.operands
+                    .iter()
+                    .filter_map(|operand| match operand.role {
+                        EvaluationRole::Written(index) => Some(EvaluationRole::Written(index)),
+                        _ => None,
+                    }),
+            )
     }
 }
 
@@ -273,8 +326,8 @@ mod tests {
                 }),
                 vec![
                     EvaluationRole::Piped,
-                    EvaluationRole::Written(0),
                     EvaluationRole::Callee,
+                    EvaluationRole::Written(0),
                 ],
             ),
         ] {

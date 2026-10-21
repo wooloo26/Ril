@@ -71,6 +71,7 @@ pub(super) fn symbolic_member_key(key: &ArgumentKey, scope: &BoundScope) -> bool
         }
         work -= 1;
         match key {
+            ArgumentKey::GenericBuiltin(_) => {}
             ArgumentKey::Closed(_) => return false,
             ArgumentKey::Binder {
                 identity,
@@ -327,6 +328,7 @@ impl Replay<'_> {
             )?;
             work -= 1;
             match key {
+                ArgumentKey::GenericBuiltin(_) => {}
                 ArgumentKey::Closed(_) => {
                     return Err("symbolic member has an unresolved type computation".into());
                 }
@@ -435,14 +437,14 @@ impl Replay<'_> {
             })
             .ok_or_else(|| "symbolic member has no actual whole argument entry".to_owned())?;
         require(
-            call.arguments.len() == self.function(call.target)?.syntax.parameters.len(),
+            call.entry.arguments.len() == self.function(call.target)?.syntax.parameters.len(),
             "symbolic member argument table has missing entries or wrong arity",
         )?;
         require(
             call.declaration_probe
                 && call.target == bound.definition
                 && projection.context.owner == Some(CallableOwner::Function(bound.definition))
-                && projection.allocation_epoch == call.entry_allocation_epoch
+                && projection.allocation_epoch == call.entry.allocation_epoch
                 && projection.access == BoundAccess::Read
                 && site.supported
                 && site.assignment.is_none()
@@ -469,7 +471,7 @@ impl Replay<'_> {
         )?;
         let mut whole_entries = Vec::new();
         for (argument, path) in &paths {
-            let (mode, entry) = call.arguments.get(*argument).ok_or_else(|| {
+            let (mode, entry) = call.entry.arguments.get(*argument).ok_or_else(|| {
                 "symbolic declaration T path has no whole actual entry".to_owned()
             })?;
             require(
@@ -515,7 +517,7 @@ impl Replay<'_> {
     ) -> Check<MemberIdentity<'a>> {
         require(
             !reception.whole_entries.is_empty()
-                && reception.projection.allocation_epoch == reception.call.entry_allocation_epoch,
+                && reception.projection.allocation_epoch == reception.call.entry.allocation_epoch,
             "symbolic declaration member has no fully covered frozen entry",
         )?;
         let syntax = self
@@ -544,7 +546,7 @@ impl Replay<'_> {
             scope: reception.scope.clone(),
             snapshot,
             member,
-            entry_epoch: reception.call.entry_allocation_epoch,
+            entry_epoch: reception.call.entry.allocation_epoch,
         };
         self.stored_symbolic_member(snapshot, member, &identity)?;
         Ok(identity)
@@ -586,13 +588,13 @@ impl Replay<'_> {
             })
             .ok_or_else(|| "symbolic source stage has no completed actual invocation".to_owned())?;
         require(
-            call.arguments.len() == self.function(call.target)?.syntax.parameters.len(),
+            call.entry.arguments.len() == self.function(call.target)?.syntax.parameters.len(),
             "symbolic source stage whole argument table is missing or has wrong arity",
         )?;
         require(
             identity.context.owner == Some(CallableOwner::Function(call.target))
                 && identity.span == call.span
-                && call.entry_allocation_epoch <= self.facts.allocation_history.len()
+                && call.entry.allocation_epoch <= self.facts.allocation_history.len()
                 && self
                     .facts
                     .explanations
@@ -634,10 +636,10 @@ impl Replay<'_> {
                     && same_material_path(path, &occurrence.selection_path),
                 "symbolic source stage borrowed another actual T path",
             )?;
-            let (mode, actual) = call
-                .arguments
-                .get(*argument)
-                .ok_or_else(|| "symbolic source T path lacks a whole actual entry".to_owned())?;
+            let (mode, actual) =
+                call.entry.arguments.get(*argument).ok_or_else(|| {
+                    "symbolic source T path lacks a whole actual entry".to_owned()
+                })?;
             require(
                 *mode == super::super::model::Mode::Read,
                 "symbolic source type identity cannot replace mutable reception",
@@ -716,7 +718,7 @@ impl Replay<'_> {
         Ok(ScopedOriginalFormal {
             identity,
             context: identity.context,
-            entry_epoch: call.entry_allocation_epoch,
+            entry_epoch: call.entry.allocation_epoch,
             occurrences,
         })
     }

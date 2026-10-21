@@ -192,6 +192,24 @@ mod tests {
     }
 
     #[test]
+    fn native_location_cache_cannot_overwrite_distinct_source_closure_sites() {
+        let mut input = module(NonRetainingBuiltin::ConcurrentFork);
+        let span = input.nonretaining_adapters[0].span;
+        for id in 0..2 {
+            input.closure_sites.push(ClosureSite {
+                id: ClosureSiteId(id),
+                owner: CallableOwner::Function(DefinitionId(0)),
+                source: ril_compiler_core::ids::ExprId(id),
+                span,
+            });
+        }
+        assert!(
+            matches!(super::super::prepare(&input), Err(BackendError::NotImplemented(reason))
+            if reason.detail.contains("native closure cache cannot distinguish"))
+        );
+    }
+
+    #[test]
     fn missing_wrong_or_source_callable_certificates_cannot_skip_retention_checks() {
         for change in 0..5 {
             let mut input = module(NonRetainingBuiltin::ConcurrentFork);
@@ -205,6 +223,7 @@ mod tests {
                 3 => input.closure_sites.push(ClosureSite {
                     id: ClosureSiteId(0),
                     owner: CallableOwner::Function(DefinitionId(0)),
+                    source: ril_compiler_core::ids::ExprId(0),
                     span: site,
                 }),
                 _ => input.nonretaining_adapters[0].causes.clear(),

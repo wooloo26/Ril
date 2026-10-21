@@ -83,7 +83,7 @@ impl Checker {
                 nodes.extend(&value.origins.nodes);
                 participants.extend(&value.participants);
                 for bound in &value.callable_bounds {
-                    bindings.extend(bound.lexical.values().copied());
+                    bindings.extend(bound.typing_environment.contract_bindings.values().copied());
                 }
                 let mut returns: Vec<_> = value.callable_returns.iter().map(Arc::as_ref).collect();
                 while let Some(bound) = returns.pop() {

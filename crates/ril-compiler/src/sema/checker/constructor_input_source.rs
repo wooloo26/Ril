@@ -34,7 +34,7 @@ impl Checker {
             if target.sensitivity == source_reception::SchemaSensitivity::NotRequired {
                 continue;
             }
-            let answer = target.key.as_ref().and_then(|expected| {
+            let answer = target.key().as_ref().and_then(|expected| {
                 let event_id = event?;
                 let event = self.copy_call_events.get(event_id.0 as usize)?;
                 let context = self.invocation_context(frame.callable_owner);
@@ -44,7 +44,10 @@ impl Checker {
                 {
                     return None;
                 }
-                let callee = self.expression_facts.get(event.callee_expression?)?;
+                let callee = self
+                    .application_effect
+                    .expressions
+                    .get(event.callee_expression?)?;
                 if !callee.value.callables.iter().any(
                     |callable| matches!(callable, Callable::Constructor(actual) if actual == name),
                 ) {
@@ -85,8 +88,8 @@ impl Checker {
                 {
                     return None;
                 }
-                let observation = self.expression_facts.get(token.expression)?;
-                let row = self.invocation_expressions.get(token.expression)?;
+                let observation = self.application_effect.expressions.get(token.expression)?;
+                let row = self.application_effect.contexts.get(token.expression)?;
                 if row.expression != token.expression
                     || row.context != context
                     || row.argument_of != Some((event_id, slot as u32))
@@ -98,7 +101,10 @@ impl Checker {
                 if transported != *value {
                     return None;
                 }
-                input_compatible(expected, input)
+                match &input.key {
+                    Some(actual) => target.receive(actual, Some(&input.fresh), &mut 4096),
+                    None => input_compatible(expected, input),
+                }
             });
             match answer {
                 Some(true) => {}

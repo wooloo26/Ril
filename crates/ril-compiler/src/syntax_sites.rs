@@ -1,6 +1,6 @@
-//! Until every owned AST node has an identity, a diagnostic span may not select
-//! two different lexical handler/closure sites, or a contextual numeric literal
-//! and another value expression. Actual invocations are separate.
+//! Guards for remaining span-indexed consumers. Closure site identity is HIR
+//! based, but static-key binders and backend callable caches still need this
+//! conservative guard. Uncertified analysis retains its HIR and partial facts.
 use ril_compiler_core::source::Span;
 use ril_syntax::ast::*;
 use std::collections::{BTreeMap, BTreeSet};

@@ -79,3 +79,45 @@ fn example() {}
 fn example() @Parallel {}
 --@ end-file
 --@ end-case
+
+--@ case: square-all-immutable-input
+--@ mode: run-pass
+--@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ spec: SPEC#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ companion: square-all-live-read-input
+--@ entry: test_native
+--@ file: source.ril
+use ril/parallel
+halt fn square_all(numbers:Immut<[]f64>)->[]f64{
+    numbers |> Parallel::map(\x->x*x)
+}
+pub fn test_native(){assert(square_all(clone_immut([1.5,2.0]))==[2.25,4.0])}
+--@ end-file
+--@ end-case
+
+--@ case: square-all-live-read-input
+--@ mode: check-fail
+--@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ companion: square-all-immutable-input
+-- Error [E0605]: a read-only formal can still denote live input.
+--@ file: source.ril
+use ril/parallel
+halt fn square_all(numbers:[]f64)->[]f64{
+    numbers |> Parallel::map(\x->x*x)
+}
+--@ end-file
+--@ end-case
+
+--@ case: square-all-unbounded-callback
+--@ mode: check-fail
+--@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+--@ companion: square-all-immutable-input
+-- Error [E0820]: a pipeline retains its actual callback's termination obligation.
+--@ file: source.ril
+use ril/parallel
+fn spin(value:f64)->f64{loop{}}
+halt fn square_all(numbers:Immut<[]f64>)->[]f64{
+    numbers |> Parallel::map(spin)
+}
+--@ end-file
+--@ end-case

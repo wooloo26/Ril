@@ -140,7 +140,7 @@ impl Checker {
         let result = domain::close(&CoverageInput {
             final_epoch: self.recency_moves.len(),
             closures: &self.closures,
-            sites: &self.closure_sites,
+            sites: &self.application_effect.closure_sites,
             functions: &self.functions,
             named: &self.copy_invocations,
             calls: &self.closure_invocations,

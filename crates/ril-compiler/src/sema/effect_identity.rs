@@ -12,6 +12,8 @@ pub enum StaticBinderSort {
 /// retain source information which the value-level `Ty` deliberately erases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArgumentKey {
+    /// Reference to a complete, closed polymorphic declaration, not a Ty hole.
+    GenericBuiltin(ril_compiler_core::builtin_calls::GenericBuiltin),
     Closed(String),
     Binder {
         identity: String,
@@ -43,6 +45,7 @@ pub enum ArgumentKey {
 impl ArgumentKey {
     pub fn is_closed(&self) -> bool {
         match self {
+            Self::GenericBuiltin(_) => true,
             Self::Closed(_) => true,
             Self::Binder { .. } => false,
             Self::Name { arguments, .. } | Self::Tuple(arguments) => {
@@ -141,6 +144,7 @@ pub use ril_compiler_core::ids::ClosureInvocationId;
 #[derive(Debug, Clone)]
 pub struct ClosureInvocation {
     pub id: ClosureInvocationId,
+    pub entry: super::application_effect::CallableEntry,
     pub source_event: Option<super::copy_contract::CopyCallEventId>,
     pub caller_activation: super::facts::ScopeId,
     /// Actual entered closure frame, distinct from its caller and creation.

@@ -8,6 +8,7 @@ use ril_syntax::ast::ParameterMode;
 pub(crate) fn closed_key(value: &ArgumentKey) -> Result<irs::ArgumentKey, NotImplemented> {
     use irs::ArgumentKey as K;
     Ok(match value {
+        ArgumentKey::GenericBuiltin(id) => K::GenericBuiltin(*id),
         ArgumentKey::Closed(value) => K::Closed(value.clone()),
         ArgumentKey::Binder { .. } => {
             return Err(NotImplemented::new(

@@ -353,6 +353,9 @@ fn standard_termination(name: &str) -> Option<Judgment> {
             | "File::SeekFrom::End"
             | "Io::error_text"
             | "Io::read_buffer"
+            | "Io::read_position"
+            | "Io::guard_read"
+            | "Io::guard_seek"
             | "Io::write_buffer"
             | "Process::command"
             | "Process::success"
@@ -479,9 +482,9 @@ impl Visitor<'_> {
     fn standard_argument<'a>(
         &self,
         callee: &Expr,
-        arguments: &'a [Argument],
+        arguments: &'a [crate::hir::application::Operand<'_, &Expr>],
         index: usize,
-    ) -> Option<&'a Argument> {
+    ) -> Option<&'a Expr> {
         fn name(
             visitor: &Visitor<'_>,
             expression: &Expr,
@@ -508,11 +511,11 @@ impl Visitor<'_> {
         let labels = name(self, callee, &mut BTreeSet::new())
             .and_then(|name| crate::sema::parallel_parameter_labels(&name));
         let Some(labels) = labels else {
-            return arguments.get(index);
+            return arguments.get(index).map(|argument| argument.expression);
         };
         let mut ordered = vec![None; labels.len()];
         for argument in arguments {
-            let slot = if let Some(label) = &argument.label {
+            let slot = if let Some(label) = argument.label {
                 labels.iter().position(|parameter| *parameter == label)
             } else {
                 ordered.iter().position(Option::is_none)
@@ -520,7 +523,7 @@ impl Visitor<'_> {
             if ordered[slot].is_some() {
                 return None;
             }
-            ordered[slot] = Some(argument);
+            ordered[slot] = Some(argument.expression);
         }
         ordered.get(index).copied().flatten()
     }
@@ -882,7 +885,100 @@ impl Visitor<'_> {
         }
         result
     }
+    fn application(
+        &mut self,
+        application: &crate::hir::application::AstApplication<'_>,
+    ) -> Judgment {
+        let callee = application.callee;
+        let arguments = application.operands.as_slice();
+        let mut result = Judgment::default();
+        let mut selected = None;
+        for role in application.evaluation_order() {
+            result.include(
+                self.expression(
+                    application
+                        .expression(role)
+                        .expect("actual application role"),
+                ),
+            );
+            if role == crate::hir::application::EvaluationRole::Callee {
+                // Later written arguments can reassign a callable variable.
+                // Keep the callable selected at its actual evaluation point.
+                selected = Some((
+                    self.standard_callable(callee, &mut BTreeSet::new()),
+                    self.callable(callee, &mut BTreeSet::new()),
+                    self.named_callable(callee, &mut BTreeSet::new()),
+                ));
+            }
+        }
+        let Some((standard, called, named)) = selected else {
+            return Judgment::unresolved();
+        };
+        if let Some(bounded) = self.budget_call(application.span, arguments, &result) {
+            result.include(bounded);
+            return result;
+        }
+        if let Some(called) = standard {
+            for index in called.callable_parameters {
+                if let Some(argument) = self.standard_argument(callee, arguments, index) {
+                    result.include(self.callable(argument, &mut BTreeSet::new()));
+                } else {
+                    result.unresolved = true;
+                }
+            }
+            return result;
+        }
+        if (!called.callable_parameters.is_empty()
+            || (called.unresolved && !self.handlers.is_empty()))
+            && let Some(name) = &named
+            && !self.functions[name].is_halt
+            && let Some(actual) = self.contextual_call(name, arguments)
+        {
+            result.include(actual);
+            return result;
+        }
+        result.may_diverge |= called.may_diverge;
+        result.unresolved |= called.unresolved;
+        if named
+            .as_ref()
+            .is_none_or(|name| !self.functions.contains_key(name))
+        {
+            result
+                .callable_parameters
+                .extend(called.callable_parameters);
+            return result;
+        }
+        let halt = named
+            .as_ref()
+            .and_then(|name| self.functions.get(name))
+            .is_some_and(|function| function.is_halt);
+        for parameter in called.callable_parameters {
+            let Some(argument) = arguments.get(parameter) else {
+                result.unresolved = true;
+                continue;
+            };
+            let actual = self.callable(argument.expression, &mut BTreeSet::new());
+            if halt && actual.may_diverge {
+                self.diagnostics.push(diagnostic(
+                    "E0534",
+                    argument.span,
+                    "halt callback argument has no finite invocation proof",
+                ));
+            }
+            if halt && actual.unresolved {
+                self.unsupported.push(crate::sema::UnsupportedFeature {
+                    span: argument.span,
+                    description: "termination of an indirect halt callback argument".into(),
+                });
+            }
+            result.include(actual);
+        }
+        result
+    }
     fn expression_inner(&mut self, expression: &Expr) -> Judgment {
+        if let Some(application) = crate::hir::application::AstApplication::from_ast(expression) {
+            return self.application(&application);
+        }
         let mut result = Judgment::default();
         match &expression.kind {
             ExprKind::Literal(_)
@@ -980,74 +1076,7 @@ impl Visitor<'_> {
                 result.include(self.expression(left));
                 result.include(self.expression(right));
             }
-            ExprKind::Call { callee, arguments } => {
-                result.include(self.expression(callee));
-                for argument in arguments {
-                    result.include(self.expression(&argument.value));
-                }
-                if let Some(bounded) = self.budget_call(expression.span, arguments, &result) {
-                    result.include(bounded);
-                    return result;
-                }
-                if let Some(called) = self.standard_callable(callee, &mut BTreeSet::new()) {
-                    for index in called.callable_parameters {
-                        if let Some(argument) = self.standard_argument(callee, arguments, index) {
-                            result.include(self.callable(&argument.value, &mut BTreeSet::new()));
-                        } else {
-                            result.unresolved = true;
-                        }
-                    }
-                    return result;
-                }
-                let called = self.callable(callee, &mut BTreeSet::new());
-                let contextual_name = self.named_callable(callee, &mut BTreeSet::new());
-                if (!called.callable_parameters.is_empty()
-                    || (called.unresolved && !self.handlers.is_empty()))
-                    && let Some(name) = &contextual_name
-                    && !self.functions[name].is_halt
-                    && let Some(actual) = self.contextual_call(name, arguments)
-                {
-                    result.include(actual);
-                    return result;
-                }
-                result.may_diverge |= called.may_diverge;
-                result.unresolved |= called.unresolved;
-                let named = self.named_callable(callee, &mut BTreeSet::new());
-                if named
-                    .as_ref()
-                    .is_none_or(|name| !self.functions.contains_key(name))
-                {
-                    result
-                        .callable_parameters
-                        .extend(called.callable_parameters);
-                    return result;
-                }
-                let halt = named
-                    .as_ref()
-                    .and_then(|name| self.functions.get(name))
-                    .is_some_and(|function| function.is_halt);
-                for parameter in called.callable_parameters {
-                    let Some(argument) = arguments.get(parameter) else {
-                        result.unresolved = true;
-                        continue;
-                    };
-                    let actual = self.callable(&argument.value, &mut BTreeSet::new());
-                    if halt && actual.may_diverge {
-                        self.diagnostics.push(diagnostic(
-                            "E0534",
-                            argument.span,
-                            "halt callback argument has no finite invocation proof",
-                        ));
-                    }
-                    if halt && actual.unresolved {
-                        self.unsupported.push(crate::sema::UnsupportedFeature {
-                            span: argument.span,
-                            description: "termination of an indirect halt callback argument".into(),
-                        });
-                    }
-                    result.include(actual);
-                }
-            }
+            ExprKind::Call { .. } => return Judgment::unresolved(),
             ExprKind::Block(block) => result.include(self.block(block)),
             ExprKind::If {
                 condition,

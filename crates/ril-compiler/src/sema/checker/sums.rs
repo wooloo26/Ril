@@ -149,9 +149,9 @@ impl Checker {
             );
         } else if !declaration.opaque {
             for variant in &declaration.variants {
-                let previous = self.generic_context.clone();
+                let previous = self.type_source.environment.generic_context.clone();
                 for (index, parameter) in variant.generics.iter().enumerate() {
-                    self.generic_context.insert(
+                    self.type_source.environment.generic_context.insert(
                         parameter.name.clone(),
                         format!(
                             "{}:{}:variant:{index}:{}",
@@ -169,7 +169,7 @@ impl Checker {
                     .as_ref()
                     .map(|result| self.ty(result))
                     .unwrap_or_else(|| self.constructor_template_owner(declaration));
-                self.generic_context = previous;
+                self.type_source.environment.generic_context = previous;
                 self.constructors.insert(
                     format!("{}::{}", declaration.name, variant.name),
                     ConstructorInfo {

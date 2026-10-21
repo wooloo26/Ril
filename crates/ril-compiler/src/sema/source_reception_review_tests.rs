@@ -16,25 +16,34 @@ fn int() -> ArgumentKey {
 #[test]
 fn projection_keeps_nested_dimensions_and_refuses_excessive_row_scans() {
     use super::facts::Slot;
+    let hir = crate::hir::nodes::HirProgram::lower(&ril_syntax::ast::Program::default()).unwrap();
+    let project = |key: &ArgumentKey, slot: Slot| {
+        super::source_types::declarations::project(
+            key,
+            &[slot],
+            &hir,
+            &mut super::source_types::WorkLimit::new(4096),
+        )
+    };
     let source = record(false, array(Some(0), array(Some(3), int())));
-    let member = relation::project_key(&source, &[Slot::Field("items".into())]).unwrap();
+    let member = project(&source, Slot::Field("items".into())).unwrap();
     assert_eq!(
         relation::compatible(
             &array(Some(0), array(Some(2), int())),
-            member,
+            &member,
             None,
             &mut 4096
         ),
         Some(false),
     );
-    assert!(relation::project_key(&source, &[Slot::Field("missing".into())]).is_none());
+    assert!(project(&source, Slot::Field("missing".into())).is_err());
     let wide = ArgumentKey::Record {
         fields: (0..4097)
             .map(|index| (format!("field{index}"), false, int()))
             .collect(),
         row: None,
     };
-    assert!(relation::project_key(&wide, &[Slot::Field("field0".into())]).is_none());
+    assert!(project(&wide, Slot::Field("field0".into())).is_err());
 }
 
 fn array(length: Option<u64>, element: ArgumentKey) -> ArgumentKey {

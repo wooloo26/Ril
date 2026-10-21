@@ -1,0 +1,131 @@
+--@ case: explicit-empty-inner-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: fresh-tuple-construction
+-- Error [E0301]: Explicit element selection does not replace a stored inner extent.
+--@ file: source.ril
+fn exact<T>(value:[0][2]T)->int{0}
+fn example()->int{let values:[0][3]int=[];exact<int>(values)}
+--@ end-file
+--@ end-case
+
+--@ case: explicit-record-field-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: fresh-record-construction
+-- Error [E0301]: A record wrapper preserves the stored dynamic array schema.
+--@ file: source.ril
+fn exact<T>(value:{items:[2]T})->int{0}
+fn example()->int{
+    let values:[]int=[7,9]
+    let holder=.{items:values}
+    exact<int>(holder)
+}
+--@ end-file
+--@ end-case
+
+--@ case: fresh-record-construction
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: explicit-record-field-dimension
+--@ file: source.ril
+type Holder={items:[2]int}
+fn example(){let holder:Holder=.{items:[7,9]};assert(holder.items[0]==7)}
+--@ end-file
+--@ end-case
+
+--@ case: fresh-tuple-construction
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: explicit-empty-inner-dimension
+--@ file: source.ril
+fn example(){let pair:([2]int,int)=([7,9],0);assert(pair.0[0]==7)}
+--@ end-file
+--@ end-case
+
+--@ case: partial-static-argument-inference
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: excess-static-arguments
+--@ file: source.ril
+fn second<T,U>(first:T,second:U)->U{second}
+fn example(){assert(second<str>("x",7)==7)}
+--@ end-file
+--@ end-case
+
+--@ case: callable-view-cannot-regain-default
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+-- Error [E0314]: Generic forwarding retains the exposed view without a default.
+--@ file: source.ril
+fn right(right:int=2)->int{right}
+fn pass<T>(value:T)->T{value}
+fn example(){
+    let exposed:fn(other:int)->int=right
+    let received=pass<(fn(other:int)->int)>(exposed)
+    received()
+}
+--@ end-file
+--@ end-case
+
+--@ case: excess-static-arguments
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: partial-static-argument-inference
+-- Error [E0340]: Static argument arity has its own diagnostic.
+--@ file: source.ril
+fn empty<T>(){}
+fn example(){empty<int,str>()}
+--@ end-file
+--@ end-case
+
+--@ case: generic-array-return
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: unrelated-generic-return
+--@ file: source.ril
+fn id<T>(value:T)->T{value}
+fn forward<U>(value:U)->U{id<U>(value)}
+fn example(){let values:[2]int=[7,9];let received:[2]int=forward(values)}
+--@ end-file
+--@ end-case
+
+--@ case: bounded-record-tuple-return
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ file: source.ril
+fn first<U,T:{items:[2]U,..R}>(value:(T,int))->U{value.0.items[0]}
+fn forward<U,S>(value:({items:[2]U,tag:str,..S},int))->U{first<U>(value)}
+fn example(){
+    let values:[2]int=[7,9]
+    assert(forward((.{items:values,tag:"same"},0))==7)
+}
+--@ end-file
+--@ end-case
+
+--@ case: unrelated-generic-return
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: generic-array-return
+-- Error [E0301]: An unrelated generic binder cannot supply the return Source.
+--@ file: source.ril
+fn wrong<U,V>(value:U)->V{value}
+--@ end-file
+--@ end-case
+
+--@ case: composed-row-with-array-and-callback
+--@ mode: check-pass
+--@ spec: SPEC#record-types-and-row-polymorphism
+--@ file: source.ril
+fn same(value:int)->int{value}
+fn pass<U,T:{items:[2]U,..R}>(value:T)->T{value}
+fn forward<U,S>(value:{items:[2]U,tag:str,..S})->{items:[2]U,tag:str,..S}{pass<U>(value)}
+fn outer<U,S>(value:{items:[2]U,tag:str,..S})->{items:[2]U,tag:str,..S}{forward<U,S>(value)}
+fn example(){
+    let values:[2]int=[7,9]
+    let extra:[0][3]int=[]
+    let received=outer(.{items:values,tag:"same",extra:extra,action:same})
+    assert(received.action(received.items[0])==7)
+}
+--@ end-file
+--@ end-case

@@ -57,6 +57,9 @@ pub enum Object {
     Bytes(crate::byte_string::Bytes),
     /// Private linear-time stream accumulation, never a source-language value.
     IoAccumulator(Vec<u8>),
+    /// Immutable, non-owning position identity. This weak generation identity
+    /// is deliberately not a heap edge, including when this value is copied.
+    ReadPosition(Handle),
     ReadBuffer(crate::io_buffered::ReadBuffer),
     WriteBuffer(crate::io_buffered::WriteBuffer),
     Array(Vec<Handle>),

@@ -55,6 +55,14 @@ impl Evaluator {
             TypeKind::Name { path, arguments } => {
                 let full = path.join("::");
                 let name = full.strip_prefix("Prelude::").unwrap_or(&full).to_owned();
+                if ril_compiler_core::builtin_types::AtomicBuiltinType::from_name(&name).is_some()
+                    && !arguments.is_empty()
+                {
+                    return Err(Failure::Diagnostic(
+                        "E0340",
+                        "intrinsic atomic type has no generic arguments".into(),
+                    ));
+                }
                 if let Some(StaticValue::Type(value)) = self
                     .values
                     .get(&full)

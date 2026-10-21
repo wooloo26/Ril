@@ -6,12 +6,60 @@ use ril_compiler_core::diagnostic::CauseId;
 use ril_syntax::ast::TypeExpr;
 use std::collections::BTreeSet;
 
+/// Candidate interface only. Original declaration/occurrence validation still
+/// establishes identity. A published monomorphic view keeps its own interface.
+pub(crate) fn generic_reference(
+    value: &super::model::Value,
+) -> Option<ril_compiler_core::builtin_calls::GenericBuiltin> {
+    use super::model::{Callable, Ty};
+    if value.signature.is_some() || value.ty != Ty::Unknown {
+        return None;
+    }
+    let [Callable::Builtin(name)] = value.callables.as_slice() else {
+        return None;
+    };
+    ril_compiler_core::builtin_calls::GenericBuiltin::lookup(name)
+}
+
+pub(crate) fn parameter_labels(value: &super::model::Value, fallback: usize) -> Vec<Option<&str>> {
+    if let Some(parameters) = &value.signature {
+        crate::hir::application::parameter_labels(parameters)
+    } else if let Some(id) = generic_reference(value) {
+        super::source_types::polymorphic::parameter_labels(id)
+    } else {
+        vec![None; fallback]
+    }
+}
+
+/// A closed declaration reference can retain universal variables without
+/// inventing a monomorphic TypeExpr from the later receiving context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuiltinDeclaration {
+    Syntax(TypeExpr),
+    Generic(ril_compiler_core::builtin_calls::GenericBuiltin),
+}
+
+impl BuiltinDeclaration {
+    pub fn syntax(&self) -> Option<&TypeExpr> {
+        match self {
+            Self::Syntax(syntax) => Some(syntax),
+            Self::Generic(_) => None,
+        }
+    }
+    pub fn syntax_mut(&mut self) -> Option<&mut TypeExpr> {
+        match self {
+            Self::Syntax(syntax) => Some(syntax),
+            Self::Generic(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BuiltinSourceObservation {
     pub expression: usize,
     pub context: InvocationContext,
     pub identity: String,
-    pub full_header: TypeExpr,
+    pub full_header: BuiltinDeclaration,
     pub concrete_effects: BTreeSet<String>,
     pub written_formals: BTreeSet<u32>,
     pub captures: BTreeSet<BindingId>,

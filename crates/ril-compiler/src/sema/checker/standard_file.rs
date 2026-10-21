@@ -27,35 +27,19 @@ pub(super) fn file_constant(name: &str) -> Option<Ty> {
     Some(Ty::Named(ty.into()))
 }
 pub(super) fn io_error() -> Ty {
-    Ty::Record(
-        [
-            ("kind".into(), (false, Ty::Named("Io::ErrorKind".into()))),
-            ("message".into(), (false, Ty::Str)),
-            (
-                "native_code".into(),
-                (false, Ty::Optional(Box::new(integer("i64")))),
-            ),
-        ]
-        .into(),
-    )
+    crate::sema::source_types::standard_data::IO_ERROR
+        .erased()
+        .expect("fixed Io::IoError declaration fits its projection bound")
 }
 pub(super) fn read_chunk() -> Ty {
-    Ty::Record(
-        [
-            ("data".into(), (false, Ty::Bytes)),
-            ("end".into(), (false, Ty::Bool)),
-        ]
-        .into(),
-    )
+    crate::sema::source_types::standard_data::READ_CHUNK
+        .erased()
+        .expect("fixed Io::ReadChunk declaration fits its projection bound")
 }
 pub(super) fn write_progress() -> Ty {
-    Ty::Record(
-        [
-            ("written".into(), (false, integer("int"))),
-            ("error".into(), (false, Ty::Optional(Box::new(io_error())))),
-        ]
-        .into(),
-    )
+    crate::sema::source_types::standard_data::WRITE_PROGRESS
+        .erased()
+        .expect("fixed Io::WriteProgress declaration fits its projection bound")
 }
 pub(super) fn file_metadata() -> Ty {
     Ty::Record(

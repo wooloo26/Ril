@@ -2316,7 +2316,7 @@ source !> Array::push(4)              -- OK: no remaining use of this window or 
 
 - **Linear Pipeline (`|>`)**: Passes the left expression as the first argument to the right callable: `x |> f` desugars to `f(x)`.
 - **Mutating Pipeline (`!>`)**: Passes the mutable left lvalue to the right mutating callable: `x !> f` desugars to `f(mut x)`. It never supplies `^mut` implicitly.
-- **Call Form and Propagation**: `x |> f(a)` means `f(x, a)`; `x !> f(a)` means `f(mut x, a)`. The left operand evaluates first, then the written right arguments. Trailing closures supply the final argument. Postfix `?` keeps its ordinary precedence: use `(x !> f(a))?` to propagate the whole pipeline result.
+- **Call Form and Propagation**: `x |> f(a)` means `f(x, a)`; `x !> f(a)` means `f(mut x, a)`. Evaluation follows source order: the left operand, the right callee expression, then written right arguments in written order. Each expression evaluates once; an abrupt exit prevents the remaining expressions and the call. Thus `left() |> computed()(arg())` evaluates `left()`, then `computed()`, then `arg()`, before invoking the selected callable. This also applies to mutating pipelines. Trailing closures supply the final argument. Postfix `?` keeps its ordinary precedence: use `(x !> f(a))?` to propagate the whole pipeline result.
 
 ```ril
 let doubled = [1, 2, 3]
@@ -4062,6 +4062,8 @@ These forms use the same [callable contracts](#callable-contracts); spelling the
 
 Accessing module-level or captured bindings requires the corresponding named source group. A named definition must also declare concrete named obligations inherited from calls, either with a matching source group or an admissible function state contract reference. Only genuine callable-parameter dependencies retain implicit symbolic forwarding.
 
+This includes reading a module-level `meta let NAME` in a run-time value expression: the named definition declares `&{NAME}`. Compile-time evaluation and immutability do not erase that named source. Reads performed in the static/type domain are exempt from this run-time state obligation, including type expressions and static arguments.
+
 Within either kind of source group, a bare item permits read-only access, whether its actual data is immutable or live. It does not promise deep immutability or create a `let view` binding. `mut name` adds writes; `^mut name` additionally permits retained writable sharing. Each mode applies only to its own item.
 
 Direct access includes storage access in the named definition's lexical anonymous functions and handler arms when those operations contribute to its current invocation, and mutable argument permissions it supplies. Direct access requires its own declarations after local discharge; a contract reference cannot replace them. Referencing a named function declaration is not itself a read of storage; accessing a stored external callback is. Future operations of a returned callable remain latent, while its creation, capture, and retention obligations are checked separately.
@@ -5181,13 +5183,15 @@ A child panic may become a Result at its owning structured boundary. Synchronous
 
 ```ril
 use ril/parallel
-halt fn square_all(numbers: []f64) -> []f64 {
+halt fn square_all(numbers: Immut<[]f64>) -> []f64 {
     numbers |> Parallel::map(\x -> x * x)
 }
 -- @Parallel is not an effect annotation (E0620).
 ```
 
 Parallel invocation requires no residual effects and independently established finite computation; empty effect rows alone are insufficient (`E0820`). Outside mutable/live/resource dependencies, including those hidden in handlers or cleanup, are rejected (`E0605`), except the explicitly lent disjoint regions admitted by a concrete library operation. Overlapping or unproved-disjoint write/read or write/write regions are `E0619`. Checks are transitive; a distinct name, index, or copied graph path is not evidence of independence. Handling Div exhaustion alone does not establish finiteness. No live authority may escape the invocation.
+
+An ordinary read-only parameter such as `numbers: []f64` can denote live data; it does not establish `Immut<[]f64>`. Pure parallel collection inputs require the immutable view declared above or an explicitly detached immutable copy.
 
 Parallel reference evaluation determines result order and observable faults. Double faults in branch-local cleanup use the same visibility rule. Permitted writes remain confined to their explicitly lent regions.
 
@@ -5591,6 +5595,16 @@ MetaFnDecl       ::= [ "pub" ] "meta" "fn" SnakeCase [ GenericParams ] "(" [ Par
 ```
 
 `meta let` and `meta fn` evaluate in the pure static domain. Results can be used as immutable run-time constants. Type functions can consume these values to select shapes. Arithmetic on sizes follows the ordinary integer rules.
+
+A run-time value-expression read of a module-level meta constant retains its named source obligation under [External State Tracking](#external-state-tracking). Static/type-domain reads have no such run-time obligation.
+
+```ril
+meta let ANSWER = 42
+fn answer() -> int &{ANSWER} { ANSWER }
+-- fn hidden_answer() -> int { ANSWER } -- Error [E0510]
+meta let _ = assert(ANSWER == 42)
+fn empty(values: [ANSWER - 42]int) -> int { len(values) }
+```
 
 ```ril
 meta fn align_to(offset: int, alignment: int) -> int {

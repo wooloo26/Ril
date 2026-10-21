@@ -14,12 +14,8 @@ impl Checker {
             return;
         }
         let mut paths = Vec::new();
-        pattern_sources(
-            &binding.pattern,
-            target.and_then(|target| target.key.as_ref()),
-            &mut paths,
-            &mut 4096,
-        );
+        let source_key = target.and_then(|target| target.key());
+        pattern_sources(&binding.pattern, source_key.as_ref(), &mut paths, &mut 4096);
         for id in start..self.bindings.len() {
             let actual = &self.bindings[id];
             if actual.parameter
@@ -40,37 +36,72 @@ impl Checker {
     }
 
     pub(super) fn formal_source_type_key(
-        &self,
+        &mut self,
         value: &Value,
         syntax: &Expr,
         frame: &Frame,
     ) -> Option<ArgumentKey> {
-        let key = self.raw_formal_source_type_key(value, syntax, frame)?;
-        self.selected_bound_key(&key)
+        let (syntax, environment) = self.formal_source_declaration(value, syntax, frame)?;
+        self.with_typing_environment(&environment, |checker| {
+            let key = checker.record_bound_key(&syntax, &checker.record_bound_scope())?;
+            checker.selected_bound_key(&key)
+        })
     }
 
     /// Projection selects the declared member before applying an instance.
     /// Selecting an entire open aggregate would require a closed witness for
     /// siblings that do not participate in the actual projection.
     pub(super) fn raw_formal_source_type_key(
-        &self,
+        &mut self,
         value: &Value,
         syntax: &Expr,
         frame: &Frame,
     ) -> Option<ArgumentKey> {
+        let (syntax, environment) = self.formal_source_declaration(value, syntax, frame)?;
+        self.with_typing_environment(&environment, |checker| {
+            checker.record_bound_key(&syntax, &checker.record_bound_scope())
+        })
+    }
+
+    pub(super) fn formal_source_receiving_key(
+        &mut self,
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+    ) -> Option<ArgumentKey> {
+        let (syntax, environment) = self.formal_source_declaration(value, syntax, frame)?;
+        self.with_typing_environment(&environment, |checker| {
+            checker.freeze_source_receiving_target(&syntax).key()
+        })
+    }
+
+    fn formal_source_declaration(
+        &self,
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+    ) -> Option<(TypeExpr, crate::sema::context::FrozenEnvironment)> {
         let ExprKind::Name(name) = &syntax.kind else {
             return None;
         };
         let id = *frame.env.get(name)?;
-        let binding = self.bindings.get(id)?;
-        if !binding.parameter
-            || binding.owner != frame.owner
-            || binding.name != *name
-            || value.sources != BTreeSet::from([id])
-        {
+        if value.sources != BTreeSet::from([id]) {
             return None;
         }
-        let parameters = match frame.callable_owner? {
+        self.formal_binding_declaration(id, name)
+    }
+
+    fn formal_binding_declaration(
+        &self,
+        id: BindingId,
+        name: &str,
+    ) -> Option<(TypeExpr, crate::sema::context::FrozenEnvironment)> {
+        let binding = self.bindings.get(id)?;
+        if !binding.parameter || binding.name != name {
+            return None;
+        }
+        let pattern = binding.pattern?;
+        let parameters = match binding.context.owner? {
             CallableOwner::Function(definition) => {
                 &self
                     .functions
@@ -82,9 +113,9 @@ impl Checker {
             CallableOwner::Lambda(site) => {
                 let invocation = self
                     .closure_invocations
-                    .get(self.closure_invocation_stack.last()?.0 as usize)?;
+                    .get(binding.context.closure_invocation?.0 as usize)?;
                 let closure = self.closures.get(invocation.closure)?;
-                if invocation.activation != Some(frame.owner) || closure.site != Some(site) {
+                if invocation.activation != Some(binding.owner) || closure.site != Some(site) {
                     return None;
                 }
                 &closure.parameters
@@ -92,10 +123,21 @@ impl Checker {
             CallableOwner::Global => return None,
         };
         let parameter = parameters.iter().find(|parameter| {
-            parameter.pattern.span == binding.span
+            parameter.pattern.hir_id == Some(pattern)
                 && matches!(&parameter.pattern.kind,PatternKind::Name(actual) if actual==name)
         })?;
-        self.record_bound_key(parameter.ty.as_ref()?, &self.record_bound_scope())
+        Some((parameter.ty.clone()?, binding.typing_environment.clone()))
+    }
+
+    pub(in crate::sema::checker) fn declared_formal_source(
+        &mut self,
+        id: BindingId,
+        name: &str,
+    ) -> Option<ArgumentKey> {
+        let (syntax, environment) = self.formal_binding_declaration(id, name)?;
+        self.with_typing_environment(&environment, |checker| {
+            checker.freeze_source_receiving_target(&syntax).key()
+        })
     }
 
     pub(in crate::sema::checker) fn remember_closure_source(
@@ -124,12 +166,14 @@ impl Checker {
         }
         let context = self.invocation_context(frame.callable_owner);
         if self
-            .invocation_expressions
+            .application_effect
+            .contexts
             .iter()
             .filter(|row| {
                 row.context == context
                     && self
-                        .expression_facts
+                        .application_effect
+                        .expressions
                         .get(row.expression)
                         .is_some_and(|fact| {
                             fact.source_id.is_some()
@@ -152,12 +196,12 @@ impl Checker {
             let Some(syntax) = parameter.ty.as_ref() else {
                 return;
             };
-            let Some(key) = self.freeze_source_receiving_target(syntax).key else {
+            let Some(key) = self.freeze_source_receiving_target(syntax).key() else {
                 return;
             };
             parameters.push((parameter.mode, key));
         }
-        let Some(contract) = self.lambda_contracts.get(&index) else {
+        let Some(contract) = self.lambda_contract(index) else {
             return;
         };
         let key = ArgumentKey::Callable {

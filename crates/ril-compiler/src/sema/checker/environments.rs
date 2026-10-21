@@ -72,13 +72,13 @@ impl Checker {
             pattern: &Pattern,
             owner: ScopeId,
             scope: u32,
-            table: &mut BTreeMap<(ScopeId, u32, String), Span>,
+            table: &mut BTreeMap<(ScopeId, u32, String), Option<ril_compiler_core::ids::PatternId>>,
         ) {
             match &pattern.kind {
                 PatternKind::Name(name) => {
                     table
                         .entry((owner, scope, name.clone()))
-                        .or_insert(pattern.span);
+                        .or_insert(pattern.hir_id);
                 }
                 PatternKind::Tuple(items)
                 | PatternKind::Alternative(items)
@@ -120,13 +120,8 @@ impl Checker {
         let Some(body) = &info.syntax.body else {
             return;
         };
-        let expression = Expr {
-            hir_id: None,
-            kind: ExprKind::Block(body.clone()),
-            span: body.span,
-        };
         let mut names = BTreeSet::new();
-        expressions::collect_names(&expression, &mut names);
+        expressions::collect_block_names(body, &mut names);
         for parameter in &info.syntax.parameters {
             for name in pattern_names(&parameter.pattern) {
                 names.remove(&name);
@@ -138,17 +133,24 @@ impl Checker {
                 .lexical_declarations
                 .get(&(owner, info.lexical_scope, name.clone()))
                 .copied()
-                && info
+            {
+                if expected.is_none() {
+                    self.unsupported(
+                        info.syntax.span,
+                        "captured lexical declaration lacks its original HIR pattern identity",
+                    );
+                } else if info
                     .lexical
                     .get(&name)
-                    .is_none_or(|binding| self.bindings[*binding].span != expected)
-            {
-                self.error(
-                    "E0207",
-                    info.syntax.span,
-                    format!("captured lexical binding {name} has not been initialized"),
-                    [],
-                );
+                    .is_none_or(|binding| self.bindings[*binding].pattern != expected)
+                {
+                    self.error(
+                        "E0207",
+                        info.syntax.span,
+                        format!("captured lexical binding {name} has not been initialized"),
+                        [],
+                    );
+                }
             }
             let functions: Vec<_> = info
                 .lexical
@@ -173,9 +175,9 @@ impl Checker {
                 && function.lexical_scope == source.lexical_scope
             {
                 function.lexical.insert(source.name.clone(), binding);
-                function.typing_environment = function
-                    .typing_environment
-                    .with_contract_bindings(function.lexical.clone());
+                function.typing_environment = self
+                    .type_source
+                    .derive_environment(&function.typing_environment, &function.lexical);
             }
         }
     }
@@ -193,19 +195,14 @@ impl Checker {
         let Some(body) = &function.syntax.body else {
             return;
         };
-        let expression = Expr {
-            hir_id: None,
-            kind: ExprKind::Block(body.clone()),
-            span: body.span,
-        };
         let mut names = BTreeSet::new();
-        expressions::collect_names(&expression, &mut names);
+        expressions::collect_block_names(body, &mut names);
         for parameter in &function.syntax.parameters {
             for name in pattern_names(&parameter.pattern) {
                 names.remove(&name);
             }
         }
-        let mutated = expressions::mutated_names(&expression);
+        let mutated = expressions::mutated_block_names(body);
         for name in names {
             let Some(&binding) = function.lexical.get(&name) else {
                 continue;
@@ -383,5 +380,58 @@ pub(super) fn pattern_names(pattern: &Pattern) -> Vec<String> {
             .collect(),
         PatternKind::Mode { pattern, .. } => pattern_names(pattern),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod declaration_identity_tests {
+    use super::*;
+
+    #[test]
+    fn captured_initialization_uses_pattern_identity_instead_of_diagnostic_spans() {
+        let parsed = ril_syntax::parse(
+            "fn example(){let other=8;let value=7;assert(read()==7) where fn read()->int &{closure,value}{value}}",
+        );
+        assert!(parsed.diagnostics.is_empty());
+        let mut checker = Checker::new(FileId(0));
+        checker.run(&parsed.program);
+        let function = checker
+            .functions
+            .iter()
+            .position(|function| {
+                function.syntax.name == "read" && function.lexical.contains_key("value")
+            })
+            .unwrap();
+        let binding = checker.functions[function].lexical["value"];
+        let other = checker.functions[function].lexical["other"];
+        let original_span = checker.bindings[binding].span;
+        let original_pattern = checker.bindings[binding]
+            .pattern
+            .expect("original binding pattern");
+        assert_ne!(Some(original_pattern), checker.bindings[other].pattern);
+        checker.diagnostics.clear();
+        checker.bindings[binding].span = Span {
+            file: FileId(0),
+            start: 0,
+            end: 0,
+        };
+        checker.check_named_initialization(function);
+        assert!(
+            checker
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != "E0207"),
+            "{:?}",
+            checker.diagnostics
+        );
+        checker.bindings[binding].span = original_span;
+        checker.bindings[binding].pattern = checker.bindings[other].pattern;
+        checker.check_named_initialization(function);
+        assert!(
+            checker
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "E0207")
+        );
     }
 }

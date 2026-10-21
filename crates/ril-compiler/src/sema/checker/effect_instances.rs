@@ -68,7 +68,7 @@ impl Checker {
             if let Some(identity) = self
                 .effect_type_binders
                 .get(&name)
-                .or_else(|| self.generic_context.get(&name))
+                .or_else(|| self.type_source.environment.generic_context.get(&name))
                 .cloned()
             {
                 if !arguments.is_empty() {
@@ -79,10 +79,21 @@ impl Checker {
                 if !self.certified_effect_type_binder(&identity) {
                     return Err("symbolic effect argument requires a certified Type binder sort");
                 }
-                if let Some(witness) = self.generic_type_witnesses.get(&identity) {
+                if let Some(witness) = self
+                    .type_source
+                    .environment
+                    .generic_type_witnesses
+                    .get(&identity)
+                {
                     return Ok(witness.syntax.clone());
                 }
-                return if let Some(selected) = self.generic_substitutions.get(&identity).cloned() {
+                return if let Some(selected) = self
+                    .type_source
+                    .environment
+                    .generic_substitutions
+                    .get(&identity)
+                    .cloned()
+                {
                     self.effect_selected_type(&selected, syntax.span)
                         .ok_or("selected effect argument lacks its complete source type shape")
                 } else {
@@ -106,10 +117,12 @@ impl Checker {
                 for parameter in &declaration.generics {
                     dependencies.remove(&parameter.name);
                 }
-                if dependencies
-                    .iter()
-                    .any(|name| self.generic_context.contains_key(name))
-                {
+                if dependencies.iter().any(|name| {
+                    self.type_source
+                        .environment
+                        .generic_context
+                        .contains_key(name)
+                }) {
                     return Err(
                         "effect argument alias captures an enclosing binder without its declaration environment",
                     );
@@ -153,7 +166,7 @@ impl Checker {
                 annotations,
             } => {
                 if !annotations.is_empty() {
-                    if !self.generic_context.is_empty() {
+                    if !self.type_source.environment.generic_context.is_empty() {
                         return Err(
                             "effect argument callable rows require their canonical lexical binder environment",
                         );
@@ -176,7 +189,7 @@ impl Checker {
     }
 
     fn closed_effect_syntax(&self, syntax: &TypeExpr) -> Result<(), &'static str> {
-        if !self.generic_context.is_empty()
+        if !self.type_source.environment.generic_context.is_empty()
             && matches!(
                 syntax.kind,
                 TypeKind::TypeFunction { .. } | TypeKind::KindArrow { .. }
@@ -189,7 +202,10 @@ impl Checker {
         if crate::static_eval::effects::type_dependencies(syntax)
             .iter()
             .any(|name| {
-                self.generic_context.contains_key(name)
+                self.type_source
+                    .environment
+                    .generic_context
+                    .contains_key(name)
                     || self.effect_type_binders.contains_key(name)
             })
         {
@@ -211,6 +227,8 @@ impl Checker {
             .enumerate()
             .map(|(index, parameter)| {
                 let identity = self
+                    .type_source
+                    .environment
                     .generic_context
                     .get(&parameter.name)
                     .cloned()

@@ -192,6 +192,26 @@ pub fn test_native(){
 --@ end-file
 --@ end-case
 
+--@ case: closure-default-lexical-environment
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ entry: test_native
+--@ file: source.ril
+pub fn test_native(){
+    let action=\first:int=saved(),second:int=first+1,third:int=first+2,fourth:int=third+1 -> first*1000+second*100+third*10+fourth
+    {
+        assert(action()==7900)
+        assert(action(2)==2345)
+        assert(saved()==99)
+    where
+        fn saved()->int{99}
+    }
+where
+    fn saved()->int{7}
+}
+--@ end-file
+--@ end-case
+
 --@ case: generated-adapter-per-call
 --@ mode: run-pass
 --@ spec: STD#explicit-iteration
@@ -252,8 +272,8 @@ pub fn test_ordinary_callee_never() &{mut trace}{trace=0;assert(ordinary_callee_
 pub fn test_ordinary_first_never() &{mut trace}{trace=0;assert(ordinary_first_stop()==7 && trace==12)}
 pub fn test_ordinary_last_never() &{mut trace}{trace=0;assert(ordinary_last_stop()==7 && trace==123)}
 pub fn test_pipeline_left_never() &{mut trace}{trace=0;assert(pipeline_left_stop()==7 && trace==1)}
-pub fn test_pipeline_written_never() &{mut trace}{trace=0;assert(pipeline_written_stop()==7 && trace==12)}
-pub fn test_pipeline_callee_never() &{mut trace}{trace=0;assert(pipeline_callee_stop()==7 && trace==123)}
+pub fn test_pipeline_written_never() &{mut trace}{trace=0;assert(pipeline_written_stop()==7 && trace==132)}
+pub fn test_pipeline_callee_never() &{mut trace}{trace=0;assert(pipeline_callee_stop()==7 && trace==13)}
 pub fn test_ordinary_order() &{mut trace}{
     trace=0
     let result=({mark(9);combine})(mark(1),mark(2))
@@ -262,7 +282,7 @@ pub fn test_ordinary_order() &{mut trace}{
 pub fn test_pipeline_order() &{mut trace}{
     trace=0
     let result=mark(1) |> ({mark(9);combine})(mark(2))
-    assert(result==12 && trace==1294)
+    assert(result==12 && trace==1924)
 }
 --@ end-file
 --@ end-source
@@ -306,7 +326,7 @@ pub fn test_pipeline_order() &{mut trace}{
 --@ mode: run-pass
 --@ spec: SPEC#pipeline-operators
 --@ entry: test_pipeline_callee_never
--- Computed callees currently follow written arguments; README tracks the specification question.
+-- An abrupt computed callee prevents every written right argument.
 --@ use-source: application-prefix-control
 --@ end-case
 
@@ -323,7 +343,7 @@ pub fn test_pipeline_order() &{mut trace}{
 --@ spec: SPEC#pipeline-operators
 --@ entry: test_pipeline_order
 --@ companion: application-ordinary-complete-order
--- Computed callee position follows the current implementation agreement, pending specification clarification.
+-- The source order is left, computed callee, written right arguments, body.
 --@ use-source: application-prefix-control
 --@ end-case
 
@@ -599,17 +619,17 @@ pub fn test_ordinary_suspended() &{mut trace}{
 pub fn test_pipeline_left_suspended() &{mut trace}{
     trace=0
     with Read::get()->{mark(1);resume 1}
-    assert(pipeline_left_suspended()==12 && trace==1234)
+    assert(pipeline_left_suspended()==12 && trace==1324)
 }
 pub fn test_pipeline_written_suspended() &{mut trace}{
     trace=0
     with Read::get()->resume 2
-    assert(pipeline_written_suspended()==12 && trace==1234)
+    assert(pipeline_written_suspended()==12 && trace==1324)
 }
 pub fn test_pipeline_callee_suspended() &{mut trace}{
     trace=0
     with Read::get()->resume 0
-    assert(pipeline_callee_suspended()==12 && trace==1234)
+    assert(pipeline_callee_suspended()==12 && trace==1324)
 }
 --@ end-file
 --@ end-source
@@ -645,7 +665,7 @@ pub fn test_pipeline_callee_suspended() &{mut trace}{
 --@ spec: SPEC#pipeline-operators
 --@ entry: test_pipeline_callee_suspended
 --@ companion: application-ordinary-suspending-callee
--- Computed callees follow written arguments under the current implementation agreement.
+-- The computed callee suspends before the written right arguments run.
 --@ use-source: application-suspending-prefixes
 --@ end-case
 
@@ -749,6 +769,38 @@ pub fn test_native(){
         index+=1
     }
     assert(index==3 && total==6)
+}
+--@ end-file
+--@ end-case
+
+--@ case: application-mutating-computed-callee-order
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_native
+--@ file: source.ril
+type Cell={mut value:int}
+var trace=0
+fn mark(digit:int)->int &{mut trace}{trace=trace*10+digit;digit}
+fn bump(mut cell:Cell,increment:int)&mut{cell.value+=increment}
+pub fn test_native() &{mut trace}{
+    let mut cells=[Cell.{value:10}]
+    cells[mark(1)-1] !> ({mark(2);bump})(mark(3))
+    assert(trace==123 && cells[0].value==13)
+}
+--@ end-file
+--@ end-case
+
+--@ case: application-callee-selected-before-written-mutation
+--@ mode: run-pass
+--@ spec: SPEC#pipeline-operators
+--@ entry: test_native
+--@ file: source.ril
+fn early(left:i32,right:i32)->i32{left*10+right}
+fn late(left:i32,right:i32)->i32{100+left*10+right}
+pub fn test_native(){
+    var changed=false
+    let result=1i32 |> (if changed{late}else{early})({changed=true;2i32})
+    assert(result==12i32 && changed)
 }
 --@ end-file
 --@ end-case

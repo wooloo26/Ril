@@ -71,6 +71,8 @@ pub struct CopyNode {
 #[derive(Debug, Clone)]
 pub struct CopyBoundary {
     pub id: CopyBoundaryId,
+    pub input_allocation_epoch: usize,
+    pub output_allocation_epoch: Option<usize>,
     pub owner: Option<DefinitionId>,
     pub activation: ScopeId,
     pub span: Span,
@@ -149,18 +151,17 @@ impl CopyCallEvent {
 #[derive(Debug, Clone)]
 pub struct CopyInvocation {
     pub id: super::copy_templates::InstanceId,
+    pub entry:
+        super::application_effect::CallableEntry<Vec<(super::model::Mode, CopyValueSnapshot)>>,
     pub parent: Option<super::copy_templates::InstanceId>,
     pub caller: Option<DefinitionId>,
     pub caller_owner: Option<CallableOwner>,
     pub caller_activation: Option<super::facts::ScopeId>,
-    /// Frozen at the same point as the whole-argument snapshots.
-    pub entry_allocation_epoch: usize,
     pub target: DefinitionId,
     pub span: Span,
     pub declaration_probe: bool,
     pub direct: bool,
     pub source_event: Option<CopyCallEventId>,
-    pub arguments: Vec<(super::model::Mode, CopyValueSnapshot)>,
     pub boundaries: std::collections::BTreeSet<CopyBoundaryId>,
     pub result: Option<CopyValueSnapshot>,
     pub resource_copies: Vec<super::resource_copy::ResourceCloneId>,

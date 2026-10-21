@@ -114,6 +114,7 @@ fn assignment_tokens_order_and_whole_argument_arity_are_independently_required()
     let projection = &no_arguments.generic_bound_projections
         [no_arguments.bound_field_writes[0].projection_index];
     no_arguments.copy_invocations[projection.context.invocation.unwrap().0 as usize]
+        .entry
         .arguments
         .clear();
     damaged(&no_arguments);

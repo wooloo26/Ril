@@ -35,6 +35,7 @@ mod context;
 mod contract_types;
 mod contracts;
 mod generated_sources;
+mod symbolic_rows;
 pub(crate) use generated_sources::checked_roots as checked_generated_source_roots;
 pub(crate) use generated_sources::validate as validate_generated_sources;
 mod copy;
@@ -99,6 +100,7 @@ mod storage;
 mod storage_sources;
 mod sums;
 mod termination_queries;
+mod type_source;
 mod types;
 mod windows;
 
@@ -181,21 +183,25 @@ fn analyze_inner(
     constants: &crate::static_eval::constants::ConstantPool,
 ) -> AnalyzeOutcome {
     let ambiguous_sites = crate::syntax_sites::ambiguous(syntax);
-    if !ambiguous_sites.is_empty() {
-        return AnalyzeOutcome {
-            program: None,
-            facts: None,
-            hir: None,
-            diagnostics: vec![],
-            unsupported: ambiguous_sites,
-        };
-    }
     let mut checker = Checker::new(file);
+    // Remaining span-indexed consumers cannot certify ambiguous syntax. Keep
+    // their obligation while still building the uncertified analysis snapshot.
+    checker.unsupported.extend(ambiguous_sites);
     checker.declare_system_operations();
     checker.layout = layout;
     checker.declaration_files = declaration_files.iter().map(|file| file.0).collect();
     checker.install_constants(constants);
     checker.run(syntax);
+    if checker.application_effect.exhausted {
+        checker.unsupported(
+            Span {
+                file,
+                start: 0,
+                end: 0,
+            },
+            "semantic occurrence budget exhausted before recording a value",
+        );
+    }
     if let Some(span) = checker.numeric.incomplete() {
         checker.unsupported(
             span,
@@ -223,13 +229,18 @@ fn analyze_inner(
         .filter(|ty| checker.resource_type(ty))
         .cloned()
         .collect();
-    let (binding_sources, storage_writes, source_types) = checker.storage_sources.into_parts();
+    if checker.type_source.exhausted.get() {
+        checker.unsupported(Span { file, start: 0, end: 0 },
+            "typing environment clone work or depth budget exhausted; captured contracts are unresolved");
+    }
+    let (binding_sources, storage_writes, source_types) = checker.type_source.storage.into_parts();
     let checked_syntax = checker
         .checked_source
         .clone()
         .unwrap_or_else(|| std::sync::Arc::new(syntax.clone()));
     let hir = std::sync::Arc::new(std::mem::take(&mut checker.semantic_hir));
     let facts = SemanticFacts {
+        activations: checker.application_effect.activations,
         source_types,
         semantic_hir: Some(hir.clone()),
         binding_sources,
@@ -282,8 +293,8 @@ fn analyze_inner(
         bindings: checker.bindings,
         functions: checker.functions,
         closures: checker.closures,
-        closure_sites: checker.closure_sites,
-        expressions: checker.expression_facts,
+        closure_sites: checker.application_effect.closure_sites,
+        expressions: checker.application_effect.expressions,
         termination: termination.judgments,
         loan_parents: checker.loan_parents,
         invocation_loan_starts: checker.invocation_loan_starts,
@@ -304,7 +315,8 @@ fn analyze_inner(
         operations: checker.operations,
         effect_instances: checker.effect_instances,
         effect_invocations: checker.effect_invocations,
-        invocation_expressions: checker.invocation_expressions,
+        invocation_expressions: checker.application_effect.contexts,
+        evaluations: checker.application_effect.evaluations,
         builtin_source_observations: checker.builtin_sources.into_observations(),
         generated_sources: checker.generated_sources,
         invocation_calls: checker.invocation_calls,
@@ -372,6 +384,7 @@ pub(super) fn is_known_builtin_source_type(name: &str) -> bool {
 }
 
 struct Checker {
+    type_source: type_source::TypeSourceDomain,
     semantic_hir: crate::hir::HirProgram,
     pattern_value_sources:
         BTreeMap<ril_compiler_core::ids::PatternId, ril_compiler_core::ids::ExprId>,
@@ -421,9 +434,8 @@ struct Checker {
     fields: BTreeMap<(NodeId, Slot), Value>,
     bindings: Vec<BindingInfo>,
     functions: Vec<FunctionInfo>,
-    lambda_contracts: BTreeMap<usize, contracts::LambdaContract>,
-    contract_environment: Env,
-    type_contract_environments: BTreeMap<(u32, u32, u32), contracts::ContractEnvironment>,
+    type_contract_environments:
+        BTreeMap<ril_compiler_core::ids::TypeExprId, contracts::ContractEnvironment>,
     completed_invocation: Option<(ScopeId, Obligations)>,
     definition_checks: Vec<super::DefinitionCheck>,
     resumption_steps: Vec<super::ResumptionStep>,
@@ -434,7 +446,6 @@ struct Checker {
     probing_contracts: BTreeSet<(u32, u32, u32, u32)>,
     nested_contracts: BTreeSet<(u32, u32, u32, u32)>,
     closures: Vec<ClosureInfo>,
-    closure_sites: Vec<ClosureSite>,
     types: BTreeMap<String, TypeDeclaration>,
     effects: BTreeMap<String, EffectDeclaration>,
     local_effects: BTreeSet<String>,
@@ -461,7 +472,7 @@ struct Checker {
     active_iterations: Vec<Origins>,
     active_drafts: BTreeSet<NodeId>,
     checked_closures: BTreeSet<usize>,
-    expression_facts: Vec<super::ExpressionFact>,
+    application_effect: super::application_effect::ApplicationEffectDomain,
     invocations: Vec<super::summary::InvocationSummary>,
     literal_negative: bool,
     scope_names: BTreeMap<ScopeId, Option<String>>,
@@ -469,13 +480,11 @@ struct Checker {
     storage_types: BTreeMap<NodeId, Ty>,
     declaration_files: BTreeSet<u32>,
     recursive_analysis: super::recursive::Analysis,
-    generic_context: BTreeMap<String, String>,
     static_value_bindings: BTreeSet<BindingId>,
     cancellation_contexts: Vec<cancellation::Context>,
     generic_row_lacks: BTreeMap<super::model::rows::RowIdentity, BTreeSet<String>>,
     generic_key_bounds: BTreeMap<String, TypeExpr>,
     generic_key_contexts: BTreeMap<String, BTreeMap<String, String>>,
-    static_key_arguments: BTreeMap<String, StaticCoordinate>,
     static_key_checks: Vec<super::StaticKeyCheck>,
     static_key_parameters: Vec<super::StaticKeyParameter>,
     inference_resolutions: Vec<super::InferenceResolution>,
@@ -489,9 +498,6 @@ struct Checker {
     observed_accesses: Vec<super::bound_writes::ObservedAccess>,
     bound_field_writes: Vec<super::bound_writes::BoundFieldWrite>,
     record_bounds_by_binder: BTreeMap<String, ril_compiler_core::ids::GenericBoundId>,
-    bound_row_context: BTreeMap<String, ril_compiler_core::ids::BoundRowId>,
-    bound_row_selections:
-        BTreeMap<ril_compiler_core::ids::BoundRowId, super::record_bounds::BoundRowSelection>,
     rigid_record_parameters:
         BTreeMap<(DefinitionId, u32), Vec<super::record_bounds::StructuralSchema>>,
     universal: bool,
@@ -504,10 +510,8 @@ struct Checker {
     effect_type_binders: BTreeMap<String, String>,
     effect_instances: Vec<super::effect_identity::EffectInstance>,
     effect_invocations: Vec<super::effect_identity::EffectInvocation>,
-    invocation_expressions: Vec<super::effect_identity::InvocationExpression>,
     builtin_sources: builtin_source_observations::State,
     generated_sources: Vec<super::generated_sources::GeneratedSource>,
-    storage_sources: storage_sources::State,
     invocation_calls: Vec<super::effect_identity::InvocationCall>,
     invocation_witnesses: Vec<super::effect_identity::InvocationWitness>,
     closure_invocations: Vec<super::effect_identity::ClosureInvocation>,
@@ -524,7 +528,7 @@ struct Checker {
     retained_handlers: Vec<RetainedHandlerFact>,
     retained_answer_uses: Vec<retained_answers::PendingUse>,
     retained_handler_answers: Vec<RetainedHandlerAnswerFact>,
-    immediate_scope_arguments: BTreeSet<(u32, u32, u32)>,
+    immediate_scope_arguments: BTreeSet<(super::copy_contract::CopyCallEventId, u32)>,
     immediate_scope_closures: BTreeSet<usize>,
     active_handlers: Vec<usize>,
     block_boundaries: Vec<u32>,
@@ -547,10 +551,8 @@ struct Checker {
     constructors: BTreeMap<String, ConstructorInfo>,
     invalid_refinement_values: BTreeMap<u32, &'static str>,
     write_events: Vec<narrowing::WriteEvent>,
-    read_epochs: BTreeMap<(u32, u32, u32, u32), usize>,
+    read_epochs: BTreeMap<(ril_compiler_core::ids::ExprId, ScopeId), usize>,
     uncertain_slots: BTreeSet<(NodeId, Slot)>,
-    generic_substitutions: BTreeMap<String, Ty>,
-    generic_type_witnesses: BTreeMap<String, std::sync::Arc<SourceTypeWitness>>,
     source_type_intern: BTreeMap<String, std::sync::Arc<SourceTypeWitness>>,
     source_type_bytes: usize,
     constructor_source_types: BTreeMap<String, std::sync::Arc<SourceTypeWitness>>,
@@ -559,7 +561,8 @@ struct Checker {
     result_loop_starts: Vec<usize>,
     result_exit_checks: BTreeMap<(u32, u32, u32, u32), bool>,
     result_return_checks: BTreeMap<(u32, u32), bool>,
-    lexical_declarations: BTreeMap<(ScopeId, u32, String), Span>,
+    lexical_declarations:
+        BTreeMap<(ScopeId, u32, String), Option<ril_compiler_core::ids::PatternId>>,
     array_lengths: BTreeMap<NodeId, Option<u64>>,
     fixed_arrays: BTreeSet<NodeId>,
     analysis_depth: usize,
@@ -572,6 +575,7 @@ struct Checker {
 impl Checker {
     fn new(file: FileId) -> Self {
         let mut checker = Self {
+            type_source: Default::default(),
             semantic_hir: Default::default(),
             pattern_value_sources: Default::default(),
             checked_source: None,
@@ -616,8 +620,6 @@ impl Checker {
             fields: BTreeMap::new(),
             bindings: vec![],
             functions: vec![],
-            lambda_contracts: BTreeMap::new(),
-            contract_environment: Env::new(),
             type_contract_environments: BTreeMap::new(),
             completed_invocation: None,
             definition_checks: Vec::new(),
@@ -629,7 +631,6 @@ impl Checker {
             probing_contracts: BTreeSet::new(),
             nested_contracts: BTreeSet::new(),
             closures: vec![],
-            closure_sites: vec![],
             types: BTreeMap::new(),
             effects: BTreeMap::new(),
             local_effects: BTreeSet::new(),
@@ -663,7 +664,7 @@ impl Checker {
             closure_exclusivity_certificate: None,
             closure_exposures: Vec::new(),
             closure_discards: Vec::new(),
-            expression_facts: vec![],
+            application_effect: Default::default(),
             invocations: vec![],
             literal_negative: false,
             scope_names: BTreeMap::new(),
@@ -671,13 +672,11 @@ impl Checker {
             storage_types: BTreeMap::new(),
             declaration_files: BTreeSet::new(),
             recursive_analysis: super::recursive::Analysis::default(),
-            generic_context: BTreeMap::new(),
             static_value_bindings: BTreeSet::new(),
             cancellation_contexts: Vec::new(),
             generic_row_lacks: BTreeMap::new(),
             generic_key_bounds: BTreeMap::new(),
             generic_key_contexts: BTreeMap::new(),
-            static_key_arguments: BTreeMap::new(),
             static_key_checks: Vec::new(),
             static_key_parameters: Vec::new(),
             inference_resolutions: Vec::new(),
@@ -691,16 +690,12 @@ impl Checker {
             observed_accesses: Vec::new(),
             bound_field_writes: Vec::new(),
             record_bounds_by_binder: BTreeMap::new(),
-            bound_row_context: BTreeMap::new(),
-            bound_row_selections: BTreeMap::new(),
             rigid_record_parameters: BTreeMap::new(),
             effect_type_binders: BTreeMap::new(),
             effect_instances: Vec::new(),
             effect_invocations: Vec::new(),
-            invocation_expressions: Vec::new(),
             builtin_sources: builtin_source_observations::State::default(),
             generated_sources: Vec::new(),
-            storage_sources: storage_sources::State::default(),
             invocation_calls: Vec::new(),
             invocation_witnesses: Vec::new(),
             closure_invocations: Vec::new(),
@@ -749,8 +744,6 @@ impl Checker {
             write_events: Vec::new(),
             read_epochs: BTreeMap::new(),
             uncertain_slots: BTreeSet::new(),
-            generic_substitutions: BTreeMap::new(),
-            generic_type_witnesses: BTreeMap::new(),
             source_type_intern: BTreeMap::new(),
             source_type_bytes: 0,
             constructor_source_types: BTreeMap::new(),
@@ -799,18 +792,28 @@ impl Checker {
             return_source_valid: true,
         }
     }
-    fn closure_site(&mut self, owner: Option<CallableOwner>, span: Span) -> Option<ClosureSiteId> {
-        let owner = owner?;
-        if let Some(site) = self
-            .closure_sites
-            .iter()
-            .find(|site| site.owner == owner && site.span == span)
-        {
-            return Some(site.id);
+    fn closure_site(
+        &mut self,
+        owner: Option<CallableOwner>,
+        source: Option<ril_compiler_core::ids::ExprId>,
+        span: Span,
+    ) -> Option<ClosureSiteId> {
+        let site =
+            owner.zip(source).and_then(|(owner, source)| {
+                if !self.semantic_hir.expression(source).is_some_and(|node| {
+                    matches!(node.kind, crate::hir::nodes::ExprKind::Lambda { .. })
+                }) {
+                    return None;
+                }
+                self.application_effect.closure_site(owner, source, span)
+            });
+        if site.is_none() {
+            self.unsupported(
+                span,
+                "closure site has no original HIR lambda identity or exhausted its work bound",
+            );
         }
-        let id = ClosureSiteId(self.closure_sites.len() as u32);
-        self.closure_sites.push(ClosureSite { id, owner, span });
-        Some(id)
+        site
     }
     fn scope_is_within(&self, mut candidate: ScopeId, ancestor: ScopeId) -> bool {
         let mut seen = BTreeSet::new();
@@ -829,10 +832,13 @@ impl Checker {
         let info = self.functions[id].clone();
         let function = &info.syntax;
         let previous = self.enter_typing_environment(&info.typing_environment);
-        let mut context = self.generic_context.clone();
+        let mut context = self.type_source.environment.generic_context.clone();
         let mut owned_keys = Vec::new();
         for (index, generic) in function.generics.iter().enumerate() {
-            self.bound_row_context.remove(&generic.name);
+            self.type_source
+                .environment
+                .bound_row_context
+                .remove(&generic.name);
             let identity = format!("function:{}:generic:{index}", info.definition.0);
             self.generic_binders
                 .entry(identity.clone())
@@ -852,18 +858,27 @@ impl Checker {
             }
             context.insert(generic.name.clone(), identity);
         }
-        let captured_rows: BTreeSet<_> = self.bound_row_context.values().copied().collect();
-        self.bound_row_selections.retain(|id, _| {
-            captured_rows.contains(id)
-                && self
-                    .bound_rows
-                    .get(id.0 as usize)
-                    .is_some_and(|row| row.definition != info.definition)
-        });
+        let captured_rows: BTreeSet<_> = self
+            .type_source
+            .environment
+            .bound_row_context
+            .values()
+            .copied()
+            .collect();
+        self.type_source
+            .environment
+            .bound_row_selections
+            .retain(|id, _| {
+                captured_rows.contains(id)
+                    && self
+                        .bound_rows
+                        .get(id.0 as usize)
+                        .is_some_and(|row| row.definition != info.definition)
+            });
         for identity in owned_keys {
             self.generic_key_contexts.insert(identity, context.clone());
         }
-        self.generic_context = context;
+        self.type_source.environment.generic_context = context;
         self.declare_record_bounds(id);
         self.declare_row_contract(function);
         previous
@@ -1021,9 +1036,9 @@ impl Checker {
         for function in &mut self.functions {
             if function.owner.is_none() {
                 function.lexical = self.global.clone();
-                function.typing_environment = function
-                    .typing_environment
-                    .with_contract_bindings(function.lexical.clone());
+                function.typing_environment = self
+                    .type_source
+                    .derive_environment(&function.typing_environment, &function.lexical);
             }
         }
         let functions = self.functions.len();
@@ -1133,9 +1148,9 @@ impl Checker {
         for stmt in statements {
             match &stmt.kind {
                 StmtKind::Type(decl) => {
-                    let previous = self.generic_context.clone();
+                    let previous = self.type_source.environment.generic_context.clone();
                     for (index, generic) in decl.generics.iter().enumerate() {
-                        self.generic_context.insert(
+                        self.type_source.environment.generic_context.insert(
                             generic.name.clone(),
                             format!(
                                 "{}:{}:type:{}:{}",
@@ -1147,7 +1162,7 @@ impl Checker {
                     if let Some(ty) = &decl.value {
                         let _ = self.ty(ty);
                     }
-                    self.generic_context = previous;
+                    self.type_source.environment.generic_context = previous;
                     if (!decl.generics.is_empty()
                         && !self.structural_alias_contract(decl)
                         && !self.external_shape_template(decl)
@@ -1181,9 +1196,8 @@ impl Checker {
                     if function.is_meta {
                         self.unsupported(function.span,"compile-time function definitions require static-family verification before runtime semantic analysis");
                     }
-                    let typing_environment = self
-                        .capture_typing_environment()
-                        .with_contract_bindings(frame.env.clone());
+                    let typing_environment =
+                        self.capture_typing_environment_with_bindings(&frame.env);
                     let id = self.functions.len();
                     let definition = frame
                         .callable_owner
@@ -1615,7 +1629,7 @@ impl Checker {
                     .ty
                     .as_ref()
                     .map(|syntax| self.freeze_source_receiving_target(syntax));
-                let (mut value, source_valid, initializer) =
+                let (value, source_valid, initializer) =
                     if matches!(binding.value.kind, ExprKind::Ambient)
                         && self.declaration_files.contains(&binding.value.span.file.0)
                         && binding.mode == BindingMode::Let
@@ -1649,22 +1663,20 @@ impl Checker {
                         // This actual external declaration introduces its schema;
                         // it is not a cast of existing storage or a later view.
                         self.ascribe_source_type(&mut value, syntax);
-                        let observation = self.expression_facts.len();
-                        self.invocation_expressions.push(
-                            super::effect_identity::InvocationExpression {
-                                context: self.invocation_context(frame.callable_owner),
-                                expression: observation,
-                                argument_of: None,
-                            },
-                        );
+                        let evaluation_context = self.invocation_context(frame.callable_owner);
                         self.record_copy_references(&value, binding.value.span, frame);
-                        self.expression_facts.push(super::ExpressionFact {
-                            allocation_epoch: self.recency_moves.len(),
-                            source_id: binding.value.hir_id,
-                            span: binding.value.span,
-                            value: value.clone(),
-                        });
-                        (value, true, Some(observation))
+                        let observation = self.application_effect.observe(
+                            || super::ExpressionFact {
+                                allocation_epoch: self.recency_moves.len(),
+                                source_id: binding.value.hir_id,
+                                span: binding.value.span,
+                                value: value.clone(),
+                            },
+                            evaluation_context,
+                            frame.owner,
+                            None,
+                        );
+                        (value, observation.is_some(), observation)
                     } else {
                         self.set_contract_environment(&frame.env);
                         let expected = binding.ty.as_ref().map(|syntax| self.ty(syntax));
@@ -1687,80 +1699,14 @@ impl Checker {
                 if value.ty == Ty::Never {
                     return value;
                 }
-                let prepared_storage = initializer.map(|initializer| {
-                    self.prepare_storage_binding_source(
-                        binding,
-                        source_target.as_ref(),
-                        initializer,
-                        frame,
-                    )
-                });
-                if let Some(syntax) = &binding.ty {
-                    self.set_contract_environment(&frame.env);
-                    if source_valid {
-                        self.ascribe_signature(&mut value, syntax);
-                        self.check_storage_shape(&value, syntax, frame);
-                    }
-                    let ty = self.ty(syntax);
-                    if source_valid {
-                        self.constrain_collection_type(&value, &ty, binding.value.span);
-                    }
-                    self.require_type(&value, &ty, binding.value.span);
-                    if source_valid {
-                        value.ty = ty;
-                        value.requires_inference = false;
-                    }
-                }
-                if value.requires_inference
-                    || !self.pending_result_binders(&value).is_empty()
-                    || self.unresolved_empty_map_keys(&value)
-                {
-                    self.error(
-                        "E0344",
-                        binding.value.span,
-                        "generic result type is not determined by arguments or a required context",
-                        [value.cause],
-                    );
-                }
-                if guarded {
-                    let binding_start = self.bindings.len();
-                    let result = self.check_guarded_binding(binding, value, statement.span, frame);
-                    if source_valid
-                        && let (Some(initializer), Some(prepared)) =
-                            (initializer, prepared_storage.as_ref())
-                    {
-                        self.record_storage_binding_sources(
-                            binding,
-                            prepared,
-                            initializer,
-                            binding_start,
-                            frame,
-                        );
-                    }
-                    return result;
-                }
-                let binding_start = self.bindings.len();
-                self.bind_pattern(&binding.pattern, binding.mode, value, frame, false);
-                if source_valid {
-                    self.record_typed_local_source(
-                        binding,
-                        source_target.as_ref(),
-                        binding_start,
-                        frame,
-                    );
-                    if let (Some(initializer), Some(prepared)) =
-                        (initializer, prepared_storage.as_ref())
-                    {
-                        self.record_storage_binding_sources(
-                            binding,
-                            prepared,
-                            initializer,
-                            binding_start,
-                            frame,
-                        );
-                    }
-                }
-                self.unit(statement.span)
+                self.receive_binding(
+                    binding,
+                    value,
+                    initializer,
+                    source_target.as_ref(),
+                    source_valid,
+                    frame,
+                )
             }
             StmtKind::Assignment {
                 target,

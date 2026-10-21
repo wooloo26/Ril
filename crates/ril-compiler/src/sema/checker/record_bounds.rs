@@ -94,8 +94,8 @@ impl Checker {
 
     pub(in crate::sema::checker) fn record_bound_scope(&self) -> BoundScope {
         BoundScope {
-            types: self.generic_context.clone(),
-            rows: self.bound_row_context.clone(),
+            types: self.type_source.environment.generic_context.clone(),
+            rows: self.type_source.environment.bound_row_context.clone(),
         }
     }
 
@@ -182,7 +182,12 @@ impl Checker {
                 continue;
             }
             let name = &path[0];
-            let declared = self.generic_context.get(name).cloned();
+            let declared = self
+                .type_source
+                .environment
+                .generic_context
+                .get(name)
+                .cloned();
             if let Some(binder) = declared.as_ref() {
                 let valid = self.generic_binders.get(binder).is_some_and(|binder| {
                     self.functions
@@ -227,7 +232,7 @@ impl Checker {
                 (BoundRowRole::ImplicitResidual, None) => true,
                 _ => false,
             };
-            let existing = self.bound_row_context.get(name).copied().filter(|id| {
+            let existing = self.type_source.environment.bound_row_context.get(name).copied().filter(|id| {
                 self.bound_rows.get(id.0 as usize).is_some_and(|bound| {
                     role_matches(bound)
                 })
@@ -274,10 +279,16 @@ impl Checker {
                     lacks: BTreeSet::new(),
                     span: row.span,
                 });
-                self.bound_row_context.insert(name.clone(), id);
+                self.type_source
+                    .environment
+                    .bound_row_context
+                    .insert(name.clone(), id);
                 id
             });
-            self.bound_row_context.insert(name.clone(), id);
+            self.type_source
+                .environment
+                .bound_row_context
+                .insert(name.clone(), id);
             // An inner constraint does not add unconditional absences to a
             // captured outer row. Its own field labels remain local premises.
             if self.bound_rows[id.0 as usize].definition == definition {
@@ -294,8 +305,8 @@ impl Checker {
             }
         }
 
-        let substitutions = std::mem::take(&mut self.generic_substitutions);
-        let witnesses = std::mem::take(&mut self.generic_type_witnesses);
+        let substitutions = std::mem::take(&mut self.type_source.environment.generic_substitutions);
+        let witnesses = std::mem::take(&mut self.type_source.environment.generic_type_witnesses);
         let scope = self.record_bound_scope();
         for (index, parameter) in function.generics.iter().enumerate() {
             let Some(
@@ -307,7 +318,13 @@ impl Checker {
             else {
                 continue;
             };
-            let Some(binder) = self.generic_context.get(&parameter.name).cloned() else {
+            let Some(binder) = self
+                .type_source
+                .environment
+                .generic_context
+                .get(&parameter.name)
+                .cloned()
+            else {
                 continue;
             };
             if self.record_bounds_by_binder.contains_key(&binder) {
@@ -319,7 +336,9 @@ impl Checker {
                     TypeKind::Name { path, arguments }
                         if path.len() == 1 && arguments.is_empty() =>
                     {
-                        self.bound_row_context
+                        self.type_source
+                            .environment
+                            .bound_row_context
                             .get(&path[0])
                             .copied()
                             .map(DeclaredBoundTail::Row)
@@ -388,8 +407,8 @@ impl Checker {
             });
             self.record_bounds_by_binder.insert(binder, id);
         }
-        self.generic_substitutions = substitutions;
-        self.generic_type_witnesses = witnesses;
+        self.type_source.environment.generic_substitutions = substitutions;
+        self.type_source.environment.generic_type_witnesses = witnesses;
     }
 
     fn declared_record_bound(&self, ty: &Ty) -> Option<&GenericRecordBound> {
@@ -430,8 +449,8 @@ impl Checker {
     }
 
     pub(super) fn bound_row_type(&self, name: &str) -> Option<Ty> {
-        let id = self.bound_row_context.get(name)?;
-        if let Some(actual) = self.bound_row_selections.get(id) {
+        let id = self.type_source.environment.bound_row_context.get(name)?;
+        if let Some(actual) = self.type_source.environment.bound_row_selections.get(id) {
             return Some(Self::row_type(actual.remainder.clone()));
         }
         let row = self.bound_rows.get(id.0 as usize)?;
@@ -706,9 +725,14 @@ impl Checker {
         &mut self,
         bound: &GenericRecordBound,
     ) -> Option<Vec<RecordBoundField>> {
-        let previous = std::mem::replace(&mut self.generic_context, bound.scope.types.clone());
-        let previous_rows =
-            std::mem::replace(&mut self.bound_row_context, bound.scope.rows.clone());
+        let previous = std::mem::replace(
+            &mut self.type_source.environment.generic_context,
+            bound.scope.types.clone(),
+        );
+        let previous_rows = std::mem::replace(
+            &mut self.type_source.environment.bound_row_context,
+            bound.scope.rows.clone(),
+        );
         let result = bound
             .fields
             .iter()
@@ -727,8 +751,8 @@ impl Checker {
                 })
             })
             .collect();
-        self.generic_context = previous;
-        self.bound_row_context = previous_rows;
+        self.type_source.environment.generic_context = previous;
+        self.type_source.environment.bound_row_context = previous_rows;
         result
     }
 
@@ -749,13 +773,23 @@ impl Checker {
                 return None;
             }
             if let ArgumentKey::Binder { identity, sort } = key {
-                if let Some(witness) = checker.generic_type_witnesses.get(identity) {
+                if let Some(witness) = checker
+                    .type_source
+                    .environment
+                    .generic_type_witnesses
+                    .get(identity)
+                {
                     return crate::static_eval::effects::bounded_argument_key(
                         &witness.syntax,
                         &BTreeMap::new(),
                     );
                 }
-                return match checker.generic_substitutions.get(identity) {
+                return match checker
+                    .type_source
+                    .environment
+                    .generic_substitutions
+                    .get(identity)
+                {
                     Some(Ty::Generic(actual)) if actual != identity => {
                         if !active.insert(identity.clone()) {
                             return None;
@@ -781,7 +815,7 @@ impl Checker {
             }
             let mut child = |key: &ArgumentKey| select(checker, key, active, depth + 1, work);
             Some(match key {
-                ArgumentKey::Closed(_) => key.clone(),
+                ArgumentKey::Closed(_) | ArgumentKey::GenericBuiltin(_) => key.clone(),
                 ArgumentKey::Name { name, arguments } => ArgumentKey::Name {
                     name: name.clone(),
                     arguments: arguments.iter().map(&mut child).collect::<Option<_>>()?,
@@ -836,9 +870,9 @@ impl Checker {
         activation: ScopeId,
         span: Span,
     ) {
-        let substitutions = self.generic_substitutions.clone();
-        let witnesses = self.generic_type_witnesses.clone();
-        let row_selections = self.bound_row_selections.clone();
+        let substitutions = self.type_source.environment.generic_substitutions.clone();
+        let witnesses = self.type_source.environment.generic_type_witnesses.clone();
+        let row_selections = self.type_source.environment.bound_row_selections.clone();
         let diagnostics = self.diagnostics.len();
         let unsupported = self.unsupported.len();
         let complete = self.check_record_bound_application_transaction(
@@ -853,9 +887,9 @@ impl Checker {
             || self.diagnostics.len() != diagnostics
             || self.unsupported.len() != unsupported
         {
-            self.generic_substitutions = substitutions;
-            self.generic_type_witnesses = witnesses;
-            self.bound_row_selections = row_selections;
+            self.type_source.environment.generic_substitutions = substitutions;
+            self.type_source.environment.generic_type_witnesses = witnesses;
+            self.type_source.environment.bound_row_selections = row_selections;
         }
     }
 
@@ -1148,35 +1182,45 @@ impl Checker {
                 .map(|field| (field.label.clone(), (field.mutable, field.key.clone())))
                 .collect();
             let fixed_selection = if let DeclaredBoundTail::Row(id) = &bound.tail {
-                self.bound_row_selections.get(id).cloned().or_else(|| {
-                    let BoundRowRole::DeclaredTypeParameter { binder } =
-                        &self.bound_rows[id.0 as usize].role
-                    else {
-                        return None;
-                    };
-                    let witness = self.generic_type_witnesses.get(binder)?.clone();
-                    let TypeKind::Record { fields, row: None } = &witness.syntax.kind else {
-                        return None;
-                    };
-                    let scope = self.record_bound_scope();
-                    let fields = fields
-                        .iter()
-                        .map(|field| self.record_bound_field(field, &scope))
-                        .collect::<Option<Vec<_>>>()?;
-                    Some(BoundRowSelection {
-                        row: *id,
-                        remainder: Row::closed(
-                            fields
-                                .iter()
-                                .map(|field| {
-                                    (field.label.clone(), (field.mutable, field.ty.clone()))
-                                })
-                                .collect(),
-                        ),
-                        fields,
-                        source_type_witness: Some(witness),
+                self.type_source
+                    .environment
+                    .bound_row_selections
+                    .get(id)
+                    .cloned()
+                    .or_else(|| {
+                        let BoundRowRole::DeclaredTypeParameter { binder } =
+                            &self.bound_rows[id.0 as usize].role
+                        else {
+                            return None;
+                        };
+                        let witness = self
+                            .type_source
+                            .environment
+                            .generic_type_witnesses
+                            .get(binder)?
+                            .clone();
+                        let TypeKind::Record { fields, row: None } = &witness.syntax.kind else {
+                            return None;
+                        };
+                        let scope = self.record_bound_scope();
+                        let fields = fields
+                            .iter()
+                            .map(|field| self.record_bound_field(field, &scope))
+                            .collect::<Option<Vec<_>>>()?;
+                        Some(BoundRowSelection {
+                            row: *id,
+                            remainder: Row::closed(
+                                fields
+                                    .iter()
+                                    .map(|field| {
+                                        (field.label.clone(), (field.mutable, field.ty.clone()))
+                                    })
+                                    .collect(),
+                            ),
+                            fields,
+                            source_type_witness: Some(witness),
+                        })
                     })
-                })
             } else {
                 None
             };
@@ -1184,7 +1228,11 @@ impl Checker {
                 && let DeclaredBoundTail::Row(id) = &bound.tail
                 && let BoundRowRole::DeclaredTypeParameter { binder } =
                     &self.bound_rows[id.0 as usize].role
-                && let Some(selected) = self.generic_substitutions.get(binder)
+                && let Some(selected) = self
+                    .type_source
+                    .environment
+                    .generic_substitutions
+                    .get(binder)
             {
                 if matches!(
                     self.call_inference_type(selected),
@@ -1346,7 +1394,7 @@ impl Checker {
                 rows.push(selection);
             }
             let mut substitutions = BTreeMap::new();
-            for (binder, witness) in &self.generic_type_witnesses {
+            for (binder, witness) in &self.type_source.environment.generic_type_witnesses {
                 if let Some(key) = crate::static_eval::effects::bounded_argument_key(
                     &witness.syntax,
                     &BTreeMap::new(),
@@ -1354,7 +1402,7 @@ impl Checker {
                     substitutions.insert(binder.clone(), key);
                 }
             }
-            for (binder, selected) in &self.generic_substitutions {
+            for (binder, selected) in &self.type_source.environment.generic_substitutions {
                 if let Ty::Generic(actual) = selected {
                     substitutions.insert(
                         binder.clone(),
@@ -1399,15 +1447,22 @@ impl Checker {
                 && let BoundRowRole::DeclaredTypeParameter { binder } =
                     &self.bound_rows[id.0 as usize].role
             {
-                self.generic_substitutions
+                self.type_source
+                    .environment
+                    .generic_substitutions
                     .insert(binder.clone(), Self::row_type(selection.remainder.clone()));
                 if let Some(witness) = &selection.source_type_witness {
-                    self.generic_type_witnesses
+                    self.type_source
+                        .environment
+                        .generic_type_witnesses
                         .insert(binder.clone(), witness.clone());
                 }
             }
         }
-        self.bound_row_selections.extend(selections);
+        self.type_source
+            .environment
+            .bound_row_selections
+            .extend(selections);
         self.generic_bound_checks.extend(staged);
         true
     }
@@ -1429,12 +1484,12 @@ mod tests {
         let mut lexical = None;
         for clear in [true, true, false, false, true] {
             if clear {
-                checker.bound_row_context.clear();
-                checker.bound_row_selections.clear();
+                checker.type_source.environment.bound_row_context.clear();
+                checker.type_source.environment.bound_row_selections.clear();
             }
             checker.generic_scope(0);
             checker.declare_record_bounds(0);
-            let current = checker.bound_row_context["R"];
+            let current = checker.type_source.environment.bound_row_context["R"];
             assert_eq!(*lexical.get_or_insert(current), current);
             assert_eq!(checker.bound_rows.len(), 1);
             assert_eq!(checker.record_bounds.len(), 2);

@@ -55,3 +55,30 @@ fn answer()->[]int{with Read::get()->{let answer=resume 7;let other=data(99);ass
 fn example(){for [0,1] as index{let values=answer();assert(values[0]==7)}}
 --@ end-file
 --@ end-case
+
+--@ source: source-handler-declaration-environment
+--@ file: source.ril
+eff Read{get()->int}
+fn trigger<U>(marker:U)->int @Read{Read::get()}
+fn selected<T>(value:T)->T{
+    with Read::get()->{let _:T=value;resume 1}
+    let ignored=trigger("foreign")
+    value
+}
+pub fn test_native(){let result=selected(7);assert(result==7)}
+--@ end-file
+--@ end-source
+
+--@ case: handler-declaration-environment
+--@ mode: check-pass
+--@ spec: SPEC#effect-handlers
+--@ companion: handler-declaration-environment-native
+--@ use-source: source-handler-declaration-environment
+--@ end-case
+
+--@ case: handler-declaration-environment-native
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ entry: test_native
+--@ use-source: source-handler-declaration-environment
+--@ end-case

@@ -1,6 +1,6 @@
 --@ source: source-source-receiving-native
 --@ file: source.ril
--- Pending: this whole source must pass Session/Core before native activation.
+-- Fixed dimensions and callable schemas survive each receiving boundary.
 type Holder={empty:[0][2]int,pair:([2]int,[0][2]int)}
 
 fn second(values:[2]int)->int{values[1]}

@@ -123,7 +123,8 @@ impl Checker {
         ];
         let repeated = self.begin_repeated_callback(&mut invocation, frame);
         let family = self.begin_loop_results(frame.owner);
-        let output = self.invoke(&callback, invocation, span, frame);
+        let origin = self.generated_callback_origin(read, frame);
+        let output = self.invoke_from(&callback, invocation, span, frame, origin);
         if output.ty == Ty::Never {
             let mut iteration = self.unit(span);
             self.finish_loop_results(
@@ -274,5 +275,98 @@ impl Checker {
             [value.cause, failed.cause],
         );
         value.join(&failed, self.choice(), cause)
+    }
+
+    fn generated_callback_origin(
+        &mut self,
+        read: bool,
+        frame: &Frame,
+    ) -> crate::sema::application_effect::EntryOrigin {
+        use crate::sema::application_effect::{EntryOrigin, InputOrigin, ScalarInput};
+        use ril_compiler_core::ids::EvaluationOccurrenceId;
+        let source = (|| {
+            let anchor = self.application_effect.current_activation()?;
+            let event = self.copy_operation_events.last().copied().flatten()?;
+            let row = self
+                .call_arguments
+                .iter()
+                .find(|row| row.source_event == event)?;
+            let operation = self
+                .copy_call_events
+                .get(event.0 as usize)?
+                .callee_expression?;
+            let [Callable::Builtin(name)] = self
+                .application_effect
+                .expressions
+                .get(operation)?
+                .value
+                .callables
+                .as_slice()
+            else {
+                return None;
+            };
+            let contract = crate::sema::application_effect::record_callback(name)?;
+            if (contract.field == "read") != read {
+                return None;
+            }
+            let receiver = row.supplied.get(&contract.receiver)?.expression;
+            let ops = row.supplied.get(&contract.operations)?.expression;
+            let ops_fact = self.application_effect.expressions.get(ops)?;
+            let field = crate::sema::application_effect::record_field_source(
+                &self.semantic_hir,
+                ops_fact.source_id?,
+                contract.field,
+                &mut 4096,
+            )?;
+            let parent = self
+                .application_effect
+                .evaluations
+                .get(ops)?
+                .identity?
+                .activation;
+            let context = self.invocation_context(frame.callable_owner);
+            let count = self.application_effect.occurrences(field, context).len();
+            if !self.application_effect.admit(count + 3) {
+                return None;
+            }
+            let occurrences = self.application_effect.occurrences(field, context);
+            let mut matching = occurrences.iter().copied().filter(|index| {
+                self.application_effect.evaluations[*index]
+                    .identity
+                    .and_then(|id| {
+                        self.application_effect
+                            .activations
+                            .get(id.activation.0 as usize)
+                    })
+                    .is_some_and(|activation| activation.parent == Some(parent))
+            });
+            let callee = matching.next()?;
+            if matching.next().is_some() {
+                return None;
+            }
+            Some(EntryOrigin::Generated {
+                anchor,
+                callee: EvaluationOccurrenceId(callee as u32),
+                inputs: vec![
+                    InputOrigin::Widened(EvaluationOccurrenceId(receiver as u32)),
+                    InputOrigin::Scalar(match contract.scalar_source {
+                        crate::sema::application_effect::ScalarSource::PositiveInt => {
+                            ScalarInput::PositiveInt
+                        }
+                        crate::sema::application_effect::ScalarSource::ByteSuffix(slot) => {
+                            ScalarInput::ByteSuffix(EvaluationOccurrenceId(
+                                row.supplied.get(&slot)?.expression as u32,
+                            ))
+                        }
+                        crate::sema::application_effect::ScalarSource::BufferedBytes(slot) => {
+                            ScalarInput::BufferedBytes(EvaluationOccurrenceId(
+                                row.supplied.get(&slot)?.expression as u32,
+                            ))
+                        }
+                    }),
+                ],
+            })
+        })();
+        source.unwrap_or(EntryOrigin::Unresolved)
     }
 }

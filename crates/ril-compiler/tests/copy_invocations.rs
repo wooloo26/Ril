@@ -24,11 +24,11 @@ fn same_site_substitutions_keep_separate_actual_argument_graphs() {
         .collect();
     let integer = records
         .iter()
-        .find(|record| matches!(record.arguments[0].1.value.ty, Ty::Int(_)))
+        .find(|record| matches!(record.entry.arguments[0].1.value.ty, Ty::Int(_)))
         .unwrap();
     let string = records
         .iter()
-        .find(|record| record.arguments[0].1.value.ty == Ty::Str)
+        .find(|record| record.entry.arguments[0].1.value.ty == Ty::Str)
         .unwrap();
     assert_eq!(integer.span, string.span);
     assert_ne!(integer.id, string.id);

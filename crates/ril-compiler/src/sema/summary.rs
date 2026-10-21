@@ -32,6 +32,8 @@ pub struct InvocationSummary {
     pub handler_environment: bool,
     pub accesses: BTreeSet<Footprint>,
     pub concrete_state: BTreeMap<u32, Access>,
+    /// Actual formal callback callee observations, not concrete state accesses.
+    pub symbolic_uses: BTreeSet<ril_compiler_core::ids::EvaluationOccurrenceId>,
     pub effects: BTreeSet<String>,
     pub callbacks: BTreeSet<CallbackDependency>,
     pub escaped_origins: BTreeSet<NodeId>,
@@ -57,6 +59,7 @@ impl InvocationSummary {
                 .or_insert(mode);
         }
         self.effects.extend(other.effects.iter().cloned());
+        self.symbolic_uses.extend(&other.symbolic_uses);
         self.callbacks.extend(other.callbacks.iter().cloned());
         self.escaped_origins.extend(&other.escaped_origins);
         self.retained_origins.extend(&other.retained_origins);

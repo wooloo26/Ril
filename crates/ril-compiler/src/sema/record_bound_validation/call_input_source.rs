@@ -7,6 +7,8 @@ mod closure_sources;
 mod composites;
 #[path = "constructor_input_source.rs"]
 mod constructor_inputs;
+#[path = "callable_entries.rs"]
+mod entries;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
 #[path = "storage_input_source.rs"]
@@ -95,14 +97,22 @@ impl<'a> OriginalOperandSources<'a> {
             preparation.target == event.target && preparation.evaluation_complete,
             "source operand preparation changed its actual target or completion",
         )?;
+        let labels = crate::sema::builtin_sources::parameter_labels(
+            &callee_fact.value,
+            preparation.slots.len(),
+        );
+        let mapping = crate::hir::application::bind_slots(
+            &labels,
+            arguments.iter().map(|argument| argument.label),
+        );
         let mut occupied = BTreeSet::new();
         let mut selected = None;
-        for argument in arguments {
-            let position=if let Some(label)=argument.label {
-            callee_fact.value.signature.as_ref().and_then(|parameters|parameters.iter().position(|parameter|
-                matches!(&parameter.pattern.kind,ril_syntax::ast::PatternKind::Name(name) if name.as_str()==label)))
-        } else {(0..preparation.slots.len()).find(|slot|!occupied.contains(slot))}
-            .ok_or_else(||"source operand label is outside its original public signature".to_owned())?;
+        for (argument, position) in arguments.iter().zip(mapping) {
+            let position = position.map_err(|code| {
+                format!(
+                    "source operand label/position is outside its original public signature: {code}"
+                )
+            })?;
             require(
                 occupied.insert(position),
                 "source operand position is written twice",
@@ -146,7 +156,7 @@ impl<'a> OriginalOperandSources<'a> {
             "source operand token borrowed another physical occurrence or context",
         )?;
         replay.input_operand_interval(event, slot as usize, token.expression, context, sites)?;
-        replay.original_source_key(syntax, &value.value, context, sites)
+        replay.original_observed_source_key(syntax, token.expression, context, sites)
     }
 }
 
@@ -672,27 +682,20 @@ impl Replay<'_> {
         value: &Value,
         context: InvocationContext,
         sites: &super::explicit_named::SourceSites<'_>,
+        observation: Option<usize>,
     ) -> Check<Option<ArgumentKey>> {
         let fresh = source_reception::construction(expression, &mut 4096)
             .ok_or_else(|| "call input construction Source exceeds its work bound".to_owned())?;
-        if let (
-            ArgumentKey::Array { length, element },
-            source_reception::Construction::Array(items),
-        ) = (expected, &fresh)
-            && items.is_empty()
-        {
-            source_reception::complete(element, &mut 4096).ok_or_else(|| {
-                "empty call input has no complete receiving element Source".to_owned()
-            })?;
-            require(
-                length
-                    .as_ref()
-                    .is_none_or(|length| length == "const(int:0)"),
-                "empty call input differs from its required outer dimension",
-            )?;
+        if let Some(fits) = source_reception::empty_context(expected, &fresh, &mut 4096) {
+            require(fits, "empty call input differs from its receiving Source")?;
             return Ok(None);
         }
-        let actual = self.original_source_key(expression, value, context, sites)?;
+        let actual = match observation {
+            Some(observation) => {
+                self.original_observed_source_key(expression, observation, context, sites)?
+            }
+            None => self.original_source_key(expression, value, context, sites)?,
+        };
         require(
             source_reception::compatible(expected, &actual, Some(&fresh), &mut 4096) == Some(true),
             "call input original whole source does not prove its receiving coordinates",
@@ -818,7 +821,7 @@ impl Replay<'_> {
             .ok_or_else(|| {
                 "call input symbolic index is absent from its actual bound".to_owned()
             })?;
-        let raw = self.normalized_key(&field.syntax, &bound.scope)?;
+        let raw = self.input_callable_source_key(&field.syntax, &bound.scope)?;
         require(
             raw == field.key,
             "call input symbolic index changed its original declared field coordinates",
@@ -884,7 +887,7 @@ impl Replay<'_> {
                 return Err("call input formal Source has no named owner".into());
             };
             let function = self.function(owner)?;
-            let parameter = function.syntax.parameters.iter().find(|parameter| parameter.pattern.span == binding.span
+            let parameter = function.syntax.parameters.iter().find(|parameter| parameter.pattern.hir_id.is_some() && parameter.pattern.hir_id == binding.pattern
                 && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(actual) if actual == name))
                 .ok_or_else(|| "call input formal Source differs from its real header index".to_owned())?;
             let call = context
@@ -897,9 +900,9 @@ impl Replay<'_> {
                 expression,
                 context,
                 binding.owner,
-                call.entry_allocation_epoch,
+                call.entry.allocation_epoch,
             )?;
-            return self.normalized_key(
+            return self.input_callable_source_key(
                 parameter
                     .ty
                     .as_ref()
@@ -959,6 +962,20 @@ impl Replay<'_> {
             _ => return Err("call input formal Source path has an unsupported operation".into()),
         };
         let key = self.formal_input_path_key(base, parent, context, work, depth + 1)?;
+        let key = if matches!(&key, ArgumentKey::Name { .. }) {
+            let hir = self
+                .facts
+                .semantic_hir
+                .as_deref()
+                .ok_or("formal alias has no original HIR")?;
+            let mut limit = crate::sema::source_types::WorkLimit::new(*work);
+            let key = crate::sema::source_types::declarations::expanded_key(&key, hir, &mut limit)
+                .map_err(|error| format!("formal alias Source: {error}"))?;
+            *work = limit.remaining();
+            key
+        } else {
+            key
+        };
         match (key, step) {
             (ArgumentKey::Array { element, .. }, None) => Ok(*element),
             (ArgumentKey::Tuple(items), Some(Slot::Tuple(index))) => items
@@ -986,7 +1003,7 @@ impl Replay<'_> {
                     .ok_or_else(|| {
                         "call input formal field is absent from its real bound".to_owned()
                     })?;
-                let key = self.normalized_key(&field.syntax, &bound.scope)?;
+                let key = self.input_callable_source_key(&field.syntax, &bound.scope)?;
                 require(
                     key == field.key,
                     "call input formal field changed its actual declared type",
@@ -1025,6 +1042,53 @@ impl Replay<'_> {
         if let Some(key) = self.storage_binding_source_key(expression, value, context, sites) {
             return key;
         }
+        if !matches!(&value.ty, Ty::Generic(_))
+            && matches!(
+                &expression.kind,
+                ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::ComputedField { .. }
+            )
+        {
+            let projected = self.formal_input_path_key(expression, value.cause, context, work, 0);
+            if let Ok(key) = projected {
+                let call = context
+                    .invocation
+                    .and_then(|id| self.facts.copy_invocations.get(id.0 as usize))
+                    .ok_or("projected formal Source has no actual invocation")?;
+                let key = input_select_key(&key, &self.input_selected_keys(call)?, 0)?;
+                if matches!(&key, ArgumentKey::Name { .. }) {
+                    let hir = self
+                        .facts
+                        .semantic_hir
+                        .as_deref()
+                        .ok_or("projected alias has no original HIR")?;
+                    let mut limit = crate::sema::source_types::WorkLimit::new(*work);
+                    let key = crate::sema::source_types::declarations::expanded_key(
+                        &key, hir, &mut limit,
+                    )
+                    .map_err(|error| format!("projected alias Source: {error}"))?;
+                    *work = limit.remaining();
+                    return Ok(key);
+                }
+                return Ok(key);
+            }
+        }
+        if let Some((source, hir)) = expression.hir_id.zip(self.facts.semantic_hir.as_deref()) {
+            let mut limit = crate::sema::source_types::WorkLimit::new(*work);
+            let declared =
+                crate::sema::source_types::declarations::construction(source, hir, &mut limit);
+            *work = limit.remaining();
+            if let Some(key) =
+                declared.map_err(|error| format!("typed construction Source: {error}"))?
+            {
+                self.original_source_root(expression, value, context, visit.observation, work)?;
+                return Ok(key);
+            }
+        }
+        if let Some(key) =
+            self.original_copy_source_key(expression, value, context, sites, work, visit)?
+        {
+            return Ok(key);
+        }
         if value.source_type_witness.is_none()
             && let Some(key) =
                 self.original_carrier_source_key(expression, value, context, sites, work, depth)?
@@ -1046,7 +1110,7 @@ impl Replay<'_> {
                 original.validate_closed() && value.source_type_witness.as_ref() == Some(original),
                 "constant reference changed its original per-reference Source view",
             )?;
-            return self.normalized_key(&original.syntax, &BoundScope::default());
+            return self.input_callable_source_key(&original.syntax, &BoundScope::default());
         }
         if let Some(key) = super::super::checker::original_canonical_builtin_source_key(
             self.facts, value, expression, context,
@@ -1067,39 +1131,51 @@ impl Replay<'_> {
                 "call input source borrowed another Name binding",
             )?;
             if binding.parameter {
-                if matches!(context.owner, Some(CallableOwner::Lambda(_))) {
-                    return self.lambda_formal_source_key(expression, value, context, sites);
+                let declaration = self.parameter_declaration_context(
+                    expression,
+                    value,
+                    context,
+                    visit.observation,
+                )?;
+                if matches!(declaration.owner, Some(CallableOwner::Lambda(_))) {
+                    return self
+                        .lambda_formal_source_key(expression, value, context, sites, work, visit);
                 }
-                let Some(CallableOwner::Function(owner)) = context.owner else {
+                let Some(CallableOwner::Function(owner)) = declaration.owner else {
                     return Err("call input parameter has no genuine named header".into());
                 };
                 let function = self.function(owner)?;
                 let (parameter_index, parameter) = function.syntax.parameters.iter().enumerate().find(|(_,parameter)|
-                    parameter.pattern.span == binding.span && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(actual) if actual == name))
+                    binding.pattern.is_some() && parameter.pattern.hir_id == binding.pattern && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(actual) if actual == name))
                     .ok_or_else(|| "call input parameter Name differs from its actual header".to_owned())?;
                 let scope = self.scope(owner)?;
-                let key = self.normalized_key(
+                let key = self.input_callable_source_key(
                     parameter.ty.as_ref().ok_or_else(|| {
                         "call input header has no complete type source".to_owned()
                     })?,
                     &scope,
                 )?;
-                if let Some(id) = context.default_use {
-                    let default = self
-                        .facts
-                        .default_uses
-                        .get(id.0 as usize)
-                        .filter(|default| default.id == id)
-                        .ok_or_else(|| {
-                            "call input earlier formal lost its actual default identity".to_owned()
-                        })?;
+                if let Some(default) = self.parameter_preparation(binding, context)? {
                     require(
-                        default.owner == context.owner
+                        default.owner == declaration.owner
                             && default.target == Some(owner)
-                            && parameter_index < default.parameter as usize
-                            && default.evaluation_complete
-                            && default.status == CopyInvocationStatus::Completed,
+                            && parameter_index < default.parameter as usize,
                         "call input default borrowed a later or unrelated formal header",
+                    )?;
+                    if default.origin == DefaultOrigin::DeclarationProbe {
+                        require(
+                            default.entered.is_empty() && default.caller == declaration,
+                            "declaration formal invented an actual body entry",
+                        )?;
+                        return input_select_key(
+                            &key,
+                            &self.declaration_default_selections(owner, default)?,
+                            0,
+                        );
+                    }
+                    require(
+                        default.status == CopyInvocationStatus::Completed,
+                        "call input default has no completed receiving invocation",
                     )?;
                     let [entered] = default.entered.as_slice() else {
                         return Err(
@@ -1132,7 +1208,7 @@ impl Replay<'_> {
                     }
                     return input_select_key(&key, &selected, 0);
                 }
-                let instance = context
+                let instance = declaration
                     .invocation
                     .and_then(|id| self.facts.copy_invocations.get(id.0 as usize))
                     .filter(|call| call.target == owner)
@@ -1145,11 +1221,11 @@ impl Replay<'_> {
                     self.read_parameter_reception(
                         value,
                         expression,
-                        context,
+                        declaration,
                         binding.owner,
-                        instance.entry_allocation_epoch,
+                        instance.entry.allocation_epoch,
                     )?;
-                    let original = &instance.arguments[parameter_index].1.value;
+                    let original = &instance.entry.arguments[parameter_index].1.value;
                     let original = if self.source_optional_projection(expression, value, context) {
                         original.option_payload.as_deref().ok_or_else(|| {
                             "call input optional projection lacks its original Some payload"
@@ -1168,7 +1244,7 @@ impl Replay<'_> {
                         .invocation_loan_starts
                         .iter()
                         .filter(|loan| {
-                            loan.owner == context.owner
+                            loan.owner == declaration.owner
                                 && loan.named == Some(instance.id)
                                 && loan.parameter as usize == parameter_index
                                 && loan.activation == binding.owner
@@ -1180,14 +1256,18 @@ impl Replay<'_> {
                             "call input mutable formal lost its exact original loan entry".into(),
                         );
                     };
-                    let entry = instance.arguments.get(parameter_index).ok_or_else(|| {
-                        "call input mutable formal lost its whole entry".to_owned()
-                    })?;
+                    let entry = instance
+                        .entry
+                        .arguments
+                        .get(parameter_index)
+                        .ok_or_else(|| {
+                            "call input mutable formal lost its whole entry".to_owned()
+                        })?;
                     require(
                         loan.retained
                             == (parameter.mode == ril_syntax::ast::ParameterMode::SharedMut)
                             && loan.origins == entry.1.value.origins
-                            && loan.allocation_epoch == instance.entry_allocation_epoch
+                            && loan.allocation_epoch == instance.entry.allocation_epoch
                             && value.origins == loan.origins
                             && value.participants
                                 == BTreeSet::from([super::super::facts::Participant::Loan(
@@ -1208,7 +1288,7 @@ impl Replay<'_> {
                 && let Some(syntax) = &declaration.binding.ty
             {
                 let scope = self.lambda_input_scope(declaration.owner)?;
-                let key = self.normalized_key(syntax, &scope)?;
+                let key = self.input_callable_source_key(syntax, &scope)?;
                 let selected = self.binding_source_selections(binding, declaration.owner)?;
                 return input_select_key(&key, &selected, 0);
             }
@@ -1272,7 +1352,7 @@ impl Replay<'_> {
                         })
                         .collect();
                     if let [instance] = instances.as_slice() {
-                        let key = self.normalized_key(result, &self.scope(target)?)?;
+                        let key = self.input_callable_source_key(result, &self.scope(target)?)?;
                         let selected = self.producing_input_selected_keys(instance, value)?;
                         let declared = input_select_key(&key, &selected, 0)?;
                         let callee = source
@@ -1334,10 +1414,12 @@ impl Replay<'_> {
         {
             return Ok(key);
         }
-        let witness = value
-            .source_type_witness
-            .as_ref()
-            .ok_or_else(|| "call input has no complete original source view".to_owned())?;
+        let witness = value.source_type_witness.as_ref().ok_or_else(|| {
+            format!(
+                "call input has no complete original source view at HIR {:?}",
+                expression.hir_id
+            )
+        })?;
         require(
             witness.validate_closed()
                 && crate::sema::source_type_validation::resolved_names(
@@ -1346,10 +1428,24 @@ impl Replay<'_> {
                 ),
             "call input complete witness has inconsistent or unresolved source names",
         )?;
-        self.normalized_key(&witness.syntax, &BoundScope::default())
+        self.input_callable_source_key(&witness.syntax, &BoundScope::default())
     }
 
     pub(super) fn input_value_transport(
+        &self,
+        original: &Value,
+        actual: &Value,
+        from: usize,
+        to: usize,
+    ) -> Check {
+        require(
+            original.cause == actual.cause,
+            "call input entry changed its original cause",
+        )?;
+        self.input_view_transport(original, actual, from, to)
+    }
+
+    pub(super) fn input_view_transport(
         &self,
         original: &Value,
         actual: &Value,
@@ -1378,7 +1474,6 @@ impl Replay<'_> {
                 && original.sources == actual.sources
                 && original.results == actual.results
                 && original.outer_results == actual.outer_results
-                && original.cause == actual.cause
                 && original.source_type_witness == actual.source_type_witness,
             "call input entry differs from its original physical expression or source schema",
         )
@@ -1617,7 +1712,7 @@ impl Replay<'_> {
                         .iter()
                         .filter_map(|parameter| parameter.ty.as_ref())
                         .map(|syntax| {
-                            self.normalized_key(syntax, &scope).map(|key| {
+                            self.input_callable_source_key(syntax, &scope).map(|key| {
                                 source_reception::sensitive(&key, &mut 4096) != Some(false)
                             })
                         })
@@ -1651,6 +1746,77 @@ impl Replay<'_> {
                     .into_iter()
                     .any(|needed| needed);
                 if !needs {
+                    return Ok(());
+                }
+                if call.entry.origin == crate::sema::application_effect::EntryOrigin::SignatureProbe
+                {
+                    require(
+                        call.source_event.is_none() && !call.declaration_probe,
+                        "signature assumption claimed a physical application",
+                    )?;
+                    for (slot, expected) in expected.iter().enumerate() {
+                        let Some(expected) = expected else { continue };
+                        if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+                            continue;
+                        }
+                        let input = &call
+                            .entry
+                            .arguments
+                            .get(slot)
+                            .ok_or("signature assumption lost its input")?
+                            .1;
+                        let actual = crate::sema::application_effect::signature_assumption(
+                            input,
+                            call.caller_activation,
+                            call.entry.caller_context,
+                            &self.facts.bindings,
+                            &mut 4096,
+                        )
+                        .ok_or("signature input is not its original universal formal")?;
+                        require(
+                            source_reception::compatible(
+                                expected,
+                                &actual,
+                                Some(&source_reception::Construction::Opaque),
+                                &mut 4096,
+                            ) == Some(true),
+                            "signature input differs from the original declared source",
+                        )?;
+                    }
+                    return Ok(());
+                }
+                if matches!(
+                    call.entry.origin,
+                    crate::sema::application_effect::EntryOrigin::Generated { .. }
+                ) {
+                    for (index, expected) in expected.iter().enumerate() {
+                        let Some(expected) = expected else { continue };
+                        if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+                            continue;
+                        }
+                        let actual = self.named_entry_source_key(call, index, &sites, &mut 4096)?;
+                        require(
+                            source_reception::compatible(
+                                expected,
+                                &actual,
+                                Some(&source_reception::Construction::Opaque),
+                                &mut 4096,
+                            ) == Some(true),
+                            "generated callable input does not prove its receiving coordinates",
+                        )?;
+                        let raw = self.input_callable_source_key(
+                            function.syntax.parameters[index].ty.as_ref().unwrap(),
+                            &scope,
+                        )?;
+                        self.input_row_equations(
+                            &raw,
+                            &actual,
+                            &selected,
+                            call.target,
+                            &mut 4096,
+                            0,
+                        )?;
+                    }
                     return Ok(());
                 }
                 let event = call
@@ -1695,7 +1861,7 @@ impl Replay<'_> {
                     preparation.target == event.target
                         && preparation.evaluation_complete
                         && preparation.slots.len() == function.syntax.parameters.len()
-                        && call.arguments.len() == function.syntax.parameters.len(),
+                        && call.entry.arguments.len() == function.syntax.parameters.len(),
                     "call input preparation changed its target, completion or full arity",
                 )?;
                 let callee = event
@@ -1708,11 +1874,13 @@ impl Replay<'_> {
                     .as_ref()
                     .unwrap_or(&function.syntax.parameters);
                 let mut written = BTreeMap::new();
-                for argument in arguments {
-                    let index = if let Some(label) = argument.label {
-                        parameters.iter().position(|parameter| matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name.as_str() == label))
-                    } else { (0..parameters.len()).find(|index| !written.contains_key(index)) }
-                        .ok_or_else(|| "call input label/position is outside its actual public signature".to_owned())?;
+                let labels = crate::hir::application::parameter_labels(parameters);
+                let mapping = crate::hir::application::bind_slots(
+                    &labels,
+                    arguments.iter().map(|argument| argument.label),
+                );
+                for (argument, index) in arguments.iter().zip(mapping) {
+                    let index = index.map_err(|code|format!("call input label/position is outside its actual public signature: {code}"))?;
                     require(
                         written.insert(index, argument.expression).is_none(),
                         "call input parameter is supplied twice",
@@ -1729,7 +1897,7 @@ impl Replay<'_> {
                     if source_reception::sensitive(expected, &mut 4096) == Some(false) {
                         continue;
                     }
-                    let entry = call.arguments.get(index).ok_or_else(|| {
+                    let entry = call.entry.arguments.get(index).ok_or_else(|| {
                         "call input entry lacks its original whole argument".to_owned()
                     })?;
                     let (syntax, original, epoch, source_context) = match preparation
@@ -1838,7 +2006,7 @@ impl Replay<'_> {
                         original,
                         &entry.1.value,
                         epoch,
-                        call.entry_allocation_epoch,
+                        call.entry.allocation_epoch,
                     )?;
                     if let Some(actual) = self.input_source_reception(
                         expected,
@@ -1846,8 +2014,9 @@ impl Replay<'_> {
                         original,
                         source_context,
                         &sites,
+                        None,
                     )? {
-                        let raw = self.normalized_key(
+                        let raw = self.input_callable_source_key(
                             function.syntax.parameters[index].ty.as_ref().unwrap(),
                             &scope,
                         )?;
@@ -1909,12 +2078,17 @@ impl Replay<'_> {
             "public callable preparation changed its target, arity or completion",
         )?;
         let mut written = BTreeMap::new();
-        for argument in arguments {
-            let slot = if let Some(label) = argument.label {
-                callee.signature.as_ref().and_then(|parameters| parameters.iter().position(|parameter|
-                    matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(name) if name.as_str() == label)))
-            } else { (0..parameters.len()).find(|slot| !written.contains_key(slot)) }
-                .ok_or_else(|| "public callable Source label is outside its actual signature".to_owned())?;
+        let labels = crate::sema::builtin_sources::parameter_labels(callee, parameters.len());
+        let mapping = crate::hir::application::bind_slots(
+            &labels,
+            arguments.iter().map(|argument| argument.label),
+        );
+        for (argument, slot) in arguments.iter().zip(mapping) {
+            let slot = slot.map_err(|code| {
+                format!(
+                    "public callable Source label/position is outside its actual signature: {code}"
+                )
+            })?;
             require(
                 written.insert(slot, argument.expression).is_none(),
                 "public callable Source supplies one slot twice",
@@ -2014,7 +2188,14 @@ impl Replay<'_> {
                 }
                 _ => return Err("public callable input lacks a full-source operand".into()),
             };
-            self.input_source_reception(expected, actual_syntax, value, actual_context, sites)?;
+            self.input_source_reception(
+                expected,
+                actual_syntax,
+                value,
+                actual_context,
+                sites,
+                None,
+            )?;
         }
         Ok(())
     }

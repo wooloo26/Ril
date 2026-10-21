@@ -1,6 +1,66 @@
 use ril_compiler::{CompilationOutcome, Session};
 use ril_ir::specialization::ArgumentKey;
 
+#[test]
+fn failed_source_reception_preserves_later_independent_declarations_in_the_snapshot() {
+    for target in ["pointer32", "pointer64"] {
+        for prefix in [
+            "let original:[0][3]int=[];let invalid:[0][2]int=original;",
+            "let invalid:fn([0][2]int)->()=original_callable;",
+        ] {
+            let source = format!(
+                "type Cell={{mut count:int}}\nfn original_callable(value:[0][3]int){{}}\nfn example(){{{prefix}\nlet mut cells:[]Cell=[];cells !> Array::push(Cell.{{count:1}});cells[0].count+=1}}"
+            );
+            let snapshot = Session::with_options(
+                source.into_bytes(),
+                ril_compiler::CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
+                },
+            )
+            .analyze();
+            assert_eq!(
+                snapshot.status(),
+                ril_compiler::AnalysisStatus::Rejected,
+                "{:?}",
+                snapshot.outcome()
+            );
+            assert!(
+                snapshot
+                    .diagnostics()
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == "E0301"),
+                "{prefix}: {:?}",
+                snapshot.outcome()
+            );
+            assert!(
+                snapshot
+                    .diagnostics()
+                    .iter()
+                    .all(|diagnostic| diagnostic.code != "E0522")
+            );
+            let facts = snapshot.facts().unwrap();
+            let (id, cells) = facts
+                .bindings
+                .iter()
+                .enumerate()
+                .find(|(_, binding)| binding.name == "cells")
+                .unwrap();
+            assert!(
+                matches!(&cells.value.ty, ril_compiler::sema::model::Ty::Array(element) if !matches!(element.as_ref(), ril_compiler::sema::model::Ty::Unknown))
+            );
+            assert!(cells.value.source_type_witness.is_some());
+            assert!(
+                facts
+                    .binding_sources
+                    .iter()
+                    .any(|binding| binding.binding == id && binding.key.is_some())
+            );
+            assert!(snapshot.into_verified().is_err());
+        }
+    }
+}
+
 fn forwarding_fixture() -> &'static str {
     ril_test::case_source("tests/regressions/source-types.ril::forwarding")
 }
@@ -153,7 +213,8 @@ fn retained_return_contracts_export_each_creator_invocations_own_complete_schema
         .provenance
         .callable_return_contracts
         .iter()
-        .flat_map(|bound| &bound.generic_type_witnesses)
+        .map(|bound| &core.provenance.frozen_environments[bound.environment.0 as usize])
+        .flat_map(|environment| &environment.generic_type_witnesses)
         .map(|(_, witness)| &witness.shape)
         .collect();
     for expected in ["const(int:0)", "const(int:2)", "const(int:3)"] {
@@ -253,7 +314,7 @@ fn tampering_only_frozen_snapshot_syntax_is_rejected_even_when_value_equality_hi
     let value = facts
         .copy_invocations
         .iter_mut()
-        .flat_map(|invocation| &mut invocation.arguments)
+        .flat_map(|invocation| &mut invocation.entry.arguments)
         .map(|(_, snapshot)| &mut snapshot.value)
         .find(|value| value.source_type_witness.is_some())
         .unwrap();
@@ -286,7 +347,7 @@ fn a_consistent_key_cannot_turn_an_unresolved_binder_spelling_into_a_nominal_typ
     let value = facts
         .copy_invocations
         .iter_mut()
-        .flat_map(|invocation| &mut invocation.arguments)
+        .flat_map(|invocation| &mut invocation.entry.arguments)
         .map(|(_, snapshot)| &mut snapshot.value)
         .find(|value| value.source_type_witness.is_some())
         .unwrap();

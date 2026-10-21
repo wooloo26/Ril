@@ -37,7 +37,7 @@ impl Visitor<'_> {
     pub(super) fn contextual_call(
         &mut self,
         name: &str,
-        arguments: &[Argument],
+        arguments: &[crate::hir::application::Operand<'_, &Expr>],
     ) -> Option<Judgment> {
         // Recursive edges use the independently established summary. Replaying
         // their captured environments recursively cannot establish finiteness.
@@ -60,7 +60,7 @@ impl Visitor<'_> {
             callback_arguments.insert(
                 name.clone(),
                 ArgumentContext {
-                    expression: argument.value.clone(),
+                    expression: (*argument.expression).clone(),
                     aliases: self.aliases.clone(),
                     parameters: self.parameters.clone(),
                     handlers: self.handlers.clone(),

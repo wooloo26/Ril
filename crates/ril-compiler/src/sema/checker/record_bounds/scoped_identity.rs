@@ -80,7 +80,7 @@ fn complete_key(key: &ArgumentKey, depth: usize, work: &mut usize) -> Option<()>
     let mut child = |key| complete_key(key, depth + 1, work);
     match key {
         ArgumentKey::Closed(_) => return None,
-        ArgumentKey::Binder { .. } => {}
+        ArgumentKey::Binder { .. } | ArgumentKey::GenericBuiltin(_) => {}
         ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {
             for key in arguments {
                 child(key)?;
@@ -177,7 +177,7 @@ impl Checker {
             .iter()
             .find(|function| function.definition == call.target)?;
         if call.target != bound.definition
-            || call.arguments.len() != function.syntax.parameters.len()
+            || call.entry.arguments.len() != function.syntax.parameters.len()
             || templates.len() != function.syntax.parameters.len()
         {
             return None;
@@ -204,6 +204,7 @@ impl Checker {
         let mut common: Option<Arc<SourceTypeWitness>> = None;
         for (argument, path) in paths {
             let (mode, entry) = self.copy_invocations[invocation.0 as usize]
+                .entry
                 .arguments
                 .get(argument)?;
             if *mode != Mode::Read {
@@ -366,11 +367,11 @@ impl Checker {
         // A present selected argument is not evidence that the rest of the
         // original entry table was recorded. Defaults need their own complete
         // receiving entry before this conservative path can admit them.
-        if source.arguments.len() != info.syntax.parameters.len() {
+        if source.entry.arguments.len() != info.syntax.parameters.len() {
             return None;
         }
-        let (mode, entry) = source.arguments.get(*parameter_index as usize)?;
-        if *mode != Mode::Read || source.entry_allocation_epoch != self.recency_moves.len() {
+        let (mode, entry) = source.entry.arguments.get(*parameter_index as usize)?;
+        if *mode != Mode::Read || source.entry.allocation_epoch != self.recency_moves.len() {
             return None;
         }
         let mut bindings = self.bindings.iter().enumerate().filter(|(_, binding)| {
@@ -392,19 +393,23 @@ impl Checker {
         // The frozen expression index is an execution occurrence. Its source
         // token and the complete Read reception are checked independently;
         // agreeing caller/activation metadata alone cannot provide this root.
-        let root_expression =
-            self.invocation_expressions
-                .iter()
-                .enumerate()
-                .find_map(|(index, observation)| {
-                    let expression = self.expression_facts.get(observation.expression)?;
-                    (observation.context.invocation == Some(source.id)
-                        && observation.context.owner == Some(CallableOwner::Function(*definition))
-                        && expression.value.sources == BTreeSet::from([binding_id])
-                        && expression.value.origins == entry.value.origins
-                        && expression.value.permission == Permission::Read)
-                        .then_some(index)
-                })?;
+        let root_expression = self
+            .application_effect
+            .contexts
+            .iter()
+            .enumerate()
+            .find_map(|(index, observation)| {
+                let expression = self
+                    .application_effect
+                    .expressions
+                    .get(observation.expression)?;
+                (observation.context.invocation == Some(source.id)
+                    && observation.context.owner == Some(CallableOwner::Function(*definition))
+                    && expression.value.sources == BTreeSet::from([binding_id])
+                    && expression.value.origins == entry.value.origins
+                    && expression.value.permission == Permission::Read)
+                    .then_some(index)
+            })?;
 
         // Pair source syntax with the immutable original argument graph. The
         // current value's metadata is not used to choose a header type.
@@ -458,7 +463,7 @@ impl Checker {
             activation,
             binding: binding_id,
             root_expression,
-            entry_allocation_epoch: source.entry_allocation_epoch,
+            entry_allocation_epoch: source.entry.allocation_epoch,
         })
     }
 
@@ -477,7 +482,7 @@ impl Checker {
             .iter()
             .find(|info| info.definition == call.target)?;
         if call.target != bound.definition
-            || call.arguments.len() != function.syntax.parameters.len()
+            || call.entry.arguments.len() != function.syntax.parameters.len()
             || templates.len() != function.syntax.parameters.len()
         {
             return None;
@@ -507,6 +512,7 @@ impl Checker {
         let mut cause = None;
         for (argument_index, selection_path) in paths {
             let (mode, entry) = self.copy_invocations[invocation.0 as usize]
+                .entry
                 .arguments
                 .get(argument_index)?;
             if *mode != Mode::Read {

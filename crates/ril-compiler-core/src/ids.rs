@@ -69,3 +69,27 @@ pub struct ConstRef {
     pub graph: ConstGraphId,
     pub node: ConstNodeId,
 }
+/// The real HIR node that directly owns one lexical block. Source offsets and
+/// dynamic handler boundaries do not select a block's static identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BlockAnchor {
+    FunctionBody(StmtId),
+    ExpressionBody(ExprId),
+}
+/// A dynamic protected-computation answer receipt, distinct from its source
+/// expression and from the handler's synthetic continuation observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProtectedAnswerId(pub u32);
+/// One semantic evaluation activation, independent of heap-allocation recency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ActivationEpochId(pub u32);
+/// Physical identity in an analysis snapshot's append-only evaluation arena.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EvaluationOccurrenceId(pub u32);
+
+/// Original owner of a callable row; diagnostic spans never select a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CallableContractSource {
+    Type(TypeExprId),
+    Expression(ExprId),
+}

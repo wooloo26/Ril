@@ -169,6 +169,8 @@ impl Checker {
                     return true;
                 };
                 if !self
+                    .type_source
+                    .environment
                     .generic_context
                     .values()
                     .any(|identity| identity == caller)
@@ -245,7 +247,7 @@ impl Checker {
         let window = self.explicit_named.windows.pop()?;
         let mut prepared = window.prepared?;
         let expression = observed?;
-        let row = self.expression_facts.get(expression)?;
+        let row = self.application_effect.expressions.get(expression)?;
         if row.span != prepared.span || row.value.ty == Ty::Never {
             return None;
         }
@@ -279,7 +281,8 @@ impl Checker {
                         && call.callee_expression == Some(expression)
                 })
             && self
-                .invocation_expressions
+                .application_effect
+                .contexts
                 .iter()
                 .filter(|row| row.expression == expression && row.context == context)
                 .count()
@@ -324,10 +327,14 @@ impl Checker {
 
     pub(super) fn seed_explicit_named(&mut self, prepared: &Prepared) {
         for selected in &prepared.selections {
-            self.generic_substitutions
+            self.type_source
+                .environment
+                .generic_substitutions
                 .insert(selected.binder.clone(), selected.ty.clone());
             if let Some(witness) = &selected.witness {
-                self.generic_type_witnesses
+                self.type_source
+                    .environment
+                    .generic_type_witnesses
                     .insert(selected.binder.clone(), witness.clone());
             }
         }
@@ -338,7 +345,12 @@ impl Checker {
     /// and its real construction syntax by the common call-input gate.
     pub(super) fn finish_explicit_named_inference(&mut self, prepared: &Prepared, span: Span) {
         for selected in &prepared.selections {
-            let same_ty = self.generic_substitutions.get(&selected.binder) == Some(&selected.ty);
+            let same_ty = self
+                .type_source
+                .environment
+                .generic_substitutions
+                .get(&selected.binder)
+                == Some(&selected.ty);
             if !same_ty {
                 self.error(
                     "E0301",
@@ -417,7 +429,7 @@ impl Checker {
                         && (selection.witness.is_some()
                             || matches!(&selection.key, ArgumentKey::Binder { identity, sort: StaticBinderSort::Type }
                                 if matches!(&selection.ty, Ty::Generic(actual) if actual == identity)))
-                        && self.generic_substitutions.get(binder) == Some(expected)
+                        && self.type_source.environment.generic_substitutions.get(binder) == Some(expected)
                         && arguments.get(selection.index as usize).is_some_and(|argument|
                             argument.definition == info.definition && argument.index == selection.index
                                 && argument.binder == selection.binder

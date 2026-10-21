@@ -432,9 +432,9 @@ impl Checker {
                 _ => false,
             }
         }
-        let previous = self.generic_context.clone();
+        let previous = self.type_source.environment.generic_context.clone();
         for (index, parameter) in declaration.generics.iter().enumerate() {
-            self.generic_context.insert(
+            self.type_source.environment.generic_context.insert(
                 parameter.name.clone(),
                 format!(
                     "{}:{}:type:{index}:{}",
@@ -478,7 +478,7 @@ impl Checker {
                 );
             }
         }
-        self.generic_context = previous;
+        self.type_source.environment.generic_context = previous;
         true
     }
     pub(super) fn canonical_type_argument(&self, syntax: &TypeExpr, ty: Ty) -> TypeArgument {
@@ -519,9 +519,16 @@ impl Checker {
             TypeKind::Name { path, arguments } => {
                 (arguments.is_empty()
                     && self
+                        .type_source
+                        .environment
                         .generic_context
                         .get(&path.join("::"))
-                        .is_some_and(|identity| self.generic_substitutions.contains_key(identity)))
+                        .is_some_and(|identity| {
+                            self.type_source
+                                .environment
+                                .generic_substitutions
+                                .contains_key(identity)
+                        }))
                     || arguments.iter().any(child)
             }
             TypeKind::Optional(inner)
@@ -652,11 +659,19 @@ impl Checker {
         for (parameter, argument) in declaration.generics.iter().zip(arguments) {
             if static_parameter(parameter) {
                 let symbolic = match &argument.kind {
-                    TypeKind::Name { path, arguments } if arguments.is_empty() => {
-                        self.generic_context.get(&path.join("::")).cloned()
-                    }
+                    TypeKind::Name { path, arguments } if arguments.is_empty() => self
+                        .type_source
+                        .environment
+                        .generic_context
+                        .get(&path.join("::"))
+                        .cloned(),
                     TypeKind::Computation(expression) => match &expression.kind {
-                        ExprKind::Name(name) => self.generic_context.get(name).cloned(),
+                        ExprKind::Name(name) => self
+                            .type_source
+                            .environment
+                            .generic_context
+                            .get(name)
+                            .cloned(),
                         _ => None,
                     },
                     _ => None,
@@ -710,7 +725,7 @@ impl Checker {
                     .unwrap_or(&full_name)
                     .to_owned();
                 if full_name == name
-                    && let Some(identity) = self.generic_context.get(&name)
+                    && let Some(identity) = self.type_source.environment.generic_context.get(&name)
                 {
                     if !arguments.is_empty() {
                         self.unsupported(
@@ -723,6 +738,8 @@ impl Checker {
                         return Ty::StaticKey(identity.clone());
                     }
                     return self
+                        .type_source
+                        .environment
                         .generic_substitutions
                         .get(identity)
                         .cloned()
@@ -913,15 +930,10 @@ impl Checker {
                             | "bytes"
                             | "never"
                             | "Random::Rng"
-                            | "Order::Ordering"
                             | "Time::Duration"
                             | "Time::Instant"
                             | "Time::TimeError"
                             | "Time::Timestamp"
-                            | "Os::NativeString"
-                            | "Os::NativeError"
-                            | "Os::Platform"
-                            | "Path::Path"
                             | "Io::ErrorKind"
                             | "Io::IoError"
                             | "StringBuilder::Builder"
@@ -951,14 +963,9 @@ impl Checker {
                     "bytes" => Ty::Bytes,
                     "never" => Ty::Never,
                     "Random::Rng"
-                    | "Order::Ordering"
                     | "Time::Duration"
                     | "Time::Instant"
                     | "Time::TimeError"
-                    | "Os::NativeString"
-                    | "Os::NativeError"
-                    | "Os::Platform"
-                    | "Path::Path"
                     | "Io::ErrorKind"
                     | "StringBuilder::Builder"
                     | "Num::NumError"
@@ -1131,7 +1138,9 @@ impl Checker {
             TypeKind::ComputedProjection { base, key } => {
                 let base_type = self.ty(base);
                 let identity = if let ExprKind::Name(name) = &key.kind {
-                    self.generic_context
+                    self.type_source
+                        .environment
+                        .generic_context
                         .get(name)
                         .filter(|identity| self.generic_key_bounds.contains_key(*identity))
                         .cloned()
@@ -1139,7 +1148,13 @@ impl Checker {
                     None
                 };
                 if let Some(identity) = identity {
-                    if let Some(coordinate) = self.static_key_arguments.get(&identity).cloned() {
+                    if let Some(coordinate) = self
+                        .type_source
+                        .environment
+                        .static_key_arguments
+                        .get(&identity)
+                        .cloned()
+                    {
                         if let Some(projected) =
                             self.static_type_projection(&base_type, &coordinate)
                         {
@@ -1413,12 +1428,14 @@ impl Checker {
                     };
                 }
                 if full_name == name
-                    && let Some(identity) = self.generic_context.get(&name)
+                    && let Some(identity) = self.type_source.environment.generic_context.get(&name)
                 {
                     if self.generic_key_bounds.contains_key(identity) {
                         return Ty::StaticKey(identity.clone());
                     }
                     return self
+                        .type_source
+                        .environment
                         .generic_substitutions
                         .get(identity)
                         .cloned()
@@ -1587,10 +1604,15 @@ impl Checker {
             TypeKind::ComputedProjection { base, key } => {
                 let base = substitute(base, seen, substitutions);
                 if let ExprKind::Name(name) = &key.kind
-                    && let Some(identity) = self.generic_context.get(name)
+                    && let Some(identity) = self.type_source.environment.generic_context.get(name)
                     && self.generic_key_bounds.contains_key(identity)
                 {
-                    if let Some(coordinate) = self.static_key_arguments.get(identity) {
+                    if let Some(coordinate) = self
+                        .type_source
+                        .environment
+                        .static_key_arguments
+                        .get(identity)
+                    {
                         self.static_type_projection(&base, coordinate)
                             .unwrap_or(Ty::Unknown)
                     } else {
@@ -1938,7 +1960,7 @@ impl Checker {
                         })
                         .collect();
                     let mut context = self.frame(closure.lexical.clone(), true);
-                    let returned = self.invoke_closure_probe(*id, args, span, &mut context);
+                    let returned = self.invoke_closure_signature(*id, args, span, &mut context);
                     if !self.compatible_at(&returned.ty, &result, span.file) {
                         self.error(
                             "E0301",
@@ -2036,7 +2058,7 @@ impl Checker {
                 spans.push(source);
             }
         }
-        for fact in &self.expression_facts {
+        for fact in &self.application_effect.expressions {
             if ids.contains(&fact.value.cause.0) && fact.value.unsuffixed_numeric {
                 spans.push(fact.span);
                 if fact.value.literal_number {
@@ -2078,8 +2100,8 @@ impl Checker {
                 // expression returned. Attribute its written type to that
                 // expression's actual invocation, not the current caller.
                 let mut contexts = Vec::new();
-                for observation in &self.invocation_expressions {
-                    let fact = &self.expression_facts[observation.expression];
+                for observation in &self.application_effect.contexts {
+                    let fact = &self.application_effect.expressions[observation.expression];
                     if fact.span == span
                         && ids.contains(&fact.value.cause.0)
                         && !contexts.contains(&observation.context)
@@ -2386,9 +2408,16 @@ impl Checker {
         if let TypeKind::Name { path, arguments } = &syntax.kind
             && arguments.is_empty()
             && self
+                .type_source
+                .environment
                 .generic_context
                 .get(&path.join("::"))
-                .is_some_and(|binder| self.generic_type_witnesses.contains_key(binder))
+                .is_some_and(|binder| {
+                    self.type_source
+                        .environment
+                        .generic_type_witnesses
+                        .contains_key(binder)
+                })
         {
             // T transports the actual callable interface (including defaults
             // and labels). Its identity schema does not replace that descriptor.
@@ -2399,7 +2428,7 @@ impl Checker {
             self.ascribe_signature(value, &instantiated);
             return;
         }
-        self.contextual_storage_callable(value, syntax);
+        self.instantiate_builtin_signature(value, syntax);
         self.contextual_empty_map(value, syntax);
         if !self.pending_result_binders(value).is_empty() {
             if !self.complete_argument_identity(syntax, &mut BTreeSet::new()) {
@@ -2502,7 +2531,7 @@ mod tests {
             panic!()
         };
         let mut checker = Checker::new(FileId(0));
-        checker.generic_context.extend([
+        checker.type_source.environment.generic_context.extend([
             ("R".into(), "callee:R".into()),
             ("T".into(), "callee:T".into()),
         ]);

@@ -96,7 +96,7 @@ fn binders(value: &ArgumentKey, output: &mut BTreeSet<String>) {
         ArgumentKey::Binder { identity, .. } => {
             output.insert(identity.clone());
         }
-        ArgumentKey::Closed(_) => {}
+        ArgumentKey::Closed(_) | ArgumentKey::GenericBuiltin(_) => {}
         ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {
             for value in arguments {
                 binders(value, output);

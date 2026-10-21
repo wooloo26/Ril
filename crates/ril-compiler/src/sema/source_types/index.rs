@@ -1,6 +1,7 @@
 //! Snapshot-owned storage view index. An ID is a cache of coordinates whose
 //! original binding/declaration/occurrence must still be independently checked.
 use super::*;
+use crate::sema::context::{FrozenEnvId, FrozenEnvironment};
 use crate::sema::{effect_identity::ArgumentKey, facts::Slot};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -10,7 +11,20 @@ pub struct SourceTypeIndex(Arc<IndexData>);
 #[derive(Debug)]
 struct IndexData {
     types: Result<SourceTypes, SourceTypesError>,
-    bindings: BTreeMap<usize, Option<SourceTypeId>>,
+    bindings: BTreeMap<usize, BindingView>,
+}
+
+#[derive(Debug)]
+struct BindingView {
+    ty: Option<SourceTypeId>,
+    environment: FrozenEnvironment,
+}
+
+/// Complete coordinates and their declaration interpretation are one view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceView {
+    pub ty: SourceTypeId,
+    pub environment: FrozenEnvId,
 }
 
 impl Default for SourceTypeIndex {
@@ -24,7 +38,14 @@ impl Default for SourceTypeIndex {
 
 impl SourceTypeIndex {
     pub fn binding_type(&self, binding: usize) -> Option<SourceTypeId> {
-        self.0.bindings.get(&binding).copied().flatten()
+        self.0.bindings.get(&binding)?.ty
+    }
+    pub fn binding_view(&self, binding: usize) -> Option<SourceView> {
+        let view = self.0.bindings.get(&binding)?;
+        (!view.environment.is_poisoned()).then_some(SourceView {
+            ty: view.ty?,
+            environment: view.environment.id(),
+        })
     }
     pub fn contains_binding(&self, binding: usize) -> bool {
         self.0.bindings.contains_key(&binding)
@@ -59,20 +80,37 @@ impl SourceTypeIndex {
         &self,
         binding: usize,
         path: &[Slot],
+        hir: Option<&crate::hir::nodes::HirProgram>,
     ) -> Result<ArgumentKey, SourceTypesError> {
         let id = self
             .binding_type(binding)
             .ok_or(SourceTypesError::Unresolved)?;
-        let steps = steps(path)?;
-        self.key(self.project(id, &steps)?)
+        let types = self.0.types.as_ref().map_err(Clone::clone)?;
+        projected_key(types, id, path, hir, &mut WorkLimit::new(12288))
     }
-    pub(crate) fn validate_binding(&self, binding: usize, original: Option<&ArgumentKey>) -> bool {
-        if !self.contains_binding(binding) {
+    pub(crate) fn validate_binding(
+        &self,
+        binding: usize,
+        original: Option<&ArgumentKey>,
+        environment: FrozenEnvId,
+    ) -> bool {
+        if self.0.bindings.get(&binding).is_none_or(|view| {
+            view.environment.id() != environment || view.environment.is_poisoned()
+        }) {
             return false;
         }
         match (self.binding_type(binding), original) {
             (None, None) => true,
-            (Some(id), Some(original)) => self.key(id).is_ok_and(|stored| stored == *original),
+            (Some(id), Some(original)) => {
+                let check = || -> Result<bool, SourceTypesError> {
+                    let types = self.0.types.as_ref().map_err(Clone::clone)?;
+                    let mut work = WorkLimit::new(4096);
+                    let mut original_types = SourceBuilder::new()?;
+                    let original = original_types.import_key(original, &mut work)?;
+                    super::reception::equivalent(types, id, &original_types, original, &mut work)
+                };
+                check() == Ok(true)
+            }
             _ => false,
         }
     }
@@ -81,7 +119,7 @@ impl SourceTypeIndex {
 #[derive(Default)]
 pub(crate) struct LiveSourceTypes {
     builder: Option<SourceBuilder>,
-    bindings: BTreeMap<usize, Option<SourceTypeId>>,
+    bindings: BTreeMap<usize, BindingView>,
 }
 
 impl LiveSourceTypes {
@@ -89,11 +127,15 @@ impl LiveSourceTypes {
         &mut self,
         binding: usize,
         key: Option<&ArgumentKey>,
+        environment: FrozenEnvironment,
     ) -> Result<(), SourceTypesError> {
         if self.bindings.contains_key(&binding) {
             return Err(SourceTypesError::AlreadyDefined);
         }
         let result = (|| {
+            if environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
             let Some(key) = key else { return Ok(None) };
             if self.builder.is_none() {
                 self.builder = Some(SourceBuilder::new()?);
@@ -104,25 +146,28 @@ impl LiveSourceTypes {
                 .import_key(key, &mut WorkLimit::new(4096))
                 .map(Some)
         })();
-        self.bindings
-            .insert(binding, result.as_ref().copied().unwrap_or(None));
+        self.bindings.insert(
+            binding,
+            BindingView {
+                ty: result.as_ref().copied().unwrap_or(None),
+                environment,
+            },
+        );
         result.map(|_| ())
     }
     pub(crate) fn projected_binding_key(
         &self,
         binding: usize,
         path: &[Slot],
+        hir: Option<&crate::hir::nodes::HirProgram>,
     ) -> Result<ArgumentKey, SourceTypesError> {
         let id = self
             .bindings
             .get(&binding)
-            .copied()
-            .flatten()
+            .and_then(|view| view.ty)
             .ok_or(SourceTypesError::Unresolved)?;
         let builder = self.builder.as_ref().ok_or(SourceTypesError::MissingNode)?;
-        let mut work = WorkLimit::new(4096);
-        let selected = builder.project(id, &steps(path)?, &mut work)?;
-        builder.legacy_key(selected, &mut work)
+        projected_key(builder, id, path, hir, &mut WorkLimit::new(8192))
     }
     pub(crate) fn freeze(self) -> SourceTypeIndex {
         let types = match self.builder {
@@ -136,8 +181,30 @@ impl LiveSourceTypes {
     }
 }
 
-fn steps(path: &[Slot]) -> Result<Vec<SourcePath>, SourceTypesError> {
-    let mut work = WorkLimit::new(4096);
+fn projected_key(
+    types: &(impl SourceTypeQueries + LegacySourceExport),
+    root: SourceTypeId,
+    path: &[Slot],
+    hir: Option<&crate::hir::nodes::HirProgram>,
+    work: &mut WorkLimit,
+) -> Result<ArgumentKey, SourceTypesError> {
+    let steps = steps_in(path, work)?;
+    match (types.project(root, &steps, work), hir) {
+        (Ok(selected), _) => types.legacy_key(selected, work),
+        (Err(SourceTypesError::MissingProjection | SourceTypesError::Unresolved), Some(hir)) => {
+            // Resolve the indexed declaration, never a later mutable value.
+            // The same budget pays for the unresolved walk and its expansion.
+            let key = types.legacy_key(root, work)?;
+            super::declarations::project_steps(&key, &steps, hir, work)
+        }
+        (Err(error), _) => Err(error),
+    }
+}
+
+pub(super) fn steps_in(
+    path: &[Slot],
+    work: &mut WorkLimit,
+) -> Result<Vec<SourcePath>, SourceTypesError> {
     path.iter()
         .map(|slot| {
             work.charge(1)?;
@@ -171,20 +238,28 @@ mod tests {
             }),
         };
         let mut first = LiveSourceTypes::default();
-        first.record(2, Some(&key)).unwrap();
+        let environment = FrozenEnvironment::default();
+        first.record(2, Some(&key), environment.clone()).unwrap();
         let first = first.freeze();
         let mut second = LiveSourceTypes::default();
-        second.record(2, Some(&key)).unwrap();
+        let other_environment = FrozenEnvironment::default();
+        second
+            .record(2, Some(&key), other_environment.clone())
+            .unwrap();
         let second = second.freeze();
-        assert!(first.validate_binding(2, Some(&key)));
+        assert!(first.validate_binding(2, Some(&key), environment.id()));
+        assert!(!first.validate_binding(2, Some(&key), other_environment.id()));
+        assert_eq!(first.binding_view(2).unwrap().environment, environment.id());
         assert!(matches!(
             second.key(first.binding_type(2).unwrap()),
             Err(SourceTypesError::ForeignIdentity)
         ));
-        let child = first.projected_binding_key(2, &[Slot::AnyIndex]).unwrap();
+        let child = first
+            .projected_binding_key(2, &[Slot::AnyIndex], None)
+            .unwrap();
         assert!(
             matches!(child, ArgumentKey::Array { length: Some(length), .. } if length == "const(int:2)")
         );
-        assert!(!SourceTypeIndex::default().validate_binding(2, Some(&key)));
+        assert!(!SourceTypeIndex::default().validate_binding(2, Some(&key), environment.id()));
     }
 }

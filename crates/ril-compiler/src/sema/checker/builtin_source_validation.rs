@@ -1,7 +1,12 @@
-//! Independent checks for physical builtin source observations. This validates
-//! their original contracts; it never pays a receiving bound or an effect duty.
+//! Independent declaration and result coverage over physical HIR occurrences.
+//! A later view, erased Ty or neighboring call cannot replace this evidence.
 use super::*;
-use crate::sema::SemanticFacts;
+use crate::sema::{
+    SemanticFacts,
+    source_types::{SourceBuilder, WorkLimit, builtins, reception},
+};
+#[path = "builtin_source_instances.rs"]
+mod instances;
 
 pub(crate) fn actual_prelude_name(
     facts: &SemanticFacts,
@@ -12,47 +17,103 @@ pub(crate) fn actual_prelude_name(
     source::actual_prelude_name(facts, context, actual, identity)
 }
 
+fn effects(contract: &builtin_source_types::Contract) -> BTreeSet<String> {
+    contract
+        .effects
+        .iter()
+        .map(|effect| match effect {
+            builtin_source_types::SystemEffect::Fiber => "Fiber".into(),
+        })
+        .collect()
+}
+
 pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, String)> {
+    let fallback = facts
+        .expressions
+        .first()
+        .map(|fact| fact.span)
+        .unwrap_or(Span {
+            file: FileId(0),
+            start: 0,
+            end: 0,
+        });
+    let contexts = physical_contexts(facts).map_err(|message| (fallback, CauseId(0), message))?;
+    if facts.invocation_expressions.is_empty() && facts.builtin_source_observations.is_empty() {
+        return validate_results(facts, &contexts);
+    }
+    let names = source::NameIndex::new(facts).map_err(|message| (fallback, CauseId(0), message))?;
     let mut seen = BTreeSet::new();
     for observation in &facts.builtin_source_observations {
         let span = facts
             .expressions
             .get(observation.expression)
-            .map_or(observation.full_header.span, |fact| fact.span);
+            .map_or(fallback, |fact| fact.span);
         let mut run = || -> Result<(), String> {
             if !seen.insert(observation.expression) {
                 return Err("builtin source repeats a physical expression".into());
             }
             let contract = builtin_source_types::contract(&observation.identity, span)
-                .ok_or("builtin source has no canonical standard header")?;
+                .ok_or("builtin source has no canonical standard declaration")?;
             let fact = facts
                 .expressions
                 .get(observation.expression)
                 .ok_or("builtin source expression is absent")?;
             if observation.full_header != contract.source
-                || observation.concrete_effects != BTreeSet::from(["Fiber".into()])
-                || observation.written_formals != BTreeSet::from([0])
+                || observation.concrete_effects != effects(&contract)
+                || observation.written_formals != contract.written_formals.iter().copied().collect()
                 || observation.captures != contract.captures
                 || observation.cause != fact.value.cause
-                || !matches!(fact.value.callables.as_slice(), [Callable::Builtin(name)] if name == &observation.identity)
                 || !fact.value.sources.is_empty()
             {
                 return Err(
-                    "builtin source changed its original header, rows or capture identity".into(),
+                    "builtin source changed its original declaration, rows or capture identity"
+                        .into(),
                 );
             }
-            let TypeKind::Callable { parameters, .. } = &observation.full_header.kind else {
-                return Err("builtin source header is not Fn".into());
-            };
-            if fact.value.signature.as_ref() != Some(parameters) {
-                return Err("builtin source changed its original parameter signature".into());
+            match &contract.source {
+                BuiltinDeclaration::Generic(id) => {
+                    if fact.value.signature.is_some()
+                        || fact.value.ty != Ty::Unknown
+                        || !matches!(fact.value.callables.as_slice(), [Callable::Builtin(name)] if name == id.name())
+                    {
+                        return Err(
+                            "generic builtin source changed its universal descriptor".into()
+                        );
+                    }
+                }
+                BuiltinDeclaration::Syntax(TypeExpr {
+                    kind: TypeKind::Callable { parameters, .. },
+                    ..
+                }) => {
+                    if fact.value.signature.as_ref() != Some(parameters)
+                        || !matches!(fact.value.callables.as_slice(), [Callable::Builtin(name)] if name == &observation.identity)
+                    {
+                        return Err(
+                            "builtin source changed its original callable or parameter signature"
+                                .into(),
+                        );
+                    }
+                }
+                BuiltinDeclaration::Syntax(_)
+                    if matches!(
+                        contract.identity,
+                        builtin_source_types::Identity::Constant(_)
+                    ) =>
+                {
+                    if !fact.value.callables.is_empty()
+                        || fact.value.signature.is_some()
+                        || standard::constant_ty(&observation.identity).as_ref()
+                            != Some(&fact.value.ty)
+                    {
+                        return Err(
+                            "builtin data constant changed its canonical type or became callable"
+                                .into(),
+                        );
+                    }
+                }
+                _ => return Err("builtin source declaration has no supported kind".into()),
             }
-            let rows: Vec<_> = facts
-                .invocation_expressions
-                .iter()
-                .filter(|row| row.expression == observation.expression)
-                .collect();
-            if !matches!(rows.as_slice(), [row] if row.context == observation.context) {
+            if contexts.get(&observation.expression) != Some(&observation.context) {
                 return Err("builtin source lost its unique actual caller context".into());
             }
             let cause = facts
@@ -68,39 +129,210 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
             {
                 return Err("builtin source borrowed a derived or unrelated cause".into());
             }
-            source::actual_name(
-                facts,
+            names.actual_name(
                 observation.context.owner,
-                span,
+                fact.source_id
+                    .ok_or("builtin reference has no HIR identity")?,
                 &observation.identity,
             )
         };
         run().map_err(|message| (span, observation.cause, message))?;
     }
-    // Reconstruct reverse coverage from original expressions, so deleting the
-    // whole observation arena cannot erase its Source obligation.
+    // Reverse obligations come from actual HIR names, even if the producer's
+    // declaration arena or callable tags have been deleted or altered.
     for row in &facts.invocation_expressions {
         let Some(fact) = facts.expressions.get(row.expression) else {
             continue;
         };
-        let [Callable::Builtin(name)] = fact.value.callables.as_slice() else {
-            continue;
-        };
-        if builtin_source_types::contract(name, fact.span).is_none()
-            || !fact.value.sources.is_empty()
-            || facts.explanations.kinds.get(fact.value.cause.0 as usize) != Some(&CauseKind::Source)
-        {
-            continue;
-        }
-        let identity = source::direct_identity(facts, row.context.owner, fact.span)
+        let Some(id) = fact.source_id else { continue };
+        let identity = names
+            .direct_identity(row.context.owner, id)
             .map_err(|message| (fact.span, fact.value.cause, message))?;
-        if identity.as_deref() == Some(name) && !seen.contains(&row.expression) {
+        if identity.is_some() && !seen.contains(&row.expression) {
             return Err((
                 fact.span,
                 fact.value.cause,
                 "canonical builtin source lost its required original observation".into(),
             ));
         }
+    }
+    validate_results(facts, &contexts)?;
+    instances::validate(facts)
+}
+
+fn physical_contexts(facts: &SemanticFacts) -> Result<BTreeMap<usize, InvocationContext>, String> {
+    let mut work = WorkLimit::new(1 << 20);
+    work.charge(facts.invocation_expressions.len())
+        .map_err(|error| error.to_string())?;
+    let mut contexts = BTreeMap::new();
+    for row in &facts.invocation_expressions {
+        if contexts.insert(row.expression, row.context).is_some() {
+            return Err("builtin validation repeats a physical caller context".into());
+        }
+    }
+    Ok(contexts)
+}
+
+fn validate_results(
+    facts: &SemanticFacts,
+    contexts: &BTreeMap<usize, InvocationContext>,
+) -> Result<(), (Span, CauseId, String)> {
+    if facts.copy_call_events.is_empty() {
+        return Ok(());
+    }
+    let fallback = &facts.copy_call_events[0];
+    let index_error = |message| (fallback.span, CauseId(0), message);
+    let mut work = WorkLimit::new(1 << 20);
+    work.charge(facts.copy_call_events.len())
+        .map_err(|error| index_error(error.to_string()))?;
+    work.charge(facts.call_arguments.len())
+        .map_err(|error| index_error(error.to_string()))?;
+    let mut preparations = BTreeMap::new();
+    for row in &facts.call_arguments {
+        if preparations.insert(row.source_event, row).is_some() {
+            return Err(index_error("call repeats its physical preparation".into()));
+        }
+    }
+    // Effect operations may legally use the same spelling. Their declaration
+    // must be present in actual HIR; a producer map entry cannot waive a result.
+    let hir = facts
+        .semantic_hir
+        .as_deref()
+        .ok_or_else(|| index_error("builtin result validation has no HIR".into()))?;
+    work.charge(hir.statements().len())
+        .map_err(|error| index_error(error.to_string()))?;
+    let mut operations = BTreeSet::new();
+    for (_, statement) in hir.statements() {
+        if let crate::hir::nodes::StmtKind::Effect {
+            name,
+            operations: declarations,
+            ..
+        } = &statement.kind
+        {
+            work.charge(declarations.len())
+                .map_err(|error| index_error(error.to_string()))?;
+            if name.len() > 64 {
+                continue;
+            }
+            for &id in declarations {
+                let Some(crate::hir::nodes::Stmt {
+                    kind: crate::hir::nodes::StmtKind::Function(function),
+                    ..
+                }) = hir.statement(id)
+                else {
+                    return Err(index_error(
+                        "effect operation has no HIR declaration".into(),
+                    ));
+                };
+                if function.name.len() <= 64 {
+                    let name = format!("{name}::{}", function.name);
+                    if let Some(id) = builtins::BuiltinId::lookup(&name) {
+                        operations.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    for event in &facts.copy_call_events {
+        let Some(callee) = event
+            .callee_expression
+            .and_then(|id| facts.expressions.get(id))
+        else {
+            continue;
+        };
+        work.charge(callee.value.callables.len())
+            .map_err(|error| index_error(error.to_string()))?;
+        let definitions = callee
+            .value
+            .callables
+            .iter()
+            .map(|target| match target {
+                Callable::Builtin(name) => {
+                    builtins::BuiltinId::lookup(name).filter(|id| !operations.contains(id))
+                }
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(definitions) = definitions.filter(|ids| !ids.is_empty()) else {
+            continue;
+        };
+        let run = || -> Result<(), String> {
+            let result_id = event
+                .result_expression
+                .ok_or("closed builtin call lost its actual result occurrence")?;
+            let result = facts
+                .expressions
+                .get(result_id)
+                .ok_or("closed builtin result occurrence is absent")?;
+            let preparation = preparations
+                .get(&event.id)
+                .ok_or("closed builtin has no unique physical preparation")?;
+            let callee_context = contexts
+                .get(&event.callee_expression.unwrap())
+                .ok_or("closed builtin callee has no actual caller context")?;
+            if contexts.get(&result_id) != Some(callee_context)
+                || callee_context.owner != event.owner
+                || callee_context.invocation != event.parent
+                || result.source_id != event.source_id
+                || result.source_id.is_none()
+            {
+                return Err(
+                    "closed builtin result borrowed a different HIR application or activation"
+                        .into(),
+                );
+            }
+            if preparation.evaluated.iter().any(|row| {
+                facts
+                    .expressions
+                    .get(row.observation.expression)
+                    .is_some_and(|fact| fact.value.ty == Ty::Never)
+            }) {
+                return Ok(());
+            }
+            if !preparation.evaluation_complete || !preparation.slots_bound {
+                return Err(
+                    "closed builtin result borrowed an incomplete or different HIR application"
+                        .into(),
+                );
+            }
+            for id in definitions {
+                let mut work = WorkLimit::new(4096);
+                let graph = id
+                    .definition()
+                    .graph(&mut work)
+                    .map_err(|error| error.to_string())?;
+                let actual = result
+                    .value
+                    .source_type_witness
+                    .as_ref()
+                    .ok_or("closed builtin result lost its original declaration view")?;
+                if !actual.validate_closed() {
+                    return Err("closed builtin result source is not a closed original view".into());
+                }
+                let actual = crate::static_eval::effects::bounded_argument_key(
+                    &actual.syntax,
+                    &BTreeMap::new(),
+                )
+                .ok_or("closed builtin result source is not complete")?;
+                let mut imported = SourceBuilder::new().map_err(|error| error.to_string())?;
+                let actual = imported
+                    .import_key(&actual, &mut work)
+                    .map_err(|error| error.to_string())?;
+                if !reception::equivalent(&graph.types, graph.result, &imported, actual, &mut work)
+                    .map_err(|error| error.to_string())?
+                    || builtins::erased_type(&graph.types, graph.result, &mut work)
+                        .ok()
+                        .as_ref()
+                        != Some(&result.value.ty)
+                {
+                    return Err(
+                        "closed builtin result changed its original declared source schema".into(),
+                    );
+                }
+            }
+            Ok(())
+        };
+        run().map_err(|message| (event.span, callee.value.cause, message))?;
     }
     Ok(())
 }
@@ -109,7 +341,7 @@ pub(crate) fn original_canonical_key(
     facts: &SemanticFacts,
     value: &Value,
     actual: &Expr,
-    context: crate::sema::effect_identity::InvocationContext,
+    context: InvocationContext,
 ) -> Option<crate::sema::effect_identity::ArgumentKey> {
     let name = match &actual.kind {
         ExprKind::Name(name) => name.clone(),
@@ -120,6 +352,7 @@ pub(crate) fn original_canonical_key(
         return None;
     }
     let contract = builtin_source_types::contract(&name, actual.span)?;
+    let source_id = actual.hir_id?;
     let mut matching = facts
         .builtin_source_observations
         .iter()
@@ -130,13 +363,13 @@ pub(crate) fn original_canonical_key(
                 && facts
                     .expressions
                     .get(observation.expression)
-                    .is_some_and(|fact| fact.span == actual.span && fact.value == *value)
+                    .is_some_and(|fact| fact.source_id == Some(source_id) && fact.value == *value)
         });
     let observation = matching.next()?;
     if matching.next().is_some()
         || observation.full_header != contract.source
-        || observation.concrete_effects != BTreeSet::from(["Fiber".into()])
-        || observation.written_formals != BTreeSet::from([0])
+        || observation.concrete_effects != effects(&contract)
+        || observation.written_formals != contract.written_formals.iter().copied().collect()
         || !observation.captures.is_empty()
         || facts
             .invocation_expressions
@@ -147,15 +380,8 @@ pub(crate) fn original_canonical_key(
     {
         return None;
     }
-    source::actual_name(facts, context.owner, actual.span, &name).ok()?;
-    let syntax = super::super::source_types::expand_builtin_source_syntax(
-        &BTreeMap::new(),
-        &observation.full_header,
-        0,
-    )?;
-    let key = crate::static_eval::effects::bounded_argument_key(&syntax, &BTreeMap::new())?;
-    crate::sema::source_reception::complete(&key, &mut 4096)?;
-    Some(key)
+    source::actual_name(facts, context.owner, source_id, &name).ok()?;
+    builtin_source_types::source_key(&observation.full_header)
 }
 
 #[path = "builtin_source_syntax.rs"]

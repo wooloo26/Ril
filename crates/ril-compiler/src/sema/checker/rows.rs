@@ -47,8 +47,9 @@ impl Checker {
             }
         }
         // Declaration absences are independent of an invocation's selections.
-        let substitutions = std::mem::take(&mut self.generic_substitutions);
-        let type_witnesses = std::mem::take(&mut self.generic_type_witnesses);
+        let substitutions = std::mem::take(&mut self.type_source.environment.generic_substitutions);
+        let type_witnesses =
+            std::mem::take(&mut self.type_source.environment.generic_type_witnesses);
         let mut facts = BTreeMap::new();
         for syntax in function
             .parameters
@@ -59,8 +60,8 @@ impl Checker {
             let ty = self.ty_readonly(syntax, &mut BTreeSet::new());
             collect(&self.call_inference_type(&ty), &mut facts);
         }
-        self.generic_substitutions = substitutions;
-        self.generic_type_witnesses = type_witnesses;
+        self.type_source.environment.generic_substitutions = substitutions;
+        self.type_source.environment.generic_type_witnesses = type_witnesses;
         for (identity, lacks) in facts {
             self.generic_row_lacks
                 .entry(identity)

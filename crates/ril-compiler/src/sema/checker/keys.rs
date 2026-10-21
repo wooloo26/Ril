@@ -85,9 +85,10 @@ impl Checker {
     pub(super) fn static_key_bound_type(&mut self, identity: &str) -> Option<Ty> {
         let bound = self.generic_key_bounds.get(identity)?.clone();
         let context = self.generic_key_contexts.get(identity)?.clone();
-        let previous = std::mem::replace(&mut self.generic_context, context);
+        let previous =
+            std::mem::replace(&mut self.type_source.environment.generic_context, context);
         let result = self.ty(&bound);
-        self.generic_context = previous;
+        self.type_source.environment.generic_context = previous;
         Some(result)
     }
     pub(super) fn static_type_projection(
@@ -169,7 +170,11 @@ impl Checker {
             }
             _ => {
                 if let Ty::StaticKey(identity) = &key_value.ty {
-                    self.static_key_arguments.get(identity).cloned()
+                    self.type_source
+                        .environment
+                        .static_key_arguments
+                        .get(identity)
+                        .cloned()
                 } else {
                     None
                 }

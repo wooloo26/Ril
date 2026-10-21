@@ -39,6 +39,7 @@ pub(super) fn closed_result_contract(evaluator: &Evaluator, syntax: &TypeExpr) -
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Ty {
+    Intrinsic(ril_compiler_core::builtin_types::AtomicBuiltinType),
     Unit,
     Bool,
     Number(String),
@@ -178,6 +179,7 @@ pub(super) fn type_of(evaluator: &Evaluator, operand: &Expr) -> Result<TypeExpr>
 
 fn reify_type(ty: &Ty, span: Span) -> Result<TypeExpr> {
     let name = match ty {
+        Ty::Intrinsic(identity) => Some(identity.name()),
         Ty::Bool => Some("bool"),
         Ty::String => Some("str"),
         Ty::Bytes => Some("bytes"),
@@ -188,7 +190,7 @@ fn reify_type(ty: &Ty, span: Span) -> Result<TypeExpr> {
     };
     let kind = if let Some(name) = name {
         TypeKind::Name {
-            path: vec![name.into()],
+            path: name.split("::").map(str::to_owned).collect(),
             arguments: vec![],
         }
     } else {
@@ -621,6 +623,17 @@ impl<'a> Typer<'a> {
             TypeKind::Name { path, arguments } => {
                 let name = path.join("::");
                 let name = name.strip_prefix("Prelude::").unwrap_or(&name);
+                if let Some(identity) =
+                    ril_compiler_core::builtin_types::AtomicBuiltinType::from_name(name)
+                {
+                    if !arguments.is_empty() {
+                        return Err(Failure::Diagnostic(
+                            "E0340",
+                            "intrinsic atomic type has no generic arguments".into(),
+                        ));
+                    }
+                    return Ok(Ty::Intrinsic(identity));
+                }
                 match name {
                     "bool" => Ty::Bool,
                     "str" => Ty::String,
@@ -2424,6 +2437,14 @@ impl<'a> Typer<'a> {
             TypeKind::Name { path, arguments } => {
                 let joined = path.join("::");
                 let name = joined.strip_prefix("Prelude::").unwrap_or(&joined);
+                if ril_compiler_core::builtin_types::AtomicBuiltinType::from_name(name).is_some()
+                    && !arguments.is_empty()
+                {
+                    return Err(Failure::Diagnostic(
+                        "E0340",
+                        "intrinsic atomic type has no generic arguments".into(),
+                    ));
+                }
                 if let Some(Ty::Constructor(arity)) = env.get(name)
                     && arguments.len() != *arity
                 {
@@ -2436,6 +2457,8 @@ impl<'a> Typer<'a> {
                     return Ok(());
                 }
                 if !primitive_type(name)
+                    && ril_compiler_core::builtin_types::AtomicBuiltinType::from_name(name)
+                        .is_none()
                     && !matches!(
                         name,
                         "Option"

@@ -49,6 +49,144 @@ fn count_call(runtime: &mut Runtime, receiver: Handle) -> Result<()> {
     runtime.set_field(receiver, "calls".into(), count)?;
     Ok(())
 }
+
+extern "C" fn guarded_read(_: u64, arguments: u64) -> u64 {
+    handle(|runtime| {
+        let args = runtime.sequence(Handle(arguments))?;
+        let token = runtime.field(args[0], "position")?;
+        let position = runtime.read_position_identity(token)?;
+        runtime.guard_read_position(position, false)?;
+        count_call(runtime, args[0])?;
+        let maximum = runtime.as_integer(args[1])?;
+        let chunk =
+            runtime.read_chunk_value(if maximum == 0 { vec![] } else { b"ab".to_vec() }, false)?;
+        runtime.variant("Ok", vec![chunk])
+    })
+}
+
+extern "C" fn aborted_read(_: u64, arguments: u64) -> u64 {
+    handle(|runtime| {
+        let receiver = runtime.sequence(Handle(arguments))?[0];
+        let token = runtime.field(receiver, "position")?;
+        runtime.guard_read_position(runtime.read_position_identity(token)?, false)?;
+        let bad = runtime.field(receiver, "bad")?;
+        Err(if runtime.truth(bad)? {
+            RuntimeError::panic("abort guarded read")
+        } else {
+            RuntimeError::cancelled()
+        })
+    })
+}
+
+#[test]
+fn guarded_callback_abort_and_cancellation_close_the_actual_read_permission() {
+    for panic in [true, false] {
+        ril_rt_init();
+        let (buffer, receiver, operations, token, maximum) = with_runtime(|runtime| {
+            let buffer = runtime
+                .allocate(Object::ReadBuffer(crate::io_buffered::ReadBuffer::new(2)))
+                .unwrap();
+            let (receiver, operations) =
+                fixture(runtime, aborted_read as *const () as usize as u64, "read");
+            let token = runtime.io_builtin("Io::read_position", &[]).unwrap();
+            runtime
+                .set_field(receiver, "position".into(), token)
+                .unwrap();
+            let bad = runtime.boolean(panic).unwrap();
+            runtime.set_field(receiver, "bad".into(), bad).unwrap();
+            (buffer, receiver, operations, token, runtime.int(1).unwrap())
+        });
+        let error = call(
+            "Io::read_buffered_at",
+            vec![buffer, receiver, operations, maximum, token],
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.tag,
+            if panic {
+                ril_runtime_api::abi::OutcomeTag::LanguagePanic
+            } else {
+                ril_runtime_api::abi::OutcomeTag::Cancelled
+            }
+        );
+        with_runtime(|runtime| {
+            assert!(runtime.read_permits.is_empty());
+            assert!(runtime.heap.read_sources.is_empty());
+            assert!(runtime.heap.read_reservations.is_empty());
+        });
+        call("Io::guard_read", vec![token]).unwrap();
+        call("Io::guard_seek", vec![token]).unwrap();
+        ril_rt_init();
+    }
+}
+
+#[test]
+fn explicit_positions_follow_real_buffered_calls_zero_reads_copies_and_release() {
+    ril_rt_init();
+    let (buffer, receiver, operations, token, copy, maximum, zero) = with_runtime(|runtime| {
+        let buffer = runtime
+            .allocate(Object::ReadBuffer(crate::io_buffered::ReadBuffer::new(2)))
+            .unwrap();
+        let (receiver, operations) =
+            fixture(runtime, guarded_read as *const () as usize as u64, "read");
+        let token = runtime.io_builtin("Io::read_position", &[]).unwrap();
+        runtime
+            .set_field(receiver, "position".into(), token)
+            .unwrap();
+        let copy = runtime.heap.deep_clone(token).unwrap();
+        (
+            buffer,
+            receiver,
+            operations,
+            token,
+            copy,
+            runtime.int(1).unwrap(),
+            runtime.int(0).unwrap(),
+        )
+    });
+    call(
+        "Io::read_buffered_at",
+        vec![buffer, receiver, operations, maximum, copy],
+    )
+    .unwrap();
+    call(
+        "Io::read_buffered_at",
+        vec![buffer, receiver, operations, zero, token],
+    )
+    .unwrap();
+    let duplicate = with_runtime(|runtime| {
+        assert!(runtime.read_permits.is_empty());
+        let calls = runtime.field(receiver, "calls").unwrap();
+        assert_eq!(runtime.as_integer(calls).unwrap(), 2);
+        assert!(
+            matches!(runtime.heap.get(buffer).unwrap(), Object::ReadBuffer(state) if state.pending.len() == 1)
+        );
+        runtime.heap.deep_clone(buffer).unwrap()
+    });
+    assert_eq!(
+        call("Io::guard_read", vec![token]).unwrap_err().message,
+        "reader position is reserved by unread buffered input"
+    );
+    assert!(call("Io::guard_seek", vec![copy]).is_err());
+    // A copied buffer keeps an independent pending claim even when the
+    // original is drained. Draining a hit never accesses the actual cursor.
+    call(
+        "Io::read_buffered_at",
+        vec![buffer, receiver, operations, maximum, token],
+    )
+    .unwrap();
+    assert!(call("Io::guard_read", vec![copy]).is_err());
+    assert!(call("Io::guard_seek", vec![copy]).is_err());
+    call(
+        "Io::read_buffered_at",
+        vec![duplicate, receiver, operations, maximum, copy],
+    )
+    .unwrap();
+    call("Io::guard_read", vec![copy]).unwrap();
+    call("Io::guard_seek", vec![token]).unwrap();
+    with_runtime(|runtime| assert!(runtime.read_permits.is_empty()));
+    ril_rt_init();
+}
 extern "C" fn invalid_read(_: u64, arguments: u64) -> u64 {
     handle(|runtime| {
         let receiver = runtime.sequence(Handle(arguments))?[0];

@@ -1,14 +1,12 @@
 //! Transitional ingress for existing immutable ArgumentKey facts. This adapter
-//! preserves original child references; it does not resolve an alias by name or
+//! retains complete coordinates; it does not resolve an alias by name or
 //! infer dimensions from a collection's runtime contents.
 use super::*;
-use crate::sema::{effect_identity::ArgumentKey, facts::Slot};
-use std::collections::BTreeMap;
+use crate::sema::effect_identity::ArgumentKey;
 
-pub(super) struct Imported<'a> {
+pub(super) struct Imported {
     pub(super) types: SourceTypes,
     pub(super) root: SourceTypeId,
-    originals: BTreeMap<SourceTypeId, &'a ArgumentKey>,
 }
 
 pub(super) fn scalar(name: &str) -> Option<SourceScalar> {
@@ -34,7 +32,7 @@ pub(super) fn scalar(name: &str) -> Option<SourceScalar> {
         "bigint" => BigInt,
         "f32" => F32,
         "f64" => F64,
-        _ => return None,
+        other => Intrinsic(ril_compiler_core::builtin_types::AtomicBuiltinType::from_name(other)?),
     })
 }
 
@@ -52,10 +50,9 @@ pub(super) fn container(name: &str) -> Option<SourceContainer> {
     })
 }
 
-pub(super) fn import_node<'a>(
-    key: &'a ArgumentKey,
+pub(super) fn import_node(
+    key: &ArgumentKey,
     builder: &mut SourceBuilder,
-    originals: &mut BTreeMap<SourceTypeId, &'a ArgumentKey>,
     work: &mut WorkLimit,
     depth: usize,
 ) -> Result<SourceTypeId, SourceTypesError> {
@@ -63,8 +60,9 @@ pub(super) fn import_node<'a>(
     if depth >= 64 {
         return Err(SourceTypesError::BudgetExceeded);
     }
-    let mut child = |key| import_node(key, builder, originals, work, depth + 1);
+    let mut child = |key| import_node(key, builder, work, depth + 1);
     let shape = match key {
+        ArgumentKey::GenericBuiltin(id) => SourceNode::GenericBuiltin(*id),
         ArgumentKey::Closed(key) => {
             work.text(key)?;
             SourceNode::OpaqueComputation(key.clone())
@@ -74,6 +72,12 @@ pub(super) fn import_node<'a>(
             SourceNode::Binder(identity.clone())
         }
         ArgumentKey::Name { name, arguments } => {
+            if let Some(schema) = super::standard_data::schema(name) {
+                if !arguments.is_empty() {
+                    return Err(SourceTypesError::InvalidContainer);
+                }
+                return schema.insert(builder, work);
+            }
             let arguments = arguments
                 .iter()
                 .map(&mut child)
@@ -120,7 +124,7 @@ pub(super) fn import_node<'a>(
             let fields = fields
                 .iter()
                 .map(|(label, mutable, key)| {
-                    let value = import_node(key, builder, originals, work, depth + 1)?;
+                    let value = import_node(key, builder, work, depth + 1)?;
                     work.text(label)?;
                     Ok(SourceField {
                         label: label.clone(),
@@ -131,7 +135,7 @@ pub(super) fn import_node<'a>(
                 .collect::<Result<_, SourceTypesError>>()?;
             let row = row
                 .as_deref()
-                .map(|key| import_node(key, builder, originals, work, depth + 1))
+                .map(|key| import_node(key, builder, work, depth + 1))
                 .transpose()?;
             SourceNode::Record { fields, row }
         }
@@ -155,22 +159,18 @@ pub(super) fn import_node<'a>(
             }
         }
     };
-    let id = builder.insert(shape, work)?;
-    originals.insert(id, key);
-    Ok(id)
+    builder.insert(shape, work)
 }
 
-pub(super) fn import<'a>(
-    key: &'a ArgumentKey,
+pub(super) fn import(
+    key: &ArgumentKey,
     work: &mut WorkLimit,
-) -> Result<Imported<'a>, SourceTypesError> {
+) -> Result<Imported, SourceTypesError> {
     let mut builder = SourceBuilder::new()?;
-    let mut originals = BTreeMap::new();
-    let root = import_node(key, &mut builder, &mut originals, work, 0)?;
+    let root = import_node(key, &mut builder, work, 0)?;
     Ok(Imported {
         types: builder.freeze(work)?,
         root,
-        originals,
     })
 }
 
@@ -181,7 +181,7 @@ impl SourceBuilder {
         work: &mut WorkLimit,
     ) -> Result<SourceTypeId, SourceTypesError> {
         let checkpoint = self.checkpoint();
-        let result = import_node(key, self, &mut BTreeMap::new(), work, 0);
+        let result = import_node(key, self, work, 0);
         if result.is_err() {
             self.rollback(checkpoint);
         }
@@ -201,31 +201,4 @@ pub(crate) fn key_is_coordinate_free(key: &ArgumentKey) -> bool {
         key_sensitivity(key, &mut WorkLimit::new(4096)),
         SourceSensitivity::Absent { .. }
     )
-}
-
-pub(crate) fn project_key<'a>(
-    key: &'a ArgumentKey,
-    path: &[Slot],
-    work: &mut WorkLimit,
-) -> Result<&'a ArgumentKey, SourceTypesError> {
-    let imported = import(key, work)?;
-    let mut steps = Vec::new();
-    for step in path {
-        work.charge(1)?;
-        steps.push(match step {
-            Slot::Field(label) => {
-                work.text(label)?;
-                SourcePath::Field(label.clone())
-            }
-            Slot::Tuple(index) => SourcePath::Tuple(*index),
-            Slot::Index(_) | Slot::AnyIndex => SourcePath::Element,
-            _ => return Err(SourceTypesError::MissingProjection),
-        });
-    }
-    let id = imported.types.project(imported.root, &steps, work)?;
-    imported
-        .originals
-        .get(&id)
-        .copied()
-        .ok_or(SourceTypesError::MissingNode)
 }

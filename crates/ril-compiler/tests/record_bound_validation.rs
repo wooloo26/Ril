@@ -155,7 +155,9 @@ fn fixed_storage_is_frozen_before_the_actual_application_entry() {
             node.fixed = false;
         }
     }
-    let (_, actual) = &mut facts.copy_invocations[invocation.0 as usize].arguments[argument];
+    let (_, actual) = &mut facts.copy_invocations[invocation.0 as usize]
+        .entry
+        .arguments[argument];
     for node in &mut actual.nodes {
         if node.origin == origin {
             node.fixed = false;

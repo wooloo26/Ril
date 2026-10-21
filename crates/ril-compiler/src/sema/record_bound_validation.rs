@@ -37,6 +37,13 @@ mod writes;
 type Failure = (Span, Option<CauseId>, String);
 type Check<T = ()> = Result<T, String>;
 
+pub(crate) fn validate_callable_inputs(facts: &SemanticFacts) -> Result<(), String> {
+    if facts.closure_invocations.is_empty() && facts.copy_invocations.is_empty() {
+        return Ok(());
+    }
+    Replay::new(facts)?.callable_inputs()
+}
+
 pub(crate) fn validate_storage_sources(facts: &SemanticFacts) -> Result<(), Failure> {
     let fallback = facts
         .source_program
@@ -81,6 +88,7 @@ const LIMIT: usize = 65_536;
 struct Replay<'a> {
     facts: &'a SemanticFacts,
     observations: observation_index::ObservationIndex<'a>,
+    blocks: Option<crate::hir::blocks::BlockIndex>,
     functions: BTreeMap<DefinitionId, &'a FunctionInfo>,
     bounds: BTreeMap<(DefinitionId, u32), &'a GenericRecordBound>,
 }
@@ -96,6 +104,12 @@ impl<'a> Replay<'a> {
         crate::sema::evaluation_identity::validate(facts)
             .map_err(|(_, _, message)| format!("application evaluation structure: {message}"))?;
         let observations = observation_index::ObservationIndex::new(facts)?;
+        let blocks = facts
+            .semantic_hir
+            .as_deref()
+            .map(crate::hir::blocks::BlockIndex::new)
+            .transpose()
+            .map_err(|error| format!("original block index: {error}"))?;
         require(
             facts.functions.len() <= LIMIT
                 && facts.record_bounds.len() <= LIMIT
@@ -164,6 +178,7 @@ impl<'a> Replay<'a> {
         Ok(Self {
             facts,
             observations,
+            blocks,
             functions,
             bounds,
         })
@@ -1645,7 +1660,7 @@ fn select_key(
             Some(selected) if selected != key => child(selected)?,
             _ => key.clone(),
         },
-        ArgumentKey::Closed(_) => key.clone(),
+        ArgumentKey::Closed(_) | ArgumentKey::GenericBuiltin(_) => key.clone(),
         ArgumentKey::Name { name, arguments } => ArgumentKey::Name {
             name: name.clone(),
             arguments: arguments.iter().map(&mut child).collect::<Check<_>>()?,
@@ -1854,7 +1869,9 @@ fn projection_sites(facts: &SemanticFacts) -> Check<Vec<ProjectionSite<'_>>> {
                         let site = facts
                             .closure_sites
                             .iter()
-                            .find(|site| site.owner == owner && site.span == expression.span)
+                            .find(|site| {
+                                site.owner == owner && Some(site.source) == expression.hir_id
+                            })
                             .ok_or_else(|| {
                                 "record-bound coverage cannot identify a lexical lambda".to_owned()
                             })?;
@@ -2158,7 +2175,7 @@ impl Replay<'_> {
             site.base,
             base.context,
             activation,
-            call.entry_allocation_epoch,
+            call.entry.allocation_epoch,
         )?;
         let cause = self
             .facts
@@ -2904,7 +2921,9 @@ impl Replay<'_> {
                 continue;
             }
             for (index, parameter) in function.syntax.parameters.iter().enumerate() {
-                if matches!(&parameter.pattern.kind,ril_syntax::ast::PatternKind::Name(name) if name==&info.name)
+                if info.pattern.is_some()
+                    && parameter.pattern.hir_id == info.pattern
+                    && matches!(&parameter.pattern.kind,ril_syntax::ast::PatternKind::Name(name) if name==&info.name)
                 {
                     matching.push((*binding, index, info, parameter));
                 }
@@ -2919,7 +2938,7 @@ impl Replay<'_> {
             u32::try_from(binding_id).ok() == Some(binding.root.0),
             "record read reception borrowed another binding's root identity",
         )?;
-        let (mode, actual) = call.arguments.get(index).ok_or_else(|| {
+        let (mode, actual) = call.entry.arguments.get(index).ok_or_else(|| {
             "record read receiver has no whole argument at its real parameter index".to_owned()
         })?;
         let (root_expression, path) = product_expression_path(expression, &binding.name)?;
@@ -2975,7 +2994,7 @@ impl Replay<'_> {
             "nested read receiver belongs to another observed source path",
         )?;
         require(
-            allocation_epoch == call.entry_allocation_epoch,
+            allocation_epoch == call.entry.allocation_epoch,
             "record read projection across recency needs explicit frozen source transport",
         )?;
         if let Some(parent) = call.caller_activation {
@@ -3551,6 +3570,7 @@ impl Replay<'_> {
             "structural check selected another source argument or invented a T object",
         )?;
         let (_, actual) = call
+            .entry
             .arguments
             .get(check.argument_index as usize)
             .ok_or_else(|| {
@@ -3563,7 +3583,7 @@ impl Replay<'_> {
             "structural check borrowed another call's actual source snapshot",
         )?;
         require(
-            check.allocation_epoch == call.entry_allocation_epoch
+            check.allocation_epoch == call.entry.allocation_epoch
                 && call.caller_activation == Some(check.activation)
                 && check.allocation_epoch <= self.facts.allocation_history.len()
                 && self.facts.allocated_scopes.contains(&check.activation),
@@ -3586,7 +3606,7 @@ impl Replay<'_> {
         let scope = self.schema_scope(check)?;
         let reception = self.scoped_reception_for_check(check)?;
         for (ordinal, (index, path)) in paths.iter().enumerate().skip(1) {
-            let (_, whole) = call.arguments.get(*index).ok_or_else(|| {
+            let (_, whole) = call.entry.arguments.get(*index).ok_or_else(|| {
                 "another structural occurrence has no whole actual argument".to_owned()
             })?;
             self.snapshot(whole)?;

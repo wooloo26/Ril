@@ -165,7 +165,7 @@ mod tests {
                 for cause in &checker.explanations.causes {
                     println!("CAUSE {cause:?}");
                 }
-                for value in &checker.expression_facts {
+                for value in &checker.application_effect.expressions {
                     println!(
                         "EXPR {:?} {:?} {:?}",
                         value.span, value.value.option_identity, value.value.cause

@@ -2,76 +2,27 @@
 //! return value. Retaining a writer there has the same permission restrictions.
 use super::*;
 impl Checker {
-    /// Select the storage primitive's type variables from a written callable
-    /// context. The descriptor keeps its intrinsic reception contract; the
-    /// context must preserve the receiver/element relationship and modes.
-    pub(super) fn contextual_storage_callable(&mut self, value: &mut Value, syntax: &TypeExpr) {
-        fn parameters(
-            checker: &Checker,
-            syntax: &TypeExpr,
-            seen: &mut BTreeSet<String>,
-        ) -> Option<Vec<Parameter>> {
-            match &syntax.kind {
-                TypeKind::Callable { parameters, .. } => Some(parameters.clone()),
-                TypeKind::Name { path, arguments } if arguments.is_empty() => {
-                    let name = path.join("::");
-                    if !seen.insert(name.clone()) {
-                        return None;
-                    }
-                    let declaration = checker.types.get(&name)?;
-                    if declaration.nominal || declaration.opaque {
-                        return None;
-                    }
-                    parameters(checker, declaration.value.as_ref()?, seen)
-                }
-                _ => None,
-            }
-        }
+    /// Instantiate the original universal declaration using full Source
+    /// coordinates. Erased runtime shapes never establish its correlations.
+    pub(super) fn instantiate_builtin_signature(&mut self, value: &mut Value, syntax: &TypeExpr) {
         if value.ty != Ty::Unknown || value.callables.len() != 1 {
             return;
         }
         let Callable::Builtin(name) = &value.callables[0] else {
             return;
         };
-        if !standard::storage_callable(name) {
-            return;
-        }
-        let Some(parameters) = parameters(self, syntax, &mut BTreeSet::new()) else {
+        let Some(id) = ril_compiler_core::builtin_calls::GenericBuiltin::lookup(name) else {
             return;
         };
-        let target = self.ty(syntax);
-        let Ty::Callable(inputs, result) = self.call_inference_type(&target) else {
-            return;
-        };
-        let modes: Vec<_> = parameters.iter().map(|parameter| parameter.mode).collect();
-        let ordinary = |mode| matches!(mode, ParameterMode::Read | ParameterMode::SharedMut);
-        let valid = *result == Ty::Unit
-            && match (name.as_str(), inputs.as_slice(), modes.as_slice()) {
-                ("Array::push", [Ty::Array(element), supplied], [ParameterMode::Mut, mode]) => {
-                    ordinary(*mode) && **element == *supplied
-                }
-                (
-                    "Array::insert",
-                    [Ty::Array(element), Ty::Int(index), supplied],
-                    [ParameterMode::Mut, ParameterMode::Read, mode],
-                ) => index == "int" && ordinary(*mode) && **element == *supplied,
-                (
-                    "Array::truncate",
-                    [Ty::Array(_), Ty::Int(length)],
-                    [ParameterMode::Mut, ParameterMode::Read],
-                ) => length == "int",
-                (
-                    "Map::set",
-                    [Ty::Map(key, element), supplied_key, supplied],
-                    [ParameterMode::Mut, ParameterMode::Read, mode],
-                ) => ordinary(*mode) && **key == *supplied_key && **element == *supplied,
-                _ => false,
-            };
-        if !valid {
-            self.error("E0301", syntax.span, "storage callable context must preserve its receiver, element types, result and parameter modes", [value.cause]);
-            return;
+        let target = self.freeze_source_receiving_target(syntax);
+        let instance = target
+            .key()
+            .and_then(|key| crate::sema::source_types::polymorphic::instantiate_key(id, &key).ok());
+        match instance {
+            Some(Some(_)) => value.ty = self.ty(syntax),
+            Some(None) => self.error("E0301", syntax.span, "primitive Source instance must preserve its receiver, full element/key types, result and parameter modes", [value.cause]),
+            None => self.unsupported(syntax.span, "primitive signature selection requires its complete frozen receiving Source"),
         }
-        value.ty = target;
     }
     pub(super) fn check_stored_authority(
         &mut self,

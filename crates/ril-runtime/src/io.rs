@@ -185,6 +185,16 @@ impl Runtime {
                 .ok_or_else(|| RuntimeError::internal("missing IO argument"))
         };
         match name {
+            "Io::read_position" => {
+                let handle = self.allocate(Object::ReadPosition(Handle::INVALID))?;
+                *self.heap.get_mut(handle)? = Object::ReadPosition(handle);
+                Ok(handle)
+            }
+            "Io::guard_read" | "Io::guard_seek" => {
+                let identity = self.read_position_identity(arg(0)?)?;
+                self.guard_read_position(identity, name == "Io::guard_seek")?;
+                self.unit()
+            }
             "Io::read_buffer" | "Io::write_buffer" => {
                 let capacity = usize::try_from(self.as_integer(arg(0)?)?)
                     .ok()

@@ -15,7 +15,7 @@ pub(super) struct FlowSnapshot {
     pub(super) handler_obligations: BTreeMap<ScopeId, Obligations>,
     refinements: BTreeMap<narrowing::Place, narrowing::Refinement>,
     writes: Vec<narrowing::WriteEvent>,
-    reads: BTreeMap<(u32, u32, u32, u32), usize>,
+    reads: BTreeMap<(ril_compiler_core::ids::ExprId, ScopeId), usize>,
     pub(super) control: effects::ControlState,
     uncertain: BTreeSet<(NodeId, Slot)>,
     arrays: BTreeMap<NodeId, Option<u64>>,

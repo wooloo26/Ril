@@ -372,6 +372,7 @@ impl Checker {
             bound: &Arc<CallableReturnBound>,
             selected: &BTreeMap<String, Ty>,
             memo: &mut BTreeMap<usize, Arc<CallableReturnBound>>,
+            domain: &super::type_source::TypeSourceDomain,
         ) -> Arc<CallableReturnBound> {
             let pointer = Arc::as_ptr(bound) as usize;
             if let Some(rewritten) = memo.get(&pointer) {
@@ -380,15 +381,18 @@ impl Checker {
             let rewritten = if bound.raw {
                 bound.clone()
             } else {
+                let Some(mut environment) = domain.copy_environment(&bound.typing_environment)
+                else {
+                    return bound.clone();
+                };
                 let mut rewritten = (**bound).clone();
                 rewritten.target = substitute_inferred_type(&bound.target, selected);
-                let mut environment = rewritten.typing_environment.thaw();
                 for ty in environment.generic_substitutions.values_mut() {
                     *ty = substitute_inferred_type(ty, selected);
                 }
                 rewritten.typing_environment = environment.freeze();
                 for predecessor in &mut rewritten.predecessors {
-                    *predecessor = rewrite_bound(predecessor, selected, memo);
+                    *predecessor = rewrite_bound(predecessor, selected, memo, domain);
                 }
                 if rewritten.target == bound.target
                     && rewritten.typing_environment == bound.typing_environment
@@ -410,10 +414,11 @@ impl Checker {
             value: &mut Value,
             selected: &BTreeMap<String, Ty>,
             memo: &mut BTreeMap<usize, Arc<CallableReturnBound>>,
+            domain: &super::type_source::TypeSourceDomain,
         ) {
             value.ty = substitute_inferred_type(&value.ty, selected);
             for bound in &mut value.callable_returns {
-                *bound = rewrite_bound(bound, selected, memo);
+                *bound = rewrite_bound(bound, selected, memo, domain);
             }
             value
                 .pending_inference
@@ -430,7 +435,7 @@ impl Checker {
             .flatten()
             .chain(value.variant_witnesses.values_mut())
             {
-                rewrite(payload, selected, memo);
+                rewrite(payload, selected, memo, domain);
             }
         }
         for node in affected {
@@ -442,10 +447,10 @@ impl Checker {
         let mut bound_memo = BTreeMap::new();
         for ((parent, _), child) in &mut self.fields {
             if reachable.contains(parent) {
-                rewrite(child, &selected, &mut bound_memo);
+                rewrite(child, &selected, &mut bound_memo, &self.type_source);
             }
         }
-        rewrite(value, &selected, &mut bound_memo);
+        rewrite(value, &selected, &mut bound_memo, &self.type_source);
         value.pending_inference = pending
             .into_iter()
             .filter(|identity| !selected.contains_key(identity))

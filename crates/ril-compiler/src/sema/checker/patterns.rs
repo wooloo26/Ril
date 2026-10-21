@@ -11,7 +11,7 @@ struct PatternState {
     refinements: BTreeMap<narrowing::Place, narrowing::Refinement>,
     handler_obligations: BTreeMap<ScopeId, Obligations>,
     writes: Vec<narrowing::WriteEvent>,
-    reads: BTreeMap<(u32, u32, u32, u32), usize>,
+    reads: BTreeMap<(ril_compiler_core::ids::ExprId, ScopeId), usize>,
     uncertain: BTreeSet<(NodeId, Slot)>,
     arrays: BTreeMap<NodeId, Option<u64>>,
     fixed_arrays: BTreeSet<NodeId>,
@@ -915,6 +915,9 @@ impl Checker {
             value.participants.insert(Participant::Root(root));
         }
         self.bindings.push(BindingInfo {
+            pattern: None,
+            context: self.invocation_context(frame.callable_owner),
+            typing_environment: self.capture_typing_environment_with_bindings(&frame.env),
             name: name.into(),
             value,
             mode: BindingMode::Let,

@@ -41,7 +41,10 @@ impl Checker {
                 // A genuine scalar-only source graph has no additional
                 // dimension/callable coordinate duty. Ordinary typing and all
                 // publication permissions still run in the intrinsic.
-                if crate::sema::source_types::key_is_coordinate_free(expected) {
+                if crate::sema::source_types::key_is_coordinate_free_with_declarations(
+                    expected,
+                    Some(&self.semantic_hir),
+                ) {
                     continue;
                 }
                 let input = self.storage_supplied_input(event, slot, &args[slot].1, span, frame)?;
@@ -115,8 +118,8 @@ impl Checker {
         {
             return None;
         }
-        let row = self.invocation_expressions.get(expression)?;
-        let original = self.expression_facts.get(expression)?;
+        let row = self.application_effect.contexts.get(expression)?;
+        let original = self.application_effect.expressions.get(expression)?;
         if row.expression != expression
             || row.context != actual_context
             || row.argument_of != Some((event, slot as u32))

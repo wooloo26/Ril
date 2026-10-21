@@ -40,6 +40,7 @@ pub(super) struct AssignmentSite<'a> {
 }
 
 pub(super) struct SourceSites<'a> {
+    pub expressions: BTreeMap<ril_compiler_core::ids::ExprId, &'a Expr>,
     generic: Vec<Site<'a>>,
     pub calls: Vec<CallSite<'a>>,
     pub bindings: Vec<BindingSite<'a>>,
@@ -105,6 +106,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
         // The source predicate, rather than an empty/mutable arena, proves that
         // no executable Call or Generic expression needs coverage here.
         return Ok(SourceSites {
+            expressions: BTreeMap::new(),
             generic: Vec::new(),
             calls: Vec::new(),
             bindings: Vec::new(),
@@ -139,6 +141,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
     let mut assignments = Vec::new();
     let mut lambdas = Vec::new();
     let mut functions = Vec::new();
+    let mut expressions = BTreeMap::new();
     loop {
         let node = match pending.pop() {
             Some(node) => node,
@@ -278,6 +281,12 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
                 }
             }
             Pending::Expression(owner, expression, parent_call, depth) => {
+                if let Some(id) = expression.hir_id {
+                    require(
+                        expressions.insert(id, expression).is_none(),
+                        "original expression index repeats a HIR identity",
+                    )?;
+                }
                 require(
                     depth < 128,
                     "explicit named expression nesting exceeds its bound",
@@ -311,7 +320,9 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
                         let matching: Vec<_> = facts
                             .closure_sites
                             .iter()
-                            .filter(|site| site.owner == owner && site.span == expression.span)
+                            .filter(|site| {
+                                site.owner == owner && Some(site.source) == expression.hir_id
+                            })
                             .collect();
                         let [site] = matching.as_slice() else {
                             return Err(
@@ -483,6 +494,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
         )?;
     }
     Ok(SourceSites {
+        expressions,
         generic: result,
         calls,
         bindings,

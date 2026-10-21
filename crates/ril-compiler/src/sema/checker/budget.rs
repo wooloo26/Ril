@@ -544,8 +544,12 @@ fn finite_primitive(name: &str) -> bool {
             // separately invoke and certify the actual stream callback; this
             // entry never covers a file wait or unresolved operation table.
             | "Io::read_buffer"
+            | "Io::read_position"
+            | "Io::guard_read"
+            | "Io::guard_seek"
             | "Io::write_buffer"
             | "Io::read_buffered"
+            | "Io::read_buffered_at"
             | "Io::write_buffered"
             | "Io::flush"
             | "Array::push"

@@ -775,7 +775,8 @@ impl Checker {
             self.unsupported(span, "generated iterator has no actual HIR origin call or exceeded its registration budget");
             return self.unit(span);
         }
-        let Some(site) = self.closure_site(caller.callable_owner, syntax.span) else {
+        let Some(site) = self.closure_site(caller.callable_owner, syntax.hir_id, syntax.span)
+        else {
             self.unsupported(
                 span,
                 "generated iterator source has no actual lexical owner",
@@ -791,7 +792,15 @@ impl Checker {
         else {
             unreachable!()
         };
+        let contract = std::sync::Arc::new(LambdaContract {
+            source: None,
+            return_type: return_type.clone(),
+            annotations: vec![],
+            span,
+            typing_environment: self.capture_typing_environment_with_bindings(&environment.env),
+        });
         self.closures.push(ClosureInfo {
+            contract,
             hir_id: syntax.hir_id,
             site: Some(site),
             creation_invocation: self.copy_invocation_stack.last().copied(),
@@ -806,17 +815,6 @@ impl Checker {
             owner: environment.owner,
             node,
         });
-        self.lambda_contracts.insert(
-            closure,
-            contracts::LambdaContract {
-                return_type: return_type.clone(),
-                annotations: vec![],
-                span,
-                typing_environment: self
-                    .capture_typing_environment()
-                    .with_contract_bindings(environment.env.clone()),
-            },
-        );
         self.iter_steps.insert(
             identity.clone(),
             StepFact {

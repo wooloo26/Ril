@@ -27,19 +27,21 @@ fn same_evidence(left: &BudgetProof, right: &BudgetProof) -> bool {
         && set(&left.cleanup_coverage) == set(&right.cleanup_coverage)
 }
 
-fn action_argument(arguments: &[Argument]) -> Option<&Expr> {
+fn action_argument<'a>(
+    arguments: &[crate::hir::application::Operand<'_, &'a Expr>],
+) -> Option<&'a Expr> {
     if arguments.len() != 2 {
         return None;
     }
     let mut slots = [None, None];
     for argument in arguments {
-        let slot = match argument.label.as_deref() {
+        let slot = match argument.label {
             Some("limit") => 0,
             Some("action") => 1,
             None => slots.iter().position(Option::is_none)?,
             _ => return None,
         };
-        if slots[slot].replace(&argument.value).is_some() {
+        if slots[slot].replace(argument.expression).is_some() {
             return None;
         }
     }
@@ -51,7 +53,7 @@ impl Visitor<'_> {
     pub(super) fn budget_call(
         &mut self,
         span: Span,
-        arguments: &[Argument],
+        arguments: &[crate::hir::application::Operand<'_, &Expr>],
         explicit_evaluation: &Judgment,
     ) -> Option<Judgment> {
         let mut proofs = self.budget_proofs.iter().filter(|proof| proof.span == span);

@@ -55,6 +55,17 @@ struct Operand {
 }
 
 impl Checker {
+    pub(super) fn evaluated_argument_source(
+        &self,
+        event: CopyCallEventId,
+        role: EvaluationRole,
+    ) -> Option<&ArgumentKey> {
+        self.call_input_source
+            .evaluated
+            .get(&(event, role))?
+            .key
+            .as_ref()
+    }
     pub(super) fn remember_result_carrier(
         &mut self,
         callee: &Value,
@@ -85,12 +96,27 @@ impl Checker {
             .syntax
             .generics
             .iter()
-            .filter_map(|parameter| self.generic_context.get(&parameter.name).cloned())
+            .filter_map(|parameter| {
+                self.type_source
+                    .environment
+                    .generic_context
+                    .get(&parameter.name)
+                    .cloned()
+            })
             .collect();
         for binder in &owned {
-            self.generic_substitutions.remove(binder);
-            self.generic_type_witnesses.remove(binder);
-            self.static_key_arguments.remove(binder);
+            self.type_source
+                .environment
+                .generic_substitutions
+                .remove(binder);
+            self.type_source
+                .environment
+                .generic_type_witnesses
+                .remove(binder);
+            self.type_source
+                .environment
+                .static_key_arguments
+                .remove(binder);
         }
         if let Some(prepared) = self.explicit_named_for_event(event, info.definition) {
             self.seed_explicit_named(&prepared);
@@ -106,12 +132,17 @@ impl Checker {
                 let mut names = BTreeSet::new();
                 ty.generic_names(&mut names);
                 if names.iter().any(|name| {
-                    owned.contains(name) && !self.generic_substitutions.contains_key(name)
+                    owned.contains(name)
+                        && !self
+                            .type_source
+                            .environment
+                            .generic_substitutions
+                            .contains_key(name)
                 }) {
                     return None;
                 }
                 let target = self.freeze_source_receiving_target(syntax);
-                target.key.as_ref()?;
+                target.key().as_ref()?;
                 Some(target)
             })
             .collect();
@@ -199,6 +230,26 @@ impl Checker {
         if let Some(key) = self.storage_binding_source_key(value, syntax, frame) {
             return key;
         }
+        if let Some(source) = syntax.hir_id {
+            let mut limit = crate::sema::source_types::WorkLimit::new(*work);
+            let declared = crate::sema::source_types::declarations::construction(
+                source,
+                &self.semantic_hir,
+                &mut limit,
+            );
+            *work = limit.remaining();
+            if let Some(key) = declared.ok()? {
+                return Some(key);
+            }
+        }
+        if value.source_type_witness.is_none()
+            && matches!(&syntax.kind, ExprKind::Unary { operator, .. } if operator == "^mut")
+        {
+            return self.original_composite_source_key(value, syntax, frame, work, depth);
+        }
+        if let Some(key) = self.original_copy_source_key(value, syntax, frame, work, depth) {
+            return key;
+        }
         if let ExprKind::Name(name) = &syntax.kind
             && self.constant_references.contains_key(name)
         {
@@ -252,17 +303,8 @@ impl Checker {
             if value.sources.len() != 1 || binding.name != *name {
                 return None;
             }
-            if binding.parameter && binding.owner == frame.owner {
-                if matches!(frame.callable_owner, Some(CallableOwner::Lambda(_))) {
-                    return self.formal_source_type_key(value, syntax, frame);
-                }
-                let function = self.functions.iter().find(|function| {
-                    frame.callable_owner == Some(CallableOwner::Function(function.definition))
-                })?;
-                let parameter = function.syntax.parameters.iter().find(|parameter|
-                    parameter.pattern.span == binding.span && matches!(&parameter.pattern.kind, PatternKind::Name(actual) if actual == name))?;
-                let ty = parameter.ty.clone()?;
-                return self.freeze_source_receiving_target(&ty).key;
+            if binding.parameter {
+                return self.formal_source_receiving_key(value, syntax, frame);
             }
             if let [Callable::Named(index)] = value.callables.as_slice() {
                 let function = self.functions[*index].clone();
@@ -323,13 +365,14 @@ impl Checker {
         let Some(expression) = observed else {
             return;
         };
-        let Some(observation) = self.expression_facts.get(expression) else {
+        let Some(observation) = self.application_effect.expressions.get(expression) else {
             return;
         };
         let context = self.invocation_context(frame.callable_owner);
         if (observation.source_id.is_none() || observation.source_id != syntax.hir_id)
             || !self
-                .invocation_expressions
+                .application_effect
+                .contexts
                 .get(expression)
                 .is_some_and(|row| row.expression == expression && row.context == context)
         {
@@ -396,7 +439,7 @@ impl Checker {
         if input.context != self.invocation_context(frame.callable_owner) {
             return false;
         }
-        let Some(row) = self.invocation_expressions.get_mut(expression) else {
+        let Some(row) = self.application_effect.contexts.get_mut(expression) else {
             return false;
         };
         let mapped = (event, slot as u32);
@@ -534,59 +577,75 @@ impl Checker {
                     .or_else(|| self.call_input_source.defaults.get(&(event, slot)))
             })
             .cloned();
-        let answer = input.as_ref().and_then(|input| {
-            let event =
-                source_event.and_then(|event| self.copy_call_events.get(event.0 as usize))?;
-            if let Some(id) = input.default {
-                let record = self
-                    .default_uses
-                    .get(id.0 as usize)
-                    .filter(|record| record.id == id)?;
-                if record.target != Some(info.definition)
-                    || record.parameter as usize != slot
-                    || record.caller != input.context
-                    || record.result_allocation_epoch != Some(input.allocation_epoch)
+        let answer = if source_event.is_none() {
+            self.generated_entry_source_key(slot)
+                .or_else(|| self.signature_entry_source_key(slot))
+                .and_then(|actual| {
+                    source_reception::compatible(
+                        &expected,
+                        &actual,
+                        Some(&Construction::Opaque),
+                        &mut 4096,
+                    )
+                })
+        } else {
+            input.as_ref().and_then(|input| {
+                let event =
+                    source_event.and_then(|event| self.copy_call_events.get(event.0 as usize))?;
+                if let Some(id) = input.default {
+                    let record = self
+                        .default_uses
+                        .get(id.0 as usize)
+                        .filter(|record| record.id == id)?;
+                    if record.target != Some(info.definition)
+                        || record.parameter as usize != slot
+                        || record.caller != input.context
+                        || record.result_allocation_epoch != Some(input.allocation_epoch)
+                    {
+                        return None;
+                    }
+                    match record.origin {
+                        crate::sema::default_uses::DefaultOrigin::Call(id)
+                            if id == event.id
+                                && event.owner == input.context.owner
+                                && event.parent == input.context.invocation => {}
+                        crate::sema::default_uses::DefaultOrigin::InvocationFallback(id)
+                            if self.copy_invocation_stack.last() == Some(&id)
+                                && self.copy_invocations.get(id.0 as usize).is_some_and(
+                                    |call| {
+                                        call.source_event == Some(event.id)
+                                            && call.target == info.definition
+                                    },
+                                ) => {}
+                        _ => return None,
+                    }
+                } else if event.owner != input.context.owner
+                    || event.parent != input.context.invocation
                 {
                     return None;
                 }
-                match record.origin {
-                    crate::sema::default_uses::DefaultOrigin::Call(id)
-                        if id == event.id
-                            && event.owner == input.context.owner
-                            && event.parent == input.context.invocation => {}
-                    crate::sema::default_uses::DefaultOrigin::InvocationFallback(id)
-                        if self.copy_invocation_stack.last() == Some(&id)
-                            && self
-                                .copy_invocations
-                                .get(id.0 as usize)
-                                .is_some_and(|call| {
-                                    call.source_event == Some(event.id)
-                                        && call.target == info.definition
-                                }) => {}
-                    _ => return None,
+                match &input.key {
+                    Some(actual) => source_reception::compatible(
+                        &expected,
+                        actual,
+                        Some(&input.fresh),
+                        &mut 4096,
+                    ),
+                    None => match (&expected, &input.fresh) {
+                        (ArgumentKey::Array { length, element }, Construction::Array(items))
+                            if items.is_empty()
+                                && length
+                                    .as_ref()
+                                    .is_none_or(|length| length == "const(int:0)") =>
+                        {
+                            source_reception::complete(element, &mut 4096)?;
+                            Some(true)
+                        }
+                        _ => None,
+                    },
                 }
-            } else if event.owner != input.context.owner || event.parent != input.context.invocation
-            {
-                return None;
-            }
-            match &input.key {
-                Some(actual) => {
-                    source_reception::compatible(&expected, actual, Some(&input.fresh), &mut 4096)
-                }
-                None => match (&expected, &input.fresh) {
-                    (ArgumentKey::Array { length, element }, Construction::Array(items))
-                        if items.is_empty()
-                            && length
-                                .as_ref()
-                                .is_none_or(|length| length == "const(int:0)") =>
-                    {
-                        source_reception::complete(element, &mut 4096)?;
-                        Some(true)
-                    }
-                    _ => None,
-                },
-            }
-        });
+            })
+        };
         match answer {
             Some(true) => true,
             Some(false) => {
@@ -606,6 +665,104 @@ impl Checker {
                 false
             }
         }
+    }
+
+    fn generated_entry_source_key(&self, slot: usize) -> Option<ArgumentKey> {
+        use crate::sema::application_effect::{EntryOrigin, InputOrigin};
+        let call = self
+            .copy_invocations
+            .get(self.copy_invocation_stack.last()?.0 as usize)?;
+        let EntryOrigin::Generated { inputs, .. } = &call.entry.origin else {
+            return None;
+        };
+        let (observation, boundary) = match inputs.get(slot)? {
+            InputOrigin::Copied {
+                observation,
+                boundary,
+            } => (*observation, Some(*boundary)),
+            InputOrigin::Observed(observation) | InputOrigin::Widened(observation) => {
+                (*observation, None)
+            }
+            InputOrigin::Scalar(kind) => {
+                return Some(ArgumentKey::Name {
+                    name: match kind {
+                        crate::sema::application_effect::ScalarInput::PositiveInt => "int",
+                        crate::sema::application_effect::ScalarInput::ByteSuffix(_)
+                        | crate::sema::application_effect::ScalarInput::BufferedBytes(_) => "bytes",
+                    }
+                    .into(),
+                    arguments: vec![],
+                });
+            }
+        };
+        let original = self
+            .application_effect
+            .expressions
+            .get(observation.0 as usize)?;
+        let source = original.source_id?;
+        let node = self.semantic_hir.expression(source)?;
+        let key = if let crate::hir::nodes::ExprKind::Name(name) = &node.kind
+            && original.value.sources.len() == 1
+            && let Some(binding) = original.value.sources.first()
+            && self
+                .bindings
+                .get(*binding)
+                .is_some_and(|binding| binding.name == *name)
+            && let Some(view) = self.call_input_source.local_views.get(binding)
+        {
+            let key = view.as_ref()?;
+            source_reception::complete(key, &mut 4096)?;
+            key.clone()
+        } else {
+            let mut limit = crate::sema::source_types::WorkLimit::new(4096);
+            if let Some(key) = crate::sema::source_types::declarations::construction(
+                source,
+                &self.semantic_hir,
+                &mut limit,
+            )
+            .ok()?
+            {
+                key
+            } else {
+                let witness = original.value.source_type_witness.as_ref()?;
+                if !witness.validate_closed() {
+                    return None;
+                }
+                crate::static_eval::effects::bounded_argument_key(
+                    &witness.syntax,
+                    &BTreeMap::new(),
+                )?
+            }
+        };
+        if let Some(boundary) = boundary {
+            let proof = self
+                .copy_boundaries
+                .get(boundary.0 as usize)
+                .filter(|proof| proof.id == boundary)?;
+            source_reception::copy_view(key, proof.mode, &mut 4096)
+        } else {
+            Some(key)
+        }
+    }
+
+    fn signature_entry_source_key(&self, slot: usize) -> Option<ArgumentKey> {
+        let call = self
+            .copy_invocations
+            .get(self.copy_invocation_stack.last()?.0 as usize)?;
+        if call.entry.origin != crate::sema::application_effect::EntryOrigin::SignatureProbe
+            || call.source_event.is_some()
+            || call.declaration_probe
+        {
+            return None;
+        }
+        let input = &call.entry.arguments.get(slot)?.1;
+        crate::sema::application_effect::signature_assumption(
+            input,
+            call.caller_activation,
+            call.entry.caller_context,
+            &self.bindings,
+            &mut 4096,
+        )
     }
 
     pub(super) fn check_public_call_input_sources(
@@ -679,7 +836,7 @@ impl Checker {
             let keys = match callable {
                 Callable::Closure(index) => {
                     let closure = self.closures.get(*index)?.clone();
-                    let contract = self.lambda_contracts.get(index)?.clone();
+                    let contract = self.lambda_contract(*index)?.clone();
                     let previous = self.enter_typing_environment(&contract.typing_environment);
                     let keys: Option<Vec<_>> = closure
                         .parameters
@@ -693,7 +850,7 @@ impl Checker {
                                 {
                                     Some(None)
                                 } else {
-                                    target.key.map(Some)
+                                    target.key().map(Some)
                                 }
                             }
                         })
@@ -787,19 +944,7 @@ fn input_compatible(expected: &ArgumentKey, input: &Input) -> Option<bool> {
         Some(actual) => {
             source_reception::compatible(expected, actual, Some(&input.fresh), &mut 4096)
         }
-        None => match (expected, &input.fresh) {
-            (ArgumentKey::Array { length, element }, Construction::Array(items))
-                if items.is_empty() =>
-            {
-                source_reception::complete(element, &mut 4096)?;
-                Some(
-                    length
-                        .as_ref()
-                        .is_none_or(|length| length == "const(int:0)"),
-                )
-            }
-            _ => None,
-        },
+        None => source_reception::empty_context(expected, &input.fresh, &mut 4096),
     }
 }
 
@@ -898,8 +1043,8 @@ mod tests {
         assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
         let mut checker = Checker::new(FileId(0));
         checker.run(&parsed.program);
-        let expressions: Vec<_> = checker.invocation_expressions.iter().filter_map(|row| {
-            let fact = checker.expression_facts.get(row.expression)?;
+        let expressions: Vec<_> = checker.application_effect.contexts.iter().filter_map(|row| {
+            let fact = checker.application_effect.expressions.get(row.expression)?;
             (fact.span.start == 49 || fact.span.start == 126).then(||
                 (row.context, fact.span, fact.value.ty.clone(), fact.value.cause,
                     checker.explanations.causes.get(fact.value.cause.0 as usize).map(|cause| cause.parents.clone()),

@@ -34,6 +34,44 @@ pub(super) fn selected_type(ty: NumberType) -> Ty {
 }
 
 impl Checker {
+    pub(super) fn primitive_numeric_contexts(
+        &mut self,
+        id: ril_compiler_core::builtin_calls::GenericBuiltin,
+        event: CopyCallEventId,
+        arguments: &[Operand<'_, &Expr>],
+        mapping: &[Result<usize, &'static str>],
+        frame: &Frame,
+    ) -> Vec<Option<Ty>> {
+        let receiver = arguments
+            .iter()
+            .zip(mapping)
+            .find(|(_, slot)| **slot == Ok(0))
+            .and_then(|(argument, _)| {
+                self.evaluated_argument_source(event, argument.role)
+                    .cloned()
+                    .or_else(|| self.declared_operand_source(argument.expression, frame))
+            });
+        let parameters =
+            crate::sema::source_types::polymorphic::numeric_parameters(id, receiver.as_ref()).ok();
+        mapping
+            .iter()
+            .map(|slot| {
+                let kind = parameters.as_ref()?.get(*slot.as_ref().ok()?)?.as_ref()?;
+                let name = crate::sema::source_types::scalar_name(*kind).to_owned();
+                Some(
+                    if matches!(
+                        kind,
+                        crate::sema::source_types::SourceScalar::F32
+                            | crate::sema::source_types::SourceScalar::F64
+                    ) {
+                        Ty::Float(name)
+                    } else {
+                        Ty::Int(name)
+                    },
+                )
+            })
+            .collect()
+    }
     pub(super) fn numeric_argument_contexts(
         &mut self,
         callee: &Value,
@@ -64,17 +102,24 @@ impl Checker {
             let Ty::Callable(parameters, _) = self.expanded_at(&callee.ty, span.file) else {
                 return vec![None; arguments.len()];
             };
-            let mut occupied = BTreeSet::new();
-            return arguments.iter().map(|argument| {
-                let slot=if let Some(label)=argument.label {
-                    callee.signature.as_ref()?.iter().position(|parameter|matches!(&parameter.pattern.kind,PatternKind::Name(name) if name==label))
-                } else {(0..parameters.len()).find(|slot|!occupied.contains(slot))}?;
-                occupied.insert(slot);
-                let ty=parameters.get(slot)?.clone();
-                let mut generics=BTreeSet::new();
+            let labels = callee
+                .signature
+                .as_ref()
+                .map(|parameters| crate::hir::application::parameter_labels(parameters))
+                .unwrap_or_else(|| vec![None; parameters.len()]);
+            return crate::hir::application::bind_slots(
+                &labels,
+                arguments.iter().map(|argument| argument.label),
+            )
+            .into_iter()
+            .map(|slot| {
+                let slot = slot.ok()?;
+                let ty = parameters.get(slot)?.clone();
+                let mut generics = BTreeSet::new();
                 ty.generic_names(&mut generics);
-                (generics.is_empty() && ty!=Ty::Unknown).then_some(ty)
-            }).collect();
+                (generics.is_empty() && ty != Ty::Unknown).then_some(ty)
+            })
+            .collect();
         };
         let info = self.functions[*id].clone();
         let previous_typing = self.generic_scope(*id);
@@ -82,12 +127,27 @@ impl Checker {
             .syntax
             .generics
             .iter()
-            .filter_map(|parameter| self.generic_context.get(&parameter.name).cloned())
+            .filter_map(|parameter| {
+                self.type_source
+                    .environment
+                    .generic_context
+                    .get(&parameter.name)
+                    .cloned()
+            })
             .collect();
         for binder in &binders {
-            self.generic_substitutions.remove(binder);
-            self.generic_type_witnesses.remove(binder);
-            self.static_key_arguments.remove(binder);
+            self.type_source
+                .environment
+                .generic_substitutions
+                .remove(binder);
+            self.type_source
+                .environment
+                .generic_type_witnesses
+                .remove(binder);
+            self.type_source
+                .environment
+                .static_key_arguments
+                .remove(binder);
         }
         let templates: Vec<_> = info
             .syntax
@@ -170,16 +230,15 @@ impl Checker {
         }
         self.restore_typing_environment(previous_typing);
 
-        let mut occupied = BTreeSet::new();
         let interface = callee.signature.as_ref().unwrap_or(&info.syntax.parameters);
-        let slots:Vec<_>=arguments.iter().map(|argument|{
-            let slot=if let Some(label)=argument.label {
-                    interface.iter().position(|parameter|matches!(&parameter.pattern.kind,PatternKind::Name(name) if name==label))
-            } else { (0..templates.len()).find(|slot|!occupied.contains(slot)) };
-            let slot=slot?;
-            occupied.insert(slot);
-            Some(slot)
-        }).collect();
+        let labels = crate::hir::application::parameter_labels(interface);
+        let slots: Vec<_> = crate::hir::application::bind_slots(
+            &labels,
+            arguments.iter().map(|argument| argument.label),
+        )
+        .into_iter()
+        .map(Result::ok)
+        .collect();
         for (index, (argument, slot)) in arguments.iter().zip(&slots).enumerate() {
             let Some(template) = slot.and_then(|slot| templates[slot].as_ref()) else {
                 continue;
@@ -488,13 +547,17 @@ impl Checker {
             }
             return;
         }
-        if application
-            .substitutions
-            .iter()
-            .any(|(binder, expected)| self.generic_substitutions.get(binder) != Some(expected))
-        {
+        if application.substitutions.iter().any(|(binder, expected)| {
+            self.type_source
+                .environment
+                .generic_substitutions
+                .get(binder)
+                != Some(expected)
+        }) {
             let conflict = application.substitutions.iter().any(|(binder, expected)| {
-                self.generic_substitutions
+                self.type_source
+                    .environment
+                    .generic_substitutions
                     .get(binder)
                     .is_some_and(|actual| {
                         actual != expected

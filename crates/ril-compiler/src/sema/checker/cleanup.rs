@@ -4,6 +4,7 @@ pub(super) struct DeferredArmCleanup {
     pub boundary: u32,
     pub target: ScopeId,
     pub frame: Frame,
+    pub typing_environment: crate::sema::context::FrozenEnvironment,
     pub registrations: Vec<BindingId>,
     pub loans: BTreeMap<LoanId, BTreeSet<Participant>>,
     pub outer_handlers: Vec<usize>,
@@ -249,6 +250,7 @@ impl Checker {
                 );
             }
             let active = std::mem::replace(&mut self.active_handlers, deferred.outer_handlers);
+            let previous_typing = self.enter_typing_environment(&deferred.typing_environment);
             if let Some(suffix) = deferred.suffix.take() {
                 let scope_exit = self.retire_continuation_writers(
                     boundary,
@@ -285,6 +287,7 @@ impl Checker {
                     cause,
                 });
             }
+            self.restore_typing_environment(previous_typing);
             self.active_handlers = active;
             let unit = self.unit(span);
             self.finish_results(deferred.frame.owner, &unit);

@@ -36,6 +36,8 @@ pub(crate) enum SourceScalar {
     BigInt,
     F32,
     F64,
+    /// Intrinsic immutable identity; it has no hidden source coordinates.
+    Intrinsic(ril_compiler_core::builtin_types::AtomicBuiltinType),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +66,12 @@ pub(crate) struct SourceField {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SourceNode {
+    /// A catalog reference retains its quantified variables, full parameter
+    /// correlations and mode alternatives without choosing a runtime instance.
+    GenericBuiltin(ril_compiler_core::builtin_calls::GenericBuiltin),
     Scalar(SourceScalar),
+    /// A closed nominal declaration in the immutable standard data catalog.
+    Nominal(super::standard_data::Nominal),
     /// A genuine Type UID is complete as an identity, but its structure is
     /// unknown until an independently justified substitution selects it.
     Binder(String),
@@ -114,7 +121,13 @@ pub(crate) enum SourceNode {
 impl SourceNode {
     pub(super) fn children(&self) -> Vec<SourceTypeId> {
         match self {
-            Self::Scalar(_) | Self::Binder(_) | Self::OpaqueComputation(_) => vec![],
+            Self::GenericBuiltin(_)
+            | Self::Scalar(_)
+            | Self::Nominal(_)
+            | Self::Binder(_)
+            | Self::OpaqueComputation(_) => {
+                vec![]
+            }
             Self::Array { element, .. } => vec![*element],
             Self::Map { key, value } => vec![*key, *value],
             Self::Tuple(items)
@@ -148,7 +161,9 @@ impl SourceNode {
         mut map: impl FnMut(SourceTypeId) -> Result<SourceTypeId, SourceTypesError>,
     ) -> Result<Self, SourceTypesError> {
         Ok(match self {
+            Self::GenericBuiltin(id) => Self::GenericBuiltin(*id),
             Self::Scalar(kind) => Self::Scalar(*kind),
+            Self::Nominal(id) => Self::Nominal(*id),
             Self::Binder(identity) => Self::Binder(identity.clone()),
             Self::OpaqueComputation(key) => Self::OpaqueComputation(key.clone()),
             Self::Array { length, element } => Self::Array {
@@ -317,7 +332,7 @@ impl WorkLimit {
     pub(crate) fn remaining(&self) -> usize {
         self.remaining
     }
-    pub(super) fn charge(&mut self, units: usize) -> Result<(), SourceTypesError> {
+    pub(crate) fn charge(&mut self, units: usize) -> Result<(), SourceTypesError> {
         self.remaining = self
             .remaining
             .checked_sub(units)

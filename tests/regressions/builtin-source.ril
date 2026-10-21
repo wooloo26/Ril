@@ -1,0 +1,161 @@
+--@ case: declared-boundaries
+--@ mode: run-pass
+--@ spec: STD#native-strings-and-paths
+--@ entry: test_declared_boundaries
+--@ file: declared-boundaries.ril
+use ril/os
+use ril/path
+
+type Holder = { mut path: Path::Path }
+fn default_path(value: Path::Path = Path::from_string("default")) -> Path::Path { value }
+fn publish(value: Path::Path) -> Result<?Path::Path, str> { Ok(Some(value)) }
+
+pub fn test_declared_boundaries() {
+    let path: Path::Path = Path::from_string("first")
+    let name: Os::NativeString = Path::native(path)
+    let pair: (Path::Path, Os::NativeString) = (path, name)
+    let captured = \-> pair.0
+    assert(captured() == path)
+    let mut holder = Holder.{ path: path }
+    holder.path = default_path()
+    assert(holder.path == default_path())
+    let mut paths: [2]Path::Path = [path, holder.path]
+    paths[1] = Path::from_native(name)
+    assert(paths[0] == paths[1])
+    let joined = if len(paths) == 2 { paths[1] } else { default_path() }
+    let optional = publish(joined) ?? \_error -> panic("unexpected error")
+    assert((optional ?? panic("missing path")) == path)
+    assert(Os::to_string(pair.1) is Ok("first"))
+}
+--@ end-file
+--@ end-case
+
+--@ case: callable-pipeline-and-labels
+--@ mode: run-pass
+--@ spec: STD#native-strings-and-paths
+--@ entry: test_callable_pipeline
+--@ file: callable-pipeline-and-labels.ril
+use ril/os
+use ril/path
+
+pub fn test_callable_pipeline() {
+    let platform: Os::Platform = Os::platform()
+    assert(platform == Os::Platform::Windows || platform == Os::Platform::Posix)
+    let invalid: Os::NativeError = Os::NativeError::InvalidEncoding
+    let wrong: Os::NativeError = Os::NativeError::WrongPlatform
+    assert(invalid != wrong)
+    let make: fn(str) -> Path::Path = Path::from_string
+    let path = "a" |> make |> Path::normalize_lexical
+    assert(Path::to_string(path) is Ok("a"))
+    let joined = Path::join(child: Path::from_string("b"), base: path)
+    assert(Path::file_name(joined) == Some(Os::from_string("b")))
+    let parent = Path::parent(joined) ?? panic("missing parent")
+    assert(parent == path)
+}
+--@ end-file
+--@ end-case
+
+--@ case: handler-and-resumption
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ entry: test_handler_path
+--@ file: handler-and-resumption.ril
+use ril/path
+
+eff Pick { path() -> Path::Path }
+fn selected() -> Path::Path {
+    with Pick::path() -> {
+        let answer = resume Path::from_string("resumed")
+        assert(answer == Path::from_string("resumed"))
+        answer
+    }
+    Pick::path()
+}
+pub fn test_handler_path() { assert(selected() == Path::from_string("resumed")) }
+--@ end-file
+--@ end-case
+
+--@ case: channel-transport
+--@ mode: run-pass
+--@ spec: STD#structured-concurrency-channels
+--@ entry: test_channel_path
+--@ file: channel-transport.ril
+use ril/path
+use ril/concurrent::{scope, TaskFault}
+use ril/concurrent/channel
+
+pub fn test_channel_path() @Async {
+    let result = scope \mut s -> {
+        let task = s.fork(\-> ())
+        let (mut tx, mut rx) = Channel::bounded<Path::Path>(1)
+        let path = Path::from_string("message")
+        assert((tx !> Channel::send(path)) is Ok())
+        assert((rx !> Channel::recv()) is Ok(path))
+        Channel::close(tx)
+        task.join()?
+        Ok()
+    }
+    assert(result is Ok())
+}
+--@ end-file
+--@ end-case
+
+--@ case: shadowed-effect-declaration
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ entry: test_shadowed_effect
+--@ file: shadowed-effect-declaration.ril
+eff Path { from_string(text: str) -> int }
+fn selected() -> int {
+    with Path::from_string(text) -> resume len(text)
+    Path::from_string("abc")
+}
+pub fn test_shadowed_effect() { assert(selected() == 3) }
+--@ end-file
+--@ end-case
+
+--@ case: atomic-static-reflection
+--@ mode: run-pass
+--@ spec: SPEC#static-type-values-and-type-quotation
+--@ entry: test_atomic_reflection
+--@ file: atomic-static-reflection.ril
+use ril/os
+use ril/path
+use ril/order
+use ril/io
+
+meta let _ = assert(byte_size(type<Path::Path>) > 0)
+meta let _ = assert(byte_size(type<Os::NativeString>) == byte_size(type<Path::Path>))
+meta let _ = assert(byte_size(type<Os::NativeError>) == byte_size(type<Path::Path>))
+meta let _ = assert(byte_size(type<Os::Platform>) == byte_size(type<Path::Path>))
+meta let _ = assert(byte_size(type<Order::Ordering>) == byte_size(type<Path::Path>))
+meta let _ = assert(byte_size(type<Io::ReadPosition>) == byte_size(type<Path::Path>))
+pub fn test_atomic_reflection() {}
+--@ end-file
+--@ end-case
+
+--@ case: dynamic-array-is-not-fixed
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: callable-pipeline-and-labels
+-- Error [E0301]: dynamic native units do not establish a fixed dimension
+--@ file: dynamic-array-is-not-fixed.ril
+use ril/os
+fn fixed(value: [2]u16) { assert(len(value) == 2) }
+fn example() {
+    let units = Os::windows_units(Os::from_string("ab")) ?? \_error -> panic("platform")
+    fixed(units)
+}
+--@ end-file
+--@ end-case
+
+--@ case: closed-declaration-no-generics
+--@ mode: check-fail
+--@ spec: STD#native-strings-and-paths
+--@ companion: callable-pipeline-and-labels
+-- Error [E0340]: a closed declaration has no generic binders
+--@ file: closed-declaration-no-generics.ril
+use ril/path
+fn example() { let value = Path::from_string<int>("a") }
+--@ end-file
+--@ end-case

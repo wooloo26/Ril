@@ -13,53 +13,14 @@ pub(super) fn process_type(name: &str) -> Option<Ty> {
     })
 }
 fn command_type() -> Ty {
-    let native = Ty::Named("Os::NativeString".into());
-    Ty::Record(
-        [
-            ("program".into(), (false, Ty::Named("Path::Path".into()))),
-            ("args".into(), (false, Ty::Array(Box::new(native.clone())))),
-            (
-                "cwd".into(),
-                (
-                    false,
-                    Ty::Optional(Box::new(Ty::Named("Path::Path".into()))),
-                ),
-            ),
-            (
-                "env".into(),
-                (
-                    false,
-                    Ty::Optional(Box::new(Ty::Array(Box::new(Ty::Tuple(vec![
-                        native.clone(),
-                        native,
-                    ]))))),
-                ),
-            ),
-            ("input".into(), (false, Ty::Named("Process::Input".into()))),
-            (
-                "stdout".into(),
-                (false, Ty::Named("Process::OutputMode".into())),
-            ),
-            (
-                "stderr".into(),
-                (false, Ty::Named("Process::OutputMode".into())),
-            ),
-        ]
-        .into(),
-    )
+    crate::sema::source_types::standard_data::COMMAND
+        .erased()
+        .expect("fixed Process::Command declaration fits its projection bound")
 }
 fn output_type() -> Ty {
-    Ty::Record(
-        [
-            (
-                "status".into(),
-                (false, Ty::Named("Process::ExitStatus".into())),
-            ),
-            ("stdout".into(), (false, Ty::Bytes)),
-            ("stderr".into(), (false, Ty::Bytes)),
-        ]
-        .into(),
-    )
+    crate::sema::source_types::standard_data::OUTPUT
+        .erased()
+        .expect("fixed Process::Output declaration fits its projection bound")
 }
 pub(super) fn is_process_builtin(name: &str) -> bool {
     matches!(
@@ -79,44 +40,35 @@ impl Checker {
             start: 0,
             end: 0,
         };
-        for (owner, variants) in [
-            (
-                "Process::Input",
-                vec![("Inherit", None), ("Null", None), ("Data", Some(Ty::Bytes))],
-            ),
-            (
-                "Process::OutputMode",
-                vec![("Inherit", None), ("Null", None), ("Capture", None)],
-            ),
-            (
-                "Process::ExitStatus",
-                vec![
-                    ("Exited", Some(integer("u32"))),
-                    ("Signaled", Some(integer("int"))),
-                ],
-            ),
-            (
-                "Process::ProcessError",
-                vec![
-                    ("InvalidCommand", Some(Ty::Str)),
-                    ("StartFailed", Some(file::io_error())),
-                    ("WaitFailed", Some(file::io_error())),
-                    ("TransferFailed", Some(file::io_error())),
-                    ("CaptureLimit", None),
-                ],
-            ),
+        use crate::sema::source_types::{WorkLimit, standard_data::Nominal};
+        for declaration in [
+            Nominal::ProcessInput,
+            Nominal::ProcessOutputMode,
+            Nominal::ProcessExitStatus,
+            Nominal::ProcessError,
         ] {
-            for (variant, payload) in variants {
+            let owner = declaration.name();
+            for (variant, payload) in declaration.variants() {
                 let tag = format!("{owner}::{variant}");
                 self.constructors.insert(
                     tag.clone(),
                     ConstructorInfo {
                         tag,
                         owner: Ty::Named(owner.into()),
-                        payload: payload.clone().unwrap_or(Ty::Unit),
+                        payload: payload
+                            .map(|schema| {
+                                schema.erased().expect(
+                                    "fixed standard variant payload fits its projection bound",
+                                )
+                            })
+                            .unwrap_or(Ty::Unit),
                         nominal: false,
                         has_payload: payload.is_some(),
-                        payload_syntax: None,
+                        payload_syntax: payload.map(|schema| {
+                            schema
+                                .syntax(span, &mut WorkLimit::new(4096))
+                                .expect("fixed standard variant payload fits its syntax bound")
+                        }),
                         span,
                     },
                 );

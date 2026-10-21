@@ -139,16 +139,10 @@ impl Checker {
         {
             return;
         }
-        let epoch = self
-            .read_epochs
-            .get(&(
-                expression.span.file.0,
-                expression.span.start,
-                expression.span.end,
-                frame.owner.0,
-            ))
-            .copied()
-            .unwrap_or(self.write_events.len())
+        let epoch = expression
+            .hir_id
+            .and_then(|source| self.read_epochs.get(&(source, frame.owner)).copied())
+            .unwrap_or(0)
             .min(self.write_events.len());
         let invalid = if live {
             self.write_events[epoch..].iter().find_map(|event| {

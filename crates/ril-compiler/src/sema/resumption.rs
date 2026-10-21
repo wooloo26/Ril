@@ -464,7 +464,7 @@ fn scope_protection(
             protected.extend(&value.callback_parameters);
             participants.extend(&value.participants);
             for bound in &value.callable_bounds {
-                protected.extend(bound.lexical.values().copied());
+                protected.extend(bound.typing_environment.contract_bindings.values().copied());
             }
             let mut returns: Vec<_> = value
                 .callable_returns
@@ -750,13 +750,14 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     // Reconstruct required input-expression events from the resolved arm ASTs;
     // their exact event indices and dynamic contexts still identify each use.
     let mut suffix_sites = BTreeSet::new();
+    let mut arm_sources = BTreeSet::new();
     for handler in &facts.handlers {
         for arm in &handler.arms {
             use ril_syntax::ast::{ControlOperation, ExprKind, StmtKind};
             let ExprKind::Block(block) = &arm.body.kind else {
                 continue;
             };
-            if let Some((index, span)) =
+            if let Some((index, expression)) =
                 block
                     .statements
                     .iter()
@@ -774,12 +775,27 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
                                 ..
                             }
                         )
-                        .then_some((index, expression.span))
+                        .then_some((index, expression))
                     })
                 && !(index + 1 == block.statements.len()
                     && matches!(block.statements[index].kind, StmtKind::Expr { .. }))
             {
-                suffix_sites.insert((span.file.0, span.start, span.end));
+                let resume_source = expression.hir_id.ok_or_else(|| {
+                    (
+                        expression.span,
+                        None,
+                        "non-tail Resume has no original HIR identity".to_owned(),
+                    )
+                })?;
+                let arm_source = arm.body.hir_id.ok_or_else(|| {
+                    (
+                        arm.body.span,
+                        None,
+                        "non-tail handler arm has no original HIR identity".to_owned(),
+                    )
+                })?;
+                suffix_sites.insert(resume_source);
+                arm_sources.insert((handler.id, resume_source, arm_source));
             }
         }
     }
@@ -787,18 +803,18 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         let Some(expression) = facts.expressions.get(event.expression) else {
             continue;
         };
-        if suffix_sites.contains(&(
-            expression.span.file.0,
-            expression.span.start,
-            expression.span.end,
-        )) && facts
-            .resumption_steps
-            .iter()
-            .filter(|step| {
-                step.continuation_expression == event.expression && step.context == event.context
-            })
-            .count()
-            != 1
+        if expression
+            .source_id
+            .is_some_and(|source| suffix_sites.contains(&source))
+            && facts
+                .resumption_steps
+                .iter()
+                .filter(|step| {
+                    step.continuation_expression == event.expression
+                        && step.context == event.context
+                })
+                .count()
+                != 1
         {
             return Err(fail(
                 expression.span,
@@ -839,8 +855,17 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             ));
         }
     }
+    let mut answer_ids = BTreeSet::new();
     for step in &facts.resumption_steps {
         let bad = |message| fail(step.span, step.cause, message);
+        if !answer_ids.insert(step.id)
+            || step.id.0 as usize != step.continuation_expression
+            || !arm_sources.contains(&(step.handler, step.resume_source, step.arm_source))
+        {
+            return Err(bad(
+                "protected answer lost its unique occurrence or original handler arm",
+            ));
+        }
         let operation = facts
             .operations
             .values()
@@ -880,7 +905,8 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         // Both records were emitted at this exact point. Comparing only their
         // final transported graphs would hide a forged historical identity
         // when multiple recent allocations collapse into the same older node.
-        if expression.span != step.span
+        if expression.source_id != Some(step.resume_source)
+            || expression.span != step.span
             || expression.allocation_epoch != step.continuation_epoch
             || expression.value != step.continuation_value.value
             || !facts.invocation_expressions.iter().any(|event| {
@@ -895,7 +921,8 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             .expressions
             .get(step.arm_expression)
             .ok_or_else(|| bad("resumption suffix expression is missing"))?;
-        if output.allocation_epoch != step.completion_epoch
+        if output.source_id != Some(step.arm_source)
+            || output.allocation_epoch != step.completion_epoch
             || output.value != step.arm_value.value
             || !facts.invocation_expressions.iter().any(|event| {
                 event.expression == step.arm_expression && event.context == step.context

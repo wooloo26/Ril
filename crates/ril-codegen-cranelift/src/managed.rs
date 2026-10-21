@@ -16,6 +16,11 @@ mod cleanup;
 mod constants;
 #[path = "cps.rs"]
 mod cps;
+#[cfg(test)]
+#[path = "managed/default_tests.rs"]
+mod default_tests;
+#[path = "managed/discovery.rs"]
+mod discovery;
 #[path = "managed/foreign.rs"]
 pub(crate) mod foreign;
 #[path = "managed/hof.rs"]
@@ -161,7 +166,7 @@ fn names(pattern: &Pattern, result: &mut BTreeSet<String>) {
     }
 }
 
-fn visit_expr(expr: &Expr, visit: &mut impl FnMut(&Expr) -> bool) {
+fn visit_expr<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr) -> bool) {
     if !visit(expr) {
         return;
     }
@@ -285,7 +290,7 @@ fn visit_expr(expr: &Expr, visit: &mut impl FnMut(&Expr) -> bool) {
     }
 }
 
-fn visit_pattern_values(pattern: &Pattern, visit: &mut impl FnMut(&Expr) -> bool) {
+fn visit_pattern_values<'a>(pattern: &'a Pattern, visit: &mut impl FnMut(&'a Expr) -> bool) {
     match pattern {
         Pattern::Value(value) => visit_expr(value, visit),
         Pattern::Tuple(patterns)
@@ -307,7 +312,7 @@ fn visit_pattern_values(pattern: &Pattern, visit: &mut impl FnMut(&Expr) -> bool
     }
 }
 
-fn visit_block(block: &core::Block, visit: &mut impl FnMut(&Expr) -> bool) {
+fn visit_block<'a>(block: &'a core::Block, visit: &mut impl FnMut(&'a Expr) -> bool) {
     for statement in &block.statements {
         match statement {
             Statement::Bind { value, .. } => visit_expr(value, visit),
@@ -578,19 +583,21 @@ pub(crate) fn prepare(input: &native::Module) -> Result<Prepared, BackendError> 
                 ))
             })
             .collect(),
-        closure_sites: input
-            .closure_sites
-            .iter()
-            .map(|site| {
-                (
-                    (
-                        site.owner,
-                        (site.span.file.0, site.span.start, site.span.end),
-                    ),
-                    site.id,
-                )
-            })
-            .collect(),
+        closure_sites: {
+            let mut sites = HashMap::new();
+            for site in &input.closure_sites {
+                let location = (
+                    site.owner,
+                    (site.span.file.0, site.span.start, site.span.end),
+                );
+                if sites.insert(location, site.id).is_some() {
+                    return Err(unsupported(
+                        "native closure cache cannot distinguish source sites at one owner/location; executable closure identities are required",
+                    ));
+                }
+            }
+            sites
+        },
         budget_entries: input
             .budget_entries
             .iter()
@@ -686,7 +693,16 @@ pub(crate) fn prepare(input: &native::Module) -> Result<Prepared, BackendError> 
                     definition: graph.definition,
                     name: graph.name.clone(),
                     generic_parameters: graph.generic_parameters.clone(),
-                    parameters: graph.parameters.clone(),
+                    // Executable defaults already occur in CPS instructions.
+                    // Do not discover their unnormalized metadata copies again.
+                    parameters: graph
+                        .parameters
+                        .iter()
+                        .map(|parameter| core::Parameter {
+                            pattern: parameter.pattern.clone(),
+                            default: None,
+                        })
+                        .collect(),
                     body: core::Block {
                         statements: graph
                             .blocks
@@ -703,67 +719,27 @@ pub(crate) fn prepare(input: &native::Module) -> Result<Prepared, BackendError> 
         };
         let mut bound = BTreeSet::new();
         bound.extend(cps_locals);
-        for parameter in &function.parameters {
-            names(&parameter.pattern, &mut bound)
-        }
-        for statement in &function.body.statements {
-            match statement {
-                Statement::Bind { pattern, .. } => names(pattern, &mut bound),
-                Statement::Function(function) => {
-                    bound.insert(function.name.clone());
-                }
-                _ => {}
-            }
-        }
         if let Some(captures) = prepared.captures.get(&function.name) {
             bound.extend(captures.iter().cloned());
         }
+        let found = discovery::function(&function, &bound);
         named::prepare(
             &function,
+            &found,
             &mut prepared,
             &mut known_cps,
             &input.operations,
             &retained_lambdas,
         )?;
-        visit_block(&function.body, &mut |expr| {
-            match &expr.kind {
-                ExprKind::Lambda { .. } => return false,
-                ExprKind::Block(block)
-                | ExprKind::Loop { body: block, .. }
-                | ExprKind::While { body: block, .. }
-                | ExprKind::For { body: block, .. } => {
-                    for statement in &block.statements {
-                        match statement {
-                            Statement::Bind { pattern, .. } => names(pattern, &mut bound),
-                            Statement::Function(function) => {
-                                bound.insert(function.name.clone());
-                            }
-                            _ => {}
-                        }
-                    }
-                    if let ExprKind::For { pattern, .. } = &expr.kind {
-                        names(pattern, &mut bound);
-                    }
-                }
-                ExprKind::Match { arms, .. } => {
-                    for arm in arms {
-                        names(&arm.pattern, &mut bound)
-                    }
-                }
-                _ => {}
-            }
-            true
-        });
-        let mut found = Vec::new();
-        visit_block(&function.body, &mut |expr| {
-            if let ExprKind::Lambda { parameters, body } = &expr.kind {
-                found.push((expr.span, parameters.clone(), body.as_ref().clone()));
-                false
-            } else {
-                true
-            }
-        });
-        for (span, parameters, body) in found {
+        for creation in found {
+            let discovery::Callable::Lambda(expr) = creation.callable else {
+                continue;
+            };
+            let ExprKind::Lambda { parameters, body } = &expr.kind else {
+                unreachable!();
+            };
+            let (span, parameters, body) = (expr.span, parameters.clone(), body.as_ref().clone());
+            let bound = creation.bound;
             let key = callable_key(&function.name, span);
             let site = key.span;
             let callable = prepared

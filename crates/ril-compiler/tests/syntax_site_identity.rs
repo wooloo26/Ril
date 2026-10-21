@@ -1,22 +1,19 @@
-use ril_compiler::{CompilationOutcome, Session};
+use ril_compiler::{AnalysisStatus, CompilationOutcome, Session};
 use ril_syntax::ast::{ExprKind, StmtKind};
 
-const HANDLERS: &str = r#"
-eff Read{get()->int}
-type Reader=fn()->int &closure
-fn make(value:int)->Reader &capture{
-    with Read::get()->resume value
-    with Read::get()->resume (Read::get())
-    \->Read::get()
+fn handler_fixture() -> &'static str {
+    ril_test::case_source("tests/regressions/closure-occurrences.ril::factory-with-handlers")
 }
-fn example(){let seven=make(7);let nine=make(9);assert(seven()==7 && nine()==9)}
-"#;
 
 #[test]
 fn distinct_handlers_at_one_diagnostic_span_cannot_receive_a_certificate() {
-    let mut parsed = ril_syntax::parse(HANDLERS);
+    let mut parsed = ril_syntax::parse(handler_fixture());
     assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
-    assert!(Session::new(HANDLERS.as_bytes().to_vec()).verify().is_ok());
+    assert!(
+        Session::new(handler_fixture().as_bytes().to_vec())
+            .verify()
+            .is_ok()
+    );
     let function = parsed
         .program
         .statements
@@ -38,7 +35,12 @@ fn distinct_handlers_at_one_diagnostic_span_cannot_receive_a_certificate() {
     for handler in handlers {
         handler.span = shared;
     }
-    let result = Session::new(vec![]).verify_program(&parsed.program);
+    let analysis = Session::new(vec![]).analyze_program(&parsed.program);
+    assert_eq!(analysis.status(), AnalysisStatus::Incomplete);
+    assert!(analysis.facts().is_some());
+    assert!(analysis.hir().is_some());
+    assert!(analysis.checked_hir().is_some());
+    let result = analysis.into_verified();
     assert!(
         matches!(&result,Err(CompilationOutcome::NotImplemented{reason}) if reason.detail.contains("distinct lexical handler")),
         "{result:?}"
@@ -47,7 +49,7 @@ fn distinct_handlers_at_one_diagnostic_span_cannot_receive_a_certificate() {
 
 #[test]
 fn different_lambda_occurrences_at_one_span_cannot_share_a_site() {
-    let source = "fn example(){let first=\\->1;let second=\\->2;assert(first()==1 && second()==2)}";
+    let source = ril_test::case_source("tests/regressions/closure-occurrences.ril::two-written");
     let mut parsed = ril_syntax::parse(source);
     assert!(Session::new(source.as_bytes().to_vec()).verify().is_ok());
     let StmtKind::Function(function) = &mut parsed.program.statements[0].kind else {
@@ -70,9 +72,20 @@ fn different_lambda_occurrences_at_one_span_cannot_share_a_site() {
     for lambda in lambdas {
         lambda.span = shared;
     }
-    let result = Session::new(vec![]).verify_program(&parsed.program);
+    let analysis = Session::new(vec![]).analyze_program(&parsed.program);
+    assert_eq!(analysis.status(), AnalysisStatus::Incomplete);
+    assert!(analysis.hir().is_some());
+    assert!(analysis.checked_hir().is_some());
+    let sites = &analysis.facts().unwrap().closure_sites;
+    assert_eq!(sites.len(), 2);
+    assert_eq!(sites[0].owner, sites[1].owner);
+    assert_eq!(sites[0].span, sites[1].span);
+    assert_ne!(sites[0].source, sites[1].source);
+    assert_ne!(sites[0].id, sites[1].id);
+    let result = analysis.into_verified();
     assert!(
-        matches!(&result,Err(CompilationOutcome::NotImplemented{reason}) if reason.detail.contains("distinct lexical closure")),
+        matches!(&result,Err(CompilationOutcome::NotImplemented{reason})
+        if reason.detail.contains("distinct lexical closure")),
         "{result:?}"
     );
 }

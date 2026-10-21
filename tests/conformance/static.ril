@@ -519,3 +519,39 @@ meta let _ = assert(type<Long> == type<(str, bool)>)
 meta let _ = assert(type<Short> == type<never>)
 --@ end-file
 --@ end-case
+
+--@ case: runtime-meta-named-source
+--@ mode: run-pass
+--@ spec: SPEC#external-state-tracking
+--@ spec: SPEC#compile-time-execution-and-layout-cooperation
+--@ companion: runtime-meta-missing-source
+--@ entry: test_native
+--@ file: source.ril
+meta let ANSWER=42
+fn answer()->int &{ANSWER}{ANSWER}
+pub fn test_native() &{ANSWER}{assert(answer()==42)}
+--@ end-file
+--@ end-case
+
+--@ case: runtime-meta-missing-source
+--@ mode: check-fail
+--@ spec: SPEC#external-state-tracking
+--@ companion: runtime-meta-named-source
+-- Error [E0510]: compile-time publication does not erase a runtime named source.
+--@ file: source.ril
+meta let ANSWER=42
+fn hidden_answer()->int{ANSWER}
+--@ end-file
+--@ end-case
+
+--@ case: static-meta-source-exemption
+--@ mode: check-pass
+--@ spec: SPEC#compile-time-execution-and-layout-cooperation
+--@ file: source.ril
+meta let ANSWER=42
+meta let COPY=ANSWER
+meta let _=assert(COPY==42)
+fn empty(values:[ANSWER-42]int)->int{len(values)}
+fn example(){assert(empty([])==0)}
+--@ end-file
+--@ end-case

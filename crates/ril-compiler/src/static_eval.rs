@@ -24,6 +24,16 @@ mod application;
 mod array_construction;
 mod builtins;
 mod clone_work;
+
+/// Admit an owned syntax copy using the shared exhaustive syntax visitor.
+/// This consumes implementation work only, without entering a static root or
+/// charging any language event.
+pub(crate) fn charge_type_syntax_clone(syntax: &TypeExpr, work: &mut usize) -> Option<()> {
+    let budget = budget::Budget::with_work(u64::try_from(*work).ok()?);
+    let result = clone_work::type_syntax(&budget, syntax);
+    *work = usize::try_from(budget.work_remaining()).ok()?;
+    result.ok()
+}
 pub(crate) mod committed_float;
 pub(crate) mod constants;
 mod definitions;
@@ -1310,7 +1320,7 @@ impl Evaluator {
         let pointer = i128::from(self.layout.pointer_bytes());
         match &ty.kind {
             TypeKind::Tuple(values) if values.is_empty() => Ok(0),
-            TypeKind::Name { path, .. } => Ok(match path.join("::").as_str() {
+            TypeKind::Name { path, arguments } => Ok(match path.join("::").as_str() {
                 "bool" | "u8" | "i8" => 1,
                 "u16" | "i16" => 2,
                 "u32" | "i32" | "f32" => 4,
@@ -1318,10 +1328,21 @@ impl Evaluator {
                 "int" | "bigint" => pointer,
                 "str" | "bytes" => pointer * 2,
                 "never" => 0,
-                _ => {
-                    return Err(Failure::Unsupported(
-                        "layout of unresolved named type".into(),
-                    ));
+                name => {
+                    let Some(identity) =
+                        ril_compiler_core::builtin_types::AtomicBuiltinType::from_name(name)
+                    else {
+                        return Err(Failure::Unsupported(
+                            "layout of unresolved named type".into(),
+                        ));
+                    };
+                    if !arguments.is_empty() {
+                        return Err(Failure::Diagnostic(
+                            "E0340",
+                            "intrinsic atomic type has no generic arguments".into(),
+                        ));
+                    }
+                    i128::from(identity.byte_size(self.layout))
                 }
             }),
             TypeKind::Record { .. }

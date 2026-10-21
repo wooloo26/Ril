@@ -337,7 +337,12 @@ impl Checker {
         {
             return false;
         }
-        let Some(witness) = self.generic_type_witnesses.get(binder) else {
+        let Some(witness) = self
+            .type_source
+            .environment
+            .generic_type_witnesses
+            .get(binder)
+        else {
             return false;
         };
         if !witness.validate_closed() {
@@ -360,7 +365,7 @@ impl Checker {
         for check in &self.generic_bound_checks {
             if check.context.invocation != Some(invocation)
                 || check.context.owner != Some(CallableOwner::Function(info.definition))
-                || check.allocation_epoch != call.entry_allocation_epoch
+                || check.allocation_epoch != call.entry.allocation_epoch
                 || check.substitutions.get(binder) != Some(&expected_key)
             {
                 continue;
@@ -372,7 +377,7 @@ impl Checker {
             else {
                 continue;
             };
-            let Some((_, entry)) = call.arguments.get(check.argument_index as usize) else {
+            let Some((_, entry)) = call.entry.arguments.get(check.argument_index as usize) else {
                 continue;
             };
             if entry.value != check.actual.value
@@ -492,7 +497,11 @@ impl Checker {
                 identity != &bound.binder
                     && !row_binders.contains(identity)
                     && !self.generic_key_bounds.contains_key(identity)
-                    && !self.generic_substitutions.contains_key(identity)
+                    && !self
+                        .type_source
+                        .environment
+                        .generic_substitutions
+                        .contains_key(identity)
             })
             .collect();
         if owned.is_empty() {
@@ -540,14 +549,14 @@ impl Checker {
         // Nothing is committed until every repeated U and every known coordinate
         // agreed. The enclosing whole-bound transaction rolls back on any later
         // field, row, source-identity or shape failure.
-        let previous_types = self.generic_context.clone();
-        let previous_rows = self.bound_row_context.clone();
+        let previous_types = self.type_source.environment.generic_context.clone();
+        let previous_rows = self.type_source.environment.bound_row_context.clone();
         let mut types = BTreeMap::new();
         let mut witnesses = BTreeMap::new();
         let valid = (|| {
             for (identity, candidate) in selected {
-                self.generic_context = candidate.scope.types.clone();
-                self.bound_row_context = candidate.scope.rows.clone();
+                self.type_source.environment.generic_context = candidate.scope.types.clone();
+                self.type_source.environment.bound_row_context = candidate.scope.rows.clone();
                 let ty = match &candidate.key {
                     ArgumentKey::Binder {
                         identity: caller, ..
@@ -579,11 +588,17 @@ impl Checker {
             Some(())
         })()
         .is_some();
-        self.generic_context = previous_types;
-        self.bound_row_context = previous_rows;
+        self.type_source.environment.generic_context = previous_types;
+        self.type_source.environment.bound_row_context = previous_rows;
         if valid {
-            self.generic_substitutions.extend(types);
-            self.generic_type_witnesses.extend(witnesses);
+            self.type_source
+                .environment
+                .generic_substitutions
+                .extend(types);
+            self.type_source
+                .environment
+                .generic_type_witnesses
+                .extend(witnesses);
         }
         valid
     }

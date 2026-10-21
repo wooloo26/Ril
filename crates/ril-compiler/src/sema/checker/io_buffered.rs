@@ -10,9 +10,18 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        let read = name == "Io::read_buffered";
+        let positioned = name == "Io::read_buffered_at";
+        let read = matches!(name, "Io::read_buffered" | "Io::read_buffered_at");
         let flush = name == "Io::flush";
-        if args.len() != if flush { 3 } else { 4 } {
+        if args.len()
+            != if positioned {
+                5
+            } else if flush {
+                3
+            } else {
+                4
+            }
+        {
             self.error("E0314", span, "buffered stream argument count mismatch", []);
             return self.unit(span);
         }
@@ -48,6 +57,9 @@ impl Checker {
             .into(),
         );
         self.require_type(&args[0].1, &buffer_ty, args[0].2);
+        if positioned {
+            self.require_type(&args[4].1, &Ty::Named("Io::ReadPosition".into()), args[4].2);
+        }
         let buffer_region = self.heap.reachable(args[0].1.origins.nodes.iter().copied());
         let receiver_region = self.heap.reachable(args[1].1.origins.nodes.iter().copied());
         if !self.nodes_disjoint(&buffer_region, &receiver_region) {

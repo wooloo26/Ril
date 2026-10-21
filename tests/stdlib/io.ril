@@ -1,3 +1,287 @@
+--@ source: guarded-read-positions
+--@ file: source.ril
+use ril/io
+type Reader={position:Io::ReadPosition,mut calls:int}
+fn reading(mut reader:Reader,maximum:int)->Result<Io::ReadChunk,Io::IoError> &mut{
+    Io::guard_read(reader.position)
+    reader.calls+=1
+    if maximum==0 {Ok(.{data:b"",end:false})} else {Ok(.{data:b"ab",end:false})}
+}
+fn alternate(mut reader:Reader,maximum:int)->Result<Io::ReadChunk,Io::IoError> &mut{
+    Io::guard_read(reader.position)
+    reader.calls+=1
+    Ok(.{data:b"",end:true})
+}
+fn reposition(mut reader:Reader) &mut{
+    Io::guard_seek(reader.position)
+    reader.calls=0
+}
+pub fn test_identity(){
+    let position=Io::read_position()
+    let duplicate=clone(position)
+    assert(duplicate==position && Io::read_position()!=position)
+    Io::guard_read(duplicate)
+    Io::guard_seek(position)
+}
+pub fn test_cache(){
+    let position=Io::read_position()
+    let mut reader=Reader.{position:position,calls:0}
+    let mut buffer=Io::read_buffer(2)
+    let first=Io::read_buffered_at(mut buffer,mut reader,.{read:reading},1,clone(position)) ?? \_error->panic("read")
+    assert(first.data==b"a" && reader.calls==1)
+    let zero=Io::read_buffered_at(mut buffer,mut reader,.{read:reading},0,position) ?? \_error->panic("zero")
+    assert(zero.data==b"" && !zero.end && reader.calls==2)
+    let cached=Io::read_buffered_at(position:position,mut reader:reader,mut buffer:buffer,max_bytes:1,ops:.{read:reading}) ?? \_error->panic("cache")
+    assert(cached.data==b"b" && reader.calls==2)
+    reposition(mut reader)
+    assert(reader.calls==0)
+}
+pub fn test_alternate(){
+    let position=Io::read_position()
+    let mut reader=Reader.{position:position,calls:0}
+    let mut buffer=Io::read_buffer(2)
+    assert(Io::read_buffered_at(mut buffer,mut reader,.{read:reading},1,position) is Ok(_))
+    assert(alternate(mut reader,1) is Ok(_))
+}
+pub fn test_other_position(){
+    let position=Io::read_position()
+    let mut reader=Reader.{position:position,calls:0}
+    let mut other=Reader.{position:Io::read_position(),calls:0}
+    let mut buffer=Io::read_buffer(2)
+    assert(Io::read_buffered_at(mut buffer,mut reader,.{read:reading},1,position) is Ok(_))
+    assert(alternate(mut other,1) is Ok(_))
+    assert(reader.calls==1 && other.calls==1)
+}
+pub fn test_switch(){
+    let position=Io::read_position()
+    let mut reader=Reader.{position:position,calls:0}
+    let mut buffer=Io::read_buffer(2)
+    assert(Io::read_buffered_at(mut buffer,mut reader,.{read:reading},1,position) is Ok(_))
+    assert(Io::read_buffered_at(mut buffer,mut reader,.{read:reading},1,Io::read_position()) is Ok(_))
+}
+pub fn test_seek(){
+    let position=Io::read_position()
+    let mut reader=Reader.{position:position,calls:0}
+    let mut buffer=Io::read_buffer(2)
+    assert(Io::read_buffered_at(mut buffer,mut reader,.{read:reading},1,position) is Ok(_))
+    reposition(mut reader)
+}
+pub fn test_shared_position(){
+    let position=Io::read_position()
+    let mut reader=Reader.{position:position,calls:0}
+    let mut wrapper=Reader.{position:clone(position),calls:0}
+    let mut buffer=Io::read_buffer(2)
+    assert(Io::read_buffered_at(mut buffer,mut reader,.{read:reading},1,position) is Ok(_))
+    assert(alternate(mut wrapper,1) is Ok(_))
+}
+fn spin_read(mut reader:Reader,maximum:int)->Result<Io::ReadChunk,Io::IoError> &mut{
+    Io::guard_read(reader.position)
+    reader.calls+=1
+    loop{}
+}
+fn attempt(position:Io::ReadPosition)->bool{
+    with Div::exhausted()->true
+    with Div::budget(200)
+    let mut reader=Reader.{position:position,calls:0}
+    let mut buffer=Io::read_buffer(2)
+    assert(Io::read_buffered_at(mut buffer,mut reader,.{read:spin_read},1,position) is Ok(_))
+    false
+}
+pub fn test_abort(){
+    let position=Io::read_position()
+    assert(attempt(position))
+    Io::guard_read(position)
+    Io::guard_seek(position)
+}
+--@ end-file
+--@ end-source
+
+--@ case: position-identity-copy
+--@ mode: run-pass
+--@ spec: STD#buffered-streams
+--@ entry: test_identity
+--@ use-source: guarded-read-positions
+--@ end-case
+
+--@ case: position-cache-and-zero
+--@ mode: run-pass
+--@ spec: STD#buffered-streams
+--@ entry: test_cache
+--@ use-source: guarded-read-positions
+--@ end-case
+
+--@ case: position-other-identity
+--@ mode: run-pass
+--@ spec: STD#buffered-streams
+--@ companion: position-shared-identity
+--@ entry: test_other_position
+--@ use-source: guarded-read-positions
+--@ end-case
+
+--@ case: position-different-callback
+--@ mode: run-panic
+--@ spec: STD#buffered-streams
+--@ companion: position-cache-and-zero
+--@ entry: test_alternate
+-- Panics: reader position is reserved by unread buffered input
+--@ use-source: guarded-read-positions
+--@ end-case
+
+--@ case: position-buffer-switch
+--@ mode: run-panic
+--@ spec: STD#buffered-streams
+--@ companion: position-cache-and-zero
+--@ entry: test_switch
+-- Panics: buffer has pending data for another receiver, position or operation
+--@ use-source: guarded-read-positions
+--@ end-case
+
+--@ case: position-seek-reserved
+--@ mode: run-panic
+--@ spec: STD#buffered-streams
+--@ companion: position-cache-and-zero
+--@ entry: test_seek
+-- Panics: reader position is reserved by unread buffered input
+--@ use-source: guarded-read-positions
+--@ end-case
+
+--@ case: position-shared-identity
+--@ mode: run-panic
+--@ spec: STD#buffered-streams
+--@ companion: position-other-identity
+--@ entry: test_shared_position
+-- Panics: reader position is reserved by unread buffered input
+--@ use-source: guarded-read-positions
+--@ end-case
+
+--@ case: position-requires-identity
+--@ mode: check-fail
+--@ spec: STD#buffered-streams
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: position-identity-copy
+-- Error [E0301]: A numeric value cannot stand in for an opaque position identity.
+--@ file: source.ril
+use ril/io
+fn example(){Io::guard_read(1)}
+--@ end-file
+--@ end-case
+
+--@ case: position-budget-abort
+--@ mode: run-pass
+--@ spec: STD#buffered-streams
+--@ spec: SPEC#termination-and-halt-contracts
+--@ entry: test_abort
+--@ use-source: guarded-read-positions
+--@ end-case
+
+--@ case: position-no-type-arguments
+--@ mode: check-fail
+--@ spec: STD#buffered-streams
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: position-identity-copy
+-- Error [E0340]: The intrinsic position identity has no type arguments.
+--@ file: source.ril
+use ril/io
+fn example(position:Io::ReadPosition<int>){}
+--@ end-file
+--@ end-case
+
+--@ case: position-static-reflection
+--@ mode: check-pass
+--@ spec: STD#buffered-streams
+--@ spec: STD#prelude-and-module-index
+--@ file: source.ril
+use ril/io
+type Position=Io::ReadPosition
+meta fn identity(value:Io::ReadPosition)->Io::ReadPosition{value}
+meta let _=assert(byte_size(type<Position>)==byte_size(type<int>))
+meta let _=assert(byte_size(type<Io::ReadPosition>)==byte_size(type<int>))
+meta let _=assert(type<Position>==type<Io::ReadPosition>)
+meta let _=assert(type<Io::ReadPosition>!=type<int>)
+--@ end-file
+--@ end-case
+
+--@ case: position-static-no-type-arguments
+--@ mode: check-fail
+--@ spec: STD#buffered-streams
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: position-static-reflection
+-- Error [E0340]: Quoting an intrinsic type does not make it a constructor.
+--@ file: source.ril
+use ril/io
+meta let _=type<Io::ReadPosition<int>>==type<Io::ReadPosition>
+--@ end-file
+--@ end-case
+
+--@ case: position-runtime-only-factory
+--@ mode: check-fail
+--@ spec: STD#buffered-streams
+--@ spec: SPEC#compile-time-computation-and-totality
+--@ companion: position-identity-copy
+-- Error [E0810]: Position identity creation is an ordinary runtime operation.
+--@ file: source.ril
+use ril/io
+meta let POSITION=Io::read_position()
+--@ end-file
+--@ end-case
+
+--@ case: buffered-seek-released
+--@ mode: run-pass
+--@ spec: STD#buffered-streams
+--@ spec: STD#files-and-directories
+--@ companion: buffered-seek-reserved
+--@ entry: test_native
+--@ requires: filesystem
+--@ file: source.ril
+use ril/io
+use ril/file
+fn wrapped(mut file:File::Handle,maximum:int)->Result<Io::ReadChunk,Io::IoError> @Fiber &mut{
+    File::read_chunk(mut file,maximum)
+}
+pub fn test_native() @Fiber{
+    let scoped mut file=File::open("buffered-seek.bin") ?? \_error->panic("open")
+    let mut buffer=Io::read_buffer(2)
+    let first=Io::read_buffered(mut buffer,mut file,.{read:wrapped},1) ?? \_error->panic("read")
+    assert(first.data==b"a")
+    let cached=Io::read_buffered(mut buffer,mut file,.{read:wrapped},1) ?? \_error->panic("read cache")
+    assert(cached.data==b"b")
+    assert((File::seek(mut file,File::SeekFrom::Start(0i64)) ?? \_error->panic("seek"))==0u64)
+    let reread=File::read_chunk(mut file,1) ?? \_error->panic("reread")
+    assert(reread.data==b"a")
+}
+--@ end-file
+--@ file: buffered-seek.bin
+abc
+--@ end-file
+--@ end-case
+
+--@ case: buffered-seek-reserved
+--@ mode: run-panic
+--@ spec: STD#buffered-streams
+--@ spec: STD#files-and-directories
+--@ companion: buffered-seek-released
+--@ entry: test_native
+--@ requires: filesystem
+-- Panics: reader position is reserved by unread buffered input
+--@ file: source.ril
+use ril/io
+use ril/file
+fn wrapped(mut file:File::Handle,maximum:int)->Result<Io::ReadChunk,Io::IoError> @Fiber &mut{
+    File::read_chunk(mut file,maximum)
+}
+pub fn test_native() @Fiber{
+    let scoped mut file=File::open("buffered-seek.bin") ?? \_error->panic("open")
+    let mut buffer=Io::read_buffer(2)
+    let first=Io::read_buffered(mut buffer,mut file,.{read:wrapped},1) ?? \_error->panic("read")
+    assert(first.data==b"a")
+    assert(File::seek(mut file,File::SeekFrom::Start(0i64)) is Ok(_))
+}
+--@ end-file
+--@ file: buffered-seek.bin
+abc
+--@ end-file
+--@ end-case
+
 --@ case: buffered-round-trip
 --@ mode: run-pass
 --@ spec: STD#buffered-streams

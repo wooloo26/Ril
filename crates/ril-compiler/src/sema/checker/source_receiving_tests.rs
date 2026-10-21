@@ -1,6 +1,74 @@
 //! Focused checks for original-source receiving. These do not replace the
 //! complete Session/Source gate at the real binding/return/member hooks.
 use super::*;
+use crate::sema::source_reception::Construction;
+
+#[test]
+fn a_registered_generic_requires_its_actual_source_observation() {
+    let parsed = ril_syntax::parse(
+        "fn owner<U>(value:U)->U{value}\nfn other<V>(other:V){}\nfn keys<T,K:keyof T>(record:T,key:K){}",
+    );
+    assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
+    let mut checker = Checker::new(FileId(0));
+    checker.run(&parsed.program);
+    let owner = checker
+        .functions
+        .iter()
+        .position(|function| function.syntax.name == "owner")
+        .unwrap();
+    let function = checker.functions[owner].clone();
+    let StmtKind::Expr { expression, .. } =
+        &function.syntax.body.as_ref().unwrap().statements[0].kind
+    else {
+        panic!("the owner returns its actual formal")
+    };
+    assert!(expression.hir_id.is_some());
+    let actual = checker
+        .application_effect
+        .expressions
+        .iter()
+        .find(|fact| fact.source_id == expression.hir_id && matches!(fact.value.ty, Ty::Generic(_)))
+        .unwrap()
+        .value
+        .clone();
+    assert_eq!(actual.sources.len(), 1);
+    let binding = *actual.sources.first().unwrap();
+    checker.generic_scope(owner);
+    let mut frame = checker.frame(Env::from([("value".into(), binding)]), false);
+    frame.owner = checker.bindings[binding].owner;
+    frame.definition = Some(function.definition);
+    frame.callable_owner = Some(CallableOwner::Function(function.definition));
+    assert!(
+        checker
+            .original_source_receiving_key(&actual, expression, &frame)
+            .is_some(),
+        "the original formal and its real HIR observation must supply Source"
+    );
+    for (name, index) in [("owner", 0), ("other", 0), ("keys", 1)] {
+        let definition = checker
+            .functions
+            .iter()
+            .find(|function| function.syntax.name == name)
+            .unwrap()
+            .definition;
+        let identity = checker
+            .generic_binders
+            .values()
+            .find(|binder| binder.definition == definition && binder.index == index)
+            .unwrap()
+            .identity
+            .clone();
+        // Retain the real HIR expression and cause. Only the Source receipt is
+        // absent, so a missing HIR ID cannot make this negative test vacuous.
+        let counterfeit = Value::scalar(Ty::Generic(identity), None, actual.cause);
+        assert!(
+            checker
+                .original_source_receiving_key(&counterfeit, expression, &frame)
+                .is_none(),
+            "registered {name}:{index} without Source minted a Type identity"
+        );
+    }
+}
 
 fn expression(source: &str) -> Expr {
     let parsed = ril_syntax::parse_expression(source, FileId(0));
@@ -92,7 +160,7 @@ fn missing_or_wrong_context_observation_cannot_supply_receiving_context() {
     let (actual, value, index) = stored_array(&mut checker, &mut frame, "[0][2]int");
     let target = checker.freeze_source_receiving_target(&annotation("[0][2]int"));
     assert!(!checker.require_source_reception(&target, &actual, &value, None, &frame));
-    checker.invocation_expressions[index]
+    checker.application_effect.contexts[index]
         .context
         .budget_validation = true;
     assert!(!checker.require_source_reception(&target, &actual, &value, Some(index), &frame));
@@ -138,12 +206,12 @@ fn annotation_alias_is_frozen_before_later_shadowing() {
         .insert("Items".into(), declaration("type Items=[3]int"));
     let after = checker.freeze_source_receiving_target(&annotation);
     assert!(
-        matches!(&before.key, Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:2)")
+        matches!(&before.key(), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:2)")
     );
     assert!(
-        matches!(&after.key, Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
+        matches!(&after.key(), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
     );
-    assert_ne!(before.key, after.key);
+    assert_ne!(before.key(), after.key());
     assert!(before.syntax.is_some() && after.syntax.is_some());
 }
 
@@ -191,7 +259,7 @@ fn frozen_member_source_and_typed_record_opacity_are_independent() {
     let record = checker.freeze_source_receiving_target(&annotation("{item:[0][2]int}"));
     let member = member_target(&record, "item", record.span);
     assert!(
-        matches!(&member.key, Some(ArgumentKey::Array { length:Some(n), .. }) if n=="const(int:0)")
+        matches!(&member.key(), Some(ArgumentKey::Array { length:Some(n), .. }) if n=="const(int:0)")
     );
     assert!(matches!(
         &member.syntax.as_ref().unwrap().kind,
@@ -203,7 +271,7 @@ fn frozen_member_source_and_typed_record_opacity_are_independent() {
         Some(Construction::Opaque)
     ));
     let absent = member_target(&record, "absent", record.span);
-    assert!(absent.key.is_none() && absent.syntax.is_none());
+    assert!(absent.key().is_none() && absent.syntax.is_none());
 }
 
 #[test]
@@ -215,7 +283,7 @@ fn fresh_empty_recursive_scalar_array_has_only_a_proved_construction_context() {
     );
     let target = checker.freeze_source_receiving_target(&annotation("[]Node"));
     assert!(
-        target.key.is_none(),
+        target.key().is_none(),
         "a finite absence proof is not a complete Source schema"
     );
     assert!(target.empty_array_context.is_some());
@@ -255,15 +323,15 @@ fn qualified_callable_targets_share_canonical_data_schemas_without_losing_rows()
     let original = builtin_source_types::contract("File::read_chunk", written.span).unwrap();
     let normalized = super::super::source_types::expand_builtin_source_syntax(
         &BTreeMap::new(),
-        &original.source,
+        original.source.syntax().unwrap(),
         0,
     )
     .unwrap();
     let original_key =
         crate::static_eval::effects::bounded_argument_key(&normalized, &BTreeMap::new()).unwrap();
     for target in [&written, &alias] {
-        let expected = target
-            .key
+        let target_key = target.key();
+        let expected = target_key
             .as_ref()
             .expect("complete qualified source target");
         assert_eq!(
@@ -291,7 +359,7 @@ fn qualified_callable_targets_share_canonical_data_schemas_without_losing_rows()
         };
         assert!(matches!(arguments[0].kind, TypeKind::Record { .. }));
     }
-    assert_eq!(written.key, alias.key);
+    assert_eq!(written.key(), alias.key());
 }
 
 #[test]
@@ -302,19 +370,21 @@ fn a_qualified_alias_does_not_reinterpret_a_captured_or_recursive_source() {
         declaration("type Captured=fn()->T@Fiber"),
     );
     checker
+        .type_source
+        .environment
         .generic_context
         .insert("T".into(), "unproved-original-T".into());
     assert!(
         checker
             .freeze_source_receiving_target(&annotation("Captured"))
-            .key
+            .key()
             .is_none()
     );
-    checker.generic_context.clear();
+    checker.type_source.environment.generic_context.clear();
     checker
         .types
         .insert("Cycle".into(), declaration("type Cycle={following:?Cycle}"));
     let target = checker.freeze_source_receiving_target(&annotation("fn()->Cycle@Fiber"));
-    assert!(target.key.is_none());
+    assert!(target.key().is_none());
     assert_eq!(target.sensitivity, SchemaSensitivity::Required);
 }

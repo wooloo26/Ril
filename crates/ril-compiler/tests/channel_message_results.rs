@@ -685,18 +685,30 @@ fn independent_formal_optional_paths_cannot_be_unified_even_with_one_valid_cause
         .find(|invocation| {
             invocation.declaration_probe
                 && invocation.caller_activation.is_none()
-                && invocation.arguments.len() == 2
-                && invocation.arguments[0].1.value.option_identity.is_some()
-                && invocation.arguments[1].1.value.option_identity.is_some()
+                && invocation.entry.arguments.len() == 2
+                && invocation.entry.arguments[0]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
+                && invocation.entry.arguments[1]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
         })
         .unwrap();
-    let identity = invocation.arguments[0].1.value.option_identity.unwrap();
+    let identity = invocation.entry.arguments[0]
+        .1
+        .value
+        .option_identity
+        .unwrap();
     assert_ne!(
         Some(identity),
-        invocation.arguments[1].1.value.option_identity
+        invocation.entry.arguments[1].1.value.option_identity
     );
-    invocation.arguments[1].1.value.option_identity = Some(identity);
-    invocation.arguments[1].1.value.cause = changed.optional_tags[identity.0 as usize].cause;
+    invocation.entry.arguments[1].1.value.option_identity = Some(identity);
+    invocation.entry.arguments[1].1.value.cause = changed.optional_tags[identity.0 as usize].cause;
     // The arena entry, payload type, owner and ancestry are all individually
     // valid. The two actual symbolic input positions must still be independent.
     rejected(&changed);
@@ -715,18 +727,30 @@ fn formal_optional_independence_cannot_be_disabled_by_a_registered_owner() {
         .find(|invocation| {
             invocation.declaration_probe
                 && invocation.caller_activation.is_none()
-                && invocation.arguments.len() == 2
-                && invocation.arguments[0].1.value.option_identity.is_some()
-                && invocation.arguments[1].1.value.option_identity.is_some()
+                && invocation.entry.arguments.len() == 2
+                && invocation.entry.arguments[0]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
+                && invocation.entry.arguments[1]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
         })
         .unwrap();
-    let identity = invocation.arguments[0].1.value.option_identity.unwrap();
+    let identity = invocation.entry.arguments[0]
+        .1
+        .value
+        .option_identity
+        .unwrap();
     assert_ne!(
         Some(identity),
-        invocation.arguments[1].1.value.option_identity
+        invocation.entry.arguments[1].1.value.option_identity
     );
-    invocation.arguments[1].1.value.option_identity = Some(identity);
-    invocation.arguments[1].1.value.cause = changed.optional_tags[identity.0 as usize].cause;
+    invocation.entry.arguments[1].1.value.option_identity = Some(identity);
+    invocation.entry.arguments[1].1.value.cause = changed.optional_tags[identity.0 as usize].cause;
     // Registry-valid owner metadata must not change which actual declaration
     // parameter paths are independent symbolic inputs.
     changed.optional_tags[identity.0 as usize].creation_owner =
@@ -754,9 +778,17 @@ fn formal_optional_independence_survives_every_entry_selector_combination() {
         .find(|invocation| {
             invocation.declaration_probe
                 && invocation.caller_activation.is_none()
-                && invocation.arguments.len() == 2
-                && invocation.arguments[0].1.value.option_identity.is_some()
-                && invocation.arguments[1].1.value.option_identity.is_some()
+                && invocation.entry.arguments.len() == 2
+                && invocation.entry.arguments[0]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
+                && invocation.entry.arguments[1]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
         })
         .unwrap();
     let header = original
@@ -790,13 +822,18 @@ fn formal_optional_independence_survives_every_entry_selector_combination() {
     for selectors in 0u8..16 {
         let mut changed = original.clone();
         let invocation = &mut changed.copy_invocations[entry.id.0 as usize];
-        let identity = invocation.arguments[0].1.value.option_identity.unwrap();
+        let identity = invocation.entry.arguments[0]
+            .1
+            .value
+            .option_identity
+            .unwrap();
         assert_ne!(
             Some(identity),
-            invocation.arguments[1].1.value.option_identity
+            invocation.entry.arguments[1].1.value.option_identity
         );
-        invocation.arguments[1].1.value.option_identity = Some(identity);
-        invocation.arguments[1].1.value.cause = changed.optional_tags[identity.0 as usize].cause;
+        invocation.entry.arguments[1].1.value.option_identity = Some(identity);
+        invocation.entry.arguments[1].1.value.cause =
+            changed.optional_tags[identity.0 as usize].cause;
         // All substituted identities are registered. The original real
         // declaration span and two frozen symbolic input paths stay intact.
         changed.optional_tags[identity.0 as usize].creation_owner = scope;
@@ -851,12 +888,20 @@ fn deleting_the_entire_formal_input_table_cannot_skip_header_coverage() {
         .find(|invocation| {
             invocation.declaration_probe
                 && invocation.caller_activation.is_none()
-                && invocation.arguments.len() == 2
-                && invocation.arguments[0].1.value.option_identity.is_some()
-                && invocation.arguments[1].1.value.option_identity.is_some()
+                && invocation.entry.arguments.len() == 2
+                && invocation.entry.arguments[0]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
+                && invocation.entry.arguments[1]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
         })
         .unwrap();
-    invocation.arguments.clear();
+    invocation.entry.arguments.clear();
     let result = ril_compiler::sema::validate::solved_facts(&changed);
     println!("deleted whole declaration input table: {result:?}");
     let issues = result.unwrap_err();
@@ -906,7 +951,11 @@ fn unrelated_global_optional_inputs_do_not_require_business_message_source_proof
             invocation.target == target
                 && !invocation.declaration_probe
                 && invocation.source_event.is_some()
-                && invocation.arguments[0].1.value.option_identity.is_some()
+                && invocation.entry.arguments[0]
+                    .1
+                    .value
+                    .option_identity
+                    .is_some()
         })
         .unwrap();
     call.source_event = None;

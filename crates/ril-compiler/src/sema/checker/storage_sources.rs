@@ -1,7 +1,6 @@
 //! Immutable declaration views and physical receipts for storage reception.
 //! The current value of a mutable binding is never its declaration schema.
 use super::*;
-use crate::sema::source_reception::project_key;
 use crate::sema::{
     effect_identity::ArgumentKey,
     source_reception,
@@ -32,6 +31,7 @@ pub(super) struct PreparedBindingSource {
     context: crate::sema::effect_identity::InvocationContext,
     activation: ScopeId,
     root: Option<ArgumentKey>,
+    environment: crate::sema::context::FrozenEnvironment,
 }
 
 pub(super) struct StoreReception<'a> {
@@ -44,6 +44,29 @@ pub(super) struct StoreReception<'a> {
 }
 
 impl Checker {
+    /// Static constraint lookup only. This projects the immutable declaration
+    /// view, never the binding's current value, heap contents or numeric data.
+    pub(super) fn declared_operand_source(
+        &mut self,
+        syntax: &Expr,
+        frame: &Frame,
+    ) -> Option<ArgumentKey> {
+        let mut path = Vec::new();
+        let name = source_path(syntax, &mut path, &mut 4096)?;
+        let id = *frame.env.get(name)?;
+        if let Ok(key) = self.type_source.storage.types.projected_binding_key(
+            id,
+            &path,
+            Some(&self.semantic_hir),
+        ) {
+            return Some(key);
+        }
+        let mut key = self.declared_formal_source(id, name)?;
+        for slot in path {
+            key = self.storage_projection_source_key(&key, &slot)?;
+        }
+        Some(key)
+    }
     pub(super) fn prepare_storage_binding_source(
         &mut self,
         binding: &Binding,
@@ -52,9 +75,16 @@ impl Checker {
         frame: &Frame,
     ) -> PreparedBindingSource {
         let context = self.invocation_context(frame.callable_owner);
-        let original = self.expression_facts.get(initializer.expression).cloned();
+        let environment = target
+            .map(|target| target.environment.clone())
+            .unwrap_or_else(|| self.capture_typing_environment_with_bindings(&frame.env));
+        let original = self
+            .application_effect
+            .expressions
+            .get(initializer.expression)
+            .cloned();
         let root = if let Some(target) = target {
-            target.key.clone()
+            target.key()
         } else {
             original.as_ref().and_then(|original| {
                 self.original_source_receiving_key(&original.value, &binding.value, frame)
@@ -64,6 +94,7 @@ impl Checker {
             context,
             activation: frame.owner,
             root,
+            environment,
         }
     }
 
@@ -77,6 +108,13 @@ impl Checker {
     ) {
         let context = prepared.context;
         let root = &prepared.root;
+        let Some(declaration) = binding.pattern.hir_id else {
+            self.unsupported(
+                binding.pattern.span,
+                "storage declaration has no original PatternId",
+            );
+            return;
+        };
         if prepared.activation != frame.owner
             || context != self.invocation_context(frame.callable_owner)
         {
@@ -99,6 +137,9 @@ impl Checker {
             if actual.parameter || actual.owner != frame.owner {
                 continue;
             }
+            self.bindings[id].pattern = Some(declaration);
+            self.bindings[id].typing_environment = prepared.environment.clone();
+            let actual = &self.bindings[id];
             let candidates: Vec<_> = names
                 .iter()
                 .filter(|(span, name, _, _)| *span == actual.span && *name == actual.name)
@@ -106,20 +147,27 @@ impl Checker {
             let [(_, _, path, known)] = candidates.as_slice() else {
                 // A real introduced binding remains an unknown declaration,
                 // including guarded/rest patterns not represented by Slots.
-                self.storage_sources
+                self.type_source
+                    .storage
                     .by_binding
-                    .insert(id, self.storage_sources.bindings.len());
-                self.storage_sources.bindings.push(BindingSource {
+                    .insert(id, self.type_source.storage.bindings.len());
+                self.type_source.storage.bindings.push(BindingSource {
                     binding: id,
                     context,
                     activation: frame.owner,
-                    declaration: binding.pattern.span,
+                    declaration,
                     declared: binding.ty.is_some(),
                     initializer,
                     path: Vec::new(),
                     key: None,
                 });
-                if self.storage_sources.types.record(id, None).is_err() {
+                if self
+                    .type_source
+                    .storage
+                    .types
+                    .record(id, None, prepared.environment.clone())
+                    .is_err()
+                {
                     self.unsupported(
                         binding.pattern.span,
                         "storage source index could not record the original unknown view",
@@ -128,26 +176,39 @@ impl Checker {
                 continue;
             };
             let key = if *known {
-                root.as_ref()
-                    .and_then(|root| project_key(root, path))
-                    .cloned()
+                root.as_ref().and_then(|root| {
+                    crate::sema::source_types::declarations::project(
+                        root,
+                        path,
+                        &self.semantic_hir,
+                        &mut crate::sema::source_types::WorkLimit::new(4096),
+                    )
+                    .ok()
+                })
             } else {
                 None
             };
-            self.storage_sources
+            self.type_source
+                .storage
                 .by_binding
-                .insert(id, self.storage_sources.bindings.len());
-            if self.storage_sources.types.record(id, key.as_ref()).is_err() {
+                .insert(id, self.type_source.storage.bindings.len());
+            if self
+                .type_source
+                .storage
+                .types
+                .record(id, key.as_ref(), prepared.environment.clone())
+                .is_err()
+            {
                 self.unsupported(
                     binding.pattern.span,
                     "storage source graph admission exceeded its metadata budget",
                 );
             }
-            self.storage_sources.bindings.push(BindingSource {
+            self.type_source.storage.bindings.push(BindingSource {
                 binding: id,
                 context,
                 activation: frame.owner,
-                declaration: binding.pattern.span,
+                declaration,
                 declared: binding.ty.is_some(),
                 initializer,
                 path: path.clone(),
@@ -170,9 +231,10 @@ impl Checker {
             return None;
         }
         let id = *value.sources.first()?;
-        self.storage_sources
+        self.type_source
+            .storage
             .bindings
-            .get(*self.storage_sources.by_binding.get(&id)?)?;
+            .get(*self.type_source.storage.by_binding.get(&id)?)?;
         if value.sources != BTreeSet::from([id])
             || self
                 .bindings
@@ -182,9 +244,10 @@ impl Checker {
             return Some(None);
         }
         Some(
-            self.storage_sources
+            self.type_source
+                .storage
                 .types
-                .projected_binding_key(id, &path)
+                .projected_binding_key(id, &path, Some(&self.semantic_hir))
                 .ok(),
         )
     }
@@ -203,13 +266,17 @@ impl Checker {
             destination,
             receiver,
         } = reception;
+        let Some(target_id) = target.hir_id else {
+            self.unsupported(target.span, "storage write has no original target ExprId");
+            return false;
+        };
         let expected = match &destination {
             StorageDestination::Binding(binding) => self
-                .storage_sources
-                .by_binding
-                .get(binding)
-                .and_then(|index| self.storage_sources.bindings.get(*index))
-                .and_then(|source| source.key.clone()),
+                .type_source
+                .storage
+                .types
+                .projected_binding_key(*binding, &[], Some(&self.semantic_hir))
+                .ok(),
             StorageDestination::Projection { slot, .. } => {
                 let syntax = match &target.kind {
                     ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => {
@@ -226,7 +293,8 @@ impl Checker {
             }
         };
         let context = self.invocation_context(frame.callable_owner);
-        self.storage_sources.writes.push(StorageWrite {
+        self.type_source.storage.writes.push(StorageWrite {
+            target: target_id,
             context,
             activation: frame.owner,
             span: target.span,
@@ -236,13 +304,20 @@ impl Checker {
             expected: expected.clone(),
             completed: true,
         });
-        let observation = self.expression_facts.get(rhs.expression).cloned();
+        let observation = self
+            .application_effect
+            .expressions
+            .get(rhs.expression)
+            .cloned();
         let actual = observation.as_ref().and_then(|original| {
             self.original_source_receiving_key(&original.value, rhs_syntax, frame)
         });
         let fresh = source_reception::construction(rhs_syntax, &mut 4096);
         let answer = expected.as_ref().and_then(|expected| {
-            if crate::sema::source_types::key_is_coordinate_free(expected) {
+            if crate::sema::source_types::key_is_coordinate_free_with_declarations(
+                expected,
+                Some(&self.semantic_hir),
+            ) {
                 return Some(true);
             }
             // Arithmetic compound assignment is checked separately and cannot
@@ -294,7 +369,13 @@ impl Checker {
             Slot::Field(label),
         ) = (source, slot)
         else {
-            return project_key(source, std::slice::from_ref(slot)).cloned();
+            return crate::sema::source_types::declarations::project(
+                source,
+                std::slice::from_ref(slot),
+                &self.semantic_hir,
+                &mut crate::sema::source_types::WorkLimit::new(4096),
+            )
+            .ok();
         };
         let binder = self.generic_binders.get(identity)?;
         let declaration = self
@@ -338,7 +419,15 @@ impl Checker {
         destination: StorageDestination,
         frame: &Frame,
     ) {
-        self.storage_sources.writes.push(StorageWrite {
+        let Some(target_id) = target.hir_id else {
+            self.unsupported(
+                target.span,
+                "aborted storage write has no original target ExprId",
+            );
+            return;
+        };
+        self.type_source.storage.writes.push(StorageWrite {
+            target: target_id,
             context: self.invocation_context(frame.callable_owner),
             activation: frame.owner,
             span: target.span,
@@ -384,7 +473,7 @@ fn compatible(
 pub(in crate::sema::checker) fn has_callable(key: &ArgumentKey, work: &mut usize) -> Option<bool> {
     *work = work.checked_sub(1)?;
     let children: Vec<&ArgumentKey> = match key {
-        ArgumentKey::Callable { .. } => return Some(true),
+        ArgumentKey::Callable { .. } | ArgumentKey::GenericBuiltin(_) => return Some(true),
         ArgumentKey::Array { element, .. } => vec![element],
         ArgumentKey::Map { key, value } => vec![key, value],
         ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {

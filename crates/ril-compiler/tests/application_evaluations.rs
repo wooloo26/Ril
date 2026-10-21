@@ -103,14 +103,14 @@ fn historical_operands_keep_their_allocation_epoch_and_require_explicit_transpor
         };
         let row = preparation(&facts, event);
         for (&slot, token) in &row.supplied {
-            let Some((_, argument)) = invocation.arguments.get(slot as usize) else {
+            let Some((_, argument)) = invocation.entry.arguments.get(slot as usize) else {
                 continue;
             };
             let observation = &facts.expressions[token.expression];
             assert_eq!(observation.allocation_epoch, token.allocation_epoch);
             let original = observation.value.clone();
             let entry = observation
-                .value_at(invocation.entry_allocation_epoch, &facts.allocation_history)
+                .value_at(invocation.entry.allocation_epoch, &facts.allocation_history)
                 .unwrap();
             assert_eq!(entry.origins, argument.value.origins);
             let current = observation
@@ -210,8 +210,8 @@ fn ordinary_and_pipeline_prefixes_follow_their_real_hir_children() {
                 "test_pipeline_order",
                 vec![
                     EvaluationRole::Piped,
-                    EvaluationRole::Written(0),
                     EvaluationRole::Callee,
+                    EvaluationRole::Written(0),
                 ],
             ),
         ] {
@@ -283,16 +283,16 @@ fn never_stops_at_the_actual_prefix_without_binding_or_emitting_later_operands()
         ("pipeline_left_stop", vec![EvaluationRole::Piped], false),
         (
             "pipeline_written_stop",
-            vec![EvaluationRole::Piped, EvaluationRole::Written(0)],
-            false,
+            vec![
+                EvaluationRole::Piped,
+                EvaluationRole::Callee,
+                EvaluationRole::Written(0),
+            ],
+            true,
         ),
         (
             "pipeline_callee_stop",
-            vec![
-                EvaluationRole::Piped,
-                EvaluationRole::Written(0),
-                EvaluationRole::Callee,
-            ],
+            vec![EvaluationRole::Piped, EvaluationRole::Callee],
             true,
         ),
     ] {

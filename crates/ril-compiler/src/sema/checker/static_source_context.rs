@@ -22,6 +22,7 @@ impl Checker {
                 Some(())
             };
             match key {
+                ArgumentKey::GenericBuiltin(_) => {}
                 ArgumentKey::Closed(value) => text(work, value)?,
                 ArgumentKey::Binder { identity, .. } => text(work, identity)?,
                 ArgumentKey::Name { name, arguments } => {
@@ -82,7 +83,13 @@ impl Checker {
         let identity = name
             .strip_prefix(KEY_TOKEN)
             .map(str::to_owned)
-            .or_else(|| self.generic_context.get(name).cloned())?;
+            .or_else(|| {
+                self.type_source
+                    .environment
+                    .generic_context
+                    .get(name)
+                    .cloned()
+            })?;
         let binder = self.generic_binders.get(&identity)?;
         let function = self
             .functions
@@ -118,7 +125,12 @@ impl Checker {
                 &self.effect_type_binders,
             )?;
             source_reception::complete(&base_key, &mut 4096)?;
-            if let Some(coordinate) = self.static_key_arguments.get(&identity) {
+            if let Some(coordinate) = self
+                .type_source
+                .environment
+                .static_key_arguments
+                .get(&identity)
+            {
                 let selected = match (&base.kind, coordinate) {
                     (TypeKind::Record { fields, row: None }, StaticCoordinate::Label(label)) => {
                         &fields.iter().find(|field| &field.name == label)?.ty
@@ -209,8 +221,8 @@ impl Checker {
         frame: &Frame,
     ) -> Option<Value> {
         let index = observed?;
-        let row = self.invocation_expressions.get(index)?;
-        let fact = self.expression_facts.get(index)?;
+        let row = self.application_effect.contexts.get(index)?;
+        let fact = self.application_effect.expressions.get(index)?;
         if row.expression != index
             || row.context != self.invocation_context(frame.callable_owner)
             || fact.span != syntax.span
@@ -251,13 +263,14 @@ impl Checker {
         }
         let context = self.invocation_context(frame.callable_owner);
         let keys: Vec<_> = self
-            .invocation_expressions
+            .application_effect
+            .contexts
             .iter()
             .filter_map(|row| {
                 if row.context != context {
                     return None;
                 }
-                let fact = self.expression_facts.get(row.expression)?;
+                let fact = self.application_effect.expressions.get(row.expression)?;
                 (fact.span == key.span
                     && parents.contains(&fact.value.cause)
                     && fact.value.ty == Ty::StaticKey(identity.clone()))
@@ -292,13 +305,14 @@ impl Checker {
             return None;
         }
         let bases: Vec<_> = self
-            .invocation_expressions
+            .application_effect
+            .contexts
             .iter()
             .filter_map(|row| {
                 if row.context != context {
                     return None;
                 }
-                let fact = self.expression_facts.get(row.expression)?;
+                let fact = self.application_effect.expressions.get(row.expression)?;
                 (fact.span == base.span && parents.contains(&fact.value.cause))
                     .then_some(fact.value.clone())
             })
@@ -493,15 +507,18 @@ mod tests {
         };
         let mut checker = Checker::new(FileId(0));
         checker
+            .type_source
+            .environment
             .generic_context
             .insert("K".into(), "unowned:K".into());
         checker.generic_key_bounds.insert(
             "unowned:K".into(),
             function.parameters[0].ty.clone().unwrap(),
         );
-        checker
-            .generic_key_contexts
-            .insert("unowned:K".into(), checker.generic_context.clone());
+        checker.generic_key_contexts.insert(
+            "unowned:K".into(),
+            checker.type_source.environment.generic_context.clone(),
+        );
         assert!(
             checker
                 .freeze_static_source_type(function.return_type.as_ref().unwrap())

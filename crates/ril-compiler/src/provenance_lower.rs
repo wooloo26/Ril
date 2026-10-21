@@ -8,6 +8,8 @@ use ril_compiler_core::{
 use ril_ir::provenance as p;
 use ril_syntax::ast::{ParameterMode, PatternKind};
 mod call_arguments;
+mod callable_entries;
+use callable_entries::callable_entry;
 mod record_bounds;
 mod storage_sources;
 
@@ -243,26 +245,32 @@ fn copy_invocation(
         caller: record.caller,
         caller_owner: record.caller_owner,
         caller_activation: record.caller_activation.map(|owner| owner.0),
-        entry_allocation_epoch: record.entry_allocation_epoch as u64,
         target: record.target,
         span: record.span,
         declaration_probe: record.declaration_probe,
         direct: record.direct,
         source_event: record.source_event.map(|id| p::CopyCallEventId(id.0)),
-        arguments: record
-            .arguments
-            .iter()
-            .map(|(mode, snapshot)| {
-                (
-                    match mode {
-                        m::Mode::Read => p::Access::Read,
-                        m::Mode::Write => p::Access::Write,
-                        m::Mode::Retain => p::Access::Retain,
-                    },
-                    copy_snapshot(snapshot, record.span, types, contracts),
-                )
-            })
-            .collect(),
+        entry: p::CallableEntry {
+            parent: record.entry.parent,
+            caller_context: resumption_context(record.entry.caller_context),
+            origin: callable_entries::entry_origin(&record.entry.origin),
+            allocation_epoch: record.entry.allocation_epoch as u64,
+            arguments: record
+                .entry
+                .arguments
+                .iter()
+                .map(|(mode, snapshot)| {
+                    (
+                        match mode {
+                            m::Mode::Read => p::Access::Read,
+                            m::Mode::Write => p::Access::Write,
+                            m::Mode::Retain => p::Access::Retain,
+                        },
+                        copy_snapshot(snapshot, record.span, types, contracts),
+                    )
+                })
+                .collect(),
+        },
         boundaries: record
             .boundaries
             .iter()
@@ -603,6 +611,8 @@ fn copy_boundary(
         c::CopyProjection::Variant(tag) => p::CopyProjection::Variant(tag.clone()),
     };
     p::CopyBoundary {
+        input_allocation_epoch: boundary.input_allocation_epoch as u64,
+        output_allocation_epoch: boundary.output_allocation_epoch.map(|epoch| epoch as u64),
         source_event: boundary.source_event.map(|id| p::CopyCallEventId(id.0)),
         invocation: boundary.invocation.map(|id| p::CopyInstanceId(id.0)),
         template: boundary.template,
@@ -847,6 +857,40 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         ..Default::default()
     };
     call_arguments::lower(facts, &mut graph, &mut contracts)?;
+    graph.activations = facts
+        .activations
+        .iter()
+        .map(|activation| p::EvaluationActivation {
+            id: activation.id,
+            parent: activation.parent,
+            kind: match activation.kind {
+                crate::sema::application_effect::ActivationKind::Expression => {
+                    p::ActivationKind::Expression
+                }
+                crate::sema::application_effect::ActivationKind::Emission => {
+                    p::ActivationKind::Emission
+                }
+            },
+            source: activation.source,
+            scope: activation.scope.0,
+            context: resumption_context(activation.context),
+            start_expression: activation.start_expression as u64,
+            end_expression: activation.end_expression.map(|end| end as u64),
+            result: activation.result,
+        })
+        .collect();
+    graph.evaluations = facts
+        .evaluations
+        .iter()
+        .map(|record| p::EvaluationRecord {
+            id: record.id,
+            source: record.identity.map(|identity| identity.source),
+            activation: record.identity.map(|identity| identity.activation),
+            scope: record.scope.0,
+            context: resumption_context(record.context),
+            allocation_epoch: record.allocation_epoch as u64,
+        })
+        .collect();
     record_bounds::project(facts, &mut graph, &mut contracts)?;
     graph.channel_repetitions = facts
         .channel_repetitions
@@ -900,6 +944,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .iter()
         .map(|call| p::ClosureInvocation {
             id: call.id,
+            entry: callable_entry(&call.entry, &mut graph.types, &mut contracts),
             source_event: call.source_event.map(|id| p::CopyCallEventId(id.0)),
             caller_activation: call.caller_activation.0,
             activation: call.activation.map(|scope| scope.0),
@@ -1306,6 +1351,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .map(|site| p::ClosureSite {
             id: site.id,
             owner: site.owner,
+            source: site.source,
             span: site.span,
         })
         .collect();
@@ -1463,6 +1509,10 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .enumerate()
         .map(|(index, binding)| p::Binding {
             id: index as u32,
+            pattern: binding.pattern,
+            context: resumption_context(binding.context),
+            typing_environment: contracts
+                .environment(&mut graph.types, &binding.typing_environment),
             name: binding.name.clone(),
             root: binding.root.0,
             cell: binding.cell.map(origin),
@@ -1519,11 +1569,8 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
             lexical_scope: Some(function.lexical_scope),
             published: function.environment_published,
             origin: function.environment.map(origin),
-            lexical: function
-                .lexical
-                .iter()
-                .map(|(name, id)| (name.clone(), *id as u32))
-                .collect(),
+            typing_environment: contracts
+                .environment(&mut graph.types, &function.typing_environment),
             captures: function.captures.iter().map(|id| *id as u32).collect(),
             writes: function.writes.iter().map(|id| *id as u32).collect(),
             handler_context: function
@@ -1532,7 +1579,10 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                 .map(|&id| id as u32)
                 .collect(),
         })
-        .chain(facts.closures.iter().enumerate().map(|(id, closure)| {
+        .collect();
+    graph
+        .callables
+        .extend(facts.closures.iter().enumerate().map(|(id, closure)| {
             p::Environment {
                 callable: p::Callable::Closure(id as u32),
                 span: closure.body.span,
@@ -1540,11 +1590,8 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                 lexical_scope: None,
                 published: true,
                 origin: Some(origin(closure.node)),
-                lexical: closure
-                    .lexical
-                    .iter()
-                    .map(|(name, id)| (name.clone(), *id as u32))
-                    .collect(),
+                typing_environment: contracts
+                    .environment(&mut graph.types, &closure.contract.typing_environment),
                 captures: closure.captures.iter().map(|id| *id as u32).collect(),
                 writes: closure.writes.iter().map(|id| *id as u32).collect(),
                 handler_context: closure
@@ -1553,8 +1600,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                     .map(|&id| id as u32)
                     .collect(),
             }
-        }))
-        .collect();
+        }));
     graph.invocations = facts
         .invocations
         .iter()
@@ -1594,6 +1640,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                 .map(|(id, mode)| (*id, access(*mode)))
                 .collect(),
             effects: summary.effects.iter().cloned().collect(),
+            symbolic_uses: summary.symbolic_uses.iter().copied().collect(),
             performed_operations: summary.performed_operations.iter().copied().collect(),
             callbacks: summary
                 .callbacks
@@ -1737,6 +1784,9 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .resumption_steps
         .iter()
         .map(|step| p::ResumptionStep {
+            id: step.id,
+            resume_source: step.resume_source,
+            arm_source: step.arm_source,
             span: step.span,
             owner: step.owner.0,
             handler: step.handler as u32,
@@ -1988,6 +2038,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         return Err(error);
     }
     graph.callable_return_contracts = contracts.nodes;
+    graph.frozen_environments = contracts.environments;
     Ok(graph)
 }
 #[derive(Default)]
@@ -2001,10 +2052,88 @@ struct ReturnContracts {
         std::sync::Arc<m::SourceTypeWitness>,
     >,
     nodes: Vec<p::CallableReturnBound>,
+    environments: Vec<p::FrozenEnvironment>,
+    environment_ids:
+        std::collections::BTreeMap<crate::sema::context::FrozenEnvId, p::FrozenEnvironmentId>,
     // Copy memo only: addresses never become semantic or emitted identities.
     copied: std::collections::BTreeMap<*const m::CallableReturnBound, p::ReturnContractId>,
 }
 impl ReturnContracts {
+    fn environment(
+        &mut self,
+        types: &mut Vec<p::Type>,
+        environment: &crate::sema::context::FrozenEnvironment,
+    ) -> p::FrozenEnvironmentId {
+        if let Some(id) = self.environment_ids.get(&environment.id()) {
+            return *id;
+        }
+        let id = p::FrozenEnvironmentId(self.environments.len() as u32);
+        self.environment_ids.insert(environment.id(), id);
+        // Reserve before recursively lowering row selections and their values.
+        self.environments.push(p::FrozenEnvironment::default());
+        if environment.is_poisoned() {
+            self.type_witness_error.get_or_insert_with(|| {
+                NotImplemented::new(
+                    ril_compiler_core::phase::Stage::Lowering,
+                    "incomplete frozen environment crossed the verified boundary",
+                )
+            });
+            return id;
+        }
+        let converted = p::FrozenEnvironment {
+            lexical: environment
+                .contract_bindings
+                .iter()
+                .map(|(name, &id)| (name.clone(), id as u32))
+                .collect(),
+            generic_context: environment
+                .generic_context
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            generic_substitutions: environment
+                .generic_substitutions
+                .iter()
+                .map(|(name, value)| (name.clone(), ty(types, value)))
+                .collect(),
+            generic_type_witnesses: environment
+                .generic_type_witnesses
+                .iter()
+                .filter_map(|(name, witness)| {
+                    self.source_type_witness(Some(witness))
+                        .map(|witness| (name.clone(), witness))
+                })
+                .collect(),
+            bound_row_context: environment
+                .bound_row_context
+                .iter()
+                .map(|(name, id)| (name.clone(), *id))
+                .collect(),
+            bound_row_selections: environment
+                .bound_row_selections
+                .values()
+                .map(|selection| record_bounds::selection(selection, types, self))
+                .collect(),
+            static_key_arguments: environment
+                .static_key_arguments
+                .iter()
+                .map(|(name, coordinate)| {
+                    (
+                        name.clone(),
+                        match coordinate {
+                            m::StaticCoordinate::Label(label) => {
+                                p::StaticCoordinate::Label(label.clone())
+                            }
+                            m::StaticCoordinate::Index(index) => p::StaticCoordinate::Index(*index),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        self.environments[id.0 as usize] = converted;
+        id
+    }
+
     fn source_type_witness(
         &mut self,
         witness: Option<&std::sync::Arc<m::SourceTypeWitness>>,
@@ -2082,63 +2211,7 @@ impl ReturnContracts {
                 syntax: contract(&bound.syntax),
                 span: bound.span,
                 callables: bound.callables.iter().map(callable).collect(),
-                lexical: bound
-                    .typing_environment
-                    .contract_bindings
-                    .iter()
-                    .map(|(name, &id)| (name.clone(), id as u32))
-                    .collect(),
-                generic_context: bound
-                    .typing_environment
-                    .generic_context
-                    .iter()
-                    .map(|(name, value)| (name.clone(), value.clone()))
-                    .collect(),
-                generic_substitutions: bound
-                    .typing_environment
-                    .generic_substitutions
-                    .iter()
-                    .map(|(name, value)| (name.clone(), ty(types, value)))
-                    .collect(),
-                generic_type_witnesses: bound
-                    .typing_environment
-                    .generic_type_witnesses
-                    .iter()
-                    .filter_map(|(name, witness)| {
-                        self.source_type_witness(Some(witness))
-                            .map(|witness| (name.clone(), witness))
-                    })
-                    .collect(),
-                bound_row_context: bound
-                    .typing_environment
-                    .bound_row_context
-                    .iter()
-                    .map(|(name, id)| (name.clone(), *id))
-                    .collect(),
-                bound_row_selections: bound
-                    .typing_environment
-                    .bound_row_selections
-                    .values()
-                    .map(|selection| record_bounds::selection(selection, types, self))
-                    .collect(),
-                static_key_arguments: bound
-                    .typing_environment
-                    .static_key_arguments
-                    .iter()
-                    .map(|(name, coordinate)| {
-                        (
-                            name.clone(),
-                            match coordinate {
-                                m::StaticCoordinate::Label(label) => {
-                                    p::StaticCoordinate::Label(label.clone())
-                                }
-                                m::StaticCoordinate::Index(index) => {
-                                    p::StaticCoordinate::Index(*index)
-                                }
-                            },
-                        )
-                    })
-                    .collect(),
+                environment: self.environment(types, &bound.typing_environment),
             };
             let id = p::ReturnContractId(self.nodes.len() as u32);
             self.nodes.push(node);
@@ -2355,6 +2428,7 @@ fn value(
             .callable_bounds
             .iter()
             .map(|bound| p::CallableBound {
+                source: bound.source,
                 annotations: bound
                     .annotations
                     .iter()
@@ -2369,11 +2443,7 @@ fn value(
                         span: annotation.span,
                     })
                     .collect(),
-                lexical: bound
-                    .lexical
-                    .iter()
-                    .map(|(name, &id)| (name.clone(), id as u32))
-                    .collect(),
+                environment: contracts.environment(types, &bound.typing_environment),
                 span: bound.span,
             })
             .collect(),
@@ -2466,6 +2536,80 @@ fn origin_fact(id: f::NodeId, node: &f::HeapNode) -> p::Origin {
 mod contract_graph_tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn shared_row_and_return_captures_keep_one_complete_environment_identity() {
+        use crate::sema::context::TypingEnvironment;
+        let span = Span {
+            file: ril_compiler_core::source::FileId(0),
+            start: 0,
+            end: 1,
+        };
+        let environment = TypingEnvironment {
+            generic_context: [("T".into(), "creator:T".into())].into(),
+            generic_substitutions: [("creator:T".into(), m::Ty::Int("int".into()))].into(),
+            contract_bindings: [("state".into(), 7)].into(),
+            static_key_arguments: [(
+                "field".into(),
+                m::StaticCoordinate::Label("selected".into()),
+            )]
+            .into(),
+            bound_row_context: [("R".into(), ril_compiler_core::ids::BoundRowId(3))].into(),
+            ..Default::default()
+        }
+        .freeze();
+        let mut input =
+            m::Value::scalar(m::Ty::Unit, None, ril_compiler_core::diagnostic::CauseId(0));
+        input.callable_bounds.push(m::CallableBound {
+            annotations: vec![],
+            source: None,
+            typing_environment: environment.clone(),
+            span,
+        });
+        let mut returned = m::CallableReturnBound::raw(m::Callable::Closure(0), span);
+        returned.typing_environment = environment.clone();
+        input.callable_returns.push(Arc::new(returned));
+        let mut types = vec![];
+        let mut context = ReturnContracts::default();
+        let output = value(&mut types, &mut context, &input, span);
+        let id = output.callable_bounds[0].environment;
+        assert_eq!(
+            id,
+            context.nodes[output.callable_returns[0].0 as usize].environment
+        );
+        assert_eq!(context.environments.len(), 1);
+        let capture = &context.environments[id.0 as usize];
+        assert_eq!(capture.lexical, [("state".into(), 7)]);
+        assert_eq!(capture.generic_context, [("T".into(), "creator:T".into())]);
+        assert_eq!(
+            capture.bound_row_context,
+            [("R".into(), ril_compiler_core::ids::BoundRowId(3))]
+        );
+        assert!(
+            matches!(&types[capture.generic_substitutions[0].1.0 as usize],p::Type::Integer(name) if name=="int")
+        );
+        assert!(
+            matches!(&capture.static_key_arguments[0].1,p::StaticCoordinate::Label(name) if name=="selected")
+        );
+        let repeated = value(&mut types, &mut context, &input, span);
+        assert_eq!(id, repeated.callable_bounds[0].environment);
+        input.callable_bounds[0].typing_environment = environment.thaw().freeze();
+        let separate = value(&mut types, &mut context, &input, span);
+        assert_ne!(id, separate.callable_bounds[0].environment);
+        assert_eq!(separate.callable_returns, output.callable_returns);
+        assert!(context.type_witness_error.is_none());
+    }
+
+    #[test]
+    fn an_incomplete_capture_cannot_be_exported_as_an_empty_environment() {
+        let mut types = vec![];
+        let mut context = ReturnContracts::default();
+        context.environment(
+            &mut types,
+            &crate::sema::context::FrozenEnvironment::poisoned(),
+        );
+        assert!(context.type_witness_error.is_some());
+    }
 
     #[test]
     fn complete_condition_metadata_preserves_operand_identity_without_inspecting_it() {
@@ -2866,7 +3010,8 @@ mod contract_graph_tests {
         );
         bound.typing_environment = environment.freeze();
         let bound_id = context.intern(&mut types, &Arc::new(bound));
-        let captured = &context.nodes[bound_id.0 as usize].generic_type_witnesses;
+        let environment = context.nodes[bound_id.0 as usize].environment;
+        let captured = &context.environments[environment.0 as usize].generic_type_witnesses;
         assert_eq!(captured[0].0, "creator:T");
         assert!(Arc::ptr_eq(&witness, &captured[0].1));
         assert_eq!(output.origins, [OriginId(7)]);
@@ -2988,16 +3133,18 @@ mod contract_graph_tests {
                     default_use: None,
                 },
                 identity: "File::write".into(),
-                full_header: ril_syntax::ast::TypeExpr {
-                    hir_id: None,
-                    text: String::new(),
-                    span: function.span,
-                    kind: ril_syntax::ast::TypeKind::Callable {
-                        parameters: function.parameters.clone(),
-                        result: function.return_type.clone().map(Box::new),
-                        annotations: function.annotations.clone(),
+                full_header: crate::sema::builtin_sources::BuiltinDeclaration::Syntax(
+                    ril_syntax::ast::TypeExpr {
+                        hir_id: None,
+                        text: String::new(),
+                        span: function.span,
+                        kind: ril_syntax::ast::TypeKind::Callable {
+                            parameters: function.parameters.clone(),
+                            result: function.return_type.clone().map(Box::new),
+                            annotations: function.annotations.clone(),
+                        },
                     },
-                },
+                ),
                 concrete_effects: ["Fiber".into()].into(),
                 written_formals: [0].into(),
                 captures: Default::default(),
@@ -3016,11 +3163,14 @@ mod contract_graph_tests {
         assert_eq!(observation.written_formals, [0].into());
         assert!(observation.captures.is_empty());
         assert_eq!(observation.cause.0, 17);
+        let p::BuiltinDeclaration::Syntax(header) = &observation.full_header else {
+            panic!("original written header")
+        };
         let p::ContractKind::Callable {
             parameters,
             result,
             annotations,
-        } = &observation.full_header.kind
+        } = &header.kind
         else {
             unreachable!()
         };

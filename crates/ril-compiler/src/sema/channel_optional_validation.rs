@@ -80,7 +80,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Check {
         work: &mut usize,
     ) -> Check<Vec<(usize, ril_compiler_core::ids::OptionalTagId, Vec<String>)>> {
         let mut arguments = Vec::new();
-        for (index, (_, snapshot)) in invocation.arguments.iter().enumerate() {
+        for (index, (_, snapshot)) in invocation.entry.arguments.iter().enumerate() {
             let mut tags = Vec::new();
             visit(
                 &snapshot.value,
@@ -149,7 +149,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Check {
         if invocation.span != header.syntax.span {
             continue;
         }
-        if invocation.arguments.len() != header.syntax.parameters.len() {
+        if invocation.entry.arguments.len() != header.syntax.parameters.len() {
             return Err(
                 "optional formal template does not cover the actual parameter header".into(),
             );

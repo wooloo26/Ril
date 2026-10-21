@@ -160,6 +160,14 @@ impl Checker {
         frame: &mut Frame,
         scope_exit: Option<super::super::resumption::ContinuationScopeExit>,
     ) -> Value {
+        let (Some(resume_source), Some(arm_source)) = (suffix.resume_source, suffix.body_source)
+        else {
+            self.unsupported(
+                suffix.span,
+                "resumed answer lost its original Resume or arm HIR identity",
+            );
+            return answer.clone();
+        };
         let transport = if suffix.identity && self.identity_handler_answer(answer) {
             AnswerTransport::Identity
         } else if self.copy_handler_answer(answer) {
@@ -173,30 +181,48 @@ impl Checker {
         let continuation_epoch = self.recency_moves.len();
         let continuation_value = self.copy_value_snapshot(answer);
         let mut held_answer = EvaluatedValue::new(answer.clone(), continuation_epoch);
-        let continuation_expression = self.expression_facts.len();
         self.block_boundaries.push(suffix.boundary);
-        self.invocation_expressions
-            .push(super::super::effect_identity::InvocationExpression {
-                context: suffix.context,
-                expression: self.expression_facts.len(),
-                argument_of: None,
-            });
-        self.expression_facts.push(super::super::ExpressionFact {
-            allocation_epoch: continuation_epoch,
-            source_id: suffix.resume_source,
-            span: suffix.resume,
-            value: answer.clone(),
-        });
+        let evaluation_context = suffix.context;
+        let Some(continuation_expression) = self.application_effect.observe(
+            || super::super::ExpressionFact {
+                allocation_epoch: continuation_epoch,
+                source_id: Some(resume_source),
+                span: suffix.resume,
+                value: answer.clone(),
+            },
+            evaluation_context,
+            frame.owner,
+            None,
+        ) else {
+            self.block_boundaries.pop();
+            return answer.clone();
+        };
         if let Some(binding) = &suffix.binding {
-            let mut value = answer.clone();
-            if let Some(syntax) = &binding.ty {
-                self.set_contract_environment(&frame.env);
-                self.ascribe_signature(&mut value, syntax);
-                let expected = self.ty(syntax);
-                self.require_type(&value, &expected, binding.value.span);
-                value.ty = expected;
-            }
-            self.bind_pattern(&binding.pattern, binding.mode, value, frame, false);
+            self.set_contract_environment(&frame.env);
+            let source_target = binding
+                .ty
+                .as_ref()
+                .map(|syntax| self.freeze_source_receiving_target(syntax));
+            let source_valid = source_target.as_ref().is_none_or(|target| {
+                self.require_source_reception(
+                    target,
+                    &binding.value,
+                    answer,
+                    Some(continuation_expression),
+                    frame,
+                )
+            });
+            self.receive_binding(
+                binding,
+                answer.clone(),
+                Some(super::super::storage_sources::StorageObservation {
+                    expression: continuation_expression,
+                    allocation_epoch: continuation_epoch,
+                }),
+                source_target.as_ref(),
+                source_valid,
+                frame,
+            );
         }
         let mut result = self.unit(suffix.span);
         for statement in &suffix.statements {
@@ -247,20 +273,24 @@ impl Checker {
             "handler suffix runs after the actual continuation answer",
             [answer.cause, result.cause],
         );
-        let arm_expression = self.expression_facts.len();
-        self.invocation_expressions
-            .push(super::super::effect_identity::InvocationExpression {
-                context: suffix.context,
-                expression: arm_expression,
-                argument_of: None,
-            });
-        self.expression_facts.push(super::super::ExpressionFact {
-            allocation_epoch: self.recency_moves.len(),
-            source_id: suffix.body_source,
-            span: suffix.span,
-            value: result.clone(),
-        });
+        let evaluation_context = suffix.context;
+        let Some(arm_expression) = self.application_effect.observe(
+            || super::super::ExpressionFact {
+                allocation_epoch: self.recency_moves.len(),
+                source_id: Some(arm_source),
+                span: suffix.span,
+                value: result.clone(),
+            },
+            evaluation_context,
+            frame.owner,
+            None,
+        ) else {
+            return result;
+        };
         self.resumption_steps.push(super::super::ResumptionStep {
+            id: ril_compiler_core::ids::ProtectedAnswerId(continuation_expression as u32),
+            resume_source,
+            arm_source,
             span: suffix.resume,
             owner: frame.owner,
             handler: suffix.handler,

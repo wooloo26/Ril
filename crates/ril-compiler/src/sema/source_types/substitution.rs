@@ -10,14 +10,13 @@ pub(crate) fn substitute_key(
     work: &mut WorkLimit,
 ) -> Result<ArgumentKey, SourceTypesError> {
     let mut builder = SourceBuilder::new()?;
-    let mut originals = BTreeMap::new();
-    let root = super::legacy::import_node(key, &mut builder, &mut originals, work, 0)?;
+    let root = super::legacy::import_node(key, &mut builder, work, 0)?;
     let mut selections = BTreeMap::new();
     for (identity, key) in selected {
         work.text(identity)?;
         selections.insert(
             identity.clone(),
-            super::legacy::import_node(key, &mut builder, &mut originals, work, 0)?,
+            super::legacy::import_node(key, &mut builder, work, 0)?,
         );
     }
     let types = builder.freeze(work)?;
@@ -31,20 +30,29 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
         root: SourceTypeId,
         work: &mut WorkLimit,
     ) -> Result<ArgumentKey, SourceTypesError> {
-        self.export_key(root, work, false)
+        self.export_key(root, work, false, None)
     }
     fn canonical_key(
         &self,
         root: SourceTypeId,
         work: &mut WorkLimit,
     ) -> Result<ArgumentKey, SourceTypesError> {
-        self.export_key(root, work, true)
+        self.export_key(root, work, true, None)
+    }
+    fn declared_key(
+        &self,
+        root: SourceTypeId,
+        declarations: &BTreeSet<SourceTypeId>,
+        work: &mut WorkLimit,
+    ) -> Result<ArgumentKey, SourceTypesError> {
+        self.export_key(root, work, false, Some(declarations))
     }
     fn export_key(
         &self,
         root: SourceTypeId,
         work: &mut WorkLimit,
         flatten_rows: bool,
+        declarations: Option<&BTreeSet<SourceTypeId>>,
     ) -> Result<ArgumentKey, SourceTypesError> {
         fn export<G: super::graph::SourceGraph + ?Sized>(
             types: &G,
@@ -53,20 +61,36 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
             work: &mut WorkLimit,
             depth: usize,
             flatten_rows: bool,
+            declarations: Option<&BTreeSet<SourceTypeId>>,
         ) -> Result<ArgumentKey, SourceTypesError> {
             if depth >= 64 {
                 return Err(SourceTypesError::BudgetExceeded);
             }
+            let node = types.get(id)?;
+            node.charge(work)?;
             if !active.insert(id) {
                 return Err(SourceTypesError::RecursiveLegacyKey);
             }
-            let node = types.get(id)?;
-            node.charge(work)?;
-            let mut child = |id| export(types, id, active, work, depth + 1, flatten_rows);
+            let mut child = |id| {
+                export(
+                    types,
+                    id,
+                    active,
+                    work,
+                    depth + 1,
+                    flatten_rows,
+                    declarations,
+                )
+            };
             let key = match node {
+                SourceNode::GenericBuiltin(id) => ArgumentKey::GenericBuiltin(*id),
                 SourceNode::Scalar(SourceScalar::Unit) => ArgumentKey::Tuple(vec![]),
                 SourceNode::Scalar(kind) => ArgumentKey::Name {
                     name: scalar_name(*kind).into(),
+                    arguments: vec![],
+                },
+                SourceNode::Nominal(id) => ArgumentKey::Name {
+                    name: id.name().into(),
                     arguments: vec![],
                 },
                 SourceNode::Binder(identity) => ArgumentKey::Binder {
@@ -136,6 +160,14 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
                         .map(|id| child(*id))
                         .collect::<Result<_, _>>()?,
                 },
+                SourceNode::Alias { declaration, .. }
+                    if declarations.is_some_and(|names| names.contains(&id)) =>
+                {
+                    ArgumentKey::Name {
+                        name: declaration.clone(),
+                        arguments: vec![],
+                    }
+                }
                 SourceNode::Alias { target, .. } => child(*target)?,
                 SourceNode::OpaqueName { name, arguments } => ArgumentKey::Name {
                     name: name.clone(),
@@ -149,13 +181,21 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
             active.remove(&id);
             Ok(key)
         }
-        export(self, root, &mut BTreeSet::new(), work, 0, flatten_rows)
+        export(
+            self,
+            root,
+            &mut BTreeSet::new(),
+            work,
+            0,
+            flatten_rows,
+            declarations,
+        )
     }
 }
 
 impl<T: super::graph::SourceGraph> LegacySourceExport for T {}
 
-fn scalar_name(kind: SourceScalar) -> &'static str {
+pub(crate) fn scalar_name(kind: SourceScalar) -> &'static str {
     use SourceScalar::*;
     match kind {
         Unit => "()",
@@ -179,6 +219,7 @@ fn scalar_name(kind: SourceScalar) -> &'static str {
         BigInt => "bigint",
         F32 => "f32",
         F64 => "f64",
+        Intrinsic(identity) => identity.name(),
     }
 }
 

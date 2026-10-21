@@ -230,7 +230,7 @@ impl Replay<'_> {
         let arguments = &matching[0].operands;
         require(
             arguments.len() == self.function(child.target)?.syntax.parameters.len()
-                && arguments.len() == child.arguments.len(),
+                && arguments.len() == child.entry.arguments.len(),
             "scoped source application lacks a complete explicit argument table",
         )?;
         let observations: Vec<_> = self

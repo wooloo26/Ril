@@ -5,11 +5,30 @@ use crate::sema::effect_identity::StaticBinderSort;
 
 impl Checker {
     pub(super) fn original_symbolic_source_key(
-        &self,
+        &mut self,
         value: &Value,
         syntax: &Expr,
         frame: &Frame,
     ) -> Option<ArgumentKey> {
+        if !matches!(&value.ty, Ty::Generic(_))
+            && matches!(
+                &syntax.kind,
+                ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::ComputedField { .. }
+            )
+        {
+            let key = self.formal_source_path_key(syntax, value.cause, frame, &mut 4096, 0)?;
+            let key = if matches!(&key, ArgumentKey::Name { .. }) {
+                crate::sema::source_types::declarations::expanded_key(
+                    &key,
+                    &self.semantic_hir,
+                    &mut crate::sema::source_types::WorkLimit::new(4096),
+                )
+                .ok()?
+            } else {
+                key
+            };
+            return self.selected_bound_key(&key);
+        }
         let Ty::Generic(identity) = &value.ty else {
             return None;
         };
@@ -29,12 +48,14 @@ impl Checker {
         }
         let context = self.invocation_context(frame.callable_owner);
         if self
-            .invocation_expressions
+            .application_effect
+            .contexts
             .iter()
             .filter(|row| {
                 row.context == context
                     && self
-                        .expression_facts
+                        .application_effect
+                        .expressions
                         .get(row.expression)
                         .is_some_and(|fact| {
                             fact.source_id.is_some()
@@ -100,7 +121,7 @@ impl Checker {
     }
 
     fn formal_source_path_key(
-        &self,
+        &mut self,
         syntax: &Expr,
         cause: CauseId,
         frame: &Frame,
@@ -113,17 +134,21 @@ impl Checker {
         }
         let context = self.invocation_context(frame.callable_owner);
         let observations: Vec<_> = self
-            .invocation_expressions
+            .application_effect
+            .contexts
             .iter()
             .filter_map(|row| {
                 if row.context != context {
                     return None;
                 }
-                self.expression_facts.get(row.expression).filter(|fact| {
-                    fact.source_id.is_some()
-                        && fact.source_id == syntax.hir_id
-                        && fact.value.cause == cause
-                })
+                self.application_effect
+                    .expressions
+                    .get(row.expression)
+                    .filter(|fact| {
+                        fact.source_id.is_some()
+                            && fact.source_id == syntax.hir_id
+                            && fact.value.cause == cause
+                    })
             })
             .collect();
         let [observation] = observations.as_slice() else {
@@ -138,7 +163,8 @@ impl Checker {
             {
                 return None;
             }
-            return self.raw_formal_source_type_key(&observation.value, syntax, frame);
+            let value = observation.value.clone();
+            return self.raw_formal_source_type_key(&value, syntax, frame);
         }
         if self.explanations.kinds.get(cause.0 as usize) != Some(&CauseKind::Projection) {
             return None;
@@ -166,18 +192,22 @@ impl Checker {
                 };
                 let coordinate = text.parse::<u32>().ok()?;
                 let matching: Vec<_> = self
-                    .invocation_expressions
+                    .application_effect
+                    .contexts
                     .iter()
                     .filter_map(|row| {
                         if row.context != context {
                             return None;
                         }
-                        self.expression_facts.get(row.expression).filter(|fact| {
-                            fact.source_id.is_some()
-                                && fact.source_id == key.hir_id
-                                && fact.value.constant
-                                    == Some(Constant::Integer(i128::from(coordinate)))
-                        })
+                        self.application_effect
+                            .expressions
+                            .get(row.expression)
+                            .filter(|fact| {
+                                fact.source_id.is_some()
+                                    && fact.source_id == key.hir_id
+                                    && fact.value.constant
+                                        == Some(Constant::Integer(i128::from(coordinate)))
+                            })
                     })
                     .collect();
                 if matching.len() != 1 {
@@ -188,6 +218,19 @@ impl Checker {
             _ => return None,
         };
         let key = self.formal_source_path_key(base, parent, frame, work, depth + 1)?;
+        let key = if matches!(&key, ArgumentKey::Name { .. }) {
+            let mut limit = crate::sema::source_types::WorkLimit::new(*work);
+            let key = crate::sema::source_types::declarations::expanded_key(
+                &key,
+                &self.semantic_hir,
+                &mut limit,
+            )
+            .ok()?;
+            *work = limit.remaining();
+            key
+        } else {
+            key
+        };
         match (key, step) {
             (ArgumentKey::Array { element, .. }, None) => Some(*element),
             (ArgumentKey::Tuple(items), Some(Slot::Tuple(index))) => {

@@ -28,6 +28,7 @@ pub(super) fn lower(facts: &SemanticFacts, graph: &mut p::Graph) {
         .storage_writes
         .iter()
         .map(|value| p::StorageWrite {
+            target: value.target,
             context: resumption_context(value.context),
             activation: value.activation.0,
             span: value.span,

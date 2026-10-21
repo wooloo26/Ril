@@ -163,7 +163,7 @@ impl<'a> Analysis<'a> {
                         || invocation.caller_owner.is_some()
                         || invocation.caller_activation.is_some()
                         || invocation.source_event.is_some()
-                        || invocation.arguments.len() != header.parameters.len()
+                        || invocation.entry.arguments.len() != header.parameters.len()
                     {
                         return Ok(None);
                     }
@@ -316,7 +316,8 @@ impl<'a> Analysis<'a> {
         let Some(parameter) = owners.header.parameters.get(root.parameter) else {
             return Ok(None);
         };
-        let Some((Mode::Read, snapshot)) = owners.invocation.arguments.get(root.parameter) else {
+        let Some((Mode::Read, snapshot)) = owners.invocation.entry.arguments.get(root.parameter)
+        else {
             return Ok(None);
         };
         if parameter.span != root.parameter_span || parameter.pattern.span != root.binder {
@@ -678,7 +679,7 @@ impl<'a> Analysis<'a> {
             || !self.same_identity(
                 original,
                 &subject.value,
-                owners.invocation.entry_allocation_epoch,
+                owners.invocation.entry.allocation_epoch,
                 event.allocation_epoch,
                 0,
             )?

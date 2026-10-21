@@ -5,6 +5,7 @@ use ril_compiler_core::{
     source::{FileId, Span},
 };
 
+pub mod application_effect;
 pub mod bound_writes;
 pub mod builtin_sources;
 pub(crate) mod checker;
@@ -46,6 +47,7 @@ pub mod source_types;
 mod static_argument_validation;
 pub mod storage_sources;
 pub mod summary;
+mod symbolic_rows;
 pub mod validate;
 pub use checker::iter::{AdapterKind as IterAdapterKind, StepFact as IterStepFact};
 #[cfg(test)]
@@ -53,6 +55,8 @@ mod tests;
 
 #[derive(Debug, Clone, Default)]
 pub struct SemanticFacts {
+    pub activations: Vec<application_effect::EvaluationActivation>,
+    pub evaluations: Vec<application_effect::EvaluationRecord>,
     pub source_types: source_types::SourceTypeIndex,
     pub semantic_hir: Option<std::sync::Arc<crate::hir::HirProgram>>,
     /// The actual analyzed source tree supplies complete lexical declarations.
@@ -278,6 +282,9 @@ pub struct StaticKeyParameter {
 }
 #[derive(Debug, Clone)]
 pub struct ResumptionStep {
+    pub id: ril_compiler_core::ids::ProtectedAnswerId,
+    pub resume_source: ril_compiler_core::ids::ExprId,
+    pub arm_source: ril_compiler_core::ids::ExprId,
     pub span: Span,
     pub owner: facts::ScopeId,
     pub handler: usize,

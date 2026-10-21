@@ -5,7 +5,7 @@ use super::{
     copy_contract::{CopyCallEvent, CopyCallEventId},
     default_uses::{ArgumentSource, CallArguments, DefaultOrigin},
     effect_identity::{InvocationContext, InvocationExpression},
-    model::Ty,
+    model::{Callable, Ty},
 };
 use crate::hir::nodes::{self as hir, HirProgram, LexicalOwner};
 use ril_compiler_core::{
@@ -13,7 +13,6 @@ use ril_compiler_core::{
     ids::{CallableOwner, ClosureSiteId, DefinitionId, ExprId, StmtId},
     source::{FileId, Span},
 };
-use ril_syntax::ast::PatternKind;
 use std::collections::{BTreeMap, BTreeSet};
 
 type Failure = (Span, Option<CauseId>, String);
@@ -37,7 +36,7 @@ struct Replay<'a> {
     observations: BTreeMap<usize, &'a InvocationExpression>,
     preparations: BTreeMap<CopyCallEventId, &'a CallArguments>,
     functions: BTreeMap<DefinitionId, Vec<Option<StmtId>>>,
-    closures: BTreeMap<ClosureSiteId, Vec<Option<ExprId>>>,
+    closures: BTreeMap<ClosureSiteId, ExprId>,
 }
 
 impl Replay<'_> {
@@ -183,7 +182,10 @@ impl Replay<'_> {
         Err("call HIR lexical ancestry exceeds its budget".into())
     }
     fn dynamic_owner(&self, context: InvocationContext) -> Check<Owner> {
-        match context.owner {
+        self.lexical_owner(context.owner)
+    }
+    fn lexical_owner(&self, owner: Option<CallableOwner>) -> Check<Owner> {
+        match owner {
             Some(CallableOwner::Global) => Ok(Owner::Module),
             Some(CallableOwner::Function(id)) => {
                 let declarations = self
@@ -208,26 +210,128 @@ impl Replay<'_> {
                 Ok(Owner::Function(first))
             }
             Some(CallableOwner::Lambda(site)) => {
-                let occurrences = self
+                let source = self
                     .closures
                     .get(&site)
                     .ok_or("call's closure site is absent")?;
-                let first = occurrences
-                    .first()
-                    .copied()
-                    .flatten()
-                    .ok_or("call's closure owner has no HIR identity")?;
-                require(
-                    occurrences.iter().all(|id| *id == Some(first)),
-                    "closure objects at one site disagree on their static HIR identity",
-                )?;
                 // Defaults and retained handler arms can keep a different
                 // caller closure in their dynamic ancestry. The lexical site
                 // resolves through its own declarations, not that caller.
-                Ok(Owner::Lambda(first))
+                Ok(Owner::Lambda(*source))
             }
             None => Err("call observation has no lexical owner".into()),
         }
+    }
+
+    fn closure_coverage(&self) -> Check {
+        let mut work = 4 * LIMIT;
+        work = work
+            .checked_sub(self.facts.closure_sites.len())
+            .ok_or("closure site replay budget exhausted")?;
+        for site in &self.facts.closure_sites {
+            let syntax = self
+                .hir
+                .expression(site.source)
+                .ok_or("closure site HIR source is absent")?;
+            require(
+                matches!(syntax.kind, hir::ExprKind::Lambda { .. }),
+                "closure site source is not an actual HIR lambda",
+            )?;
+            require(
+                self.static_owner(syntax.info.owner)? == self.lexical_owner(Some(site.owner))?,
+                "closure site changed its original HIR lexical owner",
+            )?;
+            require(
+                !matches!(site.owner, CallableOwner::Lambda(parent) if parent.0 >= site.id.0),
+                "closure site has a cyclic or future lexical parent",
+            )?;
+        }
+        let mut inhabited = BTreeSet::new();
+        for closure in &self.facts.closures {
+            work = work
+                .checked_sub(closure.parameters.len().saturating_add(1))
+                .ok_or("closure object replay budget exhausted")?;
+            let site = closure
+                .site
+                .and_then(|id| self.facts.closure_sites.get(id.0 as usize))
+                .ok_or("closure object lost its original static site")?;
+            inhabited.insert(site.id);
+            require(
+                closure.hir_id == Some(site.source),
+                "closure object borrowed a different static HIR site",
+            )?;
+            let Some(hir::Expr {
+                kind:
+                    hir::ExprKind::Lambda {
+                        parameters, body, ..
+                    },
+                ..
+            }) = self.hir.expression(site.source)
+            else {
+                return Err("closure object has no original HIR lambda".into());
+            };
+            require(
+                closure.body.hir_id == Some(*body)
+                    && closure.parameters.len() == parameters.len()
+                    && closure
+                        .parameters
+                        .iter()
+                        .zip(parameters)
+                        .all(|(actual, original)| {
+                            actual.pattern.hir_id == Some(original.pattern)
+                                && actual.mode == original.mode
+                        }),
+                "closure object changed its original HIR body or formal parameters",
+            )?;
+        }
+        require(
+            inhabited.len() == self.facts.closure_sites.len(),
+            "closure site has no actual creation object",
+        )?;
+        // A real lambda emission owns a closure object even if every producer
+        // site row or callable tag has been deleted. Generated adapter recipes
+        // have their separate actual HIR origin and are checked as objects above.
+        let _remaining = work
+            .checked_sub(self.facts.expressions.len())
+            .ok_or("closure emission replay budget exhausted")?;
+        for (index, fact) in self.facts.expressions.iter().enumerate() {
+            let Some(source) = fact.source_id else {
+                continue;
+            };
+            if !self
+                .hir
+                .expression(source)
+                .is_some_and(|node| matches!(node.kind, hir::ExprKind::Lambda { .. }))
+            {
+                continue;
+            }
+            let [Callable::Closure(object)] = fact.value.callables.as_slice() else {
+                return Err("actual HIR lambda emission lost its closure object".into());
+            };
+            let closure = self
+                .facts
+                .closures
+                .get(*object)
+                .ok_or("actual HIR lambda refers to an absent closure object")?;
+            let site = closure
+                .site
+                .and_then(|id| self.facts.closure_sites.get(id.0 as usize))
+                .ok_or("actual HIR lambda lost its lexical site")?;
+            let context = self
+                .observations
+                .get(&index)
+                .ok_or("actual HIR lambda lost its full creation context")?
+                .context;
+            require(
+                site.source == source
+                    && Some(site.owner) == context.owner
+                    && closure.creation_invocation == context.invocation
+                    && closure.creation_closure == context.closure_invocation
+                    && closure.creation_default == context.default_use,
+                "actual HIR lambda borrowed another source or creation activation",
+            )?;
+        }
+        Ok(())
     }
 
     fn event(&self, event: &CopyCallEvent) -> Check<usize> {
@@ -355,36 +459,35 @@ impl Replay<'_> {
             "abrupt callee claims parameter binding",
         )?;
         let signature = callee_value.value.signature.as_ref();
-        let count = signature.map_or(application.operands.len(), Vec::len);
+        let labels = if let Some(signature) = signature {
+            crate::hir::application::parameter_labels(signature)
+        } else if let Some(id) = super::builtin_sources::generic_reference(&callee_value.value) {
+            super::source_types::polymorphic::parameter_labels(id)
+        } else {
+            vec![None; application.operands.len()]
+        };
+        let count = labels.len();
         require(
             count <= LIMIT && preparation.slots.len() == count,
             "application slots differ from its public signature",
         )?;
-        let mut labels = BTreeMap::new();
-        if let Some(signature) = signature {
-            for (index, parameter) in signature.iter().enumerate() {
-                if let PatternKind::Name(name) = &parameter.pattern.kind {
-                    require(
-                        labels.insert(name.as_str(), index).is_none(),
-                        "public callable signature repeats a label",
-                    )?;
-                }
-            }
+        let mut names = BTreeSet::new();
+        for name in labels.iter().flatten() {
+            require(
+                names.insert(name),
+                "public callable signature repeats a label",
+            )?;
         }
         let mut occupied = BTreeSet::new();
         let mut consumed = BTreeSet::new();
-        let mut next = 0usize;
-        for operand in &application.operands {
-            let slot = if let Some(label) = operand.label {
-                *labels
-                    .get(label)
-                    .ok_or("written label is absent from the public signature")?
-            } else {
-                while occupied.contains(&next) {
-                    next += 1;
-                }
-                next
-            };
+        let mapping = crate::hir::application::bind_slots(
+            &labels,
+            application.operands.iter().map(|operand| operand.label),
+        );
+        for (operand, slot) in application.operands.iter().zip(mapping) {
+            let slot = slot.map_err(|code| {
+                format!("application violates its original parameter binding: {code}")
+            })?;
             require(
                 slot < count && occupied.insert(slot),
                 "application duplicates or exceeds a parameter slot",
@@ -513,7 +616,8 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             && facts.copy_invocations.len() <= LIMIT
             && facts.closure_invocations.len() <= LIMIT
             && facts.functions.len() <= LIMIT
-            && facts.closures.len() <= LIMIT,
+            && facts.closures.len() <= LIMIT
+            && facts.closure_sites.len() <= LIMIT,
         "evaluation identity replay budget exhausted",
     )
     .map_err(fail)?;
@@ -521,6 +625,8 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         return require(
             facts.source_program.is_none()
                 && facts.copy_call_events.is_empty()
+                && facts.closures.is_empty()
+                && facts.closure_sites.is_empty()
                 && facts
                     .expressions
                     .iter()
@@ -633,15 +739,17 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             .or_default()
             .push(function.hir_id);
     }
-    for closure in &facts.closures {
-        if let Some(site) = closure.site {
-            replay
-                .closures
-                .entry(site)
-                .or_default()
-                .push(closure.hir_id);
-        }
+    let mut site_sources = BTreeSet::new();
+    for (index, site) in facts.closure_sites.iter().enumerate() {
+        require(
+            site.id.0 as usize == index
+                && site_sources.insert((site.owner, site.source))
+                && replay.closures.insert(site.id, site.source).is_none(),
+            "closure site repeats or changes its static HIR identity",
+        )
+        .map_err(|message| (site.span, None, message))?;
     }
+    replay.closure_coverage().map_err(fail)?;
     let pattern_values = replay.pattern_value_sources().map_err(fail)?;
     let mut results = BTreeSet::new();
     let mut previous_occurrences = BTreeMap::new();
@@ -1152,8 +1260,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 EvaluationRole::Piped,
-                EvaluationRole::Written(0),
-                EvaluationRole::Callee
+                EvaluationRole::Callee,
+                EvaluationRole::Written(0)
             ]
         );
         for mutation in 0..4 {
@@ -1341,17 +1449,22 @@ mod tests {
         let mut changed = facts.clone();
         changed.copy_invocations.push(CopyInvocation {
             id: InstanceId(0),
+            entry: crate::sema::application_effect::CallableEntry {
+                parent: None,
+                caller_context: context(),
+                origin: crate::sema::application_effect::EntryOrigin::Unresolved,
+                allocation_epoch: 0,
+                arguments: vec![],
+            },
             parent: None,
             caller: None,
             caller_owner: context().owner,
             caller_activation: None,
-            entry_allocation_epoch: 0,
             target: DefinitionId(0),
             span: span(),
             declaration_probe: false,
             direct: false,
             source_event: Some(event),
-            arguments: vec![],
             boundaries: BTreeSet::new(),
             result: None,
             resource_copies: vec![],
@@ -1366,6 +1479,13 @@ mod tests {
         let mut changed = facts;
         changed.closure_invocations.push(ClosureInvocation {
             id: ClosureInvocationId(0),
+            entry: crate::sema::application_effect::CallableEntry {
+                parent: None,
+                caller_context: context(),
+                origin: crate::sema::application_effect::EntryOrigin::Unresolved,
+                allocation_epoch: 0,
+                arguments: std::sync::Arc::new(vec![]),
+            },
             source_event: Some(event),
             caller_activation: ScopeId(0),
             activation: Some(ScopeId(1)),

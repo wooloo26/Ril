@@ -12,178 +12,27 @@ Source-level explanations belong beside the relevant implementation.
 
 ## Development status
 
-Native compilation, linking and execution are implemented.
-Semantic integration and the architectural migration below are unfinished.
-Work proceeds in this order:
+Native compilation, linking and execution are implemented. Semantic integration
+and the architectural migration are unfinished. Work proceeds in this order:
 
-1. Preserve the implementation and its known failures.
-2. Consolidate tests and documentation; refactor the semantic core.
-3. Complete missing semantics and run the full acceptance matrix.
-4. Implement semantic introspection queries on the analysis API.
+1. Complete the semantic core and its independent evidence validation.
+2. Finish missing semantics and pass the full acceptance matrix.
+3. Expose semantic introspection through the analysis API.
 
-Git history preserves the unfinished implementation before this migration.
-The preserved full-matrix baseline is `axioms-v3`, before the confirmed
-specification decisions below. The application/effect recorder
-retains typed HIR occurrences, scope, context and immutable allocation epochs.
-Storage declarations use PatternId, writes use ExprId, and protected answers
-retain Resume/arm identities through Core. Source compatibility and declaration
-comparison use source type graphs, including finite recursive schemas.
-Shared graph queries resolve supported global transparent declarations from HIR;
-storage patterns, members, copies, sharing markers and abrupt optional fallbacks
-retain their original coordinates. Ambiguous legacy names remain unresolved.
-The legacy tree projection and its duplicate original-child index are removed.
+The current implementation lives in the normal source tree. HIR occurrences,
+frozen lexical/type environments, original binding PatternIds and callable row
+use evidence are retained through semantic analysis and Core. Closure contracts
+belong to their descriptors; bound checks enter their captured environment.
+Legacy representations and validators still need migration to the complete
+abstract value, ten receiving boundaries and five domains described below.
 
-TypeSourceDomain now owns the active lexical/static type interpretation. Frozen
-environments have opaque identities, and owned copies require budget admission.
-Bindings, handlers, receiving targets and delayed handler suffixes retain their
-own declaration environments. Local SourceTypeIndex views pair SourceTypeId with
-FrozenEnvId; equal contents in a fresh capture cannot replace that interpretation.
-Closure defaults enter their captured lexical/type environment. Parameter
-preparation activations are independently tied to actual call/default receipts;
-a later default cannot authorize an earlier forward parameter read.
-Legacy keys and witnesses remain transitional, and the complete abstract-value,
-ten-boundary and five-domain migrations are unfinished.
+Compiler acceptance still has failing tests and unimplemented corpus cases.
+The full matrix must be rerun on Windows and Linux; scoped checks do not certify
+completion. The source-transport tests expose incomplete qualified record
+projection and composed row forwarding. Both remain active failures.
 
-At that frozen baseline, on both Windows and Linux, all 143 compiler/syntax test targets report
-**1,359 passed, 154 failed and 1 ignored**, repairing 15 prior failures and adding
-seven tests without losing a prior case or adding a remaining failure. The raw
-batch initially included an invalid synthetic test source; its local test repair
-passes on both hosts, as recorded separately in the checkpoint.
-For each host and each pointer layout, 902 applicable static corpus cases report
-**865 passed, 2 failed and 35 not implemented**, excluding only the one case
-explicitly requiring the opposite layout. There are no harness errors.
-The two remaining failures are the preserved nine-scope channel timeout and the
-open-row callable product. Four related native cases pass on both platforms,
-including recursive binary copies and both closure-default programs.
-Workspace all-target Clippy with warnings denied and formatting pass.
-The separate 1,250-case concrete graph execution audit passes on both hosts under
-2 GiB memory and 300-second time limits; the normal suite keeps that test ignored.
-
-The baseline's 1,413 corpus cases structurally validate (99 bundles, 176 diagnostic codes,
-840 companion links). Each host executes 1,411 applicable cases, excluding only
-the two explicitly requiring the other platform. Windows reports
-**1,302 passed, 19 failed, 90 not implemented**; Linux reports
-**1,303 passed, 19 failed, 89 not implemented**. Neither reports a harness error.
-Four old cases recover and the new case passes, with no lost case or regression
-against the frozen v2 baseline. All 1,409 shared cases agree in verdict and
-static diagnostics. Full compiler acceptance remains unfinished.
-`target/axioms-v3-checkpoint.json` records those baseline scopes and failures;
-`axioms-v3-all-tests-*-final.json`, `axioms-v3-static-pointer*-*` and
-`axioms-v3-all-corpus-*` retain individual outcomes. Compiled source archives and
-frozen native compiler/runtime artifacts preserve both v2 and v3 for comparison.
-
-The preserved `spec-decisions` checkpoint implements pipeline evaluation in the confirmed
-left/callee/written-argument order, including Core lowering and termination
-analysis. SPEC records runtime module-level `meta let` read capabilities and the
-static/type-domain exemption. Parallel examples require `Immut<[]f64>`; ordinary
-read parameters remain live views. Buffered readers forbid `File::seek` while
-unread bytes or deferred errors reserve the receiver or a delegated file cursor.
-On each host, 71 selected corpus cases pass: 40 native unit returns, one expected
-language panic, 25 diagnostic rejections and five static acceptances. All 61
-selected pre-existing cases still pass, and ten new cases pass. Twenty focused
-compiler integration tests pass, including both pointer layouts for the ten new
-cases. Fourteen application/termination unit tests pass; runtime library tests
-report 214 passed/one ignored on Windows and 217 passed/two ignored on Linux.
-Workspace all-target Clippy with warnings denied, formatting and diff checks pass.
-All 1,423 then-current corpus cases structurally validate (99 bundles, 176 diagnostic
-codes, 847 companion links); this is separate from the selected semantic runs.
-The two-platform validation scope and frozen artifacts are recorded separately in
-`target/spec-decisions-checkpoint.json`; the v3 full-matrix results do not certify
-that source.
-
-The preserved `read-position` slice adds `Io::ReadPosition`, `read_position`,
-`guard_read`, `guard_seek` and `read_buffered_at`. Immutable position tokens retain
-their identity across copying without retaining receiver or resource authority.
-Protected accesses use the same receiver/position/delegated-endpoint reservation
-check. Only the nearest buffered activation supplies a read-ahead permission;
-nested buffers cannot borrow an outer buffer's pending claim. Copied pending
-buffers retain independent claims and may drain their own cached bytes.
-One shared intrinsic type identity supplies its name, scalar source node and
-target word layout to runtime semantics and static/type checking. Type quotation,
-aliases, comparison and `byte_size` work on both pointer layouts; invalid type
-arguments and static attempts to create runtime identities are rejected.
-Module resolution, callable interfaces, Core and both native backends support it.
-Conforming custom operations guard the same logical position before every cursor
-access; a function signature alone does not prove external cursor behavior.
-On each host, all 84 selected corpus cases pass: 44 native unit returns, five
-expected language panics, 29 diagnostic rejections and six static acceptances.
-All 71 preceding selected cases still pass; thirteen new cases pass. Fourteen
-focused compiler integration tests and the layout unit test pass on each host,
-including both layouts for the new cases. The two codegen libraries and runtime
-API report 36 passing tests. The unchanged runtime artifacts retain full library
-results of 218 passed/one ignored on Windows and 221 passed/two ignored on Linux.
-Workspace all-target Clippy with warnings denied, formatting and diff checks pass.
-The 1,436 then-current corpus cases structurally validate (99 bundles, 176 diagnostic
-codes, 856 companion links); the full semantic corpus is not recertified by this
-focused run. `target/read-position-checkpoint.json` records scopes, source archive
-and artifact hashes. The wider semantic migration and full compiler acceptance
-remain unfinished.
-
-The current `builtin-graph` slice defines 22 closed Os, Path and read-position
-operations plus four native constants in one declaration schema. Original source
-graphs supply runtime type projections, public parameter labels and modes, and
-result/payload views. The replaced native-operation table and special position
-witness construction are removed. Stored Path results now retain their original
-source view through defaults, capture, composites, mutation, joins, channels and
-handler/resumption transport. The original immutable native array schema remains
-dynamic: its backing length cannot certify a fixed dimension.
-Builtin references are joined by HIR expression identity; generated value-test
-reads retain and validate their original PatternId anchor and lexical owner.
-One bounded lexical index supplies reverse coverage, independently of producer
-callable tags.
-Existing physical application records bind results to their HIR application and
-complete caller/default/closure context; source graphs are compared structurally.
-Canonical names do not override actual same-named effect declarations.
-The legacy source witness remains a derived bridge; this is not the complete
-canonical value, domain or boundary migration.
-
-On each host, all 96 applicable selected corpus cases pass: 54 native unit
-returns, five expected language panics, 31 diagnostic rejections and six static
-acceptances. All 84 preceding selected cases remain passing, alongside eight new
-cases and four applicable pre-existing native/path cases. The 94 shared cases
-agree in verdicts and observed outcomes. Seventeen focused integration tests pass
-within the complete run; fourteen builtin/native cases check both pointer layouts
-and reach Core. Seven builtin source unit tests include adversarial evidence
-deletion, schema substitution and same-source activation/result swaps.
-The 146-target compiler/syntax gate reports 1,366 passed, 152 failed and one
-ignored on each host after a fixture-only repair. Two failures recover relative
-to the preserved v3 complete gate, with no new regression. Raw complete runs
-retain 1,365 passed/153 failed/one ignored: the added pattern index exposed a test
-selector that chose a binding Pattern instead of its real Expr. Only that
-`cfg(test)` selector changes after native freezing; both hosts rerun all seven
-builtin source tests successfully. Production code is byte-equal between the
-compiled and final source archives, which remain separately identified.
-Core, codegen, runtime API and runtime library gates report 256 passed/one ignored
-on Windows and 259 passed/two ignored on Linux. Workspace all-target Clippy with
-warnings denied, formatting and diff checks pass. All 1,444 corpus cases
-structurally validate (100 bundles, 176 diagnostic codes, 858 companion links).
-`target/builtin-graph-checkpoint.json` records both source identities, frozen
-artifacts, raw runs, fixture replay and remaining failures. The 96-case native
-selection does not certify the full semantic corpus. Complete compiler
-acceptance and the wider domain/boundary migration remain unfinished.
-
-The preserved migration checkpoint is `application-v5`: on each Windows and Linux
-host, the complete 45-target source gate reports **869 passed, 30 failed and
-1 ignored**. It repairs 20 failures from `identity-v5`, with no new regressions.
-Of the original 43 v51 regressions, 23 remain active failures.
-The additional non-tail-reference target still has seven end-to-end failures;
-its separate resumption-epoch replay test passes without authorizing lowering.
-This is an intermediate checkpoint, not completed refactoring.
-Workspace all-target Clippy with warnings denied, formatting, corpus tooling's
-27 tests and diff checks pass. The 54 application cases pass on both hosts:
-34 compile and execute native programs, 19 correctly reject and one checks.
-There are 99 bundles and 1,410 cases; structural validation passes.
-
-The original corpus has 84 theme bundles and 1,067 case identities.
-The focused native cases do not certify full corpus conformance.
-Historical native reports cannot certify this newer compiler.
-
-Detailed development reports remain under `target/`, including
-`application-v2-case-comparison-{windows,linux}.json`,
-`application-native-corpus-{windows,linux}-v5.json`, `application-v5-checkpoint.json`
-and matching build/test logs. Non-tail-reference failures remain separate.
-Git preserves removed design documents and implementation history.
-New checkpoints identify the source revision, selected cases and platform.
+Build output, extracted probes and temporary reports are disposable. Keep new
+implementation work in the source tree and regression cases in the test suite.
 
 ## Build and run
 
@@ -212,8 +61,31 @@ Compiler and runtime builds must agree on the runtime ABI version.
 Reuse one Cargo target directory per host for repeated local verification.
 Set `CARGO_INCREMENTAL=0` to avoid accumulating incremental artifacts.
 Use `-j2` on memory-constrained development machines.
-Keep reports and minimal reproductions separate from disposable build caches.
 Do not run Cargo against binaries used by a frozen native test batch.
+Delete those copies when the batch finishes. `target/` and `.local/` are
+disposable and are not inputs to any build or test.
+
+To continue on another device, use the Git checkout, the pinned toolchain and
+the platform linker described above. No local reports, source archives or
+prebuilt compiler are required. Start with:
+
+```text
+cargo check --locked --workspace --all-targets
+cargo test --locked -p ril-test
+cargo xtask corpus validate
+cargo test --locked -p ril-compiler -p ril-syntax --no-fail-fast
+```
+
+The last command exposes the remaining semantic failures; a successful build
+does not mean that the compiler is complete. Use the focused tests and coverage
+gaps below to choose the next implementation step.
+
+For the two source-transport gaps, run
+`cargo test --locked -p ril-compiler --test source_transport`.
+`bounded_record_tuple_return` lacks an original frozen edge for a nested bound
+projection; `composed_row_with_array_and_callback` infers inconsistent generic
+arguments while forwarding the row. Their programs live in
+`tests/regressions/source-transport.ril`.
 
 ## Tests
 
@@ -451,7 +323,10 @@ callbacks, resources and Result duties.
 Use one write owner per module. Agree public contracts before parallel edits.
 Integration owns builds and frozen native runs to avoid artifact races/caches.
 Commit subjects are one descriptive line without a type/scope prefix.
-Save an explicitly unfinished checkpoint when changing development phase.
+Preserve unfinished work in Git commits, with remaining gaps in this guide.
+Do not accumulate unregistered test drafts, copied source trees or historical
+verification reports. Put regression programs in the corpus and fact-mutation
+checks in the active Rust tests.
 
 Acceptance includes fresh versus edited Sessions; renaming, wrapping, module
 forwarding and helper extraction; concrete graph models; joins and permission
@@ -487,7 +362,7 @@ These are implementation gaps, not waived language requirements:
 - Complete outstanding static extent/sort contexts and shared-constant audits.
   Object identity and each reference's declared view remain separate.
 - Complete the remaining compiler and native acceptance failures on both
-  platforms. Four pending test drafts contain unique cases that need migration.
+  platforms, including the active source-transport regression cases.
 - Implement semantic introspection queries after analysis contracts stabilize.
 
 Semantic introspection must expose required annotations and full inferred

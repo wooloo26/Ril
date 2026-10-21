@@ -242,10 +242,15 @@ fn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
     Ok(.{data:b"",end:true})
 }
 pub fn test_native() @Fiber{
-    let scoped mut file=File::open_path(Path::from_string("Cargo.toml"),File::OpenMode::Read) ?? \_error->panic("open")
-    let mut reader=Reader.{scratch:[1u8,2u8],file:^mut file,calls:0}
-    assert(Io::read_all(mut reader,.{read:read}) is Ok(_))
-    assert(reader.calls==1 && reader.scratch[0]==9u8)
+    let path=Path::from_string("reader.bin")
+    File::write_bytes(path,b"input") ?? \_error->panic("create")
+    {
+        let scoped mut file=File::open_path(path,File::OpenMode::Read) ?? \_error->panic("open")
+        let mut reader=Reader.{scratch:[1u8,2u8],file:^mut file,calls:0}
+        assert(Io::read_all(mut reader,.{read:read}) is Ok(_))
+        assert(reader.calls==1 && reader.scratch[0]==9u8)
+    }
+    File::remove_file(path) ?? \_error->panic("remove")
 }
 --@ end-file
 --@ end-source

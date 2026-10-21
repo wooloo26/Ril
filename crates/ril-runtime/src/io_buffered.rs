@@ -59,6 +59,7 @@ pub(crate) fn callable_identity(runtime: &Runtime, callable: Handle) -> Result<C
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
     pub receiver: Handle,
+    pub position: Handle,
     pub operation: CallableIdentity,
 }
 
@@ -66,13 +67,14 @@ impl Binding {
     pub(crate) fn new(runtime: &Runtime, receiver: Handle, callback: Handle) -> Result<Self> {
         Ok(Self {
             receiver,
+            position: receiver,
             operation: callable_identity(runtime, callback)?,
         })
     }
     pub(crate) fn check(&self, incoming: &Self) -> Result<()> {
         if self != incoming {
             return Err(RuntimeError::panic(
-                "buffer has pending data for another receiver or operation",
+                "buffer has pending data for another receiver, position or operation",
             ));
         }
         Ok(())
@@ -182,6 +184,7 @@ pub enum Phase {
 pub struct Invocation {
     pub buffer: Handle,
     pub receiver: Handle,
+    pub position: Handle,
     pub callback: Handle,
     pub outer: Handle,
     pub handlers: Handle,

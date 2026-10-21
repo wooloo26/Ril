@@ -6,7 +6,7 @@
 use super::*;
 use crate::sema::{
     effect_identity::ArgumentKey,
-    source_reception::{self, Construction, SchemaSensitivity, Target},
+    source_reception::{self, SchemaSensitivity, Target},
 };
 use std::sync::Arc;
 #[path = "source_receiving_sensitivity.rs"]
@@ -16,6 +16,7 @@ impl Checker {
     /// Call in the annotation's original lexical/static environment. A return
     /// target is frozen before entering the body, not when a Return is read.
     pub(super) fn freeze_source_receiving_target(&mut self, syntax: &TypeExpr) -> Target {
+        let environment = self.capture_typing_environment();
         let frozen = self
             .source_type_from_syntax(syntax)
             .and_then(|witness| {
@@ -87,8 +88,16 @@ impl Checker {
             None
         };
         Target {
+            environment,
             span: syntax.span,
-            key,
+            schema: key.as_ref().and_then(|key| {
+                crate::sema::source_types::SourceSchema::import(
+                    key,
+                    syntax.hir_id,
+                    &mut crate::sema::source_types::WorkLimit::new(16384),
+                )
+                .ok()
+            }),
             syntax: frozen_syntax,
             empty_array_context,
             sensitivity,
@@ -160,17 +169,22 @@ impl Checker {
             }
             return answer;
         }
-        let Some(expected) = &target.key else {
+        let Some(expected) = &target.key() else {
             if target.empty_array_context.is_some()
                 && matches!(&actual.kind, ExprKind::Array(items) if items.is_empty())
                 && observed.is_some_and(|index| {
-                    self.expression_facts
+                    self.application_effect
+                        .expressions
                         .get(index)
                         .is_some_and(|fact| fact.span == actual.span && fact.value == *value)
-                        && self.invocation_expressions.get(index).is_some_and(|row| {
-                            row.expression == index
-                                && row.context == self.invocation_context(frame.callable_owner)
-                        })
+                        && self
+                            .application_effect
+                            .contexts
+                            .get(index)
+                            .is_some_and(|row| {
+                                row.expression == index
+                                    && row.context == self.invocation_context(frame.callable_owner)
+                            })
                 })
             {
                 return true;
@@ -186,8 +200,8 @@ impl Checker {
             // These are the two actual append-only recorder arenas. Require
             // their exact common index, not the last expression or a span
             // search. An unpaired recorder entry supplies no observation.
-            let context = self.invocation_expressions.get(index)?;
-            let expression = self.expression_facts.get(index)?;
+            let context = self.application_effect.contexts.get(index)?;
+            let expression = self.application_effect.expressions.get(index)?;
             (context.expression == index
                 && context.context == self.invocation_context(frame.callable_owner)
                 && expression.span == actual.span)
@@ -204,8 +218,8 @@ impl Checker {
                 return None;
             }
             match &original_key {
-                Some(key) => source_reception::compatible(expected, key, Some(&fresh), &mut work),
-                None => empty_array_context(expected, &fresh, &mut work),
+                Some(key) => target.receive(key, Some(&fresh), &mut work),
+                None => source_reception::empty_context(expected, &fresh, &mut work),
             }
         });
         match answer {
@@ -373,20 +387,11 @@ pub(super) fn qualified_source_aliases_in(
 /// Project the already frozen record schema. A field is never re-resolved in
 /// the environment reached after evaluating earlier members.
 pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
-    let key = target.key.as_ref().and_then(|key| {
-        let ArgumentKey::Record { fields, row: None } = key else {
-            return None;
-        };
-        let mut work = 4096usize;
-        for (label, _, key) in fields {
-            work = work.checked_sub(1 + label.len().max(name.len()).div_ceil(32))?;
-            if label == name {
-                source_reception::complete(key, &mut work)?;
-                return Some(key.clone());
-            }
-        }
-        None
-    });
+    let schema = target
+        .schema
+        .as_ref()
+        .and_then(|schema| schema.project_field(name).ok());
+    let key = schema.as_ref().and_then(|schema| schema.key().ok());
     let syntax = key.as_ref().and_then(|_| {
         let TypeKind::Record { fields, row: None } = &target.syntax.as_ref()?.kind else {
             return None;
@@ -400,8 +405,9 @@ pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
         .as_ref()
         .map_or(SchemaSensitivity::Unknown, key_sensitivity);
     Target {
+        environment: target.environment.clone(),
         span,
-        key,
+        schema,
         syntax,
         empty_array_context: None,
         sensitivity,
@@ -414,30 +420,6 @@ fn key_sensitivity(key: &ArgumentKey) -> SchemaSensitivity {
         Some(false) if key.is_closed() => SchemaSensitivity::NotRequired,
         _ => SchemaSensitivity::Unknown,
     }
-}
-
-fn empty_array_context(
-    expected: &ArgumentKey,
-    construction: &Construction,
-    work: &mut usize,
-) -> Option<bool> {
-    let (ArgumentKey::Array { length, element }, Construction::Array(items)) =
-        (expected, construction)
-    else {
-        return None;
-    };
-    if !items.is_empty() {
-        return None;
-    }
-    source_reception::complete(expected, work)?;
-    if length
-        .as_ref()
-        .is_some_and(|length| length != "const(int:0)")
-    {
-        return Some(false);
-    }
-    source_reception::complete(element, work)?;
-    Some(true)
 }
 
 /// `effect_argument_syntax` has already certified synthetic Binder tokens.
@@ -524,7 +506,8 @@ mod tests;
 /// intervening statements and unrelated nested blocks never use this target.
 pub(super) fn tuple_target(target: &Target, index: usize, span: Span) -> Target {
     let projected = (|| {
-        let ArgumentKey::Tuple(keys) = target.key.as_ref()? else {
+        let target_key = target.key();
+        let ArgumentKey::Tuple(keys) = target_key.as_ref()? else {
             return None;
         };
         let TypeKind::Tuple(items) = &target.syntax.as_ref()?.kind else {
@@ -536,19 +519,31 @@ pub(super) fn tuple_target(target: &Target, index: usize, span: Span) -> Target 
         let key = keys.get(index)?;
         let syntax = items.get(index)?;
         source_reception::complete(key, &mut 4096)?;
-        Some((key.clone(), Arc::new(syntax.clone())))
+        let schema = target
+            .schema
+            .as_ref()?
+            .project(&[crate::sema::source_types::SourcePath::Tuple(
+                index.try_into().ok()?,
+            )])
+            .ok()?;
+        Some((schema, Arc::new(syntax.clone())))
     })();
     match projected {
-        Some((key, syntax)) => Target {
+        Some((schema, syntax)) => Target {
+            environment: target.environment.clone(),
             span,
-            sensitivity: key_sensitivity(&key),
-            key: Some(key),
+            sensitivity: schema
+                .key()
+                .as_ref()
+                .map_or(SchemaSensitivity::Unknown, key_sensitivity),
+            schema: Some(schema),
             syntax: Some(syntax),
             empty_array_context: None,
         },
         None => Target {
+            environment: target.environment.clone(),
             span,
-            key: None,
+            schema: None,
             syntax: None,
             empty_array_context: None,
             sensitivity: SchemaSensitivity::Unknown,
@@ -561,7 +556,8 @@ pub(super) fn tuple_target(target: &Target, index: usize, span: Span) -> Target 
 /// alone is never evidence that the operand is an array literal.
 pub(super) fn array_element_target(target: &Target, span: Span) -> Target {
     let projected = (|| {
-        let ArgumentKey::Array { element, .. } = target.key.as_ref()? else {
+        let target_key = target.key();
+        let ArgumentKey::Array { element, .. } = target_key.as_ref()? else {
             return None;
         };
         let TypeKind::Array {
@@ -571,19 +567,29 @@ pub(super) fn array_element_target(target: &Target, span: Span) -> Target {
             return None;
         };
         source_reception::complete(element, &mut 4096)?;
-        Some(((**element).clone(), Arc::new((**syntax).clone())))
+        let schema = target
+            .schema
+            .as_ref()?
+            .project(&[crate::sema::source_types::SourcePath::Element])
+            .ok()?;
+        Some((schema, Arc::new((**syntax).clone())))
     })();
     match projected {
-        Some((key, syntax)) => Target {
+        Some((schema, syntax)) => Target {
+            environment: target.environment.clone(),
             span,
-            sensitivity: key_sensitivity(&key),
-            key: Some(key),
+            sensitivity: schema
+                .key()
+                .as_ref()
+                .map_or(SchemaSensitivity::Unknown, key_sensitivity),
+            schema: Some(schema),
             syntax: Some(syntax),
             empty_array_context: None,
         },
         None => Target {
+            environment: target.environment.clone(),
             span,
-            key: None,
+            schema: None,
             syntax: None,
             empty_array_context: None,
             sensitivity: SchemaSensitivity::Unknown,
@@ -612,22 +618,57 @@ mod projection_tests {
             checker.freeze_source_receiving_target(&annotation("([0][3]int,fn([2]int)->int)"));
         let array = tuple_target(&target, 0, target.span);
         let element = array_element_target(&array, target.span);
+        assert_eq!(target.environment.id(), array.environment.id());
+        assert_eq!(target.environment.id(), element.environment.id());
         assert!(
-            matches!(&element.key, Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
+            matches!(&element.key(), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
         );
         assert!(matches!(
             &element.syntax.as_ref().unwrap().kind,
             TypeKind::Array { .. }
         ));
         assert!(
-            matches!(&tuple_target(&target, 1, target.span).key, Some(ArgumentKey::Callable { parameters, .. }) if matches!(&parameters[0].1, ArgumentKey::Array { length: Some(n), .. } if n=="const(int:2)"))
+            matches!(&tuple_target(&target, 1, target.span).key(), Some(ArgumentKey::Callable { parameters, .. }) if matches!(&parameters[0].1, ArgumentKey::Array { length: Some(n), .. } if n=="const(int:2)"))
         );
         for unknown in [
             tuple_target(&target, 2, target.span),
             array_element_target(&target, target.span),
             tuple_target(&array, 0, target.span),
         ] {
-            assert!(unknown.key.is_none() && unknown.syntax.is_none());
+            assert!(unknown.key().is_none() && unknown.syntax.is_none());
+            assert_eq!(target.environment.id(), unknown.environment.id());
         }
+    }
+
+    #[test]
+    fn a_receiving_target_keeps_its_original_interpretation_after_context_switches() {
+        let mut checker = Checker::new(FileId(0));
+        checker
+            .type_source
+            .environment
+            .generic_context
+            .insert("T".into(), "declaration:T".into());
+        checker
+            .type_source
+            .environment
+            .generic_substitutions
+            .insert("declaration:T".into(), Ty::Str);
+        let syntax = annotation("T");
+        let target = checker.freeze_source_receiving_target(&syntax);
+        checker
+            .type_source
+            .environment
+            .generic_context
+            .insert("T".into(), "caller:T".into());
+        checker
+            .type_source
+            .environment
+            .generic_substitutions
+            .insert("caller:T".into(), Ty::Int("int".into()));
+        assert_eq!(checker.ty(&syntax), Ty::Int("int".into()));
+        let selected =
+            checker.with_typing_environment(&target.environment, |checker| checker.ty(&syntax));
+        assert_eq!(selected, Ty::Str);
+        assert_eq!(checker.ty(&syntax), Ty::Int("int".into()));
     }
 }

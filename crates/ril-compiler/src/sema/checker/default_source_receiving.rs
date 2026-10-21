@@ -53,8 +53,8 @@ impl Checker {
                 return None;
             }
             let token = receipt.result_expression?;
-            let observed = self.expression_facts.get(token)?;
-            let emission = self.invocation_expressions.get(token)?;
+            let observed = self.application_effect.expressions.get(token)?;
+            let emission = self.application_effect.contexts.get(token)?;
             let snapshot = receipt.result.as_ref()?;
             let epoch = receipt.result_allocation_epoch?;
             let mut context = caller;
@@ -89,12 +89,10 @@ impl Checker {
         if target.sensitivity == SchemaSensitivity::NotRequired {
             return true;
         }
-        let answer = target.key.as_ref().and_then(|expected| {
+        let answer = target.key().as_ref().and_then(|expected| {
             let fresh = source_reception::construction(request.syntax, &mut 4096)?;
             match self.original_source_receiving_key(&original, request.syntax, frame) {
-                Some(actual) => {
-                    source_reception::compatible(expected, &actual, Some(&fresh), &mut 4096)
-                }
+                Some(actual) => target.receive(&actual, Some(&fresh), &mut 4096),
                 None => empty_default(expected, &fresh),
             }
         });

@@ -3,17 +3,8 @@
 use super::*;
 use crate::sema::{
     default_uses::{DefaultOrigin, DefaultUse},
-    effect_identity::InvocationContext,
-    source_reception::{self, Construction},
+    source_reception,
 };
-
-struct DefaultSourceQuery<'view, 'program> {
-    definition: DefinitionId,
-    index: usize,
-    scope: &'view BoundScope,
-    selected: &'view BTreeMap<String, ArgumentKey>,
-    sites: &'view super::explicit_named::SourceSites<'program>,
-}
 
 /// Only the immutable Source view is aligned here. Allocation recency changes
 /// origins, while permissions, causes, Result duties and latent obligation
@@ -285,34 +276,12 @@ impl Replay<'_> {
             &selected,
             0,
         )?;
-        let query = DefaultSourceQuery {
-            definition,
-            index,
-            scope: &scope,
-            selected: &selected,
-            sites,
-        };
-        let actual =
-            self.declaration_default_original_key(&query, syntax, &snapshot.value, context);
+        let actual = self.original_source_key(syntax, &snapshot.value, context, sites);
         let fresh = source_reception::construction(syntax, &mut 4096)
             .ok_or_else(|| "declaration default construction exceeds its bound".to_owned())?;
         let fits = match actual {
             Ok(actual) => source_reception::compatible(&expected, &actual, Some(&fresh), &mut 4096),
-            Err(_) => match (&expected, &fresh) {
-                (ArgumentKey::Array { length, element }, Construction::Array(items))
-                    if items.is_empty() =>
-                {
-                    source_reception::complete(element, &mut 4096).ok_or_else(|| {
-                        "declaration empty default has incomplete element Source".to_owned()
-                    })?;
-                    Some(
-                        length
-                            .as_ref()
-                            .is_none_or(|length| length == "const(int:0)"),
-                    )
-                }
-                _ => None,
-            },
+            Err(_) => source_reception::empty_context(&expected, &fresh, &mut 4096),
         };
         require(
             fits == Some(true),
@@ -320,7 +289,7 @@ impl Replay<'_> {
         )
     }
 
-    fn declaration_default_selections(
+    pub(super) fn declaration_default_selections(
         &self,
         definition: DefinitionId,
         receipt: &DefaultUse,
@@ -368,45 +337,5 @@ impl Replay<'_> {
             }
         }
         Ok(selected)
-    }
-
-    fn declaration_default_original_key(
-        &self,
-        query: &DefaultSourceQuery<'_, '_>,
-        syntax: &Expr,
-        value: &Value,
-        context: InvocationContext,
-    ) -> Check<ArgumentKey> {
-        if let ExprKind::Name(name) = &syntax.kind
-            && value.sources.len() == 1
-        {
-            let binding = self
-                .facts
-                .bindings
-                .get(*value.sources.first().unwrap())
-                .ok_or_else(|| "declaration default Name lost its original binding".to_owned())?;
-            if binding.parameter {
-                let function = self.function(query.definition)?;
-                let parameter = function.syntax.parameters.iter().take(query.index).find(|parameter|
-                    parameter.pattern.span == binding.span && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(actual) if actual == name));
-                let parameter = parameter.ok_or_else(|| {
-                    "declaration default Name is not a genuine earlier formal".to_owned()
-                })?;
-                require(
-                    binding.name == *name
-                        && binding.root.0 as usize == *value.sources.first().unwrap(),
-                    "declaration default earlier formal borrowed another binding root",
-                )?;
-                let syntax = parameter.ty.as_ref().ok_or_else(|| {
-                    "declaration default earlier formal has no declared Source".to_owned()
-                })?;
-                return super::call_input_source::input_select_key(
-                    &self.normalized_key(syntax, query.scope)?,
-                    query.selected,
-                    0,
-                );
-            }
-        }
-        self.original_source_key(syntax, value, context, query.sites)
     }
 }

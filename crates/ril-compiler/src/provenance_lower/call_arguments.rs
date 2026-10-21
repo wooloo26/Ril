@@ -88,7 +88,14 @@ pub(super) fn lower(
             expression: value.expression,
             context: resumption_context(value.context),
             identity: value.identity.clone(),
-            full_header: contract(&value.full_header),
+            full_header: match &value.full_header {
+                crate::sema::builtin_sources::BuiltinDeclaration::Syntax(syntax) => {
+                    p::BuiltinDeclaration::Syntax(contract(syntax))
+                }
+                crate::sema::builtin_sources::BuiltinDeclaration::Generic(id) => {
+                    p::BuiltinDeclaration::Generic(*id)
+                }
+            },
             concrete_effects: value.concrete_effects.clone(),
             written_formals: value.written_formals.clone(),
             captures: value

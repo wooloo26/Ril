@@ -1004,6 +1004,7 @@ impl Runtime {
                 format!("[{values}]")
             }
             Object::IoAccumulator(_) => "<stream accumulator>".into(),
+            Object::ReadPosition(_) => "<read position>".into(),
             Object::ReadBuffer(buffer) => format!("<read buffer {}>", buffer.capacity),
             Object::WriteBuffer(buffer) => format!("<write buffer {}>", buffer.capacity),
             Object::Array(values) | Object::Tuple(values) => {

@@ -9,8 +9,8 @@ mod collections;
 mod environment;
 #[path = "standard_file.rs"]
 mod file;
-#[path = "standard_native.rs"]
-mod native;
+#[path = "standard_intrinsics.rs"]
+mod intrinsics;
 #[path = "standard_order.rs"]
 mod order;
 #[path = "standard_process.rs"]
@@ -29,7 +29,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
         || variants::is_variant_builtin(name)
         || temporal::is_temporal_builtin(name)
         || order::is_order_builtin(name)
-        || native::is_native_builtin(name)
+        || crate::sema::source_types::builtins::BuiltinId::lookup(name).is_some()
         || file::is_file_builtin(name)
         || environment::is_environment_builtin(name)
         || process::is_process_builtin(name)
@@ -37,6 +37,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
             name,
             "Num::convert"
                 | "Io::read_buffered"
+                | "Io::read_buffered_at"
                 | "Io::write_buffered"
                 | "Io::flush"
                 | "inner"
@@ -49,6 +50,9 @@ pub(super) fn is_builtin(name: &str) -> bool {
         )
 }
 pub(super) fn file_type(name: &str) -> Option<Ty> {
+    if let Some(identity) = ril_compiler_core::builtin_types::AtomicBuiltinType::from_name(name) {
+        return Some(Ty::Named(identity.name().into()));
+    }
     if let Some(ty) = super::concurrent::builtin_type(name) {
         return Some(ty);
     }
@@ -80,12 +84,12 @@ pub(super) fn builtin_callable_type(name: &str) -> Option<Ty> {
     ))
 }
 pub(super) fn storage_callable(name: &str) -> bool {
-    matches!(
-        name,
-        "Array::push" | "Array::insert" | "Array::truncate" | "Map::set"
-    )
+    ril_compiler_core::builtin_calls::GenericBuiltin::lookup(name).is_some()
 }
 pub(super) fn builtin_callable_signature(name: &str, span: Span) -> Option<(Ty, Vec<Parameter>)> {
+    if let Some(signature) = intrinsics::callable_signature(name, span) {
+        return Some(signature);
+    }
     if let Some(parameters) = super::parallel_signatures::parameters(name, span) {
         return Some((
             Ty::Callable(vec![Ty::Unknown; parameters.len()], Box::new(Ty::Unknown)),
@@ -93,6 +97,24 @@ pub(super) fn builtin_callable_signature(name: &str, span: Span) -> Option<(Ty, 
         ));
     }
     let (inputs, result) = match name {
+        "Io::read_buffered_at" => (
+            vec![
+                (
+                    "buffer",
+                    ParameterMode::Mut,
+                    Ty::Named("Io::ReadBuffer".into()),
+                ),
+                ("reader", ParameterMode::Mut, Ty::Unknown),
+                ("ops", ParameterMode::Read, Ty::Unknown),
+                ("max_bytes", ParameterMode::Read, integer("int")),
+                (
+                    "position",
+                    ParameterMode::Read,
+                    Ty::Named("Io::ReadPosition".into()),
+                ),
+            ],
+            Ty::Result(Box::new(file::read_chunk()), Box::new(file::io_error())),
+        ),
         "Io::read_buffer" | "Io::write_buffer" => (
             vec![("capacity", ParameterMode::Read, integer("int"))],
             Ty::Named(
@@ -148,6 +170,7 @@ pub(super) fn builtin_callable_signature(name: &str, span: Span) -> Option<(Ty, 
             let type_name = match ty {
                 Ty::Named(name) | Ty::Int(name) => name.as_str(),
                 Ty::Bytes => "bytes",
+                Ty::Unknown => "",
                 _ => unreachable!(),
             };
             Parameter {
@@ -157,7 +180,7 @@ pub(super) fn builtin_callable_signature(name: &str, span: Span) -> Option<(Ty, 
                     span,
                 },
                 mode: *mode,
-                ty: Some(TypeExpr {
+                ty: (!matches!(ty, Ty::Unknown)).then(|| TypeExpr {
                     hir_id: None,
                     text: type_name.into(),
                     kind: TypeKind::Name {
@@ -183,7 +206,7 @@ pub(super) fn constant_ty(name: &str) -> Option<Ty> {
     if let Some(ty) = file::file_constant(name) {
         return Some(ty);
     }
-    if let Some(ty) = native::native_constant(name) {
+    if let Some(ty) = intrinsics::constant_type(name) {
         return Some(ty);
     }
     if let Some(ty) = order::order_constant(name) {
@@ -354,6 +377,25 @@ fn simple_signature(name: &str) -> Option<Signature> {
 }
 
 impl Checker {
+    /// Actual execution and latent builtin checking use the same transfer.
+    /// A dedicated implementation retains its aliases and authority; its
+    /// declared Source view is installed only after that implementation.
+    pub(super) fn transfer_builtin(
+        &mut self,
+        callee: &Value,
+        name: &str,
+        args: Vec<(ParameterMode, Value, Span)>,
+        span: Span,
+        frame: &mut Frame,
+    ) -> Value {
+        let mut value = match self.standard_typed_builtin(callee, name, &args, span, frame) {
+            Some(value) => value,
+            None => self.builtin(name, args, span, frame),
+        };
+        self.attach_standard_data_result(name, &mut value, span);
+        value
+    }
+
     pub(super) fn standard_typed_builtin(
         &mut self,
         callee: &Value,
@@ -362,6 +404,12 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Option<Value> {
+        if self.operations.contains_key(name) {
+            return None;
+        }
+        if let Some(value) = self.standard_intrinsic_builtin(name, args, span, frame) {
+            return Some(value);
+        }
         if super::parallel::is_builtin(name) {
             return Some(self.parallel_typed_builtin(callee, name, args, span, frame));
         }
@@ -376,12 +424,32 @@ impl Checker {
         }
         self.standard_order_typed(callee, name, args, span, frame)
     }
+
+    fn attach_standard_data_result(&mut self, name: &str, value: &mut Value, span: Span) {
+        if let Some(id) = crate::sema::source_types::builtins::BuiltinId::lookup(name)
+            && id.definition().implementation
+                == crate::sema::source_types::builtins::Implementation::Dedicated
+        {
+            self.attach_intrinsic_source(
+                value,
+                id.definition().output,
+                span,
+                &mut crate::sema::source_types::WorkLimit::new(4096),
+            );
+        }
+    }
     pub(super) fn standard_generic(
         &mut self,
         value: &mut Value,
         arguments: &[TypeExpr],
         span: Span,
     ) {
+        if value.callables.iter().any(|callable| matches!(callable, Callable::Builtin(name) if crate::sema::source_types::builtins::BuiltinId::lookup(name).is_some())) {
+            if !arguments.is_empty() {
+                self.error("E0340", span, "this canonical builtin declaration has no generic parameters", [value.cause]);
+            }
+            return;
+        }
         if self.external_generic(value, arguments, span) {
             return;
         }
@@ -452,14 +520,14 @@ impl Checker {
     ) -> Option<Value> {
         if matches!(
             name,
-            "Io::read_buffered" | "Io::write_buffered" | "Io::flush"
+            "Io::read_buffered" | "Io::read_buffered_at" | "Io::write_buffered" | "Io::flush"
         ) {
             return Some(self.io_buffered(name, args, span, frame));
         }
         if let Some(value) = self.parallel_builtin(name, args, span, frame) {
             return Some(value);
         }
-        if let Some(value) = self.standard_native_builtin(name, args, span, frame) {
+        if let Some(value) = self.standard_intrinsic_builtin(name, args, span, frame) {
             return Some(value);
         }
         if let Some(value) = self.standard_order_builtin(name, args, span, frame) {

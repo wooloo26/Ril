@@ -620,6 +620,7 @@ mod tests {
         module.closure_sites.push(ril_ir::provenance::ClosureSite {
             id: ClosureSiteId(1),
             owner: CallableOwner::Function(external.definition),
+            source: ril_compiler_core::ids::ExprId(0),
             span,
         });
         module

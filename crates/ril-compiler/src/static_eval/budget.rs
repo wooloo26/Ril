@@ -20,6 +20,17 @@ pub(super) struct Budget {
 }
 
 impl Budget {
+    pub(super) fn with_work(units: u64) -> Self {
+        Self {
+            work_remaining: std::cell::Cell::new(units),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn work_remaining(&self) -> u64 {
+        self.work_remaining.get()
+    }
+
     pub fn new(configured: NonZeroU64) -> Self {
         Self {
             configured,

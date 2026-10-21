@@ -1,31 +1,22 @@
 //! The only entry/restore boundary for a complete captured typing environment.
 //! Active mutable tables remain an implementation detail during domain migration.
 use super::*;
-use crate::sema::context::{FrozenEnvironment, TypingEnvironment};
+use crate::sema::context::FrozenEnvironment;
 
 impl Checker {
     pub(super) fn capture_typing_environment(&self) -> FrozenEnvironment {
-        TypingEnvironment {
-            generic_context: self.generic_context.clone(),
-            generic_substitutions: self.generic_substitutions.clone(),
-            generic_type_witnesses: self.generic_type_witnesses.clone(),
-            static_key_arguments: self.static_key_arguments.clone(),
-            bound_row_context: self.bound_row_context.clone(),
-            bound_row_selections: self.bound_row_selections.clone(),
-            contract_bindings: self.contract_environment.clone(),
-        }
-        .freeze()
+        self.type_source.capture()
+    }
+
+    pub(super) fn capture_typing_environment_with_bindings(
+        &self,
+        bindings: &Env,
+    ) -> FrozenEnvironment {
+        self.type_source.capture_with_bindings(bindings)
     }
 
     pub(super) fn restore_typing_environment(&mut self, environment: FrozenEnvironment) {
-        let environment = environment.into_typing_environment();
-        self.generic_context = environment.generic_context;
-        self.generic_substitutions = environment.generic_substitutions;
-        self.generic_type_witnesses = environment.generic_type_witnesses;
-        self.static_key_arguments = environment.static_key_arguments;
-        self.bound_row_context = environment.bound_row_context;
-        self.bound_row_selections = environment.bound_row_selections;
-        self.contract_environment = environment.contract_bindings;
+        self.type_source.restore(environment);
     }
 
     pub(super) fn enter_typing_environment(
@@ -52,6 +43,7 @@ impl Checker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sema::context::TypingEnvironment;
     use crate::sema::model::rows::{Row, RowTail};
     use ril_compiler_core::ids::BoundRowId;
 
@@ -104,11 +96,29 @@ mod tests {
             assert_eq!(checker.ty(&syntax), Ty::Int("int".into()));
             let empty = FrozenEnvironment::default();
             checker.with_typing_environment(&empty, |checker| {
-                assert!(checker.generic_context.is_empty());
-                assert!(checker.generic_substitutions.is_empty());
-                assert!(checker.static_key_arguments.is_empty());
-                assert!(checker.bound_row_selections.is_empty());
-                assert!(checker.contract_environment.is_empty());
+                assert!(checker.type_source.environment.generic_context.is_empty());
+                assert!(
+                    checker
+                        .type_source
+                        .environment
+                        .generic_substitutions
+                        .is_empty()
+                );
+                assert!(
+                    checker
+                        .type_source
+                        .environment
+                        .static_key_arguments
+                        .is_empty()
+                );
+                assert!(
+                    checker
+                        .type_source
+                        .environment
+                        .bound_row_selections
+                        .is_empty()
+                );
+                assert!(checker.type_source.environment.contract_bindings.is_empty());
             });
             assert_eq!(checker.capture_typing_environment(), callee);
             Err(())

@@ -7,11 +7,26 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Value {
+        let origin = frame
+            .copy_call_event
+            .map(crate::sema::application_effect::EntryOrigin::Application)
+            .unwrap_or(crate::sema::application_effect::EntryOrigin::Unresolved);
+        self.invoke_from(callee, args, span, frame, origin)
+    }
+
+    pub(super) fn invoke_from(
+        &mut self,
+        callee: &Value,
+        args: Vec<(ParameterMode, Value, Span)>,
+        span: Span,
+        frame: &mut Frame,
+        origin: crate::sema::application_effect::EntryOrigin,
+    ) -> Value {
         self.require_recorded_public_call_inputs(callee, span, frame);
         // The operation evidence uses the same syntax token as named calls,
         // without consuming it before their existing invocation wrapper does.
         self.copy_operation_events.push(frame.copy_call_event);
-        let result = self.invoke_unrecorded(callee, args, span, frame);
+        let result = self.invoke_unrecorded(callee, args, span, frame, origin);
         self.copy_operation_events.pop();
         result
     }
@@ -21,6 +36,7 @@ impl Checker {
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
         frame: &mut Frame,
+        origin: crate::sema::application_effect::EntryOrigin,
     ) -> Value {
         // The syntax token belongs to this invocation only. Builtin/closure
         // callbacks and signature probes must not inherit a caller's token.
@@ -145,7 +161,12 @@ impl Checker {
                 }
                 Callable::Named(id) => {
                     frame.copy_call_event = copy_call_event;
-                    self.invoke_named(*id, args.clone(), span, Some(frame), false)
+                    if let Some(origin) = self.application_effect.snapshot_origin(&origin) {
+                        self.invoke_named_from(*id, args.clone(), span, Some(frame), origin)
+                    } else {
+                        self.unsupported(span, "callable origin cloning exhausted its work bound");
+                        Value::scalar(Ty::Unknown, None, CauseId(0))
+                    }
                 }
                 Callable::Builtin(name) => {
                     if concurrent::is_builtin(name) {
@@ -171,11 +192,8 @@ impl Checker {
                         intrinsic.obligations = Obligations::default();
                         intrinsic.locals.clear();
                         intrinsic.returned.clear();
-                        let value = self
-                            .standard_typed_builtin(callee, name, &args, span, &mut intrinsic)
-                            .unwrap_or_else(|| {
-                                self.builtin(name, args.clone(), span, &mut intrinsic)
-                            });
+                        let value =
+                            self.transfer_builtin(callee, name, args.clone(), span, &mut intrinsic);
                         self.completed_invocation =
                             Some((intrinsic.owner, intrinsic.obligations.clone()));
                         if frame.callback_call {
@@ -184,15 +202,18 @@ impl Checker {
                         }
                         frame.obligations.include(&intrinsic.obligations, true);
                         value
-                    } else if let Some(value) =
-                        self.standard_typed_builtin(callee, name, &args, span, frame)
-                    {
-                        value
                     } else {
-                        self.builtin(name, args.clone(), span, frame)
+                        self.transfer_builtin(callee, name, args.clone(), span, frame)
                     }
                 }
-                Callable::Closure(id) => self.invoke_closure(*id, args.clone(), span, frame),
+                Callable::Closure(id) => {
+                    if let Some(origin) = self.application_effect.snapshot_origin(&origin) {
+                        self.invoke_closure_from(*id, args.clone(), span, frame, origin)
+                    } else {
+                        self.unsupported(span, "callable origin cloning exhausted its work bound");
+                        Value::scalar(Ty::Unknown, None, CauseId(0))
+                    }
+                }
                 Callable::Symbolic(index, path) => {
                     self.unknown_window_callback(callee, span);
                     if self.has_window(callee)
@@ -216,6 +237,7 @@ impl Checker {
                     }
                     self.invalidate_unknown_callback_refinements();
                     frame.obligations.symbolic = true;
+                    self.record_symbolic_row_use(callee, &origin, frame);
                     for (mode, value, arg_span) in &args {
                         if *mode != ParameterMode::Read {
                             self.access(value, None, Mode::Write, *arg_span, frame);
@@ -358,12 +380,27 @@ impl Checker {
         let binders: BTreeSet<_> = function
             .generics
             .iter()
-            .filter_map(|parameter| self.generic_context.get(&parameter.name).cloned())
+            .filter_map(|parameter| {
+                self.type_source
+                    .environment
+                    .generic_context
+                    .get(&parameter.name)
+                    .cloned()
+            })
             .collect();
         for binder in &binders {
-            self.generic_substitutions.remove(binder);
-            self.generic_type_witnesses.remove(binder);
-            self.static_key_arguments.remove(binder);
+            self.type_source
+                .environment
+                .generic_substitutions
+                .remove(binder);
+            self.type_source
+                .environment
+                .generic_type_witnesses
+                .remove(binder);
+            self.type_source
+                .environment
+                .static_key_arguments
+                .remove(binder);
         }
         let previous_universal = self.universal;
         self.universal = verifying
@@ -414,7 +451,13 @@ impl Checker {
                 // Complete structural inputs may determine another owned Type
                 // parameter absent from the ordinary value template. Recompute
                 // missing arguments only after that transactional bound check.
-                missing_inference.retain(|binder| !self.generic_substitutions.contains_key(binder));
+                missing_inference.retain(|binder| {
+                    !self
+                        .type_source
+                        .environment
+                        .generic_substitutions
+                        .contains_key(binder)
+                });
             } else if self
                 .record_bounds
                 .iter()
@@ -956,6 +999,7 @@ impl Checker {
             selected_handlers: frame.obligations.selected_handlers.clone(),
             handler_environment: frame.obligations.handler_environment,
             effects: frame.obligations.effects.clone(),
+            symbolic_uses: frame.obligations.symbolic_uses.clone(),
             ..Default::default()
         };
         for (&binding, &mode) in &frame.obligations.named {
@@ -1083,6 +1127,10 @@ impl Checker {
                 .effects
                 .extend(frame.obligations.effects.iter().cloned());
             caller.obligations.symbolic |= frame.obligations.symbolic;
+            caller
+                .obligations
+                .symbolic_uses
+                .extend(&frame.obligations.symbolic_uses);
             if !caller.callback_call {
                 caller.obligations.concrete_effects.extend(
                     if forwarded_callback {
@@ -1179,7 +1227,10 @@ impl Checker {
                 }
                 let mut actual = self.source_value_inference_type(value);
                 if provisional {
-                    self.generic_substitutions.extend(selected.clone());
+                    self.type_source
+                        .environment
+                        .generic_substitutions
+                        .extend(selected.clone());
                     if let Ty::Generic(identity) = template
                         && let Some(ty) = selected.get(identity)
                         && matches!(
@@ -1228,7 +1279,10 @@ impl Checker {
             .map(|(binder, ty)| (binder.clone(), ty.clone()))
             .collect();
         self.select_generic_source_types(&templates, args, &binders, &schema_selected);
-        self.generic_substitutions.extend(selected);
+        self.type_source
+            .environment
+            .generic_substitutions
+            .extend(selected);
         self.infer_static_keys_and_bounds(function, args, &templates);
         (missing, templates)
     }
@@ -1260,7 +1314,11 @@ impl Checker {
             }
             let coordinate = value.static_coordinate.clone().or_else(|| {
                 if let Ty::StaticKey(source) = &value.ty {
-                    self.static_key_arguments.get(source).cloned()
+                    self.type_source
+                        .environment
+                        .static_key_arguments
+                        .get(source)
+                        .cloned()
                 } else {
                     None
                 }
@@ -1281,7 +1339,11 @@ impl Checker {
                 }
                 continue;
             };
-            if let Some(previous) = self.static_key_arguments.get(identity)
+            if let Some(previous) = self
+                .type_source
+                .environment
+                .static_key_arguments
+                .get(identity)
                 && previous != &coordinate
             {
                 self.error(
@@ -1324,7 +1386,9 @@ impl Checker {
                     });
                 }
             }
-            self.static_key_arguments
+            self.type_source
+                .environment
+                .static_key_arguments
                 .insert(identity.clone(), coordinate);
         }
         for generic in &function.generics {
@@ -1338,7 +1402,13 @@ impl Checker {
             {
                 continue;
             }
-            let Some(identity) = self.generic_context.get(&generic.name).cloned() else {
+            let Some(identity) = self
+                .type_source
+                .environment
+                .generic_context
+                .get(&generic.name)
+                .cloned()
+            else {
                 continue;
             };
             // Structural bounds use the application-wide row equation and
@@ -1347,7 +1417,13 @@ impl Checker {
             if self.record_bounds_by_binder.contains_key(&identity) {
                 continue;
             }
-            let Some(actual) = self.generic_substitutions.get(&identity).cloned() else {
+            let Some(actual) = self
+                .type_source
+                .environment
+                .generic_substitutions
+                .get(&identity)
+                .cloned()
+            else {
                 continue;
             };
             let TypeKind::Record { fields, row } = &bound.kind else {
@@ -1395,7 +1471,7 @@ impl Checker {
     pub(super) fn invoke_closure_unrecorded(
         &mut self,
         id: usize,
-        mut args: Vec<(ParameterMode, Value, Span)>,
+        args: &[(ParameterMode, Value, Span)],
         span: Span,
         caller: &mut Frame,
     ) -> Value {
@@ -1411,8 +1487,7 @@ impl Checker {
         let closure = self.closures[id].clone();
         let previous_typing = self.capture_typing_environment();
         if let Some(environment) = self
-            .lambda_contracts
-            .get(&id)
+            .lambda_contract(id)
             .map(|contract| contract.typing_environment.clone())
         {
             self.restore_typing_environment(environment);
@@ -1437,8 +1512,7 @@ impl Checker {
         }
         self.scope_parents.insert(frame.owner, caller.owner);
         frame.expected_return = self
-            .lambda_contracts
-            .get(&id)
+            .lambda_contract(id)
             .and_then(|contract| contract.return_type.clone())
             .map(|syntax| self.ty(&syntax));
         if frame.expected_return.is_none() && self.concurrent_scope_callback(id) {
@@ -1530,8 +1604,7 @@ impl Checker {
                     self.bindings[binding].forwarded = forwarded.clone();
                 }
                 let owner = self
-                    .lambda_contracts
-                    .get(&id)
+                    .lambda_contract(id)
                     .map(|contract| contract.span)
                     .unwrap_or(closure.body.span);
                 self.record_static_key_parameter(param, owner, index, &frame);
@@ -1552,8 +1625,7 @@ impl Checker {
         };
         let foreign_body_before = (self.foreign_callback_depth > 0).then(|| self.snapshot_flow());
         let return_syntax = self
-            .lambda_contracts
-            .get(&id)
+            .lambda_contract(id)
             .and_then(|contract| contract.return_type.clone());
         self.set_contract_environment(&frame.env);
         let frozen_return_source = return_syntax
@@ -1595,13 +1667,27 @@ impl Checker {
             result.construction = false;
         }
         let returned_nodes = self.heap.reachable(result.origins.nodes.iter().copied());
-        for (_, argument, _) in &mut args {
-            self.transport_value_since(argument, arguments_recency);
-        }
-        for (parameter, (_, argument, _)) in closure.parameters.iter().zip(&args) {
-            if parameter.mode == ParameterMode::SharedMut
-                && !returned_nodes.is_disjoint(&argument.origins.nodes)
-            {
+        for (parameter, (_, argument, _)) in closure.parameters.iter().zip(args) {
+            if parameter.mode != ParameterMode::SharedMut {
+                continue;
+            }
+            let moves = &self.recency_moves[arguments_recency..];
+            let cost = argument
+                .origins
+                .nodes
+                .len()
+                .checked_mul(moves.len().saturating_add(1));
+            if !cost.is_some_and(|cost| self.application_effect.admit(cost)) {
+                self.unsupported(span, "retained input transport exhausted its work bound");
+                break;
+            }
+            let mut origins = argument.origins.nodes.clone();
+            for &(recent, older) in moves {
+                if origins.remove(&recent) {
+                    origins.insert(older);
+                }
+            }
+            if !returned_nodes.is_disjoint(&origins) {
                 result.retention_result = true;
                 frame.obligations.retention = true;
                 for binding in &frame.locals {
@@ -1610,7 +1696,7 @@ impl Checker {
                             .value
                             .origins
                             .nodes
-                            .is_disjoint(&argument.origins.nodes)
+                            .is_disjoint(&origins)
                     {
                         self.mark_write(*binding);
                     }
@@ -1728,6 +1814,10 @@ impl Checker {
             .selected_handlers
             .extend(frame.obligations.selected_handlers);
         caller.obligations.symbolic |= frame.obligations.symbolic;
+        caller
+            .obligations
+            .symbolic_uses
+            .extend(&frame.obligations.symbolic_uses);
         for mut access in frame.obligations.accesses {
             access.participants =
                 super::recursive_calls::normalize_participants(&access.participants, &local_loans);
@@ -2341,6 +2431,7 @@ impl Checker {
                 .named
                 .get(&binding)
                 .is_none_or(|required| *required < mode)
+                && !self.symbolic_named_use(&frame.obligations, binding, mode)
             {
                 self.error(
                     "E0529",
@@ -2916,6 +3007,7 @@ impl Checker {
     pub(super) fn derive_value(
         &mut self,
         mut source: Value,
+        source_observation: Option<usize>,
         recipe: &Expr,
         span: Span,
         frame: &mut Frame,
@@ -2949,10 +3041,11 @@ impl Checker {
         let recency = self.recency_moves.len();
         let accesses = frame.obligations.accesses.len();
         let returned = frame.returned.len();
+        let copy = crate::sema::copy_contract::CopyBoundaryId(self.copy_boundaries.len() as u32);
         let draft = self.clone_value(&source, span, frame, false);
         self.transport_frame_prefix(frame, recency, accesses, returned);
         let mut draft = EvaluatedValue::new(draft, self.recency_moves.len());
-        let recipe = self.expression(recipe, frame);
+        let (recipe, callee_observation) = self.expression_observed(recipe, frame);
         let previous = self.active_drafts.clone();
         self.active_drafts.extend(
             self.heap.reachable(
@@ -2964,11 +3057,37 @@ impl Checker {
                     .copied(),
             ),
         );
-        let answer = self.invoke(
+        use crate::sema::application_effect::{EntryOrigin, InputOrigin};
+        use ril_compiler_core::ids::EvaluationOccurrenceId;
+        let origin = match (
+            self.application_effect.current_activation(),
+            source_observation,
+            callee_observation,
+        ) {
+            (Some(anchor), Some(input), Some(callee)) if self.application_effect.admit(2) => {
+                EntryOrigin::Generated {
+                    anchor,
+                    callee: EvaluationOccurrenceId(callee as u32),
+                    inputs: vec![InputOrigin::Copied {
+                        observation: EvaluationOccurrenceId(input as u32),
+                        boundary: copy,
+                    }],
+                }
+            }
+            _ => {
+                self.unsupported(
+                    span,
+                    "generated invocation lacks its actual input/callee evaluations",
+                );
+                EntryOrigin::Unresolved
+            }
+        };
+        let answer = self.invoke_from(
             &recipe,
             vec![(ParameterMode::Mut, draft.current(&self.recency_moves), span)],
             span,
             frame,
+            origin,
         );
         if !self
             .heap

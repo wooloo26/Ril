@@ -275,15 +275,15 @@ impl Replay<'_> {
                     self.producing_result_causes(value.value.cause)
                         .ok()
                         .filter(|causes| causes.contains(&returned.value.cause.0))
-                        .map(|_| &value.value)
+                        .map(|_| (observation.expression, &value.value))
                 })
                 .collect();
-            let [actual] = roots.as_slice() else {
+            let [(observation, actual)] = roots.as_slice() else {
                 return Err("producing result lost its unique root Source observation".into());
             };
             self.validate_producing_result_transport(call, actual)?;
             let original_key =
-                self.original_source_key(source.expression, actual, context, sites)?;
+                self.original_observed_source_key(source.expression, *observation, context, sites)?;
             if !self.producing_type_selections(call, actual)?.is_empty() {
                 let expected =
                     self.producing_receiver_key(source.expression, actual, context, sites)?;
@@ -385,7 +385,7 @@ impl Replay<'_> {
                     continue;
                 };
                 let Ok(ArgumentKey::Callable { parameters, .. }) =
-                    self.original_source_key(callee, &fact.value, context, sites)
+                    self.original_observed_source_key(callee, token, context, sites)
                 else {
                     continue;
                 };
@@ -475,13 +475,120 @@ impl Replay<'_> {
     ) -> Check<ArgumentKey> {
         crate::static_eval::effects::bounded_argument_key(syntax, &self.key_scope(scope)?)
             .ok_or_else(|| "public callable Source exceeds its reconstruction budget".to_owned())?;
+        self.input_callable_source_key_inner(syntax, scope, &mut 4096, 0)
+    }
+
+    fn input_callable_source_key_inner(
+        &self,
+        syntax: &TypeExpr,
+        scope: &BoundScope,
+        work: &mut usize,
+        depth: usize,
+    ) -> Check<ArgumentKey> {
+        *work = work
+            .checked_sub(1)
+            .ok_or("public Source projection exceeds its work budget")?;
+        require(
+            depth < 64,
+            "public Source projection exceeds its depth budget",
+        )?;
+        let mut child = |syntax: &TypeExpr| {
+            self.input_callable_source_key_inner(syntax, scope, work, depth + 1)
+        };
+        match &syntax.kind {
+            TypeKind::Record { fields, row } => {
+                let mut fields = fields
+                    .iter()
+                    .map(|field| Ok((field.name.clone(), field.mutable, child(&field.ty)?)))
+                    .collect::<Check<Vec<_>>>()?;
+                fields.sort_by(|left, right| left.0.cmp(&right.0));
+                require(
+                    fields.windows(2).all(|pair| pair[0].0 != pair[1].0),
+                    "public Source record repeats a label",
+                )?;
+                return Ok(ArgumentKey::Record {
+                    fields,
+                    row: row
+                        .as_ref()
+                        .map(|row| child(row).map(Box::new))
+                        .transpose()?,
+                });
+            }
+            TypeKind::Tuple(items) => {
+                return Ok(ArgumentKey::Tuple(
+                    items.iter().map(&mut child).collect::<Check<_>>()?,
+                ));
+            }
+            TypeKind::Map { key, value } => {
+                return Ok(ArgumentKey::Map {
+                    key: Box::new(child(key)?),
+                    value: Box::new(child(value)?),
+                });
+            }
+            TypeKind::Optional(inner) => {
+                return Ok(ArgumentKey::Name {
+                    name: "Option".into(),
+                    arguments: vec![child(inner)?],
+                });
+            }
+            TypeKind::Array { element, length } => {
+                let mut shell = syntax.clone();
+                let TypeKind::Array {
+                    element: shell_element,
+                    ..
+                } = &mut shell.kind
+                else {
+                    unreachable!()
+                };
+                **shell_element = TypeExpr {
+                    hir_id: None,
+                    text: String::new(),
+                    span: syntax.span,
+                    kind: TypeKind::Tuple(vec![]),
+                };
+                let key = self.normalized_key(&shell, scope)?;
+                let ArgumentKey::Array {
+                    length: normalized, ..
+                } = key
+                else {
+                    return Err("public Source array has no declared dimension".into());
+                };
+                require(
+                    length.is_some() == normalized.is_some(),
+                    "public Source array changed its dimension kind",
+                )?;
+                return Ok(ArgumentKey::Array {
+                    length: normalized,
+                    element: Box::new(child(element)?),
+                });
+            }
+            _ => {}
+        }
         let TypeKind::Callable {
             parameters,
             result,
             annotations,
         } = &syntax.kind
         else {
-            return self.normalized_key(syntax, scope);
+            return self.normalized_key(syntax, scope).or_else(|original| {
+                let raw = crate::static_eval::effects::bounded_argument_key(
+                    syntax,
+                    &self.key_scope(scope)?,
+                )
+                .ok_or_else(|| original.clone())?;
+                let hir = self
+                    .facts
+                    .semantic_hir
+                    .as_deref()
+                    .ok_or_else(|| original.clone())?;
+                let mut limit = crate::sema::source_types::WorkLimit::new(*work);
+                let expanded =
+                    crate::sema::source_types::declarations::expanded_key(&raw, hir, &mut limit)
+                        .map_err(|_| original.clone())?;
+                *work = limit.remaining();
+                require(expanded != raw, &original)?;
+                Ok(expanded)
+            });
         };
         require(
             parameters
@@ -495,17 +602,21 @@ impl Replay<'_> {
                 .map(|parameter| {
                     Ok((
                         parameter.mode,
-                        self.input_callable_source_key(
+                        self.input_callable_source_key_inner(
                             parameter.ty.as_ref().ok_or_else(|| {
                                 "public callable input has no written Source type".to_owned()
                             })?,
                             scope,
+                            work,
+                            depth + 1,
                         )?,
                     ))
                 })
                 .collect::<Check<_>>()?,
             result: Box::new(match result {
-                Some(result) => self.input_callable_source_key(result, scope)?,
+                Some(result) => {
+                    self.input_callable_source_key_inner(result, scope, work, depth + 1)?
+                }
                 None => ArgumentKey::Tuple(vec![]),
             }),
             // These bytes are coordinates of the already anchored real header.
@@ -525,10 +636,11 @@ impl Replay<'_> {
         sites: &super::super::explicit_named::SourceSites<'_>,
         observation: Option<usize>,
     ) -> Check<Vec<Option<ArgumentKey>>> {
-        if let Ok(ArgumentKey::Callable { parameters, .. }) = observation.map_or_else(
+        let public = observation.map_or_else(
             || self.original_source_key(syntax, callee, context, sites),
             |index| self.original_observed_source_key(syntax, index, context, sites),
-        ) {
+        );
+        if let Ok(ArgumentKey::Callable { parameters, .. }) = public {
             return Ok(parameters.into_iter().map(|(_, key)| Some(key)).collect());
         }
         require(
@@ -624,8 +736,14 @@ impl Replay<'_> {
                     .facts
                     .functions
                     .iter()
+                    .filter(|function| {
+                        binding.context.owner == Some(CallableOwner::Function(function.definition))
+                    })
                     .flat_map(|function| function.syntax.parameters.iter())
-                    .filter(|parameter| parameter.pattern.span == binding.span)
+                    .filter(|parameter| {
+                        parameter.pattern.hir_id.is_some()
+                            && parameter.pattern.hir_id == binding.pattern
+                    })
                     .collect();
                 let [parameter] = headers.as_slice() else {
                     return false;

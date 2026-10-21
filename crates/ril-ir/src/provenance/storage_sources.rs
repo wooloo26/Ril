@@ -13,7 +13,7 @@ pub struct BindingSource {
     pub binding: u32,
     pub context: ResumptionContext,
     pub activation: u32,
-    pub declaration: Span,
+    pub declaration: ril_compiler_core::ids::PatternId,
     pub declared: bool,
     pub initializer: StorageObservation,
     pub path: Vec<Projection>,
@@ -32,6 +32,7 @@ pub enum StorageDestination {
 
 #[derive(Debug, Clone)]
 pub struct StorageWrite {
+    pub target: ril_compiler_core::ids::ExprId,
     pub context: ResumptionContext,
     pub activation: u32,
     pub span: Span,

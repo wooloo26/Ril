@@ -193,7 +193,7 @@ impl Replay<'_> {
                     })?;
                 let function = self.function(call.target)?;
                 require(
-                    call.arguments.len() == function.syntax.parameters.len(),
+                    call.entry.arguments.len() == function.syntax.parameters.len(),
                     "bounded assignment invocation entry has the wrong arity",
                 )?;
                 let parameter = function
@@ -201,8 +201,11 @@ impl Replay<'_> {
                     .parameters
                     .get(loan.parameter as usize)
                     .ok_or_else(|| "bounded assignment loan has no real formal index".to_owned())?;
-                let (mode, entry) =
-                    call.arguments.get(loan.parameter as usize).ok_or_else(|| {
+                let (mode, entry) = call
+                    .entry
+                    .arguments
+                    .get(loan.parameter as usize)
+                    .ok_or_else(|| {
                         "bounded assignment lost its real whole argument entry".to_owned()
                     })?;
                 // Mut reception marks a path temporary before loan creation.
@@ -221,7 +224,7 @@ impl Replay<'_> {
                         && loan.origins == source.origins
                         && loan.source.permission == Permission::Write
                         && loan.allocation_epoch == projection.allocation_epoch
-                        && call.entry_allocation_epoch == projection.allocation_epoch,
+                        && call.entry.allocation_epoch == projection.allocation_epoch,
                     "bounded assignment replaced its actual mut reception or allocation epoch",
                 )?;
                 let receipt = self

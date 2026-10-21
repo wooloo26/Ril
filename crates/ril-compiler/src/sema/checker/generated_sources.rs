@@ -434,6 +434,7 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
             .ok_or("generated source site is absent")?;
         require(
             closure.site == Some(source.site)
+                && closure.hir_id == Some(site.source)
                 && Some(site.owner) == source.origin_context.owner
                 && closure.creation_invocation == source.origin_context.invocation
                 && closure.creation_closure == source.origin_context.closure_invocation
@@ -444,7 +445,7 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
         require(
             !ordinary_lambdas
                 .iter()
-                .any(|(owner, lambda)| *owner == site.owner && lambda.span == site.span),
+                .any(|(owner, lambda)| *owner == site.owner && lambda.hir_id == Some(site.source)),
             "generated source reused an independent written lambda's lexical identity",
         )?;
         let steps: Vec<_> = facts

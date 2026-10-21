@@ -138,6 +138,7 @@ pub(super) fn symbolic_member_candidate(key: &ArgumentKey, scope: &BoundScope) -
         }
         work -= 1;
         match key {
+            ArgumentKey::GenericBuiltin(_) => {}
             ArgumentKey::Closed(_) => return false,
             ArgumentKey::Binder {
                 identity,

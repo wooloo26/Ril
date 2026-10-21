@@ -12,6 +12,8 @@ mod channel_messages;
 pub use channel_messages::*;
 mod call_arguments;
 pub use call_arguments::*;
+mod callable_entries;
+pub use callable_entries::*;
 mod generated_sources;
 pub use generated_sources::*;
 mod storage_sources;
@@ -26,6 +28,8 @@ pub use scoped_source_identity::*;
 
 #[derive(Debug, Clone, Default)]
 pub struct Graph {
+    pub activations: Vec<EvaluationActivation>,
+    pub evaluations: Vec<EvaluationRecord>,
     /// Static HIR identities indexed exactly like `values`. Dynamic invocation
     /// identity remains in `invocation_expressions` and call records.
     pub expression_sources: Vec<Option<ril_compiler_core::ids::ExprId>>,
@@ -111,11 +115,23 @@ pub struct Graph {
     pub budget_termination: Vec<BudgetTermination>,
     pub iter_steps: Vec<IterStep>,
     pub callable_return_contracts: Vec<CallableReturnBound>,
+    pub frozen_environments: Vec<FrozenEnvironment>,
     pub windows: Vec<Window>,
     pub cleanup_events: Vec<CleanupEvent>,
     pub definition_checks: Vec<DefinitionCheck>,
     pub resumption_steps: Vec<ResumptionStep>,
     pub causes: Vec<Cause>,
+}
+
+/// Original abstract evaluation identities, retained through Core lowering.
+#[derive(Debug, Clone)]
+pub struct EvaluationRecord {
+    pub id: ril_compiler_core::ids::EvaluationOccurrenceId,
+    pub source: Option<ril_compiler_core::ids::ExprId>,
+    pub activation: Option<ril_compiler_core::ids::ActivationEpochId>,
+    pub scope: u32,
+    pub context: ResumptionContext,
+    pub allocation_epoch: u64,
 }
 #[derive(Debug, Clone)]
 pub struct InvocationLoanStart {
@@ -144,6 +160,7 @@ pub struct InvocationLoanEnd {
 }
 #[derive(Debug, Clone)]
 pub struct ClosureInvocation {
+    pub entry: CallableEntry,
     pub id: ClosureInvocationId,
     pub source_event: Option<CopyCallEventId>,
     pub caller_activation: u32,
@@ -247,6 +264,7 @@ pub struct RetainedHandler {
 pub struct ClosureSite {
     pub id: ClosureSiteId,
     pub owner: CallableOwner,
+    pub source: ril_compiler_core::ids::ExprId,
     pub span: Span,
 }
 /// A certified forwarding adapter selects no creation-site user handlers.
@@ -752,7 +770,8 @@ pub struct Parameter {
 #[derive(Debug, Clone)]
 pub struct CallableBound {
     pub annotations: Vec<Annotation>,
-    pub lexical: Vec<(String, u32)>,
+    pub source: Option<ril_compiler_core::ids::CallableContractSource>,
+    pub environment: FrozenEnvironmentId,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
@@ -763,6 +782,16 @@ pub struct CallableReturnBound {
     pub syntax: ContractSyntax,
     pub span: Span,
     pub callables: Vec<Callable>,
+    pub environment: FrozenEnvironmentId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FrozenEnvironmentId(pub u32);
+
+/// One complete immutable interpretation. References preserve capture identity;
+/// equal contents captured independently do not become the same environment.
+#[derive(Debug, Clone, Default)]
+pub struct FrozenEnvironment {
     pub lexical: Vec<(String, u32)>,
     pub generic_context: Vec<(String, String)>,
     pub generic_substitutions: Vec<(String, TypeId)>,
@@ -965,6 +994,9 @@ pub struct DefinitionCheck {
 }
 #[derive(Debug, Clone)]
 pub struct ResumptionStep {
+    pub id: ril_compiler_core::ids::ProtectedAnswerId,
+    pub resume_source: ril_compiler_core::ids::ExprId,
+    pub arm_source: ril_compiler_core::ids::ExprId,
     pub span: Span,
     pub owner: u32,
     pub handler: u32,
@@ -1001,6 +1033,9 @@ pub struct Field {
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub id: u32,
+    pub pattern: Option<ril_compiler_core::ids::PatternId>,
+    pub context: ResumptionContext,
+    pub typing_environment: FrozenEnvironmentId,
     pub name: String,
     pub root: u32,
     pub cell: Option<OriginId>,
@@ -1024,7 +1059,7 @@ pub struct Environment {
     pub lexical_scope: Option<u32>,
     pub published: bool,
     pub origin: Option<OriginId>,
-    pub lexical: Vec<(String, u32)>,
+    pub typing_environment: FrozenEnvironmentId,
     pub captures: Vec<u32>,
     pub writes: Vec<u32>,
     pub handler_context: Vec<u32>,
@@ -1058,6 +1093,8 @@ pub struct Invocation {
     pub handler_environment: bool,
     pub accesses: Vec<(OriginId, Participant, Access)>,
     pub concrete_state: Vec<(u32, Access)>,
+    /// Entered formal callback occurrences; these do not grant concrete access.
+    pub symbolic_uses: Vec<ril_compiler_core::ids::EvaluationOccurrenceId>,
     pub effects: Vec<String>,
     pub performed_operations: Vec<u64>,
     pub callbacks: Vec<(u32, Vec<String>)>,
@@ -1134,6 +1171,8 @@ pub struct CopyNode {
 }
 #[derive(Debug, Clone)]
 pub struct CopyBoundary {
+    pub input_allocation_epoch: u64,
+    pub output_allocation_epoch: Option<u64>,
     pub id: CopyBoundaryId,
     pub owner: Option<DefinitionId>,
     pub activation: u32,
@@ -1200,17 +1239,16 @@ pub struct CopyCallEvent {
 #[derive(Debug, Clone)]
 pub struct CopyInvocation {
     pub id: CopyInstanceId,
+    pub entry: CallableEntry<Vec<(Access, CopyValueSnapshot)>>,
     pub parent: Option<CopyInstanceId>,
     pub caller: Option<DefinitionId>,
     pub caller_owner: Option<CallableOwner>,
     pub caller_activation: Option<u32>,
-    pub entry_allocation_epoch: u64,
     pub target: DefinitionId,
     pub span: Span,
     pub declaration_probe: bool,
     pub direct: bool,
     pub source_event: Option<CopyCallEventId>,
-    pub arguments: Vec<(Access, CopyValueSnapshot)>,
     pub boundaries: Vec<CopyBoundaryId>,
     pub result: Option<CopyValueSnapshot>,
     pub resource_copies: Vec<ResourceCloneId>,

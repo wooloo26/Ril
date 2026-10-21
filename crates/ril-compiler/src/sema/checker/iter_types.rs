@@ -80,15 +80,15 @@ impl Checker {
         let declaration = crate::sema::model::iteration::step_declaration();
         self.types
             .insert(declaration.name.clone(), declaration.clone());
-        let previous = self.generic_context.clone();
+        let previous = self.type_source.environment.generic_context.clone();
         for (index, parameter) in declaration.generics.iter().enumerate() {
-            self.generic_context.insert(
+            self.type_source.environment.generic_context.insert(
                 parameter.name.clone(),
                 format!("std:Iter::Step:{index}:{}", parameter.name),
             );
         }
         self.declare_constructors(&declaration);
-        self.generic_context = previous;
+        self.type_source.environment.generic_context = previous;
     }
 
     /// Bare semantic arrays and callables omit dimensions and callable modes or
@@ -118,6 +118,8 @@ impl Checker {
             }
             Ty::Generic(identity) => {
                 let (name, _) = self
+                    .type_source
+                    .environment
                     .generic_context
                     .iter()
                     .find(|(_, selected)| *selected == identity)?;

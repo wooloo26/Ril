@@ -254,8 +254,9 @@ fn core_retains_the_opaque_return_contract_of_an_aliased_exported_closure() {
         assert_eq!(lowered.raw, source.raw);
         assert_eq!(lowered.span, source.span);
         assert_eq!(lowered.syntax.text, source.syntax.text);
+        let environment = &graph.frozen_environments[lowered.environment.0 as usize];
         assert_eq!(
-            lowered.lexical,
+            environment.lexical,
             source
                 .typing_environment
                 .contract_bindings

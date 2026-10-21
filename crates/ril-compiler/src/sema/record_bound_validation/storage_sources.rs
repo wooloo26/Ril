@@ -1,7 +1,6 @@
 //! Replay immutable storage declarations and every actual assignment occurrence.
 //! Source rows are duties, never a substitute for the ordinary access checker.
 use super::*;
-use crate::sema::source_reception::project_key as projection;
 use crate::sema::{
     effect_identity::InvocationContext,
     facts::ScopeId,
@@ -49,14 +48,16 @@ impl Replay<'_> {
                 "storage source borrowed another named binding",
             )?;
             require(
-                self.facts
-                    .source_types
-                    .validate_binding(id, rows[0].key.as_ref()),
+                self.facts.source_types.validate_binding(
+                    id,
+                    rows[0].key.as_ref(),
+                    binding.typing_environment.id(),
+                ),
                 "storage source index differs from the original binding view",
             )?;
             self.facts
                 .source_types
-                .projected_binding_key(id, &path)
+                .projected_binding_key(id, &path, self.facts.semantic_hir.as_deref())
                 .map_err(|error| {
                     format!("storage path has no original declared source coordinate: {error:?}")
                 })
@@ -68,6 +69,7 @@ impl Replay<'_> {
         observed: StorageObservation,
         syntax: &Expr,
         context: InvocationContext,
+        activation: ScopeId,
     ) -> Check<&Value> {
         let original = self
             .facts
@@ -79,6 +81,19 @@ impl Replay<'_> {
                 && original.source_id == syntax.hir_id
                 && original.span == syntax.span
                 && original.allocation_epoch == observed.allocation_epoch
+                && self
+                    .facts
+                    .evaluations
+                    .get(observed.expression)
+                    .is_some_and(|record| {
+                        record.id.0 as usize == observed.expression
+                            && record.scope == activation
+                            && record.context == context
+                            && record.allocation_epoch == observed.allocation_epoch
+                            && record
+                                .identity
+                                .is_some_and(|identity| Some(identity.source) == syntax.hir_id)
+                    })
                 && observed.allocation_epoch <= self.facts.allocation_history.len()
                 && self
                     .facts
@@ -109,7 +124,16 @@ impl Replay<'_> {
             Slot::Field(label),
         ) = (source, slot)
         else {
-            return Ok(projection(source, std::slice::from_ref(slot)).cloned());
+            return Ok(crate::sema::source_types::declarations::project(
+                source,
+                std::slice::from_ref(slot),
+                self.facts
+                    .semantic_hir
+                    .as_deref()
+                    .ok_or_else(|| "storage declaration has no canonical HIR".to_owned())?,
+                &mut crate::sema::source_types::WorkLimit::new(4096),
+            )
+            .ok());
         };
         self.type_binder(identity)?;
         let binder = &self.facts.generic_binders[identity];
@@ -289,7 +313,7 @@ impl Replay<'_> {
     /// An operation frame is neither its surrounding named frame nor its
     /// surrounding closure frame. Only an actual operation/continuation receipt
     /// supplies its identity; lexical ancestry alone cannot choose an activation.
-    fn storage_handler(
+    pub(in crate::sema::record_bound_validation) fn storage_handler(
         &self,
         context: InvocationContext,
         activation: ScopeId,
@@ -347,7 +371,10 @@ impl Replay<'_> {
         Ok(Some(handler))
     }
 
-    fn storage_named_environments(&self, context: InvocationContext) -> Check<Vec<&FunctionInfo>> {
+    pub(in crate::sema::record_bound_validation) fn storage_named_environments(
+        &self,
+        context: InvocationContext,
+    ) -> Check<Vec<&FunctionInfo>> {
         let Some(CallableOwner::Function(owner)) = context.owner else {
             return Err("storage named environment has another lexical owner".into());
         };
@@ -502,7 +529,10 @@ impl Replay<'_> {
             .get(row.binding)
             .ok_or_else(|| "storage declaration binding is absent".to_owned())?;
         require(
-            !binding.parameter && binding.owner == row.activation,
+            !binding.parameter
+                && binding.owner == row.activation
+                && binding.context == row.context
+                && binding.pattern == Some(row.declaration),
             "storage declaration borrowed a parameter or another frame",
         )?;
         self.storage_activation(row.context, row.activation)?;
@@ -511,7 +541,7 @@ impl Replay<'_> {
             .iter()
             .filter(|site| {
                 Some(site.owner) == row.context.owner
-                    && site.binding.pattern.span == row.declaration
+                    && site.binding.pattern.hir_id == Some(row.declaration)
             })
             .collect();
         let [declaration] = declarations.as_slice() else {
@@ -541,7 +571,12 @@ impl Replay<'_> {
             row.path == *path,
             "storage binding changed its declared pattern projection",
         )?;
-        let initial = self.storage_observation(row.initializer, &declaration.value, row.context)?;
+        let initial = self.storage_observation(
+            row.initializer,
+            &declaration.value,
+            row.context,
+            row.activation,
+        )?;
         require(
             initial.ty != Ty::Never && initial.sources.iter().all(|source| *source < row.binding),
             "storage initializer is abrupt or creates a forward declaration cycle",
@@ -558,9 +593,23 @@ impl Replay<'_> {
                 0,
             )?
         } else {
-            self.original_source_key(&declaration.value, initial, row.context, sites)?
+            self.original_observed_source_key(
+                &declaration.value,
+                row.initializer.expression,
+                row.context,
+                sites,
+            )?
         };
-        Ok(projection(&key, path).cloned())
+        Ok(crate::sema::source_types::declarations::project(
+            &key,
+            path,
+            self.facts
+                .semantic_hir
+                .as_deref()
+                .ok_or_else(|| "storage pattern Source has no canonical HIR".to_owned())?,
+            &mut crate::sema::source_types::WorkLimit::new(4096),
+        )
+        .ok())
     }
 
     pub(super) fn storage_sources(&self) -> Result<(), Failure> {
@@ -585,9 +634,16 @@ impl Replay<'_> {
             let mut declarations = BTreeMap::new();
             for row in &self.facts.binding_sources {
                 require(
-                    self.facts
-                        .source_types
-                        .validate_binding(row.binding, row.key.as_ref()),
+                    self.facts.source_types.validate_binding(
+                        row.binding,
+                        row.key.as_ref(),
+                        self.facts
+                            .bindings
+                            .get(row.binding)
+                            .ok_or_else(|| "storage Source view has no binding".to_owned())?
+                            .typing_environment
+                            .id(),
+                    ),
                     "storage source index lost or changed its original binding schema",
                 )?;
                 require(
@@ -610,7 +666,10 @@ impl Replay<'_> {
                         "unknown storage declaration binding is absent".to_owned()
                     })?;
                     require(
-                        !binding.parameter && binding.owner == row.activation,
+                        !binding.parameter
+                            && binding.owner == row.activation
+                            && binding.context == row.context
+                            && binding.pattern == Some(row.declaration),
                         "unknown storage declaration borrowed another binding",
                     )?;
                     self.storage_activation(row.context, row.activation)?;
@@ -619,7 +678,7 @@ impl Replay<'_> {
                         .iter()
                         .filter(|site| {
                             Some(site.owner) == row.context.owner
-                                && site.binding.pattern.span == row.declaration
+                                && site.binding.pattern.hir_id == Some(row.declaration)
                         })
                         .collect();
                     require(
@@ -630,6 +689,7 @@ impl Replay<'_> {
                         row.initializer,
                         &originals[0].binding.value,
                         row.context,
+                        row.activation,
                     )?;
                     let mut names = Vec::new();
                     pattern_paths(
@@ -667,9 +727,9 @@ impl Replay<'_> {
                         &mut names,
                         &mut 4096,
                     )?;
-                    matches |= names
-                        .iter()
-                        .any(|(span, name, _, _)| *span == binding.span && *name == binding.name);
+                    matches |= binding.pattern.is_some()
+                        && binding.pattern == site.binding.pattern.hir_id
+                        && names.iter().any(|(_, name, _, _)| *name == binding.name);
                 }
                 if matches {
                     require(
@@ -690,14 +750,19 @@ impl Replay<'_> {
                     .iter()
                     .filter(|site| {
                         Some(site.owner) == write.context.owner
-                            && site.target.span == write.span
+                            && site.target.hir_id == Some(write.target)
                             && site.operator == write.operator
                     })
                     .collect();
                 let [site] = originals.as_slice() else {
                     return Err("storage write is not an original assignment".into());
                 };
-                let input = self.storage_observation(write.rhs, site.value, write.context)?;
+                let input = self.storage_observation(
+                    write.rhs,
+                    site.value,
+                    write.context,
+                    write.activation,
+                )?;
                 require(
                     input.ty != Ty::Never,
                     "completed RHS storage receipt claims an abrupt expression",
@@ -753,7 +818,14 @@ impl Replay<'_> {
                                 "storage target has ambiguous same-name declaration sources",
                             )?;
                         }
-                        declaration.key.clone()
+                        self.facts
+                            .source_types
+                            .projected_binding_key(
+                                declaration.binding,
+                                &[],
+                                self.facts.semantic_hir.as_deref(),
+                            )
+                            .ok()
                     }
                     (
                         ExprKind::Field { base, field, .. },
@@ -778,7 +850,12 @@ impl Replay<'_> {
                             site.value,
                             write.context,
                         )?;
-                        let source = self.storage_observation(*receiver, base, write.context)?;
+                        let source = self.storage_observation(
+                            *receiver,
+                            base,
+                            write.context,
+                            write.activation,
+                        )?;
                         if source.ty == Ty::Never {
                             require(
                                 !write.completed && write.expected.is_none(),
@@ -812,7 +889,12 @@ impl Replay<'_> {
                             site.value,
                             write.context,
                         )?;
-                        let source = self.storage_observation(*receiver, base, write.context)?;
+                        let source = self.storage_observation(
+                            *receiver,
+                            base,
+                            write.context,
+                            write.activation,
+                        )?;
                         if source.ty == Ty::Never {
                             require(
                                 !write.completed && selector.is_none() && write.expected.is_none(),
@@ -823,7 +905,12 @@ impl Replay<'_> {
                         let selector = selector
                             .ok_or_else(|| "storage index lost its actual selector".to_owned())?;
                         self.storage_write_interval(*receiver, selector, base, write.context)?;
-                        let selected = self.storage_observation(selector, index, write.context)?;
+                        let selected = self.storage_observation(
+                            selector,
+                            index,
+                            write.context,
+                            write.activation,
+                        )?;
                         if selected.ty == Ty::Never {
                             require(
                                 !write.completed && write.expected.is_none(),
@@ -854,12 +941,21 @@ impl Replay<'_> {
                         )?;
                         if let ArgumentKey::Map { key: map_key, .. } = &key {
                             let actual = self
-                                .original_source_key(index, selected, write.context, &sites)
+                                .original_observed_source_key(
+                                    index,
+                                    selector.expression,
+                                    write.context,
+                                    &sites,
+                                )
                                 .ok();
                             let fresh = source_reception::construction(index, &mut 4096);
                             require(
-                                storage_compatible(map_key, actual.as_ref(), fresh.as_ref())
-                                    == Some(true),
+                                storage_compatible(
+                                    map_key,
+                                    actual.as_ref(),
+                                    fresh.as_ref(),
+                                    self.facts.semantic_hir.as_deref(),
+                                ) == Some(true),
                                 "storage map selector does not fit its original key source",
                             )?;
                         }
@@ -875,15 +971,28 @@ impl Replay<'_> {
                     "storage write has an unresolved original destination source".to_owned()
                 })?;
                 let actual = self
-                    .original_source_key(site.value, input, write.context, &sites)
+                    .original_observed_source_key(
+                        site.value,
+                        write.rhs.expression,
+                        write.context,
+                        &sites,
+                    )
                     .ok();
                 let fresh = source_reception::construction(site.value, &mut 4096);
-                let answer = if crate::sema::source_types::key_is_coordinate_free(&expected) {
+                let answer = if crate::sema::source_types::key_is_coordinate_free_with_declarations(
+                    &expected,
+                    self.facts.semantic_hir.as_deref(),
+                ) {
                     Some(true)
                 } else if write.operator != "=" {
                     Some(false)
                 } else {
-                    storage_compatible(&expected, actual.as_ref(), fresh.as_ref())
+                    storage_compatible(
+                        &expected,
+                        actual.as_ref(),
+                        fresh.as_ref(),
+                        self.facts.semantic_hir.as_deref(),
+                    )
                 };
                 require(
                     answer == Some(true),
@@ -902,7 +1011,10 @@ impl Replay<'_> {
                     let value = self.facts.expressions.get(row.expression).ok_or_else(|| {
                         "storage reverse coverage expression is absent".to_owned()
                     })?;
-                    if value.span == site.value.span && value.value.ty != Ty::Never {
+                    if value.source_id.is_some()
+                        && value.source_id == site.value.hir_id
+                        && value.value.ty != Ty::Never
+                    {
                         require(
                             covered.contains(&row.expression),
                             "an actual assignment lost its storage reception receipt",
@@ -936,7 +1048,9 @@ impl Replay<'_> {
                         .facts
                         .expressions
                         .get(row.expression)
-                        .is_some_and(|value| value.span == before_syntax.span)
+                        .is_some_and(|value| {
+                            value.source_id.is_some() && value.source_id == before_syntax.hir_id
+                        })
             }),
             "storage target borrowed a later repeated RHS occurrence",
         )
@@ -947,35 +1061,24 @@ pub(in crate::sema::record_bound_validation) fn storage_compatible(
     expected: &ArgumentKey,
     actual: Option<&ArgumentKey>,
     fresh: Option<&Construction>,
+    hir: Option<&crate::hir::nodes::HirProgram>,
 ) -> Option<bool> {
     if contains_callable(expected, &mut 4096)? {
         return None;
     }
-    if crate::sema::source_types::key_is_coordinate_free(expected) {
+    if crate::sema::source_types::key_is_coordinate_free_with_declarations(expected, hir) {
         return Some(true);
     }
     if let Some(actual) = actual {
         return source_reception::compatible(expected, actual, fresh, &mut 4096);
     }
-    match (expected, fresh) {
-        (ArgumentKey::Array { length, element }, Some(Construction::Array(items)))
-            if items.is_empty() =>
-        {
-            source_reception::complete(element, &mut 4096)?;
-            Some(
-                length
-                    .as_ref()
-                    .is_none_or(|length| length == "const(int:0)"),
-            )
-        }
-        _ => None,
-    }
+    source_reception::empty_context(expected, fresh?, &mut 4096)
 }
 
 fn contains_callable(key: &ArgumentKey, work: &mut usize) -> Option<bool> {
     *work = work.checked_sub(1)?;
     let children: Vec<&ArgumentKey> = match key {
-        ArgumentKey::Callable { .. } => return Some(true),
+        ArgumentKey::Callable { .. } | ArgumentKey::GenericBuiltin(_) => return Some(true),
         ArgumentKey::Array { element, .. } => vec![element],
         ArgumentKey::Map { key, value } => vec![key, value],
         ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {
@@ -1137,6 +1240,9 @@ mod tests {
     }
     fn binding(id: BindingId) -> BindingInfo {
         BindingInfo {
+            pattern: None,
+            context: context(CallableOwner::Global),
+            typing_environment: Default::default(),
             name: "counter".into(),
             value: Value::scalar(Ty::Int("int".into()), None, CauseId(0)),
             mode: BindingMode::Var,
@@ -1158,7 +1264,7 @@ mod tests {
             binding: id,
             context: context(CallableOwner::Global),
             activation: ScopeId(0),
-            declaration: span(),
+            declaration: ril_compiler_core::ids::PatternId(0),
             declared: false,
             initializer: StorageObservation {
                 expression: 0,
@@ -1180,17 +1286,22 @@ mod tests {
         facts.bindings = vec![binding(0), binding(1)];
         facts.copy_invocations.push(CopyInvocation {
             id: InstanceId(0),
+            entry: crate::sema::application_effect::CallableEntry {
+                parent: None,
+                caller_context: context(CallableOwner::Global),
+                origin: crate::sema::application_effect::EntryOrigin::Unresolved,
+                allocation_epoch: 0,
+                arguments: vec![],
+            },
             parent: None,
             caller: None,
             caller_owner: Some(CallableOwner::Global),
             caller_activation: Some(ScopeId(0)),
-            entry_allocation_epoch: 0,
             target: DefinitionId(0),
             span: span(),
             declaration_probe: false,
             direct: true,
             source_event: Some(CopyCallEventId(0)),
-            arguments: vec![],
             boundaries: BTreeSet::new(),
             result: None,
             resource_copies: vec![],
@@ -1239,6 +1350,7 @@ mod tests {
     fn replay(facts: &SemanticFacts) -> Replay<'_> {
         Replay {
             facts,
+            blocks: None,
             observations: super::super::observation_index::ObservationIndex::new(facts).unwrap(),
             functions: BTreeMap::new(),
             bounds: BTreeMap::new(),
@@ -1252,6 +1364,13 @@ mod tests {
         current.closure_invocation = Some(ClosureInvocationId(0));
         facts.invocations[0].context = Some(current);
         facts.closures.push(ClosureInfo {
+            contract: std::sync::Arc::new(crate::sema::model::LambdaContract {
+                source: None,
+                return_type: None,
+                annotations: vec![],
+                span: span(),
+                typing_environment: Default::default(),
+            }),
             hir_id: None,
             site: Some(ClosureSiteId(0)),
             creation_invocation: None,
@@ -1272,6 +1391,13 @@ mod tests {
         });
         facts.closure_invocations.push(ClosureInvocation {
             id: ClosureInvocationId(0),
+            entry: crate::sema::application_effect::CallableEntry {
+                parent: None,
+                caller_context: current,
+                origin: crate::sema::application_effect::EntryOrigin::Unresolved,
+                allocation_epoch: 0,
+                arguments: std::sync::Arc::new(vec![]),
+            },
             source_event: None,
             caller_activation: ScopeId(0),
             activation: Some(ScopeId(10)),
@@ -1356,6 +1482,7 @@ mod tests {
     fn operation_frames_require_their_exact_entry_context_handler_and_operation() {
         let (mut facts, current) = model();
         facts.handlers.push(HandlerFact {
+            typing_environment: Default::default(),
             site: None,
             callable_owner: current.owner,
             id: 0,

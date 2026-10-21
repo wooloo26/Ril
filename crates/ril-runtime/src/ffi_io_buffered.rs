@@ -23,18 +23,25 @@ pub(super) fn dispatch(
     })?;
     if !matches!(
         name.as_str(),
-        "Io::read_buffered" | "Io::write_buffered" | "Io::flush"
+        "Io::read_buffered" | "Io::read_buffered_at" | "Io::write_buffered" | "Io::flush"
     ) {
         return None;
     }
     let prepared: Option<Invocation> = guarded(|runtime| {
         let args = runtime.sequence(arguments)?;
-        let expected = if name == "Io::flush" { 3 } else { 4 };
+        let explicit_position = name == "Io::read_buffered_at";
+        let expected = if explicit_position {
+            5
+        } else if name == "Io::flush" {
+            3
+        } else {
+            4
+        };
         if args.len() != expected {
             return Err(RuntimeError::internal("invalid buffered operation arity"));
         }
         let buffer = args[0];
-        let read = name == "Io::read_buffered";
+        let read = matches!(name.as_str(), "Io::read_buffered" | "Io::read_buffered_at");
         let capacity = match runtime.heap.get(buffer)? {
             Object::ReadBuffer(state) if read => state.capacity,
             Object::WriteBuffer(state) if !read => state.capacity,
@@ -69,7 +76,13 @@ pub(super) fn dispatch(
             return Err(RuntimeError::panic("buffer and receiver overlap"));
         }
         let callback = runtime.field(args[2], if read { "read" } else { "write" })?;
-        let binding = Binding::new(runtime, receiver, callback)?;
+        let position = if explicit_position {
+            runtime.read_position_identity(args[4])?
+        } else {
+            receiver
+        };
+        let mut binding = Binding::new(runtime, receiver, callback)?;
+        binding.position = position;
         match runtime.heap.get(buffer)? {
             Object::ReadBuffer(state) => {
                 if let Some(previous) = &state.binding {
@@ -83,6 +96,11 @@ pub(super) fn dispatch(
             }
             _ => unreachable!("checked buffer"),
         }
+        let cache_hit = matches!(&phase, Phase::Read { maximum } if *maximum > 0)
+            && matches!(runtime.heap.get(buffer)?, Object::ReadBuffer(state) if !state.pending.is_empty());
+        if read && !cache_hit {
+            runtime.check_buffered_position(buffer, position)?;
+        }
         let activation = runtime.new_activation()?;
         if read {
             runtime.permit_buffered_read(activation, buffer, receiver, callback)?;
@@ -90,6 +108,7 @@ pub(super) fn dispatch(
         Ok(Some(Invocation {
             buffer,
             receiver,
+            position,
             callback,
             outer: continuation,
             handlers,
@@ -243,7 +262,8 @@ pub(super) fn resume(state: Invocation, reply: Handle) -> u64 {
                         unreachable!("validated read bytes");
                     };
                     let data = data.clone();
-                    let binding = Binding::new(runtime, state.receiver, state.callback)?;
+                    let mut binding = Binding::new(runtime, state.receiver, state.callback)?;
+                    binding.position = state.position;
                     let Object::ReadBuffer(buffer) = runtime.heap.get_mut(state.buffer)? else {
                         return Err(RuntimeError::internal("lost read buffer"));
                     };

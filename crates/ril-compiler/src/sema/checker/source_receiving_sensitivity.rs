@@ -84,6 +84,8 @@ impl Walk<'_> {
         }
         let identity = self
             .checker
+            .type_source
+            .environment
             .generic_context
             .get(name)
             .or_else(|| self.checker.effect_type_binders.get(name))?;
@@ -389,7 +391,7 @@ mod tests {
         assert_eq!(annotation(&checker, &ty("K")), NotRequired);
         assert_eq!(annotation(&checker, &ty("T")), Unknown);
         assert_eq!(annotation(&checker, &ty("Token<size>")), NotRequired);
-        let identity = checker.generic_context["K"].clone();
+        let identity = checker.type_source.environment.generic_context["K"].clone();
         checker.generic_binders.get_mut(&identity).unwrap().name = "different".into();
         assert_eq!(annotation(&checker, &ty("K")), Unknown);
     }
@@ -423,7 +425,7 @@ mod tests {
         let mut checker = checker;
         let target = checker.freeze_source_receiving_target(&ty("([2]int,int)"));
         let failed = tuple_target(&target, 9, target.span);
-        assert!(failed.key.is_none());
+        assert!(failed.key().is_none());
         assert_eq!(failed.sensitivity, Unknown);
     }
 }

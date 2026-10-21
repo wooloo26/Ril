@@ -64,7 +64,9 @@ fn precise_products_keep_the_whole_actual_argument_and_existing_selected_object(
         let invocation = &facts.copy_invocations[check.context.invocation.unwrap().0 as usize];
         assert_eq!(
             check.actual.value,
-            invocation.arguments[check.argument_index as usize].1.value
+            invocation.entry.arguments[check.argument_index as usize]
+                .1
+                .value
         );
     }
 }
@@ -203,7 +205,7 @@ fn original_stored_paths_and_fixed_resize_invariants_remain_required() {
         .origin;
     for snapshot in [
         &mut copy.generic_bound_checks[index].actual,
-        &mut copy.copy_invocations[invocation].arguments[argument].1,
+        &mut copy.copy_invocations[invocation].entry.arguments[argument].1,
     ] {
         for node in &mut snapshot.nodes {
             if node.origin == origin {
@@ -222,7 +224,7 @@ fn original_stored_paths_and_fixed_resize_invariants_remain_required() {
         .unwrap();
     for snapshot in [
         &mut copy.generic_bound_checks[index].actual,
-        &mut copy.copy_invocations[invocation].arguments[argument].1,
+        &mut copy.copy_invocations[invocation].entry.arguments[argument].1,
     ] {
         let node = snapshot
             .nodes

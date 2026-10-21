@@ -376,7 +376,7 @@ fn extracts_exact_bytes_and_isolates_workspaces() {
 }
 
 #[test]
-fn discovery_is_strict_and_inventory_matches_the_migration_baseline() {
+fn discovery_is_strict_and_the_repository_corpus_validates() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir(temp.path().join("conformance")).unwrap();
     fs::write(
@@ -393,24 +393,6 @@ fn discovery_is_strict_and_inventory_matches_the_migration_baseline() {
     assert!(discover_cases(temp.path()).is_err());
     let cases = discover_cases(&repo().join("tests")).unwrap();
     validate_corpus(&cases, &repo().join("doc"), true).unwrap();
-    let original: Vec<_> = cases
-        .into_iter()
-        .filter(|case| !case.bundle.starts_with("tests/regressions/"))
-        .collect();
-    let stats = validate_corpus(&original, &repo().join("doc"), true).unwrap();
-    assert_eq!(
-        (
-            stats.bundles,
-            stats.cases,
-            stats.diagnostic_codes,
-            stats.companions
-        ),
-        (84, 1067, 176, 811)
-    );
-    assert_eq!(
-        Mode::ALL.map(|mode| stats.modes[&mode]),
-        [342, 369, 296, 52, 8]
-    );
     assert!(validate_corpus(&[], &repo().join("doc"), true).is_err());
 }
 

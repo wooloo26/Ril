@@ -7,6 +7,7 @@ use ril_compiler_core::ids::{CallableOwner, DefinitionId, HandlerSiteId};
 /// survive even when the boxed runtime representation does not distinguish them.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ArgumentKey {
+    GenericBuiltin(ril_compiler_core::builtin_calls::GenericBuiltin),
     Closed(String),
     Name {
         name: String,

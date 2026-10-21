@@ -486,7 +486,22 @@ impl<'a> Parser<'a> {
         );
         let plain_name = self.kind() == Some(SyntaxKind::Identifier)
             && !matches!(self.look(1), "(" | "::" | ".");
-        let mut pattern = self.pattern(false);
+        let mut pattern = if self.kind() == Some(SyntaxKind::Keyword)
+            && self.look(1) == "="
+            && !matches!(self.current(), "true" | "false")
+        {
+            // This spelling is a local identifier, not a control expression
+            // whose operand may consume the binding's initializer.
+            let start = self.offset();
+            let name = self.name();
+            Pattern {
+                hir_id: None,
+                kind: PatternKind::Name(name),
+                span: self.span(start),
+            }
+        } else {
+            self.pattern(false)
+        };
         if plain_name
             && let PatternKind::Constructor {
                 path, arguments, ..

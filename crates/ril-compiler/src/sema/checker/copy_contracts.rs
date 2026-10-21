@@ -263,6 +263,7 @@ impl Checker {
         if proof.requirements.is_empty() {
             (proof.output_nodes, proof.output_relations) = self.copy_graph_snapshot(&result);
             proof.output = Some(result.clone());
+            proof.output_allocation_epoch = Some(self.recency_moves.len());
         } else {
             let mut dependencies = self.pending_copy_dependencies(source);
             dependencies.insert(proof.id);
@@ -308,6 +309,7 @@ impl Checker {
                 continue;
             }
             let origins: BTreeSet<_> = probe
+                .entry
                 .arguments
                 .iter()
                 .flat_map(|(_, argument)| argument.nodes.iter().map(|node| node.origin))
@@ -410,6 +412,8 @@ impl Checker {
         );
         CopyBoundary {
             id: CopyBoundaryId(self.copy_boundaries.len() as u32),
+            input_allocation_epoch: self.recency_moves.len(),
+            output_allocation_epoch: None,
             owner: frame.definition,
             activation: frame.owner,
             span,

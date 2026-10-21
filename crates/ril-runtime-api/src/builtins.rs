@@ -40,8 +40,12 @@ pub const OPERATIONS: &[&str] = &[
     "Io::read_all",
     "Io::write_all",
     "Io::read_buffer",
+    "Io::read_position",
+    "Io::guard_read",
+    "Io::guard_seek",
     "Io::write_buffer",
     "Io::read_buffered",
+    "Io::read_buffered_at",
     "Io::write_buffered",
     "Io::flush",
     "inner",
@@ -358,6 +362,7 @@ pub fn requires_native_step(name: &str) -> bool {
             | "Parallel::join3"
             | "Parallel::for_each"
             | "Io::read_buffered"
+            | "Io::read_buffered_at"
             | "Io::write_buffered"
             | "Io::flush"
             | "Time::sleep"
@@ -461,6 +466,7 @@ mod tests {
             "Parallel::join3",
             "Parallel::for_each",
             "Io::read_buffered",
+            "Io::read_buffered_at",
             "Io::write_buffered",
             "Io::flush",
         ] {

@@ -99,6 +99,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         pending: Vec<&'a Value>,
         witnesses: BTreeSet<usize>,
         contracts: BTreeSet<usize>,
+        environments: BTreeSet<super::context::FrozenEnvId>,
     }
     impl<'a> Walk<'a> {
         fn nodes(&mut self, nodes: &'a [CopyNode]) {
@@ -117,30 +118,75 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
                 || witness.validate_closed()
                     && resolved_names(witness, &self.facts.external_type_declarations)
         }
+        fn environment(&mut self, environment: &super::context::FrozenEnvironment) -> bool {
+            if environment.is_poisoned() {
+                return false;
+            }
+            if !self.environments.insert(environment.id()) {
+                return true;
+            }
+            self.environments.len() <= 65536
+                && environment
+                    .contract_bindings
+                    .values()
+                    .all(|id| *id < self.facts.bindings.len())
+                && environment
+                    .generic_type_witnesses
+                    .values()
+                    .all(|witness| self.witness(witness))
+                && environment
+                    .bound_row_selections
+                    .values()
+                    .filter_map(|selection| selection.source_type_witness.as_ref())
+                    .all(|witness| self.witness(witness))
+        }
         fn contract(&mut self, head: &Arc<CallableReturnBound>) -> bool {
             let mut pending = vec![head];
             while let Some(bound) = pending.pop() {
                 if !self.contracts.insert(Arc::as_ptr(bound) as usize) {
                     continue;
                 }
-                if self.contracts.len() > 65536
-                    || bound
-                        .typing_environment
-                        .generic_type_witnesses
-                        .values()
-                        .any(|witness| !self.witness(witness))
-                    || bound
-                        .typing_environment
-                        .bound_row_selections
-                        .values()
-                        .filter_map(|selection| selection.source_type_witness.as_ref())
-                        .any(|witness| !self.witness(witness))
-                {
+                if self.contracts.len() > 65536 || !self.environment(&bound.typing_environment) {
                     return false;
                 }
                 pending.extend(&bound.predecessors);
             }
             true
+        }
+
+        fn callable_bound(&mut self, bound: &super::model::CallableBound) -> bool {
+            use crate::hir::nodes::{ExprKind, TypeKind};
+            use ril_compiler_core::ids::CallableContractSource;
+            if !self.environment(&bound.typing_environment) {
+                return false;
+            }
+            let Some(source) = bound.source else {
+                return true;
+            };
+            let Some(hir) = self.facts.semantic_hir.as_deref() else {
+                return false;
+            };
+            let original = match source {
+                CallableContractSource::Type(id) => {
+                    match hir.type_expression(id).map(|node| &node.kind) {
+                        Some(TypeKind::Callable { annotations, .. }) => annotations,
+                        _ => return false,
+                    }
+                }
+                CallableContractSource::Expression(id) => {
+                    match hir.expression(id).map(|node| &node.kind) {
+                        Some(ExprKind::Lambda { annotations, .. }) => annotations,
+                        _ => return false,
+                    }
+                }
+            };
+            original.len() == bound.annotations.len()
+                && original
+                    .iter()
+                    .zip(&bound.annotations)
+                    .all(|(original, captured)| {
+                        original.kind == captured.kind && original.text == captured.text
+                    })
         }
     }
     let mut walk = Walk {
@@ -148,6 +194,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         pending: vec![],
         witnesses: BTreeSet::new(),
         contracts: BTreeSet::new(),
+        environments: BTreeSet::new(),
     };
     walk.pending.extend(facts.fields.values());
     walk.pending
@@ -158,28 +205,30 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         .extend(facts.constant_values.iter().map(|constant| &constant.value));
     walk.pending
         .extend(facts.invocation_loan_starts.iter().map(|loan| &loan.source));
+    for binding in &facts.bindings {
+        if !walk.environment(&binding.typing_environment) {
+            return Err((binding.span, binding.value.cause));
+        }
+    }
+    for handler in &facts.handlers {
+        if handler.lexical != handler.typing_environment.contract_bindings
+            || !walk.environment(&handler.typing_environment)
+        {
+            return Err((handler.span, CauseId(0)));
+        }
+    }
     for function in &facts.functions {
-        if function.lexical != function.typing_environment.contract_bindings {
+        if function.lexical != function.typing_environment.contract_bindings
+            || !walk.environment(&function.typing_environment)
+        {
             return Err((function.syntax.span, CauseId(0)));
         }
-        for witness in function.typing_environment.generic_type_witnesses.values() {
-            if !walk.witness(witness) {
-                return Err((witness.syntax.span, CauseId(0)));
-            }
-        }
-        for selection in function.typing_environment.bound_row_selections.values() {
-            if let Some(witness) = &selection.source_type_witness
-                && !walk.witness(witness)
-            {
-                return Err((
-                    witness.syntax.span,
-                    facts
-                        .explanations
-                        .causes
-                        .first()
-                        .map_or(CauseId(0), |cause| cause.id),
-                ));
-            }
+    }
+    for closure in &facts.closures {
+        if closure.lexical != closure.contract.typing_environment.contract_bindings
+            || !walk.environment(&closure.contract.typing_environment)
+        {
+            return Err((closure.contract.span, CauseId(0)));
         }
     }
     for check in &facts.generic_bound_checks {
@@ -223,7 +272,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         walk.nodes(&boundary.output_nodes);
     }
     for invocation in &facts.copy_invocations {
-        for (_, argument) in &invocation.arguments {
+        for (_, argument) in &invocation.entry.arguments {
             walk.snapshot(argument);
         }
         if let Some(result) = &invocation.result {
@@ -293,6 +342,10 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
                 .callable_returns
                 .iter()
                 .any(|bound| !walk.contract(bound))
+            || value
+                .callable_bounds
+                .iter()
+                .any(|bound| !walk.callable_bound(bound))
         {
             return Err((
                 value.source_type_witness.as_ref().map_or(

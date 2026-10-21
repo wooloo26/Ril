@@ -13,6 +13,7 @@ type HeldArgument = (ParameterMode, EvaluatedValue, Span);
 struct ApplicationSite {
     event: CopyCallEventId,
     preparation: usize,
+    arity: usize,
 }
 
 struct EvaluatedOperand {
@@ -28,9 +29,10 @@ impl Checker {
         frame: &mut Frame,
     ) -> (Value, CopyCallEventId) {
         let event = self.reserve_copy_call_event(application.root, frame);
-        let site = ApplicationSite {
+        let mut site = ApplicationSite {
             event,
             preparation: self.call_arguments.len(),
+            arity: application.operands.len(),
         };
         self.call_arguments.push(CallArguments {
             source_event: event,
@@ -48,6 +50,7 @@ impl Checker {
         let mut source_contexts = Vec::new();
         let mut mapping = Vec::new();
         let mut nullary_none = false;
+        let mut generic = None;
         let order: Vec<_> = application.evaluation_order().collect();
         for (position, role) in order.iter().copied().enumerate() {
             let syntax = application
@@ -78,7 +81,25 @@ impl Checker {
                     self.copy_call_events[event.0 as usize].target;
                 self.seal_explicit_named_callee(explicit, event, frame);
                 if value.ty != Ty::Never {
-                    mapping = application_mapping(&value, application);
+                    generic =
+                        crate::sema::builtin_sources::generic_reference(&value).filter(|id| {
+                            self.original_source_receiving_key(&value, syntax, frame)
+                                == Some(crate::sema::effect_identity::ArgumentKey::GenericBuiltin(
+                                    *id,
+                                ))
+                        });
+                    let labels = if let Some(parameters) = &value.signature {
+                        crate::hir::application::parameter_labels(parameters)
+                    } else if let Some(id) = generic {
+                        crate::sema::source_types::polymorphic::parameter_labels(id)
+                    } else {
+                        vec![None; application.operands.len()]
+                    };
+                    site.arity = labels.len();
+                    mapping = crate::hir::application::bind_slots(
+                        &labels,
+                        application.operands.iter().map(|argument| argument.label),
+                    );
                     if application.kind == ApplicationKind::Call {
                         source_contexts = self.call_argument_source_contexts(&value, event);
                         contexts = self.numeric_argument_contexts(
@@ -92,16 +113,22 @@ impl Checker {
                             },
                             frame,
                         );
+                        if let Some(id) = generic {
+                            contexts = self.primitive_numeric_contexts(
+                                id,
+                                event,
+                                &application.operands,
+                                &mapping,
+                                frame,
+                            );
+                        }
                         if matches!(value.callables.as_slice(), [Callable::Builtin(name)] if name == "Concurrent::scope")
                         {
-                            for operand in &application.operands {
-                                if matches!(operand.expression.kind, ExprKind::Lambda { .. }) {
-                                    let span = operand.expression.span;
-                                    self.immediate_scope_arguments.insert((
-                                        span.file.0,
-                                        span.start,
-                                        span.end,
-                                    ));
+                            for (operand, slot) in application.operands.iter().zip(&mapping) {
+                                if matches!(operand.expression.kind, ExprKind::Lambda { .. })
+                                    && let Ok(slot) = slot
+                                {
+                                    self.immediate_scope_arguments.insert((event, *slot as u32));
                                 }
                             }
                         }
@@ -135,6 +162,7 @@ impl Checker {
                 let deferred = expected.is_none()
                     && super::numeric_pending::candidate(syntax)
                     && (application.kind == ApplicationKind::Pipeline
+                        || generic.is_some()
                         || self.numeric.applications.contains_key(&event));
                 self.numeric.deferred_depth += usize::from(deferred);
                 let observation = self.expression_expected_source(
@@ -171,7 +199,6 @@ impl Checker {
                     let _ = self.bind_application_operands(
                         application,
                         site,
-                        &callee,
                         &mapping,
                         &evaluated,
                         frame,
@@ -215,7 +242,10 @@ impl Checker {
             );
             return (self.unit(application.span), event);
         };
-        if application.kind == ApplicationKind::Pipeline {
+        if let Some(id) = generic {
+            contexts =
+                self.primitive_numeric_contexts(id, event, &application.operands, &mapping, frame);
+        } else if application.kind == ApplicationKind::Pipeline {
             let frozen: Vec<_> = evaluated
                 .iter_mut()
                 .map(|held| {
@@ -240,7 +270,7 @@ impl Checker {
             );
         }
         let mut slots =
-            self.bind_application_operands(application, site, &callee, &mapping, &evaluated, frame);
+            self.bind_application_operands(application, site, &mapping, &evaluated, frame);
         // A failed label/position mapping has no parameter environment. Keep
         // the physical prefix, but never evaluate defaults or enter a body
         // using the partial local slots from this rejected preparation.
@@ -327,11 +357,13 @@ impl Checker {
             .expression(role)
             .expect("actual evaluation role");
         let valid = self
-            .expression_facts
+            .application_effect
+            .expressions
             .get(expression)
             .is_some_and(|fact| fact.source_id.is_some() && fact.source_id == syntax.hir_id)
             && self
-                .invocation_expressions
+                .application_effect
+                .contexts
                 .get(expression)
                 .is_some_and(|row| row.expression == expression && row.context == context)
             && application
@@ -360,16 +392,11 @@ impl Checker {
         &mut self,
         application: &AstApplication<'_>,
         site: ApplicationSite,
-        callee: &Value,
         mapping: &[Result<usize, &'static str>],
         evaluated: &[EvaluatedOperand],
         frame: &Frame,
     ) -> Vec<Option<HeldArgument>> {
-        let count = callee
-            .signature
-            .as_ref()
-            .map_or(application.operands.len(), Vec::len);
-        let mut slots = vec![None; count];
+        let mut slots = vec![None; site.arity];
         let mut valid = true;
         for (index, held) in evaluated.iter().enumerate() {
             let operand = application
@@ -425,6 +452,7 @@ impl Checker {
         let ApplicationSite {
             event: source_event,
             preparation,
+            ..
         } = site;
         let (span, callee_syntax) = (application.span, application.callee);
         let parameters = callee
@@ -448,12 +476,27 @@ impl Checker {
                 .syntax
                 .generics
                 .iter()
-                .filter_map(|parameter| self.generic_context.get(&parameter.name).cloned())
+                .filter_map(|parameter| {
+                    self.type_source
+                        .environment
+                        .generic_context
+                        .get(&parameter.name)
+                        .cloned()
+                })
                 .collect();
             for binder in &binders {
-                self.generic_substitutions.remove(binder);
-                self.generic_type_witnesses.remove(binder);
-                self.static_key_arguments.remove(binder);
+                self.type_source
+                    .environment
+                    .generic_substitutions
+                    .remove(binder);
+                self.type_source
+                    .environment
+                    .generic_type_witnesses
+                    .remove(binder);
+                self.type_source
+                    .environment
+                    .static_key_arguments
+                    .remove(binder);
             }
             let explicit = self.explicit_named_for_event(source_event, info.definition);
             let mut supplied = info.syntax.clone();
@@ -499,9 +542,21 @@ impl Checker {
                 self.finish_explicit_named_inference(prepared, span);
             }
         }
-        let environment = target
-            .map(|id| self.functions[id].lexical.clone())
-            .unwrap_or_else(|| frame.env.clone());
+        if has_default && let [Callable::Closure(id)] = callee.callables.as_slice() {
+            if let Some(environment) = self
+                .lambda_contract(*id)
+                .map(|contract| contract.typing_environment.clone())
+            {
+                self.restore_typing_environment(environment);
+            } else {
+                self.unsupported(span, "default lambda has no frozen declaration environment");
+            }
+        }
+        let environment = match callee.callables.as_slice() {
+            [Callable::Named(id)] => self.functions[*id].lexical.clone(),
+            [Callable::Closure(id)] => self.closures[*id].lexical.clone(),
+            _ => frame.env.clone(),
+        };
         let mut defaults = self.frame(environment, true);
         self.scope_parents.insert(defaults.owner, frame.owner);
         defaults.callable_owner = match callee.callables.as_slice() {
@@ -641,38 +696,4 @@ impl Checker {
         self.finish_numeric_arguments(source_event, &mut result);
         result
     }
-}
-
-fn application_mapping(
-    callee: &Value,
-    application: &AstApplication<'_>,
-) -> Vec<Result<usize, &'static str>> {
-    let count = callee
-        .signature
-        .as_ref()
-        .map_or(application.operands.len(), Vec::len);
-    let mut occupied = BTreeSet::new();
-    application
-        .operands
-        .iter()
-        .map(|operand| {
-            let slot = if let Some(label) = operand.label {
-                callee.signature.as_ref().and_then(|parameters| {
-                    parameters.iter().position(|parameter|
-                matches!(&parameter.pattern.kind, PatternKind::Name(name) if name == label))
-                })
-            } else {
-                (0..count).find(|slot| !occupied.contains(slot))
-            };
-            let slot = slot.ok_or(if operand.label.is_some() {
-                "E0339"
-            } else {
-                "E0314"
-            })?;
-            if !occupied.insert(slot) {
-                return Err("E0325");
-            }
-            Ok(slot)
-        })
-        .collect()
 }

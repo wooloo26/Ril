@@ -241,9 +241,15 @@ impl Checker {
             }
             if let TypeKind::Name { path, arguments } = &syntax.kind
                 && arguments.is_empty()
-                && let Some(identity) = checker.generic_context.get(&path.join("::"))
+                && let Some(identity) = checker
+                    .type_source
+                    .environment
+                    .generic_context
+                    .get(&path.join("::"))
             {
                 return checker
+                    .type_source
+                    .environment
                     .generic_type_witnesses
                     .get(identity)
                     .map(|witness| witness.syntax.clone());
@@ -309,7 +315,9 @@ impl Checker {
             ExprKind::Path(path) => path.join("::"),
             _ => return None,
         };
-        self.contract_environment
+        self.type_source
+            .environment
+            .contract_bindings
             .get(&name)
             .and_then(|binding| self.bindings.get(*binding))
             .map(|binding| &binding.value)
@@ -453,7 +461,10 @@ impl Checker {
                 self.unsupported(span, "a generic binder requires the complete source array dimensions and callable qualifications of its actual argument");
             }
         }
-        self.generic_type_witnesses.extend(schemas);
+        self.type_source
+            .environment
+            .generic_type_witnesses
+            .extend(schemas);
     }
 
     fn select_source_schema(
@@ -849,6 +860,18 @@ pub(super) fn expand_builtin_source_syntax(
         {
             let schema = io::operation_type(syntax)
                 .or_else(|| super::iter_types::schema(syntax))
+                .or_else(|| {
+                    if !arguments.is_empty() {
+                        return None;
+                    }
+                    crate::sema::source_types::standard_data::schema(&path.join("::"))?
+                        .syntax(
+                            syntax.span,
+                            &mut crate::sema::source_types::WorkLimit::new(4096),
+                        )
+                        .ok()
+                        .filter(|expanded| expanded.kind != syntax.kind)
+                })
                 .or_else(|| {
                     if !arguments.is_empty() {
                         return None;

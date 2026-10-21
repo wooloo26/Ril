@@ -51,6 +51,7 @@ fn key_binders(key: &ArgumentKey) -> Option<BTreeSet<String>> {
             Some(())
         };
         match key {
+            ArgumentKey::GenericBuiltin(_) => {}
             ArgumentKey::Closed(value) => text(value)?,
             ArgumentKey::Binder { identity, .. } => {
                 text(identity)?;

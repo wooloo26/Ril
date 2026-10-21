@@ -47,6 +47,7 @@ fn concurrency_values_seed_callers_without_user_effects() {
         "Parallel::join3",
         "Parallel::for_each",
         "Io::read_buffered",
+        "Io::read_buffered_at",
         "Io::write_buffered",
         "Io::flush",
     ] {

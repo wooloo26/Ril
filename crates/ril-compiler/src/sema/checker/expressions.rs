@@ -66,6 +66,21 @@ impl Checker {
                 source_valid: false,
             };
         }
+        let context = self.invocation_context(frame.callable_owner);
+        let Some(activation) = self
+            .application_effect
+            .enter(expr.hir_id, frame.owner, context)
+        else {
+            self.unsupported(
+                expr.span,
+                "evaluation activation budget exhausted before entering syntax",
+            );
+            return SourceExpression {
+                value: Value::scalar(Ty::Unknown, None, CauseId(0)),
+                observation: None,
+                source_valid: false,
+            };
+        };
         self.analysis_depth += 1;
         self.expression_owners.push(frame.callable_owner);
         self.analysis_visits += 1;
@@ -95,15 +110,10 @@ impl Checker {
         if self.expanded_at(&value.ty, expr.span.file) != Ty::Bool {
             value.condition_inspections = Default::default();
         }
-        self.read_epochs.insert(
-            (
-                expr.span.file.0,
-                expr.span.start,
-                expr.span.end,
-                frame.owner.0,
-            ),
-            self.write_events.len(),
-        );
+        if let Some(source) = expr.hir_id {
+            self.read_epochs
+                .insert((source, frame.owner), self.write_events.len());
+        }
         if value.unsuffixed_numeric
             && matches!(value.ty, Ty::Int(_) | Ty::Float(_))
             && let Some(ty) =
@@ -114,21 +124,29 @@ impl Checker {
         }
         self.infer_expression_source_type(&mut value, expr);
         self.channel_boolean_evaluation(&mut value, expr.span, frame);
-        let observation = self.expression_facts.len();
         let argument_of = self.source_argument_of(expr, frame);
-        self.invocation_expressions
-            .push(super::super::effect_identity::InvocationExpression {
-                context: self.invocation_context(frame.callable_owner),
-                expression: observation,
-                argument_of,
-            });
+        let evaluation_context = self.invocation_context(frame.callable_owner);
         self.record_copy_references(&value, expr.span, frame);
-        self.expression_facts.push(super::super::ExpressionFact {
-            allocation_epoch: self.recency_moves.len(),
-            source_id: expr.hir_id,
-            span: expr.span,
-            value: value.clone(),
-        });
+        let Some(observation) = self.application_effect.observe_in(
+            activation,
+            || super::super::ExpressionFact {
+                allocation_epoch: self.recency_moves.len(),
+                source_id: expr.hir_id,
+                span: expr.span,
+                value: value.clone(),
+            },
+            evaluation_context,
+            frame.owner,
+            argument_of,
+        ) else {
+            self.application_effect.leave(activation);
+            self.expression_owners.pop();
+            return SourceExpression {
+                value,
+                observation: None,
+                source_valid: false,
+            };
+        };
         self.record_builtin_source_observation(expr, &value, observation, frame);
         if let Some(event) = source_call_event {
             let context = self.invocation_context(frame.callable_owner);
@@ -148,22 +166,34 @@ impl Checker {
                 );
             }
         }
-        if let Some(syntax) = source.and_then(|target| target.syntax.as_deref()) {
-            self.check_signature_modes(&value, syntax);
+        if let Some(target) = source
+            && let Some(syntax) = target.syntax.as_deref()
+        {
+            self.with_typing_environment(&target.environment, |checker| {
+                checker.check_signature_modes(&value, syntax);
+            });
         }
         let source_valid = source_handled.unwrap_or_else(|| {
             source.is_none_or(|target| {
                 self.require_source_reception(target, expr, &value, Some(observation), frame)
             })
-        }) && frame.return_source_valid;
+        });
         if !source_valid {
+            // The frame accumulates failed receptions for its final answer.
+            // It is not a premise of this occurrence's independent reception:
+            // an earlier failure cannot erase a later declaration's own Source.
             frame.return_source_valid = false;
-            if let Some(syntax) = source.and_then(|target| target.syntax.as_deref()) {
-                self.check_receiving_callable_bounds(&value, syntax);
+            if let Some(target) = source
+                && let Some(syntax) = target.syntax.as_deref()
+            {
+                self.with_typing_environment(&target.environment, |checker| {
+                    checker.check_receiving_callable_bounds(&value, syntax);
+                });
             }
         }
         self.cancellation_checkpoint(expr.span, frame);
         self.expression_owners.pop();
+        self.application_effect.leave(activation);
         SourceExpression {
             value,
             observation: Some(observation),
@@ -355,7 +385,7 @@ impl Checker {
                 // through the ordinary source relation independently.
                 let receiving = source.filter(|target| {
                     use super::super::effect_identity::ArgumentKey;
-                    target.key.as_ref().is_some_and(|key| {
+                    target.key().as_ref().is_some_and(|key| {
                         super::super::source_reception::complete(key, &mut 4096).is_some()
                             && matches!(
                                 (tuple, key),
@@ -366,7 +396,7 @@ impl Checker {
                 let mut source_valid = true;
                 if let Some(target) = receiving {
                     use super::super::effect_identity::ArgumentKey;
-                    let shape_fits = match target.key.as_ref().unwrap() {
+                    let shape_fits = match target.key().as_ref().unwrap() {
                         ArgumentKey::Tuple(types) => types.len() == items.len(),
                         ArgumentKey::Array { length, .. } => length
                             .as_ref()
@@ -609,9 +639,9 @@ impl Checker {
                     .all(|member| matches!(member, RecordMember::Field(_)));
                 let structural_target = receiving.filter(|target| {
                     matches!(
-                        &target.key,
+                        &target.key(),
                         Some(super::super::effect_identity::ArgumentKey::Record { row: None, .. })
-                    ) && target.key.as_ref().is_some_and(|key| {
+                    ) && target.key().as_ref().is_some_and(|key| {
                         super::super::source_reception::complete(key, &mut 4096).is_some()
                     })
                 });
@@ -660,7 +690,7 @@ impl Checker {
                                     let Some(super::super::effect_identity::ArgumentKey::Record {
                                         fields,
                                         ..
-                                    }) = &target.key
+                                    }) = &target.key()
                                     else {
                                         return false;
                                     };
@@ -823,7 +853,7 @@ impl Checker {
                 let node = self.allocate_owned(expr.span, 0, frame.owner);
                 let receiving_fields_complete = structural_target.is_some_and(|target| {
                     let Some(super::super::effect_identity::ArgumentKey::Record { fields, .. }) =
-                        &target.key
+                        &target.key()
                     else {
                         return false;
                     };
@@ -1185,12 +1215,12 @@ impl Checker {
             } => {
                 if operator == "!>" || operator == "|>" {
                     if let ExprKind::Derive { base: None, recipe } = &right.kind {
-                        let value = self.expression(left, frame);
+                        let (value, observation) = self.expression_observed(left, frame);
                         if value.ty == Ty::Never {
                             self.preview_expression(recipe, frame);
                             return value;
                         }
-                        return self.derive_value(value, recipe, expr.span, frame);
+                        return self.derive_value(value, observation, recipe, expr.span, frame);
                     }
                     return self.application_expression(expr, expected, frame, source_call_event);
                 }
@@ -2348,12 +2378,22 @@ impl Checker {
             value.static_coordinate = None;
             return value;
         }
-        if let Some(identity) = self.generic_context.get(name).cloned()
+        if let Some(identity) = self
+            .type_source
+            .environment
+            .generic_context
+            .get(name)
+            .cloned()
             && self.generic_key_bounds.contains_key(&identity)
         {
             let cause = self.cause(CauseKind::Source, span, "static coordinate binder", []);
             let mut value = Value::scalar(Ty::StaticKey(identity.clone()), None, cause);
-            value.static_coordinate = self.static_key_arguments.get(&identity).cloned();
+            value.static_coordinate = self
+                .type_source
+                .environment
+                .static_key_arguments
+                .get(&identity)
+                .cloned();
             return value;
         }
         if let Some(value) = self.iter_private_name(name, span) {
@@ -2361,6 +2401,9 @@ impl Checker {
         }
         let builtin_name = name.strip_prefix("Prelude::").unwrap_or(name);
         if let Some(value) = self.constructor_name(name, span, frame) {
+            return value;
+        }
+        if let Some(value) = self.standard_intrinsic_constant(name, span, frame) {
             return value;
         }
         if let Some(ty) = standard::constant_ty(name) {
@@ -2494,7 +2537,7 @@ impl Checker {
             }
             value.callables.push(Callable::Builtin(builtin_name.into()));
             if builtin && !self.operations.contains_key(name) {
-                self.mark_canonical_builtin_source(name, &value, span, frame);
+                self.mark_canonical_builtin_source(name, &mut value, span, frame);
             }
             return value;
         }
@@ -2742,24 +2785,23 @@ impl Checker {
         let node = self.allocate_owned(span, 0, frame.owner);
         let id = self.closures.len();
         if self
-            .immediate_scope_arguments
-            .contains(&(span.file.0, span.start, span.end))
+            .source_argument_of(syntax, frame)
+            .is_some_and(|argument| self.immediate_scope_arguments.contains(&argument))
         {
             self.immediate_scope_closures.insert(id);
         }
-        self.lambda_contracts.insert(
-            id,
-            super::contracts::LambdaContract {
-                return_type: return_type.cloned(),
-                annotations: annotations.to_vec(),
-                span,
-                typing_environment: self
-                    .capture_typing_environment()
-                    .with_contract_bindings(frame.env.clone()),
-            },
-        );
-        let site = self.closure_site(frame.callable_owner, span);
+        let contract = std::sync::Arc::new(LambdaContract {
+            source: syntax
+                .hir_id
+                .map(ril_compiler_core::ids::CallableContractSource::Expression),
+            return_type: return_type.cloned(),
+            annotations: annotations.to_vec(),
+            span,
+            typing_environment: self.capture_typing_environment_with_bindings(&frame.env),
+        });
+        let site = self.closure_site(frame.callable_owner, syntax.hir_id, span);
         self.closures.push(ClosureInfo {
+            contract,
             hir_id: syntax.hir_id,
             site,
             creation_invocation: self.copy_invocation_stack.last().copied(),
@@ -2801,7 +2843,10 @@ impl Checker {
         if !annotations.is_empty() {
             value.callable_bounds.push(CallableBound {
                 annotations: annotations.to_vec(),
-                lexical: frame.env.clone(),
+                source: syntax
+                    .hir_id
+                    .map(ril_compiler_core::ids::CallableContractSource::Expression),
+                typing_environment: self.closures[id].contract.typing_environment.clone(),
                 span,
             });
         }
@@ -3109,7 +3154,7 @@ pub(super) fn collect_names(expr: &Expr, names: &mut BTreeSet<String>) {
         _ => {}
     }
 }
-fn collect_block_names(block: &Block, names: &mut BTreeSet<String>) {
+pub(super) fn collect_block_names(block: &Block, names: &mut BTreeSet<String>) {
     let mut inner = BTreeSet::new();
     for statement in block.statements.iter().chain(&block.where_items) {
         match &statement.kind {
@@ -3212,6 +3257,19 @@ fn collect_pattern_values(pattern: &Pattern, names: &mut BTreeSet<String>) {
     }
 }
 pub(super) fn mutated_names(expr: &Expr) -> BTreeSet<String> {
+    mutation_names(MutationSource::Expression(expr))
+}
+
+pub(super) fn mutated_block_names(block: &Block) -> BTreeSet<String> {
+    mutation_names(MutationSource::Block(block))
+}
+
+enum MutationSource<'a> {
+    Expression(&'a Expr),
+    Block(&'a Block),
+}
+
+fn mutation_names(source: MutationSource<'_>) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
     fn root(expr: &Expr) -> Option<&str> {
         match &expr.kind {
@@ -3222,19 +3280,7 @@ pub(super) fn mutated_names(expr: &Expr) -> BTreeSet<String> {
     }
     fn visit(expr: &Expr, result: &mut BTreeSet<String>) {
         match &expr.kind {
-            ExprKind::Block(block) => {
-                for statement in &block.statements {
-                    match &statement.kind {
-                        StmtKind::Assignment { target, .. } => {
-                            if let Some(name) = root(target) {
-                                result.insert(name.into());
-                            }
-                        }
-                        StmtKind::Expr { expression, .. } => visit(expression, result),
-                        _ => {}
-                    }
-                }
-            }
+            ExprKind::Block(block) => visit_block(block, result),
             ExprKind::Binary {
                 operator,
                 left,
@@ -3270,7 +3316,23 @@ pub(super) fn mutated_names(expr: &Expr) -> BTreeSet<String> {
             _ => {}
         }
     }
-    visit(expr, &mut result);
+    fn visit_block(block: &Block, result: &mut BTreeSet<String>) {
+        for statement in &block.statements {
+            match &statement.kind {
+                StmtKind::Assignment { target, .. } => {
+                    if let Some(name) = root(target) {
+                        result.insert(name.into());
+                    }
+                }
+                StmtKind::Expr { expression, .. } => visit(expression, result),
+                _ => {}
+            }
+        }
+    }
+    match source {
+        MutationSource::Expression(expression) => visit(expression, &mut result),
+        MutationSource::Block(block) => visit_block(block, &mut result),
+    }
     result
 }
 
@@ -3305,15 +3367,25 @@ mod observation_tests {
         };
         let (value, observation) = checker.expression_observed(&expression, &mut frame);
         let observation = observation.unwrap();
-        assert_eq!(checker.expression_facts.len(), 3);
+        assert_eq!(checker.application_effect.expressions.len(), 3);
         assert_eq!(observation, 2);
-        assert_eq!(checker.expression_facts[observation].span, expression.span);
         assert_eq!(
-            checker.expression_facts[observation].value.cause,
+            checker.application_effect.expressions[observation].span,
+            expression.span
+        );
+        assert_eq!(
+            checker.application_effect.expressions[observation]
+                .value
+                .cause,
             value.cause
         );
         assert_eq!(
-            checker.invocation_expressions.last().unwrap().expression,
+            checker
+                .application_effect
+                .contexts
+                .last()
+                .unwrap()
+                .expression,
             observation
         );
     }
@@ -3325,8 +3397,8 @@ mod observation_tests {
         checker.analysis_depth = 64;
         let (_, observation) = checker.expression_observed(&integer(2, "7"), &mut frame);
         assert_eq!(observation, None);
-        assert!(checker.expression_facts.is_empty());
-        assert!(checker.invocation_expressions.is_empty());
+        assert!(checker.application_effect.expressions.is_empty());
+        assert!(checker.application_effect.contexts.is_empty());
         assert!(!checker.unsupported.is_empty());
     }
 
@@ -3389,9 +3461,12 @@ mod observation_tests {
         let (_, whole) = checker.expression_observed(&expression, &mut frame);
         assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
         assert!(checker.unsupported.is_empty(), "{:?}", checker.unsupported);
-        assert_eq!(checker.expression_facts.len(), 3);
+        assert_eq!(checker.application_effect.expressions.len(), 3);
         assert_eq!(whole, Some(2));
-        assert_eq!(checker.expression_facts[1].span, integer(15, "7").span);
+        assert_eq!(
+            checker.application_effect.expressions[1].span,
+            integer(15, "7").span
+        );
         let receipts: Vec<_> = checker
             .channel_message_facts
             .iter()
@@ -3410,8 +3485,14 @@ mod observation_tests {
             .collect();
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].0, 0);
-        assert_eq!(checker.expression_facts[receipts[0].0].span, subject_span);
-        assert_eq!(checker.expression_facts[0].value, receipts[0].1.value);
+        assert_eq!(
+            checker.application_effect.expressions[receipts[0].0].span,
+            subject_span
+        );
+        assert_eq!(
+            checker.application_effect.expressions[0].value,
+            receipts[0].1.value
+        );
         // This exercises real recorder ordering, not independent Source
         // authorization. A refutable payload is outside that theorem.
     }

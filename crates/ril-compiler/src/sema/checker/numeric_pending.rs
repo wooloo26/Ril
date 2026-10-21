@@ -158,21 +158,21 @@ impl Checker {
         value.numeric.uses.insert(use_id);
         value.literal_number = true;
         if minus.is_some() {
-            self.invocation_expressions
-                .push(super::super::effect_identity::InvocationExpression {
-                    context,
-                    expression: self.expression_facts.len(),
-                    argument_of: None,
-                });
-            self.expression_facts.push(super::super::ExpressionFact {
-                allocation_epoch: self.recency_moves.len(),
-                source_id: match &expression.kind {
-                    ExprKind::Unary { operand, .. } => operand.hir_id,
-                    _ => None,
+            let evaluation_context = context;
+            let _ = self.application_effect.observe(
+                || super::super::ExpressionFact {
+                    allocation_epoch: self.recency_moves.len(),
+                    source_id: match &expression.kind {
+                        ExprKind::Unary { operand, .. } => operand.hir_id,
+                        _ => None,
+                    },
+                    span,
+                    value: value.clone(),
                 },
-                span,
-                value: value.clone(),
-            });
+                evaluation_context,
+                frame.owner,
+                None,
+            );
         }
         Some(value)
     }
@@ -436,7 +436,7 @@ impl Checker {
             cause,
         };
         self.numeric.resolved.insert(id, output.clone());
-        for fact in &mut self.expression_facts {
+        for fact in &mut self.application_effect.expressions {
             if fact.value.ty == Ty::NumericHole(id) {
                 fact.value.ty = output.ty.clone();
                 fact.value.constant = if signed_operand == Some(fact.span) {

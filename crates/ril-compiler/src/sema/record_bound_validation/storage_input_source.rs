@@ -37,8 +37,7 @@ impl Replay<'_> {
                 && event.owner == context.owner
                 && event.parent == context.invocation
                 && event.target.is_none()
-                && arguments.len() == arity
-                && arguments.iter().all(|argument| argument.label.is_none()),
+                && arguments.len() == arity,
             "storage intrinsic changed its original application or supplied slot mapping",
         )?;
         let preparations: Vec<_> = self
@@ -57,7 +56,37 @@ impl Replay<'_> {
                 && preparation.supplied.len() == arity,
             "storage intrinsic lost a completed physical operand",
         )?;
-        let original = |slot: usize| -> Check<ArgumentKey> {
+        let labels = if let Some(parameters) = &callee.signature {
+            crate::hir::application::parameter_labels(parameters)
+        } else if let Some(id) = crate::sema::builtin_sources::generic_reference(callee) {
+            let token = event
+                .callee_expression
+                .ok_or("primitive interface has no actual callee")?;
+            require(
+                self.original_observed_source_key(application.callee, token, context, sites)?
+                    == ArgumentKey::GenericBuiltin(id),
+                "primitive public interface has no original declaration Source",
+            )?;
+            crate::sema::source_types::polymorphic::parameter_labels(id)
+        } else {
+            vec![None; arity]
+        };
+        let mapping: Vec<_> = crate::hir::application::bind_slots(
+            &labels,
+            arguments.iter().map(|argument| argument.label),
+        )
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .map_err(|code| format!("primitive public argument mapping is invalid: {code}"))?;
+        require(
+            labels.len() == arity,
+            "primitive public interface changed its arity",
+        )?;
+        let original = |slot: usize| -> Check<usize> {
+            let index = mapping
+                .iter()
+                .position(|actual| *actual == slot)
+                .ok_or("primitive slot has no written input")?;
             let supplied = preparation
                 .supplied
                 .get(&(slot as u32))
@@ -70,7 +99,7 @@ impl Replay<'_> {
             require(
                 supplied.allocation_epoch <= self.facts.allocation_history.len()
                     && value.source_id.is_some()
-                    && value.source_id == arguments[slot].expression.hir_id
+                    && value.source_id == arguments[index].expression.hir_id
                     && self
                         .observations
                         .row(supplied.expression, &mut 4096)
@@ -81,9 +110,18 @@ impl Replay<'_> {
                 "storage intrinsic operand borrowed another occurrence, epoch or context",
             )?;
             self.input_operand_interval(event, slot, supplied.expression, context, sites)?;
-            self.original_source_key(arguments[slot].expression, &value.value, context, sites)
+            Ok(supplied.expression)
         };
-        let receiver = original(0)?;
+        let receiver = self.original_observed_source_key(
+            arguments[mapping
+                .iter()
+                .position(|slot| *slot == 0)
+                .ok_or("primitive receiver is absent")?]
+            .expression,
+            original(0)?,
+            context,
+            sites,
+        )?;
         require(
             source_reception::complete(&receiver, &mut 4096).is_some(),
             "storage intrinsic receiver has no complete original schema",
@@ -92,35 +130,41 @@ impl Replay<'_> {
             let expected = collection_part(&receiver, part).ok_or_else(|| {
                 "storage intrinsic receiver has no declared member projection".to_owned()
             })?;
-            if crate::sema::source_types::key_is_coordinate_free(expected) {
+            if crate::sema::source_types::key_is_coordinate_free_with_declarations(
+                expected,
+                self.facts.semantic_hir.as_deref(),
+            ) {
                 continue;
             }
-            let actual = original(slot)?;
+            let observation = original(slot)?;
+            let written = mapping
+                .iter()
+                .position(|actual| *actual == slot)
+                .ok_or("primitive stored slot is absent")?;
+            let actual = self.input_source_reception(
+                expected,
+                arguments[written].expression,
+                &self.facts.expressions[observation].value,
+                context,
+                sites,
+                Some(observation),
+            )?;
             if let (
                 ArgumentKey::Callable {
                     annotations: expected,
                     ..
                 },
-                ArgumentKey::Callable {
+                Some(ArgumentKey::Callable {
                     annotations: actual,
                     ..
-                },
-            ) = (expected, &actual)
+                }),
+            ) = (expected, actual.as_ref())
             {
                 require(
                     expected == actual,
                     "storage callable bounds require their original frozen lexical proof",
                 )?;
             }
-            let fresh = source_reception::construction(arguments[slot].expression, &mut 4096)
-                .ok_or_else(|| {
-                    "storage intrinsic original construction exceeds its budget".to_owned()
-                })?;
-            require(
-                source_reception::compatible(expected, &actual, Some(&fresh), &mut 4096)
-                    == Some(true),
-                "storage intrinsic input conflicts with the receiver's original member schema",
-            )?;
         }
         Ok(())
     }

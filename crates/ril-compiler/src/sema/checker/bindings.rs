@@ -1,6 +1,127 @@
 use super::*;
 use crate::sema::storage_sources::{StorageDestination, StorageObservation};
+
+/// Original binder identity is installed at birth, before capture publication.
+/// A diagnostic location alone never identifies a source binder.
+pub(super) struct BindingSite {
+    span: Span,
+    pattern: Option<ril_compiler_core::ids::PatternId>,
+}
+
+impl From<Span> for BindingSite {
+    fn from(span: Span) -> Self {
+        Self {
+            span,
+            pattern: None,
+        }
+    }
+}
+
+impl From<&Pattern> for BindingSite {
+    fn from(pattern: &Pattern) -> Self {
+        Self {
+            span: pattern.span,
+            pattern: pattern.hir_id,
+        }
+    }
+}
+
 impl Checker {
+    /// Every local receiver, including a resumed answer, installs the same
+    /// declaration view and records the original initializer occurrence.
+    pub(super) fn receive_binding(
+        &mut self,
+        binding: &Binding,
+        mut value: Value,
+        initializer: Option<StorageObservation>,
+        source_target: Option<&crate::sema::source_reception::Target>,
+        source_valid: bool,
+        frame: &mut Frame,
+    ) -> Value {
+        let span = binding.pattern.span;
+        let guarded = binding.fallback.is_some()
+            || matches!(
+                binding.pattern.kind,
+                PatternKind::Constructor { .. }
+                    | PatternKind::Literal(_)
+                    | PatternKind::Alternative(_)
+                    | PatternKind::Value(_)
+            );
+        let prepared_storage = initializer.map(|initializer| {
+            self.prepare_storage_binding_source(binding, source_target, initializer, frame)
+        });
+        if let Some(syntax) = &binding.ty {
+            let Some(target) = source_target else {
+                self.unsupported(
+                    span,
+                    "annotated binding lost its frozen receiving environment",
+                );
+                return self.unit(span);
+            };
+            self.with_typing_environment(&target.environment, |checker| {
+                let recency = checker.recency_moves.len();
+                if source_valid {
+                    checker.ascribe_signature(&mut value, syntax);
+                    checker.transport_value_since(&mut value, recency);
+                    let shape_recency = checker.recency_moves.len();
+                    checker.check_storage_shape(&value, syntax, frame);
+                    checker.transport_value_since(&mut value, shape_recency);
+                }
+                let ty = checker.ty(syntax);
+                if source_valid {
+                    checker.constrain_collection_type(&value, &ty, binding.value.span);
+                }
+                checker.require_type(&value, &ty, binding.value.span);
+                if source_valid {
+                    value.ty = ty;
+                    value.requires_inference = false;
+                }
+            });
+        }
+        if value.requires_inference
+            || !self.pending_result_binders(&value).is_empty()
+            || self.unresolved_empty_map_keys(&value)
+        {
+            self.error(
+                "E0344",
+                binding.value.span,
+                "generic result type is not determined by arguments or a required context",
+                [value.cause],
+            );
+        }
+        if guarded {
+            let binding_start = self.bindings.len();
+            let result = self.check_guarded_binding(binding, value, span, frame);
+            if source_valid
+                && let (Some(initializer), Some(prepared)) =
+                    (initializer, prepared_storage.as_ref())
+            {
+                self.record_storage_binding_sources(
+                    binding,
+                    prepared,
+                    initializer,
+                    binding_start,
+                    frame,
+                );
+            }
+            return result;
+        }
+        let binding_start = self.bindings.len();
+        self.bind_pattern(&binding.pattern, binding.mode, value, frame, false);
+        if source_valid {
+            self.record_typed_local_source(binding, source_target, binding_start, frame);
+            if let (Some(initializer), Some(prepared)) = (initializer, prepared_storage.as_ref()) {
+                self.record_storage_binding_sources(
+                    binding,
+                    prepared,
+                    initializer,
+                    binding_start,
+                    frame,
+                );
+            }
+        }
+        self.unit(span)
+    }
     pub(super) fn bind_pattern(
         &mut self,
         pattern: &Pattern,
@@ -14,7 +135,7 @@ impl Checker {
         }
         match &pattern.kind {
             PatternKind::Name(name) => {
-                self.bind_name(name, mode, value, pattern.span, frame, parameter);
+                self.bind_name(name, mode, value, pattern, frame, parameter);
             }
             PatternKind::Wildcard => {}
             PatternKind::Mode { mode, pattern } => {
@@ -148,10 +269,11 @@ impl Checker {
         name: &str,
         mode: BindingMode,
         mut value: Value,
-        span: Span,
+        site: impl Into<BindingSite>,
         frame: &mut Frame,
         parameter: bool,
     ) -> BindingId {
+        let BindingSite { span, pattern } = site.into();
         if name == "_" {
             return usize::MAX;
         }
@@ -301,6 +423,9 @@ impl Checker {
             value.participants.insert(Participant::Root(root));
         }
         self.bindings.push(BindingInfo {
+            pattern,
+            context: self.invocation_context(frame.callable_owner),
+            typing_environment: self.capture_typing_environment_with_bindings(&frame.env),
             name: name.into(),
             value,
             mode,

@@ -78,8 +78,15 @@ pub(crate) trait SourceTypeQueries: SourceGraph {
                 let node = self.get(id)?;
                 node.charge(work)?;
                 match node {
-                    SourceNode::Array { .. } | SourceNode::Callable { .. } => {
+                    SourceNode::Array { .. }
+                    | SourceNode::Callable { .. }
+                    | SourceNode::GenericBuiltin(_) => {
                         return Ok(SourceSensitivity::Sensitive { coordinate: id });
+                    }
+                    SourceNode::Nominal(declaration) => {
+                        if declaration.has_coordinates(work)? {
+                            return Ok(SourceSensitivity::Sensitive { coordinate: id });
+                        }
                     }
                     SourceNode::Binder(_)
                     | SourceNode::OpaqueName { .. }

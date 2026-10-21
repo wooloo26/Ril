@@ -1,0 +1,103 @@
+--@ case: two-written
+--@ mode: run-pass
+--@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+--@ entry: test_native
+--@ file: source.ril
+pub fn test_native() {
+    let first = \-> 1
+    let second = \-> 2
+    assert(first() == 1 && second() == 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: repeated-default
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ file: source.ril
+type Action = fn() -> int
+fn choose(action: Action = \-> 7) -> Action { action }
+pub fn test_native() {
+    let first = choose()
+    let second = choose()
+    assert(first() == 7 && second() == 7)
+}
+--@ end-file
+--@ end-case
+
+--@ case: factory-with-handlers
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ spec: SPEC#effect-handlers
+--@ entry: test_native
+--@ file: source.ril
+eff Read { get() -> int }
+type Reader = fn() -> int &closure
+fn make(value: int) -> Reader &capture {
+    with Read::get() -> resume value
+    with Read::get() -> resume (Read::get())
+    \-> Read::get()
+}
+pub fn test_native() {
+    let seven = make(7)
+    let nine = make(9)
+    assert(seven() == 7 && nine() == 9)
+}
+--@ end-file
+--@ end-case
+
+--@ case: named-default-block
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ file: source.ril
+type Action = fn() -> int &closure
+fn choose(action: Action = {
+    \-> saved()
+where
+    fn saved() -> int { 7 }
+}) -> Action { action }
+pub fn test_native() {
+    let first = choose()
+    let second = choose()
+    let explicit = choose(\-> 13)
+    assert(first() == 7 && second() == 7 && explicit() == 13)
+}
+--@ end-file
+--@ end-case
+
+--@ case: default-capture
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ file: source.ril
+type Action = fn() -> int &closure
+fn choose(value: int, action: Action = \-> value) -> Action { action }
+pub fn test_native() {
+    let seven = choose(7)
+    let nine = choose(9)
+    let explicit = choose(11, \-> 13)
+    assert(seven() == 7 && nine() == 9 && explicit() == 13)
+}
+--@ end-file
+--@ end-case
+
+--@ case: default-capture-through-call
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ file: source.ril
+type Action = fn() -> int &closure
+fn choose(value: int, action: Action = \-> (\number: int -> number)(value)) -> Action { action }
+pub fn test_native() {
+    let seven = choose(7)
+    let nine = choose(9)
+    let explicit = choose(11, \-> 13)
+    assert(seven() == 7 && nine() == 9 && explicit() == 13)
+}
+--@ end-file
+--@ end-case

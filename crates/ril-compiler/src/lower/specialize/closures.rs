@@ -242,6 +242,7 @@ impl Plan {
                 graph.closure_sites.push(ril_ir::provenance::ClosureSite {
                     id: closure.target,
                     owner,
+                    source: original.source,
                     span: original.span,
                 });
                 let selected = self.closure_facts(facts, index, source)?;

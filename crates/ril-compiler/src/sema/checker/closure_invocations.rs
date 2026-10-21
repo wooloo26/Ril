@@ -5,16 +5,18 @@ use super::super::{
     effect_identity::{ClosureInvocation, ClosureInvocationId},
 };
 use super::*;
+use crate::sema::application_effect::{CallableEntry, EntryOrigin};
 
 impl Checker {
-    pub(super) fn invoke_closure(
+    pub(super) fn invoke_closure_from(
         &mut self,
         id: usize,
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
         caller: &mut Frame,
+        origin: EntryOrigin,
     ) -> Value {
-        self.invoke_recorded_closure(id, args, span, caller, false)
+        self.invoke_recorded_closure(id, args, span, caller, false, origin)
     }
 
     pub(super) fn invoke_closure_probe(
@@ -24,7 +26,17 @@ impl Checker {
         span: Span,
         caller: &mut Frame,
     ) -> Value {
-        self.invoke_recorded_closure(id, args, span, caller, true)
+        self.invoke_recorded_closure(id, args, span, caller, true, EntryOrigin::DeclarationProbe)
+    }
+
+    pub(super) fn invoke_closure_signature(
+        &mut self,
+        id: usize,
+        args: Vec<(ParameterMode, Value, Span)>,
+        span: Span,
+        caller: &mut Frame,
+    ) -> Value {
+        self.invoke_recorded_closure(id, args, span, caller, true, EntryOrigin::SignatureProbe)
     }
 
     fn invoke_recorded_closure(
@@ -34,7 +46,20 @@ impl Checker {
         site: Span,
         caller: &mut Frame,
         probe: bool,
+        origin: EntryOrigin,
     ) -> Value {
+        if !self.application_effect.admit(1 + args.len()) {
+            self.unsupported(site, "callable input recording exhausted its work bound");
+            return Value::scalar(Ty::Unknown, None, CauseId(0));
+        }
+        let arguments = std::sync::Arc::new(args);
+        let entry = CallableEntry {
+            parent: self.application_effect.current_activation(),
+            caller_context: self.invocation_context(caller.callable_owner),
+            origin,
+            allocation_epoch: self.recency_moves.len(),
+            arguments: arguments.clone(),
+        };
         let id = ClosureInvocationId(self.closure_invocations.len() as u32);
         let parent_closure = self.closure_invocation_stack.last().copied();
         let probe = probe
@@ -42,6 +67,7 @@ impl Checker {
                 .is_some_and(|parent| self.closure_invocations[parent.0 as usize].probe);
         self.closure_invocations.push(ClosureInvocation {
             id,
+            entry,
             source_event: (!probe)
                 .then(|| self.channel_source_event(caller))
                 .flatten(),
@@ -57,7 +83,7 @@ impl Checker {
             status: CopyInvocationStatus::Incomplete,
         });
         self.closure_invocation_stack.push(id);
-        let result = self.invoke_closure_unrecorded(closure, args, site, caller);
+        let result = self.invoke_closure_unrecorded(closure, &arguments, site, caller);
         assert_eq!(self.closure_invocation_stack.pop(), Some(id));
         result
     }

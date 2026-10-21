@@ -1,34 +1,156 @@
 //! One frozen lexical source walk. Only syntax is indexed; caller facts and
 //! builtin summary obligations are checked separately for every observation.
 use super::*;
+use crate::hir::nodes::{self as hir, NodeId as SyntaxId};
+use ril_compiler_core::ids::ExprId;
 
 #[derive(Clone)]
 struct Candidate {
+    source: Option<SyntaxId>,
     owner: CallableOwner,
-    span: Span,
     name: String,
     shadowed: bool,
+}
+
+pub(super) struct NameIndex<'a> {
+    facts: &'a SemanticFacts,
+    candidates: BTreeMap<SyntaxId, Vec<Candidate>>,
+}
+
+impl<'a> NameIndex<'a> {
+    pub(super) fn new(facts: &'a SemanticFacts) -> Result<Self, String> {
+        let program = facts
+            .source_program
+            .as_deref()
+            .ok_or("builtin source has no frozen actual Program")?;
+        let mut walker = Walk {
+            facts,
+            work: 65536,
+            found: Vec::new(),
+        };
+        walker.statements(&program.statements, CallableOwner::Global, 0, 0)?;
+        if walker.work < walker.found.len() {
+            return Err("builtin lexical index exceeds its work bound".into());
+        }
+        let mut candidates = BTreeMap::<_, Vec<_>>::new();
+        for candidate in walker.found {
+            if let Some(source) = candidate.source {
+                candidates.entry(source).or_default().push(candidate);
+            }
+        }
+        Ok(Self { facts, candidates })
+    }
+
+    fn candidate(
+        &self,
+        owner: Option<CallableOwner>,
+        source: ExprId,
+    ) -> Result<&Candidate, String> {
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("builtin source has no HIR")?;
+        let node = hir
+            .expression(source)
+            .ok_or("builtin source HIR is absent")?;
+        let source = match node.info.origin {
+            hir::NodeOrigin::Generated {
+                anchor: SyntaxId::Pattern(id),
+                kind: hir::GeneratedKind::PatternValue,
+                ..
+            } => {
+                let pattern = hir
+                    .pattern(id)
+                    .ok_or("builtin value-test anchor is absent")?;
+                let original = match (&pattern.kind, &node.kind) {
+                    (hir::PatternKind::Name(actual), hir::ExprKind::Name(name)) => actual == name,
+                    (
+                        hir::PatternKind::Constructor {
+                            path,
+                            arguments,
+                            parenthesized,
+                        },
+                        hir::ExprKind::Path(actual),
+                    ) => path == actual && arguments.is_empty() && !parenthesized,
+                    _ => false,
+                };
+                if !original || pattern.info.owner != node.info.owner {
+                    return Err("builtin value-test name changed its original HIR pattern".into());
+                }
+                SyntaxId::Pattern(id)
+            }
+            _ => SyntaxId::Expr(source),
+        };
+        let values = self
+            .candidates
+            .get(&source)
+            .ok_or("builtin source has no actual HIR name")?;
+        let [candidate] = values.as_slice() else {
+            return Err("builtin source repeats a static HIR identity".into());
+        };
+        if Some(candidate.owner) != owner {
+            return Err("builtin source borrowed another lexical owner".into());
+        }
+        Ok(candidate)
+    }
+
+    pub(super) fn direct_identity(
+        &self,
+        owner: Option<CallableOwner>,
+        source: ExprId,
+    ) -> Result<Option<String>, String> {
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("builtin source has no HIR")?;
+        let node = hir
+            .expression(source)
+            .ok_or("builtin source HIR is absent")?;
+        let name = match &node.kind {
+            crate::hir::nodes::ExprKind::Name(name) if builtin_bit(name) != 0 => name.clone(),
+            crate::hir::nodes::ExprKind::Path(path)
+                if path.len() <= 3 && path.iter().all(|part| part.len() <= 64) =>
+            {
+                path.join("::")
+            }
+            _ => return Ok(None),
+        };
+        if builtin_bit(&name) == 0 {
+            return Ok(None);
+        }
+        let candidate = self.candidate(owner, source)?;
+        if candidate.name != name {
+            return Err("builtin reference differs from its original HIR name".into());
+        }
+        Ok((!candidate.shadowed && builtin_bit(&candidate.name) != 0)
+            .then(|| candidate.name.clone()))
+    }
+
+    pub(super) fn actual_name(
+        &self,
+        owner: Option<CallableOwner>,
+        source: ExprId,
+        name: &str,
+    ) -> Result<(), String> {
+        if self.direct_identity(owner, source)?.as_deref() == Some(name) {
+            return Ok(());
+        }
+        Err(
+            "builtin source has no unique unshadowed canonical Name in its real lexical owner"
+                .into(),
+        )
+    }
 }
 
 pub(super) fn actual_name(
     facts: &SemanticFacts,
     owner: Option<CallableOwner>,
-    span: Span,
+    source: ExprId,
     name: &str,
 ) -> Result<(), String> {
-    if direct_identity(facts, owner, span)?.as_deref() == Some(name) {
-        return Ok(());
-    }
-    Err("builtin source has no unique unshadowed canonical Name in its real lexical owner".into())
-}
-
-pub(super) fn direct_identity(
-    facts: &SemanticFacts,
-    owner: Option<CallableOwner>,
-    span: Span,
-) -> Result<Option<String>, String> {
-    let candidate = actual_candidate(facts, owner, span)?;
-    Ok((!candidate.shadowed && builtin_bit(&candidate.name) != 0).then_some(candidate.name))
+    NameIndex::new(facts)?.actual_name(owner, source, name)
 }
 
 /// A lexical lookup only. Call-site, caller activation, complete argument
@@ -39,8 +161,9 @@ pub(super) fn actual_prelude_name(
     actual: &Expr,
     identity: &str,
 ) -> Result<(), String> {
-    if !matches!(identity, "Some" | "Ok" | "Err") {
-        return Err("Prelude source lookup does not implement this constructor".into());
+    let identity = identity.strip_prefix("Prelude::").unwrap_or(identity);
+    if !matches!(identity, "Some" | "Ok" | "Err" | "clone" | "clone_immut") {
+        return Err("Prelude source lookup does not implement this primitive".into());
     }
     let name = match &actual.kind {
         ExprKind::Name(name) => name.clone(),
@@ -50,7 +173,10 @@ pub(super) fn actual_prelude_name(
     if name != identity && name != format!("Prelude::{identity}") {
         return Err("Prelude constructor source names a different declaration".into());
     }
-    let candidate = actual_candidate(facts, context.owner, actual.span)?;
+    let source = actual
+        .hir_id
+        .ok_or_else(|| "Prelude primitive has no original HIR identity".to_owned())?;
+    let candidate = actual_candidate(facts, context.owner, source)?;
     if candidate.name != name || candidate.shadowed {
         return Err("Prelude constructor is shadowed or absent in its actual lexical owner".into());
     }
@@ -60,40 +186,31 @@ pub(super) fn actual_prelude_name(
 fn actual_candidate(
     facts: &SemanticFacts,
     owner: Option<CallableOwner>,
-    span: Span,
+    source: ExprId,
 ) -> Result<Candidate, String> {
-    let program = facts
-        .source_program
-        .as_deref()
-        .ok_or("builtin source has no frozen actual Program")?;
-    let mut walker = Walk {
-        facts,
-        work: 65536,
-        found: Vec::new(),
-    };
-    walker.statements(&program.statements, CallableOwner::Global, 0, 0)?;
-    let candidates: Vec<_> = walker
-        .found
-        .iter()
-        .filter(|candidate| Some(candidate.owner) == owner && candidate.span == span)
-        .collect();
-    let [candidate] = candidates.as_slice() else {
-        return Err("builtin source has no unique real Name in its lexical owner".into());
-    };
-    Ok((**candidate).clone())
+    Ok(NameIndex::new(facts)?.candidate(owner, source)?.clone())
 }
 
-fn builtin_bit(name: &str) -> u16 {
+fn builtin_bit(name: &str) -> u64 {
     match name {
         "File::read_chunk" => 1,
         "File::write" => 2,
         "Process::wait" => 4,
         "Process::terminate" => 8,
-        _ => 0,
+        "Array::push" => 1 << 52,
+        "Array::insert" => 1 << 53,
+        "Array::truncate" => 1 << 54,
+        "Map::set" => 1 << 55,
+        other => crate::sema::source_types::builtins::BuiltinId::lookup(other)
+            .map(|id| id.bit())
+            .or_else(|| {
+                crate::sema::source_types::builtins::ConstantId::lookup(other).map(|id| id.bit())
+            })
+            .unwrap_or(0),
     }
 }
 
-fn bit(name: &str) -> u16 {
+fn bit(name: &str) -> u64 {
     match name {
         "Some" => 1 << 4,
         "Ok" => 1 << 5,
@@ -101,9 +218,13 @@ fn bit(name: &str) -> u16 {
         "Prelude::Some" => 1 << 7,
         "Prelude::Ok" => 1 << 8,
         "Prelude::Err" => 1 << 9,
+        "clone" => 1 << 10,
+        "clone_immut" => 1 << 11,
+        "Prelude::clone" => 1 << 12,
+        "Prelude::clone_immut" => 1 << 13,
         // A genuinely unresolved local Prelude namespace cannot certify a
         // qualified standard export. A short Some binding does not hide it.
-        "Prelude" => (1 << 7) | (1 << 8) | (1 << 9),
+        "Prelude" => (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12) | (1 << 13),
         _ => builtin_bit(name),
     }
 }
@@ -126,7 +247,7 @@ impl Walk<'_> {
         Ok(())
     }
 
-    fn pattern_names(&mut self, pattern: &Pattern, depth: usize) -> Result<u16, String> {
+    fn pattern_names(&mut self, pattern: &Pattern, depth: usize) -> Result<u64, String> {
         self.charge(depth)?;
         let mut mask = 0;
         match &pattern.kind {
@@ -157,7 +278,7 @@ impl Walk<'_> {
         Ok(mask)
     }
 
-    fn declaration_names(&mut self, statement: &Stmt, depth: usize) -> Result<u16, String> {
+    fn declaration_names(&mut self, statement: &Stmt, depth: usize) -> Result<u64, String> {
         self.charge(depth)?;
         let mut mask = 0;
         match &statement.kind {
@@ -182,7 +303,7 @@ impl Walk<'_> {
                 if import.glob {
                     // Unresolved wildcard imports do not establish which
                     // declaration supplies a constructor spelling.
-                    mask = u16::MAX;
+                    mask = u64::MAX;
                 } else {
                     if let Some(alias) = &import.alias {
                         mask |= bit(alias);
@@ -206,7 +327,7 @@ impl Walk<'_> {
         &mut self,
         statements: &[Stmt],
         owner: CallableOwner,
-        mut shadow: u16,
+        mut shadow: u64,
         depth: usize,
     ) -> Result<(), String> {
         for statement in statements {
@@ -267,7 +388,7 @@ impl Walk<'_> {
                 }
                 StmtKind::Handler(arms) => {
                     for arm in arms {
-                        let child_owner = self.lambda_owner(owner, arm.span).unwrap_or(owner);
+                        let child_owner = owner;
                         let mut child_shadow = shadow;
                         for parameter in &arm.parameters {
                             child_shadow |= self.pattern_names(&parameter.pattern, depth + 1)?;
@@ -285,7 +406,7 @@ impl Walk<'_> {
         &mut self,
         block: &Block,
         owner: CallableOwner,
-        shadow: u16,
+        shadow: u64,
         depth: usize,
     ) -> Result<(), String> {
         // where declarations share the body's lexical scope.
@@ -297,12 +418,13 @@ impl Walk<'_> {
         self.statements(&block.statements, owner, scope, depth + 1)
     }
 
-    fn lambda_owner(&self, parent: CallableOwner, span: Span) -> Option<CallableOwner> {
+    fn lambda_owner(&self, parent: CallableOwner, source: Option<ExprId>) -> Option<CallableOwner> {
+        let source = source?;
         let matching: Vec<_> = self
             .facts
             .closure_sites
             .iter()
-            .filter(|site| site.owner == parent && site.span == span)
+            .filter(|site| site.owner == parent && site.source == source)
             .collect();
         let [site] = matching.as_slice() else {
             return None;
@@ -314,11 +436,36 @@ impl Walk<'_> {
         &mut self,
         pattern: &Pattern,
         owner: CallableOwner,
-        shadow: u16,
+        shadow: u64,
         depth: usize,
     ) -> Result<(), String> {
         self.charge(depth)?;
         match &pattern.kind {
+            PatternKind::Name(name) if bit(name) != 0 => self.found.push(Candidate {
+                source: pattern.hir_id.map(SyntaxId::Pattern),
+                owner,
+                name: name.clone(),
+                shadowed: shadow & bit(name) != 0,
+            }),
+            PatternKind::Constructor {
+                path,
+                arguments,
+                parenthesized,
+            } if arguments.is_empty()
+                && !parenthesized
+                && path.len() <= 3
+                && path.iter().all(|piece| piece.len() <= 64) =>
+            {
+                let name = path.join("::");
+                if bit(&name) != 0 {
+                    self.found.push(Candidate {
+                        source: pattern.hir_id.map(SyntaxId::Pattern),
+                        owner,
+                        shadowed: shadow & bit(&name) != 0,
+                        name,
+                    });
+                }
+            }
             PatternKind::Value(value) => self.expr(value, owner, shadow, depth + 1)?,
             PatternKind::Tuple(items)
             | PatternKind::Alternative(items)
@@ -344,22 +491,28 @@ impl Walk<'_> {
         &mut self,
         expression: &Expr,
         owner: CallableOwner,
-        shadow: u16,
+        shadow: u64,
         depth: usize,
     ) -> Result<(), String> {
         self.charge(depth)?;
         match &expression.kind {
-            ExprKind::Name(name) => self.found.push(Candidate {
+            ExprKind::Name(name) if bit(name) != 0 => self.found.push(Candidate {
+                source: expression.hir_id.map(SyntaxId::Expr),
                 owner,
-                span: expression.span,
                 name: name.clone(),
                 shadowed: shadow & bit(name) != 0,
             }),
             ExprKind::Path(path) => {
+                if path.len() > 3 || path.iter().any(|piece| piece.len() > 64) {
+                    return Ok(());
+                }
                 let name = path.join("::");
+                if bit(&name) == 0 {
+                    return Ok(());
+                }
                 self.found.push(Candidate {
+                    source: expression.hir_id.map(SyntaxId::Expr),
                     owner,
-                    span: expression.span,
                     shadowed: shadow & bit(&name) != 0,
                     name,
                 });
@@ -370,7 +523,7 @@ impl Walk<'_> {
             ExprKind::Lambda {
                 parameters, body, ..
             } => {
-                if let Some(child_owner) = self.lambda_owner(owner, expression.span) {
+                if let Some(child_owner) = self.lambda_owner(owner, expression.hir_id) {
                     let mut child_shadow = shadow;
                     for parameter in parameters {
                         child_shadow |= self.pattern_names(&parameter.pattern, depth + 1)?;
@@ -500,10 +653,16 @@ mod prelude_tests {
     use super::*;
 
     fn lookup(source: &str, spelling: &str, identity: &str) -> Result<(), String> {
-        let parsed = ril_syntax::parse(source);
+        let mut parsed = ril_syntax::parse(source);
         assert!(parsed.is_ok(), "{source}: {:?}", parsed.diagnostics);
+        let hir = crate::hir::nodes::HirProgram::lower_identified(
+            &mut parsed.program,
+            crate::hir::nodes::InputOrigin::Source,
+        )
+        .unwrap();
         let facts = SemanticFacts {
             source_program: Some(std::sync::Arc::new(parsed.program)),
+            semantic_hir: Some(std::sync::Arc::new(hir)),
             ..SemanticFacts::default()
         };
         let mut walk = Walk {
@@ -520,8 +679,13 @@ mod prelude_tests {
         let candidate = walk
             .found
             .iter()
-            .find(|candidate| candidate.name == spelling)
+            .find(|candidate| {
+                candidate.name == spelling && matches!(candidate.source, Some(SyntaxId::Expr(_)))
+            })
             .expect("fixture must contain its real constructor expression");
+        let Some(SyntaxId::Expr(source)) = candidate.source else {
+            panic!("fixture must select a physical expression")
+        };
         actual_prelude_name(
             &facts,
             InvocationContext {
@@ -533,8 +697,15 @@ mod prelude_tests {
                 default_use: None,
             },
             &Expr {
-                hir_id: None,
-                span: candidate.span,
+                hir_id: Some(source),
+                span: facts
+                    .semantic_hir
+                    .as_deref()
+                    .unwrap()
+                    .expression(source)
+                    .unwrap()
+                    .info
+                    .span,
                 kind: ExprKind::Name(spelling.into()),
             },
             identity,
@@ -584,6 +755,19 @@ mod prelude_tests {
         }
         assert!(lookup("let VALUE=Some(1)", "Some", "None").is_err());
         assert!(lookup("let VALUE=Some(1)", "Some", "Ok").is_err());
+        for name in ["clone", "clone_immut"] {
+            let qualified = format!("Prelude::{name}");
+            assert!(lookup(&format!("let VALUE={name}(1)"), name, name).is_ok());
+            assert!(lookup(&format!("let VALUE={{let {name}=1;{name}(1)}}"), name, name).is_err());
+            assert!(
+                lookup(
+                    &format!("let VALUE={{let {name}=1;{qualified}(1)}}"),
+                    &qualified,
+                    name
+                )
+                .is_ok()
+            );
+        }
     }
 
     #[test]

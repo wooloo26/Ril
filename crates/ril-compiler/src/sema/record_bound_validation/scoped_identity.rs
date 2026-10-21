@@ -134,7 +134,7 @@ impl Replay<'_> {
                     return Ok(());
                 }
                 require(
-                    call.arguments.len() == function.syntax.parameters.len(),
+                    call.entry.arguments.len() == function.syntax.parameters.len(),
                     "structural source entry table is missing arguments or has the wrong arity",
                 )?;
                 for (generic_index, _) in required {
@@ -157,7 +157,7 @@ impl Replay<'_> {
                     // needs an open scoped descriptor. Missing stored children
                     // must not make coverage vacuously empty.
                     for (argument, path) in &paths {
-                        let (_, entry) = call.arguments.get(*argument).ok_or_else(|| {
+                        let (_, entry) = call.entry.arguments.get(*argument).ok_or_else(|| {
                             "required T path has no original whole argument".to_owned()
                         })?;
                         self.snapshot(entry)?;
@@ -270,7 +270,7 @@ impl Replay<'_> {
             })?;
         let source_function = self.function(anchor.definition)?;
         require(
-            source.arguments.len() == source_function.syntax.parameters.len(),
+            source.entry.arguments.len() == source_function.syntax.parameters.len(),
             "scoped original formal entry table is missing arguments or has the wrong arity",
         )?;
         let mut child = call;
@@ -302,8 +302,8 @@ impl Replay<'_> {
             child = parent_entry;
         }
         require(
-            anchor.entry_allocation_epoch == source.entry_allocation_epoch
-                && anchor.entry_allocation_epoch == call.entry_allocation_epoch,
+            anchor.entry_allocation_epoch == source.entry.allocation_epoch
+                && anchor.entry_allocation_epoch == call.entry.allocation_epoch,
             "scoped source across recency requires an explicit original source transport proof",
         )?;
         let parameter = self
@@ -318,6 +318,7 @@ impl Replay<'_> {
             return Err("scoped original formal is not a genuine named parameter root".into());
         };
         let (mode, entry) = source
+            .entry
             .arguments
             .get(anchor.parameter_index as usize)
             .ok_or_else(|| "scoped original formal has no whole entry snapshot".to_owned())?;

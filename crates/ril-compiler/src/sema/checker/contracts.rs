@@ -18,19 +18,17 @@ pub(super) struct CanonicalBuiltinSummary {
 }
 
 #[derive(Clone)]
-pub(super) struct LambdaContract {
-    pub return_type: Option<TypeExpr>,
-    pub annotations: Vec<Annotation>,
-    pub span: Span,
-    pub typing_environment: crate::sema::context::FrozenEnvironment,
-}
-#[derive(Clone)]
 pub(super) struct ContractEnvironment {
     owner: ScopeId,
     scope: u32,
-    lexical: Env,
+    typing_environment: crate::sema::context::FrozenEnvironment,
 }
 impl Checker {
+    pub(super) fn lambda_contract(&self, id: usize) -> Option<&LambdaContract> {
+        self.closures
+            .get(id)
+            .map(|closure| closure.contract.as_ref())
+    }
     /// Execute a primitive's semantic transfer in an isolated latent frame.
     /// This reports its actual obligations; it does not make a caller's row
     /// true or manufacture a source witness from the primitive's runtime Ty.
@@ -46,7 +44,8 @@ impl Checker {
         if !matches!(
             name.as_str(),
             "File::read_chunk" | "File::write" | "Process::wait" | "Process::terminate"
-        ) || self.operations.contains_key(name)
+        ) && crate::sema::source_types::builtins::BuiltinId::lookup(name).is_none()
+            || self.operations.contains_key(name)
         {
             return None;
         }
@@ -88,7 +87,16 @@ impl Checker {
                 ));
                 formal_roots.push(self.bindings[binding].value.origins.nodes.clone());
             }
-            self.standard_typed_builtin(value, name, &arguments, span, &mut context)?;
+            let diagnostics = self.diagnostics.len();
+            let unsupported = self.unsupported.len();
+            self.transfer_builtin(value, name, arguments, span, &mut context);
+            if self.unsupported.len() != unsupported
+                || self.diagnostics[diagnostics..]
+                    .iter()
+                    .any(|diagnostic| diagnostic.severity == Severity::Error)
+            {
+                return None;
+            }
             let obligations = &context.obligations;
             if obligations.symbolic
                 || obligations.capture
@@ -331,7 +339,10 @@ impl Checker {
             .collect();
         let mut selected = BTreeMap::new();
         if super::types::unify_call_types(&syntax_target, &bound.target, &binders, &mut selected) {
-            self.generic_substitutions.extend(selected);
+            self.type_source
+                .environment
+                .generic_substitutions
+                .extend(selected);
         }
         self.ascribe_signature(alternative, &bound.syntax);
         self.require_type(alternative, &bound.target, bound.span);
@@ -354,57 +365,72 @@ impl Checker {
     }
 
     pub(super) fn set_contract_environment(&mut self, environment: &Env) {
-        self.contract_environment = environment.clone();
+        self.type_source.environment.contract_bindings = environment.clone();
     }
     pub(super) fn register_type_contract_environments(
         &mut self,
         declaration: &TypeDeclaration,
         frame: &Frame,
     ) {
-        fn visit(ty: &TypeExpr, spans: &mut Vec<Span>) {
+        fn visit(ty: &TypeExpr, sources: &mut Vec<ril_compiler_core::ids::TypeExprId>) {
             match &ty.kind {
                 TypeKind::Callable {
                     parameters,
                     result,
                     annotations,
                 } => {
-                    spans.extend(annotations.iter().map(|annotation| annotation.span));
+                    if !annotations.is_empty() {
+                        sources.extend(ty.hir_id);
+                    }
                     for parameter in parameters {
                         if let Some(ty) = &parameter.ty {
-                            visit(ty, spans);
+                            visit(ty, sources);
                         }
                     }
                     if let Some(result) = result {
-                        visit(result, spans);
+                        visit(result, sources);
                     }
                 }
                 TypeKind::Tuple(items) => {
                     for item in items {
-                        visit(item, spans);
+                        visit(item, sources);
                     }
                 }
-                TypeKind::Record { fields, .. } => {
+                TypeKind::Record { fields, row } => {
                     for field in fields {
-                        visit(&field.ty, spans);
+                        visit(&field.ty, sources);
+                    }
+                    if let Some(row) = row {
+                        visit(row, sources);
+                    }
+                }
+                TypeKind::Name { arguments, .. } => {
+                    for argument in arguments {
+                        visit(argument, sources);
                     }
                 }
                 TypeKind::Array { element, .. } | TypeKind::Optional(element) => {
-                    visit(element, spans)
+                    visit(element, sources)
+                }
+                TypeKind::Map { key, value } => {
+                    visit(key, sources);
+                    visit(value, sources);
                 }
                 _ => {}
             }
         }
-        let mut spans = Vec::new();
+        let mut sources = Vec::new();
         if let Some(value) = &declaration.value {
-            visit(value, &mut spans);
+            visit(value, &mut sources);
         }
-        for span in spans {
+        for source in sources {
+            let typing_environment = self.capture_typing_environment_with_bindings(&frame.env);
             self.type_contract_environments.insert(
-                (span.file.0, span.start, span.end),
+                source,
                 ContractEnvironment {
                     owner: frame.owner,
                     scope: self.block_boundaries.last().copied().unwrap_or(u32::MAX),
-                    lexical: frame.env.clone(),
+                    typing_environment,
                 },
             );
         }
@@ -413,7 +439,11 @@ impl Checker {
         let info = &self.bindings[binding];
         for environment in self.type_contract_environments.values_mut() {
             if environment.owner == info.owner && environment.scope == info.lexical_scope {
-                environment.lexical.insert(info.name.clone(), binding);
+                let mut bindings = environment.typing_environment.contract_bindings.clone();
+                bindings.insert(info.name.clone(), binding);
+                environment.typing_environment = environment
+                    .typing_environment
+                    .with_contract_bindings(bindings);
             }
         }
     }
@@ -474,21 +504,15 @@ impl Checker {
             return BoundProbe::Open;
         }
         self.validate_empty_callable_rows(&value.ty, annotations, syntax.span);
-        let lexical = annotations
-            .iter()
-            .find_map(|annotation| {
-                self.type_contract_environments
-                    .get(&(
-                        annotation.span.file.0,
-                        annotation.span.start,
-                        annotation.span.end,
-                    ))
-                    .map(|environment| environment.lexical.clone())
-            })
-            .unwrap_or_else(|| self.contract_environment.clone());
+        let source = self.callable_type_source(syntax);
+        let typing_environment = source
+            .and_then(|source| self.type_contract_environments.get(&source))
+            .map(|environment| environment.typing_environment.clone())
+            .unwrap_or_else(|| self.capture_typing_environment());
         let bound = CallableBound {
             annotations: annotations.to_vec(),
-            lexical,
+            source: source.map(ril_compiler_core::ids::CallableContractSource::Type),
+            typing_environment,
             span: syntax.span,
         };
         if !value.callable_bounds.contains(&bound) {
@@ -502,6 +526,52 @@ impl Checker {
         );
         if !self.probing_contracts.insert(key) {
             return BoundProbe::Unresolved;
+        }
+        if let [Callable::Builtin(name)] = value.callables.as_slice()
+            && let Some(id) = ril_compiler_core::builtin_calls::GenericBuiltin::lookup(name)
+        {
+            let target = self.freeze_source_receiving_target(syntax);
+            let instance = target.key().and_then(|source| {
+                crate::sema::source_types::polymorphic::instantiate_key(id, &source).ok()
+            });
+            let result = match instance {
+                Some(Some(instance)) => {
+                    // A primitive declaration has a closed latent contract.
+                    // Checking that contract creates no hypothetical heap
+                    // writes, loans, fake call or borrowed application token.
+                    let obligations = Obligations {
+                        parameter_write: instance.parameter_write,
+                        retention: instance.retention,
+                        ..Default::default()
+                    };
+                    self.check_contract(
+                        &bound,
+                        ScopeId(0),
+                        &obligations,
+                        syntax.span,
+                        &BTreeSet::new(),
+                    );
+                    BoundProbe::Complete
+                }
+                Some(None) => {
+                    self.error(
+                        "E0301",
+                        syntax.span,
+                        "primitive callable bound has no matching full Source instance",
+                        [value.cause],
+                    );
+                    BoundProbe::Unresolved
+                }
+                None => {
+                    self.unsupported(
+                        syntax.span,
+                        "primitive callable bound lacks its complete frozen Source instance",
+                    );
+                    BoundProbe::Unresolved
+                }
+            };
+            self.probing_contracts.remove(&key);
+            return result;
         }
         let Some(parameters) = value.signature.clone() else {
             self.unsupported(
@@ -517,7 +587,7 @@ impl Checker {
         let preview = self.snapshot_flow();
         let handlers = std::mem::take(&mut self.active_handlers);
         let previous_completed = self.completed_invocation.clone();
-        let mut context = self.frame(bound.lexical.clone(), true);
+        let mut context = self.frame(bound.typing_environment.contract_bindings.clone(), true);
         let mut arguments = Vec::new();
         for (index, parameter) in parameters.iter().enumerate() {
             let ty = parameter
@@ -531,6 +601,7 @@ impl Checker {
                 argument.permission = Permission::Write;
             }
             if let Some(ty) = &parameter.ty {
+                self.ascribe_signature(&mut argument, ty);
                 self.promise_array_shape(&argument, ty, &mut context);
             }
             let binding = self.bind_name(
@@ -557,16 +628,16 @@ impl Checker {
             let captures = self.contract_captures(&callable);
             match callable {
                 Callable::Named(id) => {
-                    self.invoke_named(
+                    self.invoke_named_from(
                         id,
                         arguments.clone(),
                         syntax.span,
                         Some(&mut context),
-                        false,
+                        crate::sema::application_effect::EntryOrigin::SignatureProbe,
                     );
                 }
                 Callable::Closure(id) => {
-                    self.invoke_closure_probe(id, arguments.clone(), syntax.span, &mut context);
+                    self.invoke_closure_signature(id, arguments.clone(), syntax.span, &mut context);
                 }
                 Callable::Symbolic(..) => {
                     complete = false;
@@ -609,6 +680,28 @@ impl Checker {
         } else {
             BoundProbe::Unresolved
         }
+    }
+
+    fn callable_type_source(
+        &self,
+        syntax: &TypeExpr,
+    ) -> Option<ril_compiler_core::ids::TypeExprId> {
+        let mut syntax = syntax;
+        let mut seen = BTreeSet::new();
+        for _ in 0..64 {
+            match &syntax.kind {
+                TypeKind::Callable { .. } => return syntax.hir_id,
+                TypeKind::Name { path, .. } => {
+                    let name = path.join("::");
+                    if !seen.insert(name.clone()) {
+                        return None;
+                    }
+                    syntax = self.types.get(&name)?.value.as_ref()?;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// A failed source reception must not suppress an independently required
@@ -763,7 +856,7 @@ impl Checker {
         result: &mut Value,
         span: Span,
     ) {
-        let Some(contract) = self.lambda_contracts.get(&id).cloned() else {
+        let Some(contract) = self.lambda_contract(id).cloned() else {
             return;
         };
         if let Some(syntax) = &contract.return_type {
@@ -780,7 +873,8 @@ impl Checker {
         if !contract.annotations.is_empty() {
             let bound = CallableBound {
                 annotations: contract.annotations,
-                lexical: contract.typing_environment.contract_bindings.clone(),
+                source: contract.source,
+                typing_environment: contract.typing_environment,
                 span: contract.span,
             };
             let captures = self.closures[id].captures.clone();
@@ -788,6 +882,19 @@ impl Checker {
         }
     }
     fn check_contract(
+        &mut self,
+        bound: &CallableBound,
+        owner: ScopeId,
+        obligations: &Obligations,
+        span: Span,
+        captures: &BTreeSet<BindingId>,
+    ) {
+        self.with_typing_environment(&bound.typing_environment, |checker| {
+            checker.check_contract_in_environment(bound, owner, obligations, span, captures);
+        });
+    }
+
+    fn check_contract_in_environment(
         &mut self,
         bound: &CallableBound,
         owner: ScopeId,
@@ -843,7 +950,8 @@ impl Checker {
                         } else {
                             (Mode::Read, item)
                         };
-                        let Some(&binding) = bound.lexical.get(name) else {
+                        let Some(&binding) = bound.typing_environment.contract_bindings.get(name)
+                        else {
                             self.error(
                                 "E0204",
                                 annotation.span,
@@ -958,5 +1066,90 @@ fn syntax_contains_callable(syntax: &TypeExpr) -> bool {
             syntax_contains_callable(key) || syntax_contains_callable(value)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod frozen_effect_scope_tests {
+    use super::*;
+
+    #[test]
+    fn callable_effect_bounds_use_the_captured_type_instance_and_restore_the_caller() {
+        let parsed = ril_syntax::parse(
+            "eff Read<S>{get()->S}\nfn seed<T>(value:T){}\nfn caller<T>(value:T){}",
+        );
+        assert!(parsed.diagnostics.is_empty());
+        let mut checker = Checker::new(FileId(0));
+        checker.run(&parsed.program);
+        let seed = checker
+            .functions
+            .iter()
+            .position(|info| info.syntax.name == "seed")
+            .unwrap();
+        checker.generic_scope(seed);
+        let identity = checker.type_source.environment.generic_context["T"].clone();
+        let mut captured = checker.capture_typing_environment().thaw();
+        captured
+            .generic_substitutions
+            .insert(identity.clone(), Ty::Int("int".into()));
+        let captured = captured.freeze();
+        let caller_function = checker
+            .functions
+            .iter()
+            .position(|info| info.syntax.name == "caller")
+            .unwrap();
+        checker.generic_scope(caller_function);
+        let caller_identity = checker.type_source.environment.generic_context["T"].clone();
+        assert_ne!(identity, caller_identity);
+        let mut caller = checker.capture_typing_environment().thaw();
+        caller
+            .generic_substitutions
+            .insert(caller_identity.clone(), Ty::Str);
+        let caller = caller.freeze();
+        let span = checker.functions[seed].syntax.span;
+        let annotation = Annotation {
+            kind: AnnotationKind::Effect,
+            text: "@Read<T>".into(),
+            span,
+        };
+        checker.restore_typing_environment(captured.clone());
+        let captured_effects = checker.effect_row(&annotation);
+        checker.restore_typing_environment(caller.clone());
+        let caller_effects = checker.effect_row(&annotation);
+        assert!(!captured_effects.is_empty());
+        assert_ne!(captured_effects, caller_effects);
+        checker.diagnostics.clear();
+        let bound = CallableBound {
+            source: None,
+            annotations: vec![annotation],
+            typing_environment: captured,
+            span,
+        };
+        let mut obligations = Obligations {
+            effects: captured_effects,
+            ..Default::default()
+        };
+        checker.check_contract(&bound, ScopeId(0), &obligations, span, &BTreeSet::new());
+        assert!(
+            checker.diagnostics.is_empty(),
+            "captured instance was replaced by caller: {:?}",
+            checker.diagnostics
+        );
+        assert_eq!(
+            checker.type_source.environment.generic_substitutions[&caller_identity],
+            Ty::Str
+        );
+        obligations.effects = caller_effects;
+        checker.check_contract(&bound, ScopeId(0), &obligations, span, &BTreeSet::new());
+        assert!(
+            checker
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "E0534")
+        );
+        assert_eq!(
+            checker.type_source.environment.generic_substitutions[&caller_identity],
+            Ty::Str
+        );
     }
 }

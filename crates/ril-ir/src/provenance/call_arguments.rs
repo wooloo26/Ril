@@ -41,11 +41,17 @@ pub struct InvocationExpression {
 /// Complete original primitive headers and rows retained for hover and proof
 /// explanation. Presentation records never authorize a semantic operation.
 #[derive(Debug, Clone)]
+pub enum BuiltinDeclaration {
+    Syntax(ContractSyntax),
+    Generic(ril_compiler_core::builtin_calls::GenericBuiltin),
+}
+
+#[derive(Debug, Clone)]
 pub struct BuiltinSourceObservation {
     pub expression: usize,
     pub context: ResumptionContext,
     pub identity: String,
-    pub full_header: ContractSyntax,
+    pub full_header: BuiltinDeclaration,
     pub concrete_effects: BTreeSet<String>,
     pub written_formals: BTreeSet<u32>,
     pub captures: BTreeSet<u32>,

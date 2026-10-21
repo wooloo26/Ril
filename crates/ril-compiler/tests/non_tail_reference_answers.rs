@@ -58,6 +58,15 @@ fn normal_reference_answers_run_the_suffix_against_the_actual_graph() {
             .iter()
             .any(|step| step.transport == AnswerTransport::OrdinaryChecked)
     );
+    let mut damaged = verified.facts().clone();
+    damaged.resumption_steps[0].id = ril_compiler_core::ids::ProtectedAnswerId(u32::MAX);
+    assert!(sema::resumption::validate(&damaged).is_err());
+    let mut damaged = verified.facts().clone();
+    damaged.resumption_steps[0].resume_source = ril_compiler_core::ids::ExprId(u32::MAX);
+    assert!(sema::resumption::validate(&damaged).is_err());
+    let mut damaged = verified.facts().clone();
+    damaged.resumption_steps[0].arm_source = ril_compiler_core::ids::ExprId(u32::MAX);
+    assert!(sema::resumption::validate(&damaged).is_err());
     accepted(
         r#"
 eff Read{get()->int}

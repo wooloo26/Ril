@@ -75,7 +75,7 @@ impl Checker {
         let Some(token) = event.callee_expression else {
             return;
         };
-        let Some(callee_fact) = self.expression_facts.get(token) else {
+        let Some(callee_fact) = self.application_effect.expressions.get(token) else {
             return;
         };
         if !event.matches_source(syntax)
@@ -126,22 +126,26 @@ impl Checker {
                 // from the expected Result declaration.
                 let input = self.call_input_source.supplied.get(&event.id)?.get(&0)?;
                 let token = input.expression?;
-                let actual = self.expression_facts.get(token)?;
+                let actual = self.application_effect.expressions.get(token)?;
                 (input.context == context
                     && actual.source_id.is_some()
                     && actual.source_id == arguments[0].expression.hir_id
                     && actual.value.cause == payload.cause
-                    && self.invocation_expressions.get(token).is_some_and(|row| {
-                        row.expression == token
-                            && row.context == context
-                            && row.argument_of == Some((event.id, 0))
-                    }))
+                    && self
+                        .application_effect
+                        .contexts
+                        .get(token)
+                        .is_some_and(|row| {
+                            row.expression == token
+                                && row.context == context
+                                && row.argument_of == Some((event.id, 0))
+                        }))
                 .then(|| input.key.clone())
                 .flatten()
             });
         let Some(active_key) = active_key else { return };
         let inactive_key = source
-            .and_then(|source| source.key.as_ref())
+            .and_then(|source| source.key())
             .and_then(|key| match key {
                 ArgumentKey::Name { name, arguments }
                     if name == "Result" && arguments.len() == 2 =>
@@ -202,13 +206,18 @@ impl Checker {
         let event = self.copy_call_events.get(event.0 as usize)?;
         let root = event.result_expression?;
         if !event.matches_source(syntax)
-            || !self.expression_facts.get(root).is_some_and(|fact| {
-                fact.source_id.is_some()
-                    && fact.source_id == syntax.hir_id
-                    && fact.value.cause == value.cause
-            })
             || !self
-                .invocation_expressions
+                .application_effect
+                .expressions
+                .get(root)
+                .is_some_and(|fact| {
+                    fact.source_id.is_some()
+                        && fact.source_id == syntax.hir_id
+                        && fact.value.cause == value.cause
+                })
+            || !self
+                .application_effect
+                .contexts
                 .get(root)
                 .is_some_and(|row| row.expression == root && row.context == *context)
         {
@@ -325,7 +334,10 @@ impl Checker {
             return None;
         };
         let event = self.copy_call_events.get(call.source_event?.0 as usize)?;
-        let expression = self.expression_facts.get(event.callee_expression?)?;
+        let expression = self
+            .application_effect
+            .expressions
+            .get(event.callee_expression?)?;
         if Some(event.id) != call.source_event
             || event.target != Some(call.target)
             || !event.matches_source(syntax)
@@ -337,7 +349,8 @@ impl Checker {
             return None;
         }
         if self
-            .invocation_expressions
+            .application_effect
+            .contexts
             .iter()
             .filter(|row| {
                 row.expression == event.callee_expression.unwrap() && row.context == context

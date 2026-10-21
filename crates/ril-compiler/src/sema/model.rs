@@ -329,20 +329,18 @@ impl Ty {
             return inner.scalar();
         }
         if let Self::Named(name) = self {
+            if ril_compiler_core::builtin_types::AtomicBuiltinType::from_name(name).is_some() {
+                return true;
+            }
             return matches!(
                 name.as_str(),
                 "Time::Duration"
-                    | "Order::Ordering"
                     | "Time::Instant"
                     | "Time::TimeError"
                     | "Binary::ByteOrder"
                     | "Binary::BinaryError"
                     | "Num::NumError"
                     | "Io::ErrorKind"
-                    | "Os::NativeString"
-                    | "Os::NativeError"
-                    | "Os::Platform"
-                    | "Path::Path"
                     | "File::OpenMode"
                     | "File::SeekFrom"
                     | "File::FileKind"
@@ -450,7 +448,8 @@ pub enum Callable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableBound {
     pub annotations: Vec<Annotation>,
-    pub lexical: Env,
+    pub source: Option<ril_compiler_core::ids::CallableContractSource>,
+    pub typing_environment: super::context::FrozenEnvironment,
     pub span: Span,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -956,6 +955,12 @@ impl Value {
 
 #[derive(Debug, Clone)]
 pub struct BindingInfo {
+    /// Actual HIR pattern introducing this binding, independent of its span.
+    pub pattern: Option<ril_compiler_core::ids::PatternId>,
+    /// Declaration interpretation belongs to this binding's own activation,
+    /// including when a later closure or handler reads the captured binding.
+    pub context: super::effect_identity::InvocationContext,
+    pub typing_environment: super::context::FrozenEnvironment,
     pub name: String,
     pub value: Value,
     pub mode: BindingMode,
@@ -989,7 +994,17 @@ pub struct FunctionInfo {
     pub environment_published: bool,
 }
 #[derive(Debug, Clone)]
+pub struct LambdaContract {
+    pub source: Option<ril_compiler_core::ids::CallableContractSource>,
+    pub return_type: Option<TypeExpr>,
+    pub annotations: Vec<Annotation>,
+    pub span: Span,
+    pub typing_environment: super::context::FrozenEnvironment,
+}
+
+#[derive(Debug, Clone)]
 pub struct ClosureInfo {
+    pub contract: Arc<LambdaContract>,
     pub hir_id: Option<ril_compiler_core::ids::ExprId>,
     pub site: Option<ril_compiler_core::ids::ClosureSiteId>,
     pub creation_invocation: Option<super::copy_templates::InstanceId>,
@@ -1008,6 +1023,7 @@ pub struct ClosureInfo {
 pub struct ClosureSite {
     pub id: ril_compiler_core::ids::ClosureSiteId,
     pub owner: ril_compiler_core::ids::CallableOwner,
+    pub source: ril_compiler_core::ids::ExprId,
     pub span: Span,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1092,6 +1108,9 @@ pub struct Obligations {
     pub retention: bool,
     pub capture: bool,
     pub symbolic: bool,
+    /// Actual unknown-callback callee occurrences. These can justify a named
+    /// upper-bound use, but never stand in for a concrete access or effect.
+    pub symbolic_uses: BTreeSet<ril_compiler_core::ids::EvaluationOccurrenceId>,
     pub accesses: Vec<AccessFact>,
 }
 impl Obligations {
@@ -1128,6 +1147,7 @@ impl Obligations {
         self.retention |= other.retention;
         self.capture |= other.capture;
         self.symbolic |= other.symbolic;
+        self.symbolic_uses.extend(&other.symbolic_uses);
         self.accesses.extend(other.accesses.iter().cloned());
     }
 }
@@ -1150,6 +1170,7 @@ pub struct HandlerFact {
     pub operations: Vec<u64>,
     pub arm_spans: Vec<Span>,
     pub lexical: Env,
+    pub typing_environment: super::context::FrozenEnvironment,
     pub answer: Option<Ty>,
     pub arms: Vec<ril_syntax::ast::HandlerArm>,
     pub outer: Vec<usize>,

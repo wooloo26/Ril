@@ -1,0 +1,142 @@
+--@ case: command-derive
+--@ mode: run-pass
+--@ spec: SPEC#functional-updates-via-derive
+--@ entry: test_native
+--@ file: source.ril
+use ril/process
+use ril/path
+use ril/os
+pub fn test_native() {
+    let command = Process::command(Path::from_string("./unused"), [Os::from_string("argument")])
+    let captured = command |> derive \mut draft -> { draft.stdout = Process::OutputMode::Capture }
+    assert(command.stdout == Process::OutputMode::Inherit)
+    assert(captured.stdout == Process::OutputMode::Capture)
+    assert(len(captured.args) == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: closed-constructors
+--@ mode: run-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_native
+--@ file: source.ril
+use ril/process
+pub fn test_native() {
+    let status = Process::ExitStatus::Exited(7u32)
+    assert(status is Process::ExitStatus::Exited(7u32))
+    let input = Process::Input::Data(b"input")
+    assert(input is Process::Input::Data(b"input"))
+}
+--@ end-file
+--@ end-case
+
+--@ case: buffered-callback-source
+--@ mode: run-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_native
+--@ file: source.ril
+use ril/io
+use ril/bytes
+type Sink = { mut data: []u8 }
+fn write(mut sink: Sink, data: bytes) -> Io::WriteProgress &mut {
+    for Bytes::to_array(data) as value { sink.data !> Array::push(value) }
+    .{written: len(data), error: None}
+}
+pub fn test_native() {
+    let mut sink = Sink.{data: []}
+    let mut buffer = Io::write_buffer(8)
+    let progress = Io::write_buffered(mut buffer, mut sink, .{write: write}, b"abc")
+    assert(progress.written == 3 && progress.error == None)
+    assert(Io::flush(mut buffer, mut sink, .{write: write}) is Ok())
+    assert(Bytes::from_array(sink.data) == b"abc")
+}
+--@ end-file
+--@ end-case
+
+--@ case: repeated-reader
+--@ mode: run-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_native
+--@ file: source.ril
+use ril/io
+type Reader = { scratch: [0][2]int, mut calls: int }
+fn read(mut reader: Reader, maximum: int) -> Result<Io::ReadChunk, Io::IoError> &mut {
+    reader.calls += 1
+    assert(len(reader.scratch) == 0)
+    Ok(.{data: b"", end: true})
+}
+pub fn test_native() {
+    let mut reader = Reader.{scratch: [], calls: 0}
+    assert(Io::read_all(mut reader, .{read: read}) is Ok(b""))
+    assert(Io::read_all(mut reader, .{read: read}) is Ok(b""))
+    assert(reader.calls == 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: repeated-reader-mismatch
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: repeated-reader
+-- Error [E0301]: generated callback reception cannot change hidden inner dimensions
+--@ file: source.ril
+use ril/io
+type Reader = { scratch: [0][2]int, mut calls: int }
+type Other = { scratch: [0][3]int, mut calls: int }
+fn read(mut reader: Other, maximum: int) -> Result<Io::ReadChunk, Io::IoError> &mut {
+    reader.calls += 1
+    Ok(.{data: b"", end: true})
+}
+fn example() {
+    let mut reader = Reader.{scratch: [], calls: 0}
+    assert(Io::read_all(mut reader, .{read: read}) is Ok(b""))
+}
+--@ end-file
+--@ end-case
+
+--@ case: byte-array-fresh
+--@ mode: run-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_native
+--@ file: source.ril
+use ril/bytes
+pub fn test_native() {
+    let mut values = Bytes::to_array(b"ab")
+    values[0] = 122u8
+    assert(Bytes::from_array(values) == b"zb")
+}
+--@ end-file
+--@ end-case
+
+--@ case: command-args-not-fixed
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: command-derive
+-- Error [E0301]: the public command stores a dynamic argument view regardless of input cardinality
+--@ file: source.ril
+use ril/process
+use ril/path
+use ril/os
+fn fixed(values: [1]Os::NativeString) -> int { len(values) }
+fn example() {
+    let command = Process::command(Path::from_string("./unused"), [Os::from_string("argument")])
+    assert(fixed(command.args) == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: command-mode-type
+--@ mode: check-fail
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: command-derive
+-- Error [E0301]: distinct closed nominal declarations do not become interchangeable
+--@ file: source.ril
+use ril/process
+use ril/path
+fn example() {
+    let command = Process::command(Path::from_string("./unused"), [])
+    let changed = command |> derive \mut draft -> { draft.stdout = Process::Input::Null }
+}
+--@ end-file
+--@ end-case

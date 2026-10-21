@@ -162,6 +162,7 @@ fn deleted_coverage_missing_entry_tables_and_wrong_epochs_never_issue_member_tok
     ] {
         let mut copy = facts.clone();
         copy.copy_invocations[invocation.0 as usize]
+            .entry
             .arguments
             .clear();
         damaged(&copy);
@@ -246,7 +247,7 @@ fn actual_snapshot_bridges_fixed_storage_and_symbolic_sources_are_independent_ob
     let original = identity.occurrences[0].formal.invocation;
     let mut copy = facts.clone();
     let mut changed = 0;
-    for (_, snapshot) in &mut copy.copy_invocations[original.0 as usize].arguments {
+    for (_, snapshot) in &mut copy.copy_invocations[original.0 as usize].entry.arguments {
         for node in &mut snapshot.nodes {
             for (_, value) in &mut node.fields {
                 if matches!(value.ty, Ty::Generic(_)) && !value.origins.nodes.is_empty() {
@@ -272,7 +273,7 @@ fn a_callable_cannot_borrow_another_members_signature_or_drop_its_received_retur
     for erase_signature in [false, true] {
         let mut copy = facts.clone();
         let mut changed = 0;
-        for (_, snapshot) in &mut copy.copy_invocations[original.0 as usize].arguments {
+        for (_, snapshot) in &mut copy.copy_invocations[original.0 as usize].entry.arguments {
             for node in &mut snapshot.nodes {
                 for (_, value) in &mut node.fields {
                     if matches!(value.ty, Ty::Callable(..)) {
@@ -335,7 +336,8 @@ fn dependent_u_must_match_its_original_stored_field_and_complete_coordinates() {
     let mut copy = facts.clone();
     let invocation = check.context.invocation.unwrap();
     for snapshot in [
-        &mut copy.copy_invocations[invocation.0 as usize].arguments[check.argument_index as usize]
+        &mut copy.copy_invocations[invocation.0 as usize].entry.arguments
+            [check.argument_index as usize]
             .1,
         &mut copy.generic_bound_checks[check.id.0 as usize].actual,
     ] {
