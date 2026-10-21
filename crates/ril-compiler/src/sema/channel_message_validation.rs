@@ -461,7 +461,7 @@ fn metadata(facts: &SemanticFacts) -> Check {
                 .filter(|completion| {
                     completion.kind == ChannelExitKind::Complete
                         && completion.sequence < exit.sequence
-                        && facts.scope_parents.get(&completion.activation) == Some(&exit.activation)
+                        && facts.scopes.parent(&completion.activation) == Some(&exit.activation)
                         && (completion
                             .context
                             .closure_invocation
@@ -642,7 +642,7 @@ fn descendant(facts: &SemanticFacts, mut actual: ScopeId, owner: ScopeId) -> boo
         if !seen.insert(actual) {
             return false;
         }
-        let Some(parent) = facts.scope_parents.get(&actual) else {
+        let Some(parent) = facts.scopes.parent(&actual) else {
             return false;
         };
         actual = *parent;

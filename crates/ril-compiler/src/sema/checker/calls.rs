@@ -23,11 +23,12 @@ impl Checker {
         origin: crate::sema::application_effect::EntryOrigin,
     ) -> Value {
         self.require_recorded_public_call_inputs(callee, span, frame);
-        // The operation evidence uses the same syntax token as named calls,
-        // without consuming it before their existing invocation wrapper does.
-        self.copy_operation_events.push(frame.copy_call_event);
-        let result = self.invoke_unrecorded(callee, args, span, frame, origin);
-        self.copy_operation_events.pop();
+        let Some(origin) = self.application_effect.enter_call(origin) else {
+            self.unsupported(span, "call entry budget exhausted before invocation");
+            return Value::scalar(Ty::Unknown, None, CauseId(0));
+        };
+        let result = self.invoke_unrecorded(callee, args, span, frame, &origin);
+        self.application_effect.leave_call(&origin);
         result
     }
     fn invoke_unrecorded(
@@ -36,7 +37,7 @@ impl Checker {
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
         frame: &mut Frame,
-        origin: crate::sema::application_effect::EntryOrigin,
+        origin: &crate::sema::application_effect::EntryOrigin,
     ) -> Value {
         // The syntax token belongs to this invocation only. Builtin/closure
         // callbacks and signature probes must not inherit a caller's token.
@@ -161,7 +162,7 @@ impl Checker {
                 }
                 Callable::Named(id) => {
                     frame.copy_call_event = copy_call_event;
-                    if let Some(origin) = self.application_effect.snapshot_origin(&origin) {
+                    if let Some(origin) = self.application_effect.snapshot_origin(origin) {
                         self.invoke_named_from(*id, args.clone(), span, Some(frame), origin)
                     } else {
                         self.unsupported(span, "callable origin cloning exhausted its work bound");
@@ -207,7 +208,7 @@ impl Checker {
                     }
                 }
                 Callable::Closure(id) => {
-                    if let Some(origin) = self.application_effect.snapshot_origin(&origin) {
+                    if let Some(origin) = self.application_effect.snapshot_origin(origin) {
                         self.invoke_closure_from(*id, args.clone(), span, frame, origin)
                     } else {
                         self.unsupported(span, "callable origin cloning exhausted its work bound");
@@ -237,7 +238,7 @@ impl Checker {
                     }
                     self.invalidate_unknown_callback_refinements();
                     frame.obligations.symbolic = true;
-                    self.record_symbolic_row_use(callee, &origin, frame);
+                    self.record_symbolic_row_use(callee, origin, frame);
                     for (mode, value, arg_span) in &args {
                         if *mode != ParameterMode::Read {
                             self.access(value, None, Mode::Write, *arg_span, frame);
@@ -517,8 +518,14 @@ impl Checker {
         let mut frame = self.frame(env, false);
         frame.definition = Some(info.definition);
         frame.callable_owner = Some(CallableOwner::Function(info.definition));
+        if let Some(&invocation) = self.copy_invocation_stack.last() {
+            self.scopes.set_origin(
+                frame.owner,
+                crate::sema::scopes::ScopeOrigin::Named(invocation),
+            );
+        }
         if let Some(caller) = &caller {
-            self.scope_parents.insert(frame.owner, caller.owner);
+            self.scopes.set_parent(frame.owner, caller.owner);
         }
         frame.expected_return = Some(
             function
@@ -1494,6 +1501,8 @@ impl Checker {
         let mut frame = self.frame(closure.lexical.clone(), true);
         frame.callable_owner = closure.site.map(CallableOwner::Lambda);
         if let Some(id) = self.closure_invocation_stack.last().copied() {
+            self.scopes
+                .set_origin(frame.owner, crate::sema::scopes::ScopeOrigin::Closure(id));
             let invocation = &mut self.closure_invocations[id.0 as usize];
             if invocation
                 .activation
@@ -1507,7 +1516,7 @@ impl Checker {
                 invocation.activation = Some(frame.owner);
             }
         }
-        self.scope_parents.insert(frame.owner, caller.owner);
+        self.scopes.set_parent(frame.owner, caller.owner);
         frame.expected_return = self
             .lambda_contract(id)
             .and_then(|contract| contract.return_type.clone())

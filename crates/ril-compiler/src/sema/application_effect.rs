@@ -39,6 +39,7 @@ pub struct EvaluationRecord {
 pub(crate) struct ApplicationEffectDomain {
     pub activations: Vec<EvaluationActivation>,
     active: Vec<ActivationEpochId>,
+    calls: Vec<std::sync::Arc<EntryOrigin>>,
     pub expressions: Vec<ExpressionFact>,
     pub contexts: Vec<InvocationExpression>,
     pub evaluations: Vec<EvaluationRecord>,
@@ -54,6 +55,7 @@ impl Default for ApplicationEffectDomain {
         Self {
             activations: Vec::new(),
             active: Vec::new(),
+            calls: Vec::new(),
             expressions: Vec::new(),
             contexts: Vec::new(),
             evaluations: Vec::new(),
@@ -67,6 +69,39 @@ impl Default for ApplicationEffectDomain {
 }
 
 impl ApplicationEffectDomain {
+    pub(crate) fn enter_call(
+        &mut self,
+        origin: EntryOrigin,
+    ) -> Option<std::sync::Arc<EntryOrigin>> {
+        if !self.admit(2) {
+            return None;
+        }
+        let origin = std::sync::Arc::new(origin);
+        self.calls.push(origin.clone());
+        Some(origin)
+    }
+    pub(crate) fn leave_call(&mut self, origin: &std::sync::Arc<EntryOrigin>) {
+        let active = self.calls.pop().expect("balanced call entry");
+        assert!(std::sync::Arc::ptr_eq(&active, origin));
+    }
+    pub(crate) fn current_entry(&self) -> Option<&std::sync::Arc<EntryOrigin>> {
+        self.calls.last()
+    }
+    pub(crate) fn current_call_event(&self) -> Option<CopyCallEventId> {
+        match self.current_entry()?.as_ref() {
+            EntryOrigin::Application(id) => Some(*id),
+            _ => None,
+        }
+    }
+    pub(crate) fn enclosing_application(&self) -> Option<CopyCallEventId> {
+        self.calls
+            .iter()
+            .rev()
+            .find_map(|origin| match origin.as_ref() {
+                EntryOrigin::Application(id) => Some(*id),
+                _ => None,
+            })
+    }
     pub(crate) fn admit(&mut self, count: usize) -> bool {
         let Some(remaining) = self.remaining.checked_sub(count) else {
             self.exhausted = true;
@@ -212,6 +247,8 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, String)> {
     let mut identities = BTreeSet::new();
     activations::validate(facts).map_err(|message| (fallback, message))?;
     entries::validate(facts).map_err(|message| (fallback, message))?;
+    super::scopes::validate(facts).map_err(|message| (fallback, message))?;
+    super::scopes::validate_receptions(facts).map_err(|message| (fallback, message))?;
     let mut contexts = vec![None; facts.expressions.len()];
     for context in &facts.invocation_expressions {
         let Some(slot) = contexts.get_mut(context.expression) else {
@@ -234,7 +271,7 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, String)> {
         if record.id.0 as usize != index
             || Some(identity.source) != value.source_id
             || record.allocation_epoch != value.allocation_epoch
-            || !facts.allocated_scopes.contains(&record.scope)
+            || !facts.scopes.contains(&record.scope)
             || contexts[index].is_none_or(|context| context.context != record.context)
             || !identities.insert(identity)
             || facts

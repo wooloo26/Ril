@@ -828,7 +828,7 @@ impl Replay<'_> {
             summaries.len() == 1
                 && summaries[0]
                     .activation
-                    .is_some_and(|activation| self.facts.allocated_scopes.contains(&activation)),
+                    .is_some_and(|activation| self.facts.scopes.contains(&activation)),
             "symbolic source stage has no unique registered invocation activation",
         )?;
         self.every_scoped_occurrence_is_material(call.target, identity.binder)?;

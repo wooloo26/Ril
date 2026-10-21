@@ -345,6 +345,13 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
             return Err((handler.span, CauseId(0)));
         }
     }
+    for operation in facts.operations.values() {
+        if let Some(source) = &operation.source
+            && !walk.environment(&source.environment)
+        {
+            return Err((operation.span, CauseId(0)));
+        }
+    }
     for function in &facts.functions {
         if function.lexical != function.typing_environment.contract_bindings
             || !walk.environment(&function.typing_environment)

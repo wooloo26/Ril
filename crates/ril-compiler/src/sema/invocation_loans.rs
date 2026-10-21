@@ -36,7 +36,7 @@ pub fn validate(facts: &super::SemanticFacts) -> Result<(), (Span, Option<CauseI
             || facts.loan_parents.get(&start.loan) != Some(&start.parents)
             || start.source.participants != start.parents
             || start.source.origins != start.origins
-            || !facts.allocated_scopes.contains(&start.activation)
+            || !facts.scopes.contains(&start.activation)
             || start.allocation_epoch > facts.allocation_history.len()
             || start.bindings.iter().any(|id| {
                 facts
@@ -105,7 +105,7 @@ pub fn validate(facts: &super::SemanticFacts) -> Result<(), (Span, Option<CauseI
     let mut ended = BTreeMap::new();
     for end in &facts.invocation_loan_ends {
         let fail = |message: &str| (end.span, Some(end.cause), message.to_owned());
-        if end.loans.is_empty() || !facts.allocated_scopes.contains(&end.activation) {
+        if end.loans.is_empty() || !facts.scopes.contains(&end.activation) {
             return Err(fail("invocation loan end has no actual local loans"));
         }
         for (loan, parents) in &end.loans {

@@ -72,6 +72,7 @@ pub(crate) fn ordinary_source_coordinates(
 }
 
 pub(crate) use call_input_source::OriginalOperandSources;
+pub(crate) use explicit_named::{SourceSites, source_sites_base};
 
 pub(crate) fn ordinary_lambda_coordinates(
     facts: &SemanticFacts,
@@ -87,6 +88,7 @@ const LIMIT: usize = 65_536;
 
 struct Replay<'a> {
     facts: &'a SemanticFacts,
+    frames: super::scopes::FrameIndex<'a>,
     observations: observation_index::ObservationIndex<'a>,
     blocks: Option<crate::hir::blocks::BlockIndex>,
     functions: BTreeMap<DefinitionId, &'a FunctionInfo>,
@@ -203,6 +205,7 @@ impl<'a> Replay<'a> {
         }
         Ok(Self {
             facts,
+            frames: super::scopes::FrameIndex::new(facts)?,
             observations,
             blocks,
             functions,
@@ -1213,7 +1216,7 @@ impl Replay<'_> {
         for node in &snapshot.nodes {
             require(
                 (node.origin.0 as usize) < self.facts.heap.nodes.len()
-                    && self.facts.allocated_scopes.contains(&node.fact.owner),
+                    && self.facts.scopes.contains(&node.fact.owner),
                 "record-bound frozen origin has no registered identity or scope",
             )?;
             let fields: BTreeMap<_, _> = node
@@ -2123,7 +2126,7 @@ impl Replay<'_> {
         )?;
         let activation = summaries[0]
             .activation
-            .filter(|activation| self.facts.allocated_scopes.contains(activation))
+            .filter(|activation| self.facts.scopes.contains(activation))
             .ok_or_else(|| "symbolic coordinate has no actual activation".to_owned())?;
         let actual_function = self.function(definition)?;
         let direct_binder = key_value.sources.is_empty()
@@ -2256,7 +2259,7 @@ impl Replay<'_> {
                 )?;
                 require(
                     projection.context.owner.is_some()
-                        && self.facts.allocated_scopes.contains(&projection.activation)
+                        && self.facts.scopes.contains(&projection.activation)
                         && projection.allocation_epoch <= self.facts.allocation_history.len(),
                     "record projection has no registered context, activation or frozen epoch",
                 )?;
@@ -2987,7 +2990,7 @@ impl Replay<'_> {
         )?;
         if let Some(parent) = call.caller_activation {
             require(
-                self.facts.scope_parents.get(&activation) == Some(&parent),
+                self.facts.scopes.parent(&activation) == Some(&parent),
                 "record read activation differs from its actual caller scope",
             )?;
         } else {
@@ -3576,7 +3579,7 @@ impl Replay<'_> {
             check.allocation_epoch == call.entry.allocation_epoch
                 && call.caller_activation == Some(check.activation)
                 && check.allocation_epoch <= self.facts.allocation_history.len()
-                && self.facts.allocated_scopes.contains(&check.activation),
+                && self.facts.scopes.contains(&check.activation),
             "structural check differs from its invocation entry epoch or caller activation",
         )?;
         let actual_key = match &check.actual_schema.source {

@@ -103,7 +103,7 @@ pub struct Graph {
     pub termination: Vec<Termination>,
     pub static_termination: Vec<Termination>,
     pub loan_parents: Vec<(u32, Vec<Participant>)>,
-    pub scope_parents: Vec<(u32, u32)>,
+    pub scopes: Vec<ScopeRecord>,
     pub concurrent_boundaries: Vec<ConcurrentBoundary>,
     pub parallel_boundaries: Vec<ParallelBoundary>,
     pub storage_types: Vec<(OriginId, TypeId)>,
@@ -464,12 +464,22 @@ pub struct Constructor {
 }
 #[derive(Debug, Clone)]
 pub struct Operation {
+    pub source: Option<OperationSource>,
+    pub signature: Option<RecordBoundKey>,
     pub identity: u64,
     pub name: String,
     pub effect: String,
     pub span: Span,
     pub parameters: Vec<(Access, TypeId)>,
     pub result: TypeId,
+}
+#[derive(Debug, Clone)]
+pub struct OperationSource {
+    pub effect: ril_compiler_core::ids::StmtId,
+    pub index: u32,
+    pub environment: FrozenEnvironmentId,
+    pub scope: u32,
+    pub context: ResumptionContext,
 }
 #[derive(Debug, Clone)]
 pub enum StaticFamily {

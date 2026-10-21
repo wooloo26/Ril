@@ -421,7 +421,7 @@ fn scope_protection(
         .iter()
         .filter(|other| {
             other.boundary == step.boundary
-                && facts.scope_parents.get(&other.owner) == Some(&exit.activation)
+                && facts.scopes.parent(&other.owner) == Some(&exit.activation)
         })
         .map(|other| other.owner)
         .chain([step.owner])
@@ -520,7 +520,7 @@ fn requires_scope_exit(step: &super::ResumptionStep, facts: &SemanticFacts) -> b
     if value.permission != super::facts::Permission::Write || !value.construction {
         return false;
     }
-    let Some(activation) = facts.scope_parents.get(&step.owner) else {
+    let Some(activation) = facts.scopes.parent(&step.owner) else {
         return false;
     };
     value
@@ -556,7 +556,7 @@ fn validate_scope_exit(
     use ril_syntax::ast::{BindingMode, ExprKind, PatternKind, StmtKind};
     let bad = |message| fail(step.span, step.cause, message);
     if exit.boundary != step.boundary
-        || facts.scope_parents.get(&step.owner) != Some(&exit.activation)
+        || facts.scopes.parent(&step.owner) != Some(&exit.activation)
         || exit.epoch != step.continuation_epoch
         || exit.binding_frontier > facts.bindings.len()
         || exit.retired_bindings.is_empty()
@@ -666,7 +666,7 @@ fn validate_scope_exit(
                 ancestor = true;
                 break;
             }
-            parent = facts.scope_parents.get(&scope).copied();
+            parent = facts.scopes.parent(&scope).copied();
         }
         if !observation.alive
             && (binding.parameter && ancestor
@@ -803,6 +803,17 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         let Some(expression) = facts.expressions.get(event.expression) else {
             continue;
         };
+        if facts
+            .evaluations
+            .get(event.expression)
+            .and_then(|record| record.identity)
+            .and_then(|identity| facts.activations.get(identity.activation.0 as usize))
+            .is_some_and(|activation| {
+                activation.kind == super::application_effect::ActivationKind::ControlTransfer
+            })
+        {
+            continue;
+        }
         if expression
             .source_id
             .is_some_and(|source| suffix_sites.contains(&source))
@@ -833,7 +844,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             .map(|(mode, _)| *mode);
         if starts.insert(start.loan, start).is_some()
             || facts.loan_parents.get(&start.loan) != Some(&start.source.value.participants)
-            || !facts.allocated_scopes.contains(&start.activation)
+            || !facts.scopes.contains(&start.activation)
             || start.allocation_epoch > facts.allocation_history.len()
             || mode
                 != Some(if start.temporary {
@@ -878,7 +889,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
                 "fresh reception of a continuation-local writer lacks its scope-exit proof",
             ));
         }
-        if !facts.allocated_scopes.contains(&step.owner)
+        if !facts.scopes.contains(&step.owner)
             || !context_valid(step.context, facts)
             || facts
                 .handlers
@@ -995,8 +1006,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             continue;
         }
         let bad = |message| fail(proof.span, proof.cause, message);
-        if proof.resumption_steps.is_empty() || !facts.allocated_scopes.contains(&proof.activation)
-        {
+        if proof.resumption_steps.is_empty() || !facts.scopes.contains(&proof.activation) {
             return Err(bad(
                 "ordinary retained answer has no actual resumption steps",
             ));
@@ -1011,7 +1021,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
                 || step.transport != AnswerTransport::OrdinaryChecked
                 || step.handler != proof.handler
                 || step.operation != proof.operation
-                || facts.scope_parents.get(&step.owner) != Some(&proof.activation)
+                || facts.scopes.parent(&step.owner) != Some(&proof.activation)
                 || step.arm_answer != proof.invocation
                 || !ordinary_snapshot(&step.continuation_value, facts, &step.ended_operation_loans)
                 || !ordinary_snapshot(&step.arm_value, facts, &step.ended_operation_loans)

@@ -157,14 +157,14 @@ impl Heap {
         owner: ScopeId,
         cause: CauseId,
     ) -> (NodeId, Option<(NodeId, NodeId)>) {
-        self.fresh_in_scopes(site, owner, cause, &BTreeMap::new())
+        self.fresh_in_scopes(site, owner, cause, &super::scopes::ScopeIndex::default())
     }
     pub(crate) fn fresh_in_scopes(
         &mut self,
         site: SiteId,
         owner: ScopeId,
         cause: CauseId,
-        parents: &BTreeMap<ScopeId, ScopeId>,
+        parents: &super::scopes::ScopeIndex,
     ) -> (NodeId, Option<(NodeId, NodeId)>) {
         if let Some(&recent) = self.recent.get(&site) {
             let previous = self.nodes[recent.0 as usize].clone();
@@ -316,12 +316,12 @@ impl Heap {
 
 /// An owner used to exempt local accesses must enclose every represented
 /// allocation. Unknown or unrelated ancestry falls back to the global scope.
-fn common_owner(a: ScopeId, b: ScopeId, parents: &BTreeMap<ScopeId, ScopeId>) -> ScopeId {
+fn common_owner(a: ScopeId, b: ScopeId, parents: &super::scopes::ScopeIndex) -> ScopeId {
     let ancestors = |mut owner| {
         let mut result = Vec::new();
         while !result.contains(&owner) {
             result.push(owner);
-            let Some(parent) = parents.get(&owner) else {
+            let Some(parent) = parents.parent(&owner) else {
                 break;
             };
             owner = *parent;
@@ -395,19 +395,22 @@ mod tests {
     use crate::sema::relations::Condition;
     #[test]
     fn allocation_history_owners_enclose_every_prior_concrete_owner() {
-        let parents: BTreeMap<_, _> = [
+        let edges = [
             (ScopeId(1), ScopeId(0)),
             (ScopeId(2), ScopeId(1)),
             (ScopeId(3), ScopeId(1)),
             (ScopeId(4), ScopeId(2)),
-        ]
-        .into();
+        ];
+        let mut parents: super::super::scopes::ScopeIndex = (0..5).map(ScopeId).collect();
+        for (child, parent) in edges {
+            parents.set_parent(child, parent);
+        }
         let encloses = |mut child: ScopeId, owner: ScopeId| {
             loop {
                 if child == owner {
                     return true;
                 }
-                let Some(parent) = parents.get(&child) else {
+                let Some(parent) = parents.parent(&child) else {
                     return false;
                 };
                 child = *parent;

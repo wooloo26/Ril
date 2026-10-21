@@ -867,6 +867,9 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                 crate::sema::application_effect::ActivationKind::Expression => {
                     p::ActivationKind::Expression
                 }
+                crate::sema::application_effect::ActivationKind::ControlTransfer => {
+                    p::ActivationKind::ControlTransfer
+                }
                 crate::sema::application_effect::ActivationKind::Emission => {
                     p::ActivationKind::Emission
                 }
@@ -1243,10 +1246,32 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
             }
         })
         .collect();
-    graph.scope_parents = facts
-        .scope_parents
-        .iter()
-        .map(|(child, parent)| (child.0, parent.0))
+    graph.scopes = facts
+        .scopes
+        .records()
+        .map(|record| {
+            use crate::sema::scopes::ScopeOrigin;
+            p::ScopeRecord {
+                id: record.id.0,
+                parent: record.parent.map(|parent| parent.0),
+                origin: match &record.origin {
+                    ScopeOrigin::Module => p::ScopeOrigin::Module,
+                    ScopeOrigin::Unresolved => p::ScopeOrigin::Unresolved,
+                    ScopeOrigin::Named(id) => p::ScopeOrigin::Named(p::CopyInstanceId(id.0)),
+                    ScopeOrigin::Closure(id) => p::ScopeOrigin::Closure(id.0),
+                    ScopeOrigin::Operation(entry) => p::ScopeOrigin::Operation {
+                        handler: entry.handler as u32,
+                        operation: entry.operation,
+                        body: entry.body,
+                        parent: entry.parent,
+                        caller_context: resumption_context(entry.caller_context),
+                        context: resumption_context(entry.context),
+                        origin: callable_entries::entry_origin(&entry.origin),
+                        allocation_epoch: entry.allocation_epoch as u64,
+                    },
+                },
+            }
+        })
         .collect();
     graph.storage_types = facts
         .storage_types
@@ -1429,6 +1454,30 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .operations
         .values()
         .map(|operation| p::Operation {
+            signature: match operation
+                .signature
+                .as_ref()
+                .map(|signature| signature.key())
+            {
+                Some(Ok(key)) => Some(record_bounds::key(&key)),
+                Some(Err(error)) => {
+                    contracts.type_witness_error.get_or_insert_with(|| {
+                        NotImplemented::new(
+                            ril_compiler_core::phase::Stage::Lowering,
+                            format!("operation Source signature could not be retained: {error}"),
+                        )
+                    });
+                    None
+                }
+                None => None,
+            },
+            source: operation.source.as_ref().map(|source| p::OperationSource {
+                effect: source.effect,
+                index: source.index,
+                environment: contracts.environment(&mut graph.types, &source.environment),
+                scope: source.scope.0,
+                context: resumption_context(source.context),
+            }),
             identity: operation.identity,
             name: operation.name.clone(),
             effect: operation.effect.clone(),

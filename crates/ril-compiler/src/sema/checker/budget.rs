@@ -225,7 +225,7 @@ impl Checker {
         }
         let mut before = self.snapshot_flow();
         let mut protected = self.frame(caller.env.clone(), true);
-        self.scope_parents.insert(protected.owner, caller.owner);
+        self.scopes.set_parent(protected.owner, caller.owner);
         self.budget_coverage.push(Coverage {
             owner: protected.owner,
             callees: Vec::new(),
@@ -345,7 +345,24 @@ impl Checker {
         let mut recovery_frame = caller.clone();
         recovery_frame.obligations = Obligations::default();
         recovery_frame.returned.clear();
-        let recovery = self.perform_operation("Div::exhausted", &[], span, &mut recovery_frame);
+        let origin = self
+            .application_effect
+            .current_activation()
+            .zip(
+                self.application_effect
+                    .current_call_event()
+                    .and_then(|id| self.copy_call_events.get(id.0 as usize)?.callee_expression),
+            )
+            .map(
+                |(anchor, callee)| crate::sema::application_effect::EntryOrigin::Generated {
+                    anchor,
+                    callee: ril_compiler_core::ids::EvaluationOccurrenceId(callee as u32),
+                    inputs: vec![],
+                },
+            )
+            .unwrap_or(crate::sema::application_effect::EntryOrigin::Unresolved);
+        let recovery =
+            self.perform_operation_from("Div::exhausted", &[], span, &mut recovery_frame, origin);
         let recovery_pending = self.pending_handler_obligations.clone();
         let transfer = self.pending_abort.take();
         let answer = transfer.as_ref().map(|(_, answer)| answer.clone());

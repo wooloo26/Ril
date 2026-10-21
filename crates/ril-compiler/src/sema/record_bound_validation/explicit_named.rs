@@ -17,29 +17,30 @@ struct Site<'a> {
     arguments: &'a [TypeExpr],
 }
 
-pub(super) struct CallSite<'a> {
+pub(crate) struct CallSite<'a> {
     pub owner: CallableOwner,
     pub expression: &'a Expr,
 }
 
-pub(super) struct BindingSite<'a> {
+pub(crate) struct BindingSite<'a> {
     pub owner: CallableOwner,
     pub binding: &'a ril_syntax::ast::Binding,
 }
 
-pub(super) struct FunctionSite<'a> {
+pub(crate) struct FunctionSite<'a> {
     pub owner: CallableOwner,
     pub function: &'a ril_syntax::ast::Function,
 }
 
-pub(super) struct AssignmentSite<'a> {
+pub(crate) struct AssignmentSite<'a> {
     pub owner: CallableOwner,
     pub target: &'a Expr,
     pub operator: &'a str,
     pub value: &'a Expr,
 }
 
-pub(super) struct SourceSites<'a> {
+pub(crate) struct SourceSites<'a> {
+    pub effects: BTreeMap<ril_compiler_core::ids::StmtId, &'a ril_syntax::ast::EffectDeclaration>,
     pub expressions: BTreeMap<ril_compiler_core::ids::ExprId, &'a Expr>,
     generic: Vec<Site<'a>>,
     pub calls: Vec<CallSite<'a>>,
@@ -74,7 +75,7 @@ pub(super) fn source_sites(facts: &SemanticFacts) -> Check<SourceSites<'_>> {
     source_sites_inner(facts, true)
 }
 
-pub(super) fn source_sites_base(facts: &SemanticFacts) -> Check<SourceSites<'_>> {
+pub(crate) fn source_sites_base(facts: &SemanticFacts) -> Check<SourceSites<'_>> {
     source_sites_inner(facts, false)
 }
 
@@ -106,6 +107,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
         // The source predicate, rather than an empty/mutable arena, proves that
         // no executable Call or Generic expression needs coverage here.
         return Ok(SourceSites {
+            effects: BTreeMap::new(),
             expressions: BTreeMap::new(),
             generic: Vec::new(),
             calls: Vec::new(),
@@ -142,6 +144,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
     let mut lambdas = Vec::new();
     let mut functions = Vec::new();
     let mut expressions = BTreeMap::new();
+    let mut effects = BTreeMap::new();
     loop {
         let node = match pending.pop() {
             Some(node) => node,
@@ -244,7 +247,13 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
                             );
                         }
                     }
-                    StmtKind::Type(_) | StmtKind::Effect(_) | StmtKind::Use(_) => {}
+                    StmtKind::Effect(effect) => {
+                        let id = statement
+                            .hir_id
+                            .ok_or("effect source declaration has no original HIR identity")?;
+                        effects.insert(id, effect);
+                    }
+                    StmtKind::Type(_) | StmtKind::Use(_) => {}
                 }
             }
             Pending::Pattern(owner, pattern, depth) => {
@@ -494,6 +503,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
         )?;
     }
     Ok(SourceSites {
+        effects,
         expressions,
         generic: result,
         calls,

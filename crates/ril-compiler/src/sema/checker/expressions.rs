@@ -67,10 +67,25 @@ impl Checker {
             };
         }
         let context = self.invocation_context(frame.callable_owner);
-        let Some(activation) = self
-            .application_effect
-            .enter(expr.hir_id, frame.owner, context)
-        else {
+        let kind = if matches!(
+            expr.kind,
+            ExprKind::Control {
+                operation: ControlOperation::Resume,
+                ..
+            }
+        ) {
+            crate::sema::application_effect::ActivationKind::ControlTransfer
+        } else {
+            crate::sema::application_effect::ActivationKind::Expression
+        };
+        let activation = if kind == crate::sema::application_effect::ActivationKind::Expression {
+            self.application_effect
+                .enter(expr.hir_id, frame.owner, context)
+        } else {
+            self.application_effect
+                .enter_kind(expr.hir_id, frame.owner, context, kind)
+        };
+        let Some(activation) = activation else {
             self.unsupported(
                 expr.span,
                 "evaluation activation budget exhausted before entering syntax",
@@ -1822,22 +1837,48 @@ impl Checker {
                         [],
                     );
                 }
-                let return_expected = (*operation == ControlOperation::Return)
-                    .then(|| frame.expected_return.clone())
-                    .flatten();
-                let return_source = (*operation == ControlOperation::Return)
-                    .then(|| frame.expected_return_source.clone())
-                    .flatten();
+                let return_expected = match operation {
+                    ControlOperation::Return => frame.expected_return.clone(),
+                    ControlOperation::Resume => self
+                        .resume_contexts
+                        .last()
+                        .map(|context| context.result.clone()),
+                    _ => None,
+                };
+                let return_source = match operation {
+                    ControlOperation::Return => frame.expected_return_source.clone(),
+                    ControlOperation::Resume => self
+                        .resume_contexts
+                        .last()
+                        .and_then(|context| context.source.clone()),
+                    _ => None,
+                };
                 let value = value
                     .as_ref()
                     .map(|v| {
-                        self.expression_expected_source(
+                        let mut supplied = self.expression_expected_source(
                             v,
                             frame,
                             return_expected.as_ref(),
                             return_source.as_ref(),
-                        )
-                        .value
+                        );
+                        if *operation == ControlOperation::Resume
+                            && let Some(target) = &return_source
+                        {
+                            let valid = self.require_source_reception(
+                                target,
+                                v,
+                                &supplied.value,
+                                supplied.observation,
+                                frame,
+                            );
+                            if valid && let Some(syntax) = target.syntax.as_ref() {
+                                self.with_typing_environment(&target.environment, |checker| {
+                                    checker.ascribe_signature(&mut supplied.value, syntax)
+                                });
+                            }
+                        }
+                        supplied.value
                     })
                     .unwrap_or_else(|| self.unit(expr.span));
                 match operation {

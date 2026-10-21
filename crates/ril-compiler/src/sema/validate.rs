@@ -131,8 +131,8 @@ pub fn solved_facts(facts: &SemanticFacts) -> Result<ValidatedStructure, Vec<Val
             || invocation.activation.is_some_and(|activation| {
                 !closure_activations.insert(activation)
                     || activation == invocation.caller_activation
-                    || !facts.allocated_scopes.contains(&activation)
-                    || facts.scope_parents.get(&activation) != Some(&invocation.caller_activation)
+                    || !facts.scopes.contains(&activation)
+                    || facts.scopes.parent(&activation) != Some(&invocation.caller_activation)
             })
         {
             validator.issue(
@@ -304,7 +304,7 @@ impl Validator<'_> {
         valid
     }
     fn scope(&mut self, scope: ScopeId, formal: bool, span: Option<Span>) {
-        if !(self.facts.allocated_scopes.contains(&scope) || formal && scope == ScopeId(u32::MAX)) {
+        if !(self.facts.scopes.contains(&scope) || formal && scope == ScopeId(u32::MAX)) {
             self.issue(ValidationIssueKind::InvalidScope(scope), span, None);
         }
     }
@@ -460,22 +460,29 @@ impl Validator<'_> {
             self.scope(duty.owner, true, Some(duty.span));
             self.cause(duty.cause, Some(duty.span));
         }
-        if !facts.allocated_scopes.contains(&ScopeId(0)) {
+        if !facts.scopes.contains(&ScopeId(0)) {
             self.issue(ValidationIssueKind::MissingGlobalScope, None, None);
         }
-        if facts.allocated_scopes.contains(&ScopeId(u32::MAX)) {
+        if facts.scopes.contains(&ScopeId(u32::MAX)) {
             self.issue(
                 ValidationIssueKind::InvalidScope(ScopeId(u32::MAX)),
                 None,
                 None,
             );
         }
-        for (&child, &parent) in &facts.scope_parents {
+        if facts.scopes.is_poisoned() {
+            self.issue(
+                ValidationIssueKind::InvalidScope(ScopeId(u32::MAX)),
+                None,
+                None,
+            );
+        }
+        for (&child, &parent) in facts.scopes.parents() {
             self.scope(child, false, None);
             self.scope(parent, false, None);
             let mut seen = BTreeSet::new();
             let mut current = child;
-            while let Some(parent) = facts.scope_parents.get(&current) {
+            while let Some(parent) = facts.scopes.parent(&current) {
                 if !seen.insert(current) {
                     self.issue(ValidationIssueKind::ScopeCycle(child), None, None);
                     break;

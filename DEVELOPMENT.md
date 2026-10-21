@@ -112,6 +112,7 @@ duplicate source trees and historical verification reports.
 
 Source transport regressions, including open row composition with fixed arrays
 and callbacks, are in `tests/regressions/source-transport.ril`.
+Operation and resumption Source views are in `tests/regressions/effect-source-views.ril`.
 
 ## Unicode regeneration
 

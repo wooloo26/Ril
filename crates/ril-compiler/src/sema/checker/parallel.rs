@@ -232,7 +232,7 @@ impl Checker {
         let before_cleanup = self.cleanup_events.len();
         let recency = self.recency_moves.len();
         let mut child = self.frame(frame.env.clone(), true);
-        self.scope_parents.insert(child.owner, frame.owner);
+        self.scopes.set_parent(child.owner, frame.owner);
         // The parent's budget cannot certify a worker. A budget installed by
         // the callback itself still creates the ordinary semantic certificate.
         let budget = std::mem::take(&mut self.budget_coverage);

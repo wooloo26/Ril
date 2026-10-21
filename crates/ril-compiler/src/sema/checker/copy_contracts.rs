@@ -432,7 +432,7 @@ impl Checker {
             output_nodes: vec![],
             output_relations: vec![],
             invocation: self.copy_invocation_stack.last().copied(),
-            source_event: self.copy_operation_events.last().copied().flatten(),
+            source_event: self.application_effect.current_call_event(),
             template: false,
             template_root: None,
         }

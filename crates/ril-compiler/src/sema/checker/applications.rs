@@ -555,7 +555,7 @@ impl Checker {
             _ => frame.env.clone(),
         };
         let mut defaults = self.frame(environment, true);
-        self.scope_parents.insert(defaults.owner, frame.owner);
+        self.scopes.set_parent(defaults.owner, frame.owner);
         defaults.callable_owner = match callee.callables.as_slice() {
             [Callable::Named(id)] => Some(CallableOwner::Function(self.functions[*id].definition)),
             [Callable::Closure(id)] => self.closures[*id].site.map(CallableOwner::Lambda),

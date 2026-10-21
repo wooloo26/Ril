@@ -84,7 +84,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), String> {
                 .context
                 .invocation
                 .is_some_and(|invocation| represented.contains(&(scope, invocation)));
-            let Some(parent) = facts.scope_parents.get(&scope) else {
+            let Some(parent) = facts.scopes.parent(&scope) else {
                 break;
             };
             scope = *parent;

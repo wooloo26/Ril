@@ -754,7 +754,7 @@ fn formal_optional_independence_cannot_be_disabled_by_a_registered_owner() {
     // Registry-valid owner metadata must not change which actual declaration
     // parameter paths are independent symbolic inputs.
     changed.optional_tags[identity.0 as usize].creation_owner =
-        *changed.allocated_scopes.iter().next().unwrap();
+        *changed.scopes.iter().next().unwrap();
     rejected(&changed);
 }
 
@@ -797,7 +797,7 @@ fn formal_optional_independence_survives_every_entry_selector_combination() {
         .find(|function| function.definition == entry.target)
         .unwrap();
     assert_eq!(entry.span, header.syntax.span);
-    let scope = *original.allocated_scopes.iter().next().unwrap();
+    let scope = *original.scopes.iter().next().unwrap();
     let actual_source = original
         .copy_call_events
         .iter()

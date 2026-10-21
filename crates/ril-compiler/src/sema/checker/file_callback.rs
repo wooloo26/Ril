@@ -114,7 +114,7 @@ impl Checker {
         frame.obligations.effects.insert("Fiber".into());
         frame.obligations.concrete_effects.insert("Fiber".into());
         let mut helper = self.frame(frame.env.clone(), true);
-        self.scope_parents.insert(helper.owner, frame.owner);
+        self.scopes.set_parent(helper.owner, frame.owner);
         let node = self.allocate(span, if child { 0xC11D } else { 0xF11E }, helper.owner);
         let handle = Value::reference(
             Ty::Named(if child {

@@ -4,6 +4,9 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationKind {
     Expression,
+    /// A control request. Offered operands keep their own observations;
+    /// a suspended expression's completed value is recorded separately.
+    ControlTransfer,
     /// An explicit numeric/transport/publication observation, rather than
     /// another execution of a syntax subtree.
     Emission,
@@ -29,7 +32,16 @@ impl ApplicationEffectDomain {
         scope: ScopeId,
         context: InvocationContext,
     ) -> Option<ActivationEpochId> {
-        let id = self.activation(source, scope, context, ActivationKind::Expression)?;
+        self.enter_kind(source, scope, context, ActivationKind::Expression)
+    }
+    pub(crate) fn enter_kind(
+        &mut self,
+        source: Option<ExprId>,
+        scope: ScopeId,
+        context: InvocationContext,
+        kind: ActivationKind,
+    ) -> Option<ActivationEpochId> {
+        let id = self.activation(source, scope, context, kind)?;
         self.active.push(id);
         Some(id)
     }

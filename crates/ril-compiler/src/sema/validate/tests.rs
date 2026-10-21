@@ -159,12 +159,12 @@ fn damaged_graph_roots_loans_causes_and_history_are_rejected_without_panics() {
 fn boundary_and_scope_references_are_checked_against_independent_registries() {
     let original = facts(PARALLEL);
     let mut damaged = original.clone();
-    damaged.allocated_scopes.remove(&ScopeId(0));
+    damaged.scopes.remove(&ScopeId(0));
     fails(&damaged, |kind| {
         *kind == ValidationIssueKind::MissingGlobalScope
     });
     let mut damaged = original.clone();
-    damaged.scope_parents.insert(ScopeId(1), ScopeId(1));
+    damaged.scopes.set_parent(ScopeId(1), ScopeId(1));
     fails(&damaged, |kind| {
         *kind == ValidationIssueKind::ScopeCycle(ScopeId(1))
     });
@@ -226,7 +226,7 @@ fn formal_scope_sentinels_and_relation_material_cannot_bypass_the_structure_chec
         *kind == ValidationIssueKind::InvalidScope(ScopeId(u32::MAX))
     });
     let mut damaged = original.clone();
-    damaged.allocated_scopes.insert(ScopeId(u32::MAX));
+    damaged.scopes.insert(ScopeId(u32::MAX));
     fails(&damaged, |kind| {
         *kind == ValidationIssueKind::InvalidScope(ScopeId(u32::MAX))
     });

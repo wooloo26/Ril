@@ -255,7 +255,7 @@ fn analyze_inner(
         closure_exposures: checker.closure_exposures,
         closure_discards: checker.closure_discards,
         allocation_history: checker.recency_moves.clone(),
-        allocated_scopes: (0..checker.next_scope).map(ScopeId).collect(),
+        scopes: checker.scopes,
         numeric_uses: checker.numeric.uses,
         numeric_selections: checker.numeric.selections,
         constant_pool: constants.clone(),
@@ -281,7 +281,7 @@ fn analyze_inner(
         resumption_steps: checker.resumption_steps,
         definition_checks: checker.definition_checks,
         file: Some(checker.file),
-        scope_parents: checker.scope_parents,
+
         storage_types: checker.storage_types,
         static_key_checks: checker.static_key_checks,
         static_key_parameters: checker.static_key_parameters,
@@ -413,7 +413,6 @@ struct Checker {
     copy_invocation_stack: Vec<super::copy_templates::InstanceId>,
     copy_references: Vec<super::copy_contract::CopyReference>,
     copy_call_events: Vec<super::copy_contract::CopyCallEvent>,
-    copy_operation_events: Vec<Option<super::copy_contract::CopyCallEventId>>,
     resource_clones: Vec<super::resource_copy::ResourceCloneEvent>,
     descriptor_sites: BTreeMap<concurrent::DescriptorContext, SiteId>,
     parallel_boundaries: Vec<super::ParallelBoundary>,
@@ -447,7 +446,7 @@ struct Checker {
     nested_contracts: BTreeSet<(u32, u32, u32, u32)>,
     closures: Vec<ClosureInfo>,
     types: BTreeMap<String, TypeDeclaration>,
-    effects: BTreeMap<String, EffectDeclaration>,
+    effects: BTreeMap<String, effects::EffectInfo>,
     local_effects: BTreeSet<String>,
     callable_local_effects: BTreeMap<(bool, usize), BTreeSet<String>>,
     callable_dependencies: BTreeMap<(bool, usize), Obligations>,
@@ -456,7 +455,6 @@ struct Checker {
     unsupported: Vec<UnsupportedFeature>,
     definitions: Vec<Definition>,
     explanations: Explanations,
-    next_scope: u32,
     next_loan: u32,
     loan_parents: BTreeMap<LoanId, BTreeSet<Participant>>,
     next_choice: u32,
@@ -476,7 +474,7 @@ struct Checker {
     invocations: Vec<super::summary::InvocationSummary>,
     literal_negative: bool,
     scope_names: BTreeMap<ScopeId, Option<String>>,
-    scope_parents: BTreeMap<ScopeId, ScopeId>,
+    scopes: super::scopes::ScopeIndex,
     storage_types: BTreeMap<NodeId, Ty>,
     declaration_files: BTreeSet<u32>,
     recursive_analysis: super::recursive::Analysis,
@@ -596,7 +594,6 @@ impl Checker {
             copy_invocation_stack: Vec::new(),
             copy_references: Vec::new(),
             copy_call_events: Vec::new(),
-            copy_operation_events: Vec::new(),
             resource_clones: Vec::new(),
             descriptor_sites: BTreeMap::new(),
             parallel_boundaries: Vec::new(),
@@ -641,7 +638,6 @@ impl Checker {
             unsupported: vec![],
             definitions: vec![],
             explanations: Explanations::default(),
-            next_scope: 1,
             next_loan: 0,
             loan_parents: BTreeMap::new(),
             invocation_loan_starts: Vec::new(),
@@ -668,7 +664,7 @@ impl Checker {
             invocations: vec![],
             literal_negative: false,
             scope_names: BTreeMap::new(),
-            scope_parents: BTreeMap::new(),
+            scopes: [ScopeId(0)].into_iter().collect(),
             storage_types: BTreeMap::new(),
             declaration_files: BTreeSet::new(),
             recursive_analysis: super::recursive::Analysis::default(),
@@ -764,9 +760,10 @@ impl Checker {
         checker
     }
     fn scope(&mut self) -> ScopeId {
-        let id = ScopeId(self.next_scope);
-        self.next_scope += 1;
-        id
+        self.scopes.allocate().unwrap_or_else(|| {
+            self.application_effect.exhausted = true;
+            ScopeId(u32::MAX)
+        })
     }
     fn choice(&mut self) -> u32 {
         let choice = self.next_choice;
@@ -775,6 +772,7 @@ impl Checker {
     }
     fn frame(&mut self, env: Env, anonymous: bool) -> Frame {
         Frame {
+            input_environment: None,
             copy_call_event: None,
             received_closures: BTreeMap::new(),
             callable_owner: None,
@@ -821,7 +819,7 @@ impl Checker {
             if candidate == ancestor {
                 return true;
             }
-            let Some(parent) = self.scope_parents.get(&candidate) else {
+            let Some(parent) = self.scopes.parent(&candidate) else {
                 return false;
             };
             candidate = *parent;
@@ -958,6 +956,7 @@ impl Checker {
         let program = std::sync::Arc::new(identified);
         self.checked_source = Some(program.clone());
         let mut frame = Frame {
+            input_environment: None,
             copy_call_event: None,
             received_closures: BTreeMap::new(),
             callable_owner: Some(CallableOwner::Global),
@@ -1131,7 +1130,14 @@ impl Checker {
         // Types are collected before function signatures, independent of order.
         for stmt in statements {
             if let StmtKind::Effect(effect) = &stmt.kind {
-                self.effects.insert(effect.name.clone(), effect.clone());
+                let info = effects::EffectInfo {
+                    source: stmt.hir_id,
+                    syntax: effect.clone(),
+                    environment: self.capture_typing_environment_with_bindings(&frame.env),
+                    scope: frame.owner,
+                    context: self.invocation_context(frame.callable_owner),
+                };
+                self.effects.insert(effect.name.clone(), info);
             }
             if let StmtKind::Type(decl) = &stmt.kind {
                 self.register_type_contract_environments(decl, frame);
@@ -1189,8 +1195,15 @@ impl Checker {
                     if frame.owner != ScopeId(0) {
                         self.local_effects.insert(decl.name.clone());
                     }
-                    self.effects.insert(decl.name.clone(), decl.clone());
-                    self.declare_operations(decl);
+                    let info = effects::EffectInfo {
+                        source: stmt.hir_id,
+                        syntax: decl.clone(),
+                        environment: self.capture_typing_environment_with_bindings(&frame.env),
+                        scope: frame.owner,
+                        context: self.invocation_context(frame.callable_owner),
+                    };
+                    self.effects.insert(decl.name.clone(), info.clone());
+                    self.declare_operations(&info);
                 }
                 StmtKind::Function(function) => {
                     if function.is_meta {
@@ -1311,9 +1324,7 @@ impl Checker {
     }
     pub(super) fn allocate_site(&mut self, span: Span, site: SiteId, owner: ScopeId) -> NodeId {
         let cause = self.cause(CauseKind::Allocation, span, "fresh storage allocation", []);
-        let (id, remap) = self
-            .heap
-            .fresh_in_scopes(site, owner, cause, &self.scope_parents);
+        let (id, remap) = self.heap.fresh_in_scopes(site, owner, cause, &self.scopes);
         if let Some((recent, older)) = remap {
             self.recency_moves.push((recent, older));
             self.remap_concurrent_identity(recent, older);

@@ -286,7 +286,7 @@ impl Checker {
         use ril_compiler_core::ids::EvaluationOccurrenceId;
         let source = (|| {
             let anchor = self.application_effect.current_activation()?;
-            let event = self.copy_operation_events.last().copied().flatten()?;
+            let event = self.application_effect.current_call_event()?;
             let row = self
                 .call_arguments
                 .iter()

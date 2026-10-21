@@ -101,6 +101,37 @@ impl Checker {
             return None;
         }
         let pattern = binding.pattern?;
+        if let Some(crate::sema::scopes::ScopeRecord {
+            origin: crate::sema::scopes::ScopeOrigin::Operation(entry),
+            ..
+        }) = self.scopes.get(&binding.owner)
+        {
+            let handler = self.handler_definitions.get(entry.handler)?;
+            let arm = handler
+                .arms
+                .values()
+                .find(|arm| arm.body.hir_id == entry.body)?;
+            let slot = arm
+                .parameters
+                .iter()
+                .position(|parameter| parameter.pattern.hir_id == Some(pattern))?;
+            let operation = self
+                .operations
+                .values()
+                .find(|operation| operation.identity == entry.operation)?;
+            let source = operation.source.as_ref()?;
+            let syntax = self
+                .effects
+                .get(&operation.effect)?
+                .operations
+                .get(source.index as usize)?
+                .parameters
+                .get(slot)?
+                .ty
+                .as_ref()?;
+            crate::static_eval::effects::bounded_argument_key(syntax, &BTreeMap::new())?;
+            return Some((syntax.clone(), binding.typing_environment.clone()));
+        }
         let parameters = match binding.context.owner? {
             CallableOwner::Function(definition) => {
                 &self

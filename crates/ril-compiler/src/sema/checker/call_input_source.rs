@@ -55,6 +55,54 @@ struct Operand {
 }
 
 impl Checker {
+    pub(super) fn receive_application_source(
+        &mut self,
+        expected: &ArgumentKey,
+        event: CopyCallEventId,
+        slot: usize,
+        value: &Value,
+        span: Span,
+    ) -> bool {
+        let input = self
+            .call_input_source
+            .supplied
+            .get(&event)
+            .and_then(|inputs| inputs.get(&slot))
+            .cloned();
+        let answer = input.as_ref().and_then(|input| {
+            if let Some(answer) = source_reception::empty_context(expected, &input.fresh, &mut 4096)
+            {
+                return Some(answer);
+            }
+            let actual = input.key.as_ref()?;
+            let actual = crate::sema::source_types::declarations::expanded_key(
+                actual,
+                &self.semantic_hir,
+                &mut crate::sema::source_types::WorkLimit::new(16384),
+            )
+            .ok()?;
+            source_reception::compatible(expected, &actual, Some(&input.fresh), &mut 16384)
+        });
+        match answer {
+            Some(true) => true,
+            Some(false) => {
+                self.error(
+                    "E0301",
+                    span,
+                    "actual input does not fit the declared complete Source view",
+                    [value.cause],
+                );
+                false
+            }
+            None => {
+                self.unsupported(
+                    span,
+                    "input reception lacks its original complete Source observation",
+                );
+                false
+            }
+        }
+    }
     pub(super) fn supplied_parameter_source(
         &self,
         slot: usize,

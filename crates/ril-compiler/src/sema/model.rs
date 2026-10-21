@@ -1153,12 +1153,22 @@ impl Obligations {
 }
 #[derive(Debug, Clone)]
 pub struct OperationFact {
+    pub source: Option<OperationSource>,
+    pub(crate) signature: Option<super::source_types::SourceSchema>,
     pub identity: u64,
     pub name: String,
     pub effect: String,
     pub span: Span,
     pub parameters: Vec<(ril_syntax::ast::ParameterMode, Ty)>,
     pub result: Ty,
+}
+#[derive(Debug, Clone)]
+pub struct OperationSource {
+    pub effect: ril_compiler_core::ids::StmtId,
+    pub index: u32,
+    pub environment: super::context::FrozenEnvironment,
+    pub scope: ScopeId,
+    pub context: super::effect_identity::InvocationContext,
 }
 #[derive(Debug, Clone)]
 pub struct HandlerFact {
@@ -1217,6 +1227,9 @@ pub struct ConstructorInfo {
 }
 #[derive(Debug, Clone)]
 pub struct Frame {
+    /// Signature interpretation for formals whose declaration environment
+    /// differs from the receiver body's lexical environment.
+    pub(crate) input_environment: Option<super::context::FrozenEnvironment>,
     pub(crate) copy_call_event: Option<super::copy_contract::CopyCallEventId>,
     /// Actual closure objects present in parameter graphs at reception.
     /// Forwarding one does not create another lexical environment.

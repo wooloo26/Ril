@@ -2,9 +2,35 @@
 use super::*;
 use ril_compiler_core::ids::{ActivationEpochId, EvaluationOccurrenceId, ExprId};
 
+#[derive(Debug, Clone)]
+pub struct ScopeRecord {
+    pub id: u32,
+    pub parent: Option<u32>,
+    pub origin: ScopeOrigin,
+}
+
+#[derive(Debug, Clone)]
+pub enum ScopeOrigin {
+    Module,
+    Unresolved,
+    Named(CopyInstanceId),
+    Closure(u32),
+    Operation {
+        handler: u32,
+        operation: u64,
+        body: Option<ExprId>,
+        parent: Option<ActivationEpochId>,
+        caller_context: ResumptionContext,
+        context: ResumptionContext,
+        origin: EntryOrigin,
+        allocation_epoch: u64,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationKind {
     Expression,
+    ControlTransfer,
     Emission,
 }
 

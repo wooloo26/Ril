@@ -245,7 +245,7 @@ impl Replay<'_> {
 
     fn storage_activation(&self, context: InvocationContext, activation: ScopeId) -> Check {
         require(
-            self.facts.allocated_scopes.contains(&activation),
+            self.facts.scopes.contains(&activation),
             "storage activation is not allocated",
         )?;
         if self.storage_handler(context, activation)?.is_some() {
@@ -291,7 +291,7 @@ impl Replay<'_> {
             return require(
                 call.target == owner
                     && call.caller_activation.is_none_or(|parent| {
-                        self.facts.scope_parents.get(&activation) == Some(&parent)
+                        self.facts.scopes.parent(&activation) == Some(&parent)
                     })
                     && self.facts.invocations.iter().any(|summary| {
                         summary.activation == Some(activation) && summary.context == Some(context)
@@ -318,57 +318,14 @@ impl Replay<'_> {
         context: InvocationContext,
         activation: ScopeId,
     ) -> Check<Option<&HandlerFact>> {
-        require(
-            self.facts.operation_loan_starts.len() <= LIMIT
-                && self.facts.resumption_steps.len() <= LIMIT
-                && self.facts.invocations.len() <= LIMIT,
-            "storage activation replay budget exhausted",
-        )?;
-        let mut handlers = BTreeSet::new();
-        for entry in &self.facts.operation_loan_starts {
-            if entry.activation == activation && entry.context == context {
-                handlers.insert(entry.handler);
-            }
-        }
-        for step in &self.facts.resumption_steps {
-            if step.owner == activation && step.context == context {
-                handlers.insert(step.handler);
-            }
-        }
-        let Some(&id) = handlers.first() else {
+        let Some(frame) = self.frames.operation(activation)? else {
             return Ok(None);
         };
         require(
-            handlers.len() == 1,
-            "storage operation frame belongs to multiple handlers",
+            frame.entry.context == context,
+            "storage operation receiver borrowed another full invocation context",
         )?;
-        let handler = self
-            .facts
-            .handlers
-            .get(id)
-            .filter(|handler| handler.id == id && handler.callable_owner == context.owner)
-            .ok_or_else(|| "storage operation frame lost its actual handler owner".to_owned())?;
-        require(
-            self.facts
-                .operation_loan_starts
-                .iter()
-                .filter(|entry| entry.activation == activation && entry.context == context)
-                .all(|entry| {
-                    entry.boundary == handler.boundary
-                        && handler.operations.contains(&entry.operation)
-                })
-                && self
-                    .facts
-                    .resumption_steps
-                    .iter()
-                    .filter(|step| step.owner == activation && step.context == context)
-                    .all(|step| {
-                        step.boundary == handler.boundary
-                            && handler.operations.contains(&step.operation)
-                    }),
-            "storage operation frame borrowed another handler operation or boundary",
-        )?;
-        Ok(Some(handler))
+        Ok(Some(frame.handler))
     }
 
     pub(in crate::sema::record_bound_validation) fn storage_named_environments(
@@ -1279,9 +1236,9 @@ mod tests {
         let mut current = context(CallableOwner::Function(DefinitionId(0)));
         current.invocation = Some(InstanceId(0));
         facts
-            .allocated_scopes
+            .scopes
             .extend([ScopeId(0), ScopeId(10), ScopeId(20), ScopeId(30)]);
-        facts.scope_parents.insert(ScopeId(20), ScopeId(0));
+        facts.scopes.set_parent(ScopeId(20), ScopeId(0));
         facts.functions = vec![function(0), function(1)];
         facts.bindings = vec![binding(0), binding(1)];
         facts.copy_invocations.push(CopyInvocation {
@@ -1350,6 +1307,7 @@ mod tests {
     fn replay(facts: &SemanticFacts) -> Replay<'_> {
         Replay {
             facts,
+            frames: crate::sema::scopes::FrameIndex::new(facts).unwrap(),
             blocks: None,
             observations: super::super::observation_index::ObservationIndex::new(facts).unwrap(),
             functions: BTreeMap::new(),
@@ -1480,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_frames_require_their_exact_entry_context_handler_and_operation() {
+    fn operation_loans_cannot_invent_a_missing_receiver_frame() {
         let (mut facts, current) = model();
         facts.handlers.push(HandlerFact {
             typing_environment: Default::default(),
@@ -1519,17 +1477,13 @@ mod tests {
         assert!(
             replay(&facts)
                 .storage_activation(current, ScopeId(30))
-                .is_ok()
+                .is_err()
         );
         assert!(
             replay(&facts)
-                .storage_captured_binding(current, ScopeId(30), "counter", 1, &source(1))
+                .storage_handler(current, ScopeId(30))
                 .unwrap()
-        );
-        assert!(
-            !replay(&facts)
-                .storage_captured_binding(current, ScopeId(30), "counter", 0, &source(0))
-                .unwrap()
+                .is_none()
         );
         let mut foreign = current;
         foreign.invocation = Some(InstanceId(99));

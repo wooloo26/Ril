@@ -1535,7 +1535,7 @@ impl Checker {
         self.concurrency.task_context.push(task_node);
         self.concurrency.clone_sources.push(borrows.clone());
         let mut child = self.frame(frame.env.clone(), true);
-        self.scope_parents.insert(child.owner, frame.owner);
+        self.scopes.set_parent(child.owner, frame.owner);
         let mut output = self.invoke(action, vec![], span, &mut child);
         self.concurrency.clone_sources.pop();
         self.concurrency.task_context.pop();
@@ -1991,7 +1991,7 @@ impl Checker {
             owner: frame.definition,
             lexical_owner: frame.callable_owner,
             invocation,
-            source_event: self.copy_operation_events.last().copied().flatten(),
+            source_event: self.application_effect.current_call_event(),
             span,
             contract: ResourceCloneContract::Sender,
             required_effect: ResourceCloneEffect::Fiber,

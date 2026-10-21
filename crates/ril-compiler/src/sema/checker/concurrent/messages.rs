@@ -651,12 +651,9 @@ impl Checker {
         &self,
         frame: &Frame,
     ) -> Option<crate::sema::copy_contract::CopyCallEventId> {
-        frame.copy_call_event.or_else(|| {
-            self.copy_operation_events
-                .iter()
-                .rev()
-                .find_map(|event| *event)
-        })
+        frame
+            .copy_call_event
+            .or_else(|| self.application_effect.enclosing_application())
     }
     pub(in crate::sema::checker) fn channel_begin_repetition(
         &mut self,
@@ -1989,7 +1986,7 @@ impl Checker {
                     if !seen.insert(scope) {
                         return false;
                     }
-                    current = self.scope_parents.get(&scope).copied();
+                    current = self.scopes.parent(&scope).copied();
                 }
                 false
             })

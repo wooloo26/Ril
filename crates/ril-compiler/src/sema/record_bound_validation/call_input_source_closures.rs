@@ -13,15 +13,32 @@ impl Replay<'_> {
         binding: &crate::sema::model::BindingInfo,
         reading: InvocationContext,
     ) -> Check<Option<&crate::sema::default_uses::DefaultUse>> {
-        let Some(id) = reading.default_use else {
+        let current = reading
+            .default_use
+            .and_then(|id| self.facts.default_uses.get(id.0 as usize))
+            .filter(|receipt| {
+                receipt
+                    .result_expression
+                    .and_then(|index| self.facts.evaluations.get(index))
+                    .is_some_and(|root| root.scope == binding.owner)
+            });
+        let receipt = current.or_else(|| {
+            self.frames
+                .preparations(binding.owner)
+                .iter()
+                .copied()
+                .find(|receipt| {
+                    binding.context
+                        == InvocationContext {
+                            owner: receipt.owner,
+                            ..receipt.caller
+                        }
+                })
+        });
+        let Some(receipt) = receipt else {
             return Ok(None);
         };
-        let receipt = self
-            .facts
-            .default_uses
-            .get(id.0 as usize)
-            .filter(|receipt| receipt.id == id)
-            .ok_or_else(|| "formal Source preparation receipt is absent".to_owned())?;
+        let id = receipt.id;
         let token = receipt
             .result_expression
             .ok_or_else(|| "formal Source preparation root is absent".to_owned())?;
@@ -45,10 +62,9 @@ impl Replay<'_> {
             binding.context == declaration
                 && root.context == context
                 && self
-                    .facts
-                    .invocation_expressions
-                    .get(token)
-                    .is_some_and(|row| row.expression == token && row.context == context)
+                    .observations
+                    .row(token, &mut 4096)
+                    .is_ok_and(|row| row.expression == token && row.context == context)
                 && receipt.evaluation_complete
                 && !matches!(
                     receipt.status,
@@ -139,7 +155,19 @@ impl Replay<'_> {
             .get(index)
             .ok_or_else(|| "formal Source read has no actual scope".to_owned())?;
         let declaration = binding.context;
-        if self.parameter_preparation(binding, context)?.is_none() {
+        let operation = self.frames.operation(binding.owner)?;
+        if let Some(operation) = &operation {
+            require(
+                binding.context == operation.entry.context
+                    && operation
+                        .arm
+                        .parameters
+                        .iter()
+                        .any(|parameter| parameter.pattern.hir_id == Some(pattern)),
+                "operation formal Source borrowed another parameter receiver",
+            )?;
+        }
+        if operation.is_none() && self.parameter_preparation(binding, context)?.is_none() {
             match declaration.owner {
                 Some(CallableOwner::Function(owner)) => require(
                     self.facts
@@ -226,6 +254,53 @@ impl Replay<'_> {
             "formal Source read is absent from its actual named capture",
         )?;
         Ok(declaration)
+    }
+
+    pub(super) fn operation_formal_source_key(
+        &self,
+        binding: &crate::sema::model::BindingInfo,
+    ) -> Check<Option<ArgumentKey>> {
+        let Some(frame) = self.frames.operation(binding.owner)? else {
+            return Ok(None);
+        };
+        let slots: Vec<_> = frame
+            .arm
+            .parameters
+            .iter()
+            .enumerate()
+            .filter(|(_, parameter)| {
+                parameter.pattern.hir_id.is_some() && parameter.pattern.hir_id == binding.pattern
+            })
+            .collect();
+        let [(slot, _)] = slots.as_slice() else {
+            return Err("operation formal Source has no unique original parameter".into());
+        };
+        let source = frame
+            .operation
+            .source
+            .as_ref()
+            .ok_or("operation parameter has no original declaration")?;
+        require(
+            binding.typing_environment.id() == source.environment.id()
+                && self.facts.source_types.binding_environment(
+                    *binding
+                        .value
+                        .sources
+                        .first()
+                        .ok_or("operation parameter lost its root")?,
+                ) == Some(source.environment.id()),
+            "operation formal Source borrowed another declaration environment",
+        )?;
+        let signature = self.frames.receiver_signature(&frame)?;
+        let ArgumentKey::Callable { parameters, .. } = signature.declared else {
+            return Err("operation parameter has no callable Source signature".into());
+        };
+        let key = parameters
+            .get(*slot)
+            .ok_or("operation parameter is outside its Source signature")?
+            .1
+            .clone();
+        Ok(Some(key))
     }
 
     pub(super) fn lambda_formal_source_key(

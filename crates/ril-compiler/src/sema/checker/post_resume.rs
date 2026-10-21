@@ -103,22 +103,10 @@ impl Checker {
             StmtKind::Binding(binding) => (&binding.value, Some(binding.clone())),
             _ => unreachable!(),
         };
-        if result.ty != Ty::Never
-            && let ExprKind::Control { value, .. } = &resume.kind
-        {
-            let operand = value
-                .as_ref()
-                .map(|value| self.expression(value, frame))
-                .unwrap_or_else(|| self.unit(resume.span));
-            if operand.ty == Ty::Never {
-                self.unsupported(
-                    resume.span,
-                    "a non-tail resumption operand has no normal continuation",
-                );
-                result = operand;
-            } else {
-                result = self.resume_operation(operand, resume.span, frame);
-            }
+        if result.ty != Ty::Never {
+            // Resume is an actual HIR expression even when its operand is
+            // implicit unit. Use the common occurrence/activation recorder.
+            result = self.expression(resume, frame);
         }
         self.exit_cleanups(start, &result, body.span, frame);
         self.active_handlers.truncate(handlers);

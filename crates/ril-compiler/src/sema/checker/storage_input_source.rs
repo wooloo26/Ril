@@ -32,7 +32,7 @@ impl Checker {
             return true;
         }
         let answer = (|| {
-            let event = self.copy_operation_events.last().copied().flatten()?;
+            let event = self.application_effect.current_call_event()?;
             let receiver = self.storage_supplied_input(event, 0, &args[0].1, span, frame)?;
             let original = receiver.key.as_ref()?;
             source_reception::complete(original, &mut 4096)?;

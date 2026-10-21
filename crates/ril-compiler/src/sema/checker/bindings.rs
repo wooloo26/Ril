@@ -422,10 +422,18 @@ impl Checker {
         if value.participants.is_empty() {
             value.participants.insert(Participant::Root(root));
         }
+        let typing_environment = if parameter {
+            frame
+                .input_environment
+                .clone()
+                .unwrap_or_else(|| self.capture_typing_environment_with_bindings(&frame.env))
+        } else {
+            self.capture_typing_environment_with_bindings(&frame.env)
+        };
         self.bindings.push(BindingInfo {
             pattern,
             context: self.invocation_context(frame.callable_owner),
-            typing_environment: self.capture_typing_environment_with_bindings(&frame.env),
+            typing_environment,
             name: name.into(),
             value,
             mode,

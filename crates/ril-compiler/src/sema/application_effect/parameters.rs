@@ -115,7 +115,7 @@ impl<'a> Preparations<'a> {
             if root.0.source_id != Some(syntax)
                 || root.1.context != evaluation
                 || callee.1.context != receipt.caller
-                || facts.scope_parents.get(&root.1.scope) != Some(&callee.1.scope)
+                || facts.scopes.parent(&root.1.scope) != Some(&callee.1.scope)
                 || row.slots.get(receipt.parameter as usize)
                     != Some(&ArgumentSource::Default(receipt.id))
             {

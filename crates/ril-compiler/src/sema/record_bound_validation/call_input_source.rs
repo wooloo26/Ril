@@ -17,6 +17,7 @@ use crate::sema::{
     copy_contract::CopyInvocation,
     default_uses::{ArgumentSource, DefaultOrigin},
     effect_identity::{InvocationContext, StaticArgumentWitness},
+    model::Callable,
     source_reception,
 };
 
@@ -42,6 +43,15 @@ impl<'a> OriginalOperandSources<'a> {
         event_id: crate::sema::copy_contract::CopyCallEventId,
         slot: u32,
     ) -> Check<ArgumentKey> {
+        self.input(event_id, slot)?
+            .0
+            .ok_or_else(|| "source operand has no complete observed type".into())
+    }
+    pub(crate) fn input(
+        &self,
+        event_id: crate::sema::copy_contract::CopyCallEventId,
+        slot: u32,
+    ) -> Check<(Option<ArgumentKey>, source_reception::Construction)> {
         let replay = &self.replay;
         let facts = replay.facts;
         let sites = &self.sites;
@@ -156,7 +166,71 @@ impl<'a> OriginalOperandSources<'a> {
             "source operand token borrowed another physical occurrence or context",
         )?;
         replay.input_operand_interval(event, slot as usize, token.expression, context, sites)?;
-        replay.original_observed_source_key(syntax, token.expression, context, sites)
+        self.observed(
+            syntax.hir_id.ok_or("source input has no HIR root")?,
+            token.expression,
+        )
+    }
+    pub(crate) fn observed(
+        &self,
+        source: ril_compiler_core::ids::ExprId,
+        observation: usize,
+    ) -> Check<(Option<ArgumentKey>, source_reception::Construction)> {
+        let syntax = self
+            .sites
+            .expressions
+            .get(&source)
+            .ok_or("receiver input lost its original HIR expression")?;
+        let fact = self
+            .replay
+            .facts
+            .expressions
+            .get(observation)
+            .ok_or("receiver input is outside its value arena")?;
+        let record = self
+            .replay
+            .facts
+            .evaluations
+            .get(observation)
+            .ok_or("receiver input has no actual evaluation")?;
+        require(
+            fact.source_id == Some(source) && record.id.0 as usize == observation,
+            "receiver input borrowed another physical observation",
+        )?;
+        require(
+            record
+                .identity
+                .and_then(|id| self.replay.facts.activations.get(id.activation.0 as usize))
+                .is_some_and(|activation| {
+                    activation.kind
+                        != crate::sema::application_effect::ActivationKind::ControlTransfer
+                }),
+            "a resumption transfer is not its completed expression value",
+        )?;
+        let fresh = source_reception::construction(syntax, &mut 4096)
+            .ok_or("receiver construction exceeded its work bound")?;
+        let key = self.replay.original_observed_source_key(
+            syntax,
+            observation,
+            record.context,
+            &self.sites,
+        );
+        match key {
+            Ok(key) => Ok((Some(key), fresh)),
+            Err(_)
+                if matches!((&fresh,&fact.value.ty),
+                (source_reception::Construction::Array(items),Ty::Array(_)) if items.is_empty()) =>
+            {
+                Ok((None, fresh))
+            }
+            Err(_)
+                if matches!((&fresh,&fact.value.ty),
+                (source_reception::Construction::Map(items),Ty::Map(..)) if items.is_empty()) =>
+            {
+                Ok((None, fresh))
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -229,6 +303,45 @@ pub(super) fn has_sources(facts: &SemanticFacts) -> Check<bool> {
 }
 
 impl Replay<'_> {
+    fn operation_result_source(&self, observation: usize) -> Check<Option<ArgumentKey>> {
+        let mut events = self
+            .facts
+            .copy_call_events
+            .iter()
+            .filter(|event| event.result_expression == Some(observation));
+        let Some(event) = events.next() else {
+            return Ok(None);
+        };
+        require(
+            events.next().is_none(),
+            "operation result has duplicated physical call origins",
+        )?;
+        let callee = event
+            .callee_expression
+            .and_then(|index| self.facts.expressions.get(index))
+            .ok_or("operation result lost its actual callee")?;
+        let [Callable::Builtin(name)] = callee.value.callables.as_slice() else {
+            return Ok(None);
+        };
+        let Some(operation) = self.facts.operations.get(name) else {
+            return Ok(None);
+        };
+        let signature = self.frames.signature(
+            operation,
+            callee
+                .source_id
+                .ok_or("operation result lost its original selector")?,
+            event
+                .callee_expression
+                .and_then(|index| self.facts.evaluations.get(index))
+                .ok_or("operation result callee context is absent")?
+                .context,
+        )?;
+        let ArgumentKey::Callable { result, .. } = signature.declared else {
+            return Err("operation result has no complete Source signature".into());
+        };
+        Ok(Some(*result))
+    }
     fn input_row_equations(
         &self,
         raw: &ArgumentKey,
@@ -613,6 +726,9 @@ impl Replay<'_> {
                 && self.observations.row(observation, &mut work)?.context == context,
             "original Source root borrowed another actual occurrence or context",
         )?;
+        if let Some(key) = self.operation_result_source(observation)? {
+            return Ok(key);
+        }
         self.original_source_key_inner(
             expression,
             &fact.value,
@@ -1137,6 +1253,9 @@ impl Replay<'_> {
                     context,
                     visit.observation,
                 )?;
+                if let Some(key) = self.operation_formal_source_key(binding)? {
+                    return Ok(key);
+                }
                 if matches!(declaration.owner, Some(CallableOwner::Lambda(_))) {
                     return self
                         .lambda_formal_source_key(expression, value, context, sites, work, visit);
@@ -1192,7 +1311,7 @@ impl Replay<'_> {
                         })?;
                     require(
                         instance.caller_activation.is_some_and(|parent| {
-                            self.facts.scope_parents.get(&binding.owner) == Some(&parent)
+                            self.facts.scopes.parent(&binding.owner) == Some(&parent)
                         }),
                         "call input earlier formal belongs to another default activation",
                     )?;

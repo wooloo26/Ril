@@ -693,7 +693,7 @@ impl Checker {
         caller: &mut Frame,
     ) -> Value {
         let origin_context = self.invocation_context(caller.callable_owner);
-        let Some(origin_event) = self.copy_operation_events.last().copied().flatten() else {
+        let Some(origin_event) = self.application_effect.current_call_event() else {
             self.unsupported(
                 span,
                 "generated iterator source requires its actual adapter Call event",
@@ -715,7 +715,7 @@ impl Checker {
         };
         let result_ty = self.iter_step_type(&state, &item, span);
         let mut environment = self.frame(caller.env.clone(), true);
-        self.scope_parents.insert(environment.owner, caller.owner);
+        self.scopes.set_parent(environment.owner, caller.owner);
         let mut capture_ids = BTreeSet::new();
         for (index, value) in captures.into_iter().enumerate() {
             let mode = if value.publication == Publication::Immutable || value.construction {
@@ -1275,7 +1275,7 @@ impl Checker {
             );
         }
         let mut frame = self.frame(caller.env.clone(), true);
-        self.scope_parents.insert(frame.owner, caller.owner);
+        self.scopes.set_parent(frame.owner, caller.owner);
         let loan = LoanId(self.next_loan);
         self.next_loan += 1;
         self.loan_parents.insert(loan, cursor.participants.clone());

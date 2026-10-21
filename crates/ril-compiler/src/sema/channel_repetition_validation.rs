@@ -144,7 +144,7 @@ impl<'a> Analysis<'a> {
             if repeat.id.0 as usize != index
                 || repeat.start_sequence > end
                 || end > facts.channel_message_sequence
-                || !facts.allocated_scopes.contains(&repeat.activation)
+                || !facts.scopes.contains(&repeat.activation)
             {
                 return Err("channel repetition identity/activation/interval is incomplete".into());
             }

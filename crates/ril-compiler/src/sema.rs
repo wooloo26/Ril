@@ -39,6 +39,7 @@ pub mod resource_copy;
 pub mod result_conditions;
 pub mod resumption;
 pub mod scoped_source_identity;
+pub mod scopes;
 pub(crate) mod source_reception;
 #[cfg(test)]
 mod source_reception_review_tests;
@@ -85,7 +86,7 @@ pub struct SemanticFacts {
     pub allocation_history: Vec<(facts::NodeId, facts::NodeId)>,
     /// Scope identities allocated by the checker. The formal MAX sentinel is
     /// deliberately absent and must be admitted only by a formal fact's rule.
-    pub allocated_scopes: std::collections::BTreeSet<facts::ScopeId>,
+    pub scopes: scopes::ScopeIndex,
     pub numeric_uses: Vec<numeric_selection::NumericUse>,
     pub numeric_selections: Vec<numeric_selection::NumericSelection>,
     pub condition_evaluations: Vec<result_conditions::ConditionEvaluation>,
@@ -129,7 +130,6 @@ pub struct SemanticFacts {
     pub cleanup_events: Vec<CleanupEvent>,
     pub static_key_checks: Vec<StaticKeyCheck>,
     pub storage_types: std::collections::BTreeMap<facts::NodeId, model::Ty>,
-    pub scope_parents: std::collections::BTreeMap<facts::ScopeId, facts::ScopeId>,
     pub variant_projections: std::collections::BTreeMap<(u32, u32, u32), VariantProjection>,
     pub array_lengths: std::collections::BTreeMap<facts::NodeId, Option<u64>>,
     pub fixed_arrays: std::collections::BTreeSet<facts::NodeId>,

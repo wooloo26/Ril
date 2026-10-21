@@ -1,11 +1,26 @@
 use super::*;
 
 #[derive(Clone)]
+pub(super) struct EffectInfo {
+    pub source: Option<ril_compiler_core::ids::StmtId>,
+    pub syntax: EffectDeclaration,
+    pub environment: crate::sema::context::FrozenEnvironment,
+    pub scope: ScopeId,
+    pub context: crate::sema::effect_identity::InvocationContext,
+}
+impl std::ops::Deref for EffectInfo {
+    type Target = EffectDeclaration;
+    fn deref(&self) -> &Self::Target {
+        &self.syntax
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct HandlerDefinition {
     site: Option<HandlerSiteId>,
     callable_owner: Option<CallableOwner>,
     boundary: u32,
-    arms: BTreeMap<String, HandlerArm>,
+    pub(super) arms: BTreeMap<String, HandlerArm>,
     lexical: Env,
     typing_environment: crate::sema::context::FrozenEnvironment,
     span: Span,
@@ -25,7 +40,8 @@ pub(super) struct RetainedActivation {
 #[derive(Clone)]
 pub(super) struct ResumeContext {
     owner: ScopeId,
-    result: Ty,
+    pub(super) result: Ty,
+    pub(super) source: Option<crate::sema::source_reception::Target>,
     supplied: Option<Value>,
     pub(super) loans: BTreeSet<LoanId>,
     abortive: bool,
@@ -92,6 +108,32 @@ impl ControlState {
     }
 }
 impl Checker {
+    fn operation_source_target(
+        &mut self,
+        operation: &OperationFact,
+        parameter: Option<usize>,
+    ) -> Option<crate::sema::source_reception::Target> {
+        let source = operation.source.as_ref()?;
+        let header = self
+            .effects
+            .get(&operation.effect)?
+            .operations
+            .get(source.index as usize)?;
+        let syntax = match parameter {
+            Some(index) => header.parameters.get(index)?.ty.as_ref()?,
+            None => header.return_type.as_ref()?,
+        };
+        crate::static_eval::effects::bounded_argument_key(
+            syntax,
+            &source.environment.generic_context,
+        )?;
+        let syntax = syntax.clone();
+        Some(
+            self.with_typing_environment(&source.environment, |checker| {
+                checker.freeze_source_receiving_target(&syntax)
+            }),
+        )
+    }
     pub(super) fn finish_retained_answer_contracts(&mut self) {
         for pending in self.retained_answer_uses.clone() {
             let definition = self.handler_definitions[pending.handler].clone();
@@ -142,7 +184,7 @@ impl Checker {
                         self.resumption_steps.get(*index).is_none_or(|step| {
                             step.handler != pending.handler
                                 || step.operation != self.operations[&pending.operation].identity
-                                || self.scope_parents.get(&step.owner) != Some(&pending.activation)
+                                || self.scopes.parent(&step.owner) != Some(&pending.activation)
                                 || self.expanded(&step.arm_answer, &mut BTreeSet::new())
                                     != invocation
                         })
@@ -331,7 +373,7 @@ impl Checker {
                                 .filter_map(|(index, step)| {
                                     (step.handler == *id
                                         && step.operation == self.operations[operation].identity
-                                        && self.scope_parents.get(&step.owner) == Some(&activation))
+                                        && self.scopes.parent(&step.owner) == Some(&activation))
                                     .then_some(index)
                                 })
                                 .collect(),
@@ -918,6 +960,17 @@ impl Checker {
         self.operations.insert(
             name.clone(),
             OperationFact {
+                source: None,
+                signature: crate::sema::source_types::SourceSchema::import(
+                    &crate::sema::effect_identity::ArgumentKey::Callable {
+                        parameters: vec![],
+                        result: Box::new(crate::sema::effect_identity::ArgumentKey::Tuple(vec![])),
+                        annotations: vec![],
+                    },
+                    None,
+                    &mut crate::sema::source_types::WorkLimit::new(4096),
+                )
+                .ok(),
                 identity: u64::MAX,
                 name,
                 effect: "Fiber".into(),
@@ -934,6 +987,20 @@ impl Checker {
         self.operations.insert(
             name.clone(),
             OperationFact {
+                source: None,
+                signature: crate::sema::source_types::SourceSchema::import(
+                    &crate::sema::effect_identity::ArgumentKey::Callable {
+                        parameters: vec![],
+                        result: Box::new(crate::sema::effect_identity::ArgumentKey::Name {
+                            name: "never".into(),
+                            arguments: vec![],
+                        }),
+                        annotations: vec![],
+                    },
+                    None,
+                    &mut crate::sema::source_types::WorkLimit::new(4096),
+                )
+                .ok(),
                 identity: u64::MAX - 1,
                 name,
                 effect: "Div".into(),
@@ -947,7 +1014,7 @@ impl Checker {
             },
         );
     }
-    pub(super) fn declare_operations(&mut self, effect: &EffectDeclaration) {
+    pub(super) fn declare_operations(&mut self, effect: &EffectInfo) {
         if !effect.generics.is_empty() {
             // A generic family has no operation until a single instance is
             // selected. Never let its declaration stand for all instances.
@@ -1041,7 +1108,7 @@ impl Checker {
             self.type_source.environment.generic_context = previous;
             return;
         }
-        for operation in &effect.operations {
+        for (operation_index, operation) in effect.operations.iter().enumerate() {
             let name = format!("{}::{}", effect.name, operation.name);
             let identity = self.operations.get(&name).map_or_else(
                 || self.operations.len() as u64,
@@ -1066,9 +1133,50 @@ impl Checker {
                 .as_ref()
                 .map(|ty| self.ty(ty))
                 .unwrap_or(Ty::Unit);
+            let signature = self.with_typing_environment(&effect.environment, |checker| {
+                use crate::sema::effect_identity::ArgumentKey;
+                let parameters = operation
+                    .parameters
+                    .iter()
+                    .map(|parameter| {
+                        Some((
+                            parameter.mode,
+                            checker
+                                .freeze_source_receiving_target(parameter.ty.as_ref()?)
+                                .key()?,
+                        ))
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let result = match &operation.return_type {
+                    Some(syntax) => checker.freeze_source_receiving_target(syntax).key()?,
+                    None => ArgumentKey::Tuple(vec![]),
+                };
+                crate::sema::source_types::SourceSchema::import(
+                    &ArgumentKey::Callable {
+                        parameters,
+                        result: Box::new(result),
+                        annotations: operation
+                            .annotations
+                            .iter()
+                            .map(|row| row.text.replace(' ', ""))
+                            .collect(),
+                    },
+                    None,
+                    &mut crate::sema::source_types::WorkLimit::new(16384),
+                )
+                .ok()
+            });
             self.operations.insert(
                 name.clone(),
                 OperationFact {
+                    source: effect.source.map(|effect_source| OperationSource {
+                        effect: effect_source,
+                        index: operation_index as u32,
+                        environment: effect.environment.clone(),
+                        scope: effect.scope,
+                        context: effect.context,
+                    }),
+                    signature,
                     identity,
                     name,
                     effect: effect.name.clone(),
@@ -1252,6 +1360,13 @@ impl Checker {
         if self.local_effects.contains(family) {
             self.local_effects.insert(instance.name.clone());
         }
+        let instance = EffectInfo {
+            source: declaration.source,
+            environment: declaration.environment.clone(),
+            scope: declaration.scope,
+            context: declaration.context,
+            syntax: instance,
+        };
         self.declare_operations(&instance);
         self.effect_instances
             .push(super::super::effect_identity::EffectInstance {
@@ -1486,6 +1601,15 @@ impl Checker {
             for (index, (mode, ty)) in operation.parameters.iter().enumerate() {
                 let mut value =
                     self.formal_value(ty.clone(), index as u32, span, &mut BTreeSet::new());
+                if let Some(target) = self.operation_source_target(&operation, Some(index))
+                    && let Some(syntax) = target.syntax.as_ref()
+                {
+                    let mut assumed = frame.clone();
+                    self.with_typing_environment(&target.environment, |checker| {
+                        checker.promise_array_shape(&value, syntax, &mut assumed);
+                        checker.ascribe_signature(&mut value, syntax);
+                    });
+                }
                 if *mode != ParameterMode::Read && !self.formal_is_immutable(&value.ty) {
                     value.permission = Permission::Write;
                     for node in self.heap.reachable(value.origins.nodes.iter().copied()) {
@@ -1501,7 +1625,13 @@ impl Checker {
                 arguments.push((*mode, value, span));
             }
             let mut context = frame.clone();
-            let _ = self.perform_operation(&name, &arguments, span, &mut context);
+            let _ = self.perform_operation_from(
+                &name,
+                &arguments,
+                span,
+                &mut context,
+                crate::sema::application_effect::EntryOrigin::DeclarationProbe,
+            );
             self.restore_preview(&before);
             self.pending_abort = abort;
             self.loop_breaks = breaks;
@@ -1515,7 +1645,51 @@ impl Checker {
         span: Span,
         caller: &mut Frame,
     ) -> Value {
+        let current = self.application_effect.current_entry().cloned();
+        let origin = current
+            .as_ref()
+            .and_then(|origin| self.application_effect.snapshot_origin(origin))
+            .unwrap_or(crate::sema::application_effect::EntryOrigin::Unresolved);
+        self.perform_operation_from(name, args, span, caller, origin)
+    }
+
+    pub(super) fn perform_operation_from(
+        &mut self,
+        name: &str,
+        args: &[(ParameterMode, Value, Span)],
+        span: Span,
+        caller: &mut Frame,
+        origin: crate::sema::application_effect::EntryOrigin,
+    ) -> Value {
         let operation = self.operations[name].clone();
+        let mut source_valid = vec![true; args.len()];
+        if let crate::sema::application_effect::EntryOrigin::Application(event) = &origin {
+            let parameters = operation
+                .signature
+                .as_ref()
+                .and_then(|source| source.key().ok())
+                .and_then(|key| {
+                    if let crate::sema::effect_identity::ArgumentKey::Callable {
+                        parameters, ..
+                    } = key
+                    {
+                        Some(parameters)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(parameters) = parameters {
+                for (index, ((_, value, span), (_, expected))) in
+                    args.iter().zip(&parameters).enumerate()
+                {
+                    source_valid[index] =
+                        self.receive_application_source(expected, *event, index, value, *span);
+                }
+            } else {
+                self.unsupported(span, "effect operation has no complete Source signature");
+                source_valid.fill(false);
+            }
+        }
         caller
             .obligations
             .performed_operations
@@ -1621,8 +1795,34 @@ impl Checker {
         let active = self.active_handlers.clone();
         self.active_handlers.truncate(position);
         let mut frame = self.frame(definition.lexical.clone(), true);
+        frame.input_environment = operation
+            .source
+            .as_ref()
+            .map(|source| source.environment.clone());
         frame.callable_owner = definition.callable_owner;
-        self.scope_parents.insert(frame.owner, definition.owner);
+        self.scopes.set_parent(frame.owner, definition.owner);
+        if !self.application_effect.admit(1) {
+            self.unsupported(
+                span,
+                "operation entry budget exhausted before frame reception",
+            );
+            self.restore_typing_environment(previous_typing);
+            self.active_handlers = active;
+            return Value::scalar(Ty::Unknown, None, CauseId(0));
+        }
+        self.scopes.set_origin(
+            frame.owner,
+            crate::sema::scopes::ScopeOrigin::Operation(crate::sema::scopes::OperationEntry {
+                handler: id,
+                operation: operation.identity,
+                body: arm.body.hir_id,
+                parent: self.application_effect.current_activation(),
+                caller_context: self.invocation_context(caller.callable_owner),
+                context: self.invocation_context(frame.callable_owner),
+                origin,
+                allocation_epoch: self.recency_moves.len(),
+            }),
+        );
         let mut loans = BTreeMap::new();
         let mut temporary_loans = BTreeSet::new();
         let mut receptions = Vec::new();
@@ -1680,6 +1880,15 @@ impl Checker {
                 value.temporary |= mode == ParameterMode::Mut;
             }
             let start = frame.locals.len();
+            if source_valid.get(index) == Some(&true)
+                && let Some(target) = self.operation_source_target(&operation, Some(index))
+                && let Some(syntax) = target.syntax.as_ref()
+            {
+                self.with_typing_environment(&target.environment, |checker| {
+                    checker.ascribe_signature(&mut value, syntax);
+                    checker.check_storage_shape(&value, syntax, &mut frame);
+                });
+            }
             self.bind_pattern(
                 &parameter.pattern,
                 if mode == ParameterMode::Read {
@@ -1696,9 +1905,11 @@ impl Checker {
             }
             let _ = arg_span;
         }
+        let resume_source = self.operation_source_target(&operation, None);
         self.resume_contexts.push(ResumeContext {
             owner: frame.owner,
             result: operation.result.clone(),
+            source: resume_source,
             supplied: None,
             loans: temporary_loans,
             abortive: name == "Div::exhausted",
@@ -1901,7 +2112,7 @@ impl Checker {
     }
     pub(super) fn resume_operation(
         &mut self,
-        value: Value,
+        mut value: Value,
         span: Span,
         frame: &mut Frame,
     ) -> Value {
@@ -1959,6 +2170,7 @@ impl Checker {
             );
         }
         self.require_type(&value, &result, span);
+        value.ty = result;
         self.resume_contexts.last_mut().unwrap().supplied = Some(value);
         for loan in &loans {
             let cause = self.cause(
