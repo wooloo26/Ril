@@ -681,15 +681,15 @@ impl Replay<'_> {
         }
     }
 
-    pub(super) fn closure_entry_source_key(
+    pub(super) fn closure_entry_source_schema(
         &self,
         call: &ClosureInvocation,
         slot: usize,
         sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
         depth: usize,
-    ) -> Check<ArgumentKey> {
-        self.entry_source_key(
+    ) -> Check<OriginalSource> {
+        self.entry_source_schema(
             &call.entry,
             Some(call.caller_activation),
             Target::Closure(call.closure),
@@ -707,8 +707,21 @@ impl Replay<'_> {
         sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
     ) -> Check<ArgumentKey> {
+        self.named_entry_source_schema(call, slot, sites, work)?
+            .0
+            .key()
+            .map_err(|error| format!("legacy named input Source export: {error}"))
+    }
+
+    pub(super) fn named_entry_source_schema(
+        &self,
+        call: &CopyInvocation,
+        slot: usize,
+        sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+    ) -> Check<OriginalSource> {
         self.function(call.target)?;
-        self.entry_source_key(
+        self.entry_source_schema(
             &call.entry,
             call.caller_activation,
             Target::Named(call.target),
@@ -720,7 +733,7 @@ impl Replay<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn entry_source_key<A: Arguments>(
+    fn entry_source_schema<A: Arguments>(
         &self,
         entry: &CallableEntry<A>,
         caller_activation: Option<crate::sema::facts::ScopeId>,
@@ -729,7 +742,7 @@ impl Replay<'_> {
         sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
         depth: usize,
-    ) -> Check<ArgumentKey> {
+    ) -> Check<OriginalSource> {
         require(
             depth < 64,
             "callable input Source ancestry exceeds its bound",
@@ -744,15 +757,19 @@ impl Replay<'_> {
             let Input::Scalar(kind) = input else {
                 unreachable!()
             };
-            return Ok(ArgumentKey::Name {
-                name: match kind {
-                    crate::sema::application_effect::ScalarInput::PositiveInt => "int",
-                    crate::sema::application_effect::ScalarInput::ByteSuffix(_)
-                    | crate::sema::application_effect::ScalarInput::BufferedBytes(_) => "bytes",
-                }
-                .into(),
-                arguments: vec![],
-            });
+            return self.source_header_schema(
+                &ArgumentKey::Name {
+                    name: match kind {
+                        crate::sema::application_effect::ScalarInput::PositiveInt => "int",
+                        crate::sema::application_effect::ScalarInput::ByteSuffix(_)
+                        | crate::sema::application_effect::ScalarInput::BufferedBytes(_) => "bytes",
+                    }
+                    .into(),
+                    arguments: vec![],
+                },
+                FrozenEnvironment::default(),
+                work,
+            );
         };
         let syntax = sites
             .expressions
@@ -760,22 +777,26 @@ impl Replay<'_> {
             .ok_or("callable input lost its original indexed expression")?;
         let fact = &self.facts.expressions[observation];
         let context = self.observations.row(observation, work)?.context;
-        let key = self.original_source_key_inner(
-            syntax,
-            &fact.value,
-            context,
-            sites,
-            work,
-            SourceVisit {
-                depth: depth + 1,
-                observation: Some(observation),
-            },
-        )?;
+        let (schema, environment) = self
+            .original_source_schema_inner(
+                syntax,
+                &fact.value,
+                context,
+                sites,
+                work,
+                SourceVisit {
+                    depth: depth + 1,
+                    observation: Some(observation),
+                },
+            )?
+            .ok_or("callable input has no complete original graph")?;
         if let Some(id) = copy {
-            source_reception::copy_view(key, self.facts.copy_boundaries[id.0 as usize].mode, work)
-                .ok_or_else(|| "callable input copy Source exceeds its work bound".to_owned())
+            super::graph_sources::schema_work(work, |budget| {
+                schema.copy_view(self.facts.copy_boundaries[id.0 as usize].mode, budget)
+            })
+            .map(|schema| (schema, environment))
         } else {
-            Ok(key)
+            Ok((schema, environment))
         }
     }
 

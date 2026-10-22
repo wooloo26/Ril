@@ -3,9 +3,6 @@ use super::*;
 use ril_syntax::ast::RecordMember;
 
 impl Replay<'_> {
-    /// Outer None means that this is not a copy source. A recognized copy
-    /// keeps an unresolved original view as Some(None), after checking its
-    /// physical operands; later output metadata cannot fill that missing view.
     pub(super) fn original_copy_source_key(
         &self,
         expression: &Expr,
@@ -15,6 +12,27 @@ impl Replay<'_> {
         work: &mut usize,
         visit: SourceVisit,
     ) -> Check<Option<Option<ArgumentKey>>> {
+        self.original_copy_source_schema(expression, value, context, sites, work, visit)?
+            .map(|source| {
+                source
+                    .map(|(schema, _)| schema.key().map_err(|error| error.to_string()))
+                    .transpose()
+            })
+            .transpose()
+    }
+
+    /// Outer None means that this is not a copy source. A recognized copy
+    /// keeps an unresolved original view as Some(None), after checking its
+    /// physical operands; later output metadata cannot fill that missing view.
+    pub(super) fn original_copy_source_schema(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+        visit: SourceVisit,
+    ) -> Check<Option<Option<OriginalSource>>> {
         if let ExprKind::Binary {
             operator,
             left,
@@ -52,7 +70,7 @@ impl Replay<'_> {
                 operands.next().is_none(),
                 "copy publication borrowed an ambiguous input root",
             )?;
-            let key = self.original_source_key_inner_if_known(
+            let key = self.original_source_schema_inner(
                 left,
                 &self.facts.expressions[operand].value,
                 context,
@@ -64,13 +82,11 @@ impl Replay<'_> {
                 },
             )?;
             return key
-                .map(|key| {
-                    source_reception::copy_view(
-                        key,
-                        crate::sema::copy_contract::CopyMode::Immutable,
-                        work,
-                    )
-                    .ok_or_else(|| "copy publication Source exceeds its work bound".to_owned())
+                .map(|(schema, environment)| {
+                    super::graph_sources::schema_work(work, |budget| {
+                        schema.copy_view(crate::sema::copy_contract::CopyMode::Immutable, budget)
+                    })
+                    .map(|schema| (schema, environment))
                 })
                 .transpose()
                 .map(Some);
@@ -168,7 +184,7 @@ impl Replay<'_> {
             "copy Source input borrowed another physical operand",
         )?;
         self.input_operand_interval(event, 0, token.expression, context, sites)?;
-        let key = self.original_source_key_inner_if_known(
+        let key = self.original_source_schema_inner(
             application.operands[0].expression,
             &original.value,
             context,
@@ -179,9 +195,9 @@ impl Replay<'_> {
                 observation: Some(token.expression),
             },
         )?;
-        key.map(|key| {
-            source_reception::copy_view(key, mode, work)
-                .ok_or_else(|| "copy Source transformation exceeds its work bound".to_owned())
+        key.map(|(schema, environment)| {
+            super::graph_sources::schema_work(work, |budget| schema.copy_view(mode, budget))
+                .map(|schema| (schema, environment))
         })
         .transpose()
         .map(Some)
@@ -196,6 +212,20 @@ impl Replay<'_> {
         work: &mut usize,
         visit: SourceVisit,
     ) -> Check<Option<ArgumentKey>> {
+        self.original_composite_source_schema(expression, value, context, sites, work, visit)?
+            .map(|(schema, _)| schema.key().map_err(|error| error.to_string()))
+            .transpose()
+    }
+
+    pub(super) fn original_composite_source_schema(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+        visit: SourceVisit,
+    ) -> Check<Option<OriginalSource>> {
         let SourceVisit { depth, observation } = visit;
         if let ExprKind::Block(block) = &expression.kind {
             let blocks = self
@@ -244,21 +274,11 @@ impl Replay<'_> {
             // cleanup outcome. Only the actual unchanged tail Source can be
             // forwarded; a same-span node or current callable tag is not it.
             let root = self.original_source_root(expression, value, context, observation, work)?;
-            let source = expression.hir_id.unwrap();
-            let lower = self
-                .observations
-                .previous(source, context, root, work)?
-                .map_or(0, |index| index + 1);
             let tail_source = tail
                 .hir_id
                 .ok_or_else(|| "block Source tail has no genuine HIR identity".to_owned())?;
-            let tails = self
-                .observations
-                .range(tail_source, context, lower..root, work)?;
-            let [index] = tails else {
-                return Err("block Source tail borrowed another physical occurrence".into());
-            };
-            let actual = &self.facts.expressions[*index];
+            let index = self.source_child_observation(root, tail_source, context, work)?;
+            let actual = &self.facts.expressions[index];
             require(
                 actual.value.ty != Ty::Never
                     && actual.value.cause == value.cause
@@ -270,22 +290,33 @@ impl Replay<'_> {
                     && actual.value.signature == value.signature,
                 "block Source differs from its actual tail's complete public view",
             )?;
-            return self
-                .original_source_key_inner(
-                    tail,
-                    &actual.value,
-                    context,
-                    sites,
-                    work,
-                    SourceVisit {
-                        depth: depth + 1,
-                        observation: Some(*index),
-                    },
-                )
-                .map(Some);
+            return self.original_source_schema_inner(
+                tail,
+                &actual.value,
+                context,
+                sites,
+                work,
+                SourceVisit {
+                    depth: depth + 1,
+                    observation: Some(index),
+                },
+            );
         }
         let optional_exit =
             matches!(&expression.kind, ExprKind::Binary { operator, .. } if operator == "??");
+        let child_count = match &expression.kind {
+            ExprKind::Array(items) | ExprKind::Tuple(items) => items.len(),
+            ExprKind::Map(items) => items
+                .len()
+                .checked_mul(2)
+                .ok_or("map Source child count overflow")?,
+            ExprKind::Record { members, .. } => members.len(),
+            ExprKind::Binary { .. } => 2,
+            _ => 1,
+        };
+        *work = work
+            .checked_sub(child_count)
+            .ok_or("product Source children exceed their work bound")?;
         let children: Vec<(Option<&str>, &Expr)> = match &expression.kind {
             ExprKind::Unary { operator, operand } if operator == "^mut" => vec![(None, operand)],
             ExprKind::Binary {
@@ -294,6 +325,13 @@ impl Replay<'_> {
                 right,
             } if operator == "??" => vec![(None, left), (None, right)],
             ExprKind::Tuple(items) => items.iter().map(|item| (None, item)).collect(),
+            ExprKind::Array(items) if !items.is_empty() => {
+                items.iter().map(|item| (None, item)).collect()
+            }
+            ExprKind::Map(items) if !items.is_empty() => items
+                .iter()
+                .flat_map(|(key, value)| [(None, key), (None, value)])
+                .collect(),
             ExprKind::Record {
                 ty: None, members, ..
             } => members
@@ -308,10 +346,7 @@ impl Replay<'_> {
             _ => return Ok(None),
         };
         let root = self.original_source_root(expression, value, context, observation, work)?;
-        let mut lower = self
-            .observations
-            .previous(expression.hir_id.unwrap(), context, root, work)?
-            .map_or(0, |index| index + 1);
+        let mut previous = None;
         let mut keys = Vec::new();
         for (position, (label, child)) in children.into_iter().enumerate() {
             *work = work
@@ -320,13 +355,13 @@ impl Replay<'_> {
             let source = child
                 .hir_id
                 .ok_or_else(|| "product operand has no genuine HIR identity".to_owned())?;
-            let candidates = self
-                .observations
-                .range(source, context, lower..root, work)?;
-            let [index] = candidates else {
-                return Err("product Source operand borrowed another physical occurrence".into());
-            };
-            let fact = &self.facts.expressions[*index];
+            let index = self.source_child_observation(root, source, context, work)?;
+            require(
+                previous.is_none_or(|previous| previous < index),
+                "product Source changed its actual child evaluation order",
+            )?;
+            previous = Some(index);
+            let fact = &self.facts.expressions[index];
             if optional_exit {
                 if position == 0 && !matches!(fact.value.ty, Ty::Optional(_)) {
                     return Ok(None);
@@ -357,8 +392,7 @@ impl Replay<'_> {
                     "sharing marker changed its actual operand's Source view",
                 )?;
             }
-            lower = *index + 1;
-            let key = self.original_source_key_inner(
+            let Some(key) = self.original_source_schema_inner(
                 child,
                 &fact.value,
                 context,
@@ -366,42 +400,78 @@ impl Replay<'_> {
                 work,
                 SourceVisit {
                     depth: depth + 1,
-                    observation: Some(*index),
+                    observation: Some(index),
                 },
-            )?;
-            require(
-                source_reception::complete(&key, work).is_some(),
-                "product operand Source is incomplete",
-            )?;
+            )?
+            else {
+                return Ok(None);
+            };
             keys.push((label, key));
         }
         if optional_exit {
-            let key = keys
+            let (schema, environment) = keys
                 .pop()
                 .ok_or_else(|| "optional fallback lost its original payload Source".to_owned())?
                 .1;
-            let hir = self
-                .facts
-                .semantic_hir
-                .as_deref()
-                .ok_or_else(|| "optional fallback has no canonical HIR".to_owned())?;
-            let mut limit = crate::sema::source_types::WorkLimit::new(*work);
-            let key = crate::sema::source_types::declarations::project_steps(
-                &key,
-                &[crate::sema::source_types::SourcePath::OptionalPayload],
-                hir,
-                &mut limit,
-            );
-            *work = limit.remaining();
-            key.map(Some)
-                .map_err(|error| format!("optional fallback payload Source: {error}"))
+            super::graph_sources::schema_work(work, |budget| {
+                schema.project_steps(
+                    &[crate::sema::source_types::SourcePath::OptionalPayload],
+                    budget,
+                )
+            })
+            .map(|schema| Some((schema, environment)))
         } else if matches!(expression.kind, ExprKind::Unary { .. }) {
             Ok(keys.pop().map(|(_, key)| key))
+        } else if matches!(expression.kind, ExprKind::Array(_)) {
+            let sources: Vec<_> = keys.into_iter().map(|(_, source)| source).collect();
+            let environment = self.source_composite_environment(&sources, work)?;
+            let element = &sources[0].0;
+            for (actual, _) in &sources[1..] {
+                require(
+                    super::graph_sources::schema_work(work, |budget| {
+                        element.equivalent(actual, budget)
+                    })?,
+                    "array construction children disagree about their original Source graph",
+                )?;
+            }
+            super::graph_sources::schema_work(work, |budget| {
+                SourceSchema::array(
+                    crate::sema::source_types::SourceLength::Dynamic,
+                    element,
+                    None,
+                    budget,
+                )
+            })
+            .map(|schema| Some((schema, environment)))
+        } else if matches!(expression.kind, ExprKind::Map(_)) {
+            let sources: Vec<_> = keys.into_iter().map(|(_, source)| source).collect();
+            let environment = self.source_composite_environment(&sources, work)?;
+            let (key, value) = (&sources[0].0, &sources[1].0);
+            for pair in sources[2..].as_chunks::<2>().0 {
+                require(
+                    super::graph_sources::schema_work(work, |budget| {
+                        key.equivalent(&pair[0].0, budget)
+                    })? && super::graph_sources::schema_work(work, |budget| {
+                        value.equivalent(&pair[1].0, budget)
+                    })?,
+                    "map construction children disagree about their original Source graphs",
+                )?;
+            }
+            super::graph_sources::schema_work(work, |budget| {
+                SourceSchema::map(key, value, None, budget)
+            })
+            .map(|schema| Some((schema, environment)))
         } else if matches!(expression.kind, ExprKind::Tuple(_)) {
-            Ok(Some(ArgumentKey::Tuple(
-                keys.into_iter().map(|(_, key)| key).collect(),
-            )))
+            let sources: Vec<_> = keys.into_iter().map(|(_, source)| source).collect();
+            let environment = self.source_composite_environment(&sources, work)?;
+            let schemas: Vec<_> = sources.into_iter().map(|(schema, _)| schema).collect();
+            super::graph_sources::schema_work(work, |budget| {
+                SourceSchema::tuple(&schemas, None, budget)
+            })
+            .map(|schema| Some((schema, environment)))
         } else {
+            let sources: Vec<_> = keys.iter().map(|(_, source)| source.clone()).collect();
+            let environment = self.source_composite_environment(&sources, work)?;
             let mut fields = BTreeMap::new();
             for (name, key) in keys {
                 require(
@@ -409,13 +479,14 @@ impl Replay<'_> {
                     "product Source repeats a field",
                 )?;
             }
-            Ok(Some(ArgumentKey::Record {
-                fields: fields
-                    .into_iter()
-                    .map(|(name, key)| (name, false, key))
-                    .collect(),
-                row: None,
-            }))
+            let fields: Vec<_> = fields
+                .into_iter()
+                .map(|(name, (schema, _))| (name, false, schema))
+                .collect();
+            super::graph_sources::schema_work(work, |budget| {
+                SourceSchema::record(&fields, None, None, budget)
+            })
+            .map(|schema| Some((schema, environment)))
         }
     }
 }
@@ -423,6 +494,107 @@ impl Replay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_sources_require_each_actual_child_even_with_a_closed_root_view() {
+        for (case, array) in [
+            (
+                "tests/regressions/source-transport.ril::generic-literal-collection-source-graphs",
+                true,
+            ),
+            (
+                "tests/regressions/source-transport.ril::generic-literal-collection-source-graphs",
+                false,
+            ),
+        ] {
+            let source = ril_test::case_source(case);
+            let program = crate::Session::new(source.as_bytes().to_vec())
+                .verify()
+                .unwrap();
+            let facts = program.facts();
+            let sources = OriginalOperandSources::new(facts).unwrap();
+            let empty = facts
+                .bindings
+                .iter()
+                .position(|binding| binding.name == "empty")
+                .unwrap();
+            let (original, _) = facts
+                .source_types
+                .binding_schema_if_known(empty, None, &mut WorkLimit::new(4096))
+                .unwrap()
+                .unwrap();
+            let (observation, root, child) = facts.expressions.iter().enumerate().find_map(|(index, fact)| {
+                let id = fact.source_id?;
+                let syntax = sources.sites.expressions.get(&id)?;
+                let child = match &syntax.kind {
+                    ExprKind::Array(items) if array && matches!(items.as_slice(), [Expr { kind: ExprKind::Name(name), .. }] if name == "value") => {
+                        let parent = facts.evaluations[index].identity?.activation;
+                        let child = items[0].hir_id?;
+                        let actual = facts.expressions.iter().enumerate().find(|(observation, fact)| {
+                            fact.source_id == Some(child) && facts.evaluations[*observation].identity.is_some_and(|identity|
+                                facts.activations[identity.activation.0 as usize].parent == Some(parent))
+                        })?.1;
+                        let selected_empty = actual.value.sources.iter().filter_map(|id| facts.bindings.get(*id))
+                            .flat_map(|binding| binding.typing_environment.generic_sources.values())
+                            .any(|selected| selected.schema.equivalent(&original, &mut WorkLimit::new(4096)) == Ok(true));
+                        if !selected_empty { return None }
+                        &items[0]
+                    }
+                    ExprKind::Map(items) if !array && !items.is_empty() => &items[0].0,
+                    _ => return None,
+                };
+                Some((index, id, child.hir_id.unwrap()))
+            }).expect("fixture must retain its nonempty literal and original child");
+            let (schema, _) = sources
+                .observed(root, observation)
+                .unwrap()
+                .0
+                .expect("known literal children must retain a complete Source graph");
+            if array {
+                assert!(
+                    schema
+                        .project_steps(
+                            &[crate::sema::source_types::SourcePath::Element],
+                            &mut WorkLimit::new(4096)
+                        )
+                        .unwrap()
+                        .equivalent(&original, &mut WorkLimit::new(4096))
+                        .unwrap(),
+                    "a dynamic literal outer view must preserve the stored child's hidden fixed extent"
+                );
+            }
+            let context = sources
+                .replay
+                .observations
+                .row(observation, &mut 4096)
+                .unwrap()
+                .context;
+            let parent = facts.evaluations[observation].identity.unwrap().activation;
+            let children: Vec<_> = sources
+                .replay
+                .observations
+                .range(child, context, 0..observation, &mut 4096)
+                .unwrap()
+                .iter()
+                .copied()
+                .filter(|child| {
+                    let activation = facts.evaluations[*child].identity.unwrap().activation;
+                    facts.activations[activation.0 as usize].parent == Some(parent)
+                })
+                .collect();
+            let [child_observation] = children.as_slice() else {
+                panic!("fixture must have one actual literal child")
+            };
+            let mut changed = facts.clone();
+            changed.expressions[*child_observation].source_id = None;
+            assert!(
+                OriginalOperandSources::new(&changed)
+                    .and_then(|sources| sources.observed(root, observation))
+                    .is_err(),
+                "{case}: a root view cannot replace its missing physical child"
+            );
+        }
+    }
 
     #[test]
     fn unknown_copy_source_requires_its_primitive_and_physical_supplied_operand() {

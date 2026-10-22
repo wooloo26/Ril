@@ -103,9 +103,15 @@ duplicate source trees and historical verification reports.
 - Extend Source transport to local/generic recursive declarations. Finish migrating
   generic Source consumers to graph views paired with frozen environments; preserve
   open rows and qualified callables through inputs, returns, captures, constructors
-  and containers, then remove the remaining closed-witness adapters.
-- Finish generated I/O and iterator observations, channel payloads, handler
-  activations and resumption transport. Resolve the nine-scope channel replay
+  and containers, then remove the remaining closed-witness adapters. Replace raw
+  callable annotation text with frozen declaration references so composites can
+  retain contracts originating in different lexical environments. Migrate the
+  remaining named/public input checks from legacy keys, and solve pending Source
+  equations before certifying a producing context.
+- Complete shared value derivations for historical heap reads, callback results
+  and generated constructor inputs. Iterator creation recipes do not certify
+  individual transitions. Finish generated I/O observations, channel payloads,
+  handler activations and resumption transport. Resolve the nine-scope channel replay
   case with finite work while preserving unknown guard/history obligations.
 - Implement conditional bindings (`if let`, `while let`) and array/tuple rest
   patterns. Complete record-rest, nested closure/default

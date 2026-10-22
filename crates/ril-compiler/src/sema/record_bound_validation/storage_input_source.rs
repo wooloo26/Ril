@@ -112,54 +112,79 @@ impl Replay<'_> {
             self.input_operand_interval(event, slot, supplied.expression, context, sites)?;
             Ok(supplied.expression)
         };
-        let receiver = self.original_observed_source_key(
-            arguments[mapping
-                .iter()
-                .position(|slot| *slot == 0)
-                .ok_or("primitive receiver is absent")?]
-            .expression,
-            original(0)?,
-            context,
-            sites,
-        )?;
-        require(
-            source_reception::complete(&receiver, &mut 4096).is_some(),
-            "storage intrinsic receiver has no complete original schema",
-        )?;
+        let (receiver, _) = self
+            .original_observed_source_schema_with_work(
+                arguments[mapping
+                    .iter()
+                    .position(|slot| *slot == 0)
+                    .ok_or("primitive receiver is absent")?]
+                .expression,
+                original(0)?,
+                context,
+                sites,
+                &mut 16384,
+            )?
+            .ok_or("storage intrinsic receiver has no complete original graph")?;
         for &(slot, part) in stores {
-            let expected = collection_part(&receiver, part).ok_or_else(|| {
-                "storage intrinsic receiver has no declared member projection".to_owned()
-            })?;
-            if crate::sema::source_types::key_is_coordinate_free_with_declarations(
-                expected,
-                self.facts.semantic_hir.as_deref(),
-            ) {
-                continue;
+            let projection = match part {
+                Part::Element => crate::sema::source_types::SourcePath::Element,
+                Part::MapKey => crate::sema::source_types::SourcePath::MapKey,
+                Part::MapValue => crate::sema::source_types::SourcePath::MapValue,
+            };
+            let expected = receiver
+                .project_steps(&[projection], &mut WorkLimit::new(16384))
+                .map_err(|error| error.to_string())?;
+            match expected.sensitivity(&mut WorkLimit::new(16384)) {
+                crate::sema::source_types::SourceSensitivity::Absent { .. } => continue,
+                crate::sema::source_types::SourceSensitivity::Unknown { reason } => {
+                    return Err(reason.to_string());
+                }
+                crate::sema::source_types::SourceSensitivity::Sensitive { .. } => {}
             }
             let observation = original(slot)?;
             let written = mapping
                 .iter()
                 .position(|actual| *actual == slot)
                 .ok_or("primitive stored slot is absent")?;
-            let actual = self.input_source_reception(
-                expected,
+            let actual = self.original_observed_source_schema_with_work(
                 arguments[written].expression,
-                &self.facts.expressions[observation].value,
+                observation,
                 context,
                 sites,
-                Some(observation),
+                &mut 16384,
             )?;
-            if let (
-                ArgumentKey::Callable {
-                    annotations: expected,
-                    ..
-                },
-                Some(ArgumentKey::Callable {
-                    annotations: actual,
-                    ..
-                }),
-            ) = (expected, actual.as_ref())
+            let fresh = source_reception::construction(arguments[written].expression, &mut 4096)
+                .ok_or("storage construction work exhausted")?;
+            if let Some(answer) = expected
+                .empty_context(&fresh, &mut WorkLimit::new(4096))
+                .map_err(|error| error.to_string())?
             {
+                require(
+                    answer,
+                    "empty storage input differs from its destination Source graph",
+                )?;
+                continue;
+            }
+            let (actual, environment) =
+                actual.ok_or("storage input has no original Source graph")?;
+            require(
+                !environment.is_poisoned(),
+                "storage Source environment is poisoned",
+            )?;
+            require(
+                expected
+                    .receive_schema(&actual, Some(&fresh), &mut WorkLimit::new(16384))
+                    .map_err(|error| error.to_string())?,
+                "storage input differs from its receiving Source graph",
+            )?;
+            if let (Some(expected), Some(actual)) = (
+                expected
+                    .callable_annotations(&mut WorkLimit::new(4096))
+                    .map_err(|error| error.to_string())?,
+                actual
+                    .callable_annotations(&mut WorkLimit::new(4096))
+                    .map_err(|error| error.to_string())?,
+            ) {
                 require(
                     expected == actual,
                     "storage callable bounds require their original frozen lexical proof",
@@ -167,19 +192,5 @@ impl Replay<'_> {
             }
         }
         Ok(())
-    }
-}
-
-fn collection_part(key: &ArgumentKey, part: Part) -> Option<&ArgumentKey> {
-    match (key, part) {
-        (ArgumentKey::Array { element, .. }, Part::Element) => Some(element),
-        (ArgumentKey::Map { key, .. }, Part::MapKey) => Some(key),
-        (ArgumentKey::Map { value, .. }, Part::MapValue) => Some(value),
-        (ArgumentKey::Name { name, arguments }, Part::Element)
-            if matches!(name.as_str(), "Set" | "Prelude::Set") && arguments.len() == 1 =>
-        {
-            Some(&arguments[0])
-        }
-        _ => None,
     }
 }

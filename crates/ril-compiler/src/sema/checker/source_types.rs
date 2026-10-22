@@ -11,6 +11,44 @@ struct SourceSelection<'a> {
 }
 
 impl Checker {
+    pub(super) fn const_nominal_source_schema(
+        &self,
+        syntax: &TypeExpr,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<
+        Option<crate::sema::source_types::SourceSchema>,
+        crate::sema::source_types::SourceTypesError,
+    > {
+        use crate::sema::source_types::{SourceSchema, SourceTypesError};
+        let TypeKind::Name { path, arguments } = &syntax.kind else {
+            return Ok(None);
+        };
+        work.charge(path.len() + 1)?;
+        for part in path {
+            work.text(part)?;
+        }
+        let name = path.join("::");
+        let Some(declaration) = self.types.get(&name) else {
+            return Ok(None);
+        };
+        if declaration.name != name {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let mut remaining = work.remaining();
+        let normalized = crate::static_eval::const_nominal::closed_const_nominal_arguments(
+            declaration,
+            arguments,
+            &self.types,
+            self.layout,
+            &mut remaining,
+        );
+        work.charge(work.remaining() - remaining)?;
+        let Some(arguments) = normalized.map_err(|_| SourceTypesError::Unresolved)? else {
+            return Ok(None);
+        };
+        SourceSchema::certified_const_nominal(&name, &arguments, syntax.hir_id, work).map(Some)
+    }
+
     pub(super) fn extend_closed_generic_sources(
         &mut self,
         witnesses: impl IntoIterator<Item = (String, Arc<SourceTypeWitness>)>,
@@ -127,20 +165,62 @@ impl Checker {
         }
     }
     pub(super) fn register_constructor_source_type(&mut self, name: &str, syntax: &TypeExpr) {
-        // Preserve the genuine declaration/normalized-instance syntax even
-        // when its Const or symbolic arguments are not a closed type witness.
-        if crate::static_eval::effects::bounded_argument_key(syntax, &self.effect_type_binders)
-            .is_some()
-        {
-            self.constructor_source_syntax
-                .insert(name.into(), Arc::new(syntax.clone()));
-        } else {
-            self.constructor_source_syntax.remove(name);
-        }
-        if let Some(witness) = self.source_type_from_syntax(syntax) {
-            self.constructor_source_types.insert(name.into(), witness);
-        } else {
-            self.constructor_source_types.remove(name);
+        use crate::sema::source_types::{SourceSchema, SourceTypesError, WorkLimit};
+        let Some(info) = self.constructors.get(name) else {
+            self.unsupported(
+                syntax.span,
+                "constructor Source has no original registered declaration",
+            );
+            return;
+        };
+        let environment = info.typing_environment.clone();
+        let mut generics = BTreeSet::new();
+        info.owner.generic_names(&mut generics);
+        let template = !generics.is_empty();
+        let admission = (|| {
+            let mut work = WorkLimit::new(16384);
+            if environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let key = crate::static_eval::effects::bounded_argument_key(
+                syntax,
+                &environment.generic_context,
+            )
+            .ok_or(SourceTypesError::BudgetExceeded)?;
+            let witness = self.with_typing_environment(&environment, |checker| {
+                checker.source_type_from_syntax(syntax)
+            });
+            let source = if template {
+                None
+            } else {
+                let schema =
+                    if let Some(schema) = self.const_nominal_source_schema(syntax, &mut work)? {
+                        schema
+                    } else if let Some(witness) = &witness {
+                        let key = crate::static_eval::effects::bounded_argument_key(
+                            &witness.syntax,
+                            &BTreeMap::new(),
+                        )
+                        .ok_or(SourceTypesError::BudgetExceeded)?;
+                        SourceSchema::import(&key, witness.syntax.hir_id, &mut work)?
+                    } else {
+                        SourceSchema::import(&key, syntax.hir_id, &mut work)?
+                    };
+                Some(self.intern_source_schema(&schema, environment.clone(), &mut work)?)
+            };
+            Ok((source, witness))
+        })();
+        match admission {
+            Ok((source, witness)) => {
+                let info = self.constructors.get_mut(name).unwrap();
+                info.source = source;
+                info.source_syntax = Some(Arc::new(syntax.clone()));
+                info.source_type_witness = witness;
+            }
+            Err(error) => self.unsupported(
+                syntax.span,
+                format!("constructor Source admission failed: {error}"),
+            ),
         }
     }
 
@@ -463,14 +543,31 @@ impl Checker {
             if let Ty::Generic(identity) = template
                 && binders.contains(identity)
                 && !schemas.contains_key(identity)
-                && requires_source_identity(&value.ty)
                 && let Some(source) = self.supplied_parameter_source(slot)
             {
-                if captured.get(identity).is_some_and(
-                    |old: &Arc<crate::sema::source_types::TypeSourceSelection>| {
-                        old.key().ok() != source.key().ok()
-                    },
-                ) {
+                let agrees: Result<bool, crate::sema::source_types::SourceTypesError> = (|| {
+                    let Some(old): Option<&Arc<crate::sema::source_types::TypeSourceSelection>> =
+                        captured.get(identity)
+                    else {
+                        return Ok(true);
+                    };
+                    let mut work = crate::sema::source_types::WorkLimit::new(16384);
+                    Ok(old.schema.equivalent(&source.schema, &mut work)?
+                        && (!old.schema.requires_environment(&mut work)?
+                            || old.environment.id() == source.environment.id()))
+                })(
+                );
+                let agrees = match agrees {
+                    Ok(agrees) => agrees,
+                    Err(error) => {
+                        self.unsupported(
+                            *span,
+                            format!("generic Source graph comparison failed: {error}"),
+                        );
+                        false
+                    }
+                };
+                if !agrees {
                     self.error(
                         "E0301",
                         *span,

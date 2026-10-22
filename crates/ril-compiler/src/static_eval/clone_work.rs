@@ -172,6 +172,27 @@ impl Meter<'_> {
         }
         Ok(())
     }
+    fn type_declaration(&self, value: &TypeDeclaration, depth: usize) -> Result<()> {
+        self.node(depth)?;
+        self.text(&value.name)?;
+        for parameter in &value.generics {
+            self.generic(parameter, depth + 1)?;
+        }
+        if let Some(ty) = &value.value {
+            self.ty(ty, depth + 1)?;
+        }
+        for variant in &value.variants {
+            self.text(&variant.name)?;
+            self.annotations(&variant.annotations)?;
+            for parameter in &variant.generics {
+                self.generic(parameter, depth + 1)?;
+            }
+            for ty in variant.payload.iter().chain(&variant.result) {
+                self.ty(ty, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
     fn statement(&self, value: &Stmt, depth: usize) -> Result<()> {
         self.node(depth)?;
         match &value.kind {
@@ -186,25 +207,7 @@ impl Meter<'_> {
                 }
             }
             StmtKind::Function(value) => self.function(value, depth + 1)?,
-            StmtKind::Type(value) => {
-                self.text(&value.name)?;
-                for parameter in &value.generics {
-                    self.generic(parameter, depth + 1)?;
-                }
-                if let Some(ty) = &value.value {
-                    self.ty(ty, depth + 1)?;
-                }
-                for variant in &value.variants {
-                    self.text(&variant.name)?;
-                    self.annotations(&variant.annotations)?;
-                    for parameter in &variant.generics {
-                        self.generic(parameter, depth + 1)?;
-                    }
-                    for ty in variant.payload.iter().chain(&variant.result) {
-                        self.ty(ty, depth + 1)?;
-                    }
-                }
-            }
+            StmtKind::Type(value) => self.type_declaration(value, depth + 1)?,
             StmtKind::Effect(value) => {
                 self.text(&value.name)?;
                 for parameter in &value.generics {
@@ -569,6 +572,17 @@ pub(super) fn declarations(
     values: &BTreeMap<String, environments::EnvironmentId>,
 ) -> Result<()> {
     Meter(budget).strings(values.keys())
+}
+pub(super) fn type_declarations(
+    budget: &budget::Budget,
+    values: &BTreeMap<String, TypeDeclaration>,
+) -> Result<()> {
+    let meter = Meter(budget);
+    for (name, declaration) in values {
+        meter.text(name)?;
+        meter.type_declaration(declaration, 0)?;
+    }
+    Ok(())
 }
 pub(super) fn environment(
     budget: &budget::Budget,

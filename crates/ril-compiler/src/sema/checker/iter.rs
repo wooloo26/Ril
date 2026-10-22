@@ -1,6 +1,10 @@
 //! Explicit iterators retain actual step environments. No adapter invocation
 //! is inferred from a descriptor's effect row or from its visible function type.
 use super::*;
+use crate::sema::{
+    context::FrozenEnvironment,
+    source_types::{SourceSchema, SourceTypesError, WorkLimit},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterKind {
@@ -58,11 +62,10 @@ impl Checker {
         present: bool,
         item: Option<Value>,
         state: Value,
-        item_ty: &Ty,
+        owner: &Ty,
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        let owner = self.iter_step_type(&state.ty, item_ty, span);
         let tag = if present {
             "Iter::Step::Yielded"
         } else {
@@ -71,7 +74,7 @@ impl Checker {
         let name = self
             .constructors
             .iter()
-            .find(|(_, constructor)| constructor.owner == owner && constructor.tag == tag)
+            .find(|(_, constructor)| &constructor.owner == owner && constructor.tag == tag)
             .map(|(name, _)| name.clone());
         let Some(name) = name else {
             self.unsupported(span, "iterator step has no complete constructor instance");
@@ -103,10 +106,202 @@ impl Checker {
                 .iter()
                 .map(|id| self.bindings[*id].value.ty.clone()),
         );
-        let result = self.iter_step_type(&fact.state, &fact.item, span);
+        let result = self.iter_declared_result(&fact, span);
         let mut value = Value::scalar(Ty::Callable(inputs, Box::new(result)), None, fact.cause);
         value.callables.push(Callable::Builtin(name.into()));
         Some(value)
+    }
+
+    /// The retained generated closure declaration already owns the complete
+    /// state and item coordinates. Its runtime projection cannot recover them.
+    fn iter_declared_result(&mut self, fact: &StepFact, span: Span) -> Ty {
+        let Some(contract) = self
+            .closures
+            .get(fact.closure)
+            .map(|closure| closure.contract.clone())
+        else {
+            self.unsupported(span, "iterator transition lost its generated declaration");
+            return Ty::Unknown;
+        };
+        let Some(header) = &contract.return_type else {
+            self.unsupported(span, "iterator transition lost its declared result Source");
+            return Ty::Unknown;
+        };
+        self.with_typing_environment(&contract.typing_environment, |checker| checker.ty(header))
+    }
+
+    fn iter_source_schemas(
+        &mut self,
+        kind: AdapterKind,
+        event: crate::sema::copy_contract::CopyCallEventId,
+        captures: &[Value],
+        span: Span,
+    ) -> Result<(TypeExpr, TypeExpr, FrozenEnvironment), SourceTypesError> {
+        let mut work = WorkLimit::new(32768);
+        let (input, input_environment) = self
+            .supplied_input_source(event, 0, &mut work)?
+            .ok_or(SourceTypesError::Unresolved)?;
+        if input_environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let integer = SourceSchema::import(
+            &crate::sema::effect_identity::ArgumentKey::Name {
+                name: "int".into(),
+                arguments: vec![],
+            },
+            None,
+            &mut work,
+        )?;
+        let (state, mut item) = if kind == AdapterKind::Indexed {
+            (
+                integer.clone(),
+                input
+                    .array_parts(&mut work)?
+                    .ok_or(SourceTypesError::MissingProjection)?
+                    .1,
+            )
+        } else {
+            let (mutable, step) = input
+                .record_field("step", &mut work)?
+                .ok_or(SourceTypesError::MissingProjection)?;
+            let (parameters, result) = step
+                .callable_parts(&mut work)?
+                .ok_or(SourceTypesError::MissingProjection)?;
+            let [(ParameterMode::Read, state)] = parameters.as_slice() else {
+                return Err(SourceTypesError::InvalidContainer);
+            };
+            let arguments = result
+                .opaque_arguments("Iter::Step", 2, &mut work)?
+                .ok_or(SourceTypesError::MissingProjection)?;
+            if mutable || !state.equivalent(&arguments[0], &mut work)? {
+                return Err(SourceTypesError::Unresolved);
+            }
+            (state.clone(), arguments[1].clone())
+        };
+        let mut environment = input_environment;
+        if kind == AdapterKind::Map {
+            let output = self.supplied_input_source(event, 1, &mut work)?;
+            if let Some((callback, callback_environment)) = output {
+                if callback_environment.is_poisoned() {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                let (parameters, result) = callback
+                    .callable_parts(&mut work)?
+                    .ok_or(SourceTypesError::MissingProjection)?;
+                let [(ParameterMode::Read, parameter)] = parameters.as_slice() else {
+                    return Err(SourceTypesError::InvalidContainer);
+                };
+                if !parameter.receive_schema(&item, None, &mut work)? {
+                    self.error(
+                        "E0301",
+                        span,
+                        "iterator callback input does not fit the original item Source",
+                        captures.get(1).map(|value| value.cause),
+                    );
+                    return Err(SourceTypesError::Unresolved);
+                }
+                if result.requires_environment(&mut work)? {
+                    if state.requires_environment(&mut work)?
+                        && environment.id() != callback_environment.id()
+                    {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    environment = callback_environment;
+                }
+                item = result;
+            } else {
+                // This is type-only elaboration of the original lambda body.
+                // No erased array/callable shape or receiving annotation can
+                // supply a missing return Source.
+                let callback = captures.get(1).ok_or(SourceTypesError::MissingNode)?;
+                let [Callable::Closure(id)] = callback.callables.as_slice() else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                let closure = self
+                    .closures
+                    .get(*id)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let [parameter] = closure.parameters.as_slice() else {
+                    return Err(SourceTypesError::InvalidContainer);
+                };
+                let PatternKind::Name(name) = &parameter.pattern.kind else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                item =
+                    super::generated_sources::scalar_body(&closure.body, name, &item, &mut work, 0)
+                        .map_err(|_| SourceTypesError::Unresolved)?
+                        .ok_or(SourceTypesError::Unresolved)?;
+            }
+        }
+        let state = if kind == AdapterKind::Take {
+            SourceSchema::tuple(&[state, integer], None, &mut work)?
+        } else {
+            state
+        };
+        let mut binder = |_: &str, _: bool, _: &mut WorkLimit| Err(SourceTypesError::Unresolved);
+        let state = state.syntax_projection(span, &mut work, &mut binder)?;
+        let item = item.syntax_projection(span, &mut work, &mut binder)?;
+        Ok((state, item, environment))
+    }
+
+    /// A completed callable declaration supplies its result type without a
+    /// callback invocation during adapter construction. Runtime captures and
+    /// latent obligations remain on the retained actual callable value.
+    fn iter_declared_callback_result(
+        &mut self,
+        event: crate::sema::copy_contract::CopyCallEventId,
+        span: Span,
+    ) -> Result<Option<Ty>, SourceTypesError> {
+        let mut work = WorkLimit::new(16384);
+        let Some((schema, environment)) = self.supplied_input_source(event, 1, &mut work)? else {
+            return Ok(None);
+        };
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let (_, result) = schema
+            .callable_parts(&mut work)?
+            .ok_or(SourceTypesError::MissingProjection)?;
+        let mut binder = |identity: &str, row: bool, work: &mut WorkLimit| {
+            work.charge(environment.generic_context.len() + environment.bound_row_context.len())?;
+            let name = environment
+                .generic_context
+                .iter()
+                .find_map(|(name, uid)| (uid == identity).then_some(name));
+            let name = name
+                .or_else(|| {
+                    row.then(|| {
+                        environment.bound_row_context.iter().find_map(|(name, id)| {
+                            self.bound_rows.get(id.0 as usize).and_then(|bound| {
+                                match &bound.identity {
+                                    crate::sema::model::rows::RowIdentity::Binder(uid)
+                                        if uid == identity =>
+                                    {
+                                        Some(name)
+                                    }
+                                    _ => None,
+                                }
+                            })
+                        })
+                    })
+                    .flatten()
+                })
+                .ok_or(SourceTypesError::Unresolved)?;
+            work.text(name)?;
+            Ok(TypeExpr {
+                hir_id: None,
+                text: String::new(),
+                span,
+                kind: TypeKind::Name {
+                    path: vec![name.clone()],
+                    arguments: vec![],
+                },
+            })
+        };
+        let syntax = result.syntax_projection(span, &mut work, &mut binder)?;
+        Ok(Some(
+            self.with_typing_environment(&environment, |checker| checker.ty(&syntax)),
+        ))
     }
     pub(super) fn iter_builtin(
         &mut self,
@@ -275,24 +470,50 @@ impl Checker {
                             [callback.cause],
                         );
                     }
-                    let input = self.formal_value(item.clone(), 0, span, &mut BTreeSet::new());
-                    let inferred = self.iter_preview_callback(
-                        &callback,
-                        vec![(ParameterMode::Read, input, span)],
-                        span,
-                        frame,
-                    );
-                    callback.ty = Ty::Callable(vec![item.clone()], Box::new(inferred.ty.clone()));
+                    let declared = self
+                        .application_effect
+                        .current_call_event()
+                        .ok_or(SourceTypesError::MissingNode)
+                        .and_then(|event| self.iter_declared_callback_result(event, span));
+                    let inferred = match declared {
+                        Ok(Some(ty)) => ty,
+                        Ok(None) => {
+                            let input =
+                                self.formal_value(item.clone(), 0, span, &mut BTreeSet::new());
+                            self.iter_preview_callback(
+                                &callback,
+                                vec![(ParameterMode::Read, input, span)],
+                                span,
+                                frame,
+                            )
+                            .ty
+                        }
+                        Err(error) => {
+                            self.unsupported(
+                                span,
+                                format!("iterator callback result Source is incomplete: {error}"),
+                            );
+                            return Some(self.unit(span));
+                        }
+                    };
+                    callback.ty = Ty::Callable(vec![item.clone()], Box::new(inferred.clone()));
                     let kind = if name == "Iter::map" {
                         AdapterKind::Map
                     } else {
                         AdapterKind::Filter
                     };
                     let output = if name == "Iter::filter" {
-                        self.require_type(&inferred, &Ty::Bool, span);
+                        if !self.compatible(&inferred, &Ty::Bool) {
+                            self.error(
+                                "E0301",
+                                span,
+                                "iterator predicate must return bool",
+                                [callback.cause],
+                            );
+                        }
                         item
                     } else {
-                        inferred.ty
+                        inferred
                     };
                     self.iter_source(
                         kind,
@@ -700,20 +921,26 @@ impl Checker {
             );
             return self.unit(span);
         };
-        let Some((state_syntax, item_syntax)) =
-            self.iter_argument_syntax(&state, span, 0)
-                .and_then(|state| normalize_closed_source_syntax(&state, &self.types, self.layout))
-                .zip(self.iter_argument_syntax(&item, span, 0).and_then(|item| {
-                    normalize_closed_source_syntax(&item, &self.types, self.layout)
-                }))
-        else {
-            self.unsupported(
+        let (state_syntax, item_syntax, source_environment) =
+            match self.iter_source_schemas(kind, origin_event, &captures, span) {
+                Ok(schemas) => schemas,
+                Err(error) => {
+                    self.unsupported(
+                        span,
+                        format!("iterator input lost its complete Source graph: {error}"),
+                    );
+                    return self.unit(span);
+                }
+            };
+        self.register_standard_iter_types();
+        let declaration = self.types["Iter::Step"].clone();
+        let result_ty = self.with_typing_environment(&source_environment, |checker| {
+            checker.applied_type(
+                &declaration,
+                &[state_syntax.clone(), item_syntax.clone()],
                 span,
-                "iterator state has no complete non-erasing parameter schema",
-            );
-            return self.unit(span);
-        };
-        let result_ty = self.iter_step_type(&state, &item, span);
+            )
+        });
         let mut environment = self.frame(caller.env.clone(), true);
         self.scopes.set_parent(environment.owner, caller.owner);
         let mut capture_ids = BTreeSet::new();
@@ -797,7 +1024,7 @@ impl Checker {
             return_type: return_type.clone(),
             annotations: vec![],
             span,
-            typing_environment: self.capture_typing_environment_with_bindings(&environment.env),
+            typing_environment: source_environment,
         });
         self.closures.push(ClosureInfo {
             contract,
@@ -932,6 +1159,7 @@ impl Checker {
             return self.unit(span);
         }
         self.require_type(&args[0].1, &fact.state, span);
+        let result_ty = self.iter_declared_result(fact, span);
         match fact.kind {
             AdapterKind::Indexed => {
                 let items = &args[1].1;
@@ -950,7 +1178,7 @@ impl Checker {
                     .zip(length)
                     .map(|(index, length)| (index as u128) < u128::from(length));
                 let done =
-                    self.iter_step_value(false, None, args[0].1.clone(), &fact.item, span, frame);
+                    self.iter_step_value(false, None, args[0].1.clone(), &result_ty, span, frame);
                 if present == Some(false) {
                     return done;
                 }
@@ -972,7 +1200,7 @@ impl Checker {
                     item.cause,
                 );
                 let yielded =
-                    self.iter_step_value(true, Some(item), successor, &fact.item, span, frame);
+                    self.iter_step_value(true, Some(item), successor, &result_ty, span, frame);
                 if present == Some(true) {
                     yielded
                 } else {
@@ -985,7 +1213,7 @@ impl Checker {
                     return response;
                 }
                 let done =
-                    self.iter_step_value(false, None, args[0].1.clone(), &fact.item, span, frame);
+                    self.iter_step_value(false, None, args[0].1.clone(), &result_ty, span, frame);
                 if response.variant_tag.as_deref() == Some("Iter::Step::Done") {
                     return done;
                 }
@@ -1010,7 +1238,7 @@ impl Checker {
                         true,
                         Some(transformed),
                         successor,
-                        &fact.item,
+                        &result_ty,
                         span,
                         frame,
                     )
@@ -1049,7 +1277,7 @@ impl Checker {
                     return never;
                 }
                 let done =
-                    self.iter_step_value(false, None, args[0].1.clone(), &fact.item, span, frame);
+                    self.iter_step_value(false, None, args[0].1.clone(), &result_ty, span, frame);
                 if consumed
                     .zip(count)
                     .is_some_and(|(used, count)| used == count)
@@ -1082,7 +1310,7 @@ impl Checker {
                     );
                     let tuple = self.iter_tuple(vec![successor, next_count], span, frame.owner);
                     let yielded =
-                        self.iter_step_value(true, Some(item), tuple, &fact.item, span, frame);
+                        self.iter_step_value(true, Some(item), tuple, &result_ty, span, frame);
                     if response.variant_tag.is_some() {
                         yielded
                     } else {
@@ -1120,6 +1348,7 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Value {
+        let result_ty = self.iter_declared_result(fact, span);
         let before = self.snapshot_flow();
         let mut state = args[0].1.clone();
         let mut outputs = None;
@@ -1140,7 +1369,7 @@ impl Checker {
                 }
                 return response;
             }
-            let done = self.iter_step_value(false, None, state.clone(), &fact.item, span, frame);
+            let done = self.iter_step_value(false, None, state.clone(), &result_ty, span, frame);
             if response.variant_tag.as_deref() != Some("Iter::Step::Yielded") {
                 let continuing = self.snapshot_flow();
                 self.iter_join_output(&before, &mut outputs, done.clone(), span);
@@ -1190,7 +1419,7 @@ impl Checker {
                     true,
                     Some(item),
                     successor.clone(),
-                    &fact.item,
+                    &result_ty,
                     span,
                     frame,
                 );

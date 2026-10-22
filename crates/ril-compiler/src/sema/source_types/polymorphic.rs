@@ -90,15 +90,13 @@ fn variable_path(pattern: Pattern, variable: u8, path: &mut Vec<SourcePath>) -> 
 /// Numeric context is a scalar projection of the original receiver Source.
 /// Fixed index/length parameters need no receiver. No collection contents or
 /// current lexical binding are used to reconstruct a prior operand.
-pub(crate) fn numeric_parameters(
+pub(crate) fn numeric_parameters_schema(
     id: GenericBuiltin,
-    receiver: Option<&crate::sema::effect_identity::ArgumentKey>,
+    receiver: Option<&SourceSchema>,
+    work: &mut WorkLimit,
 ) -> Result<Vec<Option<SourceScalar>>, SourceTypesError> {
     let declaration = declaration(id);
-    let mut work = WorkLimit::new(16384);
-    let source = receiver
-        .map(|receiver| super::legacy::import(receiver, &mut work))
-        .transpose()?;
+    work.charge(declaration.parameters.len())?;
     declaration
         .parameters
         .iter()
@@ -107,16 +105,19 @@ pub(crate) fn numeric_parameters(
             if matches!(pattern, Integer) {
                 return Ok(Some(SourceScalar::Int));
             }
-            let (Pattern::Variable(variable), Some(source)) = (pattern, &source) else {
+            let (Pattern::Variable(variable), Some(source)) = (pattern, receiver) else {
                 return Ok(None);
             };
+            let (types, root) = source.graph();
             let mut path = Vec::new();
             if !variable_path(declaration.parameters[0].2, *variable, &mut path) {
                 return Ok(None);
             }
-            let target = source.types.project(source.root, &path, &mut work)?;
-            let target = source.types.unalias(target, &mut work)?;
-            Ok(match source.types.get(target)? {
+            let target = types.project(root, &path, work)?;
+            let target = types.unalias(target, work)?;
+            let node = types.get(target)?;
+            node.charge(work)?;
+            Ok(match node {
                 SourceNode::Scalar(kind)
                     if !matches!(
                         kind,
@@ -320,7 +321,7 @@ mod tests {
 
     #[test]
     fn selected_primitive_contracts_keep_their_capability_axis() {
-        let signature = key("fn(mut []{mut count:int},^mut {mut count:int})->()&^mut");
+        let mut signature = key("fn(mut []{mut count:int},^mut {mut count:int})->()&^mut");
         let instance = instantiate_key(GenericBuiltin::ArrayPush, &signature)
             .unwrap()
             .unwrap();
@@ -329,5 +330,27 @@ mod tests {
         assert!(!instance.fits_bounds(&["&mut".into()]));
         assert!(!instance.fits_bounds(&["&{}".into()]));
         assert!(instance.fits_bounds(&[]));
+        let crate::sema::effect_identity::ArgumentKey::Callable { annotations, .. } =
+            &mut signature
+        else {
+            unreachable!()
+        };
+        *annotations = vec!["&{}".into()];
+        let schema = SourceSchema::import(&signature, None, &mut WorkLimit::new(4096)).unwrap();
+        let instance = schema
+            .instantiate_builtin(GenericBuiltin::ArrayPush, &mut WorkLimit::new(4096))
+            .unwrap()
+            .unwrap();
+        assert!(instance.parameter_write && instance.retention);
+        assert!(!instance.fits_bounds(&["&{}".into()]));
+        assert!(
+            !schema
+                .is_builtin_instance(GenericBuiltin::ArrayPush, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        assert!(matches!(
+            schema.instantiate_builtin(GenericBuiltin::ArrayPush, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
     }
 }

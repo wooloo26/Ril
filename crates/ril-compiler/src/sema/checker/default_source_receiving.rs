@@ -4,7 +4,8 @@ use super::*;
 use crate::sema::{
     copy_contract::CopyInvocationStatus,
     default_uses::{DefaultOrigin, DefaultUseId},
-    source_reception::{self, Construction, SchemaSensitivity, Target},
+    source_reception::{self, SchemaSensitivity, Target},
+    source_types::{SourceTypesError, WorkLimit},
 };
 
 pub(super) struct DeclaredDefault<'a> {
@@ -61,7 +62,8 @@ impl Checker {
             context.default_use = Some(receipt.id);
             if emission.expression != token
                 || emission.context != context
-                || observed.span != request.syntax.span
+                || request.syntax.hir_id.is_none()
+                || observed.source_id != request.syntax.hir_id
                 || observed.value != snapshot.value
                 || &snapshot.value != value
                 || epoch != self.recency_moves.len()
@@ -89,16 +91,38 @@ impl Checker {
         if target.sensitivity == SchemaSensitivity::NotRequired {
             return true;
         }
-        let answer = target.key().as_ref().and_then(|expected| {
-            let fresh = source_reception::construction(request.syntax, &mut 4096)?;
-            match self.original_source_receiving_key(&original, request.syntax, frame) {
-                Some(actual) => target.receive(&actual, Some(&fresh), &mut 4096),
-                None => empty_default(expected, &fresh),
+        let mut work = WorkLimit::new(16384);
+        let answer = (|| {
+            if target.environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
             }
-        });
+            let mut remaining = work.remaining();
+            let fresh = source_reception::construction(request.syntax, &mut remaining)
+                .ok_or(SourceTypesError::BudgetExceeded)?;
+            work.charge(work.remaining() - remaining)?;
+            match self.original_source_receiving_schema(
+                &original,
+                request.syntax,
+                frame,
+                &mut work,
+            )? {
+                Some((actual, environment)) => {
+                    if environment.is_poisoned() {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    target.receive_schema(&actual, Some(&fresh), &mut work)
+                }
+                None => target
+                    .schema
+                    .as_ref()
+                    .ok_or(SourceTypesError::Unresolved)?
+                    .empty_context(&fresh, &mut work)?
+                    .ok_or(SourceTypesError::Unresolved),
+            }
+        })();
         match answer {
-            Some(true) => true,
-            Some(false) => {
+            Ok(true) => true,
+            Ok(false) => {
                 self.error(
                     "E0301",
                     request.syntax.span,
@@ -107,33 +131,13 @@ impl Checker {
                 );
                 false
             }
-            None => {
+            Err(error) => {
                 self.unsupported(
                     request.syntax.span,
-                    "declaration default requires its complete original receiving source",
+                    format!("declaration default requires its complete original receiving source: {error}"),
                 );
                 false
             }
         }
     }
-}
-
-fn empty_default(
-    expected: &crate::sema::effect_identity::ArgumentKey,
-    fresh: &Construction,
-) -> Option<bool> {
-    use crate::sema::effect_identity::ArgumentKey;
-    let (ArgumentKey::Array { length, element }, Construction::Array(items)) = (expected, fresh)
-    else {
-        return None;
-    };
-    if !items.is_empty() {
-        return None;
-    }
-    source_reception::complete(element, &mut 4096)?;
-    Some(
-        length
-            .as_ref()
-            .is_none_or(|length| length == "const(int:0)"),
-    )
 }

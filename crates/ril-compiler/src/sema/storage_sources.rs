@@ -1,9 +1,10 @@
 //! Original storage views and actual write occurrences. These records carry
 //! source-coordinate obligations; they never grant write or sharing authority.
 use super::{
-    effect_identity::{ArgumentKey, InvocationContext},
+    effect_identity::InvocationContext,
     facts::{ScopeId, Slot},
     model::BindingId,
+    source_types::SourceView,
 };
 use ril_compiler_core::projection::TypeProjection;
 use ril_compiler_core::source::Span;
@@ -46,7 +47,7 @@ pub struct StorageWrite {
     pub operator: String,
     pub rhs: StorageObservation,
     pub destination: StorageDestination,
-    pub expected: Option<ArgumentKey>,
+    pub expected: Option<SourceView>,
     /// False requires an actual Never receiver or selector observation.
     pub completed: bool,
 }

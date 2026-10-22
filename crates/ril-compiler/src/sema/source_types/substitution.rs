@@ -138,7 +138,9 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
                     identity: identity.clone(),
                     sort: StaticBinderSort::Type,
                 },
-                SourceNode::OpaqueComputation(key) => ArgumentKey::Closed(key.clone()),
+                SourceNode::StaticValue(key) | SourceNode::OpaqueComputation(key) => {
+                    ArgumentKey::Closed(key.clone())
+                }
                 SourceNode::Array { length, element } => ArgumentKey::Array {
                     length: match length {
                         SourceLength::Dynamic => None,

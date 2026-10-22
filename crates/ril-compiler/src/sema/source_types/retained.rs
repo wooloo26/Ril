@@ -6,11 +6,20 @@ use ril_syntax::ast::ParameterMode;
 
 pub(crate) struct RetainedSourceTypes {
     pub(crate) graph: p::SourceTypeGraph,
+    types: SourceTypes,
     /// Binding ordinals remain sorted as in the immutable declaration index.
     bindings: Vec<(usize, Option<p::SourceTypeId>)>,
 }
 
 impl RetainedSourceTypes {
+    pub(crate) fn view_root(
+        &self,
+        view: SourceView,
+        work: &mut WorkLimit,
+    ) -> Result<p::SourceTypeId, SourceTypesError> {
+        retained_id(&self.types, view.ty, work)
+    }
+
     pub(crate) fn binding_root(
         &self,
         binding: usize,
@@ -58,6 +67,7 @@ fn node(
         SourceNode::Scalar(kind) => p::SourceTypeNode::Scalar(*kind),
         SourceNode::Nominal(id) => p::SourceTypeNode::Nominal(nominal(*id)),
         SourceNode::Binder(identity) => p::SourceTypeNode::Binder(identity.clone()),
+        SourceNode::StaticValue(value) => p::SourceTypeNode::StaticValue(value.clone()),
         SourceNode::Array { length, element } => p::SourceTypeNode::Array {
             length: *length,
             element: edge(*element)?,
@@ -139,10 +149,20 @@ fn node(
 }
 
 impl SourceTypeIndex {
+    pub(crate) fn retained_root(
+        &self,
+        view: SourceView,
+        work: &mut WorkLimit,
+    ) -> Result<p::SourceTypeId, SourceTypesError> {
+        self.view_schema(view, work)?;
+        retained_id(self.retained_types()?, view.ty, work)
+    }
+
     pub(crate) fn retained(
         &self,
         work: &mut WorkLimit,
     ) -> Result<RetainedSourceTypes, SourceTypesError> {
+        self.validate(work)?;
         let types = self.retained_types()?;
         let bindings = self.retained_bindings();
         work.charge(bindings.len())?;
@@ -166,6 +186,7 @@ impl SourceTypeIndex {
         }
         Ok(RetainedSourceTypes {
             graph: p::SourceTypeGraph { nodes: retained },
+            types: types.clone(),
             bindings: roots,
         })
     }

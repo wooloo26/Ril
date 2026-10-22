@@ -3,47 +3,7 @@
 use super::*;
 
 impl Checker {
-    pub(super) fn formal_source_type_key(
-        &mut self,
-        value: &Value,
-        syntax: &Expr,
-        frame: &Frame,
-    ) -> Option<ArgumentKey> {
-        let (syntax, environment) = self.formal_source_declaration(value, syntax, frame)?;
-        self.with_typing_environment(&environment, |checker| {
-            let key = checker.record_bound_key(&syntax, &checker.record_bound_scope())?;
-            checker.selected_bound_key(&key)
-        })
-    }
-
-    /// Projection selects the declared member before applying an instance.
-    /// Selecting an entire open aggregate would require a closed witness for
-    /// siblings that do not participate in the actual projection.
-    pub(super) fn raw_formal_source_type_key(
-        &mut self,
-        value: &Value,
-        syntax: &Expr,
-        frame: &Frame,
-    ) -> Option<ArgumentKey> {
-        let (syntax, environment) = self.formal_source_declaration(value, syntax, frame)?;
-        self.with_typing_environment(&environment, |checker| {
-            checker.record_bound_key(&syntax, &checker.record_bound_scope())
-        })
-    }
-
-    pub(super) fn formal_source_receiving_key(
-        &mut self,
-        value: &Value,
-        syntax: &Expr,
-        frame: &Frame,
-    ) -> Option<ArgumentKey> {
-        let (syntax, environment) = self.formal_source_declaration(value, syntax, frame)?;
-        self.with_typing_environment(&environment, |checker| {
-            checker.freeze_source_receiving_target(&syntax).key()
-        })
-    }
-
-    fn formal_source_declaration(
+    pub(super) fn formal_source_declaration(
         &self,
         value: &Value,
         syntax: &Expr,
@@ -132,17 +92,6 @@ impl Checker {
         Some((syntax.clone(), binding.typing_environment.clone()))
     }
 
-    pub(in crate::sema::checker) fn declared_formal_source(
-        &mut self,
-        id: BindingId,
-        name: &str,
-    ) -> Option<ArgumentKey> {
-        let (syntax, environment) = self.formal_binding_declaration(id, name)?;
-        self.with_typing_environment(&environment, |checker| {
-            checker.freeze_source_receiving_target(&syntax).key()
-        })
-    }
-
     pub(in crate::sema::checker) fn remember_closure_source(
         &mut self,
         index: usize,
@@ -190,73 +139,142 @@ impl Checker {
         {
             return;
         }
-        let Some(result) = self.raw_original_source_receiving_key(result, &closure.body, frame)
-        else {
-            return;
-        };
-        let mut parameters = Vec::new();
-        for parameter in &closure.parameters {
-            let Some(syntax) = parameter.ty.as_ref() else {
-                return;
+        let mut work = WorkLimit::new(16384);
+        let declaration_environment = closure.contract.typing_environment.clone();
+        let composed = (|| -> InputSource {
+            let Some((result, result_environment)) =
+                self.raw_original_source_schema(result, &closure.body, frame, &mut work, 0)?
+            else {
+                return Ok(None);
             };
-            let Some(key) = self.freeze_source_receiving_target(syntax).key() else {
-                return;
+            let mut environment = if result.requires_environment(&mut work)? {
+                Some(result_environment)
+            } else {
+                None
             };
-            parameters.push((parameter.mode, key));
-        }
-        let Some(contract) = self.lambda_contract(index) else {
-            return;
-        };
-        let key = ArgumentKey::Callable {
-            parameters,
-            result: Box::new(result),
-            annotations: contract
-                .annotations
-                .iter()
-                .map(|annotation| annotation.text.replace(' ', ""))
-                .collect(),
-        };
-        if source_reception::complete(&key, &mut 4096).is_some() {
-            self.call_input_source
-                .closure_views
-                .insert(index, (id.0, key));
+            let mut parameters = Vec::new();
+            for parameter in &closure.parameters {
+                let Some(syntax) = parameter.ty.as_ref() else {
+                    return Ok(None);
+                };
+                let target = self.with_typing_environment(&declaration_environment, |checker| {
+                    checker.freeze_source_receiving_target(syntax)
+                });
+                let Some(schema) = target.schema else {
+                    return Ok(None);
+                };
+                if schema.requires_environment(&mut work)? {
+                    if environment
+                        .as_ref()
+                        .is_some_and(|original| original.id() != declaration_environment.id())
+                    {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    environment = Some(declaration_environment.clone());
+                }
+                parameters.push((parameter.mode, schema));
+            }
+            let contract = self
+                .lambda_contract(index)
+                .ok_or(SourceTypesError::MissingNode)?;
+            work.charge(contract.annotations.len())?;
+            let mut annotations = Vec::new();
+            for annotation in &contract.annotations {
+                work.text(&annotation.text)?;
+                annotations.push(annotation.text.replace(' ', ""));
+            }
+            let schema =
+                SourceSchema::callable(&parameters, &result, &annotations, None, &mut work)?;
+            if schema.callable_contract_requires_environment(&mut work)?
+                && environment
+                    .as_ref()
+                    .is_some_and(|original| original.id() != contract.typing_environment.id())
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let environment = environment.unwrap_or_else(|| contract.typing_environment.clone());
+            if environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            Ok(Some((schema, environment)))
+        })();
+        match composed {
+            Ok(Some((schema, environment))) => {
+                self.call_input_source
+                    .closure_views
+                    .insert(index, (id.0, schema, environment));
+            }
+            Ok(None) => {}
+            Err(error) => self.unsupported(
+                closure.body.span,
+                format!("lambda Source graph composition failed: {error}"),
+            ),
         }
     }
-
-    pub(super) fn original_closure_source_key(&self, value: &Value) -> Option<ArgumentKey> {
+    pub(super) fn original_closure_source_schema(
+        &mut self,
+        value: &Value,
+        work: &mut WorkLimit,
+    ) -> InputSource {
         let [Callable::Closure(index)] = value.callables.as_slice() else {
-            return None;
+            return Ok(None);
         };
-        let (id, key) = self.call_input_source.closure_views.get(index)?;
-        let invocation = self.closure_invocations.get(*id as usize)?;
-        let closure = self.closures.get(*index)?;
-        (invocation.id.0 == *id
-            && invocation.closure == *index
-            && invocation.probe
-            && invocation.status == crate::sema::copy_contract::CopyInvocationStatus::Completed
-            && invocation.parent_named == closure.creation_invocation
-            && invocation.parent_closure == closure.creation_closure)
-            .then_some(())?;
-        self.closure_public_view_agrees(value, key)?
-            .then(|| key.clone())
+        let Some((id, schema, environment)) =
+            self.call_input_source.closure_views.get(index).cloned()
+        else {
+            return Ok(None);
+        };
+        let invocation = self
+            .closure_invocations
+            .get(id as usize)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let closure = self
+            .closures
+            .get(*index)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if invocation.id.0 != id
+            || invocation.closure != *index
+            || !invocation.probe
+            || invocation.status != crate::sema::copy_contract::CopyInvocationStatus::Completed
+            || invocation.parent_named != closure.creation_invocation
+            || invocation.parent_closure != closure.creation_closure
+            || environment.is_poisoned()
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        if self.closure_public_view_agrees(value, &schema, work)? {
+            Ok(Some((schema, environment)))
+        } else {
+            Ok(None)
+        }
     }
 
-    fn closure_public_view_agrees(&self, value: &Value, key: &ArgumentKey) -> Option<bool> {
-        let ArgumentKey::Callable { annotations, .. } = key else {
-            return None;
-        };
-        if value.callable_bounds.iter().any(|bound| {
-            bound
-                .annotations
-                .iter()
-                .map(|annotation| annotation.text.replace(' ', ""))
-                .collect::<Vec<_>>()
-                != *annotations
-        }) {
-            return Some(false);
+    fn closure_public_view_agrees(
+        &mut self,
+        value: &Value,
+        schema: &SourceSchema,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        let annotations = schema
+            .callable_annotations(work)?
+            .ok_or(SourceTypesError::Unresolved)?;
+        work.charge(value.callable_bounds.len() + value.callable_returns.len())?;
+        for bound in &value.callable_bounds {
+            work.charge(bound.annotations.len())?;
+            let mut actual = Vec::new();
+            for annotation in &bound.annotations {
+                work.text(&annotation.text)?;
+                actual.push(annotation.text.replace(' ', ""));
+            }
+            if actual != annotations {
+                return Ok(false);
+            }
         }
         for bound in value.callable_returns.iter().filter(|bound| !bound.raw) {
-            let mut parameters = value.signature.clone()?;
+            let mut parameters = value
+                .signature
+                .clone()
+                .ok_or(SourceTypesError::Unresolved)?;
             for parameter in &mut parameters {
                 parameter.default = None;
             }
@@ -267,73 +285,29 @@ impl Checker {
                 kind: TypeKind::Callable {
                     parameters,
                     result: Some(Box::new(bound.syntax.clone())),
-                    annotations: vec![],
+                    annotations: annotations
+                        .iter()
+                        .map(|text| ril_syntax::ast::Annotation {
+                            kind: if text.starts_with('@') {
+                                ril_syntax::ast::AnnotationKind::Effect
+                            } else {
+                                ril_syntax::ast::AnnotationKind::Capability
+                            },
+                            text: text.clone(),
+                            span: bound.span,
+                        })
+                        .collect(),
                 },
             };
-            let mut original = crate::static_eval::effects::bounded_argument_key(
-                &syntax,
-                &bound.typing_environment.generic_context,
-            )?;
-            let ArgumentKey::Callable {
-                annotations: actual,
-                ..
-            } = &mut original
-            else {
-                unreachable!()
-            };
-            *actual = annotations.clone();
-            let mut selected = BTreeMap::new();
-            for (identity, witness) in &bound.typing_environment.generic_sources {
-                if !witness.validate_closed() {
-                    return None;
-                }
-                selected.insert(
-                    identity.clone(),
-                    crate::static_eval::effects::bounded_argument_key(
-                        &witness.syntax,
-                        &BTreeMap::new(),
-                    )?,
-                );
-            }
-            for (identity, ty) in &bound.typing_environment.generic_substitutions {
-                if selected.contains_key(identity) {
-                    continue;
-                }
-                let key = match ty {
-                    Ty::Generic(identity) => {
-                        let binder = self.generic_binders.get(identity)?;
-                        let function = self
-                            .functions
-                            .iter()
-                            .find(|function| function.definition == binder.definition)?;
-                        if !crate::sema::record_bounds::certifies_type_sort(
-                            identity,
-                            binder,
-                            function.syntax.generics.get(binder.index as usize)?,
-                            &self.record_bounds,
-                        ) {
-                            return None;
-                        }
-                        ArgumentKey::Binder {
-                            identity: identity.clone(),
-                            sort: crate::sema::effect_identity::StaticBinderSort::Type,
-                        }
-                    }
-                    Ty::Unit | Ty::Bool | Ty::Str | Ty::Bytes | Ty::Int(_) | Ty::Float(_) => {
-                        let syntax = io_types::data_type(ty, bound.span)?;
-                        crate::static_eval::effects::bounded_argument_key(
-                            &syntax,
-                            &BTreeMap::new(),
-                        )?
-                    }
-                    _ => return None,
-                };
-                selected.insert(identity.clone(), key);
-            }
-            if super::select(&original, &selected, &mut 4096, 0)? != *key {
-                return Some(false);
+            let original = self
+                .with_typing_environment(&bound.typing_environment, |checker| {
+                    checker.freeze_source_receiving_target(&syntax).schema
+                })
+                .ok_or(SourceTypesError::Unresolved)?;
+            if !original.equivalent(schema, work)? {
+                return Ok(false);
             }
         }
-        Some(true)
+        Ok(true)
     }
 }

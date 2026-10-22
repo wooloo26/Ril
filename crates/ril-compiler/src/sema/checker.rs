@@ -20,6 +20,7 @@ mod builtin_source_observations;
 mod builtin_source_types;
 pub(crate) use builtin_source_observations::actual_prelude_name;
 pub(crate) use builtin_source_observations::original_canonical_key as original_canonical_builtin_source_key;
+pub(crate) use builtin_source_observations::original_canonical_source as original_canonical_builtin_source;
 pub(crate) use builtin_source_observations::validate as validate_builtin_source_observations;
 mod call_input_source;
 mod calls;
@@ -553,8 +554,6 @@ struct Checker {
     uncertain_slots: BTreeSet<(NodeId, Slot)>,
     source_type_intern: BTreeMap<String, std::sync::Arc<SourceTypeWitness>>,
     source_type_bytes: usize,
-    constructor_source_types: BTreeMap<String, std::sync::Arc<SourceTypeWitness>>,
-    constructor_source_syntax: BTreeMap<String, std::sync::Arc<TypeExpr>>,
     variant_projections: BTreeMap<(u32, u32, u32), super::VariantProjection>,
     result_loop_starts: Vec<usize>,
     result_exit_checks: BTreeMap<(u32, u32, u32, u32), bool>,
@@ -742,8 +741,6 @@ impl Checker {
             uncertain_slots: BTreeSet::new(),
             source_type_intern: BTreeMap::new(),
             source_type_bytes: 0,
-            constructor_source_types: BTreeMap::new(),
-            constructor_source_syntax: BTreeMap::new(),
             variant_projections: BTreeMap::new(),
             result_loop_starts: Vec::new(),
             result_exit_checks: BTreeMap::new(),

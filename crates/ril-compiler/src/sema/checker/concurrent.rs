@@ -830,11 +830,16 @@ impl Checker {
             ),
             ("Channel::ChannelError", vec![("Closed", None)]),
         ] {
+            let typing_environment = self.capture_typing_environment();
             for (variant, payload) in variants {
                 let tag = format!("{owner}::{variant}");
                 self.constructors.insert(
                     tag.clone(),
                     ConstructorInfo {
+                        typing_environment: typing_environment.clone(),
+                        source: None,
+                        source_syntax: None,
+                        source_type_witness: None,
                         tag,
                         owner: Ty::Named(owner.into()),
                         payload: payload.clone().unwrap_or(Ty::Unit),

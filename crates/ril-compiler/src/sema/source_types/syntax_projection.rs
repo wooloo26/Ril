@@ -189,7 +189,10 @@ pub(super) fn project(
                             .collect::<Result<_, _>>()?,
                     }
                 }
+                // A canonical Const identity does not contain authenticated
+                // expression syntax. Do not parse it into a synthetic value.
                 SourceNode::GenericBuiltin(_)
+                | SourceNode::StaticValue(_)
                 | SourceNode::OpaqueComputation(_)
                 | SourceNode::Unresolved { .. } => return Err(SourceTypesError::Unresolved),
                 SourceNode::Alias { .. } => unreachable!("unalias returned an alias"),

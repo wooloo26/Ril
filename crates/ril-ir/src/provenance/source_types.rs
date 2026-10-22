@@ -6,6 +6,12 @@ use super::Access;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceTypeId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceView {
+    pub ty: SourceTypeId,
+    pub environment: super::FrozenEnvironmentId,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceTypeGraph {
     pub nodes: Vec<SourceTypeNode>,
@@ -114,6 +120,9 @@ pub enum SourceTypeNode {
         name: String,
         arguments: Vec<SourceTypeId>,
     },
+    /// An independently certified normalized Const argument of a nominal.
+    /// It is not a runtime type or an unresolved type computation.
+    StaticValue(String),
     OpaqueComputation(String),
     Unresolved {
         description: String,

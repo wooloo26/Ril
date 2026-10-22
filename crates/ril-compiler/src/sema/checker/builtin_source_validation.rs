@@ -42,6 +42,10 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
         return validate_results(facts, &contexts);
     }
     let names = source::NameIndex::new(facts).map_err(|message| (fallback, CauseId(0), message))?;
+    let mut source_work = WorkLimit::new(1 << 20);
+    source_work
+        .charge(facts.builtin_source_observations.len())
+        .map_err(|error| (fallback, CauseId(0), error.to_string()))?;
     let mut seen = BTreeSet::new();
     for observation in &facts.builtin_source_observations {
         let span = facts
@@ -49,6 +53,10 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
             .get(observation.expression)
             .map_or(fallback, |fact| fact.span);
         let mut run = || -> Result<(), String> {
+            source_work.charge(8).map_err(|error| error.to_string())?;
+            if !crate::sema::builtin_sources::is_catalog_environment(&observation.environment) {
+                return Err("builtin Source lost its canonical declaration environment".into());
+            }
             if !seen.insert(observation.expression) {
                 return Err("builtin source repeats a physical expression".into());
             }
@@ -337,22 +345,86 @@ fn validate_results(
     Ok(())
 }
 
+pub(crate) fn original_canonical_source(
+    facts: &SemanticFacts,
+    value: &Value,
+    actual: &Expr,
+    context: InvocationContext,
+    work: &mut WorkLimit,
+) -> Result<
+    Option<(
+        crate::sema::source_types::SourceSchema,
+        crate::sema::context::FrozenEnvironment,
+    )>,
+    String,
+> {
+    let Some((key, environment)) = canonical_declaration(facts, value, actual, context, work)?
+    else {
+        return Ok(None);
+    };
+    let schema = crate::sema::source_types::SourceSchema::import(&key, None, work)
+        .map_err(|error| error.to_string())?;
+    Ok(Some((schema, environment)))
+}
+
 pub(crate) fn original_canonical_key(
     facts: &SemanticFacts,
     value: &Value,
     actual: &Expr,
     context: InvocationContext,
-) -> Option<crate::sema::effect_identity::ArgumentKey> {
+) -> Result<Option<crate::sema::effect_identity::ArgumentKey>, String> {
+    // Compatibility consumers still receive the original declaration's key;
+    // the checked graph query never exports and readmits an observed graph.
+    canonical_declaration(facts, value, actual, context, &mut WorkLimit::new(16384))
+        .map(|source| source.map(|(key, _)| key))
+}
+
+fn canonical_declaration(
+    facts: &SemanticFacts,
+    value: &Value,
+    actual: &Expr,
+    context: InvocationContext,
+    work: &mut WorkLimit,
+) -> Result<
+    Option<(
+        crate::sema::effect_identity::ArgumentKey,
+        crate::sema::context::FrozenEnvironment,
+    )>,
+    String,
+> {
+    work.charge(1).map_err(|error| error.to_string())?;
     let name = match &actual.kind {
-        ExprKind::Name(name) => name.clone(),
-        ExprKind::Path(path) => path.join("::"),
-        _ => return None,
+        ExprKind::Name(name) => {
+            work.text(name).map_err(|error| error.to_string())?;
+            name.clone()
+        }
+        ExprKind::Path(path) => {
+            work.charge(path.len()).map_err(|error| error.to_string())?;
+            for part in path {
+                work.text(part).map_err(|error| error.to_string())?;
+            }
+            path.join("::")
+        }
+        _ => return Ok(None),
     };
     if !value.sources.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let contract = builtin_source_types::contract(&name, actual.span)?;
-    let source_id = actual.hir_id?;
+    let Some(contract) = builtin_source_types::contract(&name, actual.span) else {
+        return Ok(None);
+    };
+    let source_id = actual
+        .hir_id
+        .ok_or("canonical builtin Source lost its original HIR")?;
+    let names = source::NameIndex::new(facts)?;
+    let Some(identity) = names.direct_identity(context.owner, source_id)? else {
+        return Ok(None);
+    };
+    if identity != name {
+        return Err("canonical builtin Source borrowed another HIR name".into());
+    }
+    work.charge(facts.builtin_source_observations.len() + facts.invocation_expressions.len() + 8)
+        .map_err(|error| error.to_string())?;
     let mut matching = facts
         .builtin_source_observations
         .iter()
@@ -365,12 +437,15 @@ pub(crate) fn original_canonical_key(
                     .get(observation.expression)
                     .is_some_and(|fact| fact.source_id == Some(source_id) && fact.value == *value)
         });
-    let observation = matching.next()?;
+    let observation = matching
+        .next()
+        .ok_or("canonical builtin Source lost its physical observation")?;
     if matching.next().is_some()
+        || !crate::sema::builtin_sources::is_catalog_environment(&observation.environment)
         || observation.full_header != contract.source
         || observation.concrete_effects != effects(&contract)
         || observation.written_formals != contract.written_formals.iter().copied().collect()
-        || !observation.captures.is_empty()
+        || observation.captures != contract.captures
         || facts
             .invocation_expressions
             .iter()
@@ -378,11 +453,14 @@ pub(crate) fn original_canonical_key(
             .count()
             != 1
     {
-        return None;
+        return Err(
+            "canonical builtin Source changed its declaration, environment or physical origin"
+                .into(),
+        );
     }
-    source::actual_name(facts, context.owner, source_id, &name).ok()?;
-    builtin_source_types::source_key(&observation.full_header)
+    let key = builtin_source_types::source_key(&observation.full_header)
+        .ok_or("canonical builtin Source header is not complete")?;
+    Ok(Some((key, observation.environment.clone())))
 }
-
 #[path = "builtin_source_syntax.rs"]
 mod source;

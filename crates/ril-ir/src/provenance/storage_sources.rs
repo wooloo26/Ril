@@ -1,5 +1,5 @@
 //! Storage source obligations retained for diagnostics and tooling.
-use super::{Projection, RecordBoundKey, ResumptionContext, SourceTypeId};
+use super::{Projection, ResumptionContext, SourceTypeId, SourceView};
 use ril_compiler_core::projection::TypeProjection;
 use ril_compiler_core::source::Span;
 
@@ -40,6 +40,6 @@ pub struct StorageWrite {
     pub operator: String,
     pub rhs: StorageObservation,
     pub destination: StorageDestination,
-    pub expected: Option<RecordBoundKey>,
+    pub expected: Option<SourceView>,
     pub completed: bool,
 }

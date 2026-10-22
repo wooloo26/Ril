@@ -1,6 +1,8 @@
 //! Original named input replay. Complete source coordinates are read before
 //! reception; physical argument/default identities never come from a span scan.
 use super::*;
+#[path = "call_input_source_carriers.rs"]
+mod carrier_sources;
 #[path = "call_input_source_closures.rs"]
 mod closure_sources;
 #[path = "call_input_source_composites.rs"]
@@ -9,17 +11,27 @@ mod composites;
 mod constructor_inputs;
 #[path = "callable_entries.rs"]
 mod entries;
+#[path = "call_input_source_graph.rs"]
+mod graph_sources;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
 #[path = "storage_input_source.rs"]
 mod storage_inputs;
 use crate::sema::{
+    context::FrozenEnvironment,
     copy_contract::CopyInvocation,
     default_uses::{ArgumentSource, DefaultOrigin},
     effect_identity::{InvocationContext, StaticArgumentWitness},
     model::Callable,
     source_reception,
+    source_types::{SourceSchema, WorkLimit},
 };
+
+pub(crate) type OriginalSourceInput = (
+    Option<(SourceSchema, FrozenEnvironment)>,
+    source_reception::Construction,
+);
+type OriginalSource = (SourceSchema, FrozenEnvironment);
 
 pub(crate) struct OriginalOperandSources<'a> {
     replay: Replay<'a>,
@@ -38,20 +50,11 @@ impl<'a> OriginalOperandSources<'a> {
             sites: super::explicit_named::source_sites_base(facts)?,
         })
     }
-    pub(crate) fn key(
-        &self,
-        event_id: crate::sema::copy_contract::CopyCallEventId,
-        slot: u32,
-    ) -> Check<ArgumentKey> {
-        self.input(event_id, slot)?
-            .0
-            .ok_or_else(|| "source operand has no complete observed type".into())
-    }
     pub(crate) fn input(
         &self,
         event_id: crate::sema::copy_contract::CopyCallEventId,
         slot: u32,
-    ) -> Check<(Option<ArgumentKey>, source_reception::Construction)> {
+    ) -> Check<OriginalSourceInput> {
         let replay = &self.replay;
         let facts = replay.facts;
         let sites = &self.sites;
@@ -175,7 +178,7 @@ impl<'a> OriginalOperandSources<'a> {
         &self,
         source: ril_compiler_core::ids::ExprId,
         observation: usize,
-    ) -> Check<(Option<ArgumentKey>, source_reception::Construction)> {
+    ) -> Check<OriginalSourceInput> {
         self.observed_with_work(source, observation, &mut 4096)
     }
 
@@ -184,7 +187,7 @@ impl<'a> OriginalOperandSources<'a> {
         source: ril_compiler_core::ids::ExprId,
         observation: usize,
         work: &mut usize,
-    ) -> Check<(Option<ArgumentKey>, source_reception::Construction)> {
+    ) -> Check<OriginalSourceInput> {
         let syntax = self
             .sites
             .expressions
@@ -218,16 +221,14 @@ impl<'a> OriginalOperandSources<'a> {
         )?;
         let fresh = source_reception::construction(syntax, work)
             .ok_or("receiver construction exceeded its work bound")?;
-        let key = self
-            .replay
-            .original_observed_source_key_if_known_with_work(
-                syntax,
-                observation,
-                record.context,
-                &self.sites,
-                work,
-            )?;
-        Ok((key, fresh))
+        let schema = self.replay.original_observed_source_schema_with_work(
+            syntax,
+            observation,
+            record.context,
+            &self.sites,
+            work,
+        )?;
+        Ok((schema, fresh))
     }
 }
 
@@ -1366,7 +1367,7 @@ impl Replay<'_> {
         }
         if let Some(key) = super::super::checker::original_canonical_builtin_source_key(
             self.facts, value, expression, context,
-        ) {
+        )? {
             return Ok(Some(key));
         }
         if let ExprKind::Name(name) = &expression.kind

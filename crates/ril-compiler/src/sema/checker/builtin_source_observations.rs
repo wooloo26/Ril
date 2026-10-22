@@ -15,14 +15,31 @@ pub(crate) fn original_canonical_key(
     value: &Value,
     actual: &Expr,
     context: InvocationContext,
-) -> Option<crate::sema::effect_identity::ArgumentKey> {
+) -> Result<Option<crate::sema::effect_identity::ArgumentKey>, String> {
     validation::original_canonical_key(facts, value, actual, context)
+}
+
+pub(crate) fn original_canonical_source(
+    facts: &SemanticFacts,
+    value: &Value,
+    actual: &Expr,
+    context: InvocationContext,
+    work: &mut crate::sema::source_types::WorkLimit,
+) -> Result<
+    Option<(
+        crate::sema::source_types::SourceSchema,
+        crate::sema::context::FrozenEnvironment,
+    )>,
+    String,
+> {
+    validation::original_canonical_source(facts, value, actual, context, work)
 }
 
 struct Pending {
     context: InvocationContext,
     span: Span,
     contract: builtin_source_types::Contract,
+    environment: crate::sema::context::FrozenEnvironment,
 }
 
 #[derive(Default)]
@@ -40,21 +57,39 @@ impl State {
 impl Checker {
     /// Original direct leaf only. The index is recovered from the unique
     /// physical observation and full Value, never from a current builtin tag.
-    pub(super) fn original_canonical_builtin_source_key(
+    pub(super) fn original_canonical_builtin_source_schema(
         &self,
         value: &Value,
         actual: &Expr,
         frame: &Frame,
-    ) -> Option<crate::sema::effect_identity::ArgumentKey> {
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<
+        Option<(
+            crate::sema::source_types::SourceSchema,
+            crate::sema::context::FrozenEnvironment,
+        )>,
+        crate::sema::source_types::SourceTypesError,
+    > {
+        use crate::sema::source_types::{SourceSchema, SourceTypesError};
         let context = self.invocation_context(frame.callable_owner);
         let name = match &actual.kind {
-            ExprKind::Name(name) => name.clone(),
-            ExprKind::Path(path) => path.join("::"),
-            _ => return None,
+            ExprKind::Name(name) => {
+                work.text(name)?;
+                name.clone()
+            }
+            ExprKind::Path(path) => {
+                work.charge(path.len())?;
+                for part in path {
+                    work.text(part)?;
+                }
+                path.join("::")
+            }
+            _ => return Ok(None),
         };
         if !value.sources.is_empty() {
-            return None;
+            return Ok(None);
         }
+        work.charge(self.builtin_sources.observations.len())?;
         let mut matching = self
             .builtin_sources
             .observations
@@ -80,13 +115,29 @@ impl Checker {
                             row.expression == observation.expression && row.context == context
                         })
             });
-        let observation = matching.next()?;
+        let Some(observation) = matching.next() else {
+            return Ok(None);
+        };
         if matching.next().is_some() {
-            return None;
+            return Err(SourceTypesError::Unresolved);
+        }
+        work.charge(8)?;
+        if !crate::sema::builtin_sources::is_catalog_environment(&observation.environment) {
+            return Err(SourceTypesError::Unresolved);
         }
         // Normalize only against the canonical builtin data schemas, not a
         // caller's local aliases. Keep all original annotations in the key.
-        builtin_source_types::source_key(&observation.full_header)
+        let key = builtin_source_types::source_key(&observation.full_header)
+            .ok_or(SourceTypesError::Unresolved)?;
+        SourceSchema::import(
+            &key,
+            observation
+                .full_header
+                .syntax()
+                .and_then(|syntax| syntax.hir_id),
+            work,
+        )
+        .map(|schema| Some((schema, observation.environment.clone())))
     }
 
     pub(super) fn mark_canonical_builtin_source(
@@ -176,6 +227,7 @@ impl Checker {
                 context,
                 span,
                 contract,
+                environment: crate::sema::builtin_sources::catalog_environment().clone(),
             },
         );
     }
@@ -225,6 +277,7 @@ impl Checker {
             || pending.span != expr.span
             || name != pending.contract.identity.name()
             || !original_declaration
+            || !crate::sema::builtin_sources::is_catalog_environment(&pending.environment)
             || !self
                 .application_effect
                 .expressions
@@ -253,6 +306,7 @@ impl Checker {
                 context,
                 identity: name,
                 full_header: pending.contract.source,
+                environment: pending.environment,
                 concrete_effects: pending
                     .contract
                     .effects
@@ -394,7 +448,64 @@ mod tests {
             ])
         );
         assert!(validate(original).is_ok());
-        for mutation in 0..7 {
+        let environment = crate::sema::builtin_sources::catalog_environment();
+        assert!(
+            original
+                .builtin_source_observations
+                .iter()
+                .all(|source| source.environment.id() == environment.id()
+                    && crate::sema::builtin_sources::is_catalog_environment(&source.environment))
+        );
+        let function = original
+            .functions
+            .iter()
+            .find(|function| function.syntax.name == "example")
+            .unwrap();
+        let StmtKind::Binding(binding) = &function.syntax.body.as_ref().unwrap().statements[0].kind
+        else {
+            panic!("builtin declaration fixture")
+        };
+        let observed = &original.builtin_source_observations[0];
+        let actual = &original.expressions[observed.expression].value;
+        let first = original_canonical_source(
+            original,
+            actual,
+            &binding.value,
+            observed.context,
+            &mut crate::sema::source_types::WorkLimit::new(16384),
+        )
+        .unwrap()
+        .unwrap();
+        let second = original_canonical_source(
+            original,
+            actual,
+            &binding.value,
+            observed.context,
+            &mut crate::sema::source_types::WorkLimit::new(16384),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(first.1.id(), second.1.id());
+        assert!(
+            first
+                .0
+                .equivalent(
+                    &second.0,
+                    &mut crate::sema::source_types::WorkLimit::new(16384)
+                )
+                .unwrap()
+        );
+        assert!(
+            original_canonical_source(
+                original,
+                actual,
+                &binding.value,
+                observed.context,
+                &mut crate::sema::source_types::WorkLimit::new(0)
+            )
+            .is_err()
+        );
+        for mutation in 0..10 {
             let mut changed = original.clone();
             match mutation {
                 0 => changed.builtin_source_observations.clear(),
@@ -428,12 +539,35 @@ mod tests {
                         changed.builtin_source_observations[1].expression;
                 }
                 6 => changed.source_program = None,
+                7 => changed.builtin_source_observations[0].environment = Default::default(),
+                8 => {
+                    changed.builtin_source_observations[0].environment =
+                        crate::sema::context::FrozenEnvironment::poisoned()
+                }
+                9 => {
+                    let mut captured = environment.thaw();
+                    captured.contract_bindings.insert("caller".into(), 0);
+                    changed.builtin_source_observations[0].environment = captured.freeze();
+                }
                 _ => unreachable!(),
             }
             assert!(
                 validate(&changed).is_err(),
                 "physical builtin mutation {mutation} erased a required Source proof"
             );
+            if mutation >= 7 {
+                assert!(
+                    original_canonical_source(
+                        &changed,
+                        actual,
+                        &binding.value,
+                        observed.context,
+                        &mut crate::sema::source_types::WorkLimit::new(16384)
+                    )
+                    .is_err(),
+                    "canonical environment mutation {mutation} became an unknown source"
+                );
+            }
         }
     }
 }

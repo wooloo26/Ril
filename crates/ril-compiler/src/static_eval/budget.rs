@@ -31,6 +31,13 @@ impl Budget {
         self.work_remaining.get()
     }
 
+    /// A caller can narrow an already opened root's implementation allowance.
+    /// Neither this restriction nor a nested root replenishes prior work.
+    pub(super) fn restrict_work(&self, units: u64) {
+        self.work_remaining
+            .set(self.work_remaining.get().min(units));
+    }
+
     pub fn new(configured: NonZeroU64) -> Self {
         Self {
             configured,
@@ -122,5 +129,23 @@ mod tests {
             budget.event(Event::CallbackEntry),
             Err(Failure::Diagnostic("E0811", _))
         ));
+    }
+
+    #[test]
+    fn nested_roots_and_larger_restrictions_never_refill_outer_work() {
+        let mut budget = Budget::default();
+        let outer = budget.enter_root();
+        budget.restrict_work(7);
+        assert!(budget.work(5).is_ok());
+        let nested = budget.enter_root();
+        assert!(!nested);
+        budget.restrict_work(100);
+        assert_eq!(budget.work_remaining(), 2);
+        assert!(matches!(budget.work(3), Err(Failure::Unsupported(_))));
+        budget.leave_root(nested);
+        assert_eq!(budget.work_remaining(), 2);
+        assert!(budget.work(2).is_ok());
+        assert!(matches!(budget.work(1), Err(Failure::Unsupported(_))));
+        budget.leave_root(outer);
     }
 }

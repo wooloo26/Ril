@@ -141,6 +141,76 @@ fn example(){let source=Iter::map(Iter::indexed([1,2]),\n->n*2);let filtered=Ite
 --@ end-file
 --@ end-case
 
+--@ source: generated-iterator-nested-empty-extent
+--@ file: source.ril
+fn keep(value:[0][3]int)->[0][3]int{value}
+pub fn test_native(){
+    let empty:[0][3]int=[]
+    let source=Iter::take(Iter::map(Iter::indexed([empty]),keep),1)
+    let mut cursor=Iter::cursor((0,0))
+    let received:[0][3]int=Iter::pull(mut cursor,source) ?? panic("missing item")
+    assert(len(received)==0)
+}
+--@ end-file
+--@ end-source
+
+--@ case: generated-iterator-nested-empty-extent
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: reject-generated-iterator-inner-extent
+--@ use-source: generated-iterator-nested-empty-extent
+--@ end-case
+
+--@ case: generated-iterator-nested-empty-extent-native
+--@ mode: run-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: generated-iterator-nested-empty-extent
+--@ entry: test_native
+--@ use-source: generated-iterator-nested-empty-extent
+--@ end-case
+
+--@ case: reject-generated-iterator-inner-extent
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: generated-iterator-nested-empty-extent
+-- Error [E0301]: Adapters preserve the item Source even when its outer array is empty.
+--@ file: source.ril
+fn keep(value:[0][3]int)->[0][3]int{value}
+fn example(){
+    let empty:[0][3]int=[]
+    let source=Iter::take(Iter::map(Iter::indexed([empty]),keep),1)
+    let mut cursor=Iter::cursor((0,0))
+    let changed:[0][2]int=Iter::pull(mut cursor,source) ?? panic("missing item")
+}
+--@ end-file
+--@ end-case
+
+--@ source: generated-iterator-deferred-named-callback
+--@ file: source.ril
+var calls=0
+fn tick(value:int)->int &{mut calls}{calls+=1;value}
+pub fn test_native() &{calls}{
+    let source=Iter::map(Iter::indexed([7]),tick)
+    assert(calls==0)
+}
+--@ end-file
+--@ end-source
+
+--@ case: generated-iterator-deferred-named-callback
+--@ mode: check-pass
+--@ spec: STD#explicit-iteration
+--@ companion: generated-iterator-deferred-named-callback-native
+--@ use-source: generated-iterator-deferred-named-callback
+--@ end-case
+
+--@ case: generated-iterator-deferred-named-callback-native
+--@ mode: run-pass
+--@ spec: STD#explicit-iteration
+--@ companion: generated-iterator-deferred-named-callback
+--@ entry: test_native
+--@ use-source: generated-iterator-deferred-named-callback
+--@ end-case
+
 --@ case: constant-shared-node-distinct-views
 --@ mode: check-pass
 --@ spec: SPEC#type-identity-and-subtyping

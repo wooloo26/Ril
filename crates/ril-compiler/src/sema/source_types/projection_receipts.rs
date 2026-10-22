@@ -327,6 +327,16 @@ impl<'a> ProjectionReceipts<'a> {
         Ok(u32::from(found))
     }
 
+    pub(crate) fn child_observation(
+        &self,
+        parent: ProjectionOccurrence,
+        source: ExprId,
+        work: &mut WorkLimit,
+    ) -> Result<EvaluationOccurrenceId, SourceTypesError> {
+        let child = self.child(parent, source, work)?;
+        Ok(self.observation(child, work)?.0.id)
+    }
+
     fn child(
         &self,
         parent: ProjectionOccurrence,

@@ -67,6 +67,9 @@ pub(crate) enum SourceNode {
         name: String,
         arguments: Vec<SourceTypeId>,
     },
+    /// A Const argument admitted from an independently certified normalized
+    /// nominal declaration. This is a value coordinate, never a Type leaf.
+    StaticValue(String),
     OpaqueComputation(String),
     /// Preserve an unresolved name/computation instead of interpreting its
     /// spelling as a scalar leaf. Arguments remain reachable for diagnostics.
@@ -83,6 +86,7 @@ impl SourceNode {
             | Self::Scalar(_)
             | Self::Nominal(_)
             | Self::Binder(_)
+            | Self::StaticValue(_)
             | Self::OpaqueComputation(_) => {
                 vec![]
             }
@@ -123,6 +127,7 @@ impl SourceNode {
             Self::Scalar(kind) => Self::Scalar(*kind),
             Self::Nominal(id) => Self::Nominal(*id),
             Self::Binder(identity) => Self::Binder(identity.clone()),
+            Self::StaticValue(value) => Self::StaticValue(value.clone()),
             Self::OpaqueComputation(key) => Self::OpaqueComputation(key.clone()),
             Self::Array { length, element } => Self::Array {
                 length: *length,
@@ -197,7 +202,9 @@ impl SourceNode {
     pub(super) fn charge(&self, work: &mut WorkLimit) -> Result<(), SourceTypesError> {
         work.charge(1)?;
         match self {
-            Self::Binder(identity) | Self::OpaqueComputation(identity) => work.text(identity),
+            Self::Binder(identity)
+            | Self::StaticValue(identity)
+            | Self::OpaqueComputation(identity) => work.text(identity),
             Self::Record { fields, .. } => {
                 for field in fields {
                     work.charge(1)?;
@@ -248,6 +255,9 @@ pub enum SourceTypesError {
     InvalidContainer,
     AliasCycle,
     RowCycle,
+    /// Original HIR syntax still requires its declaration's static evaluator.
+    /// This is an ingress request, never an observed graph's unknown result.
+    NeedsStaticElaboration,
     Unresolved,
     MissingProjection,
     CyclicSubstitution,
@@ -266,6 +276,9 @@ impl std::fmt::Display for SourceTypesError {
             Self::InvalidContainer => "source container has an invalid argument count",
             Self::AliasCycle => "source alias cycle has no resolved structure",
             Self::RowCycle => "source row cycle has no resolved remainder",
+            Self::NeedsStaticElaboration => {
+                "source declaration requires its frozen static interpretation"
+            }
             Self::Unresolved => "source type coordinates remain unresolved",
             Self::MissingProjection => "source type has no such projection",
             Self::CyclicSubstitution => "source binder substitutions contain a cycle",
@@ -297,7 +310,7 @@ impl WorkLimit {
             .ok_or(SourceTypesError::BudgetExceeded)?;
         Ok(())
     }
-    pub(super) fn text(&mut self, value: &str) -> Result<(), SourceTypesError> {
+    pub(crate) fn text(&mut self, value: &str) -> Result<(), SourceTypesError> {
         self.charge(value.len().div_ceil(32))
     }
 }

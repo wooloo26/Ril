@@ -32,31 +32,44 @@ impl Checker {
             return true;
         }
         let answer = (|| {
-            let event = self.application_effect.current_call_event()?;
-            let receiver = self.storage_supplied_input(event, 0, &args[0].1, span, frame)?;
-            let original = receiver.key.as_ref()?;
-            source_reception::complete(original, &mut 4096)?;
+            let mut work = WorkLimit::new(16384);
+            let event = self
+                .application_effect
+                .current_call_event()
+                .ok_or(SourceTypesError::MissingNode)?;
+            let receiver = self
+                .storage_supplied_input(event, 0, &args[0].1, span, frame)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let (original, environment) = receiver.source?.ok_or(SourceTypesError::Unresolved)?;
+            if environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
             for &(slot, part) in parts {
-                let expected = collection_part(original, part)?;
-                // A genuine scalar-only source graph has no additional
-                // dimension/callable coordinate duty. Ordinary typing and all
-                // publication permissions still run in the intrinsic.
-                if crate::sema::source_types::key_is_coordinate_free_with_declarations(
-                    expected,
-                    Some(&self.semantic_hir),
-                ) {
-                    continue;
+                let path = match part {
+                    Part::Element => crate::sema::source_types::SourcePath::Element,
+                    Part::MapKey => crate::sema::source_types::SourcePath::MapKey,
+                    Part::MapValue => crate::sema::source_types::SourcePath::MapValue,
+                };
+                let expected = original.project_steps(&[path], &mut work)?;
+                match expected.sensitivity(&mut work) {
+                    crate::sema::source_types::SourceSensitivity::Absent { .. } => continue,
+                    crate::sema::source_types::SourceSensitivity::Unknown { reason } => {
+                        return Err(reason);
+                    }
+                    crate::sema::source_types::SourceSensitivity::Sensitive { .. } => {}
                 }
-                let input = self.storage_supplied_input(event, slot, &args[slot].1, span, frame)?;
-                if !storage_compatible(expected, &input)? {
-                    return Some(false);
+                let input = self
+                    .storage_supplied_input(event, slot, &args[slot].1, span, frame)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                if !storage_compatible(&expected, &input, &mut work)? {
+                    return Ok(false);
                 }
             }
-            Some(true)
+            Ok(true)
         })();
         match answer {
-            Some(true) => true,
-            Some(false) => {
+            Ok(true) => true,
+            Ok(false) => {
                 self.error(
                     "E0301",
                     span,
@@ -65,10 +78,10 @@ impl Checker {
                 );
                 false
             }
-            None => {
+            Err(error) => {
                 self.unsupported(
                     span,
-                    "storage input requires the original receiver schema and its actual supplied operand observations",
+                    format!("storage input requires the original receiver schema and its actual supplied operand observations: {error}"),
                 );
                 false
             }
@@ -135,41 +148,34 @@ impl Checker {
     }
 }
 
-fn collection_part(key: &ArgumentKey, part: Part) -> Option<&ArgumentKey> {
-    match (key, part) {
-        (ArgumentKey::Array { element, .. }, Part::Element) => Some(element),
-        (ArgumentKey::Map { key, .. }, Part::MapKey) => Some(key),
-        (ArgumentKey::Map { value, .. }, Part::MapValue) => Some(value),
-        (ArgumentKey::Name { name, arguments }, Part::Element)
-            if matches!(name.as_str(), "Set" | "Prelude::Set") && arguments.len() == 1 =>
-        {
-            Some(&arguments[0])
-        }
-        _ => None,
-    }
-}
-
-fn storage_compatible(expected: &ArgumentKey, input: &Input) -> Option<bool> {
-    // Top-level Fn receiving coordinates alone do not compare its bound rows.
-    // Until the original frozen bound environment is supplied by the storage
-    // ledger, unequal rows provide no additional proof at this store boundary.
-    if let (
-        ArgumentKey::Callable { annotations, .. },
-        Some(ArgumentKey::Callable {
-            annotations: actual,
-            ..
-        }),
-    ) = (expected, &input.key)
-        && annotations != actual
+fn storage_compatible(
+    expected: &SourceSchema,
+    input: &Input,
+    work: &mut WorkLimit,
+) -> Result<bool, SourceTypesError> {
+    if let Ok(Some((actual, _))) = &input.source
+        && let (Some(expected), Some(actual)) = (
+            expected.callable_annotations(work)?,
+            actual.callable_annotations(work)?,
+        )
+        && expected != actual
     {
-        return None;
+        return Err(SourceTypesError::Unresolved);
     }
-    input_compatible(expected, input)
+    input_compatible(expected, input, work)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compatible(expected: &ArgumentKey, input: &Input) -> Option<bool> {
+        storage_compatible(
+            &SourceSchema::import(expected, None, &mut WorkLimit::new(16384)).unwrap(),
+            input,
+            &mut WorkLimit::new(16384),
+        )
+        .ok()
+    }
 
     fn input(key: ArgumentKey, fresh: Construction) -> Input {
         Input {
@@ -183,7 +189,10 @@ mod tests {
             },
             expression: None,
             allocation_epoch: 0,
-            key: Some(key),
+            source: Ok(Some((
+                SourceSchema::import(&key, None, &mut WorkLimit::new(16384)).unwrap(),
+                FrozenEnvironment::default(),
+            ))),
             fresh,
             default: None,
         }
@@ -208,17 +217,17 @@ mod tests {
         let expected = array(Some(0), array(Some(2), integer_key()));
         let mismatching = array(Some(0), array(Some(3), integer_key()));
         assert_eq!(
-            storage_compatible(&expected, &input(mismatching, Construction::Opaque)),
+            compatible(&expected, &input(mismatching, Construction::Opaque)),
             Some(false)
         );
         assert_eq!(
-            storage_compatible(&expected, &input(expected.clone(), Construction::Opaque)),
+            compatible(&expected, &input(expected.clone(), Construction::Opaque)),
             Some(true)
         );
         // Only a genuinely empty construction may take its new element
         // context. Physical Source replay must independently prove this AST.
         assert_eq!(
-            storage_compatible(
+            compatible(
                 &expected,
                 &input(array(Some(0), integer_key()), Construction::Array(vec![]))
             ),
@@ -230,7 +239,7 @@ mod tests {
     fn storage_receiving_keeps_dynamic_outer_and_invariant_stored_inner_coordinates() {
         let expected = array(None, array(Some(2), integer_key()));
         assert_eq!(
-            storage_compatible(
+            compatible(
                 &expected,
                 &input(
                     array(Some(4), array(Some(2), integer_key())),
@@ -240,7 +249,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            storage_compatible(
+            compatible(
                 &expected,
                 &input(
                     array(Some(4), array(Some(3), integer_key())),
@@ -260,7 +269,7 @@ mod tests {
         };
         let expected = callable(vec!["@{}".into()]);
         assert_eq!(
-            storage_compatible(
+            compatible(
                 &expected,
                 &input(callable(vec!["@Fiber".into()]), Construction::Opaque)
             ),

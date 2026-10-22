@@ -410,12 +410,16 @@ impl Replay<'_> {
             let operand = original_sources
                 .as_ref()
                 .unwrap()
-                .key(event, parameter_index as u32)?;
+                .input(event, parameter_index as u32)?
+                .0
+                .ok_or("graph forwarding lost its complete operand Source")?;
             require(
-                source.schema.equivalent_key(
-                    &operand,
-                    &mut super::super::source_types::WorkLimit::new(16384),
-                ) == Ok(true),
+                !operand.1.is_poisoned()
+                    && next_binding.typing_environment.id() == operand.1.id()
+                    && source.schema.equivalent(
+                        &operand.0,
+                        &mut super::super::source_types::WorkLimit::new(16384),
+                    ) == Ok(true),
                 "graph forwarding changed its actual complete operand",
             )?;
             binding_id = next;

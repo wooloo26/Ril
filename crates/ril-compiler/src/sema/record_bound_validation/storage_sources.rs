@@ -104,6 +104,216 @@ fn initializer_may_bind(
 }
 
 impl Replay<'_> {
+    /// An interrupted storage operation needs an original nonreturning source,
+    /// never merely a Never type assigned to an otherwise ordinary observation.
+    pub(super) fn storage_original_abrupt(
+        &self,
+        syntax: &Expr,
+        observation: usize,
+        context: InvocationContext,
+        work: &mut usize,
+    ) -> Check<bool> {
+        use crate::sema::application_effect::ActivationKind;
+        use crate::sema::effect_identity::ArgumentKey;
+        use crate::sema::source_types::WorkLimit;
+        origin_work(work, 1)?;
+        let fact = self
+            .facts
+            .expressions
+            .get(observation)
+            .ok_or("abrupt storage operand observation is absent")?;
+        self.original_source_root(syntax, &fact.value, context, Some(observation), work)?;
+        let record = self
+            .facts
+            .evaluations
+            .get(observation)
+            .ok_or("abrupt storage operand has no actual evaluation")?;
+        let identity = record
+            .identity
+            .ok_or("abrupt storage operand lost its actual occurrence")?;
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("abrupt storage operand has no original HIR")?;
+        let original = hir
+            .expression(identity.source)
+            .ok_or("abrupt storage operand source is absent")?;
+        if matches!(
+            &original.kind,
+            crate::hir::nodes::ExprKind::Control {
+                operation: ril_syntax::ast::ControlOperation::Return
+                    | ril_syntax::ast::ControlOperation::Last
+                    | ril_syntax::ast::ControlOperation::Next,
+                ..
+            }
+        ) {
+            let activation = self
+                .facts
+                .activations
+                .get(identity.activation.0 as usize)
+                .ok_or("abrupt storage operand activation is absent")?;
+            return Ok(activation.kind == ActivationKind::ControlTransfer
+                && activation.source == Some(identity.source)
+                && activation.result == Some(record.id)
+                && activation.context == context
+                && activation.scope == record.scope);
+        }
+        let never = ArgumentKey::Name {
+            name: "never".into(),
+            arguments: vec![],
+        };
+        let is_never = |schema: &crate::sema::source_types::SourceSchema, work: &mut usize| {
+            let mut budget = WorkLimit::new(*work);
+            let result = schema.equivalent_key(&never, &mut budget);
+            *work = budget.remaining();
+            result.map_err(|error| error.to_string())
+        };
+        origin_work(work, self.facts.binding_sources.len())?;
+        if let Some(source) = self.storage_binding_source_schema(
+            syntax,
+            &fact.value,
+            context,
+            Some(observation),
+            SourceRead::Received,
+        ) {
+            return source?.map_or(Ok(false), |(schema, _)| is_never(&schema, work));
+        }
+        let Some(application) = AstApplication::from_ast(syntax) else {
+            return Ok(false);
+        };
+        origin_work(work, self.facts.copy_call_events.len())?;
+        let mut events = self
+            .facts
+            .copy_call_events
+            .iter()
+            .filter(|event| event.result_expression == Some(observation));
+        let Some(event) = events.next() else {
+            return Ok(false);
+        };
+        require(
+            events.next().is_none()
+                && event.matches_source(syntax)
+                && event.owner == context.owner
+                && event.parent == context.invocation,
+            "abrupt storage operand borrowed another actual application",
+        )?;
+        let Some(callee_observation) = event.callee_expression else {
+            return Ok(false);
+        };
+        let callee = self
+            .facts
+            .expressions
+            .get(callee_observation)
+            .ok_or("abrupt storage operand callee is absent")?;
+        self.original_source_root(
+            application.callee,
+            &callee.value,
+            context,
+            Some(callee_observation),
+            work,
+        )?;
+        origin_work(work, self.facts.binding_sources.len())?;
+        if let Some(source) = self.storage_binding_source_schema(
+            application.callee,
+            &callee.value,
+            context,
+            Some(callee_observation),
+            SourceRead::Received,
+        ) {
+            let Some((schema, _)) = source? else {
+                return Ok(false);
+            };
+            let mut budget = WorkLimit::new(*work);
+            let parts = schema.callable_parts(&mut budget);
+            *work = budget.remaining();
+            let Some((_, result)) = parts.map_err(|error| error.to_string())? else {
+                return Ok(false);
+            };
+            return is_never(&result, work);
+        }
+        if let [Callable::Named(index)] = callee.value.callables.as_slice() {
+            let function = self
+                .facts
+                .functions
+                .get(*index)
+                .ok_or("abrupt storage operand function is absent")?;
+            let mut base = application.callee;
+            for _ in 0..64 {
+                origin_work(work, 1)?;
+                let ExprKind::Generic { base: next, .. } = &base.kind else {
+                    break;
+                };
+                base = next;
+            }
+            let name = match &base.kind {
+                ExprKind::Name(name) => name.clone(),
+                ExprKind::Path(path) => path.join("::"),
+                _ => return Ok(false),
+            };
+            let Some(binding) = callee
+                .value
+                .sources
+                .first()
+                .and_then(|id| self.facts.bindings.get(*id))
+            else {
+                return Ok(false);
+            };
+            if callee.value.sources.len() != 1 || binding.name != name || function.lexical.get(&name) != callee.value.sources.first()
+                || !function.hir_id.and_then(|id| hir.statement(id)).is_some_and(|statement|
+                    matches!(&statement.kind, crate::hir::nodes::StmtKind::Function(original) if original.name == name)) { return Ok(false) }
+            let Some(result) = &function.syntax.return_type else {
+                return Ok(false);
+            };
+            let (schema, _) = self.source_type_header(
+                result,
+                &self.scope(function.definition)?,
+                function.typing_environment.clone(),
+                work,
+            )?;
+            return is_never(&schema, work);
+        }
+        // Catalog and original effect declarations can supply a never result;
+        // a current Builtin tag or an arbitrary value witness cannot do so.
+        let mut budget = WorkLimit::new(*work);
+        let catalog = crate::sema::checker::original_canonical_builtin_source(
+            self.facts,
+            &callee.value,
+            application.callee,
+            context,
+            &mut budget,
+        );
+        *work = budget.remaining();
+        if let Some((schema, _)) = catalog? {
+            let mut budget = WorkLimit::new(*work);
+            let parts = schema.callable_parts(&mut budget);
+            *work = budget.remaining();
+            if let Some((_, result)) = parts.map_err(|error| error.to_string())? {
+                return is_never(&result, work);
+            }
+        }
+        if let [Callable::Builtin(name)] = callee.value.callables.as_slice()
+            && let Some(operation) = self
+                .facts
+                .operations
+                .get(name)
+                .filter(|operation| operation.source.is_some())
+        {
+            let signature = self.frames.signature(
+                operation,
+                application
+                    .callee
+                    .hir_id
+                    .ok_or("abrupt effect callee has no HIR selector")?,
+                context,
+            )?;
+            if let ArgumentKey::Callable { result, .. } = signature.expanded {
+                return Ok(*result == never);
+            }
+        }
+        Ok(false)
+    }
+
     fn storage_declaration_inputs(&self, work: &mut usize) -> Check<DeclarationInputs> {
         use crate::hir::nodes::{ExprKind as HirExpr, LexicalOwner, StmtKind as HirStmt};
         let hir = self
@@ -697,7 +907,7 @@ impl Replay<'_> {
             })
     }
 
-    fn storage_binding_source_schema(
+    pub(super) fn storage_binding_source_schema(
         &self,
         expression: &Expr,
         value: &Value,
@@ -927,31 +1137,42 @@ impl Replay<'_> {
     /// Reconstruct only the guaranteed member from the genuine Type UID's
     /// source declaration. A bound never supplies a closed view of its parent
     /// or an access permission; those obligations belong to separate replay.
-    fn storage_projection_source_key(
+    fn storage_projection_source_schema(
         &self,
-        source: &ArgumentKey,
+        source: &(
+            crate::sema::source_types::SourceSchema,
+            crate::sema::context::FrozenEnvironment,
+        ),
         slot: &Slot,
         context: InvocationContext,
-    ) -> Check<Option<ArgumentKey>> {
-        let (
-            ArgumentKey::Binder {
-                identity,
-                sort: StaticBinderSort::Type,
-            },
-            Slot::Field(label),
-        ) = (source, slot)
-        else {
-            return Ok(crate::sema::source_types::declarations::project(
-                source,
-                std::slice::from_ref(slot),
-                self.facts
-                    .semantic_hir
-                    .as_deref()
-                    .ok_or_else(|| "storage declaration has no canonical HIR".to_owned())?,
-                &mut crate::sema::source_types::WorkLimit::new(4096),
-            )
-            .ok());
+    ) -> Check<
+        Option<(
+            crate::sema::source_types::SourceSchema,
+            crate::sema::context::FrozenEnvironment,
+        )>,
+    > {
+        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+        let steps = crate::sema::source_types::steps_in(std::slice::from_ref(slot), &mut work)
+            .map_err(|error| format!("storage target projection: {error}"))?;
+        if let Some(schema) = source
+            .0
+            .project_steps_if_structural(&steps, &mut work)
+            .map_err(|error| format!("storage target Source graph: {error}"))?
+        {
+            return Ok(Some((schema, source.1.clone())));
+        }
+        let Slot::Field(label) = slot else {
+            return Err("storage Type UID cannot prove this projection".into());
         };
+        let identities = source
+            .0
+            .binder_identities(&mut work)
+            .map_err(|error| format!("storage Type UID: {error}"))?;
+        require(
+            identities.len() == 1,
+            "storage receiver has no unique genuine Type UID",
+        )?;
+        let identity = identities.first().unwrap();
         self.type_binder(identity)?;
         let binder = &self.facts.generic_binders[identity];
         let declaration = self.function(binder.definition)?;
@@ -997,7 +1218,7 @@ impl Replay<'_> {
                 && self.normalized_key(&recorded.syntax, &scope)? == key,
             "storage member changed the complete Source of its declared field",
         )?;
-        let named = match context.owner {
+        let _named = match context.owner {
             Some(CallableOwner::Function(owner)) => {
                 let id = context
                     .invocation
@@ -1048,16 +1269,13 @@ impl Replay<'_> {
             }
             _ => return Err("storage bound field has no callable declaration context".into()),
         };
-        let selected = named
-            .map(|call| self.input_selected_keys(call))
-            .transpose()?
-            .unwrap_or_default();
-        let selected = super::call_input_source::input_select_key(&key, &selected, 0)?;
-        require(
-            source_reception::complete(&selected, &mut 4096).is_some(),
-            "storage declared field has incomplete selected Source coordinates",
-        )?;
-        Ok(Some(selected))
+        self.source_type_header(
+            &declared.ty,
+            &scope,
+            source.1.clone(),
+            &mut work.remaining(),
+        )
+        .map(Some)
     }
 
     fn storage_activation(&self, context: InvocationContext, activation: ScopeId) -> Check {
@@ -1364,35 +1582,27 @@ impl Replay<'_> {
                 }
                 original.map(|(schema, _)| schema)
             } else {
-                let key = if let Some(syntax) = &declaration.ty {
+                if let Some(syntax) = &declaration.ty {
                     let scope = self.lambda_input_scope(owner)?;
-                    let key = self.input_callable_source_key(syntax, &scope)?;
-                    Some(super::call_input_source::input_select_key(
-                        &key,
-                        &self.binding_source_selections(binding, owner)?,
-                        0,
-                    )?)
+                    Some(
+                        self.source_type_header(
+                            syntax,
+                            &scope,
+                            binding.typing_environment.clone(),
+                            &mut 16384,
+                        )?
+                        .0,
+                    )
                 } else {
-                    self.original_observed_source_key_if_known(
+                    self.original_observed_source_schema_with_work(
                         &declaration.value,
                         row.initializer.expression,
                         row.context,
                         sites,
+                        &mut 16384,
                     )?
-                };
-                key.as_ref()
-                    .map(|key| {
-                        crate::sema::source_types::declarations::schema(
-                            key,
-                            self.facts
-                                .semantic_hir
-                                .as_deref()
-                                .ok_or("storage Source has no canonical HIR")?,
-                            &mut crate::sema::source_types::WorkLimit::new(16384),
-                        )
-                        .map_err(|error| error.to_string())
-                    })
-                    .transpose()?
+                    .map(|(schema, _)| schema)
+                }
             };
             entry.insert(schema);
         }
@@ -1696,12 +1906,14 @@ impl Replay<'_> {
                         }
                         self.facts
                             .source_types
-                            .projected_binding_key(
+                            .binding_schema_if_known(
                                 declaration.binding,
-                                &[],
-                                self.facts.semantic_hir.as_deref(),
+                                None,
+                                &mut crate::sema::source_types::WorkLimit::new(16384),
                             )
-                            .ok()
+                            .map_err(|error| {
+                                format!("storage target declaration Source: {error}")
+                            })?
                     }
                     (
                         ExprKind::Field { base, field, .. },
@@ -1734,7 +1946,14 @@ impl Replay<'_> {
                         )?;
                         if source.ty == Ty::Never {
                             require(
-                                !write.completed && write.expected.is_none(),
+                                !write.completed
+                                    && write.expected.is_none()
+                                    && self.storage_original_abrupt(
+                                        base,
+                                        receiver.expression,
+                                        write.context,
+                                        &mut plan_work,
+                                    )?,
                                 "abrupt storage receiver claims a completed write",
                             )?;
                             continue;
@@ -1743,13 +1962,16 @@ impl Replay<'_> {
                             write.completed,
                             "normal storage field write was marked aborted",
                         )?;
-                        let key = self.original_observed_source_key(
-                            base,
-                            receiver.expression,
-                            write.context,
-                            &sites,
-                        )?;
-                        self.storage_projection_source_key(&key, slot, write.context)?
+                        let source = self
+                            .original_observed_source_schema_with_work(
+                                base,
+                                receiver.expression,
+                                write.context,
+                                &sites,
+                                &mut 16384,
+                            )?
+                            .ok_or("storage receiver has no complete original Source")?;
+                        self.storage_projection_source_schema(&source, slot, write.context)?
                     }
                     (
                         ExprKind::Index { base, index, .. },
@@ -1773,7 +1995,15 @@ impl Replay<'_> {
                         )?;
                         if source.ty == Ty::Never {
                             require(
-                                !write.completed && selector.is_none() && write.expected.is_none(),
+                                !write.completed
+                                    && selector.is_none()
+                                    && write.expected.is_none()
+                                    && self.storage_original_abrupt(
+                                        base,
+                                        receiver.expression,
+                                        write.context,
+                                        &mut plan_work,
+                                    )?,
                                 "abrupt indexed receiver claims a write",
                             )?;
                             continue;
@@ -1789,7 +2019,14 @@ impl Replay<'_> {
                         )?;
                         if selected.ty == Ty::Never {
                             require(
-                                !write.completed && write.expected.is_none(),
+                                !write.completed
+                                    && write.expected.is_none()
+                                    && self.storage_original_abrupt(
+                                        index,
+                                        selector.expression,
+                                        write.context,
+                                        &mut plan_work,
+                                    )?,
                                 "abrupt storage selector claims a write",
                             )?;
                             continue;
@@ -1798,16 +2035,34 @@ impl Replay<'_> {
                             write.completed,
                             "normal storage index write was marked aborted",
                         )?;
-                        let key = self.original_observed_source_key(
-                            base,
-                            receiver.expression,
-                            write.context,
-                            &sites,
-                        )?;
-                        let expected_slot = if matches!(key, ArgumentKey::Map { .. }) {
+                        let source = self
+                            .original_observed_source_schema_with_work(
+                                base,
+                                receiver.expression,
+                                write.context,
+                                &sites,
+                                &mut 16384,
+                            )?
+                            .ok_or("storage indexed receiver has no complete original Source")?;
+                        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+                        let map_key = match source.0.project_steps(
+                            &[crate::sema::source_types::SourcePath::MapKey],
+                            &mut work,
+                        ) {
+                            Ok(schema) => Some(schema),
+                            Err(crate::sema::source_types::SourceTypesError::MissingProjection) => {
+                                None
+                            }
+                            Err(error) => {
+                                return Err(format!("storage index receiver Source: {error}"));
+                            }
+                        };
+                        let expected_slot = if map_key.is_some() {
                             Slot::AnyIndex
                         } else if let Some(Constant::Integer(index)) = selected.constant {
-                            Slot::Index(index as i64)
+                            Slot::Index(i64::try_from(index).map_err(
+                                |_| "storage index is outside its admitted integer range",
+                            )?)
                         } else {
                             Slot::AnyIndex
                         };
@@ -1815,63 +2070,81 @@ impl Replay<'_> {
                             *slot == expected_slot,
                             "storage index changed its actual selected slot",
                         )?;
-                        if let ArgumentKey::Map { key: map_key, .. } = &key {
-                            let actual = self
-                                .original_observed_source_key(
-                                    index,
-                                    selector.expression,
-                                    write.context,
-                                    &sites,
-                                )
-                                .ok();
-                            let fresh = source_reception::construction(index, &mut 4096);
+                        if let Some(map_key) = map_key {
+                            let actual = self.original_observed_source_schema_with_work(
+                                index,
+                                selector.expression,
+                                write.context,
+                                &sites,
+                                &mut 16384,
+                            )?;
+                            let fresh = source_reception::construction(index, &mut 4096)
+                                .ok_or("storage map key construction work exhausted")?;
                             require(
-                                storage_compatible(
-                                    map_key,
+                                storage_schema_compatible(
+                                    &map_key,
+                                    &source.1,
                                     actual.as_ref(),
-                                    fresh.as_ref(),
-                                    self.facts.semantic_hir.as_deref(),
-                                ) == Some(true),
+                                    &fresh,
+                                    &mut work,
+                                )?,
                                 "storage map selector does not fit its original key source",
                             )?;
                         }
-                        self.storage_projection_source_key(&key, slot, write.context)?
+                        self.storage_projection_source_schema(&source, slot, write.context)?
                     }
                     _ => return Err("storage write changed its real destination form".into()),
                 };
-                require(
-                    expected == write.expected,
-                    "storage write borrowed a different expected source schema",
-                )?;
-                let expected = expected.ok_or_else(|| {
+                let (expected, expected_environment) = expected.ok_or_else(|| {
                     "storage write has an unresolved original destination source".to_owned()
                 })?;
-                let actual = self
-                    .original_observed_source_key(
-                        site.value,
-                        write.rhs.expression,
-                        write.context,
-                        &sites,
+                let mut work = crate::sema::source_types::WorkLimit::new(32768);
+                let (retained, retained_environment) = self
+                    .facts
+                    .source_types
+                    .view_schema(
+                        write
+                            .expected
+                            .ok_or("storage write lost its canonical target view")?,
+                        &mut work,
                     )
-                    .ok();
-                let fresh = source_reception::construction(site.value, &mut 4096);
-                let answer = if crate::sema::source_types::key_is_coordinate_free_with_declarations(
-                    &expected,
-                    self.facts.semantic_hir.as_deref(),
-                ) {
-                    Some(true)
-                } else if write.operator != "=" {
-                    Some(false)
-                } else {
-                    storage_compatible(
+                    .map_err(|error| format!("storage write target view: {error}"))?;
+                require(
+                    expected_environment.id() == retained_environment.id()
+                        && expected
+                            .equivalent(&retained, &mut work)
+                            .map_err(|error| format!("storage write target equality: {error}"))?,
+                    "storage write borrowed a different expected source schema or environment",
+                )?;
+                let actual = self.original_observed_source_schema_with_work(
+                    site.value,
+                    write.rhs.expression,
+                    write.context,
+                    &sites,
+                    &mut 16384,
+                )?;
+                let fresh = source_reception::construction(site.value, &mut 4096)
+                    .ok_or("storage RHS construction work exhausted")?;
+                let answer = match expected.sensitivity(&mut work) {
+                    crate::sema::source_types::SourceSensitivity::Absent { .. } => true,
+                    crate::sema::source_types::SourceSensitivity::Unknown { reason } => {
+                        return Err(format!("storage target Source sensitivity: {reason}"));
+                    }
+                    crate::sema::source_types::SourceSensitivity::Sensitive { .. }
+                        if write.operator != "=" =>
+                    {
+                        false
+                    }
+                    _ => storage_schema_compatible(
                         &expected,
+                        &expected_environment,
                         actual.as_ref(),
-                        fresh.as_ref(),
-                        self.facts.semantic_hir.as_deref(),
-                    )
+                        &fresh,
+                        &mut work,
+                    )?,
                 };
                 require(
-                    answer == Some(true),
+                    answer,
                     "storage original RHS does not prove the destination source coordinates",
                 )?;
             }
@@ -1887,12 +2160,16 @@ impl Replay<'_> {
                     let value = self.facts.expressions.get(row.expression).ok_or_else(|| {
                         "storage reverse coverage expression is absent".to_owned()
                     })?;
-                    if value.source_id.is_some()
-                        && value.source_id == site.value.hir_id
-                        && value.value.ty != Ty::Never
-                    {
+                    if value.source_id.is_some() && value.source_id == site.value.hir_id {
                         require(
-                            covered.contains(&row.expression),
+                            covered.contains(&row.expression)
+                                || (value.value.ty == Ty::Never
+                                    && self.storage_original_abrupt(
+                                        site.value,
+                                        row.expression,
+                                        row.context,
+                                        &mut plan_work,
+                                    )?),
                             "an actual assignment lost its storage reception receipt",
                         )?;
                     }
@@ -1933,49 +2210,47 @@ impl Replay<'_> {
     }
 }
 
-pub(in crate::sema::record_bound_validation) fn storage_compatible(
-    expected: &ArgumentKey,
-    actual: Option<&ArgumentKey>,
-    fresh: Option<&Construction>,
-    hir: Option<&crate::hir::nodes::HirProgram>,
-) -> Option<bool> {
-    if contains_callable(expected, &mut 4096)? {
-        return None;
-    }
-    if crate::sema::source_types::key_is_coordinate_free_with_declarations(expected, hir) {
-        return Some(true);
-    }
-    if let Some(actual) = actual {
-        return source_reception::compatible(expected, actual, fresh, &mut 4096);
-    }
-    source_reception::empty_context(expected, fresh?, &mut 4096)
-}
-
-fn contains_callable(key: &ArgumentKey, work: &mut usize) -> Option<bool> {
-    *work = work.checked_sub(1)?;
-    let children: Vec<&ArgumentKey> = match key {
-        ArgumentKey::Callable { .. } | ArgumentKey::GenericBuiltin(_) => return Some(true),
-        ArgumentKey::Array { element, .. } => vec![element],
-        ArgumentKey::Map { key, value } => vec![key, value],
-        ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {
-            arguments.iter().collect()
+fn storage_schema_compatible(
+    expected: &crate::sema::source_types::SourceSchema,
+    environment: &crate::sema::context::FrozenEnvironment,
+    actual: Option<&(
+        crate::sema::source_types::SourceSchema,
+        crate::sema::context::FrozenEnvironment,
+    )>,
+    fresh: &Construction,
+    work: &mut crate::sema::source_types::WorkLimit,
+) -> Check<bool> {
+    require(
+        !environment.is_poisoned(),
+        "storage target interpretation is poisoned",
+    )?;
+    if let Some((actual, actual_environment)) = actual {
+        require(
+            !actual_environment.is_poisoned(),
+            "storage input interpretation is poisoned",
+        )?;
+        if expected
+            .requires_declaration_environment(work)
+            .map_err(|error| error.to_string())?
+            || actual
+                .requires_declaration_environment(work)
+                .map_err(|error| error.to_string())?
+        {
+            require(
+                environment.id() == actual_environment.id(),
+                "storage lexical Source contracts require their original shared interpretation",
+            )?;
         }
-        ArgumentKey::Record { fields, row } => fields
-            .iter()
-            .map(|field| &field.2)
-            .chain(row.iter().map(|row| row.as_ref()))
-            .collect(),
-        ArgumentKey::Closed(_) => return None,
-        ArgumentKey::Binder { .. } => vec![],
-    };
-    for child in children {
-        if contains_callable(child, work)? {
-            return Some(true);
-        }
+        expected
+            .receive_schema(actual, Some(fresh), work)
+            .map_err(|error| error.to_string())
+    } else {
+        expected
+            .empty_context(fresh, work)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "storage input has no complete original Source".into())
     }
-    Some(false)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

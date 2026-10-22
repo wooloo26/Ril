@@ -28,6 +28,11 @@ impl Checker {
                 Some((key, Arc::new(witness.syntax.clone())))
             })
             .or_else(|| {
+                if !self.type_source.environment.generic_sources.is_empty() {
+                    // A captured graph can be recursive and need not have a
+                    // finite compatibility syntax. It is substituted below.
+                    return None;
+                }
                 // Bound the source structure before the legacy effect
                 // reifier recursively clones it. A failed closed-source
                 // attempt does not waive the reconstruction boundary.
@@ -87,17 +92,75 @@ impl Checker {
         } else {
             None
         };
+        let schema = (|| {
+            use crate::sema::source_types::{SourceSchema, SourceTypesError, WorkLimit};
+            let mut work = WorkLimit::new(16384);
+            if let Some(schema) = self.const_nominal_source_schema(syntax, &mut work)? {
+                return Ok(Some(schema));
+            }
+            let captured = !environment.generic_sources.is_empty();
+            let raw = if captured {
+                self.record_bound_key(syntax, &self.record_bound_scope())
+            } else {
+                key.clone()
+                    .or_else(|| self.record_bound_key(syntax, &self.record_bound_scope()))
+            };
+            let Some(raw) = raw else { return Ok(None) };
+            let schema = SourceSchema::import(&raw, syntax.hir_id, &mut work)?;
+            for identity in schema.binder_identities(&mut work)? {
+                if let Some(binder) = self.generic_binders.get(&identity) {
+                    work.charge(self.functions.len())?;
+                    let parameter = self
+                        .functions
+                        .iter()
+                        .find(|function| function.definition == binder.definition)
+                        .and_then(|function| function.syntax.generics.get(binder.index as usize))
+                        .ok_or(SourceTypesError::Unresolved)?;
+                    if !crate::sema::record_bounds::certifies_type_sort(
+                        &identity,
+                        binder,
+                        parameter,
+                        &self.record_bounds,
+                    ) {
+                        return Ok(None);
+                    }
+                } else {
+                    work.charge(self.bound_rows.len())?;
+                    if !self.bound_rows.iter().any(|row| matches!(
+                        &row.identity, crate::sema::model::rows::RowIdentity::Binder(actual) if actual == &identity
+                    )) { return Err(SourceTypesError::Unresolved); }
+                }
+            }
+            let mut selected = BTreeMap::new();
+            work.charge(environment.generic_sources.len())?;
+            for (identity, source) in &environment.generic_sources {
+                if source.environment.is_poisoned() {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                selected.insert(identity.clone(), source.schema.clone());
+            }
+            let schema = schema.substitute(&selected, &mut work)?;
+            crate::sema::source_types::declarations::resolve_schema(
+                &schema,
+                &self.semantic_hir,
+                &mut work,
+            )
+            .map(Some)
+        })();
+        let schema = match schema {
+            Ok(schema) => schema,
+            Err(error) => {
+                self.unsupported(
+                    syntax.span,
+                    format!("receiving declaration graph failed: {error}"),
+                );
+                None
+            }
+        };
         Target {
             environment,
             span: syntax.span,
-            schema: key.as_ref().and_then(|key| {
-                crate::sema::source_types::SourceSchema::import(
-                    key,
-                    syntax.hir_id,
-                    &mut crate::sema::source_types::WorkLimit::new(16384),
-                )
-                .ok()
-            }),
+            schema,
             syntax: frozen_syntax,
             empty_array_context,
             sensitivity,
@@ -169,26 +232,26 @@ impl Checker {
             }
             return answer;
         }
-        let Some(expected) = &target.key() else {
-            if target.empty_array_context.is_some()
-                && matches!(&actual.kind, ExprKind::Array(items) if items.is_empty())
-                && observed.is_some_and(|index| {
-                    self.application_effect
-                        .expressions
+        if target.empty_array_context.is_some()
+            && matches!(&actual.kind, ExprKind::Array(items) if items.is_empty())
+            && observed.is_some_and(|index| {
+                self.application_effect
+                    .expressions
+                    .get(index)
+                    .is_some_and(|fact| fact.span == actual.span && fact.value == *value)
+                    && self
+                        .application_effect
+                        .contexts
                         .get(index)
-                        .is_some_and(|fact| fact.span == actual.span && fact.value == *value)
-                        && self
-                            .application_effect
-                            .contexts
-                            .get(index)
-                            .is_some_and(|row| {
-                                row.expression == index
-                                    && row.context == self.invocation_context(frame.callable_owner)
-                            })
-                })
-            {
-                return true;
-            }
+                        .is_some_and(|row| {
+                            row.expression == index
+                                && row.context == self.invocation_context(frame.callable_owner)
+                        })
+            })
+        {
+            return true;
+        }
+        let Some(expected) = target.schema.as_ref() else {
             self.unsupported(
                 actual.span,
                 "receiving requires its original complete annotation source schema",
@@ -207,24 +270,41 @@ impl Checker {
                 && expression.span == actual.span)
                 .then(|| expression.value.clone())
         });
-        let answer = original.as_ref().and_then(|original| {
-            let fresh = source_reception::construction(actual, &mut work)?;
-            let original_key = self.original_source_receiving_key(original, actual, frame);
+        let answer = (|| {
+            use crate::sema::source_types::{SourceTypesError, WorkLimit};
+            let original = original.as_ref().ok_or(SourceTypesError::MissingNode)?;
+            let fresh = source_reception::construction(actual, &mut work)
+                .ok_or(SourceTypesError::BudgetExceeded)?;
+            let mut graph_work = WorkLimit::new(16384);
+            let original_source =
+                self.original_source_receiving_schema(original, actual, frame, &mut graph_work)?;
             // Recency transport may change graph identities, but it must not
             // change immutable source coordinates before this boundary. This
             // comparison also rejects passing an unrelated historical token.
-            let current_key = self.original_source_receiving_key(value, actual, frame);
-            if original_key != current_key {
-                return None;
+            let current_source =
+                self.original_source_receiving_schema(value, actual, frame, &mut graph_work)?;
+            match (&original_source, &current_source) {
+                (Some((original, original_env)), Some((current, current_env))) => {
+                    let equivalent = original.equivalent(current, &mut graph_work)?;
+                    let dependent = original.requires_environment(&mut graph_work)?;
+                    if original_env.is_poisoned()
+                        || current_env.is_poisoned()
+                        || !equivalent
+                        || (dependent && original_env.id() != current_env.id())
+                    {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    target.receive_schema(original, Some(&fresh), &mut graph_work)
+                }
+                (None, None) => expected
+                    .empty_context(&fresh, &mut graph_work)?
+                    .ok_or(SourceTypesError::Unresolved),
+                _ => Err(SourceTypesError::Unresolved),
             }
-            match &original_key {
-                Some(key) => target.receive(key, Some(&fresh), &mut work),
-                None => source_reception::empty_context(expected, &fresh, &mut work),
-            }
-        });
+        })();
         match answer {
-            Some(true) => true,
-            Some(false) => {
+            Ok(true) => true,
+            Ok(false) => {
                 self.error(
                     "E0301",
                     actual.span,
@@ -233,10 +313,10 @@ impl Checker {
                 );
                 false
             }
-            None => {
+            Err(error) => {
                 self.unsupported(
                     actual.span,
-                    "receiving lacks its original complete schema and actual Source observation",
+                    format!("receiving lacks its original complete schema and actual Source observation: {error}"),
                 );
                 false
             }
@@ -391,8 +471,7 @@ pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
         .schema
         .as_ref()
         .and_then(|schema| schema.project_field(name).ok());
-    let key = schema.as_ref().and_then(|schema| schema.key().ok());
-    let syntax = key.as_ref().and_then(|_| {
+    let syntax = (|| {
         let TypeKind::Record { fields, row: None } = &target.syntax.as_ref()?.kind else {
             return None;
         };
@@ -400,10 +479,10 @@ pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
             .iter()
             .find(|field| field.name == name)
             .map(|field| Arc::new(field.ty.clone()))
-    });
-    let sensitivity = key
+    })();
+    let sensitivity = schema
         .as_ref()
-        .map_or(SchemaSensitivity::Unknown, key_sensitivity);
+        .map_or(SchemaSensitivity::Unknown, graph_sensitivity);
     Target {
         environment: target.environment.clone(),
         span,
@@ -414,11 +493,12 @@ pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
     }
 }
 
-fn key_sensitivity(key: &ArgumentKey) -> SchemaSensitivity {
-    match source_reception::sensitive(key, &mut 4096) {
-        Some(true) => SchemaSensitivity::Required,
-        Some(false) if key.is_closed() => SchemaSensitivity::NotRequired,
-        _ => SchemaSensitivity::Unknown,
+fn graph_sensitivity(schema: &crate::sema::source_types::SourceSchema) -> SchemaSensitivity {
+    use crate::sema::source_types::{SourceSensitivity, WorkLimit};
+    match schema.sensitivity(&mut WorkLimit::new(16384)) {
+        SourceSensitivity::Sensitive { .. } => SchemaSensitivity::Required,
+        SourceSensitivity::Absent { .. } => SchemaSensitivity::NotRequired,
+        SourceSensitivity::Unknown { .. } => SchemaSensitivity::Unknown,
     }
 }
 
@@ -499,55 +579,37 @@ pub(super) fn resolved_symbolic_names(
 #[cfg(test)]
 #[path = "source_receiving_tests.rs"]
 mod tests;
-// Append inside checker/source_receiving.rs when Root's construction wrapper
-// is ready. This uses that module's existing imports and freezes no new names.
 
+#[cfg(test)]
+fn fixture_key(target: &Target) -> Option<ArgumentKey> {
+    target.schema.as_ref()?.key().ok()
+}
 /// Project the target of an actual tuple construction member. Conditions,
 /// intervening statements and unrelated nested blocks never use this target.
 pub(super) fn tuple_target(target: &Target, index: usize, span: Span) -> Target {
-    let projected = (|| {
-        let target_key = target.key();
-        let ArgumentKey::Tuple(keys) = target_key.as_ref()? else {
-            return None;
-        };
-        let TypeKind::Tuple(items) = &target.syntax.as_ref()?.kind else {
-            return None;
-        };
-        if keys.len() != items.len() {
-            return None;
-        }
-        let key = keys.get(index)?;
-        let syntax = items.get(index)?;
-        source_reception::complete(key, &mut 4096)?;
-        let schema = target
+    let schema = index.try_into().ok().and_then(|index| {
+        target
             .schema
             .as_ref()?
-            .project(&[crate::sema::source_types::SourcePath::Tuple(
-                index.try_into().ok()?,
-            )])
-            .ok()?;
-        Some((schema, Arc::new(syntax.clone())))
-    })();
-    match projected {
-        Some((schema, syntax)) => Target {
-            environment: target.environment.clone(),
-            span,
-            sensitivity: schema
-                .key()
-                .as_ref()
-                .map_or(SchemaSensitivity::Unknown, key_sensitivity),
-            schema: Some(schema),
-            syntax: Some(syntax),
-            empty_array_context: None,
-        },
-        None => Target {
-            environment: target.environment.clone(),
-            span,
-            schema: None,
-            syntax: None,
-            empty_array_context: None,
-            sensitivity: SchemaSensitivity::Unknown,
-        },
+            .project(&[crate::sema::source_types::SourcePath::Tuple(index)])
+            .ok()
+    });
+    let syntax = target
+        .syntax
+        .as_ref()
+        .and_then(|syntax| match &syntax.kind {
+            TypeKind::Tuple(items) => items.get(index).map(|syntax| Arc::new(syntax.clone())),
+            _ => None,
+        });
+    Target {
+        environment: target.environment.clone(),
+        span,
+        sensitivity: schema
+            .as_ref()
+            .map_or(SchemaSensitivity::Unknown, graph_sensitivity),
+        schema,
+        syntax,
+        empty_array_context: None,
     }
 }
 
@@ -555,49 +617,31 @@ pub(super) fn tuple_target(target: &Target, index: usize, span: Span) -> Target 
 /// arrays retain their invariant original element source; this projection
 /// alone is never evidence that the operand is an array literal.
 pub(super) fn array_element_target(target: &Target, span: Span) -> Target {
-    let projected = (|| {
-        let target_key = target.key();
-        let ArgumentKey::Array { element, .. } = target_key.as_ref()? else {
-            return None;
-        };
-        let TypeKind::Array {
-            element: syntax, ..
-        } = &target.syntax.as_ref()?.kind
-        else {
-            return None;
-        };
-        source_reception::complete(element, &mut 4096)?;
-        let schema = target
-            .schema
-            .as_ref()?
-            .project(&[crate::sema::source_types::SourcePath::Element])
-            .ok()?;
-        Some((schema, Arc::new((**syntax).clone())))
-    })();
-    match projected {
-        Some((schema, syntax)) => Target {
-            environment: target.environment.clone(),
-            span,
-            sensitivity: schema
-                .key()
-                .as_ref()
-                .map_or(SchemaSensitivity::Unknown, key_sensitivity),
-            schema: Some(schema),
-            syntax: Some(syntax),
-            empty_array_context: None,
-        },
-        None => Target {
-            environment: target.environment.clone(),
-            span,
-            schema: None,
-            syntax: None,
-            empty_array_context: None,
-            sensitivity: SchemaSensitivity::Unknown,
-        },
+    let schema = target.schema.as_ref().and_then(|schema| {
+        schema
+            .array_parts(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .ok()
+            .flatten()
+            .map(|(_, element)| element)
+    });
+    let syntax = target
+        .syntax
+        .as_ref()
+        .and_then(|syntax| match &syntax.kind {
+            TypeKind::Array { element, .. } => Some(Arc::new((**element).clone())),
+            _ => None,
+        });
+    Target {
+        environment: target.environment.clone(),
+        span,
+        sensitivity: schema
+            .as_ref()
+            .map_or(SchemaSensitivity::Unknown, graph_sensitivity),
+        schema,
+        syntax,
+        empty_array_context: None,
     }
 }
-
-// The same append adds this focused test module; no Source pass is claimed.
 #[cfg(test)]
 mod projection_tests {
     use super::*;
@@ -621,21 +665,21 @@ mod projection_tests {
         assert_eq!(target.environment.id(), array.environment.id());
         assert_eq!(target.environment.id(), element.environment.id());
         assert!(
-            matches!(&element.key(), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
+            matches!(&fixture_key(&element), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
         );
         assert!(matches!(
             &element.syntax.as_ref().unwrap().kind,
             TypeKind::Array { .. }
         ));
         assert!(
-            matches!(&tuple_target(&target, 1, target.span).key(), Some(ArgumentKey::Callable { parameters, .. }) if matches!(&parameters[0].1, ArgumentKey::Array { length: Some(n), .. } if n=="const(int:2)"))
+            matches!(&fixture_key(&tuple_target(&target, 1, target.span)), Some(ArgumentKey::Callable { parameters, .. }) if matches!(&parameters[0].1, ArgumentKey::Array { length: Some(n), .. } if n=="const(int:2)"))
         );
         for unknown in [
             tuple_target(&target, 2, target.span),
             array_element_target(&target, target.span),
             tuple_target(&array, 0, target.span),
         ] {
-            assert!(unknown.key().is_none() && unknown.syntax.is_none());
+            assert!(unknown.schema.is_none() && unknown.syntax.is_none());
             assert_eq!(target.environment.id(), unknown.environment.id());
         }
     }

@@ -24,15 +24,6 @@ struct Resolve<'a> {
     builder: SourceBuilder,
 }
 
-pub(crate) fn sensitivity(
-    key: &ArgumentKey,
-    hir: &HirProgram,
-    work: &mut WorkLimit,
-) -> SourceSensitivity {
-    let result = resolve(key, hir, work).map(|graph| graph.types.sensitivity(graph.root, work));
-    result.unwrap_or_else(|reason| SourceSensitivity::Unknown { reason })
-}
-
 struct DeclaredGraph {
     types: SourceTypes,
     root: SourceTypeId,
@@ -120,52 +111,58 @@ pub(crate) fn construction(
     hir: &HirProgram,
     work: &mut WorkLimit,
 ) -> Result<Option<ArgumentKey>, SourceTypesError> {
-    work.charge(1)?;
-    let Some(hir::Expr {
-        kind: hir::ExprKind::Record { ty: Some(ty), .. },
-        ..
-    }) = hir.expression(source)
-    else {
-        return Ok(None);
+    let (graph, _) = match construction_graph(source, hir, work) {
+        Ok(Some(graph)) => graph,
+        Ok(None) | Err(SourceTypesError::NeedsStaticElaboration) => return Ok(None),
+        Err(error) => return Err(error),
     };
-    let mut resolver = Resolve::new(hir, work)?;
-    let root = resolver.ty(*ty, work, 0)?;
-    let graph = resolver.freeze(root, work)?;
     if !matches!(
-        graph.types.sensitivity(root, work),
+        graph.types.sensitivity(graph.root, work),
         SourceSensitivity::Absent { .. }
     ) {
         return Ok(None);
     }
     graph
         .types
-        .declared_key(root, &graph.declarations, work)
+        .declared_key(graph.root, &graph.declarations, work)
         .map(Some)
 }
 
-/// Projection uses the same graph as receiving. Backedges export only real
-/// HIR declaration names; an arbitrary recursive graph cannot invent a name.
-pub(crate) fn project(
-    key: &ArgumentKey,
-    path: &[crate::sema::facts::Slot],
+pub(crate) fn construction_schema(
+    source: ril_compiler_core::ids::ExprId,
     hir: &HirProgram,
     work: &mut WorkLimit,
-) -> Result<ArgumentKey, SourceTypesError> {
-    let path = super::index::steps_in(path, work)?;
-    project_steps(key, &path, hir, work)
+) -> Result<Option<SourceSchema>, SourceTypesError> {
+    let (graph, original) = match construction_graph(source, hir, work) {
+        Ok(Some(graph)) => graph,
+        Ok(None) | Err(SourceTypesError::NeedsStaticElaboration) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match graph.types.sensitivity(graph.root, work) {
+        SourceSensitivity::Absent { .. } => {
+            SourceSchema::copy_from(&graph.types, graph.root, Some(original), work).map(Some)
+        }
+        SourceSensitivity::Sensitive { .. } => Ok(None),
+        SourceSensitivity::Unknown { reason } => Err(reason),
+    }
 }
 
-pub(crate) fn project_steps(
-    key: &ArgumentKey,
-    path: &[super::SourcePath],
+fn construction_graph(
+    source: ril_compiler_core::ids::ExprId,
     hir: &HirProgram,
     work: &mut WorkLimit,
-) -> Result<ArgumentKey, SourceTypesError> {
-    let graph = resolve(key, hir, work)?;
-    let selected = graph.types.project(graph.root, path, work)?;
-    graph
-        .types
-        .declared_key(selected, &graph.declarations, work)
+) -> Result<Option<(DeclaredGraph, TypeExprId)>, SourceTypesError> {
+    work.charge(1)?;
+    let expression = hir
+        .expression(source)
+        .ok_or(SourceTypesError::MissingNode)?;
+    let hir::ExprKind::Record { ty: Some(ty), .. } = &expression.kind else {
+        return Ok(None);
+    };
+    let mut resolver = Resolve::new(hir, work)?;
+    let root = resolver.ty(*ty, work, 0)?;
+    let graph = resolver.freeze(root, work)?;
+    Ok(Some((graph, *ty)))
 }
 
 fn resolve(
@@ -376,12 +373,10 @@ impl Resolve<'_> {
             hir::TypeKind::Array {
                 length: Some(_), ..
             } => {
-                // The declaration graph cannot borrow a caller's constant
-                // evaluator. Absence cannot be proved through this node.
-                return self.unknown(
-                    "fixed extent requires its frozen static interpretation",
-                    work,
-                );
+                // Only the original ingress may delegate this request to its
+                // frozen static evaluator. An actual graph's unresolved node
+                // remains an error and can never take this branch.
+                return Err(SourceTypesError::NeedsStaticElaboration);
             }
             hir::TypeKind::Map { key, value } => SourceNode::Map {
                 key: self.ty(*key, work, depth + 1)?,
@@ -536,6 +531,76 @@ mod tests {
     }
 
     #[test]
+    fn typed_extent_ingress_requests_static_elaboration_without_waiving_unknown_or_budget_errors() {
+        let source = ril_test::case_source(
+            "tests/regressions/source-observations.ril::matching-record-member-replacement",
+        );
+        let parsed = ril_syntax::parse(source);
+        assert!(parsed.is_ok());
+        let hir = HirProgram::lower(&parsed.program).unwrap();
+        let typed_literal = |hir: &HirProgram| {
+            let mut literal = None;
+            hir.walk(4096, |id, _| {
+                if let hir::NodeId::Expr(id) = id
+                    && matches!(
+                        &hir.expression(id).unwrap().kind,
+                        hir::ExprKind::Record { ty: Some(_), .. }
+                    )
+                {
+                    literal.get_or_insert(id);
+                }
+            })
+            .unwrap();
+            literal.unwrap()
+        };
+        // Query the actual typed construction, rather than recognizing a
+        // description on an unresolved graph after the static context is lost.
+        let literal = typed_literal(&hir);
+        assert!(matches!(
+            construction_graph(literal, &hir, &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::NeedsStaticElaboration)
+        ));
+        assert!(
+            construction_schema(literal, &hir, &mut WorkLimit::new(4096))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            construction(literal, &hir, &mut WorkLimit::new(4096))
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            construction_schema(literal, &hir, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(matches!(
+            construction_schema(
+                ril_compiler_core::ids::ExprId(u32::MAX),
+                &hir,
+                &mut WorkLimit::new(4096)
+            ),
+            Err(SourceTypesError::MissingNode)
+        ));
+        let mut unknown = parsed.program;
+        let StmtKind::Type(declaration) = &mut unknown.statements[0].kind else {
+            panic!()
+        };
+        let TypeKind::Record { fields, .. } = &mut declaration.value.as_mut().unwrap().kind else {
+            panic!()
+        };
+        fields[0].ty.kind = TypeKind::Name {
+            path: vec!["Missing".into()],
+            arguments: vec![],
+        };
+        let hir = HirProgram::lower(&unknown).unwrap();
+        assert!(matches!(
+            construction_schema(typed_literal(&hir), &hir, &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::Unresolved)
+        ));
+    }
+
+    #[test]
     fn real_recursive_declarations_project_without_an_erased_type_or_tree_unrolling() {
         let hir = HirProgram::lower(&original()).unwrap();
         let mut literal = None;
@@ -555,24 +620,29 @@ mod tests {
             Some(key())
         );
         assert!(matches!(
-            sensitivity(&key(), &hir, &mut WorkLimit::new(4096)),
+            schema(&key(), &hir, &mut WorkLimit::new(4096))
+                .unwrap()
+                .sensitivity(&mut WorkLimit::new(4096)),
             SourceSensitivity::Absent { .. }
         ));
-        let member = project(
-            &key(),
-            &[crate::sema::facts::Slot::Field("left".into())],
-            &hir,
-            &mut WorkLimit::new(4096),
-        )
-        .unwrap();
+        let source = schema(&key(), &hir, &mut WorkLimit::new(4096)).unwrap();
+        let member = source
+            .project_steps(
+                &[
+                    super::super::SourcePath::Field("left".into()),
+                    super::super::SourcePath::OptionalPayload,
+                ],
+                &mut WorkLimit::new(4096),
+            )
+            .unwrap();
         assert!(
-            matches!(member, ArgumentKey::Name { name, arguments } if name == "Option" && arguments == vec![key()])
+            member
+                .equivalent(&source, &mut WorkLimit::new(4096))
+                .unwrap()
         );
         assert!(matches!(
-            sensitivity(&key(), &hir, &mut WorkLimit::new(0)),
-            SourceSensitivity::Unknown {
-                reason: SourceTypesError::BudgetExceeded
-            }
+            schema(&key(), &hir, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
         ));
     }
 
@@ -610,7 +680,9 @@ mod tests {
         });
         let hir = HirProgram::lower(&source).unwrap();
         assert!(matches!(
-            sensitivity(&key(), &hir, &mut WorkLimit::new(4096)),
+            schema(&key(), &hir, &mut WorkLimit::new(4096))
+                .unwrap()
+                .sensitivity(&mut WorkLimit::new(4096)),
             SourceSensitivity::Sensitive { .. }
         ));
         for target in ["Node", "Missing"] {
@@ -624,7 +696,9 @@ mod tests {
             };
             let hir = HirProgram::lower(&source).unwrap();
             assert!(matches!(
-                sensitivity(&key(), &hir, &mut WorkLimit::new(4096)),
+                schema(&key(), &hir, &mut WorkLimit::new(4096))
+                    .unwrap()
+                    .sensitivity(&mut WorkLimit::new(4096)),
                 SourceSensitivity::Unknown { .. }
             ));
         }
@@ -640,7 +714,9 @@ mod tests {
         function.body.as_mut().unwrap().where_items.push(local);
         let hir = HirProgram::lower(&source).unwrap();
         assert!(matches!(
-            sensitivity(&key(), &hir, &mut WorkLimit::new(4096)),
+            schema(&key(), &hir, &mut WorkLimit::new(4096))
+                .unwrap()
+                .sensitivity(&mut WorkLimit::new(4096)),
             SourceSensitivity::Unknown { .. }
         ));
     }

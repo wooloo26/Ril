@@ -9,6 +9,57 @@ fn example()->int{let values:[0][3]int=[];exact<int>(values)}
 --@ end-file
 --@ end-case
 
+--@ source: const-nominal-formal-source-graph
+--@ file: source.ril
+type Token<size:int>(int)
+fn identity(value:Token<1>)->Token<1>{value}
+pub fn test_native(){
+    let original:Token<1>=Token<1>(7)
+    let received:Token<1>=identity(original)
+    assert(inner(received)==7)
+}
+--@ end-file
+--@ end-source
+
+--@ case: const-nominal-formal-source-graph
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: const-nominal-formal-source-graph-native
+--@ use-source: const-nominal-formal-source-graph
+--@ end-case
+
+--@ case: const-nominal-formal-source-graph-native
+--@ mode: run-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: const-nominal-formal-source-graph
+--@ entry: test_native
+--@ use-source: const-nominal-formal-source-graph
+--@ end-case
+
+--@ case: const-nominal-formal-value-conflict
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: const-nominal-formal-source-graph
+-- Error [E0301]: A nominal formal preserves the actual normalized Const value.
+--@ file: source.ril
+type Token<size:int>(int)
+fn identity(value:Token<1>)->Token<1>{value}
+fn example(){let other:Token<2>=Token<2>(7);let received=identity(other)}
+--@ end-file
+--@ end-case
+
+--@ case: const-nominal-formal-sort-conflict
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: const-nominal-formal-source-graph
+-- Error [E0323]: A genuine Const argument still obeys its declared static sort.
+--@ file: source.ril
+type Token<size:int>(int)
+fn identity(value:Token<1>)->Token<1>{value}
+fn example(){let other=Token<"wrong">(7);let received=identity(other)}
+--@ end-file
+--@ end-case
+
 --@ case: explicit-record-field-dimension
 --@ mode: check-fail
 --@ spec: SPEC#complete-provenance-and-optional-annotations
@@ -244,4 +295,61 @@ pub fn test_native(){
 --@ companion: open-record-through-generic-identity
 --@ entry: test_native
 --@ use-source: open-record-through-generic-identity
+--@ end-case
+
+--@ source: generic-literal-collection-source-graphs
+--@ file: source.ril
+fn singleton<T>(value:T)->[1]T{[value]}
+fn mapping<T>(value:T)->[str:T]{["one":value]}
+fn first(items:[2]int)->int{items[0]}
+fn example(){
+    let empty:[0][3]int=[]
+    let nested:[1][0][3]int=singleton(empty)
+    let by_name:[str:[0][3]int]=mapping(empty)
+    let callbacks:[1](fn([2]int)->int)=singleton(first)
+    let callback_map:[str:(fn([2]int)->int)]=mapping(first)
+    let items:[2]int=[7,9]
+    assert(len(nested)==1 && len(nested[0])==0)
+    assert(len(by_name)==1 && len(callback_map)==1)
+    assert(callbacks[0](items)==7)
+}
+pub fn test_native(){example()}
+--@ end-file
+--@ end-source
+
+--@ case: generic-literal-collection-source-graphs
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: inferred-literal-array-remains-dynamic
+--@ use-source: generic-literal-collection-source-graphs
+--@ end-case
+
+--@ case: generic-literal-collection-source-graphs-native
+--@ mode: run-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: generic-literal-collection-source-graphs
+--@ entry: test_native
+--@ use-source: generic-literal-collection-source-graphs
+--@ end-case
+
+--@ case: inferred-literal-array-remains-dynamic
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: generic-literal-collection-source-graphs
+-- Error [E0301]: An inferred array keeps its dynamic shell after storing it.
+--@ file: source.ril
+fn exact(items:[1][0][3]int){}
+fn example(){let empty:[0][3]int=[];let values=[empty];exact(values)}
+--@ end-file
+--@ end-case
+
+--@ case: literal-map-keeps-stored-inner-dimensions
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: generic-literal-collection-source-graphs
+-- Error [E0301]: A map wrapper preserves its actual stored value's hidden extent.
+--@ file: source.ril
+fn exact(items:[str:[0][2]int]){}
+fn example(){let empty:[0][3]int=[];let values=["one":empty];exact(values)}
+--@ end-file
 --@ end-case

@@ -4,8 +4,10 @@ use super::*;
 use crate::hir::application::AstApplication;
 use crate::sema::record_bound_validation::OriginalOperandSources;
 use crate::sema::{
-    effect_identity::{ArgumentKey, InvocationContext},
+    context::FrozenEnvironment,
+    effect_identity::InvocationContext,
     generated_sources::GeneratedSource,
+    source_types::{SourceSchema, WorkLimit},
 };
 #[path = "../generated_source_syntax.rs"]
 mod syntax;
@@ -115,7 +117,7 @@ fn same_capture_origins(
     &transported == actual
 }
 
-fn key(facts: &SemanticFacts, syntax: &TypeExpr) -> Result<ArgumentKey, String> {
+fn schema(facts: &SemanticFacts, syntax: &TypeExpr) -> Result<SourceSchema, String> {
     let layout = facts
         .target_layout
         .ok_or("generated source has no frozen layout")?;
@@ -125,7 +127,8 @@ fn key(facts: &SemanticFacts, syntax: &TypeExpr) -> Result<ArgumentKey, String> 
         .ok_or("generated source schema exceeds its syntax budget")?;
     crate::sema::source_reception::complete(&key, &mut 4096)
         .ok_or("generated source schema is incomplete")?;
-    Ok(key)
+    SourceSchema::import(&key, syntax.hir_id, &mut WorkLimit::new(16384))
+        .map_err(|error| format!("generated source declaration: {error}"))
 }
 
 fn adapter_name(adapter: iter::AdapterKind) -> &'static str {
@@ -137,63 +140,85 @@ fn adapter_name(adapter: iter::AdapterKind) -> &'static str {
     }
 }
 
-fn source_parts(key: &ArgumentKey) -> Result<(ArgumentKey, ArgumentKey), String> {
-    let ArgumentKey::Record { fields, row: None } = key else {
-        return Err("generated adapter input has no complete source record".into());
-    };
-    let (_, mutable, step) = fields
-        .iter()
-        .find(|(name, _, _)| name == "step")
-        .ok_or("generated adapter input lost its original step field")?;
-    let ArgumentKey::Callable {
-        parameters, result, ..
-    } = step
-    else {
-        return Err("generated adapter original step is not a complete callable".into());
-    };
-    let [(ParameterMode::Read, input)] = parameters.as_slice() else {
-        return Err("generated adapter step requires its original readonly state parameter".into());
-    };
-    let ArgumentKey::Name { name, arguments } = result.as_ref() else {
-        return Err("generated adapter step lost its nominal result source".into());
-    };
-    require(
-        !mutable && name == "Iter::Step" && arguments.len() == 2 && input == &arguments[0],
-        "generated adapter state and successor source identities differ",
-    )?;
-    Ok((arguments[0].clone(), arguments[1].clone()))
+fn scalar_schema(name: &str) -> Result<SourceSchema, String> {
+    SourceSchema::import(
+        &crate::sema::effect_identity::ArgumentKey::Name {
+            name: name.into(),
+            arguments: vec![],
+        },
+        None,
+        &mut WorkLimit::new(64),
+    )
+    .map_err(|error| format!("generated scalar Source: {error}"))
+}
+
+fn source_parts(source: &SourceSchema) -> Result<(SourceSchema, SourceSchema), String> {
+    let mut work = WorkLimit::new(16384);
+    let parts: Result<_, crate::sema::source_types::SourceTypesError> = (|| {
+        // The caller independently authenticates the actual Iter adapter
+        // declaration. This query preserves its complete state/item graphs;
+        // it does not infer standard-library identity from a type spelling.
+        source.closed_record_labels(&mut work)?;
+        let (mutable, step) = source
+            .record_field("step", &mut work)?
+            .ok_or(crate::sema::source_types::SourceTypesError::MissingProjection)?;
+        let (parameters, result) = step
+            .callable_parts(&mut work)?
+            .ok_or(crate::sema::source_types::SourceTypesError::MissingProjection)?;
+        let [(ParameterMode::Read, input)] = parameters.as_slice() else {
+            return Ok(None);
+        };
+        let Some(arguments) = result.opaque_arguments("Iter::Step", 2, &mut work)? else {
+            return Ok(None);
+        };
+        if mutable || !input.equivalent(&arguments[0], &mut work)? {
+            return Ok(None);
+        }
+        Ok(Some((arguments[0].clone(), arguments[1].clone())))
+    })();
+    parts
+        .map_err(|error| format!("generated adapter source graph: {error}"))?
+        .ok_or_else(|| "generated adapter state and successor source identities differ".into())
 }
 
 /// Small ordinary scalar inference for an unannotated map result. This never
 /// reifies Array/Fn, evaluates a branch, or borrows an actual input payload.
-fn scalar_body(
+pub(super) fn scalar_body(
     body: &Expr,
     name: &str,
-    input: &ArgumentKey,
-    work: &mut usize,
+    input: &SourceSchema,
+    work: &mut WorkLimit,
     depth: usize,
-) -> Option<ArgumentKey> {
-    *work = work.checked_sub(1)?;
+) -> Result<Option<SourceSchema>, String> {
+    work.charge(1)
+        .map_err(|error| format!("generated scalar body: {error}"))?;
     if depth >= 64 {
-        return None;
+        return Err("generated scalar body exceeds its depth bound".into());
     }
-    let named = |name: &str| ArgumentKey::Name {
-        name: name.into(),
-        arguments: vec![],
-    };
-    match &body.kind {
+    Ok(match &body.kind {
         ExprKind::Name(actual) if actual == name => Some(input.clone()),
-        ExprKind::Literal(Literal::Integer(_)) => Some(named("int")),
-        ExprKind::Literal(Literal::Bool(_)) => Some(named("bool")),
-        ExprKind::Literal(Literal::String(_) | Literal::RawString(_)) => Some(named("str")),
+        ExprKind::Literal(Literal::Integer(_)) => Some(scalar_schema("int")?),
+        ExprKind::Literal(Literal::Bool(_)) => Some(scalar_schema("bool")?),
+        ExprKind::Literal(Literal::String(_) | Literal::RawString(_)) => {
+            Some(scalar_schema("str")?)
+        }
         ExprKind::Binary {
             left,
             operator,
             right,
         } if matches!(operator.as_str(), "+" | "-" | "*" | "/" | "%") => {
-            let left = scalar_body(left, name, input, work, depth + 1)?;
-            let right = scalar_body(right, name, input, work, depth + 1)?;
-            (left == named("int") && right == left).then_some(left)
+            let Some(left) = scalar_body(left, name, input, work, depth + 1)? else {
+                return Ok(None);
+            };
+            let Some(right) = scalar_body(right, name, input, work, depth + 1)? else {
+                return Ok(None);
+            };
+            let integer = scalar_schema("int")?;
+            let fits = left
+                .equivalent(&integer, work)
+                .and_then(|fits| Ok(fits && right.equivalent(&left, work)?))
+                .map_err(|error| format!("generated scalar operation Source: {error}"))?;
+            fits.then_some(left)
         }
         ExprKind::Block(block) if block.where_items.is_empty() && block.statements.len() == 1 => {
             let StmtKind::Expr {
@@ -201,21 +226,43 @@ fn scalar_body(
                 terminated: false,
             } = &block.statements[0].kind
             else {
-                return None;
+                return Ok(None);
             };
-            scalar_body(expression, name, input, work, depth + 1)
+            scalar_body(expression, name, input, work, depth + 1)?
         }
         _ => None,
-    }
+    })
 }
 
 fn map_result(
     facts: &SemanticFacts,
     source: &GeneratedSource,
     actual: &Expr,
-    input: &ArgumentKey,
+    input: &SourceSchema,
+    input_environment: &FrozenEnvironment,
     operands: &OriginalOperandSources<'_>,
-) -> Result<ArgumentKey, String> {
+) -> Result<(SourceSchema, FrozenEnvironment), String> {
+    let mut work = WorkLimit::new(16384);
+    if let Some((callback, environment)) = operands.input(source.origin_event, 1)?.0 {
+        require(
+            !environment.is_poisoned(),
+            "generated map callback has a poisoned Source environment",
+        )?;
+        let (parameters, result) = callback
+            .callable_parts(&mut work)
+            .map_err(|error| format!("generated map callable Source: {error}"))?
+            .ok_or("generated map callback is not a callable Source")?;
+        let [(ParameterMode::Read, parameter)] = parameters.as_slice() else {
+            return Err("generated map callback source modes differ".into());
+        };
+        require(
+            parameter
+                .receive_schema(input, None, &mut work)
+                .map_err(|error| format!("generated map item Source: {error}"))?,
+            "generated map callback item source differs",
+        )?;
+        return Ok((result, environment));
+    }
     if let ExprKind::Lambda {
         parameters,
         return_type,
@@ -232,35 +279,58 @@ fn map_result(
         )?;
         if let Some(syntax) = &parameter.ty {
             require(
-                key(facts, syntax)? == *input,
+                schema(facts, syntax)?
+                    .equivalent(input, &mut WorkLimit::new(16384))
+                    .map_err(|error| format!("generated map parameter Source: {error}"))?,
                 "generated map callback original item source differs",
             )?;
         }
         if let Some(result) = return_type {
-            return key(facts, result);
+            let result = schema(facts, result)?;
+            require(
+                !result
+                    .requires_environment(&mut work)
+                    .map_err(|error| format!("generated map declared result Source: {error}"))?,
+                "generated map declared result lacks its original frozen callback environment",
+            )?;
+            return Ok((result, input_environment.clone()));
         }
         let PatternKind::Name(name) = &parameter.pattern.kind else {
             return Err("generated map inferred result needs a real simple parameter".into());
         };
-        return scalar_body(body, name, input, &mut 4096, 0).ok_or_else(|| {
-            "generated map result requires its complete original return source".into()
-        });
+        let result = scalar_body(body, name, input, &mut WorkLimit::new(4096), 0)?
+            .ok_or("generated map result requires its complete original return source")?;
+        return Ok((result, input_environment.clone()));
     }
-    let callback = operands.key(source.origin_event, 1)?;
-    let ArgumentKey::Callable {
-        parameters, result, ..
-    } = callback
-    else {
-        return Err("generated map callback lost its original callable source".into());
-    };
-    let [(ParameterMode::Read, parameter)] = parameters.as_slice() else {
-        return Err("generated map callback source modes differ".into());
-    };
+    Err("generated map callback lost its original callable source".into())
+}
+
+fn source_environment(
+    state: &SourceSchema,
+    item: &SourceSchema,
+    expected: &FrozenEnvironment,
+    actual: &FrozenEnvironment,
+    work: &mut WorkLimit,
+) -> Result<(), String> {
     require(
-        parameter == input,
-        "generated map callback item source differs",
+        !actual.is_poisoned() && !expected.is_poisoned(),
+        "generated source contract has a poisoned Source environment",
     )?;
-    Ok(*result)
+    let state = state
+        .requires_environment(work)
+        .map_err(|error| format!("generated state frozen interpretation: {error}"))?;
+    let item = item
+        .requires_environment(work)
+        .map_err(|error| format!("generated item frozen interpretation: {error}"))?;
+    // A closed view has no lexical coordinate whose interpretation could
+    // depend on a capture ID. Do not invent identity evidence for a literal.
+    if state || item {
+        require(
+            actual.id() == expected.id(),
+            "generated source contract borrowed another frozen Source interpretation",
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
@@ -491,47 +561,85 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
                 && annotations.is_empty(),
             "generated source result changed its canonical recipe",
         )?;
-        let actual_state = key(facts, state_syntax)?;
-        let actual_item = key(facts, &result_arguments[1])?;
+        let actual_state = schema(facts, state_syntax)?;
+        let actual_item = schema(facts, &result_arguments[1])?;
+        let mut source_work = WorkLimit::new(16384);
         require(
-            key(facts, &result_arguments[0])? == actual_state,
+            schema(facts, &result_arguments[0])?
+                .equivalent(&actual_state, &mut source_work)
+                .map_err(|error| format!("generated successor Source: {error}"))?,
             "generated state and result successor source differ",
         )?;
-        let input = operands.key(event.id, 0)?;
+        let (input, input_environment) = operands
+            .input(event.id, 0)?
+            .0
+            .ok_or("generated adapter lost its complete input Source")?;
+        require(
+            !input_environment.is_poisoned(),
+            "generated adapter input Source environment is poisoned",
+        )?;
+        let mut expected_environment = input_environment.clone();
         let (expected_state, expected_item) = if source.adapter == iter::AdapterKind::Indexed {
-            let ArgumentKey::Array { element, .. } = input else {
-                return Err("generated indexed adapter requires its original array source".into());
-            };
             (
-                ArgumentKey::Name {
-                    name: "int".into(),
-                    arguments: vec![],
-                },
-                *element,
+                scalar_schema("int")?,
+                input
+                    .array_parts(&mut source_work)
+                    .map_err(|error| format!("generated indexed array Source: {error}"))?
+                    .ok_or("generated indexed adapter requires its original array Source")?
+                    .1,
             )
         } else {
             let (state, item) = source_parts(&input)?;
             match source.adapter {
                 iter::AdapterKind::Take => (
-                    ArgumentKey::Tuple(vec![
-                        state,
-                        ArgumentKey::Name {
-                            name: "int".into(),
-                            arguments: vec![],
-                        },
-                    ]),
+                    SourceSchema::tuple(&[state, scalar_schema("int")?], None, &mut source_work)
+                        .map_err(|error| format!("generated take state Source: {error}"))?,
                     item,
                 ),
                 iter::AdapterKind::Filter => (state, item),
-                iter::AdapterKind::Map => (
-                    state,
-                    map_result(facts, source, written[&1], &item, &operands)?,
-                ),
+                iter::AdapterKind::Map => {
+                    let (result, callback_environment) = map_result(
+                        facts,
+                        source,
+                        written[&1],
+                        &item,
+                        &input_environment,
+                        &operands,
+                    )?;
+                    if result
+                        .requires_environment(&mut source_work)
+                        .map_err(|error| format!("generated map result environment: {error}"))?
+                    {
+                        require(
+                            !state
+                                .requires_environment(&mut source_work)
+                                .map_err(|error| {
+                                    format!("generated map state environment: {error}")
+                                })?
+                                || input_environment.id() == callback_environment.id(),
+                            "generated map combines different frozen Source environments",
+                        )?;
+                        expected_environment = callback_environment;
+                    }
+                    (state, result)
+                }
                 iter::AdapterKind::Indexed => unreachable!(),
             }
         };
+        source_environment(
+            &expected_state,
+            &expected_item,
+            &expected_environment,
+            &closure.contract.typing_environment,
+            &mut source_work,
+        )?;
         require(
-            actual_state == expected_state && actual_item == expected_item,
+            actual_state
+                .equivalent(&expected_state, &mut source_work)
+                .and_then(|same| {
+                    Ok(same && actual_item.equivalent(&expected_item, &mut source_work)?)
+                })
+                .map_err(|error| format!("generated adapter result Source: {error}"))?,
             "generated source schema differs from its genuine input/callback source",
         )?;
         let expected = iterator_syntax(
@@ -642,10 +750,13 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
                 annotations: vec![],
             },
         };
-        let expected_record = ArgumentKey::Record {
-            fields: vec![("step".into(), false, key(facts, &expected_callable)?)],
-            row: None,
-        };
+        let expected_record = SourceSchema::record(
+            &[("step".into(), false, schema(facts, &expected_callable)?)],
+            None,
+            None,
+            &mut source_work,
+        )
+        .map_err(|error| format!("generated adapter published Source: {error}"))?;
         let output_witness = result
             .value
             .source_type_witness
@@ -653,7 +764,9 @@ fn validate_inner(facts: &SemanticFacts) -> Result<(), String> {
             .ok_or("generated source result lost its complete original record schema")?;
         require(
             output_witness.validate_closed()
-                && key(facts, &output_witness.syntax)? == expected_record,
+                && schema(facts, &output_witness.syntax)?
+                    .equivalent(&expected_record, &mut source_work)
+                    .map_err(|error| format!("generated adapter output Source: {error}"))?,
             "generated source result changed its original callable source coordinates",
         )?;
         require(
@@ -706,6 +819,70 @@ pub(crate) fn checked_roots(facts: &SemanticFacts) -> Result<Vec<(CallableOwner,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_source_environment_identity_is_required_only_for_dependent_coordinates() {
+        let integer = scalar_schema("int").unwrap();
+        let declared = SourceSchema::import(
+            &crate::sema::effect_identity::ArgumentKey::Binder {
+                identity: "original-declaration:T".into(),
+                sort: crate::sema::effect_identity::StaticBinderSort::Type,
+            },
+            None,
+            &mut WorkLimit::new(128),
+        )
+        .unwrap();
+        let original = FrozenEnvironment::default();
+        let changed = original.thaw().freeze();
+        assert_eq!(original, changed);
+        assert_ne!(original.id(), changed.id());
+        source_environment(
+            &integer,
+            &declared,
+            &original,
+            &original.clone(),
+            &mut WorkLimit::new(128),
+        )
+        .unwrap();
+        assert!(
+            source_environment(
+                &integer,
+                &declared,
+                &original,
+                &changed,
+                &mut WorkLimit::new(128)
+            )
+            .is_err()
+        );
+        source_environment(
+            &integer,
+            &integer,
+            &original,
+            &changed,
+            &mut WorkLimit::new(128),
+        )
+        .unwrap();
+        assert!(
+            source_environment(
+                &integer,
+                &integer,
+                &original,
+                &FrozenEnvironment::poisoned(),
+                &mut WorkLimit::new(128)
+            )
+            .is_err()
+        );
+        assert!(
+            source_environment(
+                &integer,
+                &declared,
+                &original,
+                &original,
+                &mut WorkLimit::new(0)
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn captured_operand_transport_keeps_every_original_cause_and_exact_node() {

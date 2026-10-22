@@ -32,8 +32,19 @@ impl Replay<'_> {
             return Ok(());
         }
         require(
-            self.original_carrier_source_key(syntax, &root.value, context, sites, &mut 4096, 0)?
-                .is_some(),
+            self.original_carrier_source_schema(
+                syntax,
+                &root.value,
+                context,
+                sites,
+                &mut 16384,
+                SourceVisit {
+                    depth: 0,
+                    observation: event.result_expression,
+                },
+            )?
+            .flatten()
+            .is_some(),
             "contextual open Result has no independently reconstructed active source",
         )
     }
@@ -207,28 +218,55 @@ impl Replay<'_> {
         Err("call input static position has no independently known sort".into())
     }
 
+    pub(in crate::sema::record_bound_validation) fn parameter_has_type_source(
+        &self,
+        syntax: &TypeExpr,
+        scope: &BoundScope,
+    ) -> Check<bool> {
+        if let TypeKind::Name { path, arguments } = &syntax.kind
+            && arguments.is_empty()
+            && path.len() == 1
+            && let Some(identity) = scope.types.get(&path[0])
+        {
+            let binder = self
+                .facts
+                .generic_binders
+                .get(identity)
+                .ok_or("formal Source sort has no genuine binder")?;
+            let function = self.function(binder.definition)?;
+            let parameter = function
+                .syntax
+                .generics
+                .get(binder.index as usize)
+                .ok_or("formal Source binder index is outside its original declaration")?;
+            require(
+                self.binder(binder.definition, binder.index)?.identity == *identity,
+                "formal Source sort changed its original binder",
+            )?;
+            if matches!(
+                parameter.bound.as_ref().map(|bound| &bound.kind),
+                Some(TypeKind::KeyOf(_))
+            ) {
+                require(
+                    !self.input_type_sort(identity)?,
+                    "a real Key coordinate cannot become a Type leaf",
+                )?;
+                return Ok(false);
+            }
+            require(
+                self.input_type_sort(identity)?,
+                "a static coordinate cannot become a formal Type Source",
+            )?;
+        }
+        Ok(true)
+    }
+
     pub(in crate::sema::record_bound_validation) fn input_parameter_source_key(
         &self,
         syntax: &TypeExpr,
         scope: &BoundScope,
     ) -> Check<Option<ArgumentKey>> {
-        if let TypeKind::Name { path, arguments } = &syntax.kind
-            && arguments.is_empty()
-            && path.len() == 1
-            && let Some(identity) = scope.types.get(&path[0])
-            && let Some(binder) = self.facts.generic_binders.get(identity)
-            && matches!(
-                self.function(binder.definition)?.syntax.generics[binder.index as usize]
-                    .bound
-                    .as_ref()
-                    .map(|bound| &bound.kind),
-                Some(TypeKind::KeyOf(_))
-            )
-        {
-            require(
-                !self.input_type_sort(identity)?,
-                "a real Key coordinate cannot become a Type leaf",
-            )?;
+        if !self.parameter_has_type_source(syntax, scope)? {
             return Ok(None);
         }
         self.input_callable_source_key(syntax, scope).map(Some)

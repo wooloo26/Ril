@@ -80,6 +80,7 @@ pub(crate) trait SourceTypeQueries: SourceGraph {
                     }
                     SourceNode::Binder(_)
                     | SourceNode::OpaqueName { .. }
+                    | SourceNode::StaticValue(_)
                     | SourceNode::OpaqueComputation(_)
                     | SourceNode::Unresolved { .. } => unknown = Some(SourceTypesError::Unresolved),
                     SourceNode::Alias { .. } => {

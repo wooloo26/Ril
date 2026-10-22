@@ -398,27 +398,46 @@ impl Checker {
                 // Fresh members receive their contexts before the container
                 // freezes its element/member type. Stored children still pass
                 // through the ordinary source relation independently.
-                let receiving = source.filter(|target| {
-                    use super::super::effect_identity::ArgumentKey;
-                    target.key().as_ref().is_some_and(|key| {
-                        super::super::source_reception::complete(key, &mut 4096).is_some()
-                            && matches!(
-                                (tuple, key),
-                                (true, ArgumentKey::Tuple(_)) | (false, ArgumentKey::Array { .. })
-                            )
-                    })
-                });
                 let mut source_valid = true;
-                if let Some(target) = receiving {
-                    use super::super::effect_identity::ArgumentKey;
-                    let shape_fits = match target.key().as_ref().unwrap() {
-                        ArgumentKey::Tuple(types) => types.len() == items.len(),
-                        ArgumentKey::Array { length, .. } => length
-                            .as_ref()
-                            .is_none_or(|length| length == &format!("const(int:{})", items.len())),
-                        _ => unreachable!(),
+                let mut receiving = None;
+                if let Some(target) = source {
+                    use crate::sema::source_types::{SourceLength, SourceTypesError, WorkLimit};
+                    let shape = (|| {
+                        let Some(schema) = &target.schema else {
+                            return Ok(None);
+                        };
+                        let mut work = WorkLimit::new(16384);
+                        if tuple {
+                            schema
+                                .tuple_parts(&mut work)
+                                .map(|parts| parts.map(|parts| parts.len() == items.len()))
+                        } else {
+                            let count = u64::try_from(items.len())
+                                .map_err(|_| SourceTypesError::BudgetExceeded)?;
+                            schema.array_parts(&mut work).map(|parts| {
+                                parts.map(|(length, _)| {
+                                    matches!(length, SourceLength::Dynamic)
+                                        || length == SourceLength::Fixed(count)
+                                })
+                            })
+                        }
+                    })();
+                    let shape_fits = match shape {
+                        Ok(Some(fits)) => {
+                            receiving = Some(target);
+                            Some(fits)
+                        }
+                        Ok(None) => None,
+                        Err(error) => {
+                            self.unsupported(
+                                expr.span,
+                                format!("literal context Source graph is incomplete: {error}"),
+                            );
+                            source_valid = false;
+                            None
+                        }
                     };
-                    if !shape_fits {
+                    if shape_fits == Some(false) {
                         let annotation = self.cause(
                             CauseKind::MissingProof,
                             target.span,
@@ -652,14 +671,16 @@ impl Checker {
                 let explicit_construction = members
                     .iter()
                     .all(|member| matches!(member, RecordMember::Field(_)));
-                let structural_target = receiving.filter(|target| {
-                    matches!(
-                        &target.key(),
-                        Some(super::super::effect_identity::ArgumentKey::Record { row: None, .. })
-                    ) && target.key().as_ref().is_some_and(|key| {
-                        super::super::source_reception::complete(key, &mut 4096).is_some()
-                    })
-                });
+                let structural_labels = receiving
+                    .and_then(|target| target.schema.as_ref())
+                    .and_then(|schema| {
+                        schema
+                            .closed_record_labels(&mut crate::sema::source_types::WorkLimit::new(
+                                16384,
+                            ))
+                            .ok()
+                    });
+                let structural_target = receiving.filter(|_| structural_labels.is_some());
                 let mut source_valid = true;
                 if let Some(target) = declared_source.as_ref() {
                     use super::super::source_reception::SchemaSensitivity;
@@ -701,15 +722,10 @@ impl Checker {
                                 .and_then(|fields| fields.get(&field.name))
                                 .map(|(_, ty)| ty);
                             let child_source = structural_target
-                                .filter(|target| {
-                                    let Some(super::super::effect_identity::ArgumentKey::Record {
-                                        fields,
-                                        ..
-                                    }) = &target.key()
-                                    else {
-                                        return false;
-                                    };
-                                    fields.iter().any(|(name, _, _)| name == &field.name)
+                                .filter(|_| {
+                                    structural_labels
+                                        .as_ref()
+                                        .is_some_and(|labels| labels.contains(&field.name))
                                 })
                                 .map(|target| {
                                     super::source_receiving::member_target(
@@ -866,14 +882,9 @@ impl Checker {
                     }
                 }
                 let node = self.allocate_owned(expr.span, 0, frame.owner);
-                let receiving_fields_complete = structural_target.is_some_and(|target| {
-                    let Some(super::super::effect_identity::ArgumentKey::Record { fields, .. }) =
-                        &target.key()
-                    else {
-                        return false;
-                    };
-                    fields.iter().all(|(name, _, _)| values.contains_key(name))
-                });
+                let receiving_fields_complete = structural_labels
+                    .as_ref()
+                    .is_some_and(|labels| labels.iter().all(|name| values.contains_key(name)));
                 if ty.is_none()
                     && source.is_some()
                     && explicit_construction

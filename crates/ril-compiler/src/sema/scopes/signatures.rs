@@ -216,11 +216,16 @@ impl<'a> SignatureIndex<'a> {
         let expanded =
             crate::sema::source_types::declarations::expanded_key(&declared, hir, &mut work)
                 .map_err(|error| error.to_string())?;
-        require(
-            matches!(&declared, ArgumentKey::Callable {parameters,result,..}
+        let runtime_shape =
+            // Runtime types erase the original graph's canonical projection.
+            // Temporary graph syntax can qualify scalars as Prelude::f32;
+            // spelling and transparent aliases are resolved in `expanded`.
+            matches!(&expanded, ArgumentKey::Callable {parameters,result,..}
             if parameters.len() == operation.parameters.len()
                 && parameters.iter().zip(&operation.parameters).all(|((mode,key),(actual,ty))| mode == actual && shape(self.facts,ty,key,0))
-                && shape(self.facts,&operation.result,result,0)),
+                && shape(self.facts,&operation.result,result,0));
+        require(
+            runtime_shape,
             "operation runtime signature disagrees with its original Source projection",
         )?;
         let signature = operation
@@ -609,11 +614,30 @@ impl<'a> SignatureIndex<'a> {
             .source
             .as_ref()
             .ok_or("operation type source is absent")?;
-        crate::static_eval::effects::bounded_argument_key(
-            syntax,
-            &source.environment.generic_context,
-        )
-        .ok_or("operation type source exceeds its syntax budget")?;
+        // Instantiation projects certified Type UIDs to private tokens. They
+        // retain their registered meaning even when the effect declaration's
+        // own frozen environment is at module scope and has no generic names.
+        work.charge(source.environment.generic_context.len() + self.tokens.len())
+            .map_err(|error| error.to_string())?;
+        let mut scope = BTreeMap::new();
+        for (name, identity) in source
+            .environment
+            .generic_context
+            .iter()
+            .chain(&self.tokens)
+        {
+            work.text(name)
+                .and_then(|()| work.text(identity))
+                .map_err(|error| error.to_string())?;
+            require(
+                scope
+                    .insert(name.clone(), identity.clone())
+                    .is_none_or(|previous| previous == *identity),
+                "operation type token changed its registered Type identity",
+            )?;
+        }
+        crate::static_eval::effects::bounded_argument_key(syntax, &scope)
+            .ok_or("operation type source exceeds its syntax budget")?;
         let normalized = crate::sema::checker::normalize_closed_source_syntax(
             syntax,
             &self.facts.external_type_declarations,
@@ -622,11 +646,8 @@ impl<'a> SignatureIndex<'a> {
                 .ok_or("operation type source has no target layout")?,
         );
         let syntax = normalized.as_ref().unwrap_or(syntax);
-        let key = crate::static_eval::effects::bounded_argument_key(
-            syntax,
-            &source.environment.generic_context,
-        )
-        .ok_or("operation type key exceeds its syntax budget")?;
+        let key = crate::static_eval::effects::bounded_argument_key(syntax, &scope)
+            .ok_or("operation type key exceeds its syntax budget")?;
         use std::borrow::Cow;
         let key = crate::sema::source_types::substitute_key_with(
             &key,

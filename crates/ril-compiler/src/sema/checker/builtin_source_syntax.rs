@@ -144,15 +144,6 @@ impl<'a> NameIndex<'a> {
     }
 }
 
-pub(super) fn actual_name(
-    facts: &SemanticFacts,
-    owner: Option<CallableOwner>,
-    source: ExprId,
-    name: &str,
-) -> Result<(), String> {
-    NameIndex::new(facts)?.actual_name(owner, source, name)
-}
-
 /// A lexical lookup only. Call-site, caller activation, complete argument
 /// receipts and original constructor value must be checked independently.
 pub(super) fn actual_prelude_name(

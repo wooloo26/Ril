@@ -3,6 +3,87 @@
 use super::*;
 
 impl Checker {
+    /// The actual constructor callee selects its already admitted declaration
+    /// graph. Neither a receiving annotation nor an erased owner retypes it.
+    pub(super) fn original_constructor_result_schema(
+        &self,
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+        work: &mut WorkLimit,
+    ) -> InputSource {
+        let Some(application) = crate::hir::application::AstApplication::from_ast(syntax) else {
+            return Ok(None);
+        };
+        let context = self.invocation_context(frame.callable_owner);
+        work.charge(self.copy_call_events.len())?;
+        let mut events = self.copy_call_events.iter().filter(|event| {
+            event.matches_source(syntax)
+                && event.owner == context.owner
+                && event.parent == context.invocation
+                && event.result_expression.is_some_and(|root| {
+                    self.application_effect
+                        .expressions
+                        .get(root)
+                        .is_some_and(|fact| {
+                            fact.source_id == syntax.hir_id && fact.value.cause == value.cause
+                        })
+                })
+        });
+        let Some(event) = events.next() else {
+            return Ok(None);
+        };
+        if events.next().is_some() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let root = event
+            .result_expression
+            .ok_or(SourceTypesError::MissingNode)?;
+        let callee = event
+            .callee_expression
+            .ok_or(SourceTypesError::MissingNode)?;
+        let fact = self
+            .application_effect
+            .expressions
+            .get(callee)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if fact.source_id != application.callee.hir_id
+            || fact.source_id.is_none()
+            || !self
+                .application_effect
+                .contexts
+                .get(callee)
+                .is_some_and(|row| row.expression == callee && row.context == context)
+            || !self
+                .application_effect
+                .contexts
+                .get(root)
+                .is_some_and(|row| row.expression == root && row.context == context)
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let [Callable::Constructor(name)] = fact.value.callables.as_slice() else {
+            return Ok(None);
+        };
+        let constructor = self
+            .constructors
+            .get(name)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if value.variant_tag.as_ref() != Some(&constructor.tag)
+            || constructor.typing_environment.is_poisoned()
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let Some(view) = constructor.source else {
+            return Ok(None);
+        };
+        if view.environment != constructor.typing_environment.id() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let source = self.source_schema_view(view, work)?;
+        Ok(Some(source))
+    }
+
     pub(in crate::sema::checker) fn check_constructor_input_sources(
         &mut self,
         name: &str,
@@ -34,7 +115,7 @@ impl Checker {
             if target.sensitivity == source_reception::SchemaSensitivity::NotRequired {
                 continue;
             }
-            let answer = target.key().as_ref().and_then(|expected| {
+            let input = (|| {
                 let event_id = event?;
                 let event = self.copy_call_events.get(event_id.0 as usize)?;
                 let context = self.invocation_context(frame.callable_owner);
@@ -101,20 +182,27 @@ impl Checker {
                 if transported != *value {
                     return None;
                 }
-                match &input.key {
-                    Some(actual) => target.receive(actual, Some(&input.fresh), &mut 4096),
-                    None => input_compatible(expected, input),
-                }
-            });
+                Some(input.clone())
+            })();
+            let answer = input
+                .as_ref()
+                .ok_or(SourceTypesError::MissingNode)
+                .and_then(|input| {
+                    input_compatible(
+                        target.schema.as_ref().ok_or(SourceTypesError::Unresolved)?,
+                        input,
+                        &mut WorkLimit::new(16384),
+                    )
+                });
             match answer {
-                Some(true) => {}
-                Some(false) => {
+                Ok(true) => {}
+                Ok(false) => {
                     self.error("E0301", *span,
                         "original constructor payload source does not fit its declared dimensions or callable modes", [value.cause]);
                     valid = false;
                 }
-                None => {
-                    self.unsupported(*span, "constructor payload lacks its complete original source and actual operand receipt");
+                Err(error) => {
+                    self.unsupported(*span, format!("constructor payload lacks its complete original source and actual operand receipt: {error}"));
                     valid = false;
                 }
             }

@@ -5,6 +5,26 @@ use super::{effect_identity::InvocationContext, model::BindingId};
 use ril_compiler_core::diagnostic::CauseId;
 use ril_syntax::ast::TypeExpr;
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
+
+/// Intrinsic declarations are interpreted in one canonical namespace. This
+/// environment never captures a user's lexical bindings or static selections.
+pub(crate) fn catalog_environment() -> &'static super::context::FrozenEnvironment {
+    static CATALOG: OnceLock<super::context::FrozenEnvironment> = OnceLock::new();
+    CATALOG.get_or_init(Default::default)
+}
+
+pub(crate) fn is_catalog_environment(environment: &super::context::FrozenEnvironment) -> bool {
+    !environment.is_poisoned()
+        && environment.id() == catalog_environment().id()
+        && environment.generic_context.is_empty()
+        && environment.generic_substitutions.is_empty()
+        && environment.generic_sources.is_empty()
+        && environment.static_key_arguments.is_empty()
+        && environment.bound_row_context.is_empty()
+        && environment.bound_row_selections.is_empty()
+        && environment.contract_bindings.is_empty()
+}
 
 /// Candidate interface only. Original declaration/occurrence validation still
 /// establishes identity. A published monomorphic view keeps its own interface.
@@ -60,6 +80,7 @@ pub struct BuiltinSourceObservation {
     pub context: InvocationContext,
     pub identity: String,
     pub full_header: BuiltinDeclaration,
+    pub environment: super::context::FrozenEnvironment,
     pub concrete_effects: BTreeSet<String>,
     pub written_formals: BTreeSet<u32>,
     pub captures: BTreeSet<BindingId>,

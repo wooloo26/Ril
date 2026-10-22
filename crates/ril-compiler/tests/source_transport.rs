@@ -88,6 +88,28 @@ fn open_record_through_generic_identity() {
 }
 
 #[test]
+fn generic_literal_collections_keep_their_real_type_uid_and_nested_sources() {
+    accepts("generic-literal-collection-source-graphs");
+}
+
+#[test]
+fn inferred_literal_arrays_keep_dynamic_outer_coordinates() {
+    rejects("inferred-literal-array-remains-dynamic", "E0301");
+}
+
+#[test]
+fn literal_maps_preserve_stored_empty_inner_dimensions() {
+    rejects("literal-map-keeps-stored-inner-dimensions", "E0301");
+}
+
+#[test]
+fn const_nominal_formals_retain_their_actual_static_value_and_sort() {
+    accepts("const-nominal-formal-source-graph");
+    rejects("const-nominal-formal-value-conflict", "E0301");
+    rejects("const-nominal-formal-sort-conflict", "E0323");
+}
+
+#[test]
 fn nested_type_receipts_cannot_substitute_an_intermediate_frames_own_binder() {
     use ril_compiler::sema::{
         effect_identity::{ArgumentKey, StaticBinderSort},

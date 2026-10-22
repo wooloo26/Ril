@@ -35,6 +35,7 @@ pub(crate) fn charge_type_syntax_clone(syntax: &TypeExpr, work: &mut usize) -> O
     result.ok()
 }
 pub(crate) mod committed_float;
+pub(crate) mod const_nominal;
 pub(crate) mod constants;
 mod definitions;
 pub(crate) mod effects;
@@ -208,13 +209,39 @@ pub(crate) fn normalize_constructor_arguments(
     declarations: &BTreeMap<String, TypeDeclaration>,
     layout: TargetLayout,
 ) -> std::result::Result<NormalizedConstructorArguments, ArgumentNormalizationError> {
+    let mut work = usize::MAX;
+    normalize_constructor_arguments_bounded(declaration, arguments, declarations, layout, &mut work)
+}
+
+/// The actual declaration clone, argument binding and payload elaboration
+/// share one root. All nested evaluation inherits its remaining allowance.
+pub(crate) fn normalize_constructor_arguments_bounded(
+    declaration: &TypeDeclaration,
+    arguments: &[TypeExpr],
+    declarations: &BTreeMap<String, TypeDeclaration>,
+    layout: TargetLayout,
+    work: &mut usize,
+) -> std::result::Result<NormalizedConstructorArguments, ArgumentNormalizationError> {
+    let mut argument_budget = budget::Budget::default();
+    let root = argument_budget.enter_root();
+    argument_budget.restrict_work(u64::try_from(*work).unwrap_or(u64::MAX));
+    if let Err(failure) = clone_work::type_declarations(&argument_budget, declarations) {
+        *work = usize::try_from(argument_budget.work_remaining()).unwrap_or(usize::MAX);
+        argument_budget.leave_root(root);
+        return Err(match failure {
+            Failure::Unsupported(message) => ArgumentNormalizationError::Unsupported(message),
+            _ => ArgumentNormalizationError::Unsupported(
+                "constructor declaration clone admission failed".into(),
+            ),
+        });
+    }
     let mut evaluator = Evaluator {
         type_environment: Default::default(),
         type_application_sequence: 0,
         layout,
         values: BTreeMap::new(),
         global_values: BTreeMap::new(),
-        budget: Default::default(),
+        budget: argument_budget,
         declarations: declarations.clone(),
         effect_declarations: BTreeMap::new(),
         functions: BTreeMap::new(),
@@ -282,7 +309,10 @@ pub(crate) fn normalize_constructor_arguments(
             payloads,
         })
     };
-    normalize().map_err(|failure| match failure {
+    let result = normalize();
+    *work = usize::try_from(evaluator.budget.work_remaining()).unwrap_or(usize::MAX);
+    evaluator.budget.leave_root(root);
+    result.map_err(|failure| match failure {
         Failure::Diagnostic(code, message) => ArgumentNormalizationError::Diagnostic(code, message),
         Failure::Unsupported(message) => ArgumentNormalizationError::Unsupported(message),
         Failure::Return(_) | Failure::TailCall(_) | Failure::TailType(_) | Failure::Loop(_) => {

@@ -90,118 +90,6 @@ impl Checker {
         self.declare_constructors(&declaration);
         self.type_source.environment.generic_context = previous;
     }
-
-    /// Bare semantic arrays and callables omit dimensions and callable modes or
-    /// rows. Reification must refuse them, rather than invent a dynamic shape.
-    pub(in crate::sema::checker) fn iter_argument_syntax(
-        &self,
-        ty: &Ty,
-        span: Span,
-        depth: usize,
-    ) -> Option<TypeExpr> {
-        if depth >= 128 {
-            return None;
-        }
-        let child = |ty: &Ty| self.iter_argument_syntax(ty, span, depth + 1);
-        let kind = match ty {
-            Ty::Unit => TypeKind::Tuple(vec![]),
-            Ty::Bool => return Some(named("bool", vec![], span)),
-            Ty::Int(name) | Ty::Float(name) => return Some(named(name, vec![], span)),
-            Ty::Str => return Some(named("str", vec![], span)),
-            Ty::Bytes => return Some(named("bytes", vec![], span)),
-            Ty::Never => return Some(named("never", vec![], span)),
-            Ty::Named(name)
-                if self.types.contains_key(name)
-                    || crate::modules::known_standard_identity(name) =>
-            {
-                return Some(named(name, vec![], span));
-            }
-            Ty::Generic(identity) => {
-                let (name, _) = self
-                    .type_source
-                    .environment
-                    .generic_context
-                    .iter()
-                    .find(|(_, selected)| *selected == identity)?;
-                return Some(named(name, vec![], span));
-            }
-            Ty::Immutable(inner) => {
-                return Some(named("Prelude::Immut", vec![child(inner)?], span));
-            }
-            Ty::Optional(inner) => TypeKind::Optional(Box::new(child(inner)?)),
-            Ty::Result(ok, error) => {
-                return Some(named(
-                    "Prelude::Result",
-                    vec![child(ok)?, child(error)?],
-                    span,
-                ));
-            }
-            Ty::Set(item) => return Some(named("Prelude::Set", vec![child(item)?], span)),
-            Ty::Map(key, value) => TypeKind::Map {
-                key: Box::new(child(key)?),
-                value: Box::new(child(value)?),
-            },
-            Ty::Tuple(items) => TypeKind::Tuple(items.iter().map(child).collect::<Option<_>>()?),
-            Ty::Record(fields) => TypeKind::Record {
-                fields: fields
-                    .iter()
-                    .map(|(name, (mutable, ty))| {
-                        Some(TypeField {
-                            name: name.clone(),
-                            mutable: *mutable,
-                            ty: child(ty)?,
-                            span,
-                        })
-                    })
-                    .collect::<Option<_>>()?,
-                row: None,
-            },
-            Ty::Applied {
-                constructor,
-                arguments,
-            } => {
-                let arguments = arguments
-                    .iter()
-                    .map(|argument| match argument {
-                        TypeArgument::Type(ty) => child(ty),
-                        TypeArgument::CanonicalType { ty, key } => {
-                            let syntax = child(ty)?;
-                            (crate::static_eval::normalized_argument_key(&syntax) == *key)
-                                .then_some(syntax)
-                        }
-                        _ => None,
-                    })
-                    .collect::<Option<_>>()?;
-                return Some(named(constructor, arguments, span));
-            }
-            _ => return None,
-        };
-        Some(TypeExpr {
-            hir_id: None,
-            text: String::new(),
-            kind,
-            span,
-        })
-    }
-
-    pub(in crate::sema::checker) fn iter_step_type(
-        &mut self,
-        state: &Ty,
-        item: &Ty,
-        span: Span,
-    ) -> Ty {
-        self.register_standard_iter_types();
-        let arguments = [state, item]
-            .into_iter()
-            .map(|ty| self.iter_argument_syntax(ty, span, 0))
-            .collect::<Option<Vec<_>>>();
-        let Some(arguments) = arguments else {
-            self.unsupported(span,"iteration state and item require complete type identities, including dimensions and callable rows");
-            return Ty::Unknown;
-        };
-        let declaration = self.types["Iter::Step"].clone();
-        self.applied_type(&declaration, &arguments, span)
-    }
 }
 
 #[cfg(test)]
@@ -284,7 +172,7 @@ mod tests {
         assert!(fields.iter().all(|field| field.mutable));
     }
     #[test]
-    fn real_generic_step_instances_use_complete_distinct_owners_and_never_reify_lossy_types() {
+    fn real_generic_step_instances_use_complete_distinct_owners() {
         let mut checker = Checker::new(FileId(0));
         checker.register_standard_iter_types();
         let span = Span {
@@ -292,9 +180,23 @@ mod tests {
             start: 0,
             end: 0,
         };
-        let state = Ty::Tuple(vec![Ty::Int("int".into()), Ty::Bool]);
-        let first = checker.iter_step_type(&state, &Ty::Str, span);
-        let second = checker.iter_step_type(&state, &Ty::Bool, span);
+        let state = TypeExpr {
+            hir_id: None,
+            text: String::new(),
+            span,
+            kind: TypeKind::Tuple(vec![
+                named("int", vec![], span),
+                named("bool", vec![], span),
+            ]),
+        };
+        let declaration = checker.types["Iter::Step"].clone();
+        let first = checker.applied_type(
+            &declaration,
+            &[state.clone(), named("str", vec![], span)],
+            span,
+        );
+        let second =
+            checker.applied_type(&declaration, &[state, named("bool", vec![], span)], span);
         assert_ne!(first, second);
         assert_eq!(
             checker
@@ -311,11 +213,12 @@ mod tests {
                 constructor.owner == first && constructor.tag == "Iter::Step::Yielded"
             })
             .unwrap();
-        assert_eq!(yielded.payload, Ty::Tuple(vec![Ty::Str, state.clone()]));
-        assert!(matches!(
-            checker.iter_step_type(&Ty::Array(Box::new(Ty::Int("int".into()))), &Ty::Bool, span),
-            Ty::Unknown
-        ));
-        assert!(!checker.unsupported.is_empty());
+        assert_eq!(
+            yielded.payload,
+            Ty::Tuple(vec![
+                Ty::Str,
+                Ty::Tuple(vec![Ty::Int("int".into()), Ty::Bool])
+            ])
+        );
     }
 }

@@ -129,6 +129,7 @@ impl Checker {
                 let _ = self.ty(bound);
             }
         }
+        let declaration_environment = self.capture_typing_environment();
         if declaration.nominal {
             let payload = declaration
                 .value
@@ -138,6 +139,10 @@ impl Checker {
             self.constructors.insert(
                 declaration.name.clone(),
                 ConstructorInfo {
+                    typing_environment: declaration_environment.clone(),
+                    source: None,
+                    source_syntax: None,
+                    source_type_witness: None,
                     tag: declaration.name.clone(),
                     owner: self.constructor_template_owner(declaration),
                     payload,
@@ -169,10 +174,19 @@ impl Checker {
                     .as_ref()
                     .map(|result| self.ty(result))
                     .unwrap_or_else(|| self.constructor_template_owner(declaration));
+                let typing_environment = if variant.generics.is_empty() {
+                    declaration_environment.clone()
+                } else {
+                    self.capture_typing_environment()
+                };
                 self.type_source.environment.generic_context = previous;
                 self.constructors.insert(
                     format!("{}::{}", declaration.name, variant.name),
                     ConstructorInfo {
+                        typing_environment,
+                        source: None,
+                        source_syntax: None,
+                        source_type_witness: None,
                         tag: format!("{}::{}", declaration.name, variant.name),
                         owner,
                         payload,
@@ -255,7 +269,7 @@ impl Checker {
             Some(value)
         } else {
             let payload = self.unit(span);
-            Some(self.wrap_constructor(name, &constructor, payload, span))
+            Some(self.wrap_constructor(&constructor, payload, span))
         }
     }
     pub(super) fn invoke_constructor(
@@ -313,17 +327,16 @@ impl Checker {
         payload.ty = constructor.payload.clone();
         payload.unsuffixed_numeric = false;
         payload.literal_number = false;
-        self.wrap_constructor(name, &constructor, payload, span)
+        self.wrap_constructor(&constructor, payload, span)
     }
     fn wrap_constructor(
         &mut self,
-        name: &str,
         constructor: &ConstructorInfo,
         payload: Value,
         span: Span,
     ) -> Value {
         let mut value = payload.clone();
-        value.source_type_witness = self.constructor_source_types.get(name).cloned();
+        value.source_type_witness = constructor.source_type_witness.clone();
         value.ty = constructor.owner.clone();
         value.condition_inspections = Default::default();
         value.constant = None;
@@ -521,9 +534,9 @@ impl Checker {
             return None;
         }
         if constructors.len() == 1 && constructors[0].1.nominal {
-            let (name, constructor) = &constructors[0];
+            let (_name, constructor) = &constructors[0];
             let payload = self.formal_value(constructor.payload.clone(), index, span, seen);
-            return Some(self.wrap_constructor(name, constructor, payload, span));
+            return Some(self.wrap_constructor(constructor, payload, span));
         }
         let cause = self.cause(
             CauseKind::Source,

@@ -181,12 +181,16 @@ pub(crate) fn validate_parameter_selection<'a>(
     (*original_sources)
         .as_ref()
         .unwrap()
-        .key(origin.event, origin.slot)
-        .is_ok_and(|key| {
-            selection
-                .schema
-                .equivalent_key(&key, &mut super::source_types::WorkLimit::new(16384))
-                == Ok(true)
+        .input(origin.event, origin.slot)
+        .is_ok_and(|(source, _)| {
+            source.is_some_and(|(schema, environment)| {
+                environment.id() == selection.environment.id()
+                    && !environment.is_poisoned()
+                    && selection
+                        .schema
+                        .equivalent(&schema, &mut super::source_types::WorkLimit::new(16384))
+                        == Ok(true)
+            })
         })
 }
 
@@ -360,7 +364,30 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         }
     }
     for closure in &facts.closures {
-        if closure.lexical != closure.contract.typing_environment.contract_bindings
+        // Generated adapters execute in their captured runtime environment,
+        // while their state/item contracts retain the actual Source's lexical
+        // interpretation. Canonical generation identity selects this role;
+        // the separate creation/capture verifier authenticates both sides and
+        // reverse coverage still rejects deletion of its source receipts.
+        let generated_contract = closure
+            .hir_id
+            .and_then(|source| {
+                facts
+                    .semantic_hir
+                    .as_deref()?
+                    .info(crate::hir::nodes::NodeId::Expr(source))
+            })
+            .is_some_and(|info| {
+                matches!(
+                    info.origin,
+                    crate::hir::nodes::NodeOrigin::Generated {
+                        kind: crate::hir::nodes::GeneratedKind::IteratorAdapter,
+                        ..
+                    }
+                )
+            });
+        if (!generated_contract
+            && closure.lexical != closure.contract.typing_environment.contract_bindings)
             || !walk.environment(&closure.contract.typing_environment)
         {
             return Err((closure.contract.span, CauseId(0)));

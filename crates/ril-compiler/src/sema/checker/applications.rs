@@ -81,13 +81,26 @@ impl Checker {
                     self.copy_call_events[event.0 as usize].target;
                 self.seal_explicit_named_callee(explicit, event, frame);
                 if value.ty != Ty::Never {
-                    generic =
-                        crate::sema::builtin_sources::generic_reference(&value).filter(|id| {
-                            self.original_source_receiving_key(&value, syntax, frame)
-                                == Some(crate::sema::effect_identity::ArgumentKey::GenericBuiltin(
-                                    *id,
-                                ))
-                        });
+                    generic = if let Some(id) =
+                        crate::sema::builtin_sources::generic_reference(&value)
+                    {
+                        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+                        match self.original_source_receiving_schema(&value, syntax, frame, &mut work)
+                            .and_then(|source| source.map(|(schema, environment)| {
+                                if environment.is_poisoned() { return Err(crate::sema::source_types::SourceTypesError::Unresolved); }
+                                schema.is_generic_builtin(id, &mut work)
+                            }).transpose())
+                        {
+                            Ok(Some(true)) => Some(id),
+                            Ok(_) => None,
+                            Err(error) => {
+                                self.unsupported(syntax.span, format!("generic callee lost its original Source declaration: {error}"));
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let labels = if let Some(parameters) = &value.signature {
                         crate::hir::application::parameter_labels(parameters)
                     } else if let Some(id) = generic {

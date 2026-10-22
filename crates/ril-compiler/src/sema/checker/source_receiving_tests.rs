@@ -37,7 +37,12 @@ fn a_registered_generic_requires_its_actual_source_observation() {
     assert_eq!(actual.sources.len(), 1);
     let binding = *actual.sources.first().unwrap();
     let (declaration, environment) = checker
-        .parameter_source_schema(binding, None)
+        .parameter_source_schema_if_known(
+            binding,
+            None,
+            &mut crate::sema::source_types::WorkLimit::new(16384),
+        )
+        .unwrap()
         .expect("a written generic formal retains its complete Binder graph at birth");
     assert_eq!(
         environment.id(),
@@ -56,7 +61,13 @@ fn a_registered_generic_requires_its_actual_source_observation() {
     checker.copy_invocation_stack.push(invocation);
     assert!(
         checker
-            .original_source_receiving_key(&actual, expression, &frame)
+            .original_source_receiving_schema(
+                &actual,
+                expression,
+                &frame,
+                &mut crate::sema::source_types::WorkLimit::new(16384)
+            )
+            .unwrap()
             .is_some(),
         "the original formal and its real HIR observation must supply Source"
     );
@@ -78,9 +89,15 @@ fn a_registered_generic_requires_its_actual_source_observation() {
         // absent, so a missing HIR ID cannot make this negative test vacuous.
         let counterfeit = Value::scalar(Ty::Generic(identity), None, actual.cause);
         assert!(
-            checker
-                .original_source_receiving_key(&counterfeit, expression, &frame)
-                .is_none(),
+            !matches!(
+                checker.original_source_receiving_schema(
+                    &counterfeit,
+                    expression,
+                    &frame,
+                    &mut crate::sema::source_types::WorkLimit::new(16384)
+                ),
+                Ok(Some(_))
+            ),
             "registered {name}:{index} without Source minted a Type identity"
         );
     }
@@ -223,12 +240,12 @@ fn annotation_alias_is_frozen_before_later_shadowing() {
         .insert("Items".into(), declaration("type Items=[3]int"));
     let after = checker.freeze_source_receiving_target(&annotation);
     assert!(
-        matches!(&before.key(), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:2)")
+        matches!(&fixture_key(&before), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:2)")
     );
     assert!(
-        matches!(&after.key(), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
+        matches!(&fixture_key(&after), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
     );
-    assert_ne!(before.key(), after.key());
+    assert_ne!(fixture_key(&before), fixture_key(&after));
     assert!(before.syntax.is_some() && after.syntax.is_some());
 }
 
@@ -276,7 +293,7 @@ fn frozen_member_source_and_typed_record_opacity_are_independent() {
     let record = checker.freeze_source_receiving_target(&annotation("{item:[0][2]int}"));
     let member = member_target(&record, "item", record.span);
     assert!(
-        matches!(&member.key(), Some(ArgumentKey::Array { length:Some(n), .. }) if n=="const(int:0)")
+        matches!(&fixture_key(&member), Some(ArgumentKey::Array { length:Some(n), .. }) if n=="const(int:0)")
     );
     assert!(matches!(
         &member.syntax.as_ref().unwrap().kind,
@@ -288,7 +305,7 @@ fn frozen_member_source_and_typed_record_opacity_are_independent() {
         Some(Construction::Opaque)
     ));
     let absent = member_target(&record, "absent", record.span);
-    assert!(absent.key().is_none() && absent.syntax.is_none());
+    assert!(absent.schema.is_none() && absent.syntax.is_none());
 }
 
 #[test]
@@ -300,7 +317,13 @@ fn fresh_empty_recursive_scalar_array_has_only_a_proved_construction_context() {
     );
     let target = checker.freeze_source_receiving_target(&annotation("[]Node"));
     assert!(
-        target.key().is_none(),
+        target.schema.as_ref().is_none_or(|schema| schema
+            .array_parts(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .unwrap()
+            .unwrap()
+            .1
+            .closed_record_labels(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .is_err()),
         "a finite absence proof is not a complete Source schema"
     );
     assert!(target.empty_array_context.is_some());
@@ -347,7 +370,7 @@ fn qualified_callable_targets_share_canonical_data_schemas_without_losing_rows()
     let original_key =
         crate::static_eval::effects::bounded_argument_key(&normalized, &BTreeMap::new()).unwrap();
     for target in [&written, &alias] {
-        let target_key = target.key();
+        let target_key = fixture_key(target);
         let expected = target_key
             .as_ref()
             .expect("complete qualified source target");
@@ -376,7 +399,7 @@ fn qualified_callable_targets_share_canonical_data_schemas_without_losing_rows()
         };
         assert!(matches!(arguments[0].kind, TypeKind::Record { .. }));
     }
-    assert_eq!(written.key(), alias.key());
+    assert_eq!(fixture_key(&written), fixture_key(&alias));
 }
 
 #[test]
@@ -394,14 +417,25 @@ fn a_qualified_alias_does_not_reinterpret_a_captured_or_recursive_source() {
     assert!(
         checker
             .freeze_source_receiving_target(&annotation("Captured"))
-            .key()
-            .is_none()
+            .schema
+            .as_ref()
+            .is_none_or(|schema| schema
+                .callable_parts(&mut crate::sema::source_types::WorkLimit::new(16384))
+                .is_err())
     );
     checker.type_source.environment.generic_context.clear();
     checker
         .types
         .insert("Cycle".into(), declaration("type Cycle={following:?Cycle}"));
     let target = checker.freeze_source_receiving_target(&annotation("fn()->Cycle@Fiber"));
-    assert!(target.key().is_none());
+    assert!(target.schema.as_ref().is_none_or(|schema| {
+        schema
+            .callable_parts(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .unwrap()
+            .unwrap()
+            .1
+            .closed_record_labels(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .is_err()
+    }));
     assert_eq!(target.sensitivity, SchemaSensitivity::Required);
 }

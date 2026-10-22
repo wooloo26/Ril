@@ -4,10 +4,12 @@
 use super::*;
 use crate::hir::application::EvaluationRole;
 use crate::sema::{
+    context::FrozenEnvironment,
     copy_contract::CopyCallEventId,
     default_uses::DefaultUseId,
     effect_identity::{ArgumentKey, InvocationContext},
     source_reception::{self, Construction},
+    source_types::{SourceSchema, SourceTypesError, WorkLimit},
 };
 #[path = "call_input_source_closures.rs"]
 mod closure_sources;
@@ -15,22 +17,21 @@ mod closure_sources;
 mod composites;
 #[path = "constructor_input_source.rs"]
 mod constructor_inputs;
+#[path = "call_input_source_graph.rs"]
+mod graph_sources;
 #[path = "call_input_source_headers.rs"]
 mod headers;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
-#[path = "call_input_source_uid.rs"]
-mod source_uid;
 #[path = "storage_input_source.rs"]
 mod storage_inputs;
-pub(super) use producing_result::storage_closed_source_syntax;
 
 #[derive(Clone, Debug)]
 struct Input {
     context: InvocationContext,
     expression: Option<usize>,
     allocation_epoch: usize,
-    key: Option<ArgumentKey>,
+    source: InputSource,
     fresh: Construction,
     default: Option<DefaultUseId>,
 }
@@ -42,9 +43,11 @@ pub(super) struct State {
     defaults: BTreeMap<(CopyCallEventId, usize), Input>,
     operands: Vec<Operand>,
     carriers: BTreeMap<u32, (CopyCallEventId, InvocationContext)>,
-    carrier_sources: BTreeMap<u32, ArgumentKey>,
-    closure_views: BTreeMap<usize, (u32, ArgumentKey)>,
+    carrier_sources: BTreeMap<u32, (SourceSchema, FrozenEnvironment)>,
+    closure_views: BTreeMap<usize, (u32, SourceSchema, FrozenEnvironment)>,
 }
+
+type InputSource = Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError>;
 
 struct Operand {
     source_id: Option<ril_compiler_core::ids::ExprId>,
@@ -54,29 +57,24 @@ struct Operand {
 }
 
 impl Checker {
-    /// This bridge serves only consumers which still require a legacy key.
-    /// A graph/export failure is an incomplete analysis, never an unknown view
-    /// which can fall back to a later value or another input witness.
-    fn input_graph_key(
-        &mut self,
-        source: Result<Option<ArgumentKey>, crate::sema::source_types::SourceTypesError>,
-        span: Span,
-    ) -> Option<ArgumentKey> {
-        match source {
-            Ok(key) => key,
-            Err(error) => {
-                self.unsupported(
-                    span,
-                    format!("input Source graph cannot supply its required key view: {error}"),
-                );
-                None
-            }
-        }
+    pub(super) fn supplied_input_source(
+        &self,
+        event: CopyCallEventId,
+        slot: usize,
+        work: &mut WorkLimit,
+    ) -> InputSource {
+        work.charge(1)?;
+        self.call_input_source
+            .supplied
+            .get(&event)
+            .and_then(|inputs| inputs.get(&slot))
+            .ok_or(SourceTypesError::MissingNode)?
+            .source
+            .clone()
     }
-
     pub(super) fn receive_application_source(
         &mut self,
-        expected: &ArgumentKey,
+        expected: &SourceSchema,
         event: CopyCallEventId,
         slot: usize,
         value: &Value,
@@ -88,23 +86,13 @@ impl Checker {
             .get(&event)
             .and_then(|inputs| inputs.get(&slot))
             .cloned();
-        let answer = input.as_ref().and_then(|input| {
-            if let Some(answer) = source_reception::empty_context(expected, &input.fresh, &mut 4096)
-            {
-                return Some(answer);
-            }
-            let actual = input.key.as_ref()?;
-            let actual = crate::sema::source_types::declarations::expanded_key(
-                actual,
-                &self.semantic_hir,
-                &mut crate::sema::source_types::WorkLimit::new(16384),
-            )
-            .ok()?;
-            source_reception::compatible(expected, &actual, Some(&input.fresh), &mut 16384)
-        });
+        let answer = input
+            .as_ref()
+            .ok_or(SourceTypesError::MissingNode)
+            .and_then(|input| input_compatible(expected, input, &mut WorkLimit::new(16384)));
         match answer {
-            Some(true) => true,
-            Some(false) => {
+            Ok(true) => true,
+            Ok(false) => {
                 self.error(
                     "E0301",
                     span,
@@ -113,24 +101,49 @@ impl Checker {
                 );
                 false
             }
-            None => {
+            Err(error) => {
                 self.unsupported(
                     span,
-                    "input reception lacks its original complete Source observation",
+                    format!(
+                        "input reception lacks its original complete Source observation: {error}"
+                    ),
                 );
                 false
             }
         }
     }
     pub(super) fn supplied_parameter_source(
-        &self,
+        &mut self,
         slot: usize,
     ) -> Option<std::sync::Arc<crate::sema::source_types::TypeSourceSelection>> {
         use crate::sema::source_types::{SourceSelectionInput, TypeSourceSelection, WorkLimit};
         let invocation = *self.copy_invocation_stack.last()?;
         let call = self.copy_invocations.get(invocation.0 as usize)?;
         let event = call.source_event?;
-        let input = self.call_input_source.supplied.get(&event)?.get(&slot)?;
+        let input = self
+            .call_input_source
+            .supplied
+            .get(&event)?
+            .get(&slot)?
+            .clone();
+        let (actual, actual_environment) = match &input.source {
+            Ok(Some(source)) => source,
+            Ok(None) => return None,
+            Err(error) => {
+                self.unsupported(
+                    call.span,
+                    format!("supplied parameter Source observation failed: {error}"),
+                );
+                return None;
+            }
+        };
+        if actual_environment.is_poisoned() {
+            self.unsupported(
+                call.span,
+                "supplied parameter Source has a poisoned environment",
+            );
+            return None;
+        }
         let observation = input.expression?;
         let fact = self.application_effect.expressions.get(observation)?;
         if fact.value.sources.len() != 1 {
@@ -146,16 +159,37 @@ impl Checker {
             return None;
         }
         let (syntax, environment) = self.formal_binding_declaration(binding, &info.name)?;
-        let (schema, original_environment) =
-            self.parameter_source_schema(binding, syntax.hir_id)?;
+        let mut work = WorkLimit::new(16384);
+        let recorded = self.parameter_source_schema_if_known(binding, syntax.hir_id, &mut work);
+        let (schema, original_environment) = match recorded {
+            Ok(Some(source)) => source,
+            Ok(None) => return None,
+            Err(error) => {
+                self.unsupported(
+                    syntax.span,
+                    format!("formal parameter Source graph failed: {error}"),
+                );
+                return None;
+            }
+        };
+        let agrees = match schema.equivalent(actual, &mut work) {
+            Ok(answer) => answer,
+            Err(error) => {
+                self.unsupported(
+                    syntax.span,
+                    format!("supplied Source graph comparison failed: {error}"),
+                );
+                return None;
+            }
+        };
         if environment.id() != original_environment.id()
-            || !schema
-                .equivalent_key(input.key.as_ref()?, &mut WorkLimit::new(16384))
-                .ok()?
+            || actual_environment.id() != original_environment.id()
+            || !agrees
         {
             return None;
         }
-        TypeSourceSelection::from_parameter(
+        let source_span = syntax.span;
+        match TypeSourceSelection::from_parameter(
             schema,
             syntax,
             environment,
@@ -166,19 +200,23 @@ impl Checker {
                 observation,
                 binding,
             },
-        )
-        .ok()
+        ) {
+            Ok(source) => Some(source),
+            Err(error) => {
+                self.unsupported(
+                    source_span,
+                    format!("parameter Source selection admission failed: {error}"),
+                );
+                None
+            }
+        }
     }
     pub(super) fn evaluated_argument_source(
         &self,
         event: CopyCallEventId,
         role: EvaluationRole,
-    ) -> Option<&ArgumentKey> {
-        self.call_input_source
-            .evaluated
-            .get(&(event, role))?
-            .key
-            .as_ref()
+    ) -> Option<&InputSource> {
+        Some(&self.call_input_source.evaluated.get(&(event, role))?.source)
     }
     pub(super) fn remember_result_carrier(
         &mut self,
@@ -253,7 +291,7 @@ impl Checker {
                     return None;
                 }
                 let target = self.freeze_source_receiving_target(syntax);
-                target.key().as_ref()?;
+                target.schema.as_ref()?;
                 Some(target)
             })
             .collect();
@@ -292,193 +330,6 @@ impl Checker {
 
     pub(super) fn end_source_argument(&mut self, marker: usize) {
         self.call_input_source.operands.truncate(marker);
-    }
-
-    pub(super) fn original_source_receiving_key(
-        &mut self,
-        value: &Value,
-        syntax: &Expr,
-        frame: &Frame,
-    ) -> Option<ArgumentKey> {
-        let key = self.raw_original_source_receiving_key(value, syntax, frame)?;
-        let context = self.invocation_context(frame.callable_owner);
-        let projected = self.invocation_witnesses.iter().any(|row| {
-            row.context == context
-                && matches!(&row.kind, crate::sema::effect_identity::InvocationWitnessKind::ImplicitUnwrap(proof)
-                    if Some(proof.occurrence.source) == syntax.hir_id && proof.cause == value.cause)
-        });
-        let unwrap = if projected {
-            let mut work = crate::sema::source_types::WorkLimit::new(16384);
-            let depth = syntax
-                .hir_id
-                .ok_or(crate::sema::source_types::SourceTypesError::MissingNode)
-                .and_then(|source| {
-                    self.source_projection_occurrence(source, value, context, &mut work)
-                })
-                .and_then(|occurrence| {
-                    self.source_projection_receipts()
-                        .unwrap_depth(occurrence, &mut work)
-                });
-            match depth {
-                Ok(depth) => depth == 1,
-                Err(_) => {
-                    self.unsupported(
-                        syntax.span,
-                        "Source projection lost its original optional read occurrence",
-                    );
-                    return None;
-                }
-            }
-        } else {
-            false
-        };
-        if unwrap
-            && let ArgumentKey::Name { name, arguments } = &key
-            && name == "Option"
-            && arguments.len() == 1
-        {
-            return Some(arguments[0].clone());
-        }
-        Some(key)
-    }
-
-    fn raw_original_source_receiving_key(
-        &mut self,
-        value: &Value,
-        syntax: &Expr,
-        frame: &Frame,
-    ) -> Option<ArgumentKey> {
-        self.raw_original_source_receiving_key_inner(value, syntax, frame, &mut 4096, 0)
-    }
-
-    fn raw_original_source_receiving_key_inner(
-        &mut self,
-        value: &Value,
-        syntax: &Expr,
-        frame: &Frame,
-        work: &mut usize,
-        depth: usize,
-    ) -> Option<ArgumentKey> {
-        *work = work.checked_sub(1)?;
-        if depth >= 64 {
-            return None;
-        }
-        if let Some(source) = self.storage_binding_source_schema(value, syntax, frame) {
-            let key = source.and_then(|source| source.map(|(schema, _)| schema.key()).transpose());
-            return self.input_graph_key(key, syntax.span);
-        }
-        if let Some(source) = syntax.hir_id {
-            let mut limit = crate::sema::source_types::WorkLimit::new(*work);
-            let declared = crate::sema::source_types::declarations::construction(
-                source,
-                &self.semantic_hir,
-                &mut limit,
-            );
-            *work = limit.remaining();
-            if let Some(key) = declared.ok()? {
-                return Some(key);
-            }
-        }
-        if value.source_type_witness.is_none()
-            && matches!(&syntax.kind, ExprKind::Unary { operator, .. } if operator == "^mut")
-        {
-            return self.original_composite_source_key(value, syntax, frame, work, depth);
-        }
-        if let Some(key) = self.original_copy_source_key(value, syntax, frame, work, depth) {
-            return key;
-        }
-        if let ExprKind::Name(name) = &syntax.kind
-            && self.constant_references.contains_key(name)
-        {
-            let original = self.constant_source_views.get(name)?;
-            if !original.validate_closed() || value.source_type_witness.as_ref() != Some(original) {
-                return None;
-            }
-            return crate::static_eval::effects::bounded_argument_key(
-                &original.syntax,
-                &BTreeMap::new(),
-            );
-        }
-        if let Some(key) = self.original_carrier_source_key(value, syntax, frame) {
-            return Some(key);
-        }
-        if let Some(key) = self.original_called_result_source(value, syntax, frame) {
-            return Some(key);
-        }
-        if let Some(key) = self.original_symbolic_source_key(value, syntax, frame) {
-            return Some(key);
-        }
-        if let Some(witness) = &value.source_type_witness {
-            if !witness.validate_closed() {
-                return None;
-            }
-            return crate::static_eval::effects::bounded_argument_key(
-                &witness.syntax,
-                &BTreeMap::new(),
-            );
-        }
-        if let Some(key) = self.original_canonical_builtin_source_key(value, syntax, frame) {
-            return Some(key);
-        }
-        if let ExprKind::Name(name) = &syntax.kind {
-            let binding = value
-                .sources
-                .iter()
-                .next()
-                .and_then(|id| self.bindings.get(*id))?;
-            if value.sources.len() != 1 || binding.name != *name {
-                return None;
-            }
-            if binding.parameter {
-                return self.formal_source_receiving_key(value, syntax, frame);
-            }
-            if let [Callable::Named(index)] = value.callables.as_slice() {
-                let function = self.functions[*index].clone();
-                if binding.parameter
-                    || binding.span != function.syntax.span
-                    || !function.syntax.generics.is_empty()
-                {
-                    return None;
-                }
-                let mut parameters = function.syntax.parameters.clone();
-                for parameter in &mut parameters {
-                    parameter.default = None;
-                }
-                let syntax = TypeExpr {
-                    hir_id: None,
-                    text: String::new(),
-                    span: syntax.span,
-                    kind: TypeKind::Callable {
-                        parameters,
-                        result: function.syntax.return_type.clone().map(Box::new),
-                        annotations: function.syntax.annotations.clone(),
-                    },
-                };
-                // Array/mode coordinates remain present in the genuine header
-                // even if a named obligation row has no closed witness. This
-                // does not compare, clear or grant those obligation rows.
-                super::source_receiving::resolved_symbolic_names(
-                    &syntax,
-                    &function.typing_environment.generic_context,
-                    &self.types,
-                    &mut 4096,
-                    0,
-                )?;
-                return crate::static_eval::effects::bounded_argument_key(
-                    &syntax,
-                    &function.typing_environment.generic_context,
-                );
-            }
-        }
-        if let Some(key) = self.original_composite_source_key(value, syntax, frame, work, depth) {
-            return Some(key);
-        }
-        if let Some(key) = self.original_closure_source_key(value) {
-            return Some(key);
-        }
-        // No original declaration or complete value view supplied a schema.
-        // Erased runtime shape cannot reconstruct missing Source coordinates.
-        None
     }
 
     pub(super) fn capture_call_input_source(
@@ -529,14 +380,25 @@ impl Checker {
             );
             return;
         };
-        let key = self.original_source_receiving_key(&value, syntax, frame);
+        let source = self.original_source_receiving_schema(
+            &value,
+            syntax,
+            frame,
+            &mut WorkLimit::new(16384),
+        );
+        if let Err(error) = &source {
+            self.unsupported(
+                syntax.span,
+                format!("call input Source capture failed: {error}"),
+            );
+        }
         self.call_input_source.evaluated.insert(
             (event, role),
             Input {
                 context,
                 expression: Some(expression),
                 allocation_epoch,
-                key,
+                source,
                 fresh,
                 default: None,
             },
@@ -605,6 +467,28 @@ impl Checker {
         };
         let value = snapshot.value.clone();
         let context = record.caller;
+        let Some(root) = record.result_expression else {
+            return;
+        };
+        let mut root_context = self.invocation_context(frame.callable_owner);
+        root_context.default_use = Some(id);
+        if self
+            .application_effect
+            .expressions
+            .get(root)
+            .is_none_or(|fact| fact.source_id != syntax.hir_id || fact.value != value)
+            || self
+                .application_effect
+                .contexts
+                .get(root)
+                .is_none_or(|row| row.expression != root || row.context != root_context)
+        {
+            self.unsupported(
+                syntax.span,
+                "default Source capture lost its original DefaultUse emission",
+            );
+            return;
+        }
         let Some(allocation_epoch) = record.result_allocation_epoch else {
             return;
         };
@@ -615,14 +499,27 @@ impl Checker {
             );
             return;
         };
-        let key = self.original_source_receiving_key(&value, syntax, frame);
+        self.default_use_stack.push(id);
+        let source = self.original_source_receiving_schema(
+            &value,
+            syntax,
+            frame,
+            &mut WorkLimit::new(16384),
+        );
+        assert_eq!(self.default_use_stack.pop(), Some(id));
+        if let Err(error) = &source {
+            self.unsupported(
+                syntax.span,
+                format!("default input Source capture failed: {error}"),
+            );
+        }
         self.call_input_source.defaults.insert(
             (event, slot),
             Input {
                 context,
                 expression: None,
                 allocation_epoch,
-                key,
+                source,
                 fresh,
                 default: Some(id),
             },
@@ -670,29 +567,30 @@ impl Checker {
         if target.sensitivity == source_reception::SchemaSensitivity::NotRequired {
             return true;
         }
-        // First use a fully instantiated source descriptor. Missing closed
-        // witnesses fall back only to the actual complete static Type rows.
-        let expected = self
-            .source_type_from_syntax(syntax)
-            .and_then(|witness| {
-                crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new())
-            })
-            .or_else(|| {
-                // Normalize the declared header before selecting its actual
-                // Type leaves. An open selected record is not a closed Ty
-                // witness, and cannot prevent use of its real Source receipt.
-                let raw = self.original_input_header_key(syntax)?;
-                let selected = self.actual_input_source_selections(info, source_event, span)?;
-                select(&raw, &selected, &mut 4096, 0)
-            });
-        let Some(expected) = expected else {
-            self.unsupported(
+        let expected = (|| {
+            let schema = target.schema.as_ref().ok_or(SourceTypesError::Unresolved)?;
+            let selected = self.actual_input_source_schemas(
+                info,
+                source_event,
                 span,
-                "call input requires its complete formal source schema",
-            );
-            return false;
+                &mut WorkLimit::new(16384),
+            )?;
+            schema.substitute(&selected, &mut WorkLimit::new(16384))
+        })();
+        let expected = match expected {
+            Ok(schema) => schema,
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("call input requires its complete formal source schema: {error}"),
+                );
+                return false;
+            }
         };
-        if source_reception::sensitive(&expected, &mut 4096) == Some(false) {
+        if matches!(
+            expected.sensitivity(&mut WorkLimit::new(16384)),
+            crate::sema::source_types::SourceSensitivity::Absent { .. }
+        ) {
             return true;
         }
         let input = source_event
@@ -705,77 +603,64 @@ impl Checker {
             })
             .cloned();
         let answer = if source_event.is_none() {
-            self.generated_entry_source_key(slot)
-                .or_else(|| self.signature_entry_source_key(slot))
-                .and_then(|actual| {
-                    source_reception::compatible(
-                        &expected,
-                        &actual,
+            self.generated_entry_source_schema(slot)
+                .and_then(|source| match source {
+                    Some(source) => Ok(Some(source)),
+                    None => self.signature_entry_source_schema(slot),
+                })
+                .and_then(|source| {
+                    expected.receive_schema(
+                        &source.ok_or(SourceTypesError::Unresolved)?.0,
                         Some(&Construction::Opaque),
-                        &mut 4096,
+                        &mut WorkLimit::new(16384),
                     )
                 })
         } else {
-            input.as_ref().and_then(|input| {
-                let event =
-                    source_event.and_then(|event| self.copy_call_events.get(event.0 as usize))?;
-                if let Some(id) = input.default {
-                    let record = self
-                        .default_uses
-                        .get(id.0 as usize)
-                        .filter(|record| record.id == id)?;
-                    if record.target != Some(info.definition)
-                        || record.parameter as usize != slot
-                        || record.caller != input.context
-                        || record.result_allocation_epoch != Some(input.allocation_epoch)
+            input
+                .as_ref()
+                .and_then(|input| {
+                    let event = source_event
+                        .and_then(|event| self.copy_call_events.get(event.0 as usize))?;
+                    if let Some(id) = input.default {
+                        let record = self
+                            .default_uses
+                            .get(id.0 as usize)
+                            .filter(|record| record.id == id)?;
+                        if record.target != Some(info.definition)
+                            || record.parameter as usize != slot
+                            || record.caller != input.context
+                            || record.result_allocation_epoch != Some(input.allocation_epoch)
+                        {
+                            return None;
+                        }
+                        match record.origin {
+                            crate::sema::default_uses::DefaultOrigin::Call(id)
+                                if id == event.id
+                                    && event.owner == input.context.owner
+                                    && event.parent == input.context.invocation => {}
+                            crate::sema::default_uses::DefaultOrigin::InvocationFallback(id)
+                                if self.copy_invocation_stack.last() == Some(&id)
+                                    && self.copy_invocations.get(id.0 as usize).is_some_and(
+                                        |call| {
+                                            call.source_event == Some(event.id)
+                                                && call.target == info.definition
+                                        },
+                                    ) => {}
+                            _ => return None,
+                        }
+                    } else if event.owner != input.context.owner
+                        || event.parent != input.context.invocation
                     {
                         return None;
                     }
-                    match record.origin {
-                        crate::sema::default_uses::DefaultOrigin::Call(id)
-                            if id == event.id
-                                && event.owner == input.context.owner
-                                && event.parent == input.context.invocation => {}
-                        crate::sema::default_uses::DefaultOrigin::InvocationFallback(id)
-                            if self.copy_invocation_stack.last() == Some(&id)
-                                && self.copy_invocations.get(id.0 as usize).is_some_and(
-                                    |call| {
-                                        call.source_event == Some(event.id)
-                                            && call.target == info.definition
-                                    },
-                                ) => {}
-                        _ => return None,
-                    }
-                } else if event.owner != input.context.owner
-                    || event.parent != input.context.invocation
-                {
-                    return None;
-                }
-                match &input.key {
-                    Some(actual) => source_reception::compatible(
-                        &expected,
-                        actual,
-                        Some(&input.fresh),
-                        &mut 4096,
-                    ),
-                    None => match (&expected, &input.fresh) {
-                        (ArgumentKey::Array { length, element }, Construction::Array(items))
-                            if items.is_empty()
-                                && length
-                                    .as_ref()
-                                    .is_none_or(|length| length == "const(int:0)") =>
-                        {
-                            source_reception::complete(element, &mut 4096)?;
-                            Some(true)
-                        }
-                        _ => None,
-                    },
-                }
-            })
+                    Some(input.clone())
+                })
+                .ok_or(SourceTypesError::MissingNode)
+                .and_then(|input| input_compatible(&expected, &input, &mut WorkLimit::new(16384)))
         };
         match answer {
-            Some(true) => true,
-            Some(false) => {
+            Ok(true) => true,
+            Ok(false) => {
                 self.error(
                     "E0301",
                     span,
@@ -784,25 +669,29 @@ impl Checker {
                 );
                 false
             }
-            None => {
+            Err(error) => {
                 self.unsupported(
                     span,
-                    "call input lacks its original complete schema and actual Source observation",
+                    format!("call input lacks its original complete schema and actual Source observation: {error}"),
                 );
                 false
             }
         }
     }
 
-    fn generated_entry_source_key(&mut self, slot: usize) -> Option<ArgumentKey> {
+    fn generated_entry_source_schema(&mut self, slot: usize) -> InputSource {
         use crate::sema::application_effect::{EntryOrigin, InputOrigin};
+        let Some(id) = self.copy_invocation_stack.last() else {
+            return Ok(None);
+        };
         let call = self
             .copy_invocations
-            .get(self.copy_invocation_stack.last()?.0 as usize)?;
+            .get(id.0 as usize)
+            .ok_or(SourceTypesError::MissingNode)?;
         let EntryOrigin::Generated { inputs, .. } = &call.entry.origin else {
-            return None;
+            return Ok(None);
         };
-        let (observation, boundary) = match inputs.get(slot)? {
+        let (observation, boundary) = match inputs.get(slot).ok_or(SourceTypesError::MissingNode)? {
             InputOrigin::Copied {
                 observation,
                 boundary,
@@ -811,7 +700,7 @@ impl Checker {
                 (*observation, None)
             }
             InputOrigin::Scalar(kind) => {
-                return Some(ArgumentKey::Name {
+                let key = ArgumentKey::Name {
                     name: match kind {
                         crate::sema::application_effect::ScalarInput::PositiveInt => "int",
                         crate::sema::application_effect::ScalarInput::ByteSuffix(_)
@@ -819,17 +708,27 @@ impl Checker {
                     }
                     .into(),
                     arguments: vec![],
-                });
+                };
+                return self.input_header_schema(
+                    &key,
+                    None,
+                    self.capture_typing_environment(),
+                    &mut WorkLimit::new(16384),
+                );
             }
         };
         let original = self
             .application_effect
             .expressions
-            .get(observation.0 as usize)?;
-        let source = original.source_id?;
-        let node = self.semantic_hir.expression(source)?;
-        let span = original.span;
-        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+            .get(observation.0 as usize)
+            .ok_or(SourceTypesError::MissingNode)?
+            .clone();
+        let source = original.source_id.ok_or(SourceTypesError::MissingNode)?;
+        let node = self
+            .semantic_hir
+            .expression(source)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let mut work = WorkLimit::new(16384);
         let stored = if let crate::hir::nodes::ExprKind::Name(name) = &node.kind
             && original.value.sources.len() == 1
             && let Some(binding) = original.value.sources.first()
@@ -842,78 +741,112 @@ impl Checker {
         } else {
             None
         };
-        let key = if let Some(source) = stored {
-            source.and_then(|source| source.map(|(schema, _)| {
-                use crate::sema::source_types::{projection_receipts::ProjectionOccurrence, SourceTypesError};
-                let record = self.application_effect.evaluations.get(observation.0 as usize)
-                    .ok_or(SourceTypesError::MissingNode)?;
-                let occurrence = ProjectionOccurrence {
-                    identity: record.identity.ok_or(SourceTypesError::MissingNode)?,
-                    context: record.context,
-                    cause: original.value.cause,
-                };
-                let depth = self.source_projection_receipts().unwrap_depth(occurrence, &mut work)?;
-                if depth == 1 {
-                    schema.project_steps(&[ril_compiler_core::projection::TypeProjection::OptionalPayload], &mut work)?.key()
-                } else {
-                    schema.key()
-                }
-            }).transpose())
-        } else {
-            let mut limit = crate::sema::source_types::WorkLimit::new(4096);
-            match crate::sema::source_types::declarations::construction(
-                source,
-                &self.semantic_hir,
-                &mut limit,
-            ) {
-                Ok(Some(key)) => Ok(Some(key)),
-                Ok(None) => {
-                    let witness = original.value.source_type_witness.as_ref()?;
-                    if !witness.validate_closed() {
-                        return None;
-                    }
-                    crate::static_eval::effects::bounded_argument_key(
-                        &witness.syntax,
-                        &BTreeMap::new(),
-                    )
-                    .map(Some)
-                    .ok_or(crate::sema::source_types::SourceTypesError::Unresolved)
-                }
-                Err(error) => Err(error),
+        let source = if let Some(source) = stored {
+            source?
+                .map(|(schema, environment)| {
+                    use crate::sema::source_types::projection_receipts::ProjectionOccurrence;
+                    let record = self
+                        .application_effect
+                        .evaluations
+                        .get(observation.0 as usize)
+                        .ok_or(SourceTypesError::MissingNode)?;
+                    let occurrence = ProjectionOccurrence {
+                        identity: record.identity.ok_or(SourceTypesError::MissingNode)?,
+                        context: record.context,
+                        cause: original.value.cause,
+                    };
+                    let depth = self
+                        .source_projection_receipts()
+                        .unwrap_depth(occurrence, &mut work)?;
+                    let schema = if depth == 1 {
+                        schema.project_steps(
+                            &[crate::sema::source_types::SourcePath::OptionalPayload],
+                            &mut work,
+                        )?
+                    } else {
+                        schema
+                    };
+                    Ok((schema, environment))
+                })
+                .transpose()?
+        } else if let Some(schema) = crate::sema::source_types::declarations::construction_schema(
+            source,
+            &self.semantic_hir,
+            &mut work,
+        )? {
+            Some((schema, self.capture_typing_environment()))
+        } else if let Some(witness) = &original.value.source_type_witness {
+            if !witness.validate_closed() {
+                return Err(SourceTypesError::Unresolved);
             }
-        };
-        let key = self.input_graph_key(key, span)?;
-        if let Some(boundary) = boundary {
-            let proof = self
-                .copy_boundaries
-                .get(boundary.0 as usize)
-                .filter(|proof| proof.id == boundary)?;
-            source_reception::copy_view(key, proof.mode, &mut 4096)
+            let key = crate::static_eval::effects::bounded_argument_key(
+                &witness.syntax,
+                &BTreeMap::new(),
+            )
+            .ok_or(SourceTypesError::BudgetExceeded)?;
+            self.input_header_schema(
+                &key,
+                witness.syntax.hir_id,
+                self.capture_typing_environment(),
+                &mut work,
+            )?
         } else {
-            Some(key)
-        }
+            None
+        };
+        source
+            .map(|(schema, environment)| {
+                let schema = if let Some(boundary) = boundary {
+                    let proof = self
+                        .copy_boundaries
+                        .get(boundary.0 as usize)
+                        .filter(|proof| proof.id == boundary)
+                        .ok_or(SourceTypesError::MissingNode)?;
+                    schema.copy_view(proof.mode, &mut work)?
+                } else {
+                    schema
+                };
+                Ok((schema, environment))
+            })
+            .transpose()
     }
 
-    fn signature_entry_source_key(&self, slot: usize) -> Option<ArgumentKey> {
+    fn signature_entry_source_schema(&self, slot: usize) -> InputSource {
+        let Some(id) = self.copy_invocation_stack.last() else {
+            return Ok(None);
+        };
         let call = self
             .copy_invocations
-            .get(self.copy_invocation_stack.last()?.0 as usize)?;
+            .get(id.0 as usize)
+            .ok_or(SourceTypesError::MissingNode)?;
         if call.entry.origin != crate::sema::application_effect::EntryOrigin::SignatureProbe
             || call.source_event.is_some()
             || call.declaration_probe
         {
-            return None;
+            return Ok(None);
         }
-        let input = &call.entry.arguments.get(slot)?.1;
-        crate::sema::application_effect::signature_assumption(
+        let input = &call
+            .entry
+            .arguments
+            .get(slot)
+            .ok_or(SourceTypesError::MissingNode)?
+            .1;
+        let key = crate::sema::application_effect::signature_assumption(
             input,
             call.caller_activation,
             call.entry.caller_context,
             &self.bindings,
             &mut 4096,
-        )
+        );
+        key.map(|key| {
+            self.input_header_schema(
+                &key,
+                None,
+                self.capture_typing_environment(),
+                &mut WorkLimit::new(16384),
+            )
+        })
+        .unwrap_or(Ok(None))
     }
-
     pub(super) fn check_public_call_input_sources(
         &mut self,
         callee: &Value,
@@ -929,17 +862,30 @@ impl Checker {
         {
             return;
         }
-        let Some(parameters) = self.public_input_source_keys(callee, syntax, frame) else {
-            self.unsupported(
-                syntax.span,
-                "public callable input requires its original complete Source signature",
-            );
-            return;
+        let parameters = match self.public_input_source_schemas(callee, syntax, frame) {
+            Ok(Some(parameters)) => parameters,
+            Ok(None) => {
+                self.unsupported(
+                    syntax.span,
+                    "public callable input requires its original complete Source signature",
+                );
+                return;
+            }
+            Err(error) => {
+                self.unsupported(
+                    syntax.span,
+                    format!("public callable input Source signature failed: {error}"),
+                );
+                return;
+            }
         };
         let context = self.invocation_context(frame.callable_owner);
         for (slot, expected) in parameters.iter().enumerate() {
             let Some(expected) = expected else { continue };
-            if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+            if matches!(
+                expected.sensitivity(&mut WorkLimit::new(16384)),
+                crate::sema::source_types::SourceSensitivity::Absent { .. }
+            ) {
                 continue;
             }
             let input = self
@@ -949,57 +895,75 @@ impl Checker {
                 .and_then(|rows| rows.get(&slot))
                 .or_else(|| self.call_input_source.defaults.get(&(event, slot)))
                 .cloned();
-            let answer = input.as_ref().and_then(|input| {
-                if input.context != context {
-                    return None;
-                }
-                input_compatible(expected, input)
-            });
+            let answer = input
+                .as_ref()
+                .ok_or(SourceTypesError::MissingNode)
+                .and_then(|input| {
+                    if input.context != context {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    input_compatible(expected, input, &mut WorkLimit::new(16384))
+                });
             match answer {
-                Some(true) => {},
-                Some(false) => self.error("E0301", syntax.span,
+                Ok(true) => {},
+                Ok(false) => self.error("E0301", syntax.span,
                     "original input source does not fit the actual public callable signature", [callee.cause]),
-                None => self.unsupported(syntax.span,
-                    "public callable input lost its complete original schema or actual operand identity"),
+                Err(error) => self.unsupported(syntax.span,
+                    format!("public callable input lost its complete original schema or actual operand identity: {error}")),
             }
         }
     }
 
-    fn public_input_source_keys(
+    fn public_input_source_schemas(
         &mut self,
         callee: &Value,
         syntax: &Expr,
         frame: &Frame,
-    ) -> Option<Vec<Option<ArgumentKey>>> {
+    ) -> Result<Option<Vec<Option<SourceSchema>>>, SourceTypesError> {
         // A sealed public view has priority over an underlying inferred lambda.
-        if let Some(ArgumentKey::Callable { parameters, .. }) =
-            self.original_source_receiving_key(callee, syntax, frame)
+        let mut work = WorkLimit::new(16384);
+        if let Some((source, _)) =
+            self.original_source_receiving_schema(callee, syntax, frame, &mut work)?
         {
-            return Some(parameters.into_iter().map(|(_, key)| Some(key)).collect());
+            return source.callable_parameters(&mut work).map(|parameters| {
+                Some(
+                    parameters
+                        .into_iter()
+                        .map(|(_, schema)| Some(schema))
+                        .collect(),
+                )
+            });
         }
         if callee.callables.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let mut common = None;
+        let mut common: Option<Vec<Option<SourceSchema>>> = None;
         for callable in &callee.callables {
             let keys = match callable {
                 Callable::Closure(index) => {
-                    let closure = self.closures.get(*index)?.clone();
-                    let contract = self.lambda_contract(*index)?.clone();
+                    let closure = self
+                        .closures
+                        .get(*index)
+                        .ok_or(SourceTypesError::MissingNode)?
+                        .clone();
+                    let contract = self
+                        .lambda_contract(*index)
+                        .ok_or(SourceTypesError::MissingNode)?
+                        .clone();
                     let previous = self.enter_typing_environment(&contract.typing_environment);
-                    let keys: Option<Vec<_>> = closure
+                    let keys: Result<Vec<_>, SourceTypesError> = closure
                         .parameters
                         .iter()
                         .map(|parameter| match &parameter.ty {
-                            None => Some(None),
+                            None => Ok(None),
                             Some(syntax) => {
                                 let target = self.freeze_source_receiving_target(syntax);
                                 if target.sensitivity
                                     == source_reception::SchemaSensitivity::NotRequired
                                 {
-                                    Some(None)
+                                    Ok(None)
                                 } else {
-                                    target.key().map(Some)
+                                    target.schema.map(Some).ok_or(SourceTypesError::Unresolved)
                                 }
                             }
                         })
@@ -1008,14 +972,16 @@ impl Checker {
                     keys?
                 }
                 Callable::Symbolic(..) if self.symbolic_has_no_inputs(callee) => Vec::new(),
-                _ => return None,
+                _ => return Ok(None),
             };
-            if common.as_ref().is_some_and(|previous| previous != &keys) {
-                return None;
+            if let Some(previous) = common.as_ref()
+                && !input_schema_lists_agree(previous, &keys, &mut work)?
+            {
+                return Err(SourceTypesError::Unresolved);
             }
             common = Some(keys);
         }
-        common
+        Ok(common)
     }
 
     fn symbolic_has_no_inputs(&mut self, callee: &Value) -> bool {
@@ -1088,15 +1054,43 @@ impl Checker {
     }
 }
 
-fn input_compatible(expected: &ArgumentKey, input: &Input) -> Option<bool> {
-    match &input.key {
-        Some(actual) => {
-            source_reception::compatible(expected, actual, Some(&input.fresh), &mut 4096)
+fn input_compatible(
+    expected: &SourceSchema,
+    input: &Input,
+    work: &mut WorkLimit,
+) -> Result<bool, SourceTypesError> {
+    match &input.source {
+        Ok(Some((actual, environment))) if !environment.is_poisoned() => {
+            expected.receive_schema(actual, Some(&input.fresh), work)
         }
-        None => source_reception::empty_context(expected, &input.fresh, &mut 4096),
+        Ok(None) => expected
+            .empty_context(&input.fresh, work)?
+            .ok_or(SourceTypesError::Unresolved),
+        Ok(Some(_)) => Err(SourceTypesError::Unresolved),
+        Err(error) => Err(error.clone()),
     }
 }
 
+fn input_schema_lists_agree(
+    left: &[Option<SourceSchema>],
+    right: &[Option<SourceSchema>],
+    work: &mut WorkLimit,
+) -> Result<bool, SourceTypesError> {
+    work.charge(left.len() + right.len())?;
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    for (left, right) in left.iter().zip(right) {
+        match (left, right) {
+            (Some(left), Some(right)) if left.equivalent(right, work)? => {}
+            (None, None) => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
 fn select(
     key: &ArgumentKey,
     selected: &BTreeMap<String, ArgumentKey>,

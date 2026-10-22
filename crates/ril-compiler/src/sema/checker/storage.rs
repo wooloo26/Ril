@@ -16,12 +16,17 @@ impl Checker {
         };
         let target = self.freeze_source_receiving_target(syntax);
         let instance = target
-            .key()
-            .and_then(|key| crate::sema::source_types::polymorphic::instantiate_key(id, &key).ok());
+            .schema
+            .as_ref()
+            .ok_or(crate::sema::source_types::SourceTypesError::Unresolved)
+            .and_then(|source| {
+                source
+                    .instantiate_builtin(id, &mut crate::sema::source_types::WorkLimit::new(16384))
+            });
         match instance {
-            Some(Some(_)) => value.ty = self.ty(syntax),
-            Some(None) => self.error("E0301", syntax.span, "primitive Source instance must preserve its receiver, full element/key types, result and parameter modes", [value.cause]),
-            None => self.unsupported(syntax.span, "primitive signature selection requires its complete frozen receiving Source"),
+            Ok(Some(_)) => value.ty = self.ty(syntax),
+            Ok(None) => self.error("E0301", syntax.span, "primitive Source instance must preserve its receiver, full element/key types, result and parameter modes", [value.cause]),
+            Err(_) => self.unsupported(syntax.span, "primitive signature selection requires its complete frozen receiving Source"),
         }
     }
     pub(super) fn check_stored_authority(

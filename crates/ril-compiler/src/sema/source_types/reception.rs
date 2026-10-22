@@ -11,17 +11,17 @@ enum Position {
     Invariant,
 }
 
-fn complete(
+pub(super) fn complete(
     graph: &impl SourceGraph,
     root: SourceTypeId,
     work: &mut WorkLimit,
 ) -> Result<(), SourceTypesError> {
     work.charge(1)?;
-    let mut pending = vec![root];
+    let mut pending = vec![(root, false)];
     let mut seen = BTreeSet::new();
-    while let Some(id) = pending.pop() {
+    while let Some((id, nominal_argument)) = pending.pop() {
         work.charge(1)?;
-        if !seen.insert(id) {
+        if !seen.insert((id, nominal_argument)) {
             continue;
         }
         let node = graph.get(id)?;
@@ -32,7 +32,16 @@ fn complete(
         ) {
             return Err(SourceTypesError::Unresolved);
         }
-        pending.extend(node.children());
+        match node {
+            SourceNode::StaticValue(_) if !nominal_argument => {
+                return Err(SourceTypesError::Unresolved);
+            }
+            SourceNode::OpaqueName { arguments, .. } => {
+                pending.extend(arguments.iter().map(|id| (*id, true)));
+            }
+            SourceNode::Alias { target, .. } => pending.push((*target, nominal_argument)),
+            _ => pending.extend(node.children().into_iter().map(|id| (id, false))),
+        }
     }
     Ok(())
 }
@@ -179,6 +188,7 @@ fn compare(
     Ok(match (left, right) {
         (SourceNode::Scalar(left), SourceNode::Scalar(right)) => left == right,
         (SourceNode::Nominal(left), SourceNode::Nominal(right)) => left == right,
+        (SourceNode::StaticValue(left), SourceNode::StaticValue(right)) => left == right,
         (SourceNode::Binder(left), SourceNode::Binder(right)) if left == right => true,
         (SourceNode::Binder(_), _) | (_, SourceNode::Binder(_)) => {
             return Err(SourceTypesError::Unresolved);

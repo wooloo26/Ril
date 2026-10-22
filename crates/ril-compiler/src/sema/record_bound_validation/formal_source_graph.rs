@@ -7,6 +7,15 @@ use crate::sema::{
     source_types::{SourceSchema, WorkLimit, declarations},
 };
 
+fn header_work<T>(work: &mut WorkLimit, query: impl FnOnce(&mut usize) -> Check<T>) -> Check<T> {
+    let before = work.remaining();
+    let mut remaining = before;
+    let result = query(&mut remaining);
+    work.charge(before - remaining)
+        .map_err(|error| error.to_string())?;
+    result
+}
+
 impl Replay<'_> {
     pub(super) fn parameter_declaration_schema(
         &self,
@@ -106,17 +115,48 @@ impl Replay<'_> {
             "formal Source graph header differs from the original HIR parameter",
         )?;
         let scope = self.scope(owner)?;
-        let expected = self
-            .input_parameter_source_key(syntax, &scope)?
-            .map(|key| {
-                let key = super::call_input_source::input_select_key(
-                    &key,
-                    &self.input_selected_keys(call)?,
-                    0,
-                )?;
-                declarations::schema(&key, hir, work).map_err(|error| error.to_string())
-            })
-            .transpose()?;
+        let expected = if self.parameter_has_type_source(syntax, &scope)? {
+            // Retain the original static/scoped identity checks, but admit the
+            // genuine header before selecting graphs. A normalized Const
+            // argument is not an opaque legacy computation at this boundary.
+            let selected_keys = self.input_selected_keys(call)?;
+            let (expected, environment) = header_work(work, |remaining| {
+                self.source_type_header(syntax, &scope, info.typing_environment.clone(), remaining)
+            })?;
+            let required = expected
+                .binder_identities(work)
+                .map_err(|error| error.to_string())?;
+            let mut selected = BTreeMap::new();
+            for identity in required {
+                work.charge(1).map_err(|error| error.to_string())?;
+                if info
+                    .typing_environment
+                    .generic_sources
+                    .contains_key(&identity)
+                {
+                    // Complete actual selections already entered through the
+                    // original frozen environment; a key cannot replace one.
+                    continue;
+                }
+                let Some(key) = selected_keys.get(&identity) else {
+                    continue;
+                };
+                if matches!(key, ArgumentKey::Binder { identity: actual, .. } if actual == &identity)
+                {
+                    continue;
+                }
+                let source = header_work(work, |remaining| {
+                    self.source_header_schema(key, info.typing_environment.clone(), remaining)
+                })?;
+                selected.insert(identity, source);
+            }
+            let (expected, _) = header_work(work, |remaining| {
+                self.source_substitute_schema(expected, environment, &selected, remaining)
+            })?;
+            Some(expected)
+        } else {
+            None
+        };
         let stored = self
             .facts
             .source_types
@@ -153,6 +193,81 @@ impl Replay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formal_type_sort_rejects_a_binder_index_outside_its_original_header() {
+        let source = ril_test::case_source(
+            "tests/regressions/source-transport.ril::symbolic-type-through-three-frames",
+        );
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let facts = program.facts();
+        let function = facts
+            .functions
+            .iter()
+            .find(|function| function.syntax.name == "identity")
+            .unwrap();
+        let syntax = function.syntax.parameters[0].ty.as_ref().unwrap();
+        let replay = Replay::new(facts).unwrap();
+        let scope = replay.scope(function.definition).unwrap();
+        assert!(replay.parameter_has_type_source(syntax, &scope).unwrap());
+        let identity = &scope.types[&function.syntax.generics[0].name];
+        let mut changed = facts.clone();
+        changed.generic_binders.get_mut(identity).unwrap().index = u32::MAX;
+        assert!(
+            Replay::new(&changed)
+                .and_then(|replay| replay.parameter_has_type_source(syntax, &scope))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn const_formal_header_admits_a_static_value_without_waiving_opaque_computations() {
+        use crate::sema::source_types::SourceTypesError;
+        let source = ril_test::case_source(
+            "tests/regressions/source-transport.ril::const-nominal-formal-source-graph",
+        );
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let facts = program.facts();
+        let replay = Replay::new(facts).unwrap();
+        let function = facts
+            .functions
+            .iter()
+            .find(|function| function.syntax.name == "identity")
+            .unwrap();
+        let syntax = function.syntax.parameters[0].ty.as_ref().unwrap();
+        let scope = replay.scope(function.definition).unwrap();
+        assert!(replay.parameter_has_type_source(syntax, &scope).unwrap());
+        let (schema, _) = replay
+            .source_type_header(
+                syntax,
+                &scope,
+                function.typing_environment.clone(),
+                &mut 16384,
+            )
+            .unwrap();
+        let normalized = schema.key().unwrap();
+        assert!(matches!(normalized,
+            ArgumentKey::Name { ref name, ref arguments }
+                if name == "Token" && matches!(arguments.as_slice(), [ArgumentKey::Closed(_)])));
+        assert!(
+            schema
+                .equivalent(&schema, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        // The same source text crossing the unverified legacy adapter still
+        // has no static-sort or normalization proof and remains unresolved.
+        let key =
+            crate::static_eval::effects::bounded_argument_key(syntax, &BTreeMap::new()).unwrap();
+        let opaque = SourceSchema::import(&key, syntax.hir_id, &mut WorkLimit::new(4096)).unwrap();
+        assert_eq!(
+            schema.equivalent(&opaque, &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::Unresolved)
+        );
+    }
 
     #[test]
     fn mutable_formal_source_graph_is_a_declaration_read_and_keeps_its_identity() {
@@ -219,10 +334,12 @@ mod tests {
                         identity: "unrelated:forged".into(),
                         sort: StaticBinderSort::Type,
                     };
+                    let schema =
+                        SourceSchema::import(&forged, None, &mut WorkLimit::new(4096)).unwrap();
                     index
-                        .record(
+                        .record_schema(
                             binding,
-                            (mutation == 3).then_some(&forged),
+                            (mutation == 3).then_some(&schema),
                             facts.bindings[binding].typing_environment.clone(),
                         )
                         .unwrap();

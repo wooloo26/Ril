@@ -2,6 +2,10 @@
 //! authoritative structural representation after the graph has been frozen.
 use super::*;
 use ril_compiler_core::ids::TypeExprId;
+#[path = "schema_const_nominal.rs"]
+mod const_nominal;
+#[path = "schema_operations.rs"]
+mod operations;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SourceSchema {
@@ -90,6 +94,31 @@ impl SourceSchema {
             return Ok(false);
         };
         Ok(instance.fits_bounds(annotations))
+    }
+
+    /// Select the primitive's complete type correlations without discharging
+    /// its latent bounds. Direct callers still check the resulting obligations.
+    pub(crate) fn instantiate_builtin(
+        &self,
+        declaration: ril_compiler_core::builtin_calls::GenericBuiltin,
+        work: &mut WorkLimit,
+    ) -> Result<Option<super::polymorphic::Instance>, SourceTypesError> {
+        super::reception::receive(&self.types, self.root, self.root, None, work)?;
+        super::polymorphic::instantiate(&self.types, declaration, self.root, work)
+    }
+
+    /// A quantified declaration selects primitive argument labels before an
+    /// instance has been chosen. A compatible monomorphic callable is not that
+    /// declaration and cannot recover its polymorphic interface.
+    pub(crate) fn is_generic_builtin(
+        &self,
+        declaration: ril_compiler_core::builtin_calls::GenericBuiltin,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        let root = self.types.unalias(self.root, work)?;
+        let node = self.types.get(root)?;
+        node.charge(work)?;
+        Ok(matches!(node, SourceNode::GenericBuiltin(actual) if *actual == declaration))
     }
 
     pub(super) fn graph(&self) -> (&SourceTypes, SourceTypeId) {
@@ -338,17 +367,6 @@ impl SourceSchema {
             original: self.original,
         })
     }
-
-    pub(crate) fn receive_key(
-        &self,
-        actual: &crate::sema::effect_identity::ArgumentKey,
-        fresh: Option<&crate::sema::source_reception::Construction>,
-        work: &mut WorkLimit,
-    ) -> Result<bool, SourceTypesError> {
-        let mut builder = SourceBuilder::new()?;
-        let actual = builder.import_key(actual, work)?;
-        super::reception::receive_from(&self.types, self.root, &builder, actual, fresh, work)
-    }
 }
 
 #[cfg(test)]
@@ -582,8 +600,13 @@ mod tests {
             array(Some(2), int())
         );
         assert_eq!(
-            rows.receive_key(
-                &array(Some(0), array(Some(3), int())),
+            rows.receive_schema(
+                &SourceSchema::import(
+                    &array(Some(0), array(Some(3), int())),
+                    None,
+                    &mut WorkLimit::new(4096)
+                )
+                .unwrap(),
                 None,
                 &mut WorkLimit::new(4096)
             ),
@@ -729,19 +752,20 @@ mod tests {
     fn graph_reception_keeps_literal_context_distinct_from_stored_or_copied_values() {
         let target =
             SourceSchema::import(&array(Some(2), int()), None, &mut WorkLimit::new(4096)).unwrap();
-        let actual = array(None, int());
+        let actual =
+            SourceSchema::import(&array(None, int()), None, &mut WorkLimit::new(4096)).unwrap();
         assert_eq!(
-            target.receive_key(&actual, None, &mut WorkLimit::new(4096)),
+            target.receive_schema(&actual, None, &mut WorkLimit::new(4096)),
             Ok(false)
         );
         let fresh = Construction::Array(vec![Construction::Opaque, Construction::Opaque]);
         assert_eq!(
-            target.receive_key(&actual, Some(&fresh), &mut WorkLimit::new(4096)),
+            target.receive_schema(&actual, Some(&fresh), &mut WorkLimit::new(4096)),
             Ok(true)
         );
         let mut exhausted = WorkLimit::new(0);
         assert_eq!(
-            target.receive_key(&actual, None, &mut exhausted),
+            target.receive_schema(&actual, None, &mut exhausted),
             Err(SourceTypesError::BudgetExceeded)
         );
     }

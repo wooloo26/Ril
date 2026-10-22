@@ -1220,6 +1220,12 @@ pub enum AnswerTransport {
 }
 #[derive(Debug, Clone)]
 pub struct ConstructorInfo {
+    /// Declaration or normalized instance interpretation, captured once.
+    pub typing_environment: super::context::FrozenEnvironment,
+    pub source: Option<super::source_types::SourceView>,
+    /// Original source and compatibility cache; structural queries use source.
+    pub source_syntax: Option<Arc<TypeExpr>>,
+    pub source_type_witness: Option<Arc<SourceTypeWitness>>,
     pub tag: String,
     pub owner: Ty,
     pub payload: Ty,

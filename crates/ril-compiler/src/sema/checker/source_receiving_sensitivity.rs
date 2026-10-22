@@ -425,7 +425,7 @@ mod tests {
         let mut checker = checker;
         let target = checker.freeze_source_receiving_target(&ty("([2]int,int)"));
         let failed = tuple_target(&target, 9, target.span);
-        assert!(failed.key().is_none());
+        assert!(failed.schema.is_none());
         assert_eq!(failed.sensitivity, Unknown);
     }
 }

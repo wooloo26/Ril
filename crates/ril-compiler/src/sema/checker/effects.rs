@@ -1143,12 +1143,22 @@ impl Checker {
                             parameter.mode,
                             checker
                                 .freeze_source_receiving_target(parameter.ty.as_ref()?)
-                                .key()?,
+                                .schema
+                                .as_ref()?
+                                .key()
+                                .ok()?,
                         ))
                     })
                     .collect::<Option<Vec<_>>>()?;
                 let result = match &operation.return_type {
-                    Some(syntax) => checker.freeze_source_receiving_target(syntax).key()?,
+                    // OperationSignature's remaining legacy representation is
+                    // isolated here. Recursive/unavailable export remains NI.
+                    Some(syntax) => checker
+                        .freeze_source_receiving_target(syntax)
+                        .schema
+                        .as_ref()?
+                        .key()
+                        .ok()?,
                     None => ArgumentKey::Tuple(vec![]),
                 };
                 crate::sema::source_types::SourceSchema::import(
@@ -1667,18 +1677,12 @@ impl Checker {
             let parameters = operation
                 .signature
                 .as_ref()
-                .and_then(|source| source.key().ok())
-                .and_then(|key| {
-                    if let crate::sema::effect_identity::ArgumentKey::Callable {
-                        parameters, ..
-                    } = key
-                    {
-                        Some(parameters)
-                    } else {
-                        None
-                    }
+                .ok_or(crate::sema::source_types::SourceTypesError::Unresolved)
+                .and_then(|source| {
+                    source
+                        .callable_parameters(&mut crate::sema::source_types::WorkLimit::new(16384))
                 });
-            if let Some(parameters) = parameters {
+            if let Ok(parameters) = parameters {
                 for (index, ((_, value, span), (_, expected))) in
                     args.iter().zip(&parameters).enumerate()
                 {

@@ -312,6 +312,21 @@ impl Replay<'_> {
         work: &mut usize,
         visit: SourceVisit,
     ) -> Check<ArgumentKey> {
+        self.lambda_formal_source_schema(expression, value, context, sites, work, visit)?
+            .0
+            .key()
+            .map_err(|error| format!("legacy lambda formal Source export: {error}"))
+    }
+
+    pub(super) fn lambda_formal_source_schema(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+        visit: SourceVisit,
+    ) -> Check<OriginalSource> {
         let ExprKind::Name(name) = &expression.kind else {
             return Err("lambda formal Source is not a real Name".into());
         };
@@ -379,22 +394,14 @@ impl Replay<'_> {
             let observation =
                 self.original_source_root(expression, value, reading, visit.observation, work)?;
             self.inferred_lambda_receipt(invocation, *slot, value, observation, work)?;
-            return self.closure_entry_source_key(invocation, *slot, sites, work, visit.depth);
+            return self.closure_entry_source_schema(invocation, *slot, sites, work, visit.depth);
         };
-        let key =
-            self.input_callable_source_key(annotation, &self.lambda_input_scope(site.owner)?)?;
-        let selected = closure
-            .creation_invocation
-            .map(|id| {
-                self.facts
-                    .copy_invocations
-                    .get(id.0 as usize)
-                    .ok_or_else(|| "lambda formal creation instance is absent".to_owned())
-                    .and_then(|call| self.input_selected_keys(call))
-            })
-            .transpose()?
-            .unwrap_or_default();
-        input_select_key(&key, &selected, 0)
+        self.source_type_header(
+            annotation,
+            &self.lambda_input_scope(site.owner)?,
+            binding.typing_environment.clone(),
+            work,
+        )
     }
 
     pub(super) fn inferred_lambda_source_key(
@@ -404,6 +411,19 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
     ) -> Check<Option<ArgumentKey>> {
+        self.inferred_lambda_source_schema(expression, value, context, sites, &mut 4096)?
+            .map(|(schema, _)| schema.key().map_err(|error| error.to_string()))
+            .transpose()
+    }
+
+    pub(super) fn inferred_lambda_source_schema(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+    ) -> Check<Option<OriginalSource>> {
         let [Callable::Closure(index)] = value.callables.as_slice() else {
             return Ok(None);
         };
@@ -496,27 +516,17 @@ impl Replay<'_> {
             return Ok(None);
         }
         let scope = self.lambda_input_scope(site.owner)?;
-        let selected = closure
-            .creation_invocation
-            .map(|id| {
-                self.facts
-                    .copy_invocations
-                    .get(id.0 as usize)
-                    .ok_or_else(|| "inferred lambda creation instance is absent".to_owned())
-                    .and_then(|call| self.input_selected_keys(call))
-            })
-            .transpose()?
-            .unwrap_or_default();
         let parameter_headers = parameters;
         let parameters = parameter_headers
             .iter()
             .map(|parameter| {
                 Ok((
                     parameter.mode,
-                    input_select_key(
-                        &self.input_callable_source_key(parameter.ty.as_ref().unwrap(), &scope)?,
-                        &selected,
-                        0,
+                    self.source_type_header(
+                        parameter.ty.as_ref().unwrap(),
+                        &scope,
+                        closure.contract.typing_environment.clone(),
+                        work,
                     )?,
                 ))
             })
@@ -579,131 +589,126 @@ impl Replay<'_> {
             if result.ty == Ty::Never {
                 continue;
             }
-            let result =
-                self.original_observed_source_key(body, *observation, *body_context, sites)?;
-            let key = ArgumentKey::Callable {
-                parameters: parameters.clone(),
-                result: Box::new(result),
-                annotations: annotations
-                    .iter()
-                    .map(|annotation| annotation.text.replace(' ', ""))
-                    .collect(),
+            let Some(result) = self.original_observed_source_schema_with_work(
+                body,
+                *observation,
+                *body_context,
+                sites,
+                work,
+            )?
+            else {
+                return Ok(None);
             };
-            require(
-                source_reception::complete(&key, &mut 4096).is_some(),
-                "inferred lambda Source is incomplete",
-            )?;
-            keys.push(key);
+            *work = work
+                .checked_sub(annotations.len())
+                .ok_or("lambda Source annotations exceed their work bound")?;
+            for annotation in annotations {
+                *work = work
+                    .checked_sub(annotation.text.len().div_ceil(32))
+                    .ok_or("lambda Source annotation text exceeds its work bound")?;
+            }
+            let annotations: Vec<_> = annotations
+                .iter()
+                .map(|annotation| annotation.text.replace(' ', ""))
+                .collect();
+            *work = work
+                .checked_sub(parameters.len() * 2 + 1)
+                .ok_or("lambda Source parts exceed their work bound")?;
+            let parameter_graphs = parameters
+                .iter()
+                .map(|(mode, (schema, _))| (*mode, schema.clone()))
+                .collect::<Vec<_>>();
+            let mut parts = parameters
+                .iter()
+                .map(|(_, source)| source.clone())
+                .collect::<Vec<_>>();
+            parts.push(result.clone());
+            let mut environment = self.source_composite_environment(&parts, work)?;
+            let key = super::graph_sources::schema_work(work, |budget| {
+                SourceSchema::callable(&parameter_graphs, &result.0, &annotations, None, budget)
+            })?;
+            let depends_on_parts = parts
+                .iter()
+                .map(|(schema, _)| {
+                    super::graph_sources::schema_work(work, |budget| {
+                        schema.requires_environment(budget)
+                    })
+                })
+                .collect::<Check<Vec<_>>>()?
+                .into_iter()
+                .any(|required| required);
+            if super::graph_sources::schema_work(work, |budget| {
+                key.callable_contract_requires_environment(budget)
+            })? {
+                require(
+                    !depends_on_parts
+                        || environment.id() == closure.contract.typing_environment.id(),
+                    "lambda Source annotations combine different lexical interpretations",
+                )?;
+                environment = closure.contract.typing_environment.clone();
+            } else if !depends_on_parts {
+                environment = closure.contract.typing_environment.clone();
+            }
+            keys.push((key, environment));
         }
         let Some(first) = keys.first() else {
             return Ok(None);
         };
+        for key in &keys[1..] {
+            require(
+                super::graph_sources::schema_work(work, |budget| {
+                    first.0.equivalent(&key.0, budget)
+                })? && (!super::graph_sources::schema_work(work, |budget| {
+                    first.0.requires_environment(budget)
+                })? || first.1.id() == key.1.id()),
+                "inferred lambda bodies disagree about their Source type",
+            )?;
+        }
         require(
-            keys.iter().all(|key| key == first),
-            "inferred lambda bodies disagree about their Source type",
-        )?;
-        require(
-            self.lambda_public_view_agrees(value, first)?,
+            self.lambda_public_graph_view_agrees(value, &first.0, work)?,
             "inferred lambda Source would restore a changed public view",
         )?;
         Ok(Some(first.clone()))
     }
 
-    fn lambda_public_view_agrees(&self, value: &Value, key: &ArgumentKey) -> Check<bool> {
-        let ArgumentKey::Callable { annotations, .. } = key else {
-            unreachable!()
-        };
+    fn lambda_public_graph_view_agrees(
+        &self,
+        value: &Value,
+        schema: &SourceSchema,
+        work: &mut usize,
+    ) -> Check<bool> {
+        let annotations =
+            super::graph_sources::schema_work(work, |budget| schema.callable_annotations(budget))?
+                .ok_or("lambda Source graph is not callable")?;
         if value.callable_bounds.iter().any(|bound| {
             bound
                 .annotations
                 .iter()
                 .map(|annotation| annotation.text.replace(' ', ""))
                 .collect::<Vec<_>>()
-                != *annotations
+                != annotations
         }) {
             return Ok(false);
         }
+        let (_, result) =
+            super::graph_sources::schema_work(work, |budget| schema.callable_parts(budget))?
+                .ok_or("lambda Source graph is not callable")?;
         for bound in value.callable_returns.iter().filter(|bound| !bound.raw) {
-            let mut parameters = value
-                .signature
-                .clone()
-                .ok_or_else(|| "lambda public view has no actual parameters".to_owned())?;
-            for parameter in &mut parameters {
-                parameter.default = None;
-            }
-            let syntax = TypeExpr {
-                hir_id: None,
-                text: String::new(),
-                span: bound.span,
-                kind: TypeKind::Callable {
-                    parameters,
-                    result: Some(Box::new(bound.syntax.clone())),
-                    annotations: vec![],
-                },
+            let scope = BoundScope {
+                types: bound.typing_environment.generic_context.clone(),
+                rows: bound.typing_environment.bound_row_context.clone(),
             };
-            let mut original = crate::static_eval::effects::bounded_argument_key(
-                &syntax,
-                &bound.typing_environment.generic_context,
-            )
-            .ok_or_else(|| "lambda public view exceeds its source budget".to_owned())?;
-            let ArgumentKey::Callable {
-                annotations: actual,
-                ..
-            } = &mut original
-            else {
-                unreachable!()
-            };
-            *actual = annotations.clone();
-            let mut selected = BTreeMap::new();
-            for (identity, witness) in &bound.typing_environment.generic_sources {
-                self.type_binder(identity)?;
-                require(
-                    witness.validate_closed(),
-                    "lambda public view has an invalid complete Type witness",
-                )?;
-                selected.insert(
-                    identity.clone(),
-                    crate::static_eval::effects::bounded_argument_key(
-                        &witness.syntax,
-                        &BTreeMap::new(),
-                    )
-                    .ok_or_else(|| "lambda public witness exceeds its source budget".to_owned())?,
-                );
-            }
-            for (identity, ty) in &bound.typing_environment.generic_substitutions {
-                if selected.contains_key(identity) {
-                    continue;
-                }
-                let key = match ty {
-                    Ty::Generic(identity) => {
-                        self.type_binder(identity)?;
-                        ArgumentKey::Binder {
-                            identity: identity.clone(),
-                            sort: StaticBinderSort::Type,
-                        }
-                    }
-                    Ty::Unit => ArgumentKey::Tuple(vec![]),
-                    Ty::Bool => ArgumentKey::Name {
-                        name: "bool".into(),
-                        arguments: vec![],
-                    },
-                    Ty::Str => ArgumentKey::Name {
-                        name: "str".into(),
-                        arguments: vec![],
-                    },
-                    Ty::Bytes => ArgumentKey::Name {
-                        name: "bytes".into(),
-                        arguments: vec![],
-                    },
-                    Ty::Int(name) | Ty::Float(name) => ArgumentKey::Name {
-                        name: name.clone(),
-                        arguments: vec![],
-                    },
-                    _ => return Ok(false),
-                };
-                selected.insert(identity.clone(), key);
-            }
-            if input_select_key(&original, &selected, 0)? != *key {
+            let expected = self
+                .source_type_header(
+                    &bound.syntax,
+                    &scope,
+                    bound.typing_environment.clone(),
+                    work,
+                )?
+                .0;
+            if !super::graph_sources::schema_work(work, |budget| {
+                expected.equivalent(&result, budget)
+            })? {
                 return Ok(false);
             }
         }

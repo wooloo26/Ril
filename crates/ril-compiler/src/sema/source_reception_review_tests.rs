@@ -18,23 +18,26 @@ fn projection_keeps_nested_dimensions_and_refuses_excessive_row_scans() {
     use super::facts::Slot;
     let hir = crate::hir::nodes::HirProgram::lower(&ril_syntax::ast::Program::default()).unwrap();
     let project = |key: &ArgumentKey, slot: Slot| {
-        super::source_types::declarations::project(
-            key,
-            &[slot],
-            &hir,
-            &mut super::source_types::WorkLimit::new(4096),
-        )
+        let mut work = super::source_types::WorkLimit::new(4096);
+        let source = super::source_types::declarations::schema(key, &hir, &mut work)?;
+        let path = super::source_types::steps_in(&[slot], &mut work)?;
+        source.project_steps(&path, &mut work)
     };
     let source = record(false, array(Some(0), array(Some(3), int())));
     let member = project(&source, Slot::Field("items".into())).unwrap();
     assert_eq!(
-        relation::compatible(
+        super::source_types::SourceSchema::import(
             &array(Some(0), array(Some(2), int())),
+            None,
+            &mut super::source_types::WorkLimit::new(4096)
+        )
+        .unwrap()
+        .receive_schema(
             &member,
             None,
-            &mut 4096
+            &mut super::source_types::WorkLimit::new(4096)
         ),
-        Some(false),
+        Ok(false),
     );
     assert!(project(&source, Slot::Field("missing".into())).is_err());
     let wide = ArgumentKey::Record {

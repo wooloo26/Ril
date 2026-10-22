@@ -1,17 +1,17 @@
-//! Fresh products retain the original schemas of their actual operands.
-//! Open callable rows cannot be recovered from the erased product Ty.
+//! Fresh products and copies carry the actual operand graphs without export.
 use super::*;
 use ril_syntax::ast::RecordMember;
 
 impl Checker {
-    pub(super) fn original_copy_source_key(
+    pub(super) fn original_copy_source_schema(
         &mut self,
         value: &Value,
         syntax: &Expr,
         frame: &Frame,
-        work: &mut usize,
+        work: &mut WorkLimit,
         depth: usize,
-    ) -> Option<Option<ArgumentKey>> {
+    ) -> Result<Option<Option<(SourceSchema, FrozenEnvironment)>>, SourceTypesError> {
+        let context = self.invocation_context(frame.callable_owner);
         if let ExprKind::Binary {
             operator,
             left,
@@ -20,27 +20,33 @@ impl Checker {
             && matches!(operator.as_str(), "|>" | "!>")
             && matches!(right.kind, ExprKind::Derive { base: None, .. })
         {
-            let mut publication = || -> Option<ArgumentKey> {
-                let context = self.invocation_context(frame.callable_owner);
-                let roots = self.application_effect.occurrences(syntax.hir_id?, context);
-                *work = work.checked_sub(roots.len())?;
-                let mut roots = roots
-                    .iter()
-                    .copied()
-                    .filter(|index| self.application_effect.expressions[*index].value == *value);
-                let root = roots.next()?;
-                if roots.next().is_some() {
-                    return None;
-                }
-                let anchor = self
-                    .application_effect
-                    .evaluations
-                    .get(root)?
-                    .identity?
-                    .activation;
-                let operands = self.application_effect.occurrences(left.hir_id?, context);
-                *work = work.checked_sub(operands.len())?;
-                let mut operands = operands.iter().copied().filter(|index| {
+            let roots = self
+                .application_effect
+                .occurrences(syntax.hir_id.ok_or(SourceTypesError::MissingNode)?, context);
+            work.charge(roots.len())?;
+            let roots: Vec<_> = roots
+                .iter()
+                .copied()
+                .filter(|index| self.application_effect.expressions[*index].value == *value)
+                .collect();
+            let [root] = roots.as_slice() else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            let anchor = self
+                .application_effect
+                .evaluations
+                .get(*root)
+                .and_then(|row| row.identity)
+                .ok_or(SourceTypesError::MissingNode)?
+                .activation;
+            let operands = self
+                .application_effect
+                .occurrences(left.hir_id.ok_or(SourceTypesError::MissingNode)?, context);
+            work.charge(operands.len())?;
+            let operands: Vec<_> = operands
+                .iter()
+                .copied()
+                .filter(|index| {
                     self.application_effect.evaluations[*index]
                         .identity
                         .and_then(|id| {
@@ -49,36 +55,27 @@ impl Checker {
                                 .get(id.activation.0 as usize)
                         })
                         .is_some_and(|activation| activation.parent == Some(anchor))
-                });
-                let operand = operands.next()?;
-                if operands.next().is_some() {
-                    return None;
-                }
-                let input = self.application_effect.expressions[operand].value.clone();
-                let key = self.raw_original_source_receiving_key_inner(
-                    &input,
-                    left,
-                    frame,
-                    work,
-                    depth + 1,
-                )?;
-                source_reception::copy_view(
-                    key,
-                    crate::sema::copy_contract::CopyMode::Immutable,
-                    work,
-                )
+                })
+                .collect();
+            let [operand] = operands.as_slice() else {
+                return Err(SourceTypesError::Unresolved);
             };
-            return Some(publication());
+            let input = self.application_effect.expressions[*operand].value.clone();
+            let source = self.raw_original_source_schema(&input, left, frame, work, depth + 1)?;
+            return source
+                .map(|(schema, env)| {
+                    Ok((
+                        schema.copy_view(crate::sema::copy_contract::CopyMode::Immutable, work)?,
+                        env,
+                    ))
+                })
+                .transpose()
+                .map(Some);
         }
-        let application = crate::hir::application::AstApplication::from_ast(syntax)?;
-        let context = self.invocation_context(frame.callable_owner);
-        let Some(remaining) =
-            work.checked_sub(self.copy_call_events.len() + self.call_arguments.len())
-        else {
-            *work = 0;
-            return Some(None);
+        let Some(application) = crate::hir::application::AstApplication::from_ast(syntax) else {
+            return Ok(None);
         };
-        *work = remaining;
+        work.charge(self.copy_call_events.len() + self.call_arguments.len())?;
         let mut matching = self.copy_call_events.iter().filter(|event| {
             event.matches_source(syntax)
                 && event.owner == context.owner
@@ -95,46 +92,58 @@ impl Checker {
                             .is_some_and(|row| row.context == context)
                 })
         });
-        let event = matching.next()?;
-        let mode = event.copy_operation?;
-        let mut derive = || -> Option<_> {
-            if matching.next().is_some() || application.operands.len() != 1 {
-                return None;
-            }
-            let event_id = event.id;
-            let arguments = self
-                .call_arguments
-                .iter()
-                .find(|row| row.source_event == event_id)?;
-            let operand = arguments.supplied.get(&0)?.expression;
-            let input = &self.application_effect.expressions.get(operand)?.value;
-            Some((mode, input.clone()))
+        let Some(event) = matching.next() else {
+            return Ok(None);
         };
-        let Some((mode, input)) = derive() else {
-            return Some(None);
+        let Some(mode) = event.copy_operation else {
+            return Ok(None);
         };
-        Some(
-            self.raw_original_source_receiving_key_inner(
-                &input,
-                application.operands[0].expression,
-                frame,
-                work,
-                depth + 1,
-            )
-            .and_then(|key| source_reception::copy_view(key, mode, work)),
-        )
+        if matching.next().is_some() || application.operands.len() != 1 {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let event_id = event.id;
+        let mut arguments = self
+            .call_arguments
+            .iter()
+            .filter(|row| row.source_event == event_id);
+        let argument = arguments.next().ok_or(SourceTypesError::MissingNode)?;
+        if arguments.next().is_some() || !argument.slots_bound || !argument.evaluation_complete {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let operand = argument
+            .supplied
+            .get(&0)
+            .ok_or(SourceTypesError::MissingNode)?
+            .expression;
+        let input = self
+            .application_effect
+            .expressions
+            .get(operand)
+            .ok_or(SourceTypesError::MissingNode)?
+            .value
+            .clone();
+        let source = self.raw_original_source_schema(
+            &input,
+            application.operands[0].expression,
+            frame,
+            work,
+            depth + 1,
+        )?;
+        source
+            .map(|(schema, env)| Ok((schema.copy_view(mode, work)?, env)))
+            .transpose()
+            .map(Some)
     }
 
-    pub(super) fn original_composite_source_key(
+    pub(super) fn original_composite_source_schema(
         &mut self,
         value: &Value,
         syntax: &Expr,
         frame: &Frame,
-        work: &mut usize,
+        work: &mut WorkLimit,
         depth: usize,
-    ) -> Option<ArgumentKey> {
-        let optional_exit =
-            matches!(&syntax.kind, ExprKind::Binary { operator, .. } if operator == "??");
+    ) -> InputSource {
+        let optional_exit = matches!(&syntax.kind,ExprKind::Binary{operator,..} if operator=="??");
         let children: Vec<(Option<&str>, &Expr)> = match &syntax.kind {
             ExprKind::Unary { operator, operand } if operator == "^mut" => vec![(None, operand)],
             ExprKind::Binary {
@@ -142,100 +151,170 @@ impl Checker {
                 left,
                 right,
             } if operator == "??" => vec![(None, left), (None, right)],
-            ExprKind::Tuple(items) => items.iter().map(|item| (None, item)).collect(),
+            ExprKind::Tuple(items) | ExprKind::Array(items) => {
+                work.charge(items.len())?;
+                if items.is_empty() && matches!(syntax.kind, ExprKind::Array(_)) {
+                    return Ok(None);
+                }
+                items.iter().map(|item| (None, item)).collect()
+            }
+            ExprKind::Map(entries) => {
+                work.charge(
+                    entries
+                        .len()
+                        .checked_mul(2)
+                        .ok_or(SourceTypesError::BudgetExceeded)?,
+                )?;
+                if entries.is_empty() {
+                    return Ok(None);
+                }
+                entries
+                    .iter()
+                    .flat_map(|(key, value)| [(None, key), (None, value)])
+                    .collect()
+            }
             ExprKind::Record {
                 ty: None, members, ..
-            } => members
-                .iter()
-                .map(|member| match member {
-                    RecordMember::Field(field) => Some((Some(field.name.as_str()), &field.value)),
-                    RecordMember::Spread(_) => None,
-                })
-                .collect::<Option<_>>()?,
-            _ => return None,
+            } => {
+                let mut children = Vec::new();
+                work.charge(members.len())?;
+                for member in members {
+                    let RecordMember::Field(field) = member else {
+                        return Ok(None);
+                    };
+                    children.push((Some(field.name.as_str()), &field.value));
+                }
+                children
+            }
+            _ => return Ok(None),
         };
         let context = self.invocation_context(frame.callable_owner);
-        let occurrences = self.application_effect.occurrences(syntax.hir_id?, context);
-        *work = work.checked_sub(occurrences.len())?;
-        let mut roots = occurrences
-            .iter()
-            .copied()
-            .filter(|index| self.application_effect.expressions[*index].value == *value);
-        let root = roots.next()?;
-        if roots.next().is_some() {
-            return None;
-        }
-        // The preceding execution of this same AST root is an exclusive lower
-        // boundary. A later loop iteration cannot pay an earlier one's source.
-        let position = occurrences.partition_point(|index| *index < root);
-        let mut lower = position
-            .checked_sub(1)
-            .map_or(0, |index| occurrences[index] + 1);
-        let mut keys = Vec::new();
+        let parent = self.source_projection_occurrence(
+            syntax.hir_id.ok_or(SourceTypesError::MissingNode)?,
+            value,
+            context,
+            work,
+        )?;
+        let mut previous = None;
+        let mut schemas = Vec::new();
+        let mut environment: Option<FrozenEnvironment> = None;
         for (position, (label, child)) in children.into_iter().enumerate() {
-            *work = work.checked_sub(1 + label.map_or(0, |label| label.len().div_ceil(32)))?;
-            let candidates = self.application_effect.occurrences(child.hir_id?, context);
-            let begin = candidates.partition_point(|index| *index < lower);
-            let end = candidates.partition_point(|index| *index < root);
-            *work = work.checked_sub(end - begin)?;
-            let [index] = &candidates[begin..end] else {
-                return None;
-            };
-            let fact = &self.application_effect.expressions[*index];
+            work.charge(1 + label.map_or(0, |label| label.len().div_ceil(32)))?;
+            let index = self
+                .source_projection_receipts()
+                .child_observation(
+                    parent,
+                    child.hir_id.ok_or(SourceTypesError::MissingNode)?,
+                    work,
+                )?
+                .0 as usize;
+            if previous.is_some_and(|previous| previous >= index) {
+                return Err(SourceTypesError::Unresolved);
+            }
+            previous = Some(index);
+            let fact = &self.application_effect.expressions[index];
             if optional_exit {
                 if position == 0 && !matches!(fact.value.ty, Ty::Optional(_)) {
-                    return None;
+                    return Err(SourceTypesError::Unresolved);
                 }
                 if position == 1 {
                     if fact.value.ty == Ty::Never {
                         continue;
                     }
-                    return None;
+                    return Ok(None);
                 }
             }
             let child_value = fact.value.clone();
-            lower = *index + 1;
-            let key = self.raw_original_source_receiving_key_inner(
-                &child_value,
-                child,
-                frame,
-                work,
-                depth + 1,
-            )?;
-            source_reception::complete(&key, work)?;
-            keys.push((label, key));
+            let Some((schema, child_environment)) =
+                self.raw_original_source_schema(&child_value, child, frame, work, depth + 1)?
+            else {
+                return Ok(None);
+            };
+            if child_environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            if schema.requires_environment(work)? {
+                if environment
+                    .as_ref()
+                    .is_some_and(|previous| previous.id() != child_environment.id())
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                environment = Some(child_environment);
+            }
+            schemas.push((label, schema));
         }
-        if optional_exit {
-            let key = keys.pop()?.1;
-            let mut limit = crate::sema::source_types::WorkLimit::new(*work);
-            let key = crate::sema::source_types::declarations::project_steps(
-                &key,
-                &[crate::sema::source_types::SourcePath::OptionalPayload],
-                &self.semantic_hir,
-                &mut limit,
-            );
-            *work = limit.remaining();
-            key.ok()
+        let schema = if optional_exit {
+            schemas
+                .pop()
+                .ok_or(SourceTypesError::MissingNode)?
+                .1
+                .project_steps(
+                    &[crate::sema::source_types::SourcePath::OptionalPayload],
+                    work,
+                )?
         } else if matches!(syntax.kind, ExprKind::Unary { .. }) {
-            keys.pop().map(|(_, key)| key)
-        } else if matches!(syntax.kind, ExprKind::Tuple(_)) {
-            Some(ArgumentKey::Tuple(
-                keys.into_iter().map(|(_, key)| key).collect(),
-            ))
-        } else {
-            let mut fields = BTreeMap::new();
-            for (name, key) in keys {
-                if fields.insert(name?.to_owned(), key).is_some() {
-                    return None;
+            schemas.pop().ok_or(SourceTypesError::MissingNode)?.1
+        } else if matches!(syntax.kind, ExprKind::Array(_)) {
+            let first = &schemas.first().ok_or(SourceTypesError::MissingNode)?.1;
+            for (_, schema) in schemas.iter().skip(1) {
+                if !first.equivalent(schema, work)? {
+                    return Err(SourceTypesError::Unresolved);
                 }
             }
-            Some(ArgumentKey::Record {
-                fields: fields
+            // Inference gives this fresh literal a dynamic shell. Only the
+            // separately retained Construction may supply its receiving count.
+            SourceSchema::array(
+                crate::sema::source_types::SourceLength::Dynamic,
+                first,
+                None,
+                work,
+            )?
+        } else if matches!(syntax.kind, ExprKind::Map(_)) {
+            let key = &schemas.first().ok_or(SourceTypesError::MissingNode)?.1;
+            let value = &schemas.get(1).ok_or(SourceTypesError::MissingNode)?.1;
+            for pair in schemas.as_chunks::<2>().0.iter().skip(1) {
+                if !key.equivalent(&pair[0].1, work)? || !value.equivalent(&pair[1].1, work)? {
+                    return Err(SourceTypesError::Unresolved);
+                }
+            }
+            SourceSchema::map(key, value, None, work)?
+        } else if matches!(syntax.kind, ExprKind::Tuple(_)) {
+            SourceSchema::tuple(
+                &schemas
                     .into_iter()
-                    .map(|(name, key)| (name, false, key))
-                    .collect(),
-                row: None,
-            })
+                    .map(|(_, schema)| schema)
+                    .collect::<Vec<_>>(),
+                None,
+                work,
+            )?
+        } else {
+            let mut fields = BTreeMap::new();
+            for (label, schema) in schemas {
+                if fields
+                    .insert(
+                        label.ok_or(SourceTypesError::Unresolved)?.to_owned(),
+                        schema,
+                    )
+                    .is_some()
+                {
+                    return Err(SourceTypesError::DuplicateField);
+                }
+            }
+            SourceSchema::record(
+                &fields
+                    .into_iter()
+                    .map(|(label, schema)| (label, false, schema))
+                    .collect::<Vec<_>>(),
+                None,
+                None,
+                work,
+            )?
+        };
+        let environment = environment.unwrap_or_else(|| self.capture_typing_environment());
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
         }
+        Ok(Some((schema, environment)))
     }
 }

@@ -98,19 +98,6 @@ impl<'a> ObservationIndex<'a> {
         let end = indices.partition_point(|index| *index < range.end);
         Ok(&indices[start..end])
     }
-
-    pub(super) fn previous(
-        &self,
-        source: ExprId,
-        context: InvocationContext,
-        before: usize,
-        work: &mut usize,
-    ) -> Check<Option<usize>> {
-        Ok(self
-            .range(source, context, 0..before, work)?
-            .last()
-            .copied())
-    }
 }
 
 #[cfg(test)]
@@ -120,12 +107,16 @@ mod tests {
         hir::nodes::{HirProgram, InputOrigin},
         sema::{
             ExpressionFact,
+            application_effect::{
+                ActivationKind, EvaluationActivation, EvaluationRecord, OccurrenceIdentity,
+            },
+            facts::ScopeId,
             model::{Ty, Value},
         },
     };
     use ril_compiler_core::{
         diagnostic::CauseId,
-        ids::CallableOwner,
+        ids::{ActivationEpochId, CallableOwner, EvaluationOccurrenceId},
         source::{FileId, Span},
     };
     use ril_syntax::ast::{self, ExprKind, StmtKind};
@@ -210,6 +201,57 @@ mod tests {
                 argument_of: None,
             });
         }
+        // Allocation is preorder; the corresponding value records are
+        // postorder. Each repeated block owns its own direct tail activation.
+        let last = facts.expressions.len() - 1;
+        for (id, source, parent, start, result, end) in [
+            (0, root, None, 0, 1, 2),
+            (1, tail, Some(0), 0, 0, 1),
+            (2, root, None, 2, last, last + 1),
+            (3, tail, Some(2), 2, 2, 3),
+        ] {
+            facts.activations.push(EvaluationActivation {
+                id: ActivationEpochId(id),
+                parent: parent.map(ActivationEpochId),
+                kind: ActivationKind::Expression,
+                source: Some(source),
+                scope: ScopeId(0),
+                context: context(),
+                start_expression: start,
+                end_expression: Some(end),
+                result: Some(EvaluationOccurrenceId(result as u32)),
+            });
+        }
+        if extra_tail {
+            facts.activations.push(EvaluationActivation {
+                id: ActivationEpochId(4),
+                parent: Some(ActivationEpochId(2)),
+                kind: ActivationKind::Expression,
+                source: Some(tail),
+                scope: ScopeId(0),
+                context: context(),
+                start_expression: 3,
+                end_expression: Some(4),
+                result: Some(EvaluationOccurrenceId(3)),
+            });
+        }
+        for (index, fact) in facts.expressions.iter().enumerate() {
+            let activation = facts
+                .activations
+                .iter()
+                .find(|activation| activation.result == Some(EvaluationOccurrenceId(index as u32)))
+                .unwrap();
+            facts.evaluations.push(EvaluationRecord {
+                id: EvaluationOccurrenceId(index as u32),
+                identity: Some(OccurrenceIdentity {
+                    source: fact.source_id.unwrap(),
+                    activation: activation.id,
+                }),
+                scope: ScopeId(0),
+                context: context(),
+                allocation_epoch: 0,
+            });
+        }
         (facts, expression, tail)
     }
 
@@ -227,9 +269,9 @@ mod tests {
         assert_eq!(index.range(tail, other, 0..4, &mut work).unwrap(), &[0]);
         assert_eq!(
             index
-                .previous(expression.hir_id.unwrap(), context(), 3, &mut work)
+                .range(expression.hir_id.unwrap(), context(), 0..3, &mut work)
                 .unwrap(),
-            Some(1)
+            &[1]
         );
         assert!(work < 4096);
         assert!(index.row(0, &mut 0).is_err());

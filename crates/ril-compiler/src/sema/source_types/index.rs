@@ -12,6 +12,7 @@ pub struct SourceTypeIndex(Arc<IndexData>);
 struct IndexData {
     types: Result<SourceTypes, SourceTypesError>,
     bindings: BTreeMap<usize, BindingView>,
+    environments: BTreeMap<FrozenEnvId, FrozenEnvironment>,
 }
 
 #[derive(Debug)]
@@ -32,11 +33,33 @@ impl Default for SourceTypeIndex {
         Self(Arc::new(IndexData {
             types: Ok(SourceTypes::default()),
             bindings: BTreeMap::new(),
+            environments: BTreeMap::new(),
         }))
     }
 }
 
 impl SourceTypeIndex {
+    pub(crate) fn view_schema(
+        &self,
+        view: SourceView,
+        work: &mut WorkLimit,
+    ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
+        work.charge(1)?;
+        let types = self.retained_types()?;
+        let environment = self
+            .0
+            .environments
+            .get(&view.environment)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if environment.is_poisoned() || environment.id() != view.environment {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok((
+            SourceSchema::frozen_view(types, view.ty, None, work)?,
+            environment.clone(),
+        ))
+    }
+
     pub(super) fn retained_types(&self) -> Result<&SourceTypes, SourceTypesError> {
         self.0.types.as_ref().map_err(Clone::clone)
     }
@@ -60,11 +83,20 @@ impl SourceTypeIndex {
     pub(crate) fn validate(&self, work: &mut WorkLimit) -> Result<(), SourceTypesError> {
         work.charge(1)?;
         let types = self.retained_types()?;
+        work.charge(self.0.environments.len())?;
+        for (identity, environment) in &self.0.environments {
+            if environment.is_poisoned() || environment.id() != *identity {
+                return Err(SourceTypesError::Unresolved);
+            }
+        }
         work.charge(self.0.bindings.len())?;
         for view in self.0.bindings.values() {
             let root = view.ty.as_ref().copied().map_err(Clone::clone)?;
             if view.environment.is_poisoned() {
                 return Err(SourceTypesError::Unresolved);
+            }
+            if !self.0.environments.contains_key(&view.environment.id()) {
+                return Err(SourceTypesError::MissingNode);
             }
             if let Some(root) = root {
                 work.charge(1)?;
@@ -159,25 +191,6 @@ impl SourceTypeIndex {
             .map_err(Clone::clone)?
             .project(id, path, &mut WorkLimit::new(4096))
     }
-    pub(crate) fn projected_binding_key(
-        &self,
-        binding: usize,
-        path: &[Slot],
-        hir: Option<&crate::hir::nodes::HirProgram>,
-    ) -> Result<ArgumentKey, SourceTypesError> {
-        let id = self
-            .0
-            .bindings
-            .get(&binding)
-            .ok_or(SourceTypesError::MissingNode)?
-            .ty
-            .as_ref()
-            .copied()
-            .map_err(Clone::clone)?
-            .ok_or(SourceTypesError::Unresolved)?;
-        let types = self.0.types.as_ref().map_err(Clone::clone)?;
-        projected_key(types, id, path, hir, &mut WorkLimit::new(12288))
-    }
     pub(crate) fn validate_binding_schema(
         &self,
         binding: usize,
@@ -210,18 +223,62 @@ impl SourceTypeIndex {
 pub(crate) struct LiveSourceTypes {
     builder: Option<SourceBuilder>,
     bindings: BTreeMap<usize, BindingView>,
+    environments: BTreeMap<FrozenEnvId, FrozenEnvironment>,
 }
 
 impl LiveSourceTypes {
-    pub(crate) fn binding_schema(
+    pub(crate) fn view_schema(
         &self,
-        binding: usize,
-        original: Option<ril_compiler_core::ids::TypeExprId>,
+        view: SourceView,
         work: &mut WorkLimit,
     ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
-        self.binding_schema_if_known(binding, original, work)?
-            .ok_or(SourceTypesError::Unresolved)
+        work.charge(1)?;
+        let environment = self
+            .environments
+            .get(&view.environment)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if environment.is_poisoned() || environment.id() != view.environment {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let builder = self.builder.as_ref().ok_or(SourceTypesError::MissingNode)?;
+        Ok((
+            SourceSchema::copy_from(builder, view.ty, None, work)?,
+            environment.clone(),
+        ))
     }
+
+    /// Every receiving boundary may retain a complete view in this same arena.
+    /// An unsuccessful copy publishes neither a type root nor an environment.
+    pub(crate) fn intern_schema(
+        &mut self,
+        schema: &SourceSchema,
+        environment: FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<SourceView, SourceTypesError> {
+        work.charge(2)?;
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        if let Some(previous) = self.environments.get(&environment.id())
+            && (previous.is_poisoned() || previous.id() != environment.id())
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        if self.builder.is_none() {
+            self.builder = Some(SourceBuilder::new()?);
+        }
+        let ty = schema.copy_into(
+            self.builder.as_mut().ok_or(SourceTypesError::MissingNode)?,
+            work,
+        )?;
+        let id = environment.id();
+        self.environments.entry(id).or_insert(environment);
+        Ok(SourceView {
+            ty,
+            environment: id,
+        })
+    }
+
     pub(crate) fn binding_schema_if_known(
         &self,
         binding: usize,
@@ -244,38 +301,6 @@ impl LiveSourceTypes {
             SourceSchema::copy_from(builder, root, original, work)?,
             view.environment.clone(),
         )))
-    }
-    pub(crate) fn record(
-        &mut self,
-        binding: usize,
-        key: Option<&ArgumentKey>,
-        environment: FrozenEnvironment,
-    ) -> Result<(), SourceTypesError> {
-        if self.bindings.contains_key(&binding) {
-            return Err(SourceTypesError::AlreadyDefined);
-        }
-        let result = (|| {
-            if environment.is_poisoned() {
-                return Err(SourceTypesError::Unresolved);
-            }
-            let Some(key) = key else { return Ok(None) };
-            if self.builder.is_none() {
-                self.builder = Some(SourceBuilder::new()?);
-            }
-            self.builder
-                .as_mut()
-                .ok_or(SourceTypesError::MissingNode)?
-                .import_key(key, &mut WorkLimit::new(4096))
-                .map(Some)
-        })();
-        self.bindings.insert(
-            binding,
-            BindingView {
-                ty: result.clone(),
-                environment,
-            },
-        );
-        result.map(|_| ())
     }
     pub(crate) fn record_schema(
         &mut self,
@@ -305,6 +330,9 @@ impl LiveSourceTypes {
                 )
                 .map(Some)
         })();
+        self.environments
+            .entry(environment.id())
+            .or_insert_with(|| environment.clone());
         self.bindings.insert(
             binding,
             BindingView {
@@ -314,24 +342,6 @@ impl LiveSourceTypes {
         );
         result.map(|_| ())
     }
-    pub(crate) fn projected_binding_key(
-        &self,
-        binding: usize,
-        path: &[Slot],
-        hir: Option<&crate::hir::nodes::HirProgram>,
-    ) -> Result<ArgumentKey, SourceTypesError> {
-        let id = self
-            .bindings
-            .get(&binding)
-            .ok_or(SourceTypesError::MissingNode)?
-            .ty
-            .as_ref()
-            .copied()
-            .map_err(Clone::clone)?
-            .ok_or(SourceTypesError::Unresolved)?;
-        let builder = self.builder.as_ref().ok_or(SourceTypesError::MissingNode)?;
-        projected_key(builder, id, path, hir, &mut WorkLimit::new(8192))
-    }
     pub(crate) fn freeze(self) -> SourceTypeIndex {
         let types = match self.builder {
             Some(builder) => builder.freeze(&mut WorkLimit::new(65536)),
@@ -340,27 +350,8 @@ impl LiveSourceTypes {
         SourceTypeIndex(Arc::new(IndexData {
             types,
             bindings: self.bindings,
+            environments: self.environments,
         }))
-    }
-}
-
-fn projected_key(
-    types: &(impl SourceTypeQueries + LegacySourceExport),
-    root: SourceTypeId,
-    path: &[Slot],
-    hir: Option<&crate::hir::nodes::HirProgram>,
-    work: &mut WorkLimit,
-) -> Result<ArgumentKey, SourceTypesError> {
-    let steps = steps_in(path, work)?;
-    match (types.project(root, &steps, work), hir) {
-        (Ok(selected), _) => types.legacy_key(selected, work),
-        (Err(SourceTypesError::MissingProjection | SourceTypesError::Unresolved), Some(hir)) => {
-            // Resolve the indexed declaration, never a later mutable value.
-            // The same budget pays for the unresolved walk and its expansion.
-            let key = types.legacy_key(root, work)?;
-            super::declarations::project_steps(&key, &steps, hir, work)
-        }
-        (Err(error), _) => Err(error),
     }
 }
 
@@ -388,8 +379,151 @@ pub(crate) fn steps_in(
 mod tests {
     use super::*;
 
+    fn recursive_schema() -> SourceSchema {
+        let mut work = WorkLimit::new(4096);
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder.reserve(&mut work).unwrap();
+        let scalar = builder
+            .insert(SourceNode::Scalar(SourceScalar::Int), &mut work)
+            .unwrap();
+        let inner = builder
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(3),
+                    element: scalar,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let outer = builder
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(0),
+                    element: inner,
+                },
+                &mut work,
+            )
+            .unwrap();
+        builder
+            .define(
+                root,
+                SourceNode::Record {
+                    fields: vec![
+                        SourceField {
+                            label: "again".into(),
+                            mutable: false,
+                            value: root,
+                        },
+                        SourceField {
+                            label: "empty".into(),
+                            mutable: false,
+                            value: outer,
+                        },
+                    ],
+                    row: None,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let types = builder.freeze(&mut work).unwrap();
+        SourceSchema::frozen_view(&types, root, None, &mut work).unwrap()
+    }
+
     #[test]
-    fn failed_legacy_admissions_cannot_be_reclassified_as_unknown_views() {
+    fn nonbinding_views_borrow_the_same_frozen_arena_and_retain_their_complete_core_roots() {
+        let source = recursive_schema();
+        let environment = FrozenEnvironment::default();
+        let mut live = LiveSourceTypes::default();
+        let view = live
+            .intern_schema(&source, environment.clone(), &mut WorkLimit::new(4096))
+            .unwrap();
+        let index = live.freeze();
+        assert_eq!(view.environment, environment.id());
+        assert!(!index.contains_binding(0));
+        let (schema, frozen) = index.view_schema(view, &mut WorkLimit::new(4096)).unwrap();
+        assert_eq!(frozen.id(), environment.id());
+        assert_eq!(schema.key(), Err(SourceTypesError::RecursiveLegacyKey));
+        assert!(
+            schema
+                .equivalent(&source, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        let retained = index.retained(&mut WorkLimit::new(4096)).unwrap();
+        let root = retained.view_root(view, &mut WorkLimit::new(128)).unwrap();
+        let ril_ir::provenance::SourceTypeNode::Record { fields, .. } =
+            retained.graph.get(root).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .find(|field| field.label == "again")
+                .unwrap()
+                .value,
+            root
+        );
+        assert!(retained.graph.nodes.iter().any(|node| matches!(
+            node,
+            ril_ir::provenance::SourceTypeNode::Array {
+                length: SourceLength::Fixed(3),
+                ..
+            }
+        )));
+        assert!(index.view_schema(view, &mut WorkLimit::new(0)).is_err());
+    }
+
+    #[test]
+    fn intern_failure_keeps_old_roots_and_cannot_publish_an_environment_or_foreign_view() {
+        let source = recursive_schema();
+        let environment = FrozenEnvironment::default();
+        let mut live = LiveSourceTypes::default();
+        let view = live
+            .intern_schema(&source, environment.clone(), &mut WorkLimit::new(4096))
+            .unwrap();
+        let checkpoint = live.builder.as_ref().unwrap().checkpoint();
+        let unpublished = FrozenEnvironment::default();
+        assert_eq!(
+            live.intern_schema(&source, unpublished.clone(), &mut WorkLimit::new(20)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+        assert_eq!(live.builder.as_ref().unwrap().checkpoint(), checkpoint);
+        assert!(!live.environments.contains_key(&unpublished.id()));
+        assert_eq!(
+            live.intern_schema(
+                &source,
+                FrozenEnvironment::poisoned(),
+                &mut WorkLimit::new(4096)
+            ),
+            Err(SourceTypesError::Unresolved)
+        );
+        let first = live.freeze();
+        let mut another = LiveSourceTypes::default();
+        let foreign = another
+            .intern_schema(&source, environment, &mut WorkLimit::new(4096))
+            .unwrap();
+        assert!(matches!(
+            first.view_schema(foreign, &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::ForeignIdentity)
+        ));
+        let missing = SourceView {
+            environment: unpublished.id(),
+            ..view
+        };
+        assert!(matches!(
+            first.view_schema(missing, &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::MissingNode)
+        ));
+        first.view_schema(view, &mut WorkLimit::new(4096)).unwrap();
+        let retained = first.retained(&mut WorkLimit::new(4096)).unwrap();
+        assert_eq!(
+            retained.view_root(foreign, &mut WorkLimit::new(128)),
+            Err(SourceTypesError::ForeignIdentity)
+        );
+    }
+
+    #[test]
+    fn failed_header_ingress_cannot_create_an_unknown_binding_view() {
         let environment = FrozenEnvironment::default();
         let mut live = LiveSourceTypes::default();
         let invalid = ArgumentKey::Array {
@@ -397,29 +531,23 @@ mod tests {
             element: Box::new(ArgumentKey::Tuple(vec![])),
         };
         assert_eq!(
-            live.record(1, Some(&invalid), environment.clone()),
-            Err(SourceTypesError::Unresolved)
+            SourceSchema::import(&invalid, None, &mut WorkLimit::new(4096)).unwrap_err(),
+            SourceTypesError::Unresolved
         );
         live.record_schema(2, None, environment.clone()).unwrap();
         assert!(matches!(
             live.binding_schema_if_known(1, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::Unresolved)
+            Err(SourceTypesError::MissingNode)
         ));
         let frozen = live.freeze();
         assert!(matches!(
             frozen.binding_schema_if_known(1, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::Unresolved)
+            Err(SourceTypesError::MissingNode)
         ));
         assert!(!frozen.validate_binding_schema(1, None, environment.id()));
         assert!(frozen.validate_binding_schema(2, None, environment.id()));
-        assert_eq!(
-            frozen.validate(&mut WorkLimit::new(4096)),
-            Err(SourceTypesError::Unresolved)
-        );
-        assert!(matches!(
-            frozen.retained(&mut WorkLimit::new(4096)),
-            Err(SourceTypesError::Unresolved)
-        ));
+        frozen.validate(&mut WorkLimit::new(4096)).unwrap();
+        frozen.retained(&mut WorkLimit::new(4096)).unwrap();
     }
 
     #[test]
@@ -517,6 +645,7 @@ mod tests {
         ));
         let failed_arena = SourceTypeIndex(Arc::new(IndexData {
             types: Err(SourceTypesError::BudgetExceeded),
+            environments: BTreeMap::from([(environment.id(), environment.clone())]),
             bindings: BTreeMap::from([(
                 1,
                 BindingView {
@@ -606,27 +735,37 @@ mod tests {
         };
         let mut first = LiveSourceTypes::default();
         let environment = FrozenEnvironment::default();
-        first.record(2, Some(&key), environment.clone()).unwrap();
+        let schema = SourceSchema::import(&key, None, &mut WorkLimit::new(4096)).unwrap();
+        first
+            .record_schema(2, Some(&schema), environment.clone())
+            .unwrap();
         let first = first.freeze();
         let mut second = LiveSourceTypes::default();
         let other_environment = FrozenEnvironment::default();
         second
-            .record(2, Some(&key), other_environment.clone())
+            .record_schema(2, Some(&schema), other_environment.clone())
             .unwrap();
         let second = second.freeze();
-        let schema = SourceSchema::import(&key, None, &mut WorkLimit::new(4096)).unwrap();
         assert!(first.validate_binding_schema(2, Some(&schema), environment.id()));
         assert!(!first.validate_binding_schema(2, Some(&schema), other_environment.id()));
         assert_eq!(first.binding_view(2).unwrap().environment, environment.id());
         assert!(matches!(
-            second.key(first.binding_type(2).unwrap()),
+            second.project(first.binding_type(2).unwrap(), &[]),
             Err(SourceTypesError::ForeignIdentity)
         ));
-        let child = first
-            .projected_binding_key(2, &[Slot::AnyIndex], None)
+        let (source, _) = first
+            .view_schema(first.binding_view(2).unwrap(), &mut WorkLimit::new(4096))
             .unwrap();
-        assert!(
-            matches!(child, ArgumentKey::Array { length: Some(length), .. } if length == "const(int:2)")
+        let child = source
+            .project_steps(&[SourcePath::Element], &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_eq!(
+            child
+                .array_parts(&mut WorkLimit::new(4096))
+                .unwrap()
+                .unwrap()
+                .0,
+            SourceLength::Fixed(2)
         );
         assert!(!SourceTypeIndex::default().validate_binding_schema(
             2,

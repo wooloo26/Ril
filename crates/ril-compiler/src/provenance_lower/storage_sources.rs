@@ -9,7 +9,11 @@ fn observation(value: source::StorageObservation) -> p::StorageObservation {
     }
 }
 
-pub(super) fn lower(facts: &SemanticFacts, graph: &mut p::Graph) -> Result<(), NotImplemented> {
+pub(super) fn lower(
+    facts: &SemanticFacts,
+    graph: &mut p::Graph,
+    contracts: &mut ReturnContracts,
+) -> Result<(), NotImplemented> {
     let mut work = crate::sema::source_types::WorkLimit::new(4_000_000);
     let retained = facts.source_types.retained(&mut work).map_err(|error| {
         NotImplemented::new(
@@ -46,34 +50,58 @@ pub(super) fn lower(facts: &SemanticFacts, graph: &mut p::Graph) -> Result<(), N
             })
         })
         .collect::<Result<_, NotImplemented>>()?;
-    graph.source_types = retained.graph;
+    work.charge(facts.storage_writes.len()).map_err(|error| {
+        NotImplemented::new(
+            ril_compiler_core::phase::Stage::Lowering,
+            format!("storage Source receipts could not be retained: {error}"),
+        )
+    })?;
     graph.storage_writes = facts
         .storage_writes
         .iter()
-        .map(|value| p::StorageWrite {
-            target: value.target,
-            context: resumption_context(value.context),
-            activation: value.activation.0,
-            span: value.span,
-            operator: value.operator.clone(),
-            rhs: observation(value.rhs),
-            destination: match &value.destination {
-                source::StorageDestination::Binding(binding) => {
-                    p::StorageDestination::Binding(*binding as u32)
-                }
-                source::StorageDestination::Projection {
-                    receiver,
-                    selector,
-                    slot,
-                } => p::StorageDestination::Projection {
-                    receiver: observation(*receiver),
-                    selector: selector.map(observation),
-                    slot: projection(slot),
+        .map(|value| {
+            let expected = value
+                .expected
+                .map(|view| {
+                    let (_, environment) = facts.source_types.view_schema(view, &mut work)?;
+                    Ok::<_, crate::sema::source_types::SourceTypesError>(p::SourceView {
+                        ty: retained.view_root(view, &mut work)?,
+                        environment: contracts.environment(&mut graph.types, &environment),
+                    })
+                })
+                .transpose()
+                .map_err(|error| {
+                    NotImplemented::new(
+                        ril_compiler_core::phase::Stage::Lowering,
+                        format!("storage Source view could not be retained: {error}"),
+                    )
+                })?;
+            Ok(p::StorageWrite {
+                target: value.target,
+                context: resumption_context(value.context),
+                activation: value.activation.0,
+                span: value.span,
+                operator: value.operator.clone(),
+                rhs: observation(value.rhs),
+                destination: match &value.destination {
+                    source::StorageDestination::Binding(binding) => {
+                        p::StorageDestination::Binding(*binding as u32)
+                    }
+                    source::StorageDestination::Projection {
+                        receiver,
+                        selector,
+                        slot,
+                    } => p::StorageDestination::Projection {
+                        receiver: observation(*receiver),
+                        selector: selector.map(observation),
+                        slot: projection(slot),
+                    },
                 },
-            },
-            expected: value.expected.as_ref().map(record_bounds::key),
-            completed: value.completed,
+                expected,
+                completed: value.completed,
+            })
         })
-        .collect();
+        .collect::<Result<_, NotImplemented>>()?;
+    graph.source_types = retained.graph;
     Ok(())
 }

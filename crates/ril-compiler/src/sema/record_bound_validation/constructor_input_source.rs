@@ -8,6 +8,261 @@ use crate::sema::{
 use ril_syntax::ast::PatternKind;
 
 impl Replay<'_> {
+    fn registered_constructor_result_source(
+        &self,
+        constructor: &ConstructorInfo,
+        callee_syntax: &Expr,
+        work: &mut usize,
+    ) -> Check<Option<OriginalSource>> {
+        require(
+            !constructor.typing_environment.is_poisoned(),
+            "constructor result has a poisoned declaration interpretation",
+        )?;
+        let mut generic_names = BTreeSet::new();
+        constructor.owner.generic_names(&mut generic_names);
+        if !generic_names.is_empty() {
+            require(
+                constructor.source.is_none(),
+                "constructor template claims a complete instance Source",
+            )?;
+            return Ok(None);
+        }
+        let Some(written) = constructor.source_syntax.as_deref() else {
+            let program = self
+                .facts
+                .source_program
+                .as_ref()
+                .ok_or("constructor result has no frozen Source program")?;
+            *work = work
+                .checked_sub(program.statements.len())
+                .ok_or("constructor declaration classification exceeds its work bound")?;
+            let mut declared = false;
+            for statement in &program.statements {
+                let StmtKind::Type(declaration) = &statement.kind else {
+                    continue;
+                };
+                *work = work
+                    .checked_sub(declaration.variants.len())
+                    .ok_or("constructor variant classification exceeds its work bound")?;
+                declared |= declaration.nominal && declaration.name == constructor.tag
+                    || declaration.variants.iter().any(|variant| {
+                        format!("{}::{}", declaration.name, variant.name) == constructor.tag
+                    });
+            }
+            let step = crate::sema::model::iteration::step_declaration();
+            *work = work
+                .checked_sub(step.variants.len())
+                .ok_or("canonical constructor classification exceeds its work bound")?;
+            declared |= step
+                .variants
+                .iter()
+                .any(|variant| format!("{}::{}", step.name, variant.name) == constructor.tag);
+            // Source-owned declarations and the exact built-in Step header
+            // register result views. Standard catalog entities without a
+            // source header keep their existing separate payload validation.
+            require(
+                !declared
+                    && constructor.source.is_none()
+                    && constructor.source_type_witness.is_none(),
+                "constructor erased its required declaration and instance Source",
+            )?;
+            return Ok(None);
+        };
+        let TypeKind::Name { path, .. } = &written.kind else {
+            return Err("constructor result is not its nominal declaration header".into());
+        };
+        let family = path.join("::");
+        let declaration = self
+            .facts
+            .external_type_declarations
+            .get(&family)
+            .ok_or("constructor result lost its genuine type declaration")?;
+        let program = self
+            .facts
+            .source_program
+            .as_ref()
+            .ok_or("constructor result has no frozen Source program")?;
+        require(program.statements.iter().any(|statement|
+            matches!(&statement.kind, StmtKind::Type(actual) if actual == declaration))
+            || declaration == &crate::sema::model::iteration::step_declaration(),
+            "constructor result header lacks its actual declaration")?;
+        let fixed_result = if declaration.nominal {
+            require(
+                constructor.nominal
+                    && constructor.tag == declaration.name
+                    && constructor.span == declaration.span,
+                "constructor result changed its nominal declaration",
+            )?;
+            None
+        } else {
+            let variant = declaration.variants.iter().find(|variant| {
+                format!("{}::{}", declaration.name, variant.name) == constructor.tag
+                    && variant.span == constructor.span
+            });
+            require(
+                !constructor.nominal && !declaration.opaque && variant.is_some(),
+                "constructor result changed its variant declaration",
+            )?;
+            let variant = variant.unwrap();
+            if let Some(result) = &variant.result {
+                crate::static_eval::effects::bounded_argument_key(result, &BTreeMap::new())
+                    .ok_or("constructor result equation exceeds its Source admission")?;
+            }
+            variant.result.as_ref().filter(|result| {
+                let dependencies = crate::static_eval::effects::type_dependencies(result);
+                declaration
+                    .generics
+                    .iter()
+                    .chain(&variant.generics)
+                    .all(|parameter| !dependencies.contains(&parameter.name))
+            })
+        };
+        // A GADT tag may itself state a closed result equation. The actual
+        // declaration then supplies that Source even without written generic
+        // arguments, independently of any receiving annotation.
+        let declaration_result = if declaration.generics.is_empty()
+            || matches!(callee_syntax.kind, ExprKind::Generic { .. })
+        {
+            None
+        } else {
+            Some(self.closed_alias(fixed_result
+                .ok_or("constructor result has no original explicit instance Source or closed declaration equation")?)?)
+        };
+        let arguments = if declaration.generics.is_empty() || declaration_result.is_some() {
+            vec![]
+        } else {
+            let ExprKind::Generic { base, arguments } = &callee_syntax.kind else {
+                return Err("constructor result has no original explicit instance Source".into());
+            };
+            let name = match &base.kind {
+                ExprKind::Name(name) => name.clone(),
+                ExprKind::Path(path) => path.join("::"),
+                _ => return Err("constructor result lost its original instance declaration".into()),
+            };
+            require(
+                name == constructor.tag,
+                "constructor result instance targets another declaration",
+            )?;
+            let layout = self
+                .facts
+                .target_layout
+                .ok_or("constructor result lost its frozen layout")?;
+            let normalized = crate::static_eval::normalize_constructor_arguments(
+                declaration,
+                arguments,
+                &self.facts.external_type_declarations,
+                layout,
+            )
+            .map_err(|_| {
+                "constructor result instance cannot normalize its actual arguments".to_owned()
+            })?;
+            require(
+                normalized.payloads.contains_key(&constructor.tag),
+                "constructor result instance excludes the actual variant",
+            )?;
+            normalized.arguments
+        };
+        let expected = declaration_result.unwrap_or_else(|| TypeExpr {
+            hir_id: None,
+            text: String::new(),
+            span: declaration.span,
+            kind: TypeKind::Name {
+                path: declaration.name.split("::").map(str::to_owned).collect(),
+                arguments,
+            },
+        });
+        let environment = constructor.typing_environment.clone();
+        require(
+            !environment.is_poisoned(),
+            "constructor result has a poisoned interpretation",
+        )?;
+        let view = constructor
+            .source
+            .ok_or("constructor result erased its admitted instance Source")?;
+        require(
+            view.environment == environment.id(),
+            "constructor result changed its original interpretation",
+        )?;
+        let (actual, admitted_environment) = super::graph_sources::schema_work(work, |budget| {
+            self.facts.source_types.view_schema(view, budget)
+        })?;
+        require(
+            admitted_environment.id() == environment.id(),
+            "constructor result borrowed another Source environment",
+        )?;
+        let (expected, _) =
+            self.source_type_header(&expected, &BoundScope::default(), environment.clone(), work)?;
+        let (cached, _) =
+            self.source_type_header(written, &BoundScope::default(), environment, work)?;
+        require(
+            super::graph_sources::schema_work(work, |budget| expected.equivalent(&actual, budget))?
+                && super::graph_sources::schema_work(work, |budget| {
+                    expected.equivalent(&cached, budget)
+                })?,
+            "constructor result Source differs from its actual declaration and instance",
+        )?;
+        Ok(Some((actual, admitted_environment)))
+    }
+
+    pub(super) fn original_constructor_result_schema(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        observation: Option<usize>,
+        work: &mut usize,
+    ) -> Check<Option<OriginalSource>> {
+        let Some(application) = AstApplication::from_ast(expression) else {
+            return Ok(None);
+        };
+        let root = self.original_source_root(expression, value, context, observation, work)?;
+        *work = work
+            .checked_sub(self.facts.copy_call_events.len())
+            .ok_or("constructor result event work exhausted")?;
+        let mut events = self
+            .facts
+            .copy_call_events
+            .iter()
+            .filter(|event| event.result_expression == Some(root));
+        let Some(event) = events.next() else {
+            return Ok(None);
+        };
+        require(
+            events.next().is_none()
+                && event.matches_source(expression)
+                && event.owner == context.owner
+                && event.parent == context.invocation,
+            "constructor result borrowed another actual call occurrence",
+        )?;
+        let callee = event
+            .callee_expression
+            .ok_or("constructor result lost its actual callee observation")?;
+        let fact = self
+            .facts
+            .expressions
+            .get(callee)
+            .ok_or("constructor result callee is outside its arena")?;
+        require(
+            fact.source_id.is_some()
+                && fact.source_id == application.callee.hir_id
+                && self.observations.row(callee, work)?.context == context,
+            "constructor result borrowed another callee Source",
+        )?;
+        let [Callable::Constructor(name)] = fact.value.callables.as_slice() else {
+            return Ok(None);
+        };
+        let constructor = self
+            .facts
+            .constructors
+            .get(name)
+            .ok_or("constructor result lost its registered declaration")?;
+        require(
+            value.variant_tag.as_ref() == Some(&constructor.tag),
+            "constructor result changed its actual tag",
+        )?;
+        self.registered_constructor_result_source(constructor, application.callee, work)
+    }
+
     fn original_constructor_payload(
         &self,
         constructor: &ConstructorInfo,
@@ -168,6 +423,7 @@ impl Replay<'_> {
                 self.facts.constructors.get(name).ok_or_else(|| {
                     "constructor source lost its actual registered tag".to_owned()
                 })?;
+            self.registered_constructor_result_source(constructor, callee_syntax, &mut 16384)?;
             let payload = self.original_constructor_payload(constructor, callee_syntax)?;
             let payload_key = self.normalized_key(&payload, &BoundScope::default())?;
             if source_reception::sensitive(&payload_key, &mut 4096) == Some(false) {
@@ -265,24 +521,37 @@ impl Replay<'_> {
                     "constructor source operand belongs to another event, slot or Source occurrence",
                 )?;
                 self.input_operand_interval(event, slot, token.expression, context, sites)?;
-                let key = self.original_observed_source_key(
+                let actual = self.original_observed_source_schema_with_work(
                     actual_syntax,
                     token.expression,
                     context,
                     sites,
-                );
+                    &mut 16384,
+                )?;
                 let fresh =
                     source_reception::construction(actual_syntax, &mut 4096).ok_or_else(|| {
                         "constructor source construction exceeds its replay budget".to_owned()
                     })?;
-                let answer = match key {
-                    Ok(key) => {
-                        source_reception::compatible(expected, &key, Some(&fresh), &mut 4096)
-                    }
-                    Err(_) => source_reception::empty_context(expected, &fresh, &mut 4096),
+                let (expected, _) =
+                    self.source_header_schema(expected, FrozenEnvironment::default(), &mut 16384)?;
+                let answer = if let Some(answer) = expected
+                    .empty_context(&fresh, &mut WorkLimit::new(4096))
+                    .map_err(|error| error.to_string())?
+                {
+                    answer
+                } else {
+                    let (actual, environment) =
+                        actual.ok_or("constructor operand has no original Source graph")?;
+                    require(
+                        !environment.is_poisoned(),
+                        "constructor operand Source environment is poisoned",
+                    )?;
+                    expected
+                        .receive_schema(&actual, Some(&fresh), &mut WorkLimit::new(16384))
+                        .map_err(|error| error.to_string())?
                 };
                 require(
-                    answer == Some(true),
+                    answer,
                     "constructor original whole input source does not prove its declared payload coordinates",
                 )?;
             }

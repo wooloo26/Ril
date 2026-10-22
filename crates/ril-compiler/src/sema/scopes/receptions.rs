@@ -6,36 +6,48 @@ use crate::hir::nodes as hir;
 use crate::sema::{
     effect_identity::ArgumentKey,
     model::Callable,
-    source_reception::{self, Construction},
-    source_types::WorkLimit,
+    source_reception::Construction,
+    source_types::{SourceSchema, WorkLimit},
 };
 use ril_compiler_core::ids::{ActivationEpochId, ExprId};
 
 fn receive(
     facts: &crate::sema::SemanticFacts,
     expected: &ArgumentKey,
-    input: (Option<ArgumentKey>, Construction),
+    input: (
+        Option<(SourceSchema, crate::sema::context::FrozenEnvironment)>,
+        Construction,
+    ),
 ) -> Result<(), String> {
     let (actual, fresh) = input;
-    if let Some(answer) = source_reception::empty_context(expected, &fresh, &mut 4096) {
-        return answer
-            .then_some(())
-            .ok_or_else(|| "empty receiver input differs from its declared Source view".into());
-    }
-    let actual = actual.ok_or("receiver input has no complete original Source view")?;
-    let actual = crate::sema::source_types::declarations::expanded_key(
-        &actual,
+    let expected = crate::sema::source_types::declarations::schema(
+        expected,
         facts
             .semantic_hir
             .as_deref()
             .ok_or("receiver input has no canonical HIR")?,
         &mut WorkLimit::new(16384),
     )
-    .map_err(|error| format!("receiver input declaration: {error}"))?;
-    match source_reception::compatible(expected, &actual, Some(&fresh), &mut 16384) {
-        Some(true) => Ok(()),
-        Some(false) => Err("receiver input differs from its declared complete Source view".into()),
-        None => Err("receiver input has an unresolved Source obligation".into()),
+    .map_err(|error| error.to_string())?;
+    if let Some(answer) = expected
+        .empty_context(&fresh, &mut WorkLimit::new(4096))
+        .map_err(|error| error.to_string())?
+    {
+        return answer
+            .then_some(())
+            .ok_or_else(|| "empty receiver input differs from its declared Source view".into());
+    }
+    let (actual, environment) =
+        actual.ok_or("receiver input has no complete original Source view")?;
+    if environment.is_poisoned() {
+        return Err("receiver input has a poisoned Source environment".into());
+    }
+    match expected.receive_schema(&actual, Some(&fresh), &mut WorkLimit::new(16384)) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("receiver input differs from its declared complete Source view".into()),
+        Err(error) => Err(format!(
+            "receiver input has an unresolved Source obligation: {error}"
+        )),
     }
 }
 
@@ -149,7 +161,18 @@ pub(crate) fn validate(facts: &crate::sema::SemanticFacts) -> Result<(), String>
             }
             sources.observed(*source, observation)?
         } else {
-            (Some(ArgumentKey::Tuple(vec![])), Construction::Opaque)
+            (
+                Some((
+                    SourceSchema::import(
+                        &ArgumentKey::Tuple(vec![]),
+                        None,
+                        &mut WorkLimit::new(4096),
+                    )
+                    .map_err(|error| error.to_string())?,
+                    crate::sema::context::FrozenEnvironment::default(),
+                )),
+                Construction::Opaque,
+            )
         };
         receive(facts, &result, input)?;
     }

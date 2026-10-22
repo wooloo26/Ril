@@ -31,25 +31,16 @@ pub(crate) struct Target {
 }
 
 impl Target {
-    /// Transitional export for remaining key-based consumers. The graph is
-    /// the sole stored structural truth; failure retains the source obligation.
-    pub(crate) fn key(&self) -> Option<ArgumentKey> {
-        self.schema.as_ref()?.key().ok()
-    }
-
-    pub(crate) fn receive(
+    pub(crate) fn receive_schema(
         &self,
-        actual: &ArgumentKey,
+        actual: &super::source_types::SourceSchema,
         fresh: Option<&Construction>,
-        work: &mut usize,
-    ) -> Option<bool> {
-        let mut budget = super::source_types::WorkLimit::new(*work);
-        let result = self
-            .schema
-            .as_ref()?
-            .receive_key(actual, fresh, &mut budget);
-        *work = budget.remaining();
-        result.ok()
+        work: &mut super::source_types::WorkLimit,
+    ) -> Result<bool, super::source_types::SourceTypesError> {
+        self.schema
+            .as_ref()
+            .ok_or(super::source_types::SourceTypesError::Unresolved)?
+            .receive_schema(actual, fresh, work)
     }
 }
 
@@ -67,32 +58,6 @@ pub(crate) enum Construction {
     Map(Vec<(Construction, Construction)>),
     Tuple(Vec<Construction>),
     Record(BTreeMap<String, Construction>),
-}
-
-/// Copying changes the outer immutable qualification, while preserving every
-/// complete source coordinate. Eligibility and graph/authority transfer are
-/// separate obligations, even when this type-view transformation succeeds.
-pub(crate) fn copy_view(
-    key: ArgumentKey,
-    mode: super::copy_contract::CopyMode,
-    work: &mut usize,
-) -> Option<ArgumentKey> {
-    *work = work.checked_sub(1)?;
-    let immutable = matches!(&key, ArgumentKey::Name { name, arguments }
-        if matches!(name.as_str(), "Immut" | "Prelude::Immut") && arguments.len() == 1);
-    match (mode, immutable) {
-        (super::copy_contract::CopyMode::Mutable, true) => {
-            let ArgumentKey::Name { mut arguments, .. } = key else {
-                return None;
-            };
-            arguments.pop()
-        }
-        (super::copy_contract::CopyMode::Immutable, false) => Some(ArgumentKey::Name {
-            name: "Immut".into(),
-            arguments: vec![key],
-        }),
-        _ => Some(key),
-    }
 }
 
 fn charge(work: &mut usize, depth: usize) -> Option<()> {

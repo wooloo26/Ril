@@ -1437,19 +1437,57 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
             direct: proof.direct,
         })
         .collect();
+    let mut constructor_work = crate::sema::source_types::WorkLimit::new(4_000_000);
+    constructor_work
+        .charge(facts.constructors.len())
+        .map_err(|error| {
+            NotImplemented::new(
+                ril_compiler_core::phase::Stage::Lowering,
+                format!("constructor Source admission exceeds its work bound: {error}"),
+            )
+        })?;
     graph.constructors = facts
         .constructors
         .iter()
-        .map(|(name, info)| p::Constructor {
-            name: name.clone(),
-            tag: info.tag.clone(),
-            owner: ty(&mut graph.types, &info.owner),
-            payload: ty(&mut graph.types, &info.payload),
-            nominal: info.nominal,
-            has_payload: info.has_payload,
-            span: info.span,
+        .map(|(name, info)| {
+            let source = info
+                .source
+                .map(|view| {
+                    if view.environment != info.typing_environment.id() {
+                        return Err(crate::sema::source_types::SourceTypesError::Unresolved);
+                    }
+                    let (_, environment) = facts
+                        .source_types
+                        .view_schema(view, &mut constructor_work)?;
+                    Ok::<_, crate::sema::source_types::SourceTypesError>(p::SourceView {
+                        ty: facts
+                            .source_types
+                            .retained_root(view, &mut constructor_work)?,
+                        environment: contracts.environment(&mut graph.types, &environment),
+                    })
+                })
+                .transpose()
+                .map_err(|error| {
+                    NotImplemented::new(
+                        ril_compiler_core::phase::Stage::Lowering,
+                        format!("constructor Source view could not be retained: {error}"),
+                    )
+                })?;
+            Ok(p::Constructor {
+                typing_environment: contracts
+                    .environment(&mut graph.types, &info.typing_environment),
+                source,
+                source_syntax: info.source_syntax.as_deref().map(contract),
+                name: name.clone(),
+                tag: info.tag.clone(),
+                owner: ty(&mut graph.types, &info.owner),
+                payload: ty(&mut graph.types, &info.payload),
+                nominal: info.nominal,
+                has_payload: info.has_payload,
+                span: info.span,
+            })
         })
-        .collect();
+        .collect::<Result<_, NotImplemented>>()?;
     graph.operations = facts
         .operations
         .values()
@@ -3250,6 +3288,7 @@ mod contract_graph_tests {
                     default_use: None,
                 },
                 identity: "File::write".into(),
+                environment: crate::sema::builtin_sources::catalog_environment().clone(),
                 full_header: crate::sema::builtin_sources::BuiltinDeclaration::Syntax(
                     ril_syntax::ast::TypeExpr {
                         hir_id: None,
@@ -3279,6 +3318,16 @@ mod contract_graph_tests {
         assert_eq!(observation.concrete_effects, ["Fiber".into()].into());
         assert_eq!(observation.written_formals, [0].into());
         assert!(observation.captures.is_empty());
+        let environment = &graph.frozen_environments[observation.environment.0 as usize];
+        assert!(
+            environment.lexical.is_empty()
+                && environment.generic_context.is_empty()
+                && environment.generic_substitutions.is_empty()
+                && environment.generic_sources.is_empty()
+                && environment.bound_row_context.is_empty()
+                && environment.bound_row_selections.is_empty()
+                && environment.static_key_arguments.is_empty()
+        );
         assert_eq!(observation.cause.0, 17);
         let p::BuiltinDeclaration::Syntax(header) = &observation.full_header else {
             panic!("original written header")

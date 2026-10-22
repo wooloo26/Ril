@@ -197,3 +197,52 @@ fn canonical_iteration_header_retains_array_coordinates_and_cannot_be_replaced()
         );
     }
 }
+
+#[test]
+fn constructor_instance_source_and_its_original_environment_cannot_be_replaced() {
+    let source = "fn step_value()->Iter::Step<[2]int,[0][3]int>{Iter::Step::Yielded([],[1,2])}";
+    let facts = verified(source, "pointer64");
+    let event = &facts.copy_call_events[events(&facts)[0]];
+    let callee = &facts.expressions[event.callee_expression.unwrap()].value;
+    let [Callable::Constructor(identity)] = callee.callables.as_slice() else {
+        panic!("expected one actual constructor instance")
+    };
+    let original = &facts.constructors[identity];
+    assert!(original.source.is_some());
+    assert_eq!(
+        original.source.unwrap().environment,
+        original.typing_environment.id()
+    );
+    for mutation in 0..5 {
+        let mut changed = facts.clone();
+        let constructor = changed.constructors.get_mut(identity).unwrap();
+        match mutation {
+            0 => constructor.source = None,
+            1 => {
+                constructor.typing_environment = constructor.typing_environment.thaw().freeze();
+                assert_ne!(
+                    constructor.typing_environment.id(),
+                    original.typing_environment.id()
+                );
+            }
+            2 => constructor.source_syntax = None,
+            3 => {
+                let written = std::sync::Arc::make_mut(constructor.source_syntax.as_mut().unwrap());
+                let ril_syntax::ast::TypeKind::Name { arguments, .. } = &mut written.kind else {
+                    panic!("expected a nominal instance header")
+                };
+                arguments.swap(0, 1);
+            }
+            4 => {
+                constructor.source = None;
+                constructor.source_syntax = None;
+                constructor.source_type_witness = None;
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            solved_facts(&changed).is_err(),
+            "constructor source mutation {mutation} was authorized"
+        );
+    }
+}

@@ -1500,6 +1500,10 @@ impl Checker {
         self.loop_depth = 0;
         let mut frame = self.frame(closure.lexical.clone(), true);
         frame.callable_owner = closure.site.map(CallableOwner::Lambda);
+        // Parameter Source headers belong to the closure declaration. Adding
+        // runtime formal bindings must not mint a different interpretation of
+        // the same lexical UIDs for each activation.
+        frame.input_environment = Some(closure.contract.typing_environment.clone());
         if let Some(id) = self.closure_invocation_stack.last().copied() {
             self.scopes
                 .set_origin(frame.owner, crate::sema::scopes::ScopeOrigin::Closure(id));

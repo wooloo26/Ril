@@ -52,6 +52,7 @@ pub struct BuiltinSourceObservation {
     pub context: ResumptionContext,
     pub identity: String,
     pub full_header: BuiltinDeclaration,
+    pub environment: super::FrozenEnvironmentId,
     pub concrete_effects: BTreeSet<String>,
     pub written_formals: BTreeSet<u32>,
     pub captures: BTreeSet<u32>,

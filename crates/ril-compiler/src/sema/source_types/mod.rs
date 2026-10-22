@@ -24,9 +24,8 @@ pub(crate) use graph::{
     SourceTypes, WorkLimit,
 };
 pub use graph::{SourceTypeId, SourceTypesError};
-pub(crate) use index::LiveSourceTypes;
+pub(crate) use index::{LiveSourceTypes, steps_in};
 pub use index::{SourceTypeIndex, SourceView};
-pub(crate) use legacy::key_is_coordinate_free;
 pub(crate) use queries::SourceTypeQueries;
 pub use queries::{SourcePath, SourceSensitivity};
 pub(crate) use schema::SourceSchema;
@@ -34,16 +33,3 @@ pub use selection::{SourceSelectionInput, TypeSourceSelection};
 pub(crate) use substitution::LegacySourceExport;
 pub(crate) use substitution::scalar_name;
 pub(crate) use substitution::{substitute_key, substitute_key_with};
-
-pub(crate) fn key_is_coordinate_free_with_declarations(
-    key: &crate::sema::effect_identity::ArgumentKey,
-    hir: Option<&crate::hir::nodes::HirProgram>,
-) -> bool {
-    key_is_coordinate_free(key)
-        || hir.is_some_and(|hir| {
-            matches!(
-                declarations::sensitivity(key, hir, &mut WorkLimit::new(4096)),
-                SourceSensitivity::Absent { .. }
-            )
-        })
-}

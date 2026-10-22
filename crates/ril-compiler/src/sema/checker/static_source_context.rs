@@ -5,7 +5,10 @@
 //! their ordinary sort and exact nominal identity checks remain mandatory.
 use super::*;
 use crate::sema::effect_identity::ArgumentKey;
-use crate::sema::source_reception::{self, Target};
+use crate::sema::{
+    source_reception::{self, Target},
+    source_types::WorkLimit,
+};
 use std::sync::Arc;
 
 const KEY_TOKEN: &str = "\0ril.source.key:";
@@ -179,7 +182,14 @@ impl Checker {
             ..
         }) = target.syntax.as_deref()
         {
-            return self.static_projection_reception(base, key, actual, &original, frame);
+            return self.static_projection_reception(
+                target,
+                (base, key),
+                actual,
+                &original,
+                observed?,
+                frame,
+            );
         }
         let expected_syntax = target.syntax.as_deref()?;
         let (expected, expected_const) = self.static_coordinate_key(expected_syntax)?;
@@ -225,7 +235,8 @@ impl Checker {
         let fact = self.application_effect.expressions.get(index)?;
         if row.expression != index
             || row.context != self.invocation_context(frame.callable_owner)
-            || fact.span != syntax.span
+            || syntax.hir_id.is_none()
+            || fact.source_id != syntax.hir_id
             || fact.value.ty != value.ty
             || fact.value.cause != value.cause
         {
@@ -236,12 +247,14 @@ impl Checker {
 
     fn static_projection_reception(
         &mut self,
-        expected_base: &TypeExpr,
-        expected_key: &Expr,
+        target: &Target,
+        expected: (&TypeExpr, &Expr),
         actual: &Expr,
         value: &Value,
+        observed: usize,
         frame: &Frame,
     ) -> Option<bool> {
+        let (expected_base, expected_key) = expected;
         let ExprKind::Name(name) = &expected_key.kind else {
             return None;
         };
@@ -252,6 +265,7 @@ impl Checker {
         let ExprKind::Name(key_name) = &key.kind else {
             return None;
         };
+        let mut work = WorkLimit::new(32768);
         let parents = self
             .explanations
             .causes
@@ -262,24 +276,10 @@ impl Checker {
             return None;
         }
         let context = self.invocation_context(frame.callable_owner);
-        let keys: Vec<_> = self
-            .application_effect
-            .contexts
-            .iter()
-            .filter_map(|row| {
-                if row.context != context {
-                    return None;
-                }
-                let fact = self.application_effect.expressions.get(row.expression)?;
-                (fact.span == key.span
-                    && parents.contains(&fact.value.cause)
-                    && fact.value.ty == Ty::StaticKey(identity.clone()))
-                .then_some(&fact.value)
-            })
-            .collect();
-        let [key_value] = keys.as_slice() else {
+        let key_value = self.static_projection_child(observed, actual, key, context, &mut work)?;
+        if !parents.contains(&key_value.cause) || key_value.ty != Ty::StaticKey(identity.clone()) {
             return None;
-        };
+        }
         if let Some(binding_id) = frame.env.get(key_name) {
             let binding = self.bindings.get(*binding_id)?;
             if !binding.parameter
@@ -293,7 +293,7 @@ impl Checker {
                 frame.callable_owner == Some(CallableOwner::Function(function.definition))
             })?;
             let parameter = function.syntax.parameters.iter().find(|parameter|
-                parameter.pattern.span == binding.span
+                parameter.pattern.hir_id.is_some() && parameter.pattern.hir_id == binding.pattern
                     && matches!(&parameter.pattern.kind, PatternKind::Name(name) if name == key_name))?;
             let TypeKind::Name { path, arguments } = &parameter.ty.as_ref()?.kind else {
                 return None;
@@ -304,28 +304,39 @@ impl Checker {
         } else if self.genuine_source_key(key_name)? != identity || !key_value.sources.is_empty() {
             return None;
         }
-        let bases: Vec<_> = self
-            .application_effect
-            .contexts
-            .iter()
-            .filter_map(|row| {
-                if row.context != context {
+        let base_value =
+            self.static_projection_child(observed, actual, base, context, &mut work)?;
+        if !parents.contains(&base_value.cause) {
+            return None;
+        }
+        let expected = self
+            .with_typing_environment(&target.environment, |checker| {
+                checker.freeze_source_receiving_target(expected_base)
+            })
+            .schema?;
+        let original =
+            match self.original_source_receiving_schema(&base_value, base, frame, &mut work) {
+                Ok(Some((schema, environment))) if !environment.is_poisoned() => schema,
+                Ok(_) => return None,
+                Err(error) => {
+                    self.unsupported(
+                        actual.span,
+                        format!("static projection lost its complete original Source: {error}"),
+                    );
                     return None;
                 }
-                let fact = self.application_effect.expressions.get(row.expression)?;
-                (fact.span == base.span && parents.contains(&fact.value.cause))
-                    .then_some(fact.value.clone())
-            })
-            .collect();
-        let [base_value] = bases.as_slice() else {
-            return None;
+            };
+        let agrees = match expected.equivalent(&original, &mut work) {
+            Ok(answer) => answer,
+            Err(error) => {
+                self.unsupported(
+                    actual.span,
+                    format!("static projection Source comparison failed: {error}"),
+                );
+                return None;
+            }
         };
-        let expected = crate::static_eval::effects::bounded_argument_key(
-            expected_base,
-            &self.effect_type_binders,
-        )?;
-        let original = self.original_source_receiving_key(base_value, base, frame)?;
-        if expected != original {
+        if !agrees {
             return Some(false);
         }
         let Ty::Projection {
@@ -345,10 +356,60 @@ impl Checker {
         )
     }
 
+    /// A computed projection's operands belong to its physical evaluation
+    /// activation. Repeated evaluations of the same source coordinates cannot
+    /// supply either operand to this occurrence.
+    fn static_projection_child(
+        &self,
+        observed: usize,
+        root: &Expr,
+        child: &Expr,
+        context: crate::sema::effect_identity::InvocationContext,
+        work: &mut WorkLimit,
+    ) -> Option<Value> {
+        work.charge(self.application_effect.activations.len())
+            .ok()?;
+        let record = self.application_effect.evaluations.get(observed)?;
+        let identity = record.identity?;
+        if Some(identity.source) != root.hir_id || record.context != context {
+            return None;
+        }
+        let source = child.hir_id?;
+        let mut children = self
+            .application_effect
+            .activations
+            .iter()
+            .filter(|activation| {
+                activation.parent == Some(identity.activation)
+                    && activation.source == Some(source)
+                    && activation.context == context
+                    && activation.kind
+                        == crate::sema::application_effect::ActivationKind::Expression
+            });
+        let activation = children.next()?;
+        if children.next().is_some() {
+            return None;
+        }
+        let index = activation.result?.0 as usize;
+        let child_record = self.application_effect.evaluations.get(index)?;
+        let fact = self.application_effect.expressions.get(index)?;
+        if child_record.identity
+            != Some(crate::sema::application_effect::OccurrenceIdentity {
+                source,
+                activation: activation.id,
+            })
+            || child_record.context != context
+            || fact.source_id != Some(source)
+        {
+            return None;
+        }
+        Some(fact.value.clone())
+    }
+
     pub(super) fn nominal_owner_source_syntax(&self, owner: &Ty) -> Option<TypeExpr> {
-        let mut sources = self.constructors.iter().filter_map(|(name, constructor)| {
+        let mut sources = self.constructors.values().filter_map(|constructor| {
             (constructor.owner == *owner)
-                .then(|| self.constructor_source_syntax.get(name))
+                .then_some(constructor.source_syntax.as_ref())
                 .flatten()
         });
         let first = sources.next()?;
@@ -379,7 +440,7 @@ impl Checker {
             return None;
         }
         let payload = constructor.payload_syntax.as_ref()?;
-        let result = self.constructor_source_syntax.get(name)?.as_ref();
+        let result = constructor.source_syntax.as_deref()?;
         self.bounded_static_source_input(payload)?;
         self.bounded_static_source_input(result)?;
         let mut views = vec![vec![payload.clone()]];

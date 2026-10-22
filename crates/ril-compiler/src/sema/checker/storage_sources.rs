@@ -6,7 +6,7 @@ use crate::sema::source_types::{
     projection_receipts::{self, ProjectionOccurrence, ProjectionReceipts, SourceRead},
 };
 use crate::sema::{
-    effect_identity::ArgumentKey,
+    context::FrozenEnvironment,
     source_reception,
     storage_sources::{BindingSource, StorageDestination, StorageObservation, StorageWrite},
 };
@@ -50,23 +50,36 @@ pub(super) struct StoreReception<'a> {
 }
 
 impl Checker {
-    pub(super) fn parameter_source_schema(
-        &self,
-        binding: BindingId,
-        original: Option<ril_compiler_core::ids::TypeExprId>,
-    ) -> Option<(
-        crate::sema::source_types::SourceSchema,
-        crate::sema::context::FrozenEnvironment,
-    )> {
+    pub(super) fn intern_source_schema(
+        &mut self,
+        schema: &SourceSchema,
+        environment: FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<crate::sema::source_types::SourceView, SourceTypesError> {
         self.type_source
             .storage
             .types
-            .binding_schema(
-                binding,
-                original,
-                &mut crate::sema::source_types::WorkLimit::new(16384),
-            )
-            .ok()
+            .intern_schema(schema, environment, work)
+    }
+
+    pub(super) fn source_schema_view(
+        &self,
+        view: crate::sema::source_types::SourceView,
+        work: &mut WorkLimit,
+    ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
+        self.type_source.storage.types.view_schema(view, work)
+    }
+
+    pub(super) fn parameter_source_schema_if_known(
+        &self,
+        binding: BindingId,
+        original: Option<ril_compiler_core::ids::TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> BindingSchema {
+        self.type_source
+            .storage
+            .types
+            .binding_schema_if_known(binding, original, work)
     }
     pub(super) fn record_parameter_source(&mut self, binding: BindingId, name: &str, span: Span) {
         let environment = self.bindings[binding].typing_environment.clone();
@@ -100,12 +113,18 @@ impl Checker {
             }
             return;
         }
-        let key = self.declared_formal_source(binding, name);
+        let schema =
+            self.formal_binding_declaration(binding, name)
+                .and_then(|(syntax, environment)| {
+                    self.with_typing_environment(&environment, |checker| {
+                        checker.freeze_source_receiving_target(&syntax).schema
+                    })
+                });
         if self
             .type_source
             .storage
             .types
-            .record(binding, key.as_ref(), environment)
+            .record_schema(binding, schema.as_ref(), environment)
             .is_err()
         {
             self.unsupported(span, "parameter source view exceeded its metadata budget");
@@ -117,7 +136,7 @@ impl Checker {
         binding: BindingId,
         name: &str,
     ) -> Result<Option<SourceSchema>, SourceTypesError> {
-        use crate::sema::{effect_identity::ArgumentKey, source_types::substitute_key};
+        use crate::sema::effect_identity::ArgumentKey;
         let Some((syntax, environment)) = self.formal_binding_declaration(binding, name) else {
             return Ok(None);
         };
@@ -199,7 +218,7 @@ impl Checker {
                     ArgumentKey::Closed(_) | ArgumentKey::GenericBuiltin(_) => {}
                 }
             }
-            let selected = if has_binder {
+            let schema = if has_binder {
                 let owner = checker.bindings[binding]
                     .context
                     .owner
@@ -234,17 +253,14 @@ impl Checker {
                 // The actual selection can come from a nested product's
                 // independently recorded scoped identity. An erased ordinary
                 // substitution never reconstructs its missing Source.
-                let actual = checker
-                    .actual_input_source_selections(&info, event, span)
-                    .ok_or(SourceTypesError::Unresolved)?;
-                substitute_key(&key, &actual, &mut work)?
+                let actual = checker.actual_input_source_schemas(&info,event,span,&mut work)?;
+                SourceSchema::import(&key,syntax.hir_id,&mut work)?.substitute(&actual,&mut work)?
             } else {
-                let Some(key) = checker.freeze_source_receiving_target(&syntax).key() else {
+                let Some(schema) = checker.freeze_source_receiving_target(&syntax).schema else {
                     return Ok(None);
                 };
-                key
+                schema
             };
-            let schema = SourceSchema::import(&selected, syntax.hir_id, &mut work)?;
             crate::sema::source_types::declarations::resolve_schema(
                 &schema,
                 &checker.semantic_hir,
@@ -256,27 +272,34 @@ impl Checker {
 
     /// Static constraint lookup only. This projects the immutable declaration
     /// view, never the binding's current value, heap contents or numeric data.
-    pub(super) fn declared_operand_source(
-        &mut self,
+    pub(super) fn declared_operand_source_schema(
+        &self,
         syntax: &Expr,
         frame: &Frame,
-    ) -> Option<ArgumentKey> {
+        work: &mut WorkLimit,
+    ) -> BindingSchema {
         let mut path = Vec::new();
-        let name = source_path(syntax, &mut path, &mut 4096)?;
-        let id = *frame.env.get(name)?;
-        if let Ok(key) = self.type_source.storage.types.projected_binding_key(
-            id,
-            &path,
-            Some(&self.semantic_hir),
-        ) {
-            return Some(key);
-        }
-        let mut key = self.declared_formal_source(id, name)?;
-        for slot in path {
-            key = self.storage_projection_source_key(&key, &slot)?;
-        }
-        Some(key)
+        let mut budget = work.remaining();
+        let name = source_path(syntax, &mut path, &mut budget);
+        work.charge(work.remaining() - budget)?;
+        let Some(name) = name else { return Ok(None) };
+        let Some(binding) = frame.env.get(name) else {
+            return Ok(None);
+        };
+        let Some((schema, environment)) = self
+            .type_source
+            .storage
+            .types
+            .binding_schema_if_known(*binding, None, work)?
+        else {
+            return Ok(None);
+        };
+        let steps = crate::sema::source_types::steps_in(&path, work)?;
+        schema
+            .project_steps_if_structural(&steps, work)
+            .map(|schema| schema.map(|schema| (schema, environment)))
     }
+
     pub(super) fn prepare_storage_binding_source(
         &mut self,
         binding: &Binding,
@@ -340,18 +363,21 @@ impl Checker {
             }
         } else {
             original.as_ref().and_then(|original| {
-                let key =
-                    self.original_source_receiving_key(&original.value, &binding.value, frame)?;
-                match crate::sema::source_types::declarations::schema(
-                    &key,
-                    &self.semantic_hir,
+                match self.original_source_receiving_schema(
+                    &original.value,
+                    &binding.value,
+                    frame,
                     &mut work,
                 ) {
-                    Ok(schema) => Some(schema),
-                    Err(_) => {
+                    Ok(Some((schema, captured))) => {
+                        environment = captured;
+                        Some(schema)
+                    }
+                    Ok(None) => None,
+                    Err(error) => {
                         self.unsupported(
                             binding.value.span,
-                            "storage input Source graph could not be admitted",
+                            format!("storage input Source graph could not be admitted: {error}"),
                         );
                         None
                     }
@@ -568,7 +594,11 @@ impl Checker {
                         if binding.context.invocation == Some(invocation))
                 })
         });
-        if !named_parameter && !self.type_source.storage.by_binding.contains_key(&id) {
+        let parameter = self
+            .bindings
+            .get(id)
+            .is_some_and(|binding| binding.parameter);
+        if !parameter && !self.type_source.storage.by_binding.contains_key(&id) {
             return None;
         }
         let source = syntax.hir_id?;
@@ -614,7 +644,6 @@ impl Checker {
         } else {
             stored
         };
-        let known_source = stored.is_some();
         let result = (|| {
             let context = self.invocation_context(frame.callable_owner);
             let occurrence =
@@ -636,14 +665,25 @@ impl Checker {
             let Some((schema, environment)) = stored else {
                 return Ok(None);
             };
-            Ok(schema
-                .project_steps_if_structural(&projection.steps, &mut work)?
-                .map(|schema| (schema, environment)))
+            let mut schema = schema;
+            for step in &projection.steps {
+                if schema.root_is_binder(&mut work)? {
+                    let ril_compiler_core::projection::TypeProjection::Field(label) = step else {
+                        return Err(SourceTypesError::Unresolved);
+                    };
+                    schema = self.storage_projection_source_schema(
+                        &schema,
+                        &environment,
+                        &Slot::Field(label.clone()),
+                        &mut work,
+                    )?;
+                } else {
+                    schema = schema.project_steps(std::slice::from_ref(step), &mut work)?;
+                }
+            }
+            Ok(Some((schema, environment)))
         })();
-        match result {
-            Ok(None) if known_source => None,
-            result => Some(result),
-        }
+        Some(result)
     }
 
     /// A recorded declaration can be unknown, but an admission failure remains
@@ -688,27 +728,63 @@ impl Checker {
             self.unsupported(target.span, "storage write has no original target ExprId");
             return false;
         };
-        let expected = match &destination {
-            StorageDestination::Binding(binding) => self
-                .type_source
-                .storage
-                .types
-                .projected_binding_key(*binding, &[], Some(&self.semantic_hir))
-                .ok(),
-            StorageDestination::Projection { slot, .. } => {
-                let syntax = match &target.kind {
-                    ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => {
-                        Some(base.as_ref())
-                    }
-                    _ => None,
-                };
-                receiver
-                    .zip(syntax)
-                    .and_then(|(value, syntax)| {
-                        self.original_source_receiving_key(value, syntax, frame)
-                    })
-                    .and_then(|key| self.storage_projection_source_key(&key, slot))
+        let mut work = WorkLimit::new(16384);
+        let expected = (|| -> BindingSchema {
+            match &destination {
+                StorageDestination::Binding(binding) => self
+                    .type_source
+                    .storage
+                    .types
+                    .binding_schema_if_known(*binding, None, &mut work),
+                StorageDestination::Projection { slot, .. } => {
+                    let syntax = match &target.kind {
+                        ExprKind::Field { base, .. }
+                        | ExprKind::Index { base, .. }
+                        | ExprKind::ComputedField { base, .. } => base.as_ref(),
+                        _ => return Err(SourceTypesError::Unresolved),
+                    };
+                    let value = receiver.ok_or(SourceTypesError::MissingNode)?;
+                    let Some((schema, environment)) =
+                        self.original_source_receiving_schema(value, syntax, frame, &mut work)?
+                    else {
+                        return Ok(None);
+                    };
+                    let schema = self.storage_projection_source_schema(
+                        &schema,
+                        &environment,
+                        slot,
+                        &mut work,
+                    )?;
+                    Ok(Some((schema, environment)))
+                }
             }
+        })();
+        let expected = match expected {
+            Ok(source) => source,
+            Err(error) => {
+                self.unsupported(
+                    target.span,
+                    format!("storage destination Source graph failed: {error}"),
+                );
+                None
+            }
+        };
+        let retained = match &expected {
+            Some((schema, environment)) => match self.type_source.storage.types.intern_schema(
+                schema,
+                environment.clone(),
+                &mut work,
+            ) {
+                Ok(view) => Some(view),
+                Err(error) => {
+                    self.unsupported(
+                        target.span,
+                        format!("storage destination Source admission failed: {error}"),
+                    );
+                    None
+                }
+            },
+            None => None,
         };
         let context = self.invocation_context(frame.callable_owner);
         self.type_source.storage.writes.push(StorageWrite {
@@ -719,7 +795,7 @@ impl Checker {
             operator: operator.into(),
             rhs,
             destination,
-            expected: expected.clone(),
+            expected: retained,
             completed: true,
         });
         let observation = self
@@ -727,108 +803,130 @@ impl Checker {
             .expressions
             .get(rhs.expression)
             .cloned();
-        let actual = observation.as_ref().and_then(|original| {
-            self.original_source_receiving_key(&original.value, rhs_syntax, frame)
-        });
-        let fresh = source_reception::construction(rhs_syntax, &mut 4096);
-        let answer = expected.as_ref().and_then(|expected| {
-            if crate::sema::source_types::key_is_coordinate_free_with_declarations(
-                expected,
-                Some(&self.semantic_hir),
+        let answer = (|| {
+            let (expected, environment) = expected.as_ref().ok_or(SourceTypesError::Unresolved)?;
+            if environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            if matches!(
+                expected.sensitivity(&mut work),
+                crate::sema::source_types::SourceSensitivity::Absent { .. }
             ) {
-                return Some(true);
+                return Ok(true);
             }
-            // Arithmetic compound assignment is checked separately and cannot
-            // create a collection/Fn Source from its numeric RHS.
             if operator != "=" {
-                return Some(false);
+                return Ok(false);
             }
-            compatible(expected, actual.as_ref(), fresh.as_ref())
-        });
+            // Type coordinates alone cannot certify nested latent callable rows.
+            if expected.has_callable(&mut work)? {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let original = observation.as_ref().ok_or(SourceTypesError::MissingNode)?;
+            let actual = self.original_source_receiving_schema(
+                &original.value,
+                rhs_syntax,
+                frame,
+                &mut work,
+            )?;
+            let fresh = source_reception::construction(rhs_syntax, &mut 4096)
+                .ok_or(SourceTypesError::BudgetExceeded)?;
+            match actual {
+                Some((actual, environment)) if !environment.is_poisoned() => {
+                    expected.receive_schema(&actual, Some(&fresh), &mut work)
+                }
+                Some(_) => Err(SourceTypesError::Unresolved),
+                None => expected
+                    .empty_context(&fresh, &mut work)?
+                    .ok_or(SourceTypesError::Unresolved),
+            }
+        })();
         match answer {
-            Some(true) => {
-                // Replace only the type view. Permission, publication, causes,
-                // origins and all actual write obligations remain unchanged.
-                replacement.source_type_witness = expected
-                    .as_ref()
-                    .and_then(|key| {
-                        super::call_input_source::storage_closed_source_syntax(key, target.span)
-                    })
-                    .and_then(|syntax| self.source_type_from_frozen_syntax(&syntax));
-                true
-            }
-            Some(false) => {
-                self.error("E0301", target.span,
-                    "stored input source does not fit the destination's original declaration schema",
-                    [replacement.cause]);
+            Ok(true) => true,
+            Ok(false) => {
+                self.error("E0301",target.span,"stored input source does not fit the destination's original declaration schema",[replacement.cause]);
                 false
             }
-            None => {
-                self.unsupported(target.span,
-                    "storage reception requires its original declaration and complete input source coordinates");
+            Err(error) => {
+                self.unsupported(target.span,format!("storage reception requires its original declaration and complete input source coordinates: {error}"));
                 false
             }
         }
     }
 
-    /// A structural bound guarantees the Source of a named member, not a
-    /// complete Source for its open parent. Select the declared member before
-    /// substituting its leaves; unrelated row members remain unresolved.
-    fn storage_projection_source_key(
+    fn storage_projection_source_schema(
         &self,
-        source: &ArgumentKey,
+        source: &SourceSchema,
+        environment: &crate::sema::context::FrozenEnvironment,
         slot: &Slot,
-    ) -> Option<ArgumentKey> {
-        let (
-            ArgumentKey::Binder {
-                identity,
-                sort: crate::sema::effect_identity::StaticBinderSort::Type,
-            },
-            Slot::Field(label),
-        ) = (source, slot)
-        else {
-            return crate::sema::source_types::declarations::project(
-                source,
-                std::slice::from_ref(slot),
-                &self.semantic_hir,
-                &mut crate::sema::source_types::WorkLimit::new(4096),
-            )
-            .ok();
+        work: &mut WorkLimit,
+    ) -> Result<SourceSchema, SourceTypesError> {
+        let steps = crate::sema::source_types::steps_in(std::slice::from_ref(slot), work)?;
+        if let Some(schema) = source.project_steps_if_structural(&steps, work)? {
+            return Ok(schema);
+        }
+        let Slot::Field(label) = slot else {
+            return Err(SourceTypesError::Unresolved);
         };
-        let binder = self.generic_binders.get(identity)?;
+        let identities = source.binder_identities(work)?;
+        let mut identities = identities.iter();
+        let identity = identities.next().ok_or(SourceTypesError::Unresolved)?;
+        if identities.next().is_some() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let binder = self
+            .generic_binders
+            .get(identity)
+            .ok_or(SourceTypesError::Unresolved)?;
+        work.charge(self.functions.len())?;
         let declaration = self
             .functions
             .iter()
-            .find(|function| function.definition == binder.definition)?;
-        let parameter = declaration.syntax.generics.get(binder.index as usize)?;
+            .find(|function| function.definition == binder.definition)
+            .ok_or(SourceTypesError::Unresolved)?;
+        let parameter = declaration
+            .syntax
+            .generics
+            .get(binder.index as usize)
+            .ok_or(SourceTypesError::Unresolved)?;
         if !crate::sema::record_bounds::certifies_type_sort(
             identity,
             binder,
             parameter,
             &self.record_bounds,
         ) {
-            return None;
+            return Err(SourceTypesError::Unresolved);
         }
         let bound = self
             .record_bounds
-            .get(self.record_bounds_by_binder.get(identity)?.0 as usize)?;
+            .get(
+                self.record_bounds_by_binder
+                    .get(identity)
+                    .ok_or(SourceTypesError::MissingNode)?
+                    .0 as usize,
+            )
+            .ok_or(SourceTypesError::MissingNode)?;
         if bound.binder != *identity
             || bound.definition != binder.definition
             || bound.generic_index != binder.index
         {
-            return None;
+            return Err(SourceTypesError::Unresolved);
         }
-        let fields: Vec<_> = bound
-            .fields
+        work.charge(bound.fields.len())?;
+        let mut fields = bound.fields.iter().filter(|field| field.label == *label);
+        let field = fields.next().ok_or(SourceTypesError::MissingProjection)?;
+        if fields.next().is_some() {
+            return Err(SourceTypesError::DuplicateField);
+        }
+        let schema = SourceSchema::import(&field.key, None, work)?;
+        work.charge(environment.generic_sources.len())?;
+        let selected = environment
+            .generic_sources
             .iter()
-            .filter(|field| field.label == *label)
+            .map(|(identity, source)| (identity.clone(), source.schema.clone()))
             .collect();
-        let [field] = fields.as_slice() else {
-            return None;
-        };
-        self.selected_bound_key(&field.key)
+        let schema = schema.substitute(&selected, work)?;
+        crate::sema::source_types::declarations::resolve_schema(&schema, &self.semantic_hir, work)
     }
-
     pub(super) fn record_aborted_storage_write(
         &mut self,
         target: &Expr,
@@ -856,61 +954,6 @@ impl Checker {
             completed: false,
         });
     }
-}
-
-fn compatible(
-    expected: &ArgumentKey,
-    actual: Option<&ArgumentKey>,
-    fresh: Option<&source_reception::Construction>,
-) -> Option<bool> {
-    // A type-coordinate relation does not prove retained callable bounds.
-    // Until frozen lexical row/latent certificates are attached to stores,
-    // every callable coordinate (also nested) remains an obligation.
-    if has_callable(expected, &mut 4096)? {
-        return None;
-    }
-    if let Some(actual) = actual {
-        return source_reception::compatible(expected, actual, fresh, &mut 4096);
-    }
-    match (expected, fresh) {
-        (
-            ArgumentKey::Array { length, element },
-            Some(source_reception::Construction::Array(items)),
-        ) if items.is_empty() => {
-            source_reception::complete(element, &mut 4096)?;
-            Some(
-                length
-                    .as_ref()
-                    .is_none_or(|length| length == "const(int:0)"),
-            )
-        }
-        _ => None,
-    }
-}
-
-pub(in crate::sema::checker) fn has_callable(key: &ArgumentKey, work: &mut usize) -> Option<bool> {
-    *work = work.checked_sub(1)?;
-    let children: Vec<&ArgumentKey> = match key {
-        ArgumentKey::Callable { .. } | ArgumentKey::GenericBuiltin(_) => return Some(true),
-        ArgumentKey::Array { element, .. } => vec![element],
-        ArgumentKey::Map { key, value } => vec![key, value],
-        ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {
-            arguments.iter().collect()
-        }
-        ArgumentKey::Record { fields, row } => fields
-            .iter()
-            .map(|field| &field.2)
-            .chain(row.iter().map(|row| row.as_ref()))
-            .collect(),
-        ArgumentKey::Closed(_) => return None,
-        ArgumentKey::Binder { .. } => vec![],
-    };
-    for child in children {
-        if has_callable(child, work)? {
-            return Some(true);
-        }
-    }
-    Some(false)
 }
 
 fn source_path<'a>(syntax: &'a Expr, path: &mut Vec<Slot>, work: &mut usize) -> Option<&'a str> {

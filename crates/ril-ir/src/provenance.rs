@@ -456,6 +456,9 @@ pub struct VariantProjection {
 }
 #[derive(Debug, Clone)]
 pub struct Constructor {
+    pub typing_environment: FrozenEnvironmentId,
+    pub source: Option<SourceView>,
+    pub source_syntax: Option<ContractSyntax>,
     pub name: String,
     /// Runtime tag is declaration identity; an instantiated registry key may differ.
     pub tag: String,

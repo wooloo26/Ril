@@ -188,17 +188,3 @@ impl SourceBuilder {
         result
     }
 }
-
-pub(crate) fn key_sensitivity(key: &ArgumentKey, work: &mut WorkLimit) -> SourceSensitivity {
-    match import(key, work) {
-        Ok(imported) => imported.types.sensitivity(imported.root, work),
-        Err(reason) => SourceSensitivity::Unknown { reason },
-    }
-}
-
-pub(crate) fn key_is_coordinate_free(key: &ArgumentKey) -> bool {
-    matches!(
-        key_sensitivity(key, &mut WorkLimit::new(4096)),
-        SourceSensitivity::Absent { .. }
-    )
-}

@@ -1,6 +1,7 @@
 //! Constructor instances retain their owner identity and instantiated syntax.
 //! The private callable identity and the source declaration tag are distinct.
 use super::*;
+use crate::static_eval::const_nominal::{simple_sort, static_parameter};
 #[path = "gadt.rs"]
 mod gadt;
 std::thread_local! {
@@ -25,60 +26,6 @@ impl Drop for InstanceDepth {
     }
 }
 
-fn static_parameter(parameter: &GenericParameter) -> bool {
-    parameter
-        .name
-        .chars()
-        .next()
-        .is_some_and(char::is_lowercase)
-        || matches!(
-            parameter.bound.as_ref().map(|bound| &bound.kind),
-            Some(TypeKind::KeyOf(_))
-        )
-}
-
-fn simple_sort(ty: &TypeExpr) -> bool {
-    match &ty.kind {
-        TypeKind::Name { path, arguments } => {
-            let full = path.join("::");
-            let name = full.strip_prefix("Prelude::").unwrap_or(&full);
-            (arguments.is_empty()
-                && matches!(
-                    name,
-                    "bool"
-                        | "int"
-                        | "i8"
-                        | "i16"
-                        | "i32"
-                        | "i64"
-                        | "u8"
-                        | "u16"
-                        | "u32"
-                        | "u64"
-                        | "bigint"
-                        | "f32"
-                        | "f64"
-                        | "str"
-                        | "bytes"
-                ))
-                || (matches!(name, "Option" | "Immut")
-                    && arguments.len() == 1
-                    && simple_sort(&arguments[0]))
-        }
-        TypeKind::Optional(inner) | TypeKind::Array { element: inner, .. } => simple_sort(inner),
-        TypeKind::Tuple(items) => items.iter().all(simple_sort),
-        TypeKind::Map { key, value } => simple_sort(key) && simple_sort(value),
-        TypeKind::Record { fields, row } => {
-            row.is_none()
-                && fields
-                    .iter()
-                    .all(|field| !field.mutable && simple_sort(&field.ty))
-        }
-        // A named resource, callable, open row or unnormalized computation is
-        // not evidence of a finite authority-free static value sort.
-        _ => false,
-    }
-}
 fn instance_identity(tag: &str, owner: &Ty) -> String {
     use std::fmt::Write;
     let source = format!("{tag}\0{owner:?}");
@@ -253,6 +200,7 @@ impl Checker {
         if templates.is_empty() {
             return;
         }
+        let instance_environment = self.capture_typing_environment();
         let mut pending = vec![];
         for template in templates {
             if !normalized.payloads.contains_key(&template.tag) {
@@ -260,6 +208,22 @@ impl Checker {
             }
             let key = instance_identity(&template.tag, owner);
             let syntax = normalized.payloads[&template.tag].clone();
+            self.constructors.insert(
+                key.clone(),
+                ConstructorInfo {
+                    typing_environment: instance_environment.clone(),
+                    source: None,
+                    source_syntax: None,
+                    source_type_witness: None,
+                    tag: template.tag,
+                    owner: owner.clone(),
+                    payload: Ty::Unknown,
+                    nominal: template.nominal,
+                    has_payload: template.has_payload,
+                    payload_syntax: syntax.clone(),
+                    span: template.span,
+                },
+            );
             self.register_constructor_source_type(
                 &key,
                 &TypeExpr {
@@ -270,18 +234,6 @@ impl Checker {
                         path: declaration.name.split("::").map(str::to_owned).collect(),
                         arguments: normalized.arguments.clone(),
                     },
-                },
-            );
-            self.constructors.insert(
-                key.clone(),
-                ConstructorInfo {
-                    tag: template.tag,
-                    owner: owner.clone(),
-                    payload: Ty::Unknown,
-                    nominal: template.nominal,
-                    has_payload: template.has_payload,
-                    payload_syntax: syntax.clone(),
-                    span: template.span,
                 },
             );
             pending.push((key, syntax));
@@ -377,7 +329,7 @@ impl Checker {
                 value.callables = vec![Callable::Constructor(key)];
             } else {
                 let payload = self.unit(span);
-                *value = self.wrap_constructor(&key, &instance, payload, span);
+                *value = self.wrap_constructor(&instance, payload, span);
             }
         } else {
             self.unsupported(

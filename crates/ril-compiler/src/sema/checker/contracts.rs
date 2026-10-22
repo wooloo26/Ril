@@ -582,11 +582,18 @@ impl Checker {
             && let Some(id) = ril_compiler_core::builtin_calls::GenericBuiltin::lookup(name)
         {
             let target = self.freeze_source_receiving_target(syntax);
-            let instance = target.key().and_then(|source| {
-                crate::sema::source_types::polymorphic::instantiate_key(id, &source).ok()
-            });
+            let instance = target
+                .schema
+                .as_ref()
+                .ok_or(crate::sema::source_types::SourceTypesError::Unresolved)
+                .and_then(|source| {
+                    source.instantiate_builtin(
+                        id,
+                        &mut crate::sema::source_types::WorkLimit::new(16384),
+                    )
+                });
             let result = match instance {
-                Some(Some(instance)) => {
+                Ok(Some(instance)) => {
                     // A primitive declaration has a closed latent contract.
                     // Checking that contract creates no hypothetical heap
                     // writes, loans, fake call or borrowed application token.
@@ -604,7 +611,7 @@ impl Checker {
                     );
                     BoundProbe::Complete
                 }
-                Some(None) => {
+                Ok(None) => {
                     self.error(
                         "E0301",
                         syntax.span,
@@ -613,7 +620,7 @@ impl Checker {
                     );
                     BoundProbe::Unresolved
                 }
-                None => {
+                Err(_) => {
                     self.unsupported(
                         syntax.span,
                         "primitive callable bound lacks its complete frozen Source instance",

@@ -151,33 +151,27 @@ impl Checker {
         tag: &str,
         target: &crate::sema::source_reception::Target,
     ) -> Option<crate::sema::source_reception::Target> {
-        use crate::sema::{effect_identity::ArgumentKey, effect_identity::StaticBinderSort};
         let owner = self.expanded(&source.ty, &mut BTreeSet::new());
         let Match::Compatible(conditional) = self.conditional_constructor(tag, &owner) else {
             return None;
         };
-        let target_key = target.key();
-        let ArgumentKey::Binder {
-            identity,
-            sort: StaticBinderSort::Type,
-        } = target_key.as_ref()?
-        else {
-            return None;
-        };
-        let binder = self.generic_binders.get(identity)?;
+        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+        let schema = target.schema.as_ref()?;
+        let identity = schema.bare_binder_identity(&mut work).ok()??;
+        let binder = self.generic_binders.get(&identity)?;
         let declaration = self
             .functions
             .iter()
             .find(|function| function.definition == binder.definition)?;
         if !crate::sema::record_bounds::certifies_type_sort(
-            identity,
+            &identity,
             binder,
             declaration.syntax.generics.get(binder.index as usize)?,
             &self.record_bounds,
         ) {
             return None;
         }
-        let selected = conditional.equations.get(identity)?;
+        let selected = conditional.equations.get(&identity)?;
         if !closed_shape(selected) {
             return None;
         }

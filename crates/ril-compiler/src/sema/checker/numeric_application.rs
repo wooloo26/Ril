@@ -46,13 +46,41 @@ impl Checker {
             .iter()
             .zip(mapping)
             .find(|(_, slot)| **slot == Ok(0))
-            .and_then(|(argument, _)| {
-                self.evaluated_argument_source(event, argument.role)
-                    .cloned()
-                    .or_else(|| self.declared_operand_source(argument.expression, frame))
-            });
-        let parameters =
-            crate::sema::source_types::polymorphic::numeric_parameters(id, receiver.as_ref()).ok();
+            .map(
+                |(argument, _)| match self.evaluated_argument_source(event, argument.role) {
+                    Some(source) => source.clone(),
+                    None => self.declared_operand_source_schema(
+                        argument.expression,
+                        frame,
+                        &mut crate::sema::source_types::WorkLimit::new(16384),
+                    ),
+                },
+            );
+        let parameters = (|| {
+            let receiver = receiver.transpose()?.flatten();
+            crate::sema::source_types::polymorphic::numeric_parameters_schema(
+                id,
+                receiver.as_ref().map(|(schema, _)| schema),
+                &mut crate::sema::source_types::WorkLimit::new(16384),
+            )
+        })();
+        let parameters = match parameters {
+            Ok(parameters) => Some(parameters),
+            Err(error) => {
+                self.unsupported(
+                    arguments.first().map_or(
+                        Span {
+                            file: self.file,
+                            start: 0,
+                            end: 0,
+                        },
+                        |argument| argument.span,
+                    ),
+                    format!("numeric input Source graph failed: {error}"),
+                );
+                None
+            }
+        };
         mapping
             .iter()
             .map(|slot| {

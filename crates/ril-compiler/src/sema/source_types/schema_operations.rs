@@ -1,0 +1,1322 @@
+//! Graph-only construction and observation. New roots are frozen atomically;
+//! repeated children from one source arena retain one shared copy mapping.
+use super::*;
+use crate::sema::{copy_contract::CopyMode, source_reception::Construction};
+use ril_syntax::ast::ParameterMode;
+use std::collections::{BTreeMap, BTreeSet};
+
+type CallableParts = (Vec<(ParameterMode, SourceSchema)>, SourceSchema);
+
+fn annotation_environment(
+    annotations: &[String],
+    work: &mut WorkLimit,
+) -> Result<bool, SourceTypesError> {
+    work.charge(annotations.len())?;
+    let mut required = false;
+    for annotation in annotations {
+        work.text(annotation)?;
+        required |= !matches!(
+            annotation.trim(),
+            "@{}" | "&{}" | "&mut" | "&^mut" | "&closure" | "&capture"
+        );
+    }
+    Ok(required)
+}
+
+fn import_parts<'a>(
+    parts: impl IntoIterator<Item = &'a SourceSchema>,
+    builder: &mut SourceBuilder,
+    work: &mut WorkLimit,
+) -> Result<Vec<SourceTypeId>, SourceTypesError> {
+    let mut roots = Vec::new();
+    let mut graphs = BTreeMap::<_, (&SourceTypes, BTreeSet<SourceTypeId>)>::new();
+    for part in parts {
+        work.charge(2)?;
+        part.types.get(part.root)?;
+        roots.push(part.root);
+        graphs
+            .entry(part.root.arena)
+            .or_insert_with(|| (&part.types, BTreeSet::new()))
+            .1
+            .insert(part.root);
+    }
+    let mut copied = BTreeMap::new();
+    for (_, (types, roots)) in graphs {
+        let mapping = types.copy_into(roots, builder, work)?;
+        work.charge(mapping.len())?;
+        copied.extend(mapping);
+    }
+    work.charge(roots.len())?;
+    roots
+        .into_iter()
+        .map(|root| {
+            copied
+                .get(&root)
+                .copied()
+                .ok_or(SourceTypesError::MissingNode)
+        })
+        .collect()
+}
+
+fn freeze(
+    builder: SourceBuilder,
+    root: SourceTypeId,
+    original: Option<TypeExprId>,
+    work: &mut WorkLimit,
+) -> Result<SourceSchema, SourceTypesError> {
+    Ok(SourceSchema {
+        types: builder.freeze(work)?,
+        root,
+        original,
+    })
+}
+
+impl SourceSchema {
+    /// Read one original root UID. Immutable qualification is a real shell and
+    /// is not discarded when deciding whether this is a bare binder receiver.
+    pub(crate) fn bare_binder_identity(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Option<String>, SourceTypesError> {
+        let root = self.types.unalias(self.root, work)?;
+        let node = self.types.get(root)?;
+        node.charge(work)?;
+        Ok(match node {
+            SourceNode::Binder(identity) => Some(identity.clone()),
+            _ => None,
+        })
+    }
+
+    /// Select an already present UID node, preserving its actual arena and
+    /// interpretation. Absence is not a theorem about an unresolved type.
+    pub(crate) fn binder_view(
+        &self,
+        identity: &str,
+        work: &mut WorkLimit,
+    ) -> Result<Option<Self>, SourceTypesError> {
+        work.text(identity)?;
+        let mut selected = None;
+        for id in self.types.reachable([self.root], work)? {
+            work.charge(1)?;
+            if matches!(self.types.get(id)?, SourceNode::Binder(actual) if actual == identity)
+                && selected.is_none()
+            {
+                selected = Some(id);
+            }
+        }
+        selected
+            .map(|root| Self::frozen_view(&self.types, root, self.original, work))
+            .transpose()
+    }
+
+    /// Topology only: an actual backedge is different from a shared acyclic
+    /// child. Complete the bounded walk even after finding a cycle so another
+    /// bad edge or exhausted budget cannot be hidden behind that backedge.
+    pub(crate) fn has_cycles(&self, work: &mut WorkLimit) -> Result<bool, SourceTypesError> {
+        work.charge(1)?;
+        let mut pending = vec![(self.root, false)];
+        let mut visited = BTreeSet::new();
+        let mut active = BTreeSet::new();
+        let mut cyclic = false;
+        while let Some((id, leaving)) = pending.pop() {
+            work.charge(1)?;
+            if leaving {
+                active.remove(&id);
+                visited.insert(id);
+                continue;
+            }
+            if active.contains(&id) {
+                cyclic = true;
+                continue;
+            }
+            if visited.contains(&id) {
+                continue;
+            }
+            let node = self.types.get(id)?;
+            node.charge(work)?;
+            let children = match node {
+                SourceNode::GenericBuiltin(_)
+                | SourceNode::Scalar(_)
+                | SourceNode::Nominal(_)
+                | SourceNode::StaticValue(_)
+                | SourceNode::Binder(_) => 0,
+                SourceNode::OpaqueComputation(_) | SourceNode::Unresolved { .. } => {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                SourceNode::Array { .. } | SourceNode::Alias { .. } => 1,
+                SourceNode::Map { .. } => 2,
+                SourceNode::Tuple(items)
+                | SourceNode::Container {
+                    arguments: items, ..
+                }
+                | SourceNode::OpaqueName {
+                    arguments: items, ..
+                } => items.len(),
+                SourceNode::Record { fields, row } => fields.len() + usize::from(row.is_some()),
+                SourceNode::Callable { parameters, .. } => parameters.len() + 1,
+            };
+            work.charge(1 + children)?;
+            active.insert(id);
+            pending.push((id, true));
+            pending.extend(
+                node.children()
+                    .into_iter()
+                    .rev()
+                    .map(|child| (child, false)),
+            );
+        }
+        Ok(cyclic)
+    }
+
+    pub(crate) fn has_callable(&self, work: &mut WorkLimit) -> Result<bool, SourceTypesError> {
+        let mut found = false;
+        for id in self.types.reachable([self.root], work)? {
+            work.charge(1)?;
+            match self.types.get(id)? {
+                SourceNode::Callable { .. } | SourceNode::GenericBuiltin(_) => found = true,
+                SourceNode::Unresolved { .. } | SourceNode::OpaqueComputation(_) => {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                _ => {}
+            }
+        }
+        Ok(found)
+    }
+
+    pub(crate) fn binder_identities(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<BTreeSet<String>, SourceTypesError> {
+        let mut result = BTreeSet::new();
+        for id in self.types.reachable([self.root], work)? {
+            work.charge(1)?;
+            if let SourceNode::Binder(identity) = self.types.get(id)? {
+                work.text(identity)?;
+                result.insert(identity.clone());
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn with_original(&self, original: Option<TypeExprId>) -> Self {
+        Self {
+            types: self.types.clone(),
+            root: self.root,
+            original,
+        }
+    }
+
+    pub(crate) fn empty_context(
+        &self,
+        fresh: &Construction,
+        work: &mut WorkLimit,
+    ) -> Result<Option<bool>, SourceTypesError> {
+        work.charge(1)?;
+        if !matches!(fresh, Construction::Array(items) if items.is_empty())
+            && !matches!(fresh, Construction::Map(items) if items.is_empty())
+        {
+            return Ok(None);
+        }
+        super::super::reception::complete(&self.types, self.root, work)?;
+        let root = self.read_root(work)?;
+        Ok(match (self.types.get(root)?, fresh) {
+            (SourceNode::Array { length, .. }, Construction::Array(_)) => Some(matches!(
+                length,
+                SourceLength::Dynamic | SourceLength::Fixed(0)
+            )),
+            (SourceNode::Map { .. }, Construction::Map(_)) => Some(true),
+            (SourceNode::Binder(_) | SourceNode::OpaqueName { .. }, _) => {
+                return Err(SourceTypesError::Unresolved);
+            }
+            _ => None,
+        })
+    }
+
+    pub(crate) fn sensitivity(&self, work: &mut WorkLimit) -> SourceSensitivity {
+        self.types.sensitivity(self.root, work)
+    }
+
+    /// Closed scalar and structural coordinates do not depend on which frozen
+    /// environment lends them. Rigid UIDs and lexical callable contracts do.
+    pub(crate) fn requires_environment(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        self.environment_dependency(true, work)
+    }
+
+    /// A declaration's own lexical names/rows remain interpreted there even
+    /// after every generic UID has been substituted by an actual source view.
+    pub(crate) fn requires_declaration_environment(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        self.environment_dependency(false, work)
+    }
+
+    fn environment_dependency(
+        &self,
+        binders: bool,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        let mut required = false;
+        for id in self.types.reachable([self.root], work)? {
+            work.charge(1)?;
+            match self.types.get(id)? {
+                SourceNode::Binder(_) => required |= binders,
+                SourceNode::OpaqueName { .. } => required = true,
+                SourceNode::OpaqueComputation(_) | SourceNode::Unresolved { .. } => {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                SourceNode::Callable { annotations, .. } => {
+                    required |= annotation_environment(annotations, work)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(required)
+    }
+
+    /// The root callable owns these contracts; parameter/result dependency is
+    /// accounted for separately by the caller when it combines source views.
+    pub(crate) fn callable_contract_requires_environment(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        let root = self.read_root(work)?;
+        match self.types.get(root)? {
+            SourceNode::Callable { annotations, .. } => annotation_environment(annotations, work),
+            SourceNode::GenericBuiltin(_) => Ok(false),
+            SourceNode::Binder(_)
+            | SourceNode::OpaqueName { .. }
+            | SourceNode::OpaqueComputation(_)
+            | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
+            _ => Err(SourceTypesError::MissingProjection),
+        }
+    }
+
+    pub(crate) fn receive_schema(
+        &self,
+        actual: &Self,
+        fresh: Option<&Construction>,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        super::super::reception::receive_from(
+            &self.types,
+            self.root,
+            &actual.types,
+            actual.root,
+            fresh,
+            work,
+        )
+    }
+
+    /// Copy authority is checked elsewhere. This changes only the outer type
+    /// qualification, preserving every recursive edge and original annotation.
+    pub(crate) fn copy_view(
+        &self,
+        mode: CopyMode,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        let root = self.types.unalias(self.root, work)?;
+        let node = self.types.get(root)?;
+        node.charge(work)?;
+        let immutable = match node {
+            SourceNode::Container {
+                kind: SourceContainer::Immutable,
+                arguments,
+            } => {
+                if arguments.len() != 1 {
+                    return Err(SourceTypesError::InvalidContainer);
+                }
+                Some(arguments[0])
+            }
+            _ => None,
+        };
+        match (mode, immutable) {
+            (CopyMode::Mutable, Some(root)) => {
+                Self::frozen_view(&self.types, root, self.original, work)
+            }
+            (CopyMode::Immutable, None) => Self::container(
+                SourceContainer::Immutable,
+                std::slice::from_ref(self),
+                self.original,
+                work,
+            ),
+            _ => Ok(self.clone()),
+        }
+    }
+
+    pub(crate) fn tuple(
+        items: &[Self],
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1 + items.len())?;
+        let mut builder = SourceBuilder::new()?;
+        let items = import_parts(items, &mut builder, work)?;
+        let node = if items.is_empty() {
+            SourceNode::Scalar(SourceScalar::Unit)
+        } else {
+            SourceNode::Tuple(items)
+        };
+        let root = builder.insert(node, work)?;
+        freeze(builder, root, original, work)
+    }
+
+    pub(crate) fn array(
+        length: SourceLength,
+        element: &Self,
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        let mut builder = SourceBuilder::new()?;
+        let parts = import_parts([element], &mut builder, work)?;
+        let root = builder.insert(
+            SourceNode::Array {
+                length,
+                element: parts[0],
+            },
+            work,
+        )?;
+        freeze(builder, root, original, work)
+    }
+
+    pub(crate) fn map(
+        key: &Self,
+        value: &Self,
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        let mut builder = SourceBuilder::new()?;
+        let parts = import_parts([key, value], &mut builder, work)?;
+        let root = builder.insert(
+            SourceNode::Map {
+                key: parts[0],
+                value: parts[1],
+            },
+            work,
+        )?;
+        freeze(builder, root, original, work)
+    }
+
+    pub(crate) fn record(
+        fields: &[(String, bool, Self)],
+        row: Option<&Self>,
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1 + fields.len())?;
+        for (label, _, _) in fields {
+            work.text(label)?;
+        }
+        let mut builder = SourceBuilder::new()?;
+        let parts = import_parts(
+            fields.iter().map(|(_, _, schema)| schema).chain(row),
+            &mut builder,
+            work,
+        )?;
+        let root = builder.insert(
+            SourceNode::Record {
+                fields: fields
+                    .iter()
+                    .zip(&parts)
+                    .map(|((label, mutable, _), value)| SourceField {
+                        label: label.clone(),
+                        mutable: *mutable,
+                        value: *value,
+                    })
+                    .collect(),
+                row: row.map(|_| parts[fields.len()]),
+            },
+            work,
+        )?;
+        freeze(builder, root, original, work)
+    }
+
+    pub(crate) fn container(
+        kind: SourceContainer,
+        arguments: &[Self],
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1 + arguments.len())?;
+        let arity = if kind == SourceContainer::Result {
+            2
+        } else {
+            1
+        };
+        if arguments.len() != arity {
+            return Err(SourceTypesError::InvalidContainer);
+        }
+        let mut builder = SourceBuilder::new()?;
+        let arguments = import_parts(arguments, &mut builder, work)?;
+        let root = builder.insert(SourceNode::Container { kind, arguments }, work)?;
+        freeze(builder, root, original, work)
+    }
+
+    pub(crate) fn callable(
+        parameters: &[(ParameterMode, Self)],
+        result: &Self,
+        annotations: &[String],
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1 + parameters.len() + annotations.len())?;
+        for annotation in annotations {
+            work.text(annotation)?;
+        }
+        let mut builder = SourceBuilder::new()?;
+        let parts = import_parts(
+            parameters.iter().map(|(_, schema)| schema).chain([result]),
+            &mut builder,
+            work,
+        )?;
+        let root = builder.insert(
+            SourceNode::Callable {
+                parameters: parameters
+                    .iter()
+                    .zip(&parts)
+                    .map(|((mode, _), value)| (*mode, *value))
+                    .collect(),
+                result: parts[parameters.len()],
+                annotations: annotations.to_vec(),
+            },
+            work,
+        )?;
+        freeze(builder, root, original, work)
+    }
+
+    /// Resolve only reachable selections. Unknown unused inputs neither replace
+    /// a binder nor force their unrelated graphs into this resulting schema.
+    pub(crate) fn substitute(
+        &self,
+        selected: &BTreeMap<String, Self>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        let mut parts = vec![self];
+        let mut pending = vec![self];
+        let mut seen = BTreeSet::new();
+        let mut names = Vec::new();
+        while let Some(schema) = pending.pop() {
+            work.charge(1)?;
+            for id in schema.types.reachable([schema.root], work)? {
+                if let SourceNode::Binder(identity) = schema.types.get(id)? {
+                    work.text(identity)?;
+                    work.charge(1)?;
+                    if !seen.insert(identity.clone()) {
+                        continue;
+                    }
+                    if let Some(replacement) = selected.get(identity) {
+                        work.charge(3)?;
+                        parts.push(replacement);
+                        pending.push(replacement);
+                        names.push(identity.clone());
+                    }
+                }
+            }
+        }
+        let mut builder = SourceBuilder::new()?;
+        let roots = import_parts(parts, &mut builder, work)?;
+        work.charge(names.len())?;
+        let replacements = names
+            .into_iter()
+            .zip(roots.iter().skip(1).copied())
+            .collect();
+        let types = builder.freeze(work)?;
+        let result = types.substitute(roots[0], &replacements, work)?;
+        Ok(Self {
+            types: result.types,
+            root: result.root,
+            original: self.original,
+        })
+    }
+
+    /// A structural read can see through immutable qualification. It does not
+    /// remove that qualification from any stored value or grant write access.
+    fn read_root(&self, work: &mut WorkLimit) -> Result<SourceTypeId, SourceTypesError> {
+        let mut root = self.root;
+        let mut seen = BTreeSet::new();
+        loop {
+            work.charge(1)?;
+            root = self.types.unalias(root, work)?;
+            if !seen.insert(root) {
+                return Err(SourceTypesError::AliasCycle);
+            }
+            let node = self.types.get(root)?;
+            node.charge(work)?;
+            match node {
+                SourceNode::Container {
+                    kind: SourceContainer::Immutable,
+                    arguments,
+                } => {
+                    if arguments.len() != 1 {
+                        return Err(SourceTypesError::InvalidContainer);
+                    }
+                    root = arguments[0];
+                }
+                _ => return Ok(root),
+            }
+        }
+    }
+
+    pub(crate) fn callable_parts(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Option<CallableParts>, SourceTypesError> {
+        let root = self.read_root(work)?;
+        match self.types.get(root)? {
+            SourceNode::Callable {
+                parameters, result, ..
+            } => {
+                work.charge(parameters.len())?;
+                let parameters = parameters
+                    .iter()
+                    .map(|(mode, root)| {
+                        Self::frozen_view(&self.types, *root, self.original, work)
+                            .map(|schema| (*mode, schema))
+                    })
+                    .collect::<Result<_, _>>()?;
+                Ok(Some((
+                    parameters,
+                    Self::frozen_view(&self.types, *result, self.original, work)?,
+                )))
+            }
+            SourceNode::Binder(_)
+            | SourceNode::OpaqueName { .. }
+            | SourceNode::OpaqueComputation(_)
+            | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn tuple_parts(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Option<Vec<Self>>, SourceTypesError> {
+        let root = self.read_root(work)?;
+        match self.types.get(root)? {
+            SourceNode::Scalar(SourceScalar::Unit) => Ok(Some(Vec::new())),
+            SourceNode::Tuple(items) => {
+                work.charge(items.len())?;
+                items
+                    .iter()
+                    .map(|root| Self::frozen_view(&self.types, *root, self.original, work))
+                    .collect::<Result<_, _>>()
+                    .map(Some)
+            }
+            SourceNode::Binder(_)
+            | SourceNode::OpaqueName { .. }
+            | SourceNode::OpaqueComputation(_)
+            | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn array_parts(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Option<(SourceLength, Self)>, SourceTypesError> {
+        let root = self.read_root(work)?;
+        match self.types.get(root)? {
+            SourceNode::Array { length, element } => Ok(Some((
+                *length,
+                Self::frozen_view(&self.types, *element, self.original, work)?,
+            ))),
+            SourceNode::Binder(_)
+            | SourceNode::OpaqueName { .. }
+            | SourceNode::OpaqueComputation(_)
+            | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn callable_parameters(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Vec<(ParameterMode, Self)>, SourceTypesError> {
+        self.callable_parts(work)?
+            .map(|(parameters, _)| parameters)
+            .ok_or(SourceTypesError::MissingProjection)
+    }
+
+    pub(crate) fn callable_annotations(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Option<Vec<String>>, SourceTypesError> {
+        let root = self.read_root(work)?;
+        match self.types.get(root)? {
+            SourceNode::Callable { annotations, .. } => Ok(Some(annotations.clone())),
+            SourceNode::Binder(_)
+            | SourceNode::OpaqueName { .. }
+            | SourceNode::OpaqueComputation(_)
+            | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
+            _ => Ok(None),
+        }
+    }
+
+    /// Exact opaque name/arity only. This query supplies no declaration or
+    /// standard nominal identity proof; that proof belongs to the real caller.
+    pub(crate) fn opaque_arguments(
+        &self,
+        expected: &str,
+        arity: usize,
+        work: &mut WorkLimit,
+    ) -> Result<Option<Vec<Self>>, SourceTypesError> {
+        work.text(expected)?;
+        let root = self.read_root(work)?;
+        match self.types.get(root)? {
+            SourceNode::OpaqueName { name, arguments } if name == expected => {
+                if arguments.len() != arity {
+                    return Err(SourceTypesError::InvalidContainer);
+                }
+                work.charge(arguments.len())?;
+                arguments
+                    .iter()
+                    .map(|root| Self::frozen_view(&self.types, *root, self.original, work))
+                    .collect::<Result<_, _>>()
+                    .map(Some)
+            }
+            SourceNode::Binder(_)
+            | SourceNode::OpaqueComputation(_)
+            | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
+            _ => Ok(None),
+        }
+    }
+
+    pub(crate) fn record_field(
+        &self,
+        expected: &str,
+        work: &mut WorkLimit,
+    ) -> Result<Option<(bool, Self)>, SourceTypesError> {
+        work.text(expected)?;
+        let mut cursor = self.read_root(work)?;
+        let mut seen = BTreeSet::new();
+        let mut labels = BTreeSet::new();
+        let mut selected = None;
+        loop {
+            work.charge(1)?;
+            cursor = self.types.unalias(cursor, work)?;
+            if !seen.insert(cursor) {
+                return Err(SourceTypesError::RowCycle);
+            }
+            let node = self.types.get(cursor)?;
+            node.charge(work)?;
+            let SourceNode::Record { fields, row } = node else {
+                return match node {
+                    SourceNode::Binder(_) | SourceNode::OpaqueName { .. } => {
+                        selected.ok_or(SourceTypesError::Unresolved).map(Some)
+                    }
+                    SourceNode::OpaqueComputation(_) | SourceNode::Unresolved { .. } => {
+                        Err(SourceTypesError::Unresolved)
+                    }
+                    _ if seen.len() == 1 => Ok(None),
+                    _ => Err(SourceTypesError::Unresolved),
+                };
+            };
+            for field in fields {
+                work.charge(1)?;
+                if !labels.insert(field.label.as_str()) {
+                    return Err(SourceTypesError::DuplicateField);
+                }
+                if field.label == expected {
+                    selected = Some((
+                        field.mutable,
+                        Self::frozen_view(&self.types, field.value, self.original, work)?,
+                    ));
+                }
+            }
+            let Some(row) = row else { return Ok(selected) };
+            cursor = *row;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sema::effect_identity::{ArgumentKey, StaticBinderSort};
+
+    fn scalar(kind: SourceScalar) -> SourceSchema {
+        let mut work = WorkLimit::new(128);
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder.insert(SourceNode::Scalar(kind), &mut work).unwrap();
+        freeze(builder, root, Some(TypeExprId(17)), &mut work).unwrap()
+    }
+
+    #[test]
+    fn a_known_record_field_cannot_hide_a_poisoned_row() {
+        for poison in [
+            SourceNode::OpaqueComputation("unevaluated row".into()),
+            SourceNode::Unresolved {
+                description: "unknown row".into(),
+                arguments: vec![],
+            },
+        ] {
+            let mut work = WorkLimit::new(4096);
+            let mut builder = SourceBuilder::new().unwrap();
+            let root = builder.insert(poison, &mut work).unwrap();
+            let row = freeze(builder, root, None, &mut work).unwrap();
+            let record = SourceSchema::record(
+                &[("known".into(), false, scalar(SourceScalar::Int))],
+                Some(&row),
+                None,
+                &mut work,
+            )
+            .unwrap();
+            assert_eq!(
+                record.record_field("known", &mut work).unwrap_err(),
+                SourceTypesError::Unresolved
+            );
+            assert_eq!(
+                record.record_field("missing", &mut work).unwrap_err(),
+                SourceTypesError::Unresolved
+            );
+        }
+    }
+
+    #[test]
+    fn callable_contract_environment_excludes_parameter_and_result_dependencies() {
+        let mut work = WorkLimit::new(4096);
+        let opaque = SourceSchema::import(
+            &ArgumentKey::Name {
+                name: "OriginalNominal".into(),
+                arguments: vec![],
+            },
+            None,
+            &mut work,
+        )
+        .unwrap();
+        let callable = SourceSchema::callable(
+            &[(ParameterMode::Read, opaque.clone())],
+            &opaque,
+            &[],
+            None,
+            &mut work,
+        )
+        .unwrap();
+        assert!(
+            callable
+                .requires_declaration_environment(&mut work)
+                .unwrap()
+        );
+        assert!(
+            !callable
+                .callable_contract_requires_environment(&mut work)
+                .unwrap()
+        );
+        let captured = SourceSchema::callable(
+            &[],
+            &scalar(SourceScalar::Unit),
+            &["&{STATE}".into()],
+            None,
+            &mut work,
+        )
+        .unwrap();
+        assert!(
+            captured
+                .callable_contract_requires_environment(&mut work)
+                .unwrap()
+        );
+        assert_eq!(
+            captured.callable_contract_requires_environment(&mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+    }
+
+    fn recursive(extent: u64) -> SourceSchema {
+        let mut work = WorkLimit::new(4096);
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder.reserve(&mut work).unwrap();
+        let integer = builder
+            .insert(SourceNode::Scalar(SourceScalar::Int), &mut work)
+            .unwrap();
+        let inner = builder
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(extent),
+                    element: integer,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let empty = builder
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(0),
+                    element: inner,
+                },
+                &mut work,
+            )
+            .unwrap();
+        builder
+            .define(
+                root,
+                SourceNode::Record {
+                    fields: vec![
+                        SourceField {
+                            label: "again".into(),
+                            mutable: false,
+                            value: root,
+                        },
+                        SourceField {
+                            label: "empty".into(),
+                            mutable: true,
+                            value: empty,
+                        },
+                    ],
+                    row: None,
+                },
+                &mut work,
+            )
+            .unwrap();
+        freeze(builder, root, Some(TypeExprId(29)), &mut work).unwrap()
+    }
+
+    fn binder(identity: &str) -> SourceSchema {
+        SourceSchema::import(
+            &ArgumentKey::Binder {
+                identity: identity.into(),
+                sort: StaticBinderSort::Type,
+            },
+            None,
+            &mut WorkLimit::new(128),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn root_uid_queries_do_not_compare_distinct_binders_or_strip_immutable_shells() {
+        let caller = binder("caller:U");
+        assert_eq!(
+            caller
+                .bare_binder_identity(&mut WorkLimit::new(128))
+                .unwrap(),
+            Some("caller:U".into())
+        );
+        assert_eq!(
+            binder("callee:T")
+                .bare_binder_identity(&mut WorkLimit::new(128))
+                .unwrap(),
+            Some("callee:T".into())
+        );
+        let immutable = caller
+            .copy_view(CopyMode::Immutable, &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_eq!(
+            immutable
+                .bare_binder_identity(&mut WorkLimit::new(128))
+                .unwrap(),
+            None
+        );
+        let mut work = WorkLimit::new(4096);
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = caller.copy_into(&mut builder, &mut work).unwrap();
+        let alias = builder
+            .insert(
+                SourceNode::Alias {
+                    declaration: "original-root".into(),
+                    target: root,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let alias = freeze(builder, alias, caller.original(), &mut work).unwrap();
+        assert_eq!(
+            alias
+                .bare_binder_identity(&mut WorkLimit::new(128))
+                .unwrap(),
+            Some("caller:U".into())
+        );
+        assert!(alias.bare_binder_identity(&mut WorkLimit::new(0)).is_err());
+        let composite = SourceSchema::tuple(
+            &[alias, binder("callee:T")],
+            Some(TypeExprId(79)),
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        let caller = composite
+            .binder_view("caller:U", &mut WorkLimit::new(4096))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            caller
+                .bare_binder_identity(&mut WorkLimit::new(128))
+                .unwrap(),
+            Some("caller:U".into())
+        );
+        assert_eq!(caller.root.arena, composite.root.arena);
+        assert_eq!(caller.original(), composite.original());
+        assert!(
+            composite
+                .binder_view("unregistered:V", &mut WorkLimit::new(4096))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            composite
+                .binder_view("caller:U", &mut WorkLimit::new(0))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn topology_queries_distinguish_backedges_from_shared_diamonds_and_never_hide_errors() {
+        assert!(recursive(3).has_cycles(&mut WorkLimit::new(4096)).unwrap());
+        let integer = scalar(SourceScalar::Int);
+        let diamond =
+            SourceSchema::tuple(&[integer.clone(), integer], None, &mut WorkLimit::new(4096))
+                .unwrap();
+        assert!(!diamond.has_cycles(&mut WorkLimit::new(4096)).unwrap());
+        assert!(recursive(3).has_cycles(&mut WorkLimit::new(0)).is_err());
+        let unknown = SourceSchema::import(
+            &ArgumentKey::Closed("opaque-computation".into()),
+            None,
+            &mut WorkLimit::new(128),
+        )
+        .unwrap();
+        let incomplete =
+            SourceSchema::tuple(&[recursive(3), unknown], None, &mut WorkLimit::new(4096)).unwrap();
+        assert_eq!(
+            incomplete.has_cycles(&mut WorkLimit::new(4096)),
+            Err(SourceTypesError::Unresolved)
+        );
+    }
+
+    #[test]
+    fn graph_reception_copy_and_composition_keep_cycles_shared_roots_and_hidden_extents() {
+        let input = recursive(3);
+        assert_eq!(input.key(), Err(SourceTypesError::RecursiveLegacyKey));
+        assert!(
+            input
+                .receive_schema(&recursive(3), None, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        assert!(
+            !input
+                .receive_schema(&recursive(2), None, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        let mutable = input
+            .copy_view(CopyMode::Mutable, &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_eq!(mutable.root, input.root);
+        let immutable = input
+            .copy_view(CopyMode::Immutable, &mut WorkLimit::new(4096))
+            .unwrap();
+        let unchanged = immutable
+            .copy_view(CopyMode::Immutable, &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_eq!(unchanged.root, immutable.root);
+        let copied = immutable
+            .copy_view(CopyMode::Mutable, &mut WorkLimit::new(4096))
+            .unwrap();
+        assert!(
+            input
+                .equivalent(&copied, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        assert_eq!(copied.original(), input.original());
+        let tuple = SourceSchema::tuple(
+            &[input.clone(), input.clone()],
+            None,
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        let SourceNode::Tuple(items) = tuple.types.get(tuple.root).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            items[0], items[1],
+            "same original arena must use one copy mapping"
+        );
+        let parts = tuple
+            .tuple_parts(&mut WorkLimit::new(4096))
+            .unwrap()
+            .unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].root, parts[1].root);
+        assert!(tuple.tuple_parts(&mut WorkLimit::new(0)).is_err());
+        assert!(
+            SourceSchema::tuple(
+                &[input.clone(), input.clone()],
+                None,
+                &mut WorkLimit::new(0)
+            )
+            .is_err()
+        );
+        assert!(
+            input
+                .copy_view(CopyMode::Immutable, &mut WorkLimit::new(0))
+                .is_err()
+        );
+        assert!(
+            input
+                .receive_schema(&input, None, &mut WorkLimit::new(0))
+                .is_err()
+        );
+        assert!(
+            input
+                .equivalent(&recursive(3), &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn graph_selection_keeps_recursive_actuals_and_never_interprets_unused_unknowns() {
+        let schema = SourceSchema::tuple(
+            &[binder("T"), binder("T")],
+            Some(TypeExprId(41)),
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        let input = recursive(3);
+        let unused = SourceSchema::import(
+            &ArgumentKey::Closed("opaque".into()),
+            None,
+            &mut WorkLimit::new(128),
+        )
+        .unwrap();
+        let selected = BTreeMap::from([("T".into(), input.clone()), ("unused".into(), unused)]);
+        let result = schema
+            .substitute(&selected, &mut WorkLimit::new(16384))
+            .unwrap();
+        assert_eq!(result.original(), schema.original());
+        let first = result
+            .project_steps(&[SourcePath::Tuple(0)], &mut WorkLimit::new(128))
+            .unwrap();
+        assert!(first.equivalent(&input, &mut WorkLimit::new(4096)).unwrap());
+        let SourceNode::Tuple(items) = result.types.get(result.root).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            result
+                .types
+                .unalias(items[0], &mut WorkLimit::new(128))
+                .unwrap(),
+            result
+                .types
+                .unalias(items[1], &mut WorkLimit::new(128))
+                .unwrap()
+        );
+        assert!(
+            schema
+                .substitute(&selected, &mut WorkLimit::new(0))
+                .is_err()
+        );
+        assert_eq!(
+            binder("A")
+                .substitute(
+                    &BTreeMap::from([("A".into(), binder("B")), ("B".into(), binder("A"))]),
+                    &mut WorkLimit::new(4096)
+                )
+                .unwrap_err(),
+            SourceTypesError::CyclicSubstitution
+        );
+    }
+
+    #[test]
+    fn structural_queries_keep_modes_names_and_frozen_environment_dependencies() {
+        let input = recursive(3);
+        assert!(
+            !input
+                .requires_environment(&mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        assert!(
+            binder("genuine:T")
+                .requires_environment(&mut WorkLimit::new(128))
+                .unwrap()
+        );
+        let callback = SourceSchema::callable(
+            &[(ParameterMode::SharedMut, input.clone())],
+            &scalar(SourceScalar::Unit),
+            &["&{STATE}".into()],
+            Some(TypeExprId(43)),
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        assert!(
+            callback
+                .requires_environment(&mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        let (parameters, result) = callback
+            .callable_parts(&mut WorkLimit::new(128))
+            .unwrap()
+            .unwrap();
+        assert_eq!(parameters[0].0, ParameterMode::SharedMut);
+        assert_eq!(result.key().unwrap(), ArgumentKey::Tuple(vec![]));
+        assert_eq!(
+            callback
+                .callable_annotations(&mut WorkLimit::new(128))
+                .unwrap()
+                .unwrap(),
+            ["&{STATE}"]
+        );
+        let record = SourceSchema::record(
+            &[
+                ("action".into(), false, callback),
+                ("data".into(), true, input),
+            ],
+            None,
+            None,
+            &mut WorkLimit::new(8192),
+        )
+        .unwrap();
+        assert!(
+            !record
+                .record_field("action", &mut WorkLimit::new(256))
+                .unwrap()
+                .unwrap()
+                .0
+        );
+        assert!(
+            record
+                .record_field("data", &mut WorkLimit::new(256))
+                .unwrap()
+                .unwrap()
+                .0
+        );
+        assert!(
+            record
+                .record_field("missing", &mut WorkLimit::new(256))
+                .unwrap()
+                .is_none()
+        );
+        assert!(record.record_field("data", &mut WorkLimit::new(0)).is_err());
+        let name = SourceSchema::import(
+            &ArgumentKey::Name {
+                name: "Iter::Step".into(),
+                arguments: vec![ArgumentKey::Tuple(vec![]), ArgumentKey::Tuple(vec![])],
+            },
+            None,
+            &mut WorkLimit::new(128),
+        )
+        .unwrap();
+        assert_eq!(
+            name.opaque_arguments("Iter::Step", 2, &mut WorkLimit::new(128))
+                .unwrap()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            name.opaque_arguments("Other::Step", 2, &mut WorkLimit::new(128))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            name.opaque_arguments("Iter::Step", 1, &mut WorkLimit::new(128))
+                .unwrap_err(),
+            SourceTypesError::InvalidContainer
+        );
+    }
+
+    #[test]
+    fn scalar_numeric_projection_never_exports_the_receivers_recursive_value_graph() {
+        use ril_compiler_core::builtin_calls::GenericBuiltin;
+        let receiver = SourceSchema::map(
+            &scalar(SourceScalar::I16),
+            &recursive(3),
+            None,
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        assert_eq!(receiver.key(), Err(SourceTypesError::RecursiveLegacyKey));
+        assert!(
+            receiver
+                .array_parts(&mut WorkLimit::new(4096))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            super::super::super::polymorphic::numeric_parameters_schema(
+                GenericBuiltin::MapSet,
+                Some(&receiver),
+                &mut WorkLimit::new(128)
+            )
+            .unwrap(),
+            [None, Some(SourceScalar::I16), None]
+        );
+        assert!(
+            super::super::super::polymorphic::numeric_parameters_schema(
+                GenericBuiltin::MapSet,
+                Some(&receiver),
+                &mut WorkLimit::new(0)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn empty_context_requires_the_real_empty_shape_and_a_complete_bounded_target() {
+        let target = SourceSchema::array(
+            SourceLength::Fixed(0),
+            &recursive(3),
+            Some(TypeExprId(31)),
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        assert_eq!(
+            target.empty_context(&Construction::Array(vec![]), &mut WorkLimit::new(4096)),
+            Ok(Some(true))
+        );
+        assert_eq!(
+            target.empty_context(&Construction::Opaque, &mut WorkLimit::new(128)),
+            Ok(None)
+        );
+        assert_eq!(
+            target.empty_context(
+                &Construction::Array(vec![Construction::Opaque]),
+                &mut WorkLimit::new(128)
+            ),
+            Ok(None)
+        );
+        assert!(
+            target
+                .empty_context(&Construction::Array(vec![]), &mut WorkLimit::new(0))
+                .is_err()
+        );
+        let nonempty = SourceSchema::array(
+            SourceLength::Fixed(1),
+            &recursive(3),
+            None,
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        assert_eq!(
+            nonempty.empty_context(&Construction::Array(vec![]), &mut WorkLimit::new(4096)),
+            Ok(Some(false))
+        );
+        let unresolved = SourceSchema::import(
+            &ArgumentKey::Closed("unknown".into()),
+            None,
+            &mut WorkLimit::new(128),
+        )
+        .unwrap();
+        let incomplete = SourceSchema::array(
+            SourceLength::Fixed(0),
+            &unresolved,
+            None,
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        assert_eq!(
+            incomplete.empty_context(&Construction::Array(vec![]), &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::Unresolved)
+        );
+        assert_eq!(
+            unresolved.requires_environment(&mut WorkLimit::new(128)),
+            Err(SourceTypesError::Unresolved)
+        );
+        let relabeled = target.with_original(Some(TypeExprId(37)));
+        assert_eq!(relabeled.root, target.root);
+        assert_eq!(relabeled.original(), Some(TypeExprId(37)));
+        assert_eq!(target.original(), Some(TypeExprId(31)));
+    }
+}

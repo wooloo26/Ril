@@ -28,7 +28,7 @@ pub(super) fn lower(
     graph: &mut p::Graph,
     contracts: &mut ReturnContracts,
 ) -> Result<(), NotImplemented> {
-    super::storage_sources::lower(facts, graph)?;
+    super::storage_sources::lower(facts, graph, contracts)?;
     graph.generated_sources = facts
         .generated_sources
         .iter()
@@ -81,31 +81,55 @@ pub(super) fn lower(
             })
         })
         .collect::<Result<_, _>>()?;
+    let mut builtin_work = crate::sema::source_types::WorkLimit::new(1 << 20);
+    builtin_work
+        .charge(facts.builtin_source_observations.len())
+        .map_err(|error| {
+            NotImplemented::new(
+                ril_compiler_core::phase::Stage::Lowering,
+                format!("builtin Source observations cannot be retained: {error}"),
+            )
+        })?;
     graph.builtin_source_observations = facts
         .builtin_source_observations
         .iter()
-        .map(|value| p::BuiltinSourceObservation {
-            expression: value.expression,
-            context: resumption_context(value.context),
-            identity: value.identity.clone(),
-            full_header: match &value.full_header {
-                crate::sema::builtin_sources::BuiltinDeclaration::Syntax(syntax) => {
-                    p::BuiltinDeclaration::Syntax(contract(syntax))
-                }
-                crate::sema::builtin_sources::BuiltinDeclaration::Generic(id) => {
-                    p::BuiltinDeclaration::Generic(*id)
-                }
-            },
-            concrete_effects: value.concrete_effects.clone(),
-            written_formals: value.written_formals.clone(),
-            captures: value
-                .captures
-                .iter()
-                .map(|binding| *binding as u32)
-                .collect(),
-            cause: value.cause,
+        .map(|value| {
+            builtin_work.charge(8).map_err(|error| {
+                NotImplemented::new(
+                    ril_compiler_core::phase::Stage::Lowering,
+                    format!("builtin Source environment cannot be retained: {error}"),
+                )
+            })?;
+            if !crate::sema::builtin_sources::is_catalog_environment(&value.environment) {
+                return Err(NotImplemented::new(
+                    ril_compiler_core::phase::Stage::Lowering,
+                    "builtin Source lost its canonical declaration environment",
+                ));
+            }
+            Ok(p::BuiltinSourceObservation {
+                expression: value.expression,
+                context: resumption_context(value.context),
+                identity: value.identity.clone(),
+                full_header: match &value.full_header {
+                    crate::sema::builtin_sources::BuiltinDeclaration::Syntax(syntax) => {
+                        p::BuiltinDeclaration::Syntax(contract(syntax))
+                    }
+                    crate::sema::builtin_sources::BuiltinDeclaration::Generic(id) => {
+                        p::BuiltinDeclaration::Generic(*id)
+                    }
+                },
+                environment: contracts.environment(&mut graph.types, &value.environment),
+                concrete_effects: value.concrete_effects.clone(),
+                written_formals: value.written_formals.clone(),
+                captures: value
+                    .captures
+                    .iter()
+                    .map(|binding| *binding as u32)
+                    .collect(),
+                cause: value.cause,
+            })
         })
-        .collect();
+        .collect::<Result<_, NotImplemented>>()?;
     graph.invocation_expressions = facts
         .invocation_expressions
         .iter()
