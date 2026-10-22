@@ -30,17 +30,20 @@ mod storage_inputs;
 
 #[derive(Clone, Debug)]
 struct Input {
+    // Caller boundary context differs from a default's birth context.
     context: InvocationContext,
-    expression: Option<usize>,
-    allocation_epoch: usize,
-    source: InputSource,
-    fresh: Construction,
+    packet: std::sync::Arc<EvaluatedValue>,
     default: Option<DefaultUseId>,
+}
+impl std::ops::Deref for Input {
+    type Target = EvaluatedValue;
+    fn deref(&self) -> &Self::Target {
+        &self.packet
+    }
 }
 
 #[derive(Default)]
 pub(super) struct State {
-    evaluated: BTreeMap<(CopyCallEventId, EvaluationRole), Input>,
     supplied: BTreeMap<CopyCallEventId, BTreeMap<usize, Input>>,
     defaults: BTreeMap<(CopyCallEventId, usize), Input>,
     operands: Vec<Operand>,
@@ -49,7 +52,7 @@ pub(super) struct State {
     closure_views: BTreeMap<usize, (u32, SourceSchema, FrozenEnvironment)>,
 }
 
-type InputSource = Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError>;
+type InputSource = super::evaluated::CheckedSource;
 
 struct Operand {
     source_id: Option<ril_compiler_core::ids::ExprId>,
@@ -146,7 +149,7 @@ impl Checker {
             );
             return None;
         }
-        let observation = input.expression?;
+        let observation = input.observation?;
         let fact = self.application_effect.expressions.get(observation)?;
         if fact.value.sources.len() != 1 {
             return None;
@@ -212,13 +215,6 @@ impl Checker {
                 None
             }
         }
-    }
-    pub(super) fn evaluated_argument_source(
-        &self,
-        event: CopyCallEventId,
-        role: EvaluationRole,
-    ) -> Option<&InputSource> {
-        Some(&self.call_input_source.evaluated.get(&(event, role))?.source)
     }
     pub(super) fn remember_result_carrier(
         &mut self,
@@ -381,100 +377,103 @@ impl Checker {
         self.call_input_source.operands.truncate(marker);
     }
 
-    pub(super) fn capture_call_input_source(
+    /// Capture the exact completed child before any later operand can execute.
+    /// The packet's birth coordinates remain immutable if this query probes a
+    /// callable and advances heap recency.
+    pub(super) fn capture_evaluation_source(
         &mut self,
-        event: CopyCallEventId,
-        role: EvaluationRole,
+        packet: &mut EvaluatedValue,
         syntax: &Expr,
-        observed: Option<usize>,
         frame: &Frame,
+        work: &mut WorkLimit,
     ) {
-        let Some(expression) = observed else {
-            return;
-        };
-        let Some(observation) = self.application_effect.expressions.get(expression) else {
-            return;
-        };
-        let context = self.invocation_context(frame.callable_owner);
-        if (observation.source_id.is_none() || observation.source_id != syntax.hir_id)
-            || !self
+        let capture = (|| {
+            work.charge(3)?;
+            let observation = packet.observation.ok_or(SourceTypesError::MissingNode)?;
+            let fact = self
                 .application_effect
-                .contexts
-                .get(expression)
-                .is_some_and(|row| row.expression == expression && row.context == context)
-        {
-            return;
-        }
-        let observations: Vec<_> = self
-            .call_arguments
-            .iter()
-            .filter(|preparation| preparation.source_event == event)
-            .flat_map(|preparation| preparation.evaluated.iter())
-            .filter(|evaluated| {
-                evaluated.role == role && evaluated.observation.expression == expression
-            })
-            .collect();
-        let [evaluated] = observations.as_slice() else {
-            return;
-        };
-        let allocation_epoch = evaluated.observation.allocation_epoch;
-        if allocation_epoch != self.recency_moves.len() {
-            return;
-        }
-        let value = observation.value.clone();
-        let Some(fresh) = source_reception::construction(syntax, &mut 4096) else {
+                .expressions
+                .get(observation)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let record = self
+                .application_effect
+                .evaluations
+                .get(observation)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let identity = record.identity.ok_or(SourceTypesError::MissingNode)?;
+            let activation = self
+                .application_effect
+                .activations
+                .get(identity.activation.0 as usize)
+                .ok_or(SourceTypesError::MissingNode)?;
+            if syntax.hir_id != Some(identity.source)
+                || fact.source_id != syntax.hir_id
+                || record.id.0 as usize != observation
+                || packet.identity != Some(identity)
+                || packet.birth_context != Some(record.context)
+                || record.context != self.invocation_context(frame.callable_owner)
+                || activation.result != Some(record.id)
+                || activation.kind != crate::sema::application_effect::ActivationKind::Expression
+                || activation.scope != record.scope
+                || record.allocation_epoch != packet.allocation_epoch
+                || fact.allocation_epoch != packet.allocation_epoch
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let mut equality_work = work.remaining();
+            let before_equality = equality_work;
+            let same =
+                super::evaluated::same_birth_value(&fact.value, &packet.value, &mut equality_work);
+            work.charge(before_equality - equality_work)?;
+            if !same? {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let mut remaining = work.remaining();
+            let before = remaining;
+            let fresh = source_reception::construction(syntax, &mut remaining);
+            work.charge(before - remaining)?;
+            packet.fresh = std::sync::Arc::new(fresh.ok_or(SourceTypesError::BudgetExceeded)?);
+            self.original_source_receiving_schema(&packet.value, syntax, frame, work)
+        })();
+        if let Err(error) = &capture {
             self.unsupported(
                 syntax.span,
-                "call input literal source exceeds its work bound",
-            );
-            return;
-        };
-        let source = self.original_source_receiving_schema(
-            &value,
-            syntax,
-            frame,
-            &mut WorkLimit::new(16384),
-        );
-        if let Err(error) = &source {
-            self.unsupported(
-                syntax.span,
-                format!("call input Source capture failed: {error}"),
+                format!("evaluation Source capture failed: {error}"),
             );
         }
-        self.call_input_source.evaluated.insert(
-            (event, role),
-            Input {
-                context,
-                expression: Some(expression),
-                allocation_epoch,
-                source,
-                fresh,
-                default: None,
-            },
-        );
+        packet.source = capture;
     }
 
-    /// Bind an already evaluated Source; this operation never rereads a Name,
-    /// receiver graph, annotation or inferred type after the callee runs.
+    /// Map the existing frozen packet to its actual public parameter slot.
     pub(super) fn bind_call_input_source(
         &mut self,
         event: CopyCallEventId,
         role: EvaluationRole,
         slot: usize,
+        packet: std::sync::Arc<EvaluatedValue>,
         frame: &Frame,
     ) -> bool {
-        let Some(input) = self
-            .call_input_source
-            .evaluated
-            .get(&(event, role))
-            .cloned()
-        else {
+        let Some(expression) = packet.observation else {
             return false;
         };
-        let Some(expression) = input.expression else {
+        let context = self.invocation_context(frame.callable_owner);
+        if packet.birth_context != Some(context) {
+            return false;
+        }
+        let mut rows = self
+            .call_arguments
+            .iter()
+            .filter(|row| row.source_event == event);
+        let Some(preparation) = rows.next() else {
             return false;
         };
-        if input.context != self.invocation_context(frame.callable_owner) {
+        if rows.next().is_some()
+            || !preparation.evaluated.iter().any(|child| {
+                child.role == role
+                    && child.observation.expression == expression
+                    && child.observation.allocation_epoch == packet.allocation_epoch
+            })
+        {
             return false;
         }
         let Some(row) = self.application_effect.contexts.get_mut(expression) else {
@@ -482,7 +481,7 @@ impl Checker {
         };
         let mapped = (event, slot as u32);
         if row.expression != expression
-            || row.context != input.context
+            || row.context != context
             || row.argument_of.is_some_and(|old| old != mapped)
         {
             return false;
@@ -492,7 +491,14 @@ impl Checker {
             .supplied
             .entry(event)
             .or_default()
-            .insert(slot, input)
+            .insert(
+                slot,
+                Input {
+                    context,
+                    packet,
+                    default: None,
+                },
+            )
             .is_none()
     }
 
@@ -503,6 +509,7 @@ impl Checker {
         id: DefaultUseId,
         syntax: &Expr,
         frame: &Frame,
+        packet: std::sync::Arc<EvaluatedValue>,
     ) {
         let Some(record) = self
             .default_uses
@@ -511,65 +518,30 @@ impl Checker {
         else {
             return;
         };
-        let Some(snapshot) = &record.result else {
-            return;
-        };
-        let value = snapshot.value.clone();
-        let context = record.caller;
         let Some(root) = record.result_expression else {
             return;
         };
-        let mut root_context = self.invocation_context(frame.callable_owner);
-        root_context.default_use = Some(id);
-        if self
-            .application_effect
-            .expressions
-            .get(root)
-            .is_none_or(|fact| fact.source_id != syntax.hir_id || fact.value != value)
-            || self
-                .application_effect
-                .contexts
-                .get(root)
-                .is_none_or(|row| row.expression != root || row.context != root_context)
+        let mut context = self.invocation_context(frame.callable_owner);
+        context.default_use = Some(id);
+        if packet.observation != Some(root)
+            || packet.birth_context != Some(context)
+            || packet.identity.map(|identity| identity.source) != syntax.hir_id
+            || record
+                .result_allocation_epoch
+                .is_none_or(|epoch| epoch < packet.allocation_epoch)
         {
             self.unsupported(
                 syntax.span,
-                "default Source capture lost its original DefaultUse emission",
+                "default Source packet lost its original DefaultUse birth",
             );
             return;
         }
-        let Some(allocation_epoch) = record.result_allocation_epoch else {
-            return;
-        };
-        let Some(fresh) = source_reception::construction(syntax, &mut 4096) else {
-            self.unsupported(
-                syntax.span,
-                "default input literal source exceeds its work bound",
-            );
-            return;
-        };
-        self.default_use_stack.push(id);
-        let source = self.original_source_receiving_schema(
-            &value,
-            syntax,
-            frame,
-            &mut WorkLimit::new(16384),
-        );
-        assert_eq!(self.default_use_stack.pop(), Some(id));
-        if let Err(error) = &source {
-            self.unsupported(
-                syntax.span,
-                format!("default input Source capture failed: {error}"),
-            );
-        }
+        let caller = record.caller;
         self.call_input_source.defaults.insert(
             (event, slot),
             Input {
-                context,
-                expression: None,
-                allocation_epoch,
-                source,
-                fresh,
+                context: caller,
+                packet,
                 default: Some(id),
             },
         );
@@ -588,7 +560,7 @@ impl Checker {
                 Some((
                     *slot as u32,
                     crate::sema::default_uses::SuppliedArgument {
-                        expression: input.expression?,
+                        expression: input.observation?,
                         allocation_epoch: input.allocation_epoch,
                     },
                 ))
@@ -678,7 +650,9 @@ impl Checker {
                         if record.target != Some(info.definition)
                             || record.parameter as usize != slot
                             || record.caller != input.context
-                            || record.result_allocation_epoch != Some(input.allocation_epoch)
+                            || record
+                                .result_allocation_epoch
+                                .is_none_or(|epoch| epoch < input.allocation_epoch)
                         {
                             return None;
                         }
@@ -789,14 +763,26 @@ impl Checker {
             .expression(source)
             .ok_or(SourceTypesError::MissingNode)?;
         let mut work = WorkLimit::new(16384);
-        work.charge(self.call_input_source.evaluated.len())?;
+        work.charge(
+            self.call_input_source
+                .supplied
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+                + self.call_input_source.defaults.len(),
+        )?;
         let mut captured = self
             .call_input_source
-            .evaluated
+            .supplied
             .values()
-            .filter(|input| input.expression == Some(observation.0 as usize));
-        let captured_source = captured.next().map(|input| input.source.clone());
-        if captured.next().is_some() {
+            .flat_map(BTreeMap::values)
+            .chain(self.call_input_source.defaults.values())
+            .filter(|input| input.observation == Some(observation.0 as usize));
+        let first = captured.next();
+        let captured_source = first.map(|input| input.source.clone());
+        if captured.any(|input| {
+            !first.is_some_and(|first| std::sync::Arc::ptr_eq(&first.packet, &input.packet))
+        }) {
             return Err(SourceTypesError::Unresolved);
         }
         let source = if let Some(captured) = captured_source {

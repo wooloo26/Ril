@@ -3,7 +3,7 @@
 use crate::sema::context::{FrozenEnvironment, TypingEnvironment};
 use crate::sema::model::Env;
 use std::cell::Cell;
-mod clone_work;
+pub(super) mod clone_work;
 
 pub(super) struct TypeSourceDomain {
     pub environment: TypingEnvironment,

@@ -26,7 +26,7 @@ fn row(work: &mut usize, tail: &OpenTail) -> Option<()> {
     }
     Some(())
 }
-fn ty(work: &mut usize, value: &Ty, depth: usize) -> Option<()> {
+pub(in crate::sema::checker) fn ty(work: &mut usize, value: &Ty, depth: usize) -> Option<()> {
     charge(work, 1)?;
     if depth > 128 {
         return None;

@@ -250,8 +250,8 @@ impl Checker {
                 block.span,
                 "semantic block preview traversal budget exhausted",
             );
-            return super::expressions::SourceExpression {
-                value: Value::scalar(
+            return super::expressions::SourceExpression::unobserved(
+                Value::scalar(
                     Ty::Unknown,
                     None,
                     self.cause(
@@ -261,9 +261,9 @@ impl Checker {
                         [],
                     ),
                 ),
-                observation: None,
-                source_valid: false,
-            };
+                self.recency_moves.len(),
+                false,
+            );
         }
         self.analysis_depth += 1;
         self.analysis_visits += 1;

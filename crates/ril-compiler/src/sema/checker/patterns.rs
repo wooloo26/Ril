@@ -427,15 +427,15 @@ impl Checker {
     ) -> SourceExpression {
         if type_match {
             self.unsupported(span, "static type-match pattern checking");
-            return SourceExpression {
-                value: Value::scalar(
+            return SourceExpression::unobserved(
+                Value::scalar(
                     Ty::Unknown,
                     None,
                     self.cause(CauseKind::MissingProof, span, "unresolved type match", []),
                 ),
-                observation: None,
-                source_valid: false,
-            };
+                self.recency_moves.len(),
+                false,
+            );
         }
         // Subject and guards are not result positions. An explicit Return
         // inside them still receives its own fixed Frame return target.
@@ -462,11 +462,7 @@ impl Checker {
                     );
                 }
             }
-            return SourceExpression {
-                value: subject,
-                observation: None,
-                source_valid,
-            };
+            return SourceExpression::unobserved(subject, self.recency_moves.len(), source_valid);
         }
         if let Some(first) = arms.first() {
             self.inspect_guaranteed_pattern_head(&subject, &first.pattern, span, frame);
@@ -667,17 +663,15 @@ impl Checker {
                 [subject.cause],
             );
         }
-        SourceExpression {
-            value: result.unwrap_or_else(|| {
+        SourceExpression::unobserved(
+            result.unwrap_or_else(|| {
                 let mut value = self.unit(span);
                 value.ty = Ty::Never;
                 value
             }),
-            // The enclosing expression emitter mints the real match token.
-            // Arm tokens must not masquerade as this expression's result.
-            observation: None,
+            self.recency_moves.len(),
             source_valid,
-        }
+        )
     }
 
     pub(super) fn check_is(

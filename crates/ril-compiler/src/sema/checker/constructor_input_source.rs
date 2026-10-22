@@ -277,7 +277,7 @@ impl Checker {
                 let token = preparation.supplied.get(&(slot as u32))?;
                 if input.context != context
                     || input.default.is_some()
-                    || input.expression != Some(token.expression)
+                    || input.observation != Some(token.expression)
                     || input.allocation_epoch != token.allocation_epoch
                     || token.allocation_epoch > self.recency_moves.len()
                     || !preparation.evaluated.iter().any(|evaluation| {

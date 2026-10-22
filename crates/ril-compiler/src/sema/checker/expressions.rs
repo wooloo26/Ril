@@ -1,10 +1,6 @@
 use super::*;
 
-pub(super) struct SourceExpression {
-    pub(super) value: Value,
-    pub(super) observation: Option<usize>,
-    pub(super) source_valid: bool,
-}
+pub(super) type SourceExpression = EvaluatedValue;
 
 #[derive(Clone, Copy)]
 pub(super) struct SourceContext<'a> {
@@ -48,11 +44,32 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> SourceExpression {
+        self.expression_packet_mode(expr, frame, expected, source, false)
+    }
+
+    pub(super) fn expression_source_packet(
+        &mut self,
+        expr: &Expr,
+        frame: &mut Frame,
+        expected: Option<&Ty>,
+        source: Option<&super::super::source_reception::Target>,
+    ) -> SourceExpression {
+        self.expression_packet_mode(expr, frame, expected, source, true)
+    }
+
+    fn expression_packet_mode(
+        &mut self,
+        expr: &Expr,
+        frame: &mut Frame,
+        expected: Option<&Ty>,
+        source: Option<&super::super::source_reception::Target>,
+        capture_source: bool,
+    ) -> SourceExpression {
         self.cancellation_checkpoint(expr.span, frame);
         if self.analysis_depth >= 64 || self.analysis_visits >= 1_000_000 {
             self.unsupported(expr.span,"semantic traversal resource budget exhausted; no permission certificate was issued");
-            return SourceExpression {
-                value: Value::scalar(
+            return SourceExpression::unobserved(
+                Value::scalar(
                     Ty::Unknown,
                     None,
                     self.cause(
@@ -62,9 +79,9 @@ impl Checker {
                         [],
                     ),
                 ),
-                observation: None,
-                source_valid: false,
-            };
+                self.recency_moves.len(),
+                false,
+            );
         }
         let context = self.invocation_context(frame.callable_owner);
         let kind = if matches!(
@@ -90,11 +107,11 @@ impl Checker {
                 expr.span,
                 "evaluation activation budget exhausted before entering syntax",
             );
-            return SourceExpression {
-                value: Value::scalar(Ty::Unknown, None, CauseId(0)),
-                observation: None,
-                source_valid: false,
-            };
+            return SourceExpression::unobserved(
+                Value::scalar(Ty::Unknown, None, CauseId(0)),
+                self.recency_moves.len(),
+                false,
+            );
         };
         self.analysis_depth += 1;
         self.expression_owners.push(frame.callable_owner);
@@ -156,11 +173,7 @@ impl Checker {
         ) else {
             self.application_effect.leave(activation);
             self.expression_owners.pop();
-            return SourceExpression {
-                value,
-                observation: None,
-                source_valid: false,
-            };
+            return SourceExpression::unobserved(value, self.recency_moves.len(), false);
         };
         self.record_builtin_source_observation(expr, &value, observation, frame);
         if let Some(event) = source_call_event {
@@ -181,16 +194,31 @@ impl Checker {
                 );
             }
         }
+        let mut packet = SourceExpression::observed(
+            value,
+            observation,
+            &self.application_effect.evaluations[observation],
+        );
+        if capture_source {
+            self.capture_evaluation_source(
+                &mut packet,
+                expr,
+                frame,
+                &mut crate::sema::source_types::WorkLimit::new(16384),
+            );
+        }
+        self.transport_evaluation_packet(&mut packet, expr.span);
+        let value = &packet.value;
         if let Some(target) = source
             && let Some(syntax) = target.syntax.as_deref()
         {
             self.with_typing_environment(&target.environment, |checker| {
-                checker.check_signature_modes(&value, syntax);
+                checker.check_signature_modes(value, syntax);
             });
         }
         let source_valid = source_handled.unwrap_or_else(|| {
             source.is_none_or(|target| {
-                self.require_source_reception(target, expr, &value, Some(observation), frame)
+                self.require_source_reception(target, expr, value, Some(observation), frame)
             })
         });
         if !source_valid {
@@ -204,7 +232,7 @@ impl Checker {
             {
                 self.with_typing_environment(&origin.environment, |checker| {
                     checker.check_receiving_callable_bounds_from(
-                        &value,
+                        value,
                         syntax,
                         &super::contracts::SignatureSource {
                             header: &origin.header,
@@ -218,11 +246,9 @@ impl Checker {
         self.cancellation_checkpoint(expr.span, frame);
         self.expression_owners.pop();
         self.application_effect.leave(activation);
-        SourceExpression {
-            value,
-            observation: Some(observation),
-            source_valid,
-        }
+        packet.source_valid &= source_valid;
+        self.transport_evaluation_packet(&mut packet, expr.span);
+        packet
     }
     fn expression_inner(
         &mut self,
@@ -1749,10 +1775,12 @@ impl Checker {
                             .map(|branch| {
                                 self.preview_expression_source(branch, frame, expected, source)
                             })
-                            .unwrap_or_else(|| SourceExpression {
-                                value: self.unit(expr.span),
-                                observation: None,
-                                source_valid: true,
+                            .unwrap_or_else(|| {
+                                SourceExpression::unobserved(
+                                    self.unit(expr.span),
+                                    self.recency_moves.len(),
+                                    true,
+                                )
                             })
                     } else {
                         self.preview_expression_source(then_branch, frame, expected, source)
@@ -1771,10 +1799,12 @@ impl Checker {
                             .map(|branch| {
                                 self.expression_expected_source(branch, frame, expected, source)
                             })
-                            .unwrap_or_else(|| SourceExpression {
-                                value: self.unit(expr.span),
-                                observation: None,
-                                source_valid: true,
+                            .unwrap_or_else(|| {
+                                SourceExpression::unobserved(
+                                    self.unit(expr.span),
+                                    self.recency_moves.len(),
+                                    true,
+                                )
                             })
                     };
                     source_valid &= selected.source_valid;
@@ -1812,10 +1842,12 @@ impl Checker {
                 let right = else_branch
                     .as_ref()
                     .map(|branch| self.expression_expected_source(branch, frame, expected, source))
-                    .unwrap_or_else(|| SourceExpression {
-                        value: self.unit(expr.span),
-                        observation: None,
-                        source_valid: true,
+                    .unwrap_or_else(|| {
+                        SourceExpression::unobserved(
+                            self.unit(expr.span),
+                            self.recency_moves.len(),
+                            true,
+                        )
                     });
                 source_valid &= right.source_valid;
                 let mut right = right.value;

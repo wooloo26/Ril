@@ -134,7 +134,7 @@ impl Checker {
                 .get(&event.id)
                 .and_then(|inputs| inputs.get(&0))
                 .ok_or(SourceTypesError::MissingNode)?;
-            let token = input.expression.ok_or(SourceTypesError::MissingNode)?;
+            let token = input.observation.ok_or(SourceTypesError::MissingNode)?;
             let actual = self
                 .application_effect
                 .expressions

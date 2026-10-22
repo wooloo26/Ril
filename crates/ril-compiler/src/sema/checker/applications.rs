@@ -2,6 +2,7 @@
 //! physical observations and parameter binding are independent stages.
 use super::*;
 use crate::hir::application::{ApplicationKind, AstApplication, EvaluationRole};
+use crate::sema::source_types::SourceTypesError;
 use crate::sema::{
     copy_contract::CopyCallEventId,
     default_uses::{ApplicationEvaluation, ArgumentSource, CallArguments, SuppliedArgument},
@@ -16,12 +17,39 @@ struct ApplicationSite {
     arity: usize,
 }
 
-struct EvaluatedOperand {
-    role: EvaluationRole,
-    value: EvaluatedValue,
+pub(super) struct EvaluatedOperand {
+    pub(super) role: EvaluationRole,
+    pub(super) value: std::sync::Arc<EvaluatedValue>,
 }
 
 impl Checker {
+    pub(super) fn prepare_evaluation_packet(
+        &mut self,
+        packet: &mut EvaluatedValue,
+        span: Span,
+    ) -> Result<(), SourceTypesError> {
+        let moves = &self.recency_moves;
+        let result = self
+            .application_effect
+            .with_work(|work| packet.transport_checked(moves, work));
+        if let Err(error) = &result {
+            self.unsupported(
+                span,
+                format!("evaluation packet transport admission: {error}"),
+            );
+        }
+        result
+    }
+
+    pub(super) fn consume_evaluation_packet(
+        &mut self,
+        mut packet: EvaluatedValue,
+        span: Span,
+    ) -> Result<Value, SourceTypesError> {
+        self.prepare_evaluation_packet(&mut packet, span)?;
+        Ok(packet.value)
+    }
+
     pub(super) fn evaluate_application(
         &mut self,
         application: &AstApplication<'_>,
@@ -29,11 +57,61 @@ impl Checker {
         frame: &mut Frame,
     ) -> (Value, CopyCallEventId) {
         let event = self.reserve_copy_call_event(application.root, frame);
+        if !self
+            .application_effect
+            .admit(self.immediate_scope_arguments.len())
+        {
+            self.unsupported(
+                application.span,
+                "application scope-context admission exhausted",
+            );
+            return (Value::scalar(Ty::Unknown, None, CauseId(0)), event);
+        }
+        let original_scope_arguments = self.immediate_scope_arguments.clone();
+        let preparation = self.call_arguments.len();
+        let result = self.evaluate_application_packet(application, expected, frame, event);
+        self.immediate_scope_arguments = original_scope_arguments;
+        match result {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(prepared) = self.call_arguments.get_mut(preparation)
+                    && prepared.source_event == event
+                {
+                    prepared.evaluation_complete = false;
+                }
+                if let Some(numeric) = self.numeric.applications.get_mut(&event) {
+                    numeric.phase = crate::sema::numeric_selection::ApplicationPhase::Invalid;
+                }
+                self.unsupported(
+                    application.span,
+                    format!("application packet could not be transported: {error}"),
+                );
+                (Value::scalar(Ty::Unknown, None, CauseId(0)), event)
+            }
+        }
+    }
+
+    fn evaluate_application_packet(
+        &mut self,
+        application: &AstApplication<'_>,
+        expected: Option<&Ty>,
+        frame: &mut Frame,
+        event: CopyCallEventId,
+    ) -> Result<(Value, CopyCallEventId), SourceTypesError> {
         let mut site = ApplicationSite {
             event,
             preparation: self.call_arguments.len(),
             arity: application.operands.len(),
         };
+        if !self.application_effect.admit(
+            application
+                .operands
+                .len()
+                .checked_add(1)
+                .ok_or(SourceTypesError::BudgetExceeded)?,
+        ) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
         self.call_arguments.push(CallArguments {
             source_event: event,
             target: None,
@@ -43,20 +121,60 @@ impl Checker {
             supplied: BTreeMap::new(),
             evaluation_complete: false,
         });
+        if !self
+            .application_effect
+            .admit(self.immediate_scope_arguments.len())
+        {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
         let original_scope_arguments = self.immediate_scope_arguments.clone();
-        let mut callee = None::<EvaluatedValue>;
+        let mut callee = None::<std::sync::Arc<EvaluatedValue>>;
         let mut evaluated = Vec::<EvaluatedOperand>::new();
         let mut contexts = vec![None; application.operands.len()];
         let mut source_contexts = Vec::new();
         let mut mapping = Vec::new();
         let mut nullary_none = false;
         let mut generic = None;
-        let order: Vec<_> = application.evaluation_order().collect();
-        for (position, role) in order.iter().copied().enumerate() {
+        let Some(root) = application.root.hir_id else {
+            self.unsupported(
+                application.span,
+                "application cursor has no original HIR root",
+            );
+            return Ok((self.unit(application.span), event));
+        };
+        let mut cursor = match self.application_effect.with_work(|work| {
+            crate::hir::execution::ApplicationCursor::new(&self.semantic_hir, root, work)
+        }) {
+            Ok(cursor) => cursor,
+            Err(error) => {
+                self.unsupported(application.span, format!("application cursor: {error}"));
+                return Ok((self.unit(application.span), event));
+            }
+        };
+        loop {
+            let child = match self
+                .application_effect
+                .with_work(|work| cursor.pending(work))
+            {
+                Ok(Some(child)) => child,
+                Ok(None) => break,
+                Err(error) => {
+                    self.unsupported(application.span, format!("application cursor: {error}"));
+                    return Ok((self.unit(application.span), event));
+                }
+            };
+            let role = child.role;
             let syntax = application
                 .expression(role)
                 .expect("application role exists");
-            let (value, observation) = if role == EvaluationRole::Callee {
+            if syntax.hir_id != Some(child.expression) {
+                self.unsupported(
+                    syntax.span,
+                    "application AST child differs from its original HIR cursor",
+                );
+                return Ok((self.unit(application.span), event));
+            }
+            let packet = if role == EvaluationRole::Callee {
                 nullary_none = match &syntax.kind {
                     ExprKind::Name(name) => {
                         name == "Prelude::None" || (name == "None" && !frame.env.contains_key(name))
@@ -66,13 +184,15 @@ impl Checker {
                 };
                 let reference_start = self.copy_references.len();
                 let window = self.begin_explicit_named_callee(syntax, frame);
-                let (value, observation) = self.expression_observed(syntax, frame);
+                let packet = self.expression_source_packet(syntax, frame, None, None);
+                let observation = packet.observation;
+                let value = &packet.value;
                 let explicit = self.end_explicit_named_callee(window, observation);
-                self.append_application_evaluation(application, site, role, observation, frame);
+                self.append_application_evaluation(application, site, role, &packet, frame);
                 self.complete_copy_call_callee(
                     event,
                     syntax,
-                    &value,
+                    value,
                     reference_start,
                     observation,
                     frame,
@@ -82,15 +202,27 @@ impl Checker {
                 self.seal_explicit_named_callee(explicit, event, frame);
                 if value.ty != Ty::Never {
                     generic = if let Some(id) =
-                        crate::sema::builtin_sources::generic_reference(&value)
+                        crate::sema::builtin_sources::generic_reference(value)
                     {
-                        let mut work = crate::sema::source_types::WorkLimit::new(16384);
-                        match self.original_source_receiving_schema(&value, syntax, frame, &mut work)
-                            .and_then(|source| source.map(|(schema, environment)| {
-                                if environment.is_poisoned() { return Err(crate::sema::source_types::SourceTypesError::Unresolved); }
-                                schema.is_generic_builtin(id, &mut work)
-                            }).transpose())
-                        {
+                        let result = self.application_effect.with_work(|remaining| {
+                            let mut work = crate::sema::source_types::WorkLimit::new(*remaining);
+                            let result = work
+                                .charge(3)
+                                .and_then(|()| packet.source.clone())
+                                .and_then(|source| {
+                                    source
+                                        .map(|(schema, environment)| {
+                                            if environment.is_poisoned() {
+                                                return Err(SourceTypesError::Unresolved);
+                                            }
+                                            schema.is_generic_builtin(id, &mut work)
+                                        })
+                                        .transpose()
+                                });
+                            *remaining = work.remaining();
+                            result
+                        });
+                        match result {
                             Ok(Some(true)) => Some(id),
                             Ok(_) => None,
                             Err(error) => {
@@ -114,9 +246,9 @@ impl Checker {
                         application.operands.iter().map(|argument| argument.label),
                     );
                     if application.kind == ApplicationKind::Call {
-                        source_contexts = self.call_argument_source_contexts(&value, event);
+                        source_contexts = self.call_argument_source_contexts(value, event);
                         contexts = self.numeric_argument_contexts(
-                            &value,
+                            value,
                             &application.operands,
                             super::numeric_application::NumericInputContext {
                                 event,
@@ -129,9 +261,13 @@ impl Checker {
                         if let Some(id) = generic {
                             contexts = self.primitive_numeric_contexts(
                                 id,
-                                event,
                                 &application.operands,
                                 &mapping,
+                                super::numeric_application::PrimitiveNumericPrefix {
+                                    event,
+                                    preparation: site.preparation,
+                                    packets: &evaluated,
+                                },
                                 frame,
                             );
                         }
@@ -147,8 +283,9 @@ impl Checker {
                         }
                     }
                 }
-                callee = Some(EvaluatedValue::new(value.clone(), self.recency_moves.len()));
-                (value, observation)
+                let packet = std::sync::Arc::new(packet);
+                callee = Some(packet.clone());
+                packet
             } else {
                 let operand = application.operand(role).expect("actual operand");
                 if operand.mode != ParameterMode::Read
@@ -178,7 +315,7 @@ impl Checker {
                         || generic.is_some()
                         || self.numeric.applications.contains_key(&event));
                 self.numeric.deferred_depth += usize::from(deferred);
-                let observation = self.expression_expected_source(
+                let observation = self.expression_source_packet(
                     syntax,
                     frame,
                     expected,
@@ -189,24 +326,20 @@ impl Checker {
                 if let Some(marker) = marker {
                     self.end_source_argument(marker);
                 }
-                self.append_application_evaluation(
-                    application,
-                    site,
-                    role,
-                    observation.observation,
-                    frame,
-                );
-                self.capture_call_input_source(event, role, syntax, observation.observation, frame);
+                self.append_application_evaluation(application, site, role, &observation, frame);
+                let packet = std::sync::Arc::new(observation);
                 evaluated.push(EvaluatedOperand {
                     role,
-                    value: EvaluatedValue::new(observation.value.clone(), self.recency_moves.len()),
+                    value: packet.clone(),
                 });
-                (observation.value, observation.observation)
+                packet
             };
-            if value.ty == Ty::Never || observation.is_none() {
+            let value = &packet.value;
+            if value.ty == Ty::Never || packet.observation.is_none() {
                 if let Some(callee) = callee
                     .as_mut()
-                    .map(|callee| callee.current(&self.recency_moves))
+                    .map(|callee| self.read_evaluation_packet(callee, application.span))
+                    .transpose()?
                     && callee.ty != Ty::Never
                 {
                     let _ = self.bind_application_operands(
@@ -215,7 +348,7 @@ impl Checker {
                         &mapping,
                         &evaluated,
                         frame,
-                    );
+                    )?;
                 }
                 let mut prefix: Vec<_> = evaluated
                     .into_iter()
@@ -223,53 +356,91 @@ impl Checker {
                         let operand = application
                             .operand(held.role)
                             .expect("actual prefix operand");
-                        (
+                        Ok((
                             operand.mode,
-                            held.value.into_current(&self.recency_moves),
+                            self.read_evaluation_packet(&held.value, operand.span)?,
                             operand.span,
-                        )
+                        ))
                     })
-                    .collect();
-                if value.ty == Ty::Never {
+                    .collect::<Result<_, SourceTypesError>>()?;
+                if value.ty == Ty::Never && role == EvaluationRole::Callee {
                     // A callee may be the abrupt tail after numeric piped inputs.
-                    prefix.push((ParameterMode::Read, value.clone(), syntax.span));
+                    prefix.push((
+                        ParameterMode::Read,
+                        self.read_evaluation_packet(&packet, syntax.span)?,
+                        syntax.span,
+                    ));
                 }
                 self.finish_numeric_arguments(event, &mut prefix);
                 self.immediate_scope_arguments = original_scope_arguments;
-                for later in &order[position + 1..] {
-                    self.preview_expression(
-                        application
-                            .expression(*later)
-                            .expect("remaining application role"),
-                        frame,
-                    );
+                match self
+                    .application_effect
+                    .with_work(|work| cursor.later_children(work))
+                {
+                    Ok(children) => {
+                        for later in children {
+                            self.preview_expression(
+                                application
+                                    .expression(later.role)
+                                    .expect("remaining application role"),
+                                frame,
+                            );
+                        }
+                    }
+                    Err(error) => self.unsupported(
+                        application.span,
+                        format!("application preview cursor: {error}"),
+                    ),
                 }
-                return (value, event);
+                return Ok((self.read_evaluation_packet(&packet, syntax.span)?, event));
+            }
+            if let Err(error) = self
+                .application_effect
+                .with_work(|work| cursor.complete(child, work))
+            {
+                self.unsupported(
+                    application.span,
+                    format!("application child completion: {error}"),
+                );
+                return Ok((self.unit(application.span), event));
             }
         }
         self.immediate_scope_arguments = original_scope_arguments;
-        let Some(callee) = callee.map(|callee| callee.into_current(&self.recency_moves)) else {
+        let Some(callee) = callee
+            .as_ref()
+            .map(|callee| self.read_evaluation_packet(callee, application.span))
+            .transpose()?
+        else {
             self.unsupported(
                 application.span,
                 "application has no actual callee evaluation",
             );
-            return (self.unit(application.span), event);
+            return Ok((self.unit(application.span), event));
         };
         if let Some(id) = generic {
-            contexts =
-                self.primitive_numeric_contexts(id, event, &application.operands, &mapping, frame);
+            contexts = self.primitive_numeric_contexts(
+                id,
+                &application.operands,
+                &mapping,
+                super::numeric_application::PrimitiveNumericPrefix {
+                    event,
+                    preparation: site.preparation,
+                    packets: &evaluated,
+                },
+                frame,
+            );
         } else if application.kind == ApplicationKind::Pipeline {
             let frozen: Vec<_> = evaluated
                 .iter_mut()
                 .map(|held| {
                     let operand = application.operand(held.role).expect("actual operand");
-                    (
+                    Ok((
                         operand.mode,
-                        held.value.current(&self.recency_moves),
+                        self.read_evaluation_packet(&held.value, operand.span)?,
                         operand.span,
-                    )
+                    ))
                 })
-                .collect();
+                .collect::<Result<_, SourceTypesError>>()?;
             contexts = self.numeric_argument_contexts(
                 &callee,
                 &application.operands,
@@ -283,16 +454,16 @@ impl Checker {
             );
         }
         let mut slots =
-            self.bind_application_operands(application, site, &mapping, &evaluated, frame);
+            self.bind_application_operands(application, site, &mapping, &evaluated, frame)?;
         // A failed label/position mapping has no parameter environment. Keep
         // the physical prefix, but never evaluate defaults or enter a body
         // using the partial local slots from this rejected preparation.
         if !self.call_arguments[site.preparation].slots_bound {
             self.numeric.applications.remove(&event);
             self.window_future_expressions(&[], frame);
-            return (self.unit(application.span), event);
+            return Ok((self.unit(application.span), event));
         }
-        self.solve_numeric_slots(event, &mut slots);
+        self.solve_numeric_slots(event, &mut slots)?;
         // Non-generic interfaces and builtins may have no prepared numeric row.
         // Select only the already evaluated holes; no expression runs again.
         for (index, mapped) in mapping.iter().enumerate() {
@@ -300,7 +471,12 @@ impl Checker {
             let Some((_, held, _)) = slots.get_mut(*slot).and_then(Option::as_mut) else {
                 continue;
             };
-            let value = held.current_mut(&self.recency_moves);
+            if !matches!(held.value.ty, Ty::NumericHole(_)) {
+                continue;
+            }
+            self.prepare_evaluation_packet(held, application.span)?;
+            held.source = Err(SourceTypesError::Unresolved);
+            let value = &mut held.value;
             if let Ty::NumericHole(id) = value.ty {
                 let expected = contexts
                     .get(index)
@@ -313,13 +489,15 @@ impl Checker {
             }
         }
         let args = if callee.signature.is_some() {
-            self.finish_application_slots(application, &callee, site, slots, frame)
+            self.finish_application_slots(application, &callee, site, slots, frame)?
         } else {
             let mut args: Vec<_> = slots
                 .into_iter()
                 .flatten()
-                .map(|(mode, held, span)| (mode, held.into_current(&self.recency_moves), span))
-                .collect();
+                .map(|(mode, held, span)| {
+                    Ok((mode, self.consume_evaluation_packet(held, span)?, span))
+                })
+                .collect::<Result<_, SourceTypesError>>()?;
             self.call_arguments[site.preparation].evaluation_complete =
                 self.call_arguments[site.preparation].slots_bound
                     && self.call_arguments[site.preparation].supplied.len()
@@ -336,13 +514,30 @@ impl Checker {
                 "the None tag is data and cannot be called",
                 [callee.cause],
             );
-            return (self.unit(application.span), event);
+            return Ok((self.unit(application.span), event));
         }
         let asserted = !callee.callables.is_empty() && callee.callables.iter().all(|target|
             matches!(target, Callable::Builtin(name) if matches!(name.as_str(), "assert" | "Prelude::assert")));
-        let condition = asserted
-            .then(|| args.first().map(|(_, value, _)| value.clone()))
-            .flatten();
+        let condition = if asserted {
+            args.first()
+                .map(|(_, value, _)| {
+                    let epoch = self.recency_moves.len();
+                    let moves = &self.recency_moves;
+                    self.application_effect.with_work(|work| {
+                        super::evaluated::transport_value_at(value, moves, epoch, epoch, work)
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        if let Err(error) = self
+            .application_effect
+            .with_work(|work| cursor.reduce(work))
+        {
+            self.unsupported(application.span, format!("application reduction: {error}"));
+            return Ok((self.unit(application.span), event));
+        }
         let previous_call = frame.copy_call_event.replace(event);
         let output = self.invoke(&callee, args, application.span, frame);
         frame.copy_call_event = previous_call;
@@ -351,7 +546,7 @@ impl Checker {
         {
             self.inspect_condition_value(&condition, true, application.span);
         }
-        (output, event)
+        Ok((output, event))
     }
 
     fn append_application_evaluation(
@@ -359,10 +554,10 @@ impl Checker {
         application: &AstApplication<'_>,
         site: ApplicationSite,
         role: EvaluationRole,
-        observed: Option<usize>,
+        packet: &EvaluatedValue,
         frame: &Frame,
     ) {
-        let Some(expression) = observed else {
+        let Some(expression) = packet.observation else {
             return;
         };
         let context = self.invocation_context(frame.callable_owner);
@@ -373,7 +568,11 @@ impl Checker {
             .application_effect
             .expressions
             .get(expression)
-            .is_some_and(|fact| fact.source_id.is_some() && fact.source_id == syntax.hir_id)
+            .is_some_and(|fact| {
+                fact.source_id.is_some()
+                    && fact.source_id == syntax.hir_id
+                    && fact.allocation_epoch == packet.allocation_epoch
+            })
             && self
                 .application_effect
                 .contexts
@@ -396,7 +595,7 @@ impl Checker {
                 role,
                 observation: SuppliedArgument {
                     expression,
-                    allocation_epoch: self.recency_moves.len(),
+                    allocation_epoch: packet.allocation_epoch,
                 },
             });
     }
@@ -408,7 +607,10 @@ impl Checker {
         mapping: &[Result<usize, &'static str>],
         evaluated: &[EvaluatedOperand],
         frame: &Frame,
-    ) -> Vec<Option<HeldArgument>> {
+    ) -> Result<Vec<Option<HeldArgument>>, SourceTypesError> {
+        if !self.application_effect.admit(site.arity) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
         let mut slots = vec![None; site.arity];
         let mut valid = true;
         for (index, held) in evaluated.iter().enumerate() {
@@ -426,14 +628,16 @@ impl Checker {
                 valid = false;
                 continue;
             };
-            if !self.bind_call_input_source(site.event, held.role, slot, frame) {
+            if !self.bind_call_input_source(site.event, held.role, slot, held.value.clone(), frame)
+            {
                 self.unsupported(
                     operand.span,
                     "application operand lost its frozen Source before slot binding",
                 );
                 valid = false;
             }
-            slots[slot] = Some((operand.mode, held.value.clone(), operand.span));
+            let packet = self.clone_evaluation_packet(&held.value, operand.span)?;
+            slots[slot] = Some((operand.mode, packet, operand.span));
         }
         let supplied = self.call_supplied_observations(site.event);
         let preparation = &mut self.call_arguments[site.preparation];
@@ -451,7 +655,7 @@ impl Checker {
                 .collect();
             preparation.supplied = supplied;
         }
-        slots
+        Ok(slots)
     }
 
     fn finish_application_slots(
@@ -461,7 +665,7 @@ impl Checker {
         site: ApplicationSite,
         mut slots: Vec<Option<HeldArgument>>,
         frame: &mut Frame,
-    ) -> Vec<(ParameterMode, Value, Span)> {
+    ) -> Result<Vec<(ParameterMode, Value, Span)>, SourceTypesError> {
         let ApplicationSite {
             event: source_event,
             preparation,
@@ -482,228 +686,246 @@ impl Checker {
             .enumerate()
             .any(|(index, parameter)| slots[index].is_none() && parameter.default.is_some());
         let previous_typing = self.capture_typing_environment();
-        if has_default && let Some(id) = target {
-            let info = self.functions[id].clone();
-            self.generic_scope(id);
-            let binders: BTreeSet<_> = info
-                .syntax
-                .generics
-                .iter()
-                .filter_map(|parameter| {
+        let mut defaults_frame = None;
+        let result = (|| {
+            if has_default && let Some(id) = target {
+                let info = self.functions[id].clone();
+                self.generic_scope(id);
+                let binders: BTreeSet<_> = info
+                    .syntax
+                    .generics
+                    .iter()
+                    .filter_map(|parameter| {
+                        self.type_source
+                            .environment
+                            .generic_context
+                            .get(&parameter.name)
+                            .cloned()
+                    })
+                    .collect();
+                for binder in &binders {
                     self.type_source
                         .environment
-                        .generic_context
-                        .get(&parameter.name)
-                        .cloned()
-                })
-                .collect();
-            for binder in &binders {
-                self.type_source
-                    .environment
-                    .generic_substitutions
-                    .remove(binder);
-                self.type_source.environment.generic_sources.remove(binder);
-                self.type_source
-                    .environment
-                    .static_key_arguments
-                    .remove(binder);
-            }
-            let explicit = self.explicit_named_for_event(source_event, info.definition);
-            let mut supplied = info.syntax.clone();
-            supplied.parameters = supplied
-                .parameters
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, parameter)| {
-                    slots
-                        .get(index)
-                        .is_some_and(Option::is_some)
-                        .then_some(parameter)
-                })
-                .collect();
-            let actual: Vec<_> = slots
-                .iter_mut()
-                .flatten()
-                .map(|(mode, value, span)| (*mode, value.current(&self.recency_moves), *span))
-                .collect();
-            let raw_templates = explicit.as_ref().map(|_| {
-                supplied
+                        .generic_substitutions
+                        .remove(binder);
+                    self.type_source.environment.generic_sources.remove(binder);
+                    self.type_source
+                        .environment
+                        .static_key_arguments
+                        .remove(binder);
+                }
+                let explicit = self.explicit_named_for_event(source_event, info.definition);
+                let mut supplied = info.syntax.clone();
+                supplied.parameters = supplied
                     .parameters
-                    .iter()
-                    .map(|parameter| {
-                        parameter.ty.as_ref().map(|syntax| {
-                            let ty = self.ty(syntax);
-                            self.call_inference_type(&ty)
-                        })
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, parameter)| {
+                        slots
+                            .get(index)
+                            .is_some_and(Option::is_some)
+                            .then_some(parameter)
                     })
-                    .collect()
-            });
-            if let Some(prepared) = &explicit {
-                self.seed_explicit_named(prepared);
-            }
-            self.infer_named_arguments(
-                &supplied,
-                &actual,
-                &binders,
-                raw_templates,
-                explicit.as_ref(),
-            );
-            if let Some(prepared) = &explicit {
-                self.finish_explicit_named_inference(prepared, span);
-            }
-        }
-        if has_default && let [Callable::Closure(id)] = callee.callables.as_slice() {
-            if let Some(environment) = self
-                .lambda_contract(*id)
-                .map(|contract| contract.typing_environment.clone())
-            {
-                self.restore_typing_environment(environment);
-            } else {
-                self.unsupported(span, "default lambda has no frozen declaration environment");
-            }
-        }
-        let environment = match callee.callables.as_slice() {
-            [Callable::Named(id)] => self.functions[*id].lexical.clone(),
-            [Callable::Closure(id)] => self.closures[*id].lexical.clone(),
-            _ => frame.env.clone(),
-        };
-        let mut defaults = self.frame(environment, true);
-        self.scopes.set_parent(defaults.owner, frame.owner);
-        defaults.callable_owner = match callee.callables.as_slice() {
-            [Callable::Named(id)] => Some(CallableOwner::Function(self.functions[*id].definition)),
-            [Callable::Closure(id)] => self.closures[*id].site.map(CallableOwner::Lambda),
-            _ => None,
-        };
-        let mut result = Vec::new();
-        for (index, parameter) in parameters.iter().enumerate() {
-            let mut value = if let Some(value) = slots[index].take() {
-                value
-            } else if let Some(default) = &parameter.default {
-                let (use_id, value) = self.evaluate_default(
-                    target,
-                    index,
-                    default,
-                    super::super::default_uses::DefaultOrigin::Call(source_event),
-                    caller_context,
-                    &mut defaults,
+                    .collect();
+                let actual: Vec<_> = slots
+                    .iter()
+                    .flatten()
+                    .map(|(mode, value, span)| {
+                        Ok((*mode, self.read_evaluation_packet(value, *span)?, *span))
+                    })
+                    .collect::<Result<_, SourceTypesError>>()?;
+                let raw_templates = explicit.as_ref().map(|_| {
+                    supplied
+                        .parameters
+                        .iter()
+                        .map(|parameter| {
+                            parameter.ty.as_ref().map(|syntax| {
+                                let ty = self.ty(syntax);
+                                self.call_inference_type(&ty)
+                            })
+                        })
+                        .collect()
+                });
+                if let Some(prepared) = &explicit {
+                    self.seed_explicit_named(prepared);
+                }
+                self.infer_named_arguments(
+                    &supplied,
+                    &actual,
+                    &binders,
+                    raw_templates,
+                    explicit.as_ref(),
                 );
-                self.call_arguments[preparation].slots[index] =
-                    super::super::default_uses::ArgumentSource::Default(use_id);
-                self.record_default_call_input_source(
-                    source_event,
-                    index,
-                    use_id,
-                    default,
-                    &defaults,
-                );
-                (
-                    parameter.mode,
-                    EvaluatedValue::new(value, self.recency_moves.len()),
-                    default.span,
-                )
-            } else {
-                self.error(
-                    "E0314",
-                    span,
-                    "missing required callable argument",
-                    [callee.cause],
-                );
-                let ty = parameter
-                    .ty
-                    .as_ref()
-                    .map(|t| self.ty(t))
-                    .unwrap_or(Ty::Unknown);
-                (
-                    parameter.mode,
-                    {
-                        let value = self.formal_value(ty, index as u32, span, &mut BTreeSet::new());
-                        EvaluatedValue::new(value, self.recency_moves.len())
-                    },
-                    span,
-                )
-            };
-            if value.1.current(&self.recency_moves).ty == Ty::Never {
-                result.push(value);
-                break;
-            }
-            let mut received = value.1.clone();
-            if has_default
-                && target.is_some()
-                && let Some(ty) = &parameter.ty
-            {
-                let info = self.functions[target.unwrap()].clone();
-                let source_valid = self.check_named_input_source(
-                    &info,
-                    index,
-                    &received.current(&self.recency_moves),
-                    Some(source_event),
-                    value.2,
-                );
-                self.set_contract_environment(&defaults.env);
-                if source_valid {
-                    self.ascribe_signature(received.current_mut(&self.recency_moves), ty);
-                    let expected = self.ty(ty);
-                    self.require_type(&received.current(&self.recency_moves), &expected, value.2);
-                    self.check_storage_shape(
-                        &received.current(&self.recency_moves),
-                        ty,
-                        &mut defaults,
-                    );
-                    if self
-                        .literal_shape_compatible(&received.current(&self.recency_moves), &expected)
-                    {
-                        received.current_mut(&self.recency_moves).ty = expected;
-                    }
+                if let Some(prepared) = &explicit {
+                    self.finish_explicit_named_inference(prepared, span);
                 }
             }
-            self.bind_pattern(
-                &parameter.pattern,
-                BindingMode::Let,
-                received.into_current(&self.recency_moves),
-                &mut defaults,
-                true,
-            );
-            result.push(value);
-        }
-        // Producers created by actual defaults belong to the application.
-        // Transport their duties unchanged; supplying an argument must never
-        // borrow an inspection performed by an omitted default in another call.
-        for (_, value, _) in &mut result {
-            self.transfer_results(
-                &value.current(&self.recency_moves),
-                defaults.owner,
-                frame.owner,
-            );
-        }
-        let exit = result
-            .iter_mut()
-            .map(|(_, value, _)| value.current(&self.recency_moves))
-            .find(|value| value.ty == Ty::Never)
-            .unwrap_or_else(|| self.unit(span));
-        self.finish_results(defaults.owner, &exit);
-        for binding in defaults.locals {
-            self.bindings[binding].alive = false;
-        }
-        self.call_arguments[preparation].evaluation_complete = self.call_arguments[preparation]
-            .slots_bound
-            && self.call_arguments[preparation].supplied.len()
-                == self.call_arguments[preparation]
-                    .evaluated
+            if has_default && let [Callable::Closure(id)] = callee.callables.as_slice() {
+                if let Some(environment) = self
+                    .lambda_contract(*id)
+                    .map(|contract| contract.typing_environment.clone())
+                {
+                    self.restore_typing_environment(environment);
+                } else {
+                    self.unsupported(span, "default lambda has no frozen declaration environment");
+                }
+            }
+            let environment = match callee.callables.as_slice() {
+                [Callable::Named(id)] => self.functions[*id].lexical.clone(),
+                [Callable::Closure(id)] => self.closures[*id].lexical.clone(),
+                _ => frame.env.clone(),
+            };
+            defaults_frame = Some(self.frame(environment, true));
+            let defaults = defaults_frame.as_mut().expect("default frame was created");
+            self.scopes.set_parent(defaults.owner, frame.owner);
+            defaults.callable_owner = match callee.callables.as_slice() {
+                [Callable::Named(id)] => {
+                    Some(CallableOwner::Function(self.functions[*id].definition))
+                }
+                [Callable::Closure(id)] => self.closures[*id].site.map(CallableOwner::Lambda),
+                _ => None,
+            };
+            let mut result = Vec::new();
+            for (index, parameter) in parameters.iter().enumerate() {
+                let value = if let Some(value) = slots[index].take() {
+                    value
+                } else if let Some(default) = &parameter.default {
+                    let (use_id, packet) = self.evaluate_default(
+                        target,
+                        index,
+                        default,
+                        super::super::default_uses::DefaultOrigin::Call(source_event),
+                        caller_context,
+                        defaults,
+                    )?;
+                    self.call_arguments[preparation].slots[index] =
+                        super::super::default_uses::ArgumentSource::Default(use_id);
+                    let original = self
+                        .clone_evaluation_packet(&packet, default.span)
+                        .inspect_err(|_| {
+                            self.default_uses[use_id.0 as usize].status =
+                                super::super::copy_contract::CopyInvocationStatus::Unsupported;
+                        })?;
+                    self.record_default_call_input_source(
+                        source_event,
+                        index,
+                        use_id,
+                        default,
+                        defaults,
+                        std::sync::Arc::new(original),
+                    );
+                    (parameter.mode, packet, default.span)
+                } else {
+                    self.error(
+                        "E0314",
+                        span,
+                        "missing required callable argument",
+                        [callee.cause],
+                    );
+                    let ty = parameter
+                        .ty
+                        .as_ref()
+                        .map(|t| self.ty(t))
+                        .unwrap_or(Ty::Unknown);
+                    (
+                        parameter.mode,
+                        {
+                            let value =
+                                self.formal_value(ty, index as u32, span, &mut BTreeSet::new());
+                            EvaluatedValue::new(value, self.recency_moves.len())
+                        },
+                        span,
+                    )
+                };
+                if value.1.value.ty == Ty::Never {
+                    result.push(value);
+                    break;
+                }
+                let mut received = self.clone_evaluation_packet(&value.1, value.2)?;
+                if has_default
+                    && target.is_some()
+                    && let Some(ty) = &parameter.ty
+                {
+                    let info = self.functions[target.unwrap()].clone();
+                    self.prepare_evaluation_packet(&mut received, value.2)?;
+                    let source_valid = self.check_named_input_source(
+                        &info,
+                        index,
+                        &received.value,
+                        Some(source_event),
+                        value.2,
+                    );
+                    self.set_contract_environment(&defaults.env);
+                    if source_valid {
+                        self.prepare_evaluation_packet(&mut received, value.2)?;
+                        received.source = Err(SourceTypesError::Unresolved);
+                        self.ascribe_signature(&mut received.value, ty);
+                        let expected = self.ty(ty);
+                        self.prepare_evaluation_packet(&mut received, value.2)?;
+                        self.require_type(&received.value, &expected, value.2);
+                        self.check_storage_shape(&received.value, ty, defaults);
+                        self.prepare_evaluation_packet(&mut received, value.2)?;
+                        if self.literal_shape_compatible(&received.value, &expected) {
+                            received.value.ty = expected;
+                        }
+                    }
+                }
+                let received = self.consume_evaluation_packet(received, value.2)?;
+                self.bind_pattern(
+                    &parameter.pattern,
+                    BindingMode::Let,
+                    received,
+                    defaults,
+                    true,
+                );
+                result.push(value);
+            }
+            // Producers created by actual defaults belong to the application.
+            // Transport their duties unchanged; supplying an argument must never
+            // borrow an inspection performed by an omitted default in another call.
+            for (_, value, value_span) in &mut result {
+                self.prepare_evaluation_packet(value, *value_span)?;
+                self.transfer_results(&value.value, defaults.owner, frame.owner);
+            }
+            if let Some((_, exit, _)) = result
+                .iter()
+                .find(|(_, value, _)| value.value.ty == Ty::Never)
+            {
+                self.finish_results(defaults.owner, &exit.value);
+            } else {
+                let unit = self.unit(span);
+                self.finish_results(defaults.owner, &unit);
+            }
+            self.call_arguments[preparation].evaluation_complete = self.call_arguments[preparation]
+                .slots_bound
+                && self.call_arguments[preparation].supplied.len()
+                    == self.call_arguments[preparation]
+                        .evaluated
+                        .iter()
+                        .filter(|evaluation| evaluation.role != EvaluationRole::Callee)
+                        .count()
+                && result.len() == parameters.len()
+                && result
                     .iter()
-                    .filter(|evaluation| evaluation.role != EvaluationRole::Callee)
-                    .count()
-            && result.len() == parameters.len()
-            && result
-                .iter_mut()
-                .all(|(_, value, _)| value.current(&self.recency_moves).ty != Ty::Never);
-        frame.obligations.include(&defaults.obligations, true);
+                    .all(|(_, value, _)| value.value.ty != Ty::Never);
+            Ok::<_, SourceTypesError>(result)
+        })();
+        if let Some(defaults) = defaults_frame {
+            for binding in defaults.locals {
+                self.bindings[binding].alive = false;
+            }
+            frame.obligations.include(&defaults.obligations, true);
+        }
         self.restore_typing_environment(previous_typing);
+        let result = result?;
         self.check_public_call_input_sources(callee, callee_syntax, source_event, frame);
         let mut result = result
             .into_iter()
-            .map(|(mode, value, span)| (mode, value.into_current(&self.recency_moves), span))
-            .collect::<Vec<_>>();
+            .map(|(mode, value, span)| {
+                Ok((mode, self.consume_evaluation_packet(value, span)?, span))
+            })
+            .collect::<Result<Vec<_>, SourceTypesError>>()?;
         self.finish_numeric_arguments(source_event, &mut result);
-        result
+        Ok(result)
     }
 }

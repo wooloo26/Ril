@@ -6,6 +6,12 @@ use super::*;
 use crate::hir::application::Operand;
 use crate::numeric_literals::{ExactLiteral, NumberType, ParseLimit};
 
+pub(super) struct PrimitiveNumericPrefix<'a> {
+    pub event: CopyCallEventId,
+    pub preparation: usize,
+    pub packets: &'a [super::applications::EvaluatedOperand],
+}
+
 pub(super) struct NumericInputContext<'a> {
     pub event: CopyCallEventId,
     pub expected_result: Option<&'a Ty>,
@@ -37,18 +43,59 @@ impl Checker {
     pub(super) fn primitive_numeric_contexts(
         &mut self,
         id: ril_compiler_core::builtin_calls::GenericBuiltin,
-        event: CopyCallEventId,
         arguments: &[Operand<'_, &Expr>],
         mapping: &[Result<usize, &'static str>],
+        prefix: PrimitiveNumericPrefix<'_>,
         frame: &Frame,
     ) -> Vec<Option<Ty>> {
+        let PrimitiveNumericPrefix {
+            event,
+            preparation,
+            packets: prefixes,
+        } = prefix;
+        if !self
+            .application_effect
+            .admit(prefixes.len() + arguments.len() + mapping.len())
+        {
+            self.unsupported(
+                arguments.first().map_or(
+                    Span {
+                        file: self.file,
+                        start: 0,
+                        end: 0,
+                    },
+                    |arg| arg.span,
+                ),
+                "numeric prefix packet lookup exhausted its work bound",
+            );
+            return vec![None; mapping.len()];
+        }
         let receiver = arguments
             .iter()
             .zip(mapping)
             .find(|(_, slot)| **slot == Ok(0))
             .map(
-                |(argument, _)| match self.evaluated_argument_source(event, argument.role) {
-                    Some(source) => source.clone(),
+                |(argument, _)| match prefixes.iter().find(|input| input.role == argument.role) {
+                    Some(input) => {
+                        let original = self
+                            .call_arguments
+                            .get(preparation)
+                            .filter(|row| row.source_event == event)
+                            .is_some_and(|row| {
+                                row.evaluated.iter().any(|child| {
+                                    child.role == input.role
+                                        && Some(child.observation.expression)
+                                            == input.value.observation
+                                        && child.observation.allocation_epoch
+                                            == input.value.allocation_epoch
+                                })
+                            });
+                        if original {
+                            input.value.source.clone()
+                        } else {
+                            Err(crate::sema::source_types::SourceTypesError::MissingNode)
+                        }
+                    }
                     None => self.declared_operand_source_schema(
                         argument.expression,
                         frame,
@@ -411,23 +458,28 @@ impl Checker {
         &mut self,
         event: CopyCallEventId,
         slots: &mut [Option<(ParameterMode, EvaluatedValue, Span)>],
-    ) {
+    ) -> Result<(), crate::sema::source_types::SourceTypesError> {
+        use crate::sema::source_types::SourceTypesError;
         let Some(application) = self.numeric.applications.get(&event).cloned() else {
-            return;
+            return Ok(());
         };
+        if !self.application_effect.admit(slots.len()) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
         let actual: Vec<_> = slots
-            .iter_mut()
+            .iter()
             .map(|slot| {
-                slot.as_mut()
-                    .map(|(_, value, span)| (value.current(&self.recency_moves), *span))
+                slot.as_ref()
+                    .map(|(_, value, span)| Ok((self.read_evaluation_packet(value, *span)?, *span)))
+                    .transpose()
             })
-            .collect();
+            .collect::<Result<_, SourceTypesError>>()?;
         if !actual
             .iter()
             .flatten()
             .any(|(value, _)| matches!(value.ty, Ty::NumericHole(_)))
         {
-            return;
+            return Ok(());
         }
         let mut selected = application.substitutions.clone();
         for (actual, template) in actual.iter().zip(&application.parameter_templates) {
@@ -494,9 +546,14 @@ impl Checker {
             let Some((_, value, span)) = slot else {
                 continue;
             };
-            let value = value.current_mut(&self.recency_moves);
-            let Ty::NumericHole(id) = value.ty else {
+            if !matches!(value.value.ty, Ty::NumericHole(_)) {
                 continue;
+            }
+            self.prepare_evaluation_packet(value, *span)?;
+            value.source = Err(SourceTypesError::Unresolved);
+            let value = &mut value.value;
+            let Ty::NumericHole(id) = value.ty else {
+                unreachable!()
             };
             let Some(template) = application
                 .parameter_templates
@@ -537,6 +594,7 @@ impl Checker {
             .get_mut(&event)
             .expect("prepared numeric application")
             .substitutions = selected;
+        Ok(())
     }
 
     pub(super) fn validate_numeric_application(&mut self, info: &FunctionInfo, span: Span) {

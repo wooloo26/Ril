@@ -34,6 +34,12 @@ pub(crate) fn charge_type_syntax_clone(syntax: &TypeExpr, work: &mut usize) -> O
     *work = usize::try_from(budget.work_remaining()).ok()?;
     result.ok()
 }
+pub(crate) fn charge_parameter_syntax_clone(syntax: &Parameter, work: &mut usize) -> Option<()> {
+    let budget = budget::Budget::with_work(u64::try_from(*work).ok()?);
+    let result = clone_work::parameter(&budget, syntax);
+    *work = usize::try_from(budget.work_remaining()).ok()?;
+    result.ok()
+}
 pub(crate) mod committed_float;
 pub(crate) mod const_nominal;
 pub(crate) mod constants;

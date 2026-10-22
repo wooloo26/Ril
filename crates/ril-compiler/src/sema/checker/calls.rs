@@ -597,17 +597,59 @@ impl Checker {
                     .last()
                     .expect("named invocation identity");
                 let context = self.invocation_context(frame.callable_owner);
-                let (use_id, value) = self.evaluate_default(
-                    Some(id),
-                    index,
-                    default,
-                    super::super::default_uses::DefaultOrigin::InvocationFallback(invocation),
-                    context,
-                    &mut frame,
-                );
-                if let Some(event) = source_event {
-                    self.record_default_call_input_source(event, index, use_id, default, &frame);
-                }
+                let mut default_receipt = None;
+                let default_result = (|| {
+                    let (use_id, packet) = self.evaluate_default(
+                        Some(id),
+                        index,
+                        default,
+                        super::super::default_uses::DefaultOrigin::InvocationFallback(invocation),
+                        context,
+                        &mut frame,
+                    )?;
+                    default_receipt = Some(use_id);
+                    if let Some(event) = source_event {
+                        let original = self.clone_evaluation_packet(&packet, default.span)?;
+                        self.record_default_call_input_source(
+                            event,
+                            index,
+                            use_id,
+                            default,
+                            &frame,
+                            std::sync::Arc::new(original),
+                        );
+                    }
+                    self.consume_evaluation_packet(packet, default.span)
+                })();
+                let value = match default_result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if let Some(id) = default_receipt {
+                            self.default_uses[id.0 as usize].status =
+                                super::super::copy_contract::CopyInvocationStatus::Unsupported;
+                        }
+                        self.unsupported(
+                            default.span,
+                            format!("default packet admission: {error}"),
+                        );
+                        let mut failed = Value::scalar(Ty::Unknown, None, CauseId(0));
+                        self.flush_handler_obligations(&mut frame);
+                        self.end_invocation_loans(&mut failed, &frame, &local_loans, default.span);
+                        if let Some(caller) = caller.as_mut() {
+                            caller.obligations.include(&frame.obligations, true);
+                        }
+                        for binding in &frame.locals {
+                            self.bindings[*binding].alive = false;
+                        }
+                        self.call_stack.pop();
+                        self.loop_depth = previous_loop_depth;
+                        self.restore_typing_environment(previous_typing);
+                        self.universal = previous_universal;
+                        // Admission failure leaves Result duties unresolved;
+                        // it supplies neither an inspection nor a return.
+                        return failed;
+                    }
+                };
                 if !verifying {
                     input_sources_valid[index] = self.check_named_input_source(
                         &info,
@@ -3237,7 +3279,7 @@ impl Checker {
                     .as_ref()
                     .map(|syntax| self.freeze_source_receiving_target(syntax));
                 let caller = self.invocation_context(frame.callable_owner);
-                let (use_id, mut value) = self.evaluate_default(
+                let packet = self.evaluate_default(
                     Some(id),
                     index,
                     default,
@@ -3245,6 +3287,28 @@ impl Checker {
                     caller,
                     &mut frame,
                 );
+                let (use_id, packet) = match packet {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        self.unsupported(
+                            default.span,
+                            format!("default probe packet admission: {error}"),
+                        );
+                        break;
+                    }
+                };
+                let mut value = match self.consume_evaluation_packet(packet, default.span) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.default_uses[use_id.0 as usize].status =
+                            super::super::copy_contract::CopyInvocationStatus::Unsupported;
+                        self.unsupported(
+                            default.span,
+                            format!("default probe packet admission: {error}"),
+                        );
+                        break;
+                    }
+                };
                 self.default_use_stack.push(use_id);
                 let source_valid = self.check_declared_default_source(
                     super::default_source_receiving::DeclaredDefault {

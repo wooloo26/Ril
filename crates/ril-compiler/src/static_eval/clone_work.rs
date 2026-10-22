@@ -244,11 +244,15 @@ impl Meter<'_> {
                 self.expr(target, depth + 1)?;
                 self.expr(value, depth + 1)?;
             }
-            StmtKind::Handler(_) => {
-                return Err(Failure::Unsupported(
-                    "static clone admission for handler syntax requires a separate cost proof"
-                        .into(),
-                ));
+            StmtKind::Handler(arms) => {
+                for arm in arms {
+                    self.node(depth + 1)?;
+                    self.expr(&arm.operation, depth + 2)?;
+                    for parameter in &arm.parameters {
+                        self.parameter(parameter, depth + 2)?;
+                    }
+                    self.expr(&arm.body, depth + 2)?;
+                }
             }
         }
         Ok(())
@@ -605,10 +609,113 @@ pub(super) fn expression(budget: &budget::Budget, value: &Expr) -> Result<()> {
 pub(super) fn type_syntax(budget: &budget::Budget, value: &TypeExpr) -> Result<()> {
     Meter(budget).ty(value, 0)
 }
+pub(super) fn parameter(budget: &budget::Budget, value: &Parameter) -> Result<()> {
+    Meter(budget).parameter(value, 0)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parameter_default_handler_clone_preflights_all_owned_arm_syntax() {
+        let span = Span {
+            file: ril_compiler_core::source::FileId(0),
+            start: 0,
+            end: 0,
+        };
+        let name = |text: &str| Expr {
+            kind: ExprKind::Name(text.into()),
+            span,
+            hir_id: None,
+        };
+        let parameter = Parameter {
+            pattern: Pattern {
+                kind: PatternKind::Wildcard,
+                span,
+                hir_id: None,
+            },
+            mode: ParameterMode::Read,
+            ty: None,
+            default: Some(Expr {
+                kind: ExprKind::Block(Block {
+                    statements: vec![Stmt {
+                        kind: StmtKind::Handler(vec![HandlerArm {
+                            operation: name("operation"),
+                            parameters: vec![Parameter {
+                                pattern: Pattern {
+                                    kind: PatternKind::Name("input".into()),
+                                    span,
+                                    hir_id: None,
+                                },
+                                mode: ParameterMode::Read,
+                                ty: Some(TypeExpr {
+                                    text: "int".into(),
+                                    kind: TypeKind::Name {
+                                        path: vec!["int".into()],
+                                        arguments: vec![],
+                                    },
+                                    span,
+                                    hir_id: None,
+                                }),
+                                default: Some(name("fallback")),
+                                span,
+                            }],
+                            body: name("answer"),
+                            span,
+                        }]),
+                        span,
+                        hir_id: None,
+                    }],
+                    where_items: vec![],
+                    span,
+                }),
+                span,
+                hir_id: None,
+            }),
+            span,
+        };
+        let budget = budget::Budget::with_work(4096);
+        assert!(super::parameter(&budget, &parameter).is_ok());
+        let cost = 4096 - budget.work_remaining();
+        assert!(cost > 0);
+        let exact = budget::Budget::with_work(cost);
+        assert!(super::parameter(&exact, &parameter).is_ok());
+        assert_eq!(exact.work_remaining(), 0);
+        for work in [0, cost - 1] {
+            let budget = budget::Budget::with_work(work);
+            assert!(matches!(
+                super::parameter(&budget, &parameter),
+                Err(Failure::Unsupported(_))
+            ));
+        }
+
+        let grow: [fn(&mut HandlerArm); 5] = [
+            |arm| arm.operation.kind = ExprKind::Name("operation".repeat(128)),
+            |arm| arm.parameters[0].pattern.kind = PatternKind::Name("input".repeat(128)),
+            |arm| arm.parameters[0].ty.as_mut().unwrap().text = "int".repeat(128),
+            |arm| {
+                arm.parameters[0].default.as_mut().unwrap().kind =
+                    ExprKind::Name("fallback".repeat(128));
+            },
+            |arm| arm.body.kind = ExprKind::Name("answer".repeat(128)),
+        ];
+        for grow in grow {
+            let mut larger = parameter.clone();
+            let ExprKind::Block(block) = &mut larger.default.as_mut().unwrap().kind else {
+                unreachable!()
+            };
+            let StmtKind::Handler(arms) = &mut block.statements[0].kind else {
+                unreachable!()
+            };
+            grow(&mut arms[0]);
+            assert!(matches!(
+                super::parameter(&budget::Budget::with_work(cost), &larger),
+                Err(Failure::Unsupported(_))
+            ));
+        }
+    }
+
     #[test]
     fn shared_collection_clone_cost_does_not_unfold_its_binary_graph() {
         let mut value = StaticValue::Integer(7);

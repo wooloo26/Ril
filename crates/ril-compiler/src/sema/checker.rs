@@ -1821,11 +1821,11 @@ impl Checker {
         {
             return self.expression_expected_source(expression, frame, expected, source);
         }
-        expressions::SourceExpression {
-            value: self.statement_expected(statement, frame, expected),
-            observation: None,
-            source_valid: true,
-        }
+        expressions::SourceExpression::unobserved(
+            self.statement_expected(statement, frame, expected),
+            self.recency_moves.len(),
+            true,
+        )
     }
 
     fn block_expected(&mut self, block: &Block, frame: &mut Frame, expected: Option<&Ty>) -> Value {
@@ -1985,11 +1985,7 @@ impl Checker {
             value.publication = Publication::Unpublished;
         }
         frame.env = old_env;
-        expressions::SourceExpression {
-            value,
-            observation: None,
-            source_valid,
-        }
+        expressions::SourceExpression::unobserved(value, self.recency_moves.len(), source_valid)
     }
     fn access(
         &mut self,

@@ -40,7 +40,12 @@ impl Checker {
             let receiver = self
                 .storage_supplied_input(event, 0, &args[0].1, span, frame)
                 .ok_or(SourceTypesError::MissingNode)?;
-            let (original, environment) = receiver.source?.ok_or(SourceTypesError::Unresolved)?;
+            let (original, environment) = receiver
+                .source
+                .as_ref()
+                .map_err(Clone::clone)?
+                .as_ref()
+                .ok_or(SourceTypesError::Unresolved)?;
             if environment.is_poisoned() {
                 return Err(SourceTypesError::Unresolved);
             }
@@ -106,7 +111,7 @@ impl Checker {
             return None;
         }
         let input = self.call_input_source.supplied.get(&event)?.get(&slot)?;
-        let expression = input.expression?;
+        let expression = input.observation?;
         if input.context != actual_context
             || input.default.is_some()
             || input.allocation_epoch > self.recency_moves.len()
@@ -178,22 +183,23 @@ mod tests {
     }
 
     fn input(key: ArgumentKey, fresh: Construction) -> Input {
+        let context = InvocationContext {
+            invocation: None,
+            owner: None,
+            closure: None,
+            closure_invocation: None,
+            budget_validation: false,
+            default_use: None,
+        };
+        let mut packet = EvaluatedValue::new(Value::scalar(Ty::Unknown, None, CauseId(0)), 0);
+        packet.source = Ok(Some((
+            SourceSchema::import(&key, None, &mut WorkLimit::new(16384)).unwrap(),
+            FrozenEnvironment::default(),
+        )));
+        packet.fresh = std::sync::Arc::new(fresh);
         Input {
-            context: InvocationContext {
-                invocation: None,
-                owner: None,
-                closure: None,
-                closure_invocation: None,
-                budget_validation: false,
-                default_use: None,
-            },
-            expression: None,
-            allocation_epoch: 0,
-            source: Ok(Some((
-                SourceSchema::import(&key, None, &mut WorkLimit::new(16384)).unwrap(),
-                FrozenEnvironment::default(),
-            ))),
-            fresh,
+            context,
+            packet: std::sync::Arc::new(packet),
             default: None,
         }
     }

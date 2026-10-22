@@ -2,6 +2,7 @@
 use ril_compiler_core::{ids::DefinitionId, source::Span};
 pub mod application;
 pub mod blocks;
+pub mod execution;
 pub mod nodes;
 pub use nodes::HirProgram;
 use std::sync::Arc;

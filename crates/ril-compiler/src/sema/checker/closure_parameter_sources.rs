@@ -183,7 +183,7 @@ impl Checker {
                             .get(event)
                             .and_then(|slots| slots.get(&slot))
                             .ok_or(SourceTypesError::MissingNode)?;
-                        if input.expression != Some(token.expression) || input.default.is_some() {
+                        if input.observation != Some(token.expression) || input.default.is_some() {
                             return Err(SourceTypesError::Unresolved);
                         }
                         input
@@ -202,7 +202,7 @@ impl Checker {
                             || receipt.origin != DefaultOrigin::Call(*event)
                             || receipt.parameter as usize != slot
                             || input.default != Some(*id)
-                            || input.expression.is_some()
+                            || input.observation != receipt.result_expression
                         {
                             return Err(SourceTypesError::Unresolved);
                         }

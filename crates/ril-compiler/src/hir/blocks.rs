@@ -123,7 +123,6 @@ impl BlockIndex {
         if self.blocks.contains_key(&anchor) {
             return Err(BlockIndexError::UnknownAnchor(anchor));
         }
-        let mut tail = None;
         for id in block.statements.iter().chain(&block.where_items) {
             charge(work, lookup_cost(self.members.len()))?;
             hir.statement(*id)
@@ -133,6 +132,28 @@ impl BlockIndex {
                 return Err(BlockIndexError::DuplicateStatement(*id));
             }
         }
+        let tail = Self::structural_tail(hir, block, work)?;
+        // Charge the copied member edges before allocating the owned lists.
+        charge(work, block.statements.len())?;
+        charge(work, block.where_items.len())?;
+        self.blocks.insert(
+            anchor,
+            IndexedBlock {
+                syntax: block.clone(),
+                tail,
+            },
+        );
+        Ok(())
+    }
+
+    /// Reconstruct from the supplied HIR revision, so consumers can reject a
+    /// cached tail whose member IDs survived a change to statement structure.
+    pub(super) fn structural_tail(
+        hir: &HirProgram,
+        block: &hir::Block,
+        work: &mut usize,
+    ) -> Result<Option<(StmtId, ExprId)>, BlockIndexError> {
+        let mut tail = None;
         // where_items are declarations, not the block's executed suffix.
         // Evaluate only the ordered statements when selecting its tail.
         charge(work, block.statements.len())?;
@@ -148,6 +169,7 @@ impl BlockIndex {
                     expression,
                     terminated: false,
                 } => {
+                    charge(work, 1)?;
                     let expression_node = hir
                         .expression(*expression)
                         .ok_or(BlockIndexError::MissingNode(NodeId::Expr(*expression)))?;
@@ -157,17 +179,7 @@ impl BlockIndex {
                 _ => tail = None,
             }
         }
-        // Charge the copied member edges before allocating the owned lists.
-        charge(work, block.statements.len())?;
-        charge(work, block.where_items.len())?;
-        self.blocks.insert(
-            anchor,
-            IndexedBlock {
-                syntax: block.clone(),
-                tail,
-            },
-        );
-        Ok(())
+        Ok(tail)
     }
 
     pub fn block(&self, anchor: BlockAnchor) -> Result<&hir::Block, BlockIndexError> {

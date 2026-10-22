@@ -74,6 +74,38 @@ impl Default for ApplicationEffectDomain {
 }
 
 impl ApplicationEffectDomain {
+    /// Pure HIR cursor queries spend the same monotone work allowance as
+    /// application recording. A failed query must be handled by its caller;
+    /// this interface never grants a fresh allowance for another prefix.
+    pub(crate) fn with_work<R>(&mut self, query: impl FnOnce(&mut usize) -> R) -> R {
+        if self.exhausted {
+            self.remaining = 0;
+        }
+        query(&mut self.remaining)
+    }
+
+    /// Borrow immutable evaluation rows together with their shared allowance.
+    /// Queries may copy or transport a row only after charging that allowance.
+    pub(crate) fn with_evaluation_work<R>(
+        &mut self,
+        query: impl FnOnce(
+            &[ExpressionFact],
+            &[EvaluationRecord],
+            &[EvaluationActivation],
+            &mut usize,
+        ) -> R,
+    ) -> R {
+        if self.exhausted {
+            self.remaining = 0;
+        }
+        query(
+            &self.expressions,
+            &self.evaluations,
+            &self.activations,
+            &mut self.remaining,
+        )
+    }
+
     pub(crate) fn enter_call(
         &mut self,
         origin: EntryOrigin,

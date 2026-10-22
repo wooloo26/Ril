@@ -5,6 +5,7 @@ use super::super::{
     default_uses::{DefaultOrigin, DefaultUse, DefaultUseId},
 };
 use super::*;
+use crate::sema::source_types::SourceTypesError;
 
 impl Checker {
     pub(super) fn fail_default_uses(&mut self, rejected: bool) {
@@ -26,7 +27,7 @@ impl Checker {
         origin: DefaultOrigin,
         caller: super::super::effect_identity::InvocationContext,
         frame: &mut Frame,
-    ) -> (DefaultUseId, Value) {
+    ) -> Result<(DefaultUseId, EvaluatedValue), SourceTypesError> {
         let info = target.map(|id| self.functions[id].clone());
         let selected = info
             .as_ref()
@@ -57,18 +58,25 @@ impl Checker {
             .and_then(|info| info.syntax.parameters.get(parameter))
             .and_then(|parameter| parameter.ty.as_ref())
             .map(|syntax| self.ty(syntax));
-        let (value, result_expression) =
-            self.expression_expected_observed(syntax, frame, expected.as_ref());
-        self.check_default_purity(&value, syntax.span, frame);
+        let mut packet = self.expression_source_packet(syntax, frame, expected.as_ref(), None);
+        let transport = self.prepare_evaluation_packet(&mut packet, syntax.span);
+        if let Err(error) = transport {
+            assert_eq!(self.default_use_stack.pop(), Some(id));
+            self.default_uses[id.0 as usize].status = CopyInvocationStatus::Unsupported;
+            return Err(error);
+        }
+        let result_expression = packet.observation;
+        let value = &packet.value;
+        self.check_default_purity(value, syntax.span, frame);
         assert_eq!(self.default_use_stack.pop(), Some(id));
-        let result = self.copy_value_snapshot(&value);
+        let result = self.copy_value_snapshot(value);
         let result_allocation_epoch = self.recency_moves.len();
         let record = &mut self.default_uses[id.0 as usize];
         record.evaluation_complete = value.ty != Ty::Never && result_expression.is_some();
         record.result = Some(result);
         record.result_expression = result_expression;
         record.result_allocation_epoch = Some(result_allocation_epoch);
-        (id, value)
+        Ok((id, packet))
     }
 
     pub(super) fn check_default_purity(&mut self, value: &Value, span: Span, frame: &Frame) {
