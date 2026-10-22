@@ -1923,7 +1923,6 @@ impl Checker {
                 self.require_type(&alternative, ty, span);
             }
         }
-        self.numeric_context(value, &visible_ty, span);
         self.literal_shape_context(value, &visible_ty, span);
         if matches!(visible_ty, Ty::Immutable(_))
             && (self.has_writer(value)
@@ -2011,129 +2010,12 @@ impl Checker {
             );
         }
     }
-    pub(super) fn numeric_context(&mut self, value: &Value, expected: &Ty, span: Span) {
-        if !value.unsuffixed_numeric || !matches!(expected, Ty::Int(_) | Ty::Float(_)) {
-            return;
-        }
-        let mut ids = BTreeSet::new();
-        let mut work = vec![value.cause];
-        while let Some(id) = work.pop() {
-            if ids.insert(id.0) {
-                if let Some(alternatives) = self.type_alternatives.get(&id.0) {
-                    // Only expressions contributing the result type receive
-                    // numeric context. Conditions and shift counts keep their
-                    // own types while the explanation graph retains all uses.
-                    work.extend(alternatives.iter().map(|value| value.cause));
-                } else {
-                    work.extend(
-                        self.explanations.causes[id.0 as usize]
-                            .parents
-                            .iter()
-                            .copied(),
-                    );
-                }
-            }
-        }
-        let mut spans = Vec::new();
-        let mut literals = BTreeMap::new();
-        for id in &ids {
-            if let Some(source) = self.explanations.causes[*id as usize].span {
-                spans.push(source);
-            }
-        }
-        for fact in &self.application_effect.expressions {
-            if ids.contains(&fact.value.cause.0) && fact.value.unsuffixed_numeric {
-                spans.push(fact.span);
-                if fact.value.literal_number {
-                    let key = fact.value.cause.0;
-                    let replace = literals
-                        .get(&key)
-                        .is_none_or(|(old_span, _): &(Span, Value)| {
-                            fact.span.end - fact.span.start > old_span.end - old_span.start
-                        });
-                    if replace {
-                        literals.insert(key, (fact.span, fact.value.clone()));
-                    }
-                }
-            }
-        }
-        if value.literal_number {
-            literals.insert(value.cause.0, (span, value.clone()));
-        }
-        if let Ty::Int(name) = expected {
-            for (_, (literal_span, literal)) in literals {
-                if let Some(Constant::Integer(number)) = literal.constant {
-                    self.integer_range(number, name, literal_span, literal.cause);
-                }
-            }
-        }
-        for span in spans {
-            let key = (span.file.0, span.start, span.end);
-            if self
-                .contextual_types
-                .get(&key)
-                .is_some_and(|old| old != expected)
-            {
-                self.unsupported(
-                    span,
-                    "one expression needs multiple numeric specializations",
-                );
-            } else {
-                // Result/context inference can happen after the producing
-                // expression returned. Attribute its written type to that
-                // expression's actual invocation, not the current caller.
-                let mut contexts = Vec::new();
-                for observation in &self.application_effect.contexts {
-                    let fact = &self.application_effect.expressions[observation.expression];
-                    if fact.span == span
-                        && ids.contains(&fact.value.cause.0)
-                        && !contexts.contains(&observation.context)
-                    {
-                        contexts.push(observation.context);
-                    }
-                }
-                if contexts.is_empty() {
-                    self.expression_witness(
-                        span,
-                        super::super::effect_identity::InvocationWitnessKind::ContextualType(
-                            expected.clone(),
-                        ),
-                    );
-                } else {
-                    for context in contexts {
-                        self.invocation_witnesses.push(super::super::effect_identity::InvocationWitness {
-                            context, span, kind: super::super::effect_identity::InvocationWitnessKind::ContextualType(expected.clone()),
-                        });
-                    }
-                }
-                self.contextual_types.insert(key, expected.clone());
-            }
-        }
-    }
     pub(super) fn require_branch_types(&mut self, left: &mut Value, right: &mut Value, span: Span) {
         if left.ty == Ty::Never || right.ty == Ty::Never {
             return;
         }
         let before = self.diagnostics.len();
-        if left.unsuffixed_numeric && !right.unsuffixed_numeric {
-            self.require_type(left, &right.ty, span);
-            if matches!(
-                (&left.ty, &right.ty),
-                (Ty::Int(_), Ty::Int(_)) | (Ty::Float(_), Ty::Float(_))
-            ) {
-                left.ty = right.ty.clone();
-            }
-        } else {
-            self.require_type(right, &left.ty, span);
-            if right.unsuffixed_numeric
-                && matches!(
-                    (&left.ty, &right.ty),
-                    (Ty::Int(_), Ty::Int(_)) | (Ty::Float(_), Ty::Float(_))
-                )
-            {
-                right.ty = left.ty.clone();
-            }
-        }
+        self.require_type(right, &left.ty, span);
         for diagnostic in &mut self.diagnostics[before..] {
             if matches!(diagnostic.code.as_str(), "E0301" | "E0302" | "E0307") {
                 diagnostic.code = "E0351".into();
@@ -2141,14 +2023,6 @@ impl Checker {
         }
     }
     pub(super) fn literal_shape_compatible(&self, value: &Value, expected: &Ty) -> bool {
-        if value.unsuffixed_numeric
-            && matches!(
-                (&value.ty, expected),
-                (Ty::Int(_), Ty::Int(_)) | (Ty::Float(_), Ty::Float(_))
-            )
-        {
-            return true;
-        }
         if !value.construction {
             return false;
         }
@@ -2217,18 +2091,6 @@ impl Checker {
             return;
         }
         let expected = self.expanded(expected, &mut BTreeSet::new());
-        if let Ty::Optional(inner) = &expected
-            && let Some(payload) = &value.option_payload
-            && payload.unsuffixed_numeric
-            && matches!(
-                self.expanded(inner, &mut BTreeSet::new()),
-                Ty::Int(_) | Ty::Float(_)
-            )
-        {
-            // This context selects a scalar literal's numeric type. Following
-            // reference payloads would unfold an ordinary cyclic graph.
-            self.require_type(payload, inner, span);
-        }
         let mut checks = Vec::new();
         for node in &value.origins.nodes {
             for ((parent, slot), child) in &self.fields {

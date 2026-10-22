@@ -1,5 +1,26 @@
 use ril_compiler::{CompilationOutcome, Session};
 
+fn assert_numeric_history_has_complete_resolutions(facts: &ril_compiler::sema::SemanticFacts) {
+    use ril_compiler::sema::{model::Ty, numeric_selection::NumericHoleState};
+    for fact in &facts.expressions {
+        let Ty::NumericHole(id) = fact.value.ty else {
+            continue;
+        };
+        let hole = facts.numeric_holes.get(id.0 as usize).unwrap();
+        assert_eq!(hole.id, id);
+        let NumericHoleState::Committed { resolution, .. } = &hole.state else {
+            panic!("unresolved historical numeric expression: {fact:?}");
+        };
+        assert!(!resolution.dependencies.uses.is_empty());
+        assert!(!resolution.dependencies.selections.is_empty());
+        for selection in &resolution.dependencies.selections {
+            let selected = &facts.numeric_selections[selection.0 as usize];
+            assert_eq!(selected.id, *selection);
+            assert!(resolution.dependencies.uses.contains(&selected.literal));
+        }
+    }
+}
+
 #[test]
 fn receiving_type_precedes_named_generic_and_effect_instance_selection() {
     for source in [
@@ -26,13 +47,7 @@ fn receiving_type_precedes_named_generic_and_effect_instance_selection() {
         let program = Session::new(source.as_bytes().to_vec())
             .verify()
             .unwrap_or_else(|outcome| panic!("{source}: {outcome:?}"));
-        assert!(
-            program.facts().expressions.iter().all(|fact| !matches!(
-                fact.value.ty,
-                ril_compiler::sema::model::Ty::NumericHole(_)
-            )),
-            "uncommitted numeric expression in {source}"
-        );
+        assert_numeric_history_has_complete_resolutions(program.facts());
         ril_compiler::lower::lower_core(&program)
             .unwrap_or_else(|outcome| panic!("{source}: {outcome:?}"));
     }
@@ -70,19 +85,37 @@ fn numeric_selection_does_not_reuse_a_differently_instantiated_handler() {
 
 #[test]
 fn overflowing_selected_arithmetic_keeps_a_runtime_exit_instead_of_an_invalid_constant() {
-    let source = "fn identity<T>(value:T)->T{value}\nfn choose<T>(left:T,right:T)->T{left}\nfn example(){let number=choose(127+1,identity(3i8))}";
+    let source =
+        ril_test::case_source("tests/conformance/numeric.ril::deferred-arithmetic-overflow");
     let program = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let start = source.find("127+1").unwrap() as u32;
     let facts: Vec<_> = program
         .facts()
         .expressions
         .iter()
-        .filter(|fact| fact.span.start == start && fact.span.end == start + 5)
+        .filter(|fact| {
+            fact.source_id
+                .and_then(|id| program.semantic_hir().expression(id))
+                .is_some_and(|node| {
+                    matches!(&node.kind, ril_compiler::hir::nodes::ExprKind::Binary { operator, .. } if operator == "+")
+                })
+        })
         .collect();
     assert!(!facts.is_empty());
-    assert!(facts.iter().all(|fact| fact.value.ty
-        == ril_compiler::sema::model::Ty::Int("i8".into())
-        && fact.value.constant.is_none()));
+    assert!(facts.iter().all(|fact| {
+        if let ril_compiler::sema::model::Ty::NumericHole(id) = fact.value.ty {
+            matches!(
+                &program.facts().numeric_holes[id.0 as usize].state,
+                ril_compiler::sema::numeric_selection::NumericHoleState::Committed { resolution, .. }
+                    if resolution.number_type == ril_compiler::numeric_literals::NumberType::I8
+                        && resolution.constant.is_none()
+                        && resolution.encoded.is_none()
+            )
+        } else {
+            fact.value.ty == ril_compiler::sema::model::Ty::Int("i8".into())
+                && fact.value.constant.is_none()
+        }
+    }));
+    assert_numeric_history_has_complete_resolutions(program.facts());
     ril_compiler::lower::lower_core(&program).unwrap();
 }
 

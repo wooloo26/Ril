@@ -2,7 +2,7 @@
 //! their own graph identity contract and remain explicitly incomplete.
 use super::*;
 mod defaults;
-pub(crate) use defaults::instantiate_defaults;
+pub(crate) use defaults::instantiate_defaults_bounded;
 
 fn evaluator(declarations: &BTreeMap<String, TypeDeclaration>, layout: TargetLayout) -> Evaluator {
     Evaluator {

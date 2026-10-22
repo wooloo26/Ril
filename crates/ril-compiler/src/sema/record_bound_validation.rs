@@ -73,7 +73,7 @@ pub(crate) fn ordinary_source_coordinates(
 }
 
 pub(crate) use call_input_source::OriginalOperandSources;
-pub(crate) use explicit_named::{SourceSites, source_sites_base};
+pub(crate) use explicit_named::{SourceSites, source_sites_base_with_work};
 
 pub(crate) fn ordinary_lambda_coordinates(
     facts: &SemanticFacts,
@@ -87,12 +87,44 @@ pub(crate) fn ordinary_lambda_coordinates(
 
 const LIMIT: usize = 65_536;
 
+/// Static index preparation borrows the enclosing stage's budget. An absent
+/// or invalid index is an error only for a query that actually needs it; no
+/// successful occurrence/Source validation is memoized here.
+#[derive(Default)]
+enum PreparedBuiltinNames<'a> {
+    #[default]
+    NotPrepared,
+    Ready(super::checker::BuiltinNameIndex<'a>),
+    Failed(String),
+}
+impl<'a> PreparedBuiltinNames<'a> {
+    fn prepare(facts: &'a SemanticFacts, work: &mut usize) -> Check<Self> {
+        if facts.source_program.is_none()
+            || !super::checker::BuiltinNameIndex::needs_preparation(facts, work)?
+        {
+            return Ok(Self::NotPrepared);
+        }
+        Ok(
+            match super::checker::BuiltinNameIndex::new_with_work(facts, work) {
+                Ok(names) => Self::Ready(names),
+                Err(error) => Self::Failed(error),
+            },
+        )
+    }
+}
+
 struct Replay<'a> {
     facts: &'a SemanticFacts,
     generated_entries: super::application_effect::generated_entries::GeneratedEntryIndex<'a>,
     callable_input_work: usize,
     frames: super::scopes::FrameIndex<'a>,
     observations: observation_index::ObservationIndex<'a>,
+    numeric_session: std::cell::RefCell<super::numeric_selection::NumericReplaySession>,
+    source_query: std::rc::Rc<super::source_query::SourceQuery>,
+    builtin_names: std::cell::RefCell<PreparedBuiltinNames<'a>>,
+    storage_bindings: BTreeMap<usize, &'a super::storage_sources::BindingSource>,
+    storage_admissions: call_input_source::StorageAdmissions,
+    lexical: Option<std::sync::Arc<crate::hir::lexical::LexicalBindings>>,
     blocks: Option<crate::hir::blocks::BlockIndex>,
     functions: BTreeMap<DefinitionId, &'a FunctionInfo>,
     bounds: BTreeMap<(DefinitionId, u32), &'a GenericRecordBound>,
@@ -108,15 +140,60 @@ fn require(condition: bool, description: &str) -> Check {
         .ok_or_else(|| description.to_owned())
 }
 
+fn prepared_builtin_source_names<'s, 'a>(
+    cache: &'s std::cell::RefCell<PreparedBuiltinNames<'a>>,
+    work: &mut usize,
+) -> Check<std::cell::Ref<'s, super::checker::BuiltinNameIndex<'a>>> {
+    *work = work
+        .checked_sub(1)
+        .ok_or("builtin Source index query exhausted its shared work bound")?;
+    let prepared = cache.borrow();
+    if let PreparedBuiltinNames::Failed(error) = &*prepared {
+        *work = work
+            .checked_sub(1 + error.len().div_ceil(32))
+            .ok_or("builtin Source index error exceeds its shared work bound")?;
+        return Err(error.clone());
+    }
+    std::cell::Ref::filter_map(prepared, |prepared| match prepared {
+        PreparedBuiltinNames::Ready(names) => Some(names),
+        _ => None,
+    })
+    .map_err(|_| "required builtin Source index was not prepared".into())
+}
+
 impl<'a> Replay<'a> {
+    fn builtin_source_names(
+        &self,
+        work: &mut usize,
+    ) -> Check<std::cell::Ref<'_, super::checker::BuiltinNameIndex<'a>>> {
+        prepared_builtin_source_names(&self.builtin_names, work)
+    }
+
+    fn actual_prelude_name(
+        &self,
+        context: super::effect_identity::InvocationContext,
+        actual: &Expr,
+        identity: &str,
+        work: &mut usize,
+    ) -> Check {
+        self.builtin_source_names(work)?
+            .actual_prelude_name(context, actual, identity, work)
+    }
+
     fn new(facts: &'a SemanticFacts) -> Check<Self> {
-        crate::sema::evaluation_identity::validate(facts)
+        let mut work = 16_000_000usize;
+        let mut replay = Self::new_with_work(facts, &mut work)?;
+        replay.callable_input_work = work;
+        Ok(replay)
+    }
+    fn new_with_work(facts: &'a SemanticFacts, work: &mut usize) -> Check<Self> {
+        crate::sema::evaluation_identity::validate_with_work(facts, work)
             .map_err(|(_, _, message)| format!("application evaluation structure: {message}"))?;
-        let observations = observation_index::ObservationIndex::new(facts)?;
+        let observations = observation_index::ObservationIndex::new_with_work(facts, work)?;
         let blocks = facts
             .semantic_hir
             .as_deref()
-            .map(crate::hir::blocks::BlockIndex::new)
+            .map(|hir| crate::hir::blocks::BlockIndex::new_with_budget(hir, work))
             .transpose()
             .map_err(|error| format!("original block index: {error}"))?;
         require(
@@ -129,7 +206,26 @@ impl<'a> Replay<'a> {
         )?;
         // Bound admission precedes recursive syntax equality or owned copies.
         // The source walk itself is iterative and has its own finite budget.
-        projection_sites(facts)?;
+        *work = work
+            .checked_sub(
+                facts.functions.len() + facts.record_bounds.len() + facts.bindings.len() + 1,
+            )
+            .ok_or("record Source index exceeds its work bound")?;
+        for function in &facts.functions {
+            crate::static_eval::charge_function_syntax_clone(&function.syntax, work)
+                .ok_or("record declaration syntax exceeds shared admission")?;
+            crate::static_eval::charge_function_syntax_clone(&function.syntax, work)
+                .ok_or("record declaration equality exceeds shared admission")?;
+            *work = work
+                .checked_sub(function.typing_environment.generic_context.len())
+                .ok_or("record declaration environment exceeds shared admission")?;
+            for (name, identity) in &function.typing_environment.generic_context {
+                *work = work
+                    .checked_sub(1 + name.len().div_ceil(32) + identity.len().div_ceil(32))
+                    .ok_or("record declaration environment text exceeds shared admission")?;
+            }
+        }
+        projection_sites_with_work(facts, work)?;
         for function in &facts.functions {
             for syntax in function
                 .syntax
@@ -145,6 +241,8 @@ impl<'a> Replay<'a> {
                 )
                 .chain(function.syntax.return_type.iter())
             {
+                crate::static_eval::charge_type_syntax_clone(syntax, work)
+                    .ok_or("record header key exceeds its shared work bound")?;
                 require(
                     crate::static_eval::effects::bounded_argument_key(syntax, &BTreeMap::new())
                         .is_some(),
@@ -154,6 +252,12 @@ impl<'a> Replay<'a> {
         }
         let mut functions: BTreeMap<_, &FunctionInfo> = BTreeMap::new();
         for function in &facts.functions {
+            *work = work
+                .checked_sub(
+                    1 + function.syntax.name.len().div_ceil(32)
+                        + functions.len().checked_ilog2().unwrap_or(0) as usize,
+                )
+                .ok_or("record declaration registry exceeds its shared work bound")?;
             if let Some(previous) = functions.insert(function.definition, function) {
                 require(
                     previous.syntax.name == function.syntax.name
@@ -176,6 +280,9 @@ impl<'a> Replay<'a> {
         }
         let mut bounds = BTreeMap::new();
         for (index, bound) in facts.record_bounds.iter().enumerate() {
+            *work = work
+                .checked_sub(1 + bounds.len().checked_ilog2().unwrap_or(0) as usize)
+                .ok_or("record bound registry exceeds its shared work bound")?;
             require(
                 bound.id.0 as usize == index
                     && bounds
@@ -185,13 +292,17 @@ impl<'a> Replay<'a> {
             )?;
         }
         let mut parameter_sources = BTreeMap::new();
-        let mut work = super::source_types::WorkLimit::new(LIMIT);
         for binding in facts.bindings.iter().filter(|binding| binding.parameter) {
-            work.charge(1)
-                .map_err(|error| format!("parameter Source index: {error}"))?;
+            *work = work
+                .checked_sub(1)
+                .ok_or("parameter Source index exceeds its shared work bound")?;
             for (binder, source) in &binding.typing_environment.generic_sources {
-                work.charge(1 + binder.len().div_ceil(32))
-                    .map_err(|error| format!("parameter Source index: {error}"))?;
+                *work = work
+                    .checked_sub(
+                        2 + binder.len().div_ceil(32)
+                            + parameter_sources.len().checked_ilog2().unwrap_or(0) as usize,
+                    )
+                    .ok_or("parameter Source registry exceeds its shared work bound")?;
                 let Some(origin) = source.input else { continue };
                 if binding.context.invocation != Some(origin.invocation) {
                     continue;
@@ -206,18 +317,40 @@ impl<'a> Replay<'a> {
                 }
             }
         }
-        let mut callable_input_work = 16_000_000usize;
         let generated_entries =
-            super::application_effect::generated_entries::GeneratedEntryIndex::new(
-                facts,
-                &mut callable_input_work,
+            super::application_effect::generated_entries::GeneratedEntryIndex::new(facts, work)?;
+        let lexical = facts
+            .semantic_hir
+            .as_deref()
+            .map(|hir| {
+                crate::hir::lexical::LexicalBindings::new(hir, work).map(std::sync::Arc::new)
+            })
+            .transpose()
+            .map_err(|error| format!("original lexical Source index: {error:?}"))?;
+        let mut storage_bindings = BTreeMap::new();
+        for row in &facts.binding_sources {
+            *work = work
+                .checked_sub(2 + storage_bindings.len().checked_ilog2().unwrap_or(0) as usize)
+                .ok_or("storage receipt index exceeds its shared work bound")?;
+            require(
+                storage_bindings.insert(row.binding, row).is_none(),
+                "storage declaration has duplicate binding receipts",
             )?;
+        }
+        let frames = super::scopes::FrameIndex::new_with_lexical(facts, lexical.clone(), work)?;
+        let builtin_names = PreparedBuiltinNames::prepare(facts, work)?;
         Ok(Self {
             facts,
             generated_entries,
-            callable_input_work,
-            frames: super::scopes::FrameIndex::new(facts)?,
+            callable_input_work: 0,
+            frames,
             observations,
+            numeric_session: Default::default(),
+            source_query: Default::default(),
+            builtin_names: std::cell::RefCell::new(builtin_names),
+            storage_bindings,
+            storage_admissions: Default::default(),
+            lexical,
             blocks,
             functions,
             bounds,
@@ -1741,6 +1874,12 @@ fn literal_field(key: &Expr) -> Option<String> {
 }
 
 fn projection_sites(facts: &SemanticFacts) -> Check<Vec<ProjectionSite<'_>>> {
+    projection_sites_with_work(facts, &mut { LIMIT })
+}
+fn projection_sites_with_work<'a>(
+    facts: &'a SemanticFacts,
+    work: &mut usize,
+) -> Check<Vec<ProjectionSite<'a>>> {
     enum Pending<'a> {
         Statement(CallableOwner, &'a Stmt, usize),
         Expression(CallableOwner, &'a Expr, usize),
@@ -1749,6 +1888,9 @@ fn projection_sites(facts: &SemanticFacts) -> Check<Vec<ProjectionSite<'_>>> {
     for function in &facts.functions {
         let owner = CallableOwner::Function(function.definition);
         if let Some(body) = &function.syntax.body {
+            *work = work
+                .checked_sub(body.statements.len() + body.where_items.len())
+                .ok_or("record source frontier exceeds shared work")?;
             pending.extend(
                 body.statements
                     .iter()
@@ -1759,13 +1901,12 @@ fn projection_sites(facts: &SemanticFacts) -> Check<Vec<ProjectionSite<'_>>> {
     }
     let mut result = Vec::new();
     let mut assignments = Vec::new();
-    let mut work = LIMIT;
     while let Some(current) = pending.pop() {
         require(
-            work > 0,
+            *work > 0,
             "record-bound source coverage walk exceeds replay budget",
         )?;
-        work -= 1;
+        *work -= 1;
         match current {
             Pending::Statement(owner, statement, depth) => {
                 require(depth < 128, "record-bound source coverage walk is too deep")?;
@@ -1974,6 +2115,9 @@ fn projection_sites(facts: &SemanticFacts) -> Check<Vec<ProjectionSite<'_>>> {
         }
     }
     for site in &mut result {
+        *work = work
+            .checked_sub(assignments.len())
+            .ok_or("record source assignment matching exceeds shared work")?;
         site.assignment = assignments
             .iter()
             .find(|(owner, target, _, _)| {
@@ -4099,5 +4243,93 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(selected.tail,RowTail::Open(actual) if actual.identity==caller.identity));
+    }
+}
+
+#[cfg(test)]
+mod builtin_name_preparation_tests {
+    use super::*;
+    use crate::sema::model::Callable;
+
+    #[test]
+    fn preparation_preserves_unrelated_models_and_never_rebuilds_on_query_work() {
+        let missing = SemanticFacts::default();
+        assert!(matches!(
+            PreparedBuiltinNames::prepare(&missing, &mut 4096).unwrap(),
+            PreparedBuiltinNames::NotPrepared
+        ));
+        let mut facts = SemanticFacts {
+            source_program: Some(std::sync::Arc::new(ril_syntax::ast::Program {
+                statements: vec![],
+            })),
+            ..Default::default()
+        };
+        assert!(matches!(
+            PreparedBuiltinNames::prepare(&facts, &mut 4096).unwrap(),
+            PreparedBuiltinNames::NotPrepared
+        ));
+        let span = Span {
+            file: ril_compiler_core::source::FileId(0),
+            start: 0,
+            end: 0,
+        };
+        let mut value = Value::scalar(Ty::Unknown, None, CauseId(0));
+        value.callables.push(Callable::Builtin("Ok".into()));
+        facts.expressions.push(super::super::ExpressionFact {
+            source_id: None,
+            allocation_epoch: 0,
+            span,
+            value,
+        });
+        let cache =
+            std::cell::RefCell::new(PreparedBuiltinNames::prepare(&facts, &mut 4096).unwrap());
+        let mut lookup = 1;
+        assert!(prepared_builtin_source_names(&cache, &mut lookup).is_ok());
+        assert_eq!(
+            lookup, 0,
+            "a lookup borrows the stage-prepared static index"
+        );
+        assert!(prepared_builtin_source_names(&cache, &mut lookup).is_err());
+
+        let synthetic = Stmt {
+            hir_id: None,
+            span,
+            kind: StmtKind::Function(ril_syntax::ast::Function {
+                visibility: Default::default(),
+                is_meta: false,
+                is_halt: false,
+                name: "synthetic".into(),
+                generics: vec![],
+                parameters: vec![],
+                return_type: None,
+                annotations: vec![],
+                signature_where: vec![],
+                body: None,
+                span,
+            }),
+        };
+        let mut unrelated = SemanticFacts {
+            source_program: Some(std::sync::Arc::new(ril_syntax::ast::Program {
+                statements: vec![synthetic],
+            })),
+            ..Default::default()
+        };
+        assert!(matches!(
+            PreparedBuiltinNames::prepare(&unrelated, &mut 4096).unwrap(),
+            PreparedBuiltinNames::NotPrepared
+        ));
+        unrelated.expressions = facts.expressions.clone();
+        let failed =
+            std::cell::RefCell::new(PreparedBuiltinNames::prepare(&unrelated, &mut 4096).unwrap());
+        assert!(
+            matches!(&*failed.borrow(), PreparedBuiltinNames::Failed(_)),
+            "a malformed scope is retained as a specific preparation error"
+        );
+        assert!(prepared_builtin_source_names(&failed, &mut 4096).is_err());
+        let absent = std::cell::RefCell::new(PreparedBuiltinNames::NotPrepared);
+        assert!(
+            prepared_builtin_source_names(&absent, &mut 4096).is_err(),
+            "missing preparation never means an unknown successful Source"
+        );
     }
 }

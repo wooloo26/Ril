@@ -15,6 +15,21 @@ pub(crate) struct SourceSchema {
 }
 
 impl SourceSchema {
+    pub(crate) fn scalar(
+        scalar: SourceScalar,
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        let mut builder = SourceBuilder::new()?;
+        let root = builder.insert(SourceNode::Scalar(scalar), work)?;
+        Ok(Self {
+            types: builder.freeze(work)?,
+            root,
+            original,
+        })
+    }
+
     pub(crate) fn syntax_projection(
         &self,
         span: ril_compiler_core::source::Span,
@@ -169,21 +184,7 @@ impl SourceSchema {
         builder: &mut SourceBuilder,
         work: &mut WorkLimit,
     ) -> Result<SourceTypeId, SourceTypesError> {
-        work.charge(1)?;
-        let checkpoint = builder.checkpoint();
-        let result = self
-            .types
-            .copy_into([self.root], builder, work)
-            .and_then(|mapping| {
-                mapping
-                    .get(&self.root)
-                    .copied()
-                    .ok_or(SourceTypesError::MissingNode)
-            });
-        if result.is_err() {
-            builder.rollback(checkpoint);
-        }
-        result
+        builder.import_frozen(&self.types, self.root, work)
     }
 
     pub(crate) fn equivalent(
@@ -235,7 +236,14 @@ impl SourceSchema {
     pub(crate) fn key(
         &self,
     ) -> Result<crate::sema::effect_identity::ArgumentKey, SourceTypesError> {
-        self.types.legacy_key(self.root, &mut WorkLimit::new(4096))
+        self.key_with_work(&mut WorkLimit::new(4096))
+    }
+
+    pub(crate) fn key_with_work(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<crate::sema::effect_identity::ArgumentKey, SourceTypesError> {
+        self.types.legacy_key(self.root, work)
     }
 
     pub(crate) fn project(&self, path: &[SourcePath]) -> Result<Self, SourceTypesError> {

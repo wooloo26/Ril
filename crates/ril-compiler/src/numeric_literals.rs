@@ -54,6 +54,12 @@ impl FloatFormat {
             Self::F64 => 0x7ff0_0000_0000_0000,
         }
     }
+    fn canonical_nan(self) -> u64 {
+        match self {
+            Self::F32 => 0x7fc0_0000,
+            Self::F64 => 0x7ff8_0000_0000_0000,
+        }
+    }
 }
 
 /// Upper bits are zero for f32. Widening an already selected f32 into Core's
@@ -65,6 +71,9 @@ pub struct BinaryFloat {
 }
 
 impl BinaryFloat {
+    pub(crate) fn is_nan(self) -> bool {
+        self.bits & !self.format.sign_bit() > self.format.infinity()
+    }
     pub fn format(self) -> FloatFormat {
         self.format
     }
@@ -112,6 +121,7 @@ pub struct ParseLimit {
 enum ExactValue {
     Integer(BigUint),
     Decimal(String),
+    CommittedFloat(BinaryFloat),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +216,23 @@ impl ExactLiteral {
         if text.len() > limit.max_bytes {
             return Err(Error::ResourceLimit);
         }
+        if let Some(committed) =
+            crate::static_eval::committed_float::decode(text).map_err(|()| Error::InvalidSyntax)?
+        {
+            let (format, suffix) = match committed.width {
+                32 => (FloatFormat::F32, NumberType::F32),
+                64 => (FloatFormat::F64, NumberType::F64),
+                _ => return Err(Error::InvalidSyntax),
+            };
+            return Ok(Self {
+                value: ExactValue::CommittedFloat(BinaryFloat {
+                    format,
+                    bits: committed.bits,
+                }),
+                suffix: Some(suffix),
+                negative,
+            });
+        }
         let (body, suffix) =
             without_suffix(text, &[("f32", NumberType::F32), ("f64", NumberType::F64)]);
         let (mantissa, exponent) = body.find(['e', 'E']).map_or((body, None), |index| {
@@ -239,7 +266,21 @@ impl ExactLiteral {
     pub fn magnitude(&self) -> Option<&BigUint> {
         match &self.value {
             ExactValue::Integer(value) => Some(value),
-            ExactValue::Decimal(_) => None,
+            ExactValue::Decimal(_) | ExactValue::CommittedFloat(_) => None,
+        }
+    }
+    pub fn decimal_magnitude(&self) -> Option<&str> {
+        match &self.value {
+            ExactValue::Decimal(text) => Some(text),
+            ExactValue::Integer(_) | ExactValue::CommittedFloat(_) => None,
+        }
+    }
+    /// A fixed representation already selected by static materialization.
+    /// Its runtime use still requires a real occurrence and numeric receipt.
+    pub fn committed_float(&self) -> Option<BinaryFloat> {
+        match &self.value {
+            ExactValue::CommittedFloat(value) => Some(*value),
+            _ => None,
         }
     }
 
@@ -248,6 +289,16 @@ impl ExactLiteral {
     pub fn select(&self, ty: NumberType, layout: TargetLayout) -> Result<EncodedNumber, Error> {
         if self.suffix.is_some_and(|suffix| suffix != ty) {
             return Err(Error::IncompatibleSelection);
+        }
+        if let ExactValue::CommittedFloat(mut value) = self.value {
+            if self.negative {
+                value.bits = if value.is_nan() {
+                    value.format.canonical_nan()
+                } else {
+                    value.bits ^ value.format.sign_bit()
+                };
+            }
+            return Ok(EncodedNumber::Float(value));
         }
         if let Some(format) = match ty {
             NumberType::F32 => Some(FloatFormat::F32),
@@ -267,6 +318,7 @@ impl ExactLiteral {
                         .map_err(|_| Error::UnsupportedDecimal)?
                         .to_bits(),
                 },
+                ExactValue::CommittedFloat(_) => unreachable!("committed values returned above"),
             } | if self.negative { format.sign_bit() } else { 0 };
             return Ok(EncodedNumber::Float(BinaryFloat { format, bits }));
         }
@@ -356,4 +408,123 @@ fn round_integer(magnitude: &BigUint, format: FloatFormat) -> u64 {
     }
     let fraction_bits = precision - 1;
     ((exponent + format.max_exponent()) << fraction_bits) | (significand - (1u64 << fraction_bits))
+}
+
+#[cfg(test)]
+mod committed_tests {
+    use super::*;
+    #[test]
+    fn committed_outer_negation_uses_the_specification_ieee_table() {
+        for (width, bits, negated, twice) in [
+            (32, 0x0000_0000, 0x8000_0000, 0x0000_0000),
+            (32, 0x8000_0000, 0x0000_0000, 0x8000_0000),
+            (32, 0x3fc0_0000, 0xbfc0_0000, 0x3fc0_0000),
+            (32, 0xbfc0_0000, 0x3fc0_0000, 0xbfc0_0000),
+            (32, 0x7f80_0000, 0xff80_0000, 0x7f80_0000),
+            (32, 0xff80_0000, 0x7f80_0000, 0xff80_0000),
+            (32, 0x7fc0_0000, 0x7fc0_0000, 0x7fc0_0000),
+            (32, 0xffc0_0001, 0x7fc0_0000, 0x7fc0_0000),
+            (32, 0x7f80_0001, 0x7fc0_0000, 0x7fc0_0000),
+            (
+                64,
+                0x0000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+            ),
+            (
+                64,
+                0x8000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+            ),
+            (
+                64,
+                0x3ff8_0000_0000_0000,
+                0xbff8_0000_0000_0000,
+                0x3ff8_0000_0000_0000,
+            ),
+            (
+                64,
+                0xbff8_0000_0000_0000,
+                0x3ff8_0000_0000_0000,
+                0xbff8_0000_0000_0000,
+            ),
+            (
+                64,
+                0x7ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+            ),
+            (
+                64,
+                0xfff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+            ),
+            (
+                64,
+                0x7ff8_0000_0000_0000,
+                0x7ff8_0000_0000_0000,
+                0x7ff8_0000_0000_0000,
+            ),
+            (
+                64,
+                0xfff8_0000_0000_0001,
+                0x7ff8_0000_0000_0000,
+                0x7ff8_0000_0000_0000,
+            ),
+            (
+                64,
+                0x7ff0_0000_0000_0001,
+                0x7ff8_0000_0000_0000,
+                0x7ff8_0000_0000_0000,
+            ),
+        ] {
+            let text = if width == 32 {
+                format!("\0ril.float32:{bits:08x}")
+            } else {
+                format!("\0ril.float64:{bits:016x}")
+            };
+            let ty = if width == 32 {
+                NumberType::F32
+            } else {
+                NumberType::F64
+            };
+            for negative in [false, true] {
+                let exact =
+                    ExactLiteral::decimal(&text, negative, ParseLimit { max_bytes: 64 }).unwrap();
+                assert_eq!(exact.is_negative(), negative);
+                assert_eq!(exact.committed_float().unwrap().bits(), bits);
+                let EncodedNumber::Float(encoded) =
+                    exact.select(ty, TargetLayout::POINTER32).unwrap()
+                else {
+                    unreachable!()
+                };
+                assert_eq!(encoded.bits(), if negative { negated } else { bits });
+                let second = if width == 32 {
+                    format!("\0ril.float32:{:08x}", encoded.bits())
+                } else {
+                    format!("\0ril.float64:{:016x}", encoded.bits())
+                };
+                let EncodedNumber::Float(second) =
+                    ExactLiteral::decimal(&second, negative, ParseLimit { max_bytes: 64 })
+                        .unwrap()
+                        .select(ty, TargetLayout::POINTER64)
+                        .unwrap()
+                else {
+                    unreachable!()
+                };
+                assert_eq!(second.bits(), if negative { twice } else { bits });
+                let other = if ty == NumberType::F32 {
+                    NumberType::F64
+                } else {
+                    NumberType::F32
+                };
+                assert_eq!(
+                    exact.select(other, TargetLayout::POINTER64),
+                    Err(Error::IncompatibleSelection)
+                );
+            }
+        }
+    }
 }

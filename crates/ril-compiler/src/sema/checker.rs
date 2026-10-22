@@ -7,7 +7,7 @@ use super::{
 use crate::hir::{Definition, VerifiedProgram};
 use ril_compiler_core::{
     diagnostic::{CauseId, Diagnostic, Label, Severity},
-    ids::{CallableOwner, ClosureSiteId, DefinitionId, HandlerSiteId},
+    ids::{CallableOwner, ClosureSiteId, DefinitionId, HandlerSiteId, StmtId},
     source::{FileId, Span},
 };
 use ril_syntax::ast::*;
@@ -18,10 +18,11 @@ mod bindings;
 mod budget;
 mod builtin_source_observations;
 mod builtin_source_types;
-pub(crate) use builtin_source_observations::actual_prelude_name;
 pub(crate) use builtin_source_observations::original_canonical_key as original_canonical_builtin_source_key;
 pub(crate) use builtin_source_observations::original_canonical_source as original_canonical_builtin_source;
+pub(crate) use builtin_source_observations::original_numeric_declaration as original_numeric_builtin_declaration;
 pub(crate) use builtin_source_observations::validate as validate_builtin_source_observations;
+pub(crate) use builtin_source_observations::{BuiltinNameIndex, CanonicalBuiltinUse};
 mod call_input_source;
 mod calls;
 mod cancellation;
@@ -258,6 +259,7 @@ fn analyze_inner(
         allocation_history: checker.recency_moves.clone(),
         scopes: checker.scopes,
         numeric_uses: checker.numeric.uses,
+        numeric_holes: checker.numeric.holes,
         numeric_selections: checker.numeric.selections,
         constant_pool: constants.clone(),
         constant_values: checker.constant_values,
@@ -309,7 +311,6 @@ fn analyze_inner(
         scoped_source_identities: checker.scoped_source_identities,
         observed_accesses: checker.observed_accesses,
         bound_field_writes: checker.bound_field_writes,
-        contextual_types: checker.contextual_types,
         result_duties: checker.result_duties,
         optional_tags: checker.optional_tags,
         result_families: checker.result_families,
@@ -381,7 +382,8 @@ fn analyze_inner(
     }
 }
 pub(super) fn is_known_builtin_source_type(name: &str) -> bool {
-    name == "Io::ErrorKind" || standard::file_type(name).is_some()
+    super::source_types::standard_data::Nominal::lookup(name).is_some()
+        || standard::file_type(name).is_some()
 }
 
 struct Checker {
@@ -504,7 +506,6 @@ struct Checker {
     optional_tags: Vec<super::optional_tags::OptionalTagFact>,
     result_families: BTreeMap<u32, BTreeSet<u32>>,
     result_sites: BTreeMap<(u32, u32, u32, u32), u32>,
-    contextual_types: BTreeMap<(u32, u32, u32), Ty>,
     operations: BTreeMap<String, OperationFact>,
     effect_type_binders: BTreeMap<String, String>,
     effect_instances: Vec<super::effect_identity::EffectInstance>,
@@ -569,6 +570,20 @@ struct Checker {
     window_blocks: Vec<windows::WindowBlockUses>,
     window_expression_uses: Vec<windows::WindowExpressionUses>,
 }
+fn declaration_definition(
+    functions: &[FunctionInfo],
+    owner: Option<CallableOwner>,
+    source: Option<StmtId>,
+) -> Option<DefinitionId> {
+    let (Some(owner), Some(source)) = (owner, source) else {
+        return None;
+    };
+    functions
+        .iter()
+        .find(|info| info.lexical_owner == Some(owner) && info.hir_id == Some(source))
+        .map(|info| info.definition)
+}
+
 impl Checker {
     fn new(file: FileId) -> Self {
         let mut checker = Self {
@@ -708,7 +723,6 @@ impl Checker {
             optional_tags: vec![],
             result_families: BTreeMap::new(),
             result_sites: BTreeMap::new(),
-            contextual_types: BTreeMap::new(),
             operations: BTreeMap::new(),
             handler_definitions: Vec::new(),
             retained_handlers: Vec::new(),
@@ -961,6 +975,7 @@ impl Checker {
             );
             return;
         }
+        self.type_source.reset_header_queries();
         self.semantic_hir = hir;
         let program = std::sync::Arc::new(identified);
         self.checked_source = Some(program.clone());
@@ -1139,9 +1154,12 @@ impl Checker {
         // Types are collected before function signatures, independent of order.
         for stmt in statements {
             if let StmtKind::Effect(effect) = &stmt.kind {
+                let declaration = std::sync::Arc::new(effect.clone());
                 let info = effects::EffectInfo {
                     source: stmt.hir_id,
-                    syntax: effect.clone(),
+                    syntax: declaration.clone(),
+                    declaration,
+                    arguments: Vec::new().into(),
                     environment: self.capture_typing_environment_with_bindings(&frame.env),
                     scope: frame.owner,
                     context: self.invocation_context(frame.callable_owner),
@@ -1204,9 +1222,12 @@ impl Checker {
                     if frame.owner != ScopeId(0) {
                         self.local_effects.insert(decl.name.clone());
                     }
+                    let declaration = std::sync::Arc::new(decl.clone());
                     let info = effects::EffectInfo {
                         source: stmt.hir_id,
-                        syntax: decl.clone(),
+                        syntax: declaration.clone(),
+                        declaration,
+                        arguments: Vec::new().into(),
                         environment: self.capture_typing_environment_with_bindings(&frame.env),
                         scope: frame.owner,
                         context: self.invocation_context(frame.callable_owner),
@@ -1221,16 +1242,19 @@ impl Checker {
                     let typing_environment =
                         self.capture_typing_environment_with_bindings(&frame.env);
                     let id = self.functions.len();
-                    let definition = frame
-                        .callable_owner
-                        .and_then(|owner| {
-                            self.functions.iter().find(|info| {
-                                info.lexical_owner == Some(owner)
-                                    && info.syntax.name == function.name
-                                    && info.syntax.span == function.span
-                            })
-                        })
-                        .map_or(DefinitionId(id as u32), |info| info.definition);
+                    if frame.callable_owner.is_some()
+                        && stmt.hir_id.is_some()
+                        && !self.application_effect.admit(1 + self.functions.len())
+                    {
+                        self.unsupported(
+                            stmt.span,
+                            "function declaration identity lookup exhausted its shared work bound",
+                        );
+                        return;
+                    }
+                    let definition =
+                        declaration_definition(&self.functions, frame.callable_owner, stmt.hir_id)
+                            .unwrap_or(DefinitionId(id as u32));
                     self.functions.push(FunctionInfo {
                         hir_id: stmt.hir_id,
                         definition,

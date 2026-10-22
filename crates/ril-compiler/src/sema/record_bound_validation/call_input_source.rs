@@ -15,12 +15,16 @@ mod entries;
 mod graph_sources;
 #[path = "inferred_parameter_sources.rs"]
 mod inferred_parameters;
+#[path = "numeric_source_declarations.rs"]
+mod numeric_sources;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
 #[path = "call_input_source_reception.rs"]
 mod reception;
 #[path = "storage_input_source.rs"]
 mod storage_inputs;
+#[path = "storage_read_sources.rs"]
+mod storage_reads;
 use crate::sema::{
     context::FrozenEnvironment,
     copy_contract::CopyInvocation,
@@ -30,6 +34,7 @@ use crate::sema::{
     source_reception,
     source_types::{SourceSchema, WorkLimit},
 };
+pub(super) use storage_reads::StorageAdmissions;
 
 pub(crate) type OriginalSourceInput = (
     Option<(SourceSchema, FrozenEnvironment)>,
@@ -69,9 +74,21 @@ pub(super) struct SourceVisit {
 }
 impl<'a> OriginalOperandSources<'a> {
     pub(crate) fn new(facts: &'a SemanticFacts) -> Check<Self> {
+        Self::new_with_work(facts, &mut { 16_000_000 })
+    }
+    pub(crate) fn new_with_work(facts: &'a SemanticFacts, work: &mut usize) -> Check<Self> {
+        Self::new_with_work_in(facts, work, std::rc::Rc::default())
+    }
+    pub(crate) fn new_with_work_in(
+        facts: &'a SemanticFacts,
+        work: &mut usize,
+        query: std::rc::Rc<crate::sema::source_query::SourceQuery>,
+    ) -> Check<Self> {
+        let mut replay = Replay::new_with_work(facts, work)?;
+        replay.source_query = query;
         Ok(Self {
-            replay: Replay::new(facts)?,
-            sites: super::explicit_named::source_sites_base(facts)?,
+            replay,
+            sites: super::explicit_named::source_sites_base_with_work(facts, work)?,
         })
     }
     pub(crate) fn input(
@@ -79,11 +96,18 @@ impl<'a> OriginalOperandSources<'a> {
         event_id: crate::sema::copy_contract::CopyCallEventId,
         slot: u32,
     ) -> Check<OriginalSourceInput> {
+        self.input_with_work(event_id, slot, &mut 4096)
+    }
+    pub(crate) fn input_with_work(
+        &self,
+        event_id: crate::sema::copy_contract::CopyCallEventId,
+        slot: u32,
+        work: &mut usize,
+    ) -> Check<OriginalSourceInput> {
         let replay = &self.replay;
         let facts = replay.facts;
         let sites = &self.sites;
-        let mut work = 4096;
-        source_scan_work(&mut work, 1)?;
+        source_scan_work(work, 1)?;
         let event = facts
             .copy_call_events
             .get(event_id.0 as usize)
@@ -91,7 +115,7 @@ impl<'a> OriginalOperandSources<'a> {
             .ok_or_else(|| "source operand origin event is absent".to_owned())?;
         let origin = unique_source_record(
             &sites.calls,
-            &mut work,
+            work,
             "source operand origin has multiple actual Calls",
             |site| Some(site.owner) == event.owner && event.matches_source(site.expression),
         )?
@@ -107,7 +131,7 @@ impl<'a> OriginalOperandSources<'a> {
             .expressions
             .get(callee_token)
             .ok_or_else(|| "source operand callee token is outside its arena".to_owned())?;
-        let context = replay.observations.row(callee_token, &mut work)?.context;
+        let context = replay.observations.row(callee_token, work)?.context;
         require(
             callee_fact.source_id.is_some()
                 && callee_fact.source_id == callee.hir_id
@@ -115,12 +139,12 @@ impl<'a> OriginalOperandSources<'a> {
                 && context.invocation == event.parent,
             "source operand callee is borrowed from another occurrence",
         )?;
-        let preparation = replay.input_preparation(event.id, &mut work)?;
+        let preparation = replay.input_preparation(event.id, work)?;
         require(
             preparation.target == event.target && preparation.evaluation_complete,
             "source operand preparation changed its actual target or completion",
         )?;
-        source_scan_work(&mut work, arguments.len() + preparation.slots.len())?;
+        source_scan_work(work, arguments.len() + preparation.slots.len())?;
         let labels = crate::sema::builtin_sources::parameter_labels(
             &callee_fact.value,
             preparation.slots.len(),
@@ -163,7 +187,7 @@ impl<'a> OriginalOperandSources<'a> {
             .expressions
             .get(token.expression)
             .ok_or_else(|| "source operand root token is outside its arena".to_owned())?;
-        let actual_context = replay.observations.row(token.expression, &mut work)?;
+        let actual_context = replay.observations.row(token.expression, work)?;
         require(
             token.allocation_epoch <= facts.allocation_history.len()
                 && value.source_id.is_some()
@@ -172,19 +196,14 @@ impl<'a> OriginalOperandSources<'a> {
                 && actual_context.argument_of == Some((event.id, slot)),
             "source operand token borrowed another physical occurrence or context",
         )?;
-        replay.input_operand_interval(
-            event,
-            slot as usize,
-            token.expression,
-            context,
-            &mut work,
-        )?;
+        replay.input_operand_interval(event, slot as usize, token.expression, context, work)?;
         self.observed_with_work(
             syntax.hir_id.ok_or("source input has no HIR root")?,
             token.expression,
-            &mut work,
+            work,
         )
     }
+    #[cfg(test)]
     pub(crate) fn observed(
         &self,
         source: ril_compiler_core::ids::ExprId,
@@ -193,12 +212,24 @@ impl<'a> OriginalOperandSources<'a> {
         self.observed_with_work(source, observation, &mut 4096)
     }
 
-    fn observed_with_work(
+    pub(crate) fn observed_with_work(
         &self,
         source: ril_compiler_core::ids::ExprId,
         observation: usize,
         work: &mut usize,
     ) -> Check<OriginalSourceInput> {
+        let _entered = self
+            .replay
+            .source_query
+            .enter(
+                crate::sema::source_query::QueryKind::Source,
+                ril_compiler_core::ids::EvaluationOccurrenceId(
+                    u32::try_from(observation)
+                        .map_err(|_| "Source observation exceeds its arena identity")?,
+                ),
+                work,
+            )
+            .map_err(|error| error.to_string())?;
         let syntax = self
             .sites
             .expressions
@@ -360,6 +391,7 @@ impl Replay<'_> {
                 .and_then(|index| self.facts.evaluations.get(index))
                 .ok_or("operation result callee context is absent")?
                 .context,
+            work,
         )?;
         let ArgumentKey::Callable { result, .. } = signature.declared else {
             return Err("operation result has no complete Source signature".into());
@@ -406,23 +438,26 @@ impl Replay<'_> {
             "call input operand belongs to another actual invocation interval",
         )
     }
-    fn input_static_arguments<'a>(
+    fn input_static_environment<'a>(
         &'a self,
         call: &CopyInvocation,
-    ) -> Check<&'a [StaticArgumentWitness]> {
-        let matching: Vec<_> = self
+    ) -> Check<&'a crate::sema::effect_identity::EffectInvocation> {
+        let mut matching = self
             .facts
             .effect_invocations
             .iter()
-            .filter(|row| row.invocation == Some(call.id))
-            .collect();
-        let [row] = matching.as_slice() else {
+            .filter(|row| row.invocation == Some(call.id));
+        let Some(row) = matching.next() else {
             return Err("call input has no unique actual static environment".into());
         };
+        require(
+            matching.next().is_none(),
+            "call input has duplicated actual static environments",
+        )?;
         let function = self.function(call.target)?;
         require(
             row.function == call.target
-                && row.site == call.span
+                && row.verifying == call.declaration_probe
                 && row.arguments.len() == function.syntax.generics.len(),
             "call input static environment has missing owned positions",
         )?;
@@ -435,15 +470,23 @@ impl Replay<'_> {
                 "call input static environment changed a genuine owned binder",
             )?;
         }
-        Ok(&row.arguments)
+        Ok(row)
+    }
+
+    fn input_static_arguments<'a>(
+        &'a self,
+        call: &CopyInvocation,
+    ) -> Check<&'a [StaticArgumentWitness]> {
+        Ok(&self.input_static_environment(call)?.arguments)
     }
 
     pub(super) fn input_selected_keys(
         &self,
         call: &CopyInvocation,
     ) -> Check<BTreeMap<String, ArgumentKey>> {
+        let observed = self.input_static_environment(call)?;
         let mut selected = BTreeMap::new();
-        for argument in self.input_static_arguments(call)? {
+        for argument in &observed.arguments {
             if !self.input_type_sort(&argument.binder)? {
                 continue;
             }
@@ -482,12 +525,6 @@ impl Replay<'_> {
                 }
             }
         }
-        let observed = self
-            .facts
-            .effect_invocations
-            .iter()
-            .find(|row| row.invocation == Some(call.id))
-            .expect("unique static observation");
         for argument in &observed.captured_arguments {
             if !self.input_type_sort(&argument.binder)? {
                 continue;
@@ -643,8 +680,13 @@ impl Replay<'_> {
                 .expressions
                 .get(index)
                 .ok_or_else(|| "Source root is outside its observation arena".to_owned())?;
+            let same = if matches!(fact.value.ty, Ty::NumericHole(_)) {
+                self.numeric_source_value_matches(index, value, work)?
+            } else {
+                fact.value == *value
+            };
             require(
-                row.context == context && fact.source_id == Some(source) && fact.value == *value,
+                row.context == context && fact.source_id == Some(source) && same,
                 "Source root borrowed another physical occurrence or complete value",
             )?;
             return Ok(index);
@@ -655,18 +697,61 @@ impl Replay<'_> {
         *work = work
             .checked_sub(candidates.len())
             .ok_or_else(|| "Source root candidates exceed their work bound".to_owned())?;
-        let mut matching = candidates
-            .iter()
-            .copied()
-            .filter(|index| self.facts.expressions[*index].value == *value);
-        let root = matching
-            .next()
-            .ok_or_else(|| "Source has no matching actual root observation".to_owned())?;
-        require(
-            matching.next().is_none(),
-            "Source has multiple matching physical root observations",
-        )?;
-        Ok(root)
+        let mut root = None;
+        for &index in candidates {
+            let original = &self.facts.expressions[index].value;
+            let same = if matches!(original.ty, Ty::NumericHole(_)) {
+                self.numeric_source_value_matches(index, value, work)?
+            } else {
+                *original == *value
+            };
+            if same {
+                require(
+                    root.replace(index).is_none(),
+                    "Source has multiple matching physical root observations",
+                )?;
+            }
+        }
+        root.ok_or_else(|| "Source has no matching actual root observation".to_owned())
+    }
+
+    fn numeric_source_value_matches(
+        &self,
+        observation: usize,
+        value: &Value,
+        work: &mut usize,
+    ) -> Check<bool> {
+        let fact = &self.facts.expressions[observation];
+        if crate::sema::evaluated::same_birth_value(&fact.value, value, work)
+            .map_err(|error| format!("numeric birth comparison failed: {error}"))?
+        {
+            return Ok(true);
+        }
+        let observation = ril_compiler_core::ids::EvaluationOccurrenceId(
+            u32::try_from(observation).map_err(|_| "numeric occurrence is outside its arena")?,
+        );
+        let (_, resolution) = crate::sema::numeric_selection::checked_resolution_in_query(
+            self.facts,
+            observation,
+            &self.numeric_session,
+            &self.source_query,
+            work,
+        )
+        .map_err(|error| format!("numeric current view could not be replayed: {error}"))?
+        .ok_or("numeric current view lost its actual hole resolution")?;
+        let mut selected = crate::sema::evaluated::transport_value_at(
+            &fact.value,
+            &self.facts.allocation_history,
+            fact.allocation_epoch,
+            fact.allocation_epoch,
+            work,
+        )
+        .map_err(|error| format!("numeric current view could not be copied: {error}"))?;
+        resolution
+            .apply(&mut selected, work)
+            .map_err(|error| format!("numeric current view could not be selected: {error}"))?;
+        crate::sema::evaluated::same_birth_value(&selected, value, work)
+            .map_err(|error| format!("numeric current view comparison failed: {error}"))
     }
 
     fn original_source_key_inner(
@@ -702,6 +787,15 @@ impl Replay<'_> {
             "original Source reconstruction exceeds its bound",
         )?;
         *work -= 1;
+        if matches!(value.ty, Ty::NumericHole(_)) || !value.numeric.uses.is_empty() {
+            let root =
+                self.original_source_root(expression, value, context, visit.observation, work)?;
+            if matches!(self.facts.expressions[root].value.ty, Ty::NumericHole(_)) {
+                let (schema, _) = self.original_numeric_source_schema(root, context, work)?;
+                return graph_sources::schema_work(work, |budget| schema.key_with_work(budget))
+                    .map(Some);
+            }
+        }
         let key =
             match self.raw_original_source_key(expression, value, context, sites, work, visit)? {
                 Some(key) => key,
@@ -938,6 +1032,7 @@ impl Replay<'_> {
                 &fact.value,
                 context,
                 Some(*observation),
+                work,
             )?;
             let function = self.function(owner)?;
             let parameter = function.syntax.parameters.iter().find(|parameter| parameter.pattern.hir_id.is_some() && parameter.pattern.hir_id == binding.pattern
@@ -1187,10 +1282,27 @@ impl Replay<'_> {
                 .input_callable_source_key(&original.syntax, &BoundScope::default())
                 .map(Some);
         }
-        if let Some(key) = super::super::checker::original_canonical_builtin_source_key(
-            self.facts, value, expression, context,
-        )? {
-            return Ok(Some(key));
+        if super::super::checker::BuiltinNameIndex::is_candidate(expression, work)? {
+            let observation =
+                self.original_source_root(expression, value, context, visit.observation, work)?;
+            let names = self.builtin_source_names(work)?;
+            let mut budget = WorkLimit::new(*work);
+            let canonical = super::super::checker::original_canonical_builtin_source_key(
+                self.facts,
+                &super::super::checker::CanonicalBuiltinUse {
+                    value,
+                    actual: expression,
+                    context,
+                    observation,
+                },
+                &names,
+                &mut budget,
+            );
+            *work = budget.remaining();
+            drop(names);
+            if let Some(key) = canonical? {
+                return Ok(Some(key));
+            }
         }
         if let ExprKind::Name(name) = &expression.kind
             && value.sources.len() == 1
@@ -1211,8 +1323,9 @@ impl Replay<'_> {
                     value,
                     context,
                     visit.observation,
+                    work,
                 )?;
-                if let Some(key) = self.operation_formal_source_key(binding)? {
+                if let Some(key) = self.operation_formal_source_key(binding, work)? {
                     return Ok(Some(key));
                 }
                 if matches!(declaration.owner, Some(CallableOwner::Lambda(_))) {

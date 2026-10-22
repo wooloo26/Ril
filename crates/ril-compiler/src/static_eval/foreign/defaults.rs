@@ -2,26 +2,40 @@
 //! Only static binders are substituted; ordinary lexical binders mask them.
 use super::*;
 
-pub(crate) fn instantiate_defaults(
+pub(crate) fn instantiate_defaults_bounded(
     function: &Function,
     arguments: &[TypeExpr],
     parameters: &mut [Parameter],
     instance: &str,
     declarations: &BTreeMap<String, TypeDeclaration>,
     layout: TargetLayout,
+    work: &mut usize,
 ) -> std::result::Result<(), ArgumentNormalizationError> {
-    let mut evaluator = evaluator(declarations, layout);
-    evaluator
-        .bind_type_arguments(&function.generics, arguments, &function.name)
-        .map_err(failure)?;
-    for parameter in parameters {
-        if let Some(default) = &mut parameter.default {
-            super::super::scopes::specialize_expression(default, instance);
-            expression(&mut evaluator, default).map_err(failure)?;
-        }
-        mask(&mut evaluator, &parameter.pattern).map_err(failure)?;
+    let mut budget = super::super::budget::Budget::default();
+    let root = budget.enter_root();
+    budget.restrict_work(u64::try_from(*work).unwrap_or(u64::MAX));
+    if let Err(error) = super::super::clone_work::type_declarations(&budget, declarations) {
+        *work = usize::try_from(budget.work_remaining()).unwrap_or(usize::MAX);
+        budget.leave_root(root);
+        return Err(failure(error));
     }
-    Ok(())
+    let mut evaluator = evaluator(declarations, layout);
+    evaluator.budget = budget;
+    let result = (|| {
+        evaluator.bind_type_arguments(&function.generics, arguments, &function.name)?;
+        for parameter in parameters {
+            if let Some(default) = &mut parameter.default {
+                super::super::clone_work::expression(&evaluator.budget, default)?;
+                super::super::scopes::specialize_expression(default, instance);
+                expression(&mut evaluator, default)?;
+            }
+            mask(&mut evaluator, &parameter.pattern)?;
+        }
+        Ok(())
+    })();
+    *work = usize::try_from(evaluator.budget.work_remaining()).unwrap_or(usize::MAX);
+    evaluator.budget.leave_root(root);
+    result.map_err(failure)
 }
 
 fn mask(evaluator: &mut Evaluator, pattern: &Pattern) -> Result<()> {

@@ -121,12 +121,7 @@ impl Replay<'_> {
                 ),
             "carrier Source changed its actual primitive or argument role",
         )?;
-        crate::sema::checker::actual_prelude_name(
-            self.facts,
-            context,
-            application.callee,
-            identity,
-        )?;
+        self.actual_prelude_name(context, application.callee, identity, work)?;
         *work = work
             .checked_sub(self.facts.call_arguments.len())
             .ok_or("carrier Source preparation exceeds its work bound")?;

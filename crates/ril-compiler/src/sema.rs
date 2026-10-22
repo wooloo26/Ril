@@ -26,6 +26,8 @@ pub mod default_uses;
 pub mod effect_identity;
 pub(crate) mod evaluated;
 mod evaluation_identity;
+mod external_instance_validation;
+pub(crate) mod external_instances;
 pub mod facts;
 pub mod generated_sources;
 pub mod invocation_loans;
@@ -42,6 +44,7 @@ pub mod result_conditions;
 pub mod resumption;
 pub mod scoped_source_identity;
 pub mod scopes;
+pub(crate) mod source_query;
 pub(crate) mod source_reception;
 #[cfg(test)]
 mod source_reception_review_tests;
@@ -90,6 +93,7 @@ pub struct SemanticFacts {
     /// deliberately absent and must be admitted only by a formal fact's rule.
     pub scopes: scopes::ScopeIndex,
     pub numeric_uses: Vec<numeric_selection::NumericUse>,
+    pub numeric_holes: Vec<numeric_selection::NumericHole>,
     pub numeric_selections: Vec<numeric_selection::NumericSelection>,
     pub condition_evaluations: Vec<result_conditions::ConditionEvaluation>,
     pub effect_instances: Vec<effect_identity::EffectInstance>,
@@ -145,7 +149,6 @@ pub struct SemanticFacts {
     pub operation_loan_ends:
         std::collections::BTreeMap<facts::LoanId, ril_compiler_core::diagnostic::CauseId>,
     pub operation_loan_starts: Vec<resumption::OperationLoanStart>,
-    pub contextual_types: std::collections::BTreeMap<(u32, u32, u32), model::Ty>,
     pub generic_binders: std::collections::BTreeMap<String, GenericBinder>,
     pub result_duties: Vec<model::ResultDuty>,
     pub result_families: std::collections::BTreeMap<u32, std::collections::BTreeSet<u32>>,
@@ -171,12 +174,20 @@ pub struct ConstantValue {
     pub span: Span,
 }
 #[derive(Debug, Clone)]
+pub struct ExternalApplication {
+    pub occurrence: application_effect::OccurrenceIdentity,
+    pub base: ril_compiler_core::ids::EvaluationOccurrenceId,
+}
+#[derive(Debug, Clone)]
 pub struct ExternalInstance {
+    pub template: ril_compiler_core::ids::DefinitionId,
+    pub declaration: ril_compiler_core::ids::StmtId,
+    pub generated: ril_compiler_core::ids::StmtId,
     pub declaration_name: String,
     pub syntax: ril_syntax::ast::Function,
     pub callable_type: model::Ty,
     pub arguments: Vec<(String, ril_syntax::ast::TypeExpr)>,
-    pub sites: std::collections::BTreeSet<(u32, u32, u32)>,
+    pub applications: Vec<ExternalApplication>,
     pub callable: usize,
 }
 /// The checked source shape accompanies value-level types because fixed array

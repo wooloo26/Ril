@@ -11,6 +11,16 @@ use crate::sema::{
 };
 use ril_compiler_core::ids::{ActivationEpochId, ExprId};
 
+fn graph_work<T>(
+    work: &mut usize,
+    query: impl FnOnce(&mut WorkLimit) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut budget = WorkLimit::new(*work);
+    let result = query(&mut budget);
+    *work = budget.remaining();
+    result
+}
+
 fn receive(
     facts: &crate::sema::SemanticFacts,
     expected: &ArgumentKey,
@@ -18,42 +28,50 @@ fn receive(
         Option<(SourceSchema, crate::sema::context::FrozenEnvironment)>,
         Construction,
     ),
+    work: &mut usize,
 ) -> Result<(), String> {
-    let (actual, fresh) = input;
-    let expected = crate::sema::source_types::declarations::schema(
-        expected,
-        facts
-            .semantic_hir
-            .as_deref()
-            .ok_or("receiver input has no canonical HIR")?,
-        &mut WorkLimit::new(16384),
-    )
-    .map_err(|error| error.to_string())?;
-    if let Some(answer) = expected
-        .empty_context(&fresh, &mut WorkLimit::new(4096))
-        .map_err(|error| error.to_string())?
-    {
-        return answer
-            .then_some(())
-            .ok_or_else(|| "empty receiver input differs from its declared Source view".into());
-    }
-    let (actual, environment) =
-        actual.ok_or("receiver input has no complete original Source view")?;
-    if environment.is_poisoned() {
-        return Err("receiver input has a poisoned Source environment".into());
-    }
-    match expected.receive_schema(&actual, Some(&fresh), &mut WorkLimit::new(16384)) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err("receiver input differs from its declared complete Source view".into()),
-        Err(error) => Err(format!(
-            "receiver input has an unresolved Source obligation: {error}"
-        )),
-    }
+    graph_work(work, |work| {
+        let (actual, fresh) = input;
+        let expected = crate::sema::source_types::declarations::schema(
+            expected,
+            facts
+                .semantic_hir
+                .as_deref()
+                .ok_or("receiver input has no canonical HIR")?,
+            work,
+        )
+        .map_err(|error| error.to_string())?;
+        if let Some(answer) = expected
+            .empty_context(&fresh, work)
+            .map_err(|error| error.to_string())?
+        {
+            return answer.then_some(()).ok_or_else(|| {
+                "empty receiver input differs from its declared Source view".into()
+            });
+        }
+        let (actual, environment) =
+            actual.ok_or("receiver input has no complete original Source view")?;
+        if environment.is_poisoned() {
+            return Err("receiver input has a poisoned Source environment".into());
+        }
+        match expected.receive_schema(&actual, Some(&fresh), work) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                Err("receiver input differs from its declared complete Source view".into())
+            }
+            Err(error) => Err(format!(
+                "receiver input has an unresolved Source obligation: {error}"
+            )),
+        }
+    })
 }
 
 pub(crate) fn validate(facts: &crate::sema::SemanticFacts) -> Result<(), String> {
-    let frames = FrameIndex::new(facts)?;
-    let sources = crate::sema::record_bound_validation::OriginalOperandSources::new(facts)?;
+    let mut work = 4_000_000;
+    let frames = FrameIndex::new_with_work(facts, &mut work)?;
+    let sources = crate::sema::record_bound_validation::OriginalOperandSources::new_with_work(
+        facts, &mut work,
+    )?;
     let mut preparations = BTreeMap::new();
     for row in &facts.call_arguments {
         if preparations.insert(row.source_event, row).is_some() {
@@ -90,6 +108,7 @@ pub(crate) fn validate(facts: &crate::sema::SemanticFacts) -> Result<(), String>
                 .get(index)
                 .ok_or("operation input callee has no actual context")?
                 .context,
+            &mut work,
         )?;
         let ArgumentKey::Callable { parameters, .. } = signature.expanded else {
             return Err("operation input lost its Source signature".into());
@@ -98,7 +117,8 @@ pub(crate) fn validate(facts: &crate::sema::SemanticFacts) -> Result<(), String>
             return Err("operation input changed the original parameter arity".into());
         }
         for (slot, (_, expected)) in parameters.iter().enumerate() {
-            receive(facts, expected, sources.input(event.id, slot as u32)?)?;
+            let input = sources.input_with_work(event.id, slot as u32, &mut work)?;
+            receive(facts, expected, input, &mut work)?;
         }
     }
     let mut children = BTreeMap::<(ActivationEpochId, ExprId), Vec<_>>::new();
@@ -132,12 +152,12 @@ pub(crate) fn validate(facts: &crate::sema::SemanticFacts) -> Result<(), String>
             return Err("resumption transfer lost its original HIR control node".into());
         };
         let frame = frames
-            .operation(activation.scope)?
+            .operation(activation.scope, &mut work)?
             .ok_or("resumption input has no actual operation receiver")?;
         if frame.entry.context != activation.context {
             return Err("resumption input belongs to another operation activation".into());
         }
-        let signature = frames.receiver_signature(&frame)?;
+        let signature = frames.receiver_signature(&frame, &mut work)?;
         let ArgumentKey::Callable { result, .. } = signature.expanded else {
             return Err("resumption input has no complete operation result Source".into());
         };
@@ -159,22 +179,20 @@ pub(crate) fn validate(facts: &crate::sema::SemanticFacts) -> Result<(), String>
             {
                 continue;
             }
-            sources.observed(*source, observation)?
+            sources.observed_with_work(*source, observation, &mut work)?
         } else {
             (
                 Some((
-                    SourceSchema::import(
-                        &ArgumentKey::Tuple(vec![]),
-                        None,
-                        &mut WorkLimit::new(4096),
-                    )
-                    .map_err(|error| error.to_string())?,
+                    graph_work(&mut work, |work| {
+                        SourceSchema::import(&ArgumentKey::Tuple(vec![]), None, work)
+                            .map_err(|error| error.to_string())
+                    })?,
                     crate::sema::context::FrozenEnvironment::default(),
                 )),
                 Construction::Opaque,
             )
         };
-        receive(facts, &result, input)?;
+        receive(facts, &result, input, &mut work)?;
     }
     Ok(())
 }

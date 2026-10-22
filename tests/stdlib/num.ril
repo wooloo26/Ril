@@ -1,3 +1,72 @@
+--@ case: repeated-numeric-conversion
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ entry: test_repeated_numeric_conversion
+--@ file: repeated-numeric-conversion.ril
+use ril/num
+pub fn test_repeated_numeric_conversion() {
+    var count = 0
+    for [1, 2] as value {
+        assert(Num::convert<int, u8>(value) is Ok(_))
+        count += 1
+    }
+    assert(count == 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: numeric-callable-views
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: numeric-callable-arity-mismatch
+--@ entry: test_numeric_callable_views
+--@ file: numeric-callable-views.ril
+use ril/num
+pub fn test_numeric_callable_views() {
+    let parse = Num::parse_int
+    assert(parse("42") is Ok(42))
+    assert(parse("2a", 16) is Ok(42))
+    let explicit_parse: fn(str, int) -> Result<int, Num::NumError> = Num::parse_int
+    assert(explicit_parse("2a", 16) is Ok(42))
+    let format = Num::format_int
+    assert(format(42) is Ok("42"))
+    let explicit_format: fn(int, int) -> Result<str, Num::NumError> = Num::format_int
+    assert(explicit_format(42, 16) is Ok("2a"))
+}
+--@ end-file
+--@ end-case
+
+--@ case: numeric-callable-arity-mismatch
+--@ mode: check-fail
+--@ spec: STD#numbers-and-mathematics
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: numeric-callable-views
+-- Error [E0301]: A default does not remove a parameter from a callable type.
+--@ file: numeric-callable-arity-mismatch.ril
+use ril/num
+fn example() {
+    let parse: fn(str) -> Result<int, Num::NumError> = Num::parse_int
+}
+--@ end-file
+--@ end-case
+
+--@ case: numeric-callable-ascribed-default
+--@ mode: check-fail
+--@ spec: STD#numbers-and-mathematics
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: numeric-callable-views
+-- Error [E0314]: A typed callable receives the destination's signature without defaults.
+--@ file: numeric-callable-ascribed-default.ril
+use ril/num
+fn example() {
+    let parse: fn(str, int) -> Result<int, Num::NumError> = Num::parse_int
+    let _ = parse("42")
+}
+--@ end-file
+--@ end-case
+
 --@ case: bigint-parse-format
 --@ mode: run-pass
 --@ spec: STD#numbers-and-mathematics

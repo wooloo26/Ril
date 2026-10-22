@@ -85,6 +85,7 @@ pub(super) fn builtin_callable_type(name: &str) -> Option<Ty> {
 }
 pub(super) fn storage_callable(name: &str) -> bool {
     ril_compiler_core::builtin_calls::GenericBuiltin::lookup(name).is_some()
+        || ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(name).is_some()
 }
 pub(super) fn builtin_callable_signature(name: &str, span: Span) -> Option<(Ty, Vec<Parameter>)> {
     if let Some(signature) = intrinsics::callable_signature(name, span) {
@@ -269,34 +270,25 @@ fn numeric(name: &str) -> Option<Ty> {
 }
 fn simple_signature(name: &str) -> Option<Signature> {
     use Output::*;
-    if let Some(operation) = name.strip_prefix("Num::") {
-        if let Some(suffix) = operation.strip_prefix("parse_") {
-            let ty = numeric(suffix)?;
-            let inputs = if matches!(ty, Ty::Int(_)) {
-                vec![Ty::Str, integer("int")]
-            } else {
-                vec![Ty::Str]
-            };
-            return Some(Signature {
-                inputs,
-                minimum: 1,
-                output: Result(ty, Ty::Named("Num::NumError".into())),
-                deep: false,
-            });
-        }
-        if let Some(suffix) = operation.strip_prefix("format_") {
-            let ty = numeric(suffix)?;
-            return Some(if matches!(ty, Ty::Int(_)) {
-                Signature {
-                    inputs: vec![ty, integer("int")],
-                    minimum: 1,
-                    output: Result(Ty::Str, Ty::Named("Num::NumError".into())),
-                    deep: false,
-                }
-            } else {
-                signature(vec![ty], Value(Ty::Str))
-            });
-        }
+    if let Some(id) = ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(name) {
+        let definition = crate::sema::source_types::numeric::definition(id)?;
+        let mut work = crate::sema::source_types::WorkLimit::new(4096);
+        let source = definition.schema(&mut work).ok()?;
+        let (types, root) = source.graph();
+        let Ty::Callable(inputs, output) =
+            crate::sema::source_types::builtins::erased_type(types, root, &mut work).ok()?
+        else {
+            return None;
+        };
+        return Some(Signature {
+            inputs,
+            minimum: definition.minimum,
+            output: match *output {
+                Ty::Result(ok, error) => Result(*ok, *error),
+                output => Value(output),
+            },
+            deep: false,
+        });
     }
     if let Some(operation) = name.strip_prefix("Math::") {
         let (operation, ty) = if let Some(operation) = operation.strip_suffix("_f32") {

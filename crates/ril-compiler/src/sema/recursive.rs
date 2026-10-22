@@ -10,7 +10,11 @@ use super::{
 };
 use ril_compiler_core::ids::DefinitionId;
 use ril_syntax::ast::*;
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(test)]
+#[path = "recursive_fixture.rs"]
+pub(crate) mod review_fixture;
 
 pub type FunctionKey = DefinitionId;
 pub type Site = (u32, u32, u32);
@@ -419,6 +423,7 @@ fn site(expr: &Expr) -> Site {
 /// spans. Repeated registrations require the same original symbolic syntax;
 /// differing instances of one identity cannot provide a declaration summary.
 pub fn analyze<'a>(functions: impl IntoIterator<Item = (DefinitionId, &'a Function)>) -> Analysis {
+    let work = Cell::new(4_000_000usize);
     let mut by_name = BTreeMap::new();
     let mut ambiguous = BTreeSet::new();
     let mut declared_names = BTreeSet::new();
@@ -466,9 +471,17 @@ pub fn analyze<'a>(functions: impl IntoIterator<Item = (DefinitionId, &'a Functi
         .collect();
     let mut queued: BTreeSet<_> = queue.iter().copied().collect();
     while let Some(current) = queue.pop_front() {
+        let Some(remaining) = work.get().checked_sub(1) else {
+            for summary in summaries.values_mut() {
+                summary.incomplete("recursive summary work exhausted");
+            }
+            break;
+        };
+        work.set(remaining);
         queued.remove(&current);
         let function = by_key[&current];
         let mut transfer = Transfer {
+            work: &work,
             function,
             by_name: &by_name,
             declared_names: &declared_names,
@@ -477,6 +490,7 @@ pub fn analyze<'a>(functions: impl IntoIterator<Item = (DefinitionId, &'a Functi
             summary: Summary::default(),
             dependencies: BTreeSet::new(),
             returns: ReturnValue::Bottom,
+            default_scope: false,
         };
         let mut environment = BTreeMap::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
@@ -551,7 +565,8 @@ pub fn analyze<'a>(functions: impl IntoIterator<Item = (DefinitionId, &'a Functi
 }
 
 type Environment = BTreeMap<String, ReturnValue>;
-struct Transfer<'a> {
+struct Transfer<'a, 'w> {
+    work: &'w Cell<usize>,
     function: &'a Function,
     by_name: &'a BTreeMap<String, FunctionKey>,
     declared_names: &'a BTreeSet<String>,
@@ -560,40 +575,64 @@ struct Transfer<'a> {
     summary: Summary,
     dependencies: BTreeSet<FunctionKey>,
     returns: ReturnValue,
+    // A default sees only preceding callee formals and its own locals. The
+    // analysis input has no declaration capture environment for free values.
+    default_scope: bool,
 }
-impl Transfer<'_> {
+impl Transfer<'_, '_> {
     fn fail(&mut self, reason: &str) -> ReturnValue {
         self.summary.incomplete(reason);
         ReturnValue::Unknown
     }
-    fn bind(&mut self, pattern: &Pattern, value: ReturnValue, env: &mut Environment) {
+    fn bind(&mut self, pattern: &Pattern, value: ReturnValue, env: &mut Environment) -> bool {
+        let Some(remaining) = self.work.get().checked_sub(1) else {
+            self.fail("recursive binding work exhausted");
+            return false;
+        };
+        self.work.set(remaining);
         match &pattern.kind {
             PatternKind::Name(name) => {
+                let Some(remaining) = self.work.get().checked_sub(
+                    (1 + name.len().div_ceil(32))
+                        .saturating_mul(1 + env.len().checked_ilog2().unwrap_or(0) as usize),
+                ) else {
+                    self.fail("recursive binding name work exhausted");
+                    return false;
+                };
+                self.work.set(remaining);
                 env.insert(name.clone(), value);
+                true
             }
-            PatternKind::Wildcard => {}
+            PatternKind::Wildcard => true,
             PatternKind::Mode { pattern, .. } => self.bind(pattern, value, env),
             PatternKind::Tuple(patterns) => {
                 for (index, pattern) in patterns.iter().enumerate() {
-                    self.bind(
+                    if !self.bind(
                         pattern,
                         value.clone().project(&Slot::Tuple(index as u32)),
                         env,
-                    );
+                    ) {
+                        return false;
+                    }
                 }
+                true
             }
             PatternKind::Record { fields, .. } => {
                 for field in fields {
-                    self.bind(
+                    if !self.bind(
                         &field.pattern,
                         value.clone().project(&Slot::Field(field.name.clone())),
                         env,
-                    );
+                    ) {
+                        return false;
+                    }
                 }
+                true
             }
             _ => {
                 self.summary
                     .incomplete("refutable recursive binding pattern");
+                false
             }
         }
     }
@@ -632,6 +671,8 @@ impl Transfer<'_> {
                                 self.summary
                                     .incomplete("reference reassignment in recursive summary");
                             }
+                        } else if self.default_scope {
+                            self.fail("recursive default has no declaration lexical binding");
                         } else {
                             self.named(name, Access::Write);
                         }
@@ -746,7 +787,11 @@ impl Transfer<'_> {
         }
     }
     fn expr(&mut self, expr: &Expr, env: &mut Environment) -> ReturnValue {
-        match &expr.kind {
+        let Some(remaining) = self.work.get().checked_sub(1) else {
+            return self.fail("recursive summary work exhausted");
+        };
+        self.work.set(remaining);
+        let value = match &expr.kind {
             ExprKind::Literal(literal) => match literal {
                 Literal::Unit => ReturnValue::Unit,
                 Literal::Bool(_) => ReturnValue::Scalar(ScalarKind::Bool),
@@ -761,6 +806,9 @@ impl Transfer<'_> {
                 Literal::Bytes(_) => ReturnValue::Scalar(ScalarKind::Bytes),
             },
             ExprKind::Name(name) => env.get(name).cloned().unwrap_or_else(|| {
+                if self.default_scope {
+                    return self.fail("recursive default has no declaration lexical binding");
+                }
                 self.named(name, Access::Read);
                 ReturnValue::Global {
                     name: name.clone(),
@@ -771,6 +819,9 @@ impl Transfer<'_> {
             ExprKind::Path(path) => {
                 let name = path.join("::");
                 env.get(&name).cloned().unwrap_or_else(|| {
+                    if self.default_scope {
+                        return self.fail("recursive default has no declaration lexical binding");
+                    }
                     self.named(&name, Access::Read);
                     ReturnValue::Global {
                         name,
@@ -966,6 +1017,9 @@ impl Transfer<'_> {
                 operation: ControlOperation::Return,
                 value,
             } => {
+                if self.default_scope {
+                    return self.fail("recursive default requires a separate control boundary");
+                }
                 let value = value
                     .as_ref()
                     .map_or(ReturnValue::Unit, |value| self.expr(value, env));
@@ -974,7 +1028,12 @@ impl Transfer<'_> {
                 ReturnValue::Bottom
             }
             _ => self.fail("recursive expression requires a richer finite shape transfer"),
+        };
+        if self.default_scope && value == ReturnValue::Unknown {
+            self.summary
+                .incomplete("recursive default value is unresolved");
         }
+        value
     }
     fn call(
         &mut self,
@@ -983,21 +1042,49 @@ impl Transfer<'_> {
         env: &mut Environment,
         mut values: Vec<ReturnValue>,
     ) -> ReturnValue {
+        let prefix = values.len();
         for argument in arguments {
-            if argument.label.is_some() {
-                return self.fail("named recursive arguments require interface reordering");
-            }
             let value = self.expr(&argument.value, env);
             if value == ReturnValue::Bottom {
                 return value;
             }
             values.push(value);
         }
-        let name = match &callee.kind {
-            ExprKind::Name(name) => name.clone(),
-            ExprKind::Path(path) => path.join("::"),
+        let mut remaining = self.work.get();
+        let base = crate::hir::application::callee_base_with_work(callee, &mut remaining);
+        self.work.set(remaining);
+        let base = match base {
+            Ok(callee) => callee,
+            Err(reason) => return self.fail(reason),
+        };
+        let name = match &base.kind {
+            ExprKind::Name(name) => {
+                let Some(left) = self.work.get().checked_sub(1 + name.len().div_ceil(32)) else {
+                    return self.fail("recursive callee name work exhausted");
+                };
+                self.work.set(left);
+                name.clone()
+            }
+            ExprKind::Path(path) => {
+                for part in path {
+                    let Some(left) = self.work.get().checked_sub(1 + part.len().div_ceil(32))
+                    else {
+                        return self.fail("recursive callee path work exhausted");
+                    };
+                    self.work.set(left);
+                }
+                path.join("::")
+            }
             _ => return self.fail("dynamic recursive callee shape"),
         };
+        if self.default_scope && !env.contains_key(&name) {
+            return self.fail("recursive default callable has no declaration lexical binding");
+        }
+        if arguments.iter().any(|argument| argument.label.is_some())
+            && !self.by_name.contains_key(&name)
+        {
+            return self.fail("named recursive arguments have no declared interface");
+        }
         let builtin = name.strip_prefix("Prelude::").unwrap_or(&name);
         match builtin {
             _ if self.declared_names.contains(&name) || env.contains_key(&name) => {}
@@ -1063,17 +1150,74 @@ impl Transfer<'_> {
             return self
                 .fail("recursive projected/fresh arguments require regular interface ports");
         }
-        let mut ordered = values;
-        let parameters = self.by_key[&callee_key].parameters.clone();
-        if ordered.len() > parameters.len() {
-            return self.fail("recursive call argument arity");
+        let parameters = &self.by_key[&callee_key].parameters;
+        let count = parameters.len() + values.len();
+        let Some(left) = self
+            .work
+            .get()
+            .checked_sub(count.saturating_mul(2 + count.checked_ilog2().unwrap_or(0) as usize))
+        else {
+            return self.fail("recursive parameter binding work exhausted");
+        };
+        self.work.set(left);
+        let labels = crate::hir::application::parameter_labels(parameters);
+        for label in labels.iter().flatten().copied().chain(
+            arguments
+                .iter()
+                .filter_map(|argument| argument.label.as_deref()),
+        ) {
+            let Some(left) = self.work.get().checked_sub(
+                (2 + count.checked_ilog2().unwrap_or(0) as usize)
+                    .saturating_mul(label.len().div_ceil(32)),
+            ) else {
+                return self.fail("recursive argument label work exhausted");
+            };
+            self.work.set(left);
         }
-        for parameter in parameters.iter().skip(ordered.len()) {
-            if let Some(default) = &parameter.default {
-                ordered.push(self.expr(default, env));
+        let mapping = crate::hir::application::bind_slots(
+            &labels,
+            std::iter::repeat_n(None, prefix)
+                .chain(arguments.iter().map(|argument| argument.label.as_deref())),
+        );
+        let mut slots = vec![None; parameters.len()];
+        for (value, slot) in values.into_iter().zip(mapping) {
+            let Ok(slot) = slot else {
+                return self.fail("recursive call violates its original parameter interface");
+            };
+            slots[slot] = Some(value);
+        }
+        let mut ordered = Vec::with_capacity(parameters.len());
+        let mut default_environment = Environment::new();
+        for (parameter, value) in parameters.iter().zip(slots) {
+            let value = if let Some(value) = value {
+                value
+            } else if let Some(default) = &parameter.default {
+                let previous_default_scope = self.default_scope;
+                self.default_scope = true;
+                let value = self.expr(default, &mut default_environment);
+                self.default_scope = previous_default_scope;
+                if value == ReturnValue::Bottom {
+                    return value;
+                }
+                if match &value {
+                    ReturnValue::Unit | ReturnValue::Scalar(_) => false,
+                    ReturnValue::Parameter { port, .. } => !port.path.is_empty(),
+                    _ => true,
+                } {
+                    return self.fail("recursive default needs a resolved regular interface port");
+                }
+                value
             } else {
                 return self.fail("recursive call omitted an argument");
+            };
+            let mut binding = value.clone();
+            if parameter.mode == ParameterMode::Read {
+                binding.restrict(Permission::Read);
             }
+            if !self.bind(&parameter.pattern, binding, &mut default_environment) {
+                return self.fail("recursive callee parameter binding is unresolved");
+            }
+            ordered.push(value);
         }
         for access in &callee_summary.accesses {
             let value = ReturnValue::Parameter {
@@ -1167,6 +1311,190 @@ mod tests {
                 ..
             }
         ));
+    }
+    #[test]
+    fn explicit_generic_calls_keep_the_same_original_return_ports_and_slot_binding() {
+        use super::review_fixture as fixture;
+        let analyze_program = |program: &Program| {
+            analyze(
+                program
+                    .statements
+                    .iter()
+                    .filter_map(|statement| match &statement.kind {
+                        StmtKind::Function(function) => Some(function),
+                        _ => None,
+                    })
+                    .enumerate()
+                    .map(|(index, function)| (DefinitionId(index as u32), function)),
+            )
+        };
+        let original = fixture::program();
+        let explicit = analyze_program(&original);
+        let key = DefinitionId(1);
+        let summary = &explicit.summaries[&key];
+        assert!(summary.complete && summary.productive, "{summary:?}");
+        assert!(
+            matches!(&summary.return_value, ReturnValue::Parameter { port, .. } if port.parameter == 1)
+        );
+        let mut implicit = original.clone();
+        let ExprKind::Call { callee, .. } =
+            &mut fixture::call_mut(fixture::function_mut(&mut implicit, "recur")).kind
+        else {
+            unreachable!();
+        };
+        let ExprKind::Generic { base, .. } = &callee.kind else {
+            panic!("original explicit prefix");
+        };
+        *callee = base.clone();
+        fixture::identify(&mut implicit);
+        assert_eq!(analyze_program(&implicit).summaries, explicit.summaries);
+        let mut named = original.clone();
+        let ExprKind::Call { arguments, .. } =
+            &mut fixture::call_mut(fixture::function_mut(&mut named, "recur")).kind
+        else {
+            unreachable!();
+        };
+        arguments[0].label = Some("count".into());
+        arguments[1].label = Some("value".into());
+        arguments.swap(0, 1);
+        fixture::identify(&mut named);
+        assert_eq!(analyze_program(&named).summaries, explicit.summaries);
+        let mut shadowed = original;
+        fixture::function_mut(&mut shadowed, "recur").parameters[1]
+            .pattern
+            .kind = PatternKind::Name("recur".into());
+        fixture::identify(&mut shadowed);
+        assert!(!analyze_program(&shadowed).summaries[&key].complete);
+    }
+    #[test]
+    fn defaults_bind_callee_formals_before_following_defaults_and_keep_actual_ports() {
+        use super::review_fixture as fixture;
+        let analyze_program = |program: &Program| {
+            analyze(
+                program
+                    .statements
+                    .iter()
+                    .filter_map(|statement| match &statement.kind {
+                        StmtKind::Function(function) => Some(function),
+                        _ => None,
+                    })
+                    .enumerate()
+                    .map(|(index, function)| (DefinitionId(index as u32), function)),
+            )
+        };
+        let original = fixture::default_forwarding_program();
+        let key = DefinitionId(1);
+        let assert_port = |program: &Program, parameter| {
+            let summary = &analyze_program(program).summaries[&key];
+            assert!(summary.complete && summary.productive, "{summary:?}");
+            assert!(
+                matches!(&summary.return_value, ReturnValue::Parameter { port, .. } if port.parameter == parameter && port.path.is_empty()),
+                "{summary:?}"
+            );
+        };
+        assert_port(&original, 2);
+
+        let mut chained = original.clone();
+        let pick = fixture::function_mut(&mut chained, "pick");
+        let mut last = pick.parameters[1].clone();
+        last.pattern.kind = PatternKind::Name("last".into());
+        last.default.as_mut().unwrap().kind = ExprKind::Name("answer".into());
+        pick.parameters.push(last);
+        fixture::body_expression_mut(pick).kind = ExprKind::Name("last".into());
+        fixture::identify(&mut chained);
+        assert_port(&chained, 2);
+
+        let mut changed_actual = original.clone();
+        let ExprKind::Call { arguments, .. } =
+            &mut fixture::base_case_mut(fixture::function_mut(&mut changed_actual, "recur")).kind
+        else {
+            unreachable!();
+        };
+        arguments[0].value.kind = ExprKind::Name("first".into());
+        fixture::identify(&mut changed_actual);
+        assert_port(&changed_actual, 1);
+
+        let mut scalar = original.clone();
+        fixture::function_mut(&mut scalar, "pick").parameters[1]
+            .default
+            .as_mut()
+            .unwrap()
+            .kind = ExprKind::Literal(Literal::Integer("0".into()));
+        fixture::identify(&mut scalar);
+        let summary = &analyze_program(&scalar).summaries[&key];
+        assert!(summary.complete && summary.productive, "{summary:?}");
+        assert_eq!(
+            summary.return_value,
+            ReturnValue::Scalar(ScalarKind::Integer)
+        );
+
+        for mutation in 0..6 {
+            let mut corrupted = original.clone();
+            match mutation {
+                0 | 1 => {
+                    // `value` exists in the caller; `answer` is the current
+                    // formal and must not become available before its default.
+                    fixture::function_mut(&mut corrupted, "pick").parameters[1]
+                        .default
+                        .as_mut()
+                        .unwrap()
+                        .kind =
+                        ExprKind::Name(if mutation == 0 { "value" } else { "answer" }.into());
+                }
+                2 => {
+                    let ExprKind::Call { arguments, .. } =
+                        &mut fixture::base_case_mut(fixture::function_mut(&mut corrupted, "recur"))
+                            .kind
+                    else {
+                        unreachable!();
+                    };
+                    arguments[0].label = Some("answer".into());
+                }
+                3 => {
+                    // An unresolved default is still evaluated if the result
+                    // relation does not use that formal.
+                    let pick = fixture::function_mut(&mut corrupted, "pick");
+                    pick.parameters[1].default.as_mut().unwrap().kind =
+                        ExprKind::Name("value".into());
+                    fixture::body_expression_mut(pick).kind = ExprKind::Name("first".into());
+                }
+                4 => {
+                    let pick = fixture::function_mut(&mut corrupted, "pick");
+                    let mut callee = pick.parameters[1].default.as_ref().unwrap().clone();
+                    callee.kind = ExprKind::Name("panic".into());
+                    pick.parameters[1].default.as_mut().unwrap().kind = ExprKind::Call {
+                        callee: Box::new(callee),
+                        arguments: vec![],
+                    };
+                }
+                5 => {
+                    let pick = fixture::function_mut(&mut corrupted, "pick");
+                    let mut callee = pick.parameters[1].default.as_ref().unwrap().clone();
+                    callee.kind = ExprKind::Name("down".into());
+                    let mut value = callee.clone();
+                    value.kind = ExprKind::Literal(Literal::Integer("0".into()));
+                    pick.parameters[1].default.as_mut().unwrap().kind = ExprKind::Call {
+                        callee: Box::new(callee),
+                        arguments: vec![Argument {
+                            label: None,
+                            mode: ParameterMode::Read,
+                            span: value.span,
+                            value,
+                        }],
+                    };
+                }
+                _ => unreachable!(),
+            }
+            fixture::identify(&mut corrupted);
+            let summary = &analyze_program(&corrupted).summaries[&key];
+            assert!(
+                !summary.complete,
+                "default mutation {mutation}: {summary:?}"
+            );
+            if mutation == 4 {
+                assert!(!summary.productive, "{summary:?}");
+            }
+        }
     }
     #[test]
     fn a_cycle_without_a_normal_return_seed_stays_unknown() {

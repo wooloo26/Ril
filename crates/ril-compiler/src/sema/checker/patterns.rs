@@ -31,6 +31,56 @@ struct PatternDecision {
 }
 
 impl Checker {
+    fn pattern_needs_numeric_source<'p>(
+        &mut self,
+        patterns: impl ExactSizeIterator<Item = &'p Pattern>,
+    ) -> Result<bool, crate::sema::source_types::SourceTypesError> {
+        use crate::sema::source_types::SourceTypesError;
+        self.application_effect.with_work(|work| {
+            *work = work
+                .checked_sub(patterns.len() + 1)
+                .ok_or(SourceTypesError::BudgetExceeded)?;
+            let mut pending: Vec<_> = patterns.map(|pattern| (pattern, 0usize)).collect();
+            while let Some((pattern, depth)) = pending.pop() {
+                *work = work
+                    .checked_sub(1)
+                    .ok_or(SourceTypesError::BudgetExceeded)?;
+                if depth >= 128 {
+                    return Err(SourceTypesError::BudgetExceeded);
+                }
+                let children: &[Pattern] = match &pattern.kind {
+                    PatternKind::Literal(Literal::Integer(_) | Literal::Float(_)) => {
+                        return Ok(true);
+                    }
+                    PatternKind::Tuple(items)
+                    | PatternKind::Alternative(items)
+                    | PatternKind::Constructor {
+                        arguments: items, ..
+                    } => items,
+                    PatternKind::Mode { pattern, .. } => {
+                        *work = work
+                            .checked_sub(1)
+                            .ok_or(SourceTypesError::BudgetExceeded)?;
+                        pending.push((pattern, depth + 1));
+                        continue;
+                    }
+                    PatternKind::Record { fields, .. } => {
+                        *work = work
+                            .checked_sub(fields.len())
+                            .ok_or(SourceTypesError::BudgetExceeded)?;
+                        pending.extend(fields.iter().map(|field| (&field.pattern, depth + 1)));
+                        continue;
+                    }
+                    _ => &[],
+                };
+                *work = work
+                    .checked_sub(children.len())
+                    .ok_or(SourceTypesError::BudgetExceeded)?;
+                pending.extend(children.iter().map(|pattern| (pattern, depth + 1)));
+            }
+            Ok(false)
+        })
+    }
     /// A value-test leaf is a real desugaring of this PatternId. Repeated
     /// executions reuse its static expression while retaining fresh dynamic
     /// observations. A cloned span or an ambient name cannot provide an ID.
@@ -145,7 +195,7 @@ impl Checker {
             );
             return;
         }
-        let bindings = self.checked_pattern_bindings(pattern, &value, None, frame);
+        let bindings = self.checked_pattern_bindings(pattern, &value, None, None, frame);
         self.bind_pattern_aliases(pattern, bindings, frame);
     }
 
@@ -439,7 +489,34 @@ impl Checker {
         }
         // Subject and guards are not result positions. An explicit Return
         // inside them still receives its own fixed Frame return target.
-        let subject = self.expression(expression, frame);
+        let needs_source =
+            match self.pattern_needs_numeric_source(arms.iter().map(|arm| &arm.pattern)) {
+                Ok(required) => required,
+                Err(error) => {
+                    self.unsupported(span, format!("numeric pattern source admission: {error}"));
+                    return SourceExpression::unobserved(
+                        Value::scalar(Ty::Unknown, None, CauseId(0)),
+                        self.recency_moves.len(),
+                        false,
+                    );
+                }
+            };
+        let subject_packet = if needs_source {
+            self.expression_source_packet(expression, frame, None, None)
+        } else {
+            self.expression_expected_source(expression, frame, None, None)
+        };
+        let subject = match self.read_evaluation_packet(&subject_packet, expression.span) {
+            Ok(value) => value,
+            Err(_) => {
+                return SourceExpression::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
+            }
+        };
+        let numeric_subject = needs_source.then_some(&subject_packet);
         let mut source_valid = true;
         if subject.ty == Ty::Never {
             for arm in arms {
@@ -523,7 +600,13 @@ impl Checker {
                     [subject.cause],
                 );
             }
-            let bindings = self.checked_pattern_bindings(&arm.pattern, &typed_subject, None, frame);
+            let bindings = self.checked_pattern_bindings(
+                &arm.pattern,
+                &typed_subject,
+                None,
+                numeric_subject,
+                frame,
+            );
             self.bind_pattern_aliases(&arm.pattern, bindings, frame);
             if let Some(guard) = &arm.guard {
                 let guard = self.expression(guard, frame);
@@ -681,15 +764,32 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        let (subject, subject_expression) = self.expression_observed(expression, frame);
+        let needs_source = match self.pattern_needs_numeric_source(std::iter::once(pattern)) {
+            Ok(required) => required,
+            Err(error) => {
+                self.unsupported(span, format!("numeric pattern source admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
+        let subject_packet = if needs_source {
+            self.expression_source_packet(expression, frame, None, None)
+        } else {
+            self.expression_expected_source(expression, frame, None, None)
+        };
+        let subject_expression = subject_packet.observation;
+        let subject = match self.read_evaluation_packet(&subject_packet, expression.span) {
+            Ok(value) => value,
+            Err(_) => return Value::scalar(Ty::Unknown, None, CauseId(0)),
+        };
+        let numeric_subject = needs_source.then_some(&subject_packet);
         if subject.ty == Ty::Never {
             self.preview_value_pattern(frame, |checker, frame| {
-                checker.check_value_pattern(pattern, &subject, frame)
+                checker.check_value_pattern(pattern, &subject, numeric_subject, frame)
             });
             return subject;
         }
         self.inspect_guaranteed_pattern_head(&subject, pattern, span, frame);
-        let decision = match self.check_value_pattern(pattern, &subject, frame) {
+        let decision = match self.check_value_pattern(pattern, &subject, numeric_subject, frame) {
             PatternOutcome::Normal(decision) => decision,
             PatternOutcome::Exit(value) => return *value,
         };
@@ -724,7 +824,7 @@ impl Checker {
         birth: Option<crate::sema::application_effect::OccurrenceIdentity>,
     ) -> Value {
         self.inspect_guaranteed_pattern_head(&value, &binding.pattern, span, frame);
-        let bindings = self.checked_pattern_bindings(&binding.pattern, &value, None, frame);
+        let bindings = self.checked_pattern_bindings(&binding.pattern, &value, None, None, frame);
         if binding.fallback.is_some() && bindings.is_empty() {
             self.error(
                 "E0309",
@@ -1020,6 +1120,7 @@ impl Checker {
         pattern: &Pattern,
         value: &Value,
         mode: Option<BindingMode>,
+        packet: Option<&EvaluatedValue>,
         frame: &mut Frame,
     ) -> BTreeMap<String, (Option<BindingMode>, Value, Span)> {
         let mut result = BTreeMap::new();
@@ -1029,10 +1130,17 @@ impl Checker {
             }
             PatternKind::Wildcard => {}
             PatternKind::Mode { mode, pattern } => {
-                return self.checked_pattern_bindings(pattern, value, Some(*mode), frame);
+                return self.checked_pattern_bindings(pattern, value, Some(*mode), packet, frame);
             }
             PatternKind::Literal(literal) => {
-                let expected = self.literal(literal, pattern.span, frame);
+                let expected = if matches!(literal, Literal::Integer(_) | Literal::Float(_)) {
+                    let Some(expression) = self.pattern_value_expression(pattern) else {
+                        return result;
+                    };
+                    self.expression_pattern_value(&expression, frame, Some(&value.ty), packet)
+                } else {
+                    self.literal(literal, pattern.span, frame)
+                };
                 self.require_type(&expected, &value.ty, pattern.span);
             }
             PatternKind::Value(expression) => {
@@ -1063,7 +1171,8 @@ impl Checker {
                             frame,
                             true,
                         );
-                        let bindings = self.checked_pattern_bindings(pattern, &child, mode, frame);
+                        let bindings =
+                            self.checked_pattern_bindings(pattern, &child, mode, packet, frame);
                         self.extend_pattern_bindings(&mut result, bindings, pattern.span);
                     }
                 } else {
@@ -1092,8 +1201,13 @@ impl Checker {
                             frame,
                             true,
                         );
-                        let bindings =
-                            self.checked_pattern_bindings(&field.pattern, &child, mode, frame);
+                        let bindings = self.checked_pattern_bindings(
+                            &field.pattern,
+                            &child,
+                            mode,
+                            packet,
+                            frame,
+                        );
                         self.extend_pattern_bindings(&mut result, bindings, field.span);
                     }
                     if rest_binding.is_some() {
@@ -1183,7 +1297,13 @@ impl Checker {
                         self.discharge_absent_results(value, pattern.span);
                     }
                     if arguments.len() == 1 {
-                        return self.checked_pattern_bindings(&arguments[0], &payload, mode, frame);
+                        return self.checked_pattern_bindings(
+                            &arguments[0],
+                            &payload,
+                            mode,
+                            packet,
+                            frame,
+                        );
                     }
                     if !arguments.is_empty() {
                         if let Ty::Tuple(items) = self.expanded(&payload.ty, &mut BTreeSet::new()) {
@@ -1203,8 +1323,8 @@ impl Checker {
                                     frame,
                                     true,
                                 );
-                                let bindings =
-                                    self.checked_pattern_bindings(pattern, &child, mode, frame);
+                                let bindings = self
+                                    .checked_pattern_bindings(pattern, &child, mode, packet, frame);
                                 self.extend_pattern_bindings(&mut result, bindings, pattern.span);
                             }
                         } else {
@@ -1242,7 +1362,8 @@ impl Checker {
                             &mut BTreeSet::new(),
                         )
                     };
-                    let bindings = self.checked_pattern_bindings(pattern, &subject, mode, frame);
+                    let bindings =
+                        self.checked_pattern_bindings(pattern, &subject, mode, packet, frame);
                     choices.push((possible, bindings));
                     if let Some(preview) = preview {
                         self.restore_preview(&preview);
@@ -1586,6 +1707,7 @@ impl Checker {
         &mut self,
         pattern: &Pattern,
         value: &Value,
+        packet: Option<&EvaluatedValue>,
         frame: &mut Frame,
     ) -> PatternOutcome {
         match &pattern.kind {
@@ -1594,13 +1716,13 @@ impl Checker {
                 let Some(expected) = self.pattern_value_expression(pattern) else {
                     return self.pattern_outcome(None);
                 };
-                self.compare_expected(value, &expected, frame)
+                self.compare_expected(value, &expected, packet, frame)
             }
             PatternKind::Literal(_) => {
                 let Some(expected) = self.pattern_value_expression(pattern) else {
                     return self.pattern_outcome(None);
                 };
-                self.compare_expected(value, &expected, frame)
+                self.compare_expected(value, &expected, packet, frame)
             }
             PatternKind::Value(expected) => {
                 if self.check_pattern_range(expected, value, pattern.span, frame) {
@@ -1628,7 +1750,7 @@ impl Checker {
                     };
                     self.pattern_outcome(matched)
                 } else {
-                    self.compare_expected(value, expected, frame)
+                    self.compare_expected(value, expected, packet, frame)
                 }
             }
             PatternKind::Mode { .. } => {
@@ -1668,7 +1790,7 @@ impl Checker {
                             frame,
                             true,
                         );
-                        checker.check_value_pattern(pattern, &child, frame)
+                        checker.check_value_pattern(pattern, &child, packet, frame)
                     };
                     matched = self.pattern_sequence(matched, true, pattern.span, frame, component);
                 }
@@ -1697,7 +1819,7 @@ impl Checker {
                             frame,
                             true,
                         );
-                        checker.check_value_pattern(&field.pattern, &child, frame)
+                        checker.check_value_pattern(&field.pattern, &child, packet, frame)
                     };
                     matched = self.pattern_sequence(matched, true, field.span, frame, component);
                 }
@@ -1720,7 +1842,7 @@ impl Checker {
                     let Some(expected) = self.pattern_value_expression(pattern) else {
                         return self.pattern_outcome(None);
                     };
-                    return self.compare_expected(value, &expected, frame);
+                    return self.compare_expected(value, &expected, packet, frame);
                 }
                 let Some(tag) = self.resolved_pattern_tag(path, value, frame) else {
                     self.unsupported(pattern.span, "nonstandard constructor value-test identity");
@@ -1773,7 +1895,7 @@ impl Checker {
                             pattern.span,
                         );
                         if arguments.len() == 1 {
-                            checker.check_value_pattern(&arguments[0], &payload, frame)
+                            checker.check_value_pattern(&arguments[0], &payload, packet, frame)
                         } else if arguments.is_empty() {
                             checker.pattern_outcome(Some(true))
                         } else {
@@ -1787,7 +1909,7 @@ impl Checker {
                                         frame,
                                         true,
                                     );
-                                    checker.check_value_pattern(pattern, &child, frame)
+                                    checker.check_value_pattern(pattern, &child, packet, frame)
                                 };
                                 matched = checker.pattern_sequence(
                                     matched,
@@ -1809,7 +1931,7 @@ impl Checker {
                 let mut matched = self.pattern_outcome(Some(false));
                 for pattern in patterns {
                     let component = |checker: &mut Checker, frame: &mut Frame| {
-                        checker.check_value_pattern(pattern, value, frame)
+                        checker.check_value_pattern(pattern, value, packet, frame)
                     };
                     matched = self.pattern_sequence(matched, false, pattern.span, frame, component);
                 }
@@ -1905,9 +2027,10 @@ impl Checker {
         &mut self,
         subject: &Value,
         expected: &Expr,
+        packet: Option<&EvaluatedValue>,
         frame: &mut Frame,
     ) -> PatternOutcome {
-        let value = self.expression(expected, frame);
+        let value = self.expression_pattern_value(expected, frame, None, packet);
         self.require_type(&value, &subject.ty, expected.span);
         if self.equality_has_generic(&subject.ty) || self.equality_has_generic(&value.ty) {
             self.unsupported(

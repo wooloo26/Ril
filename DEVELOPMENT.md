@@ -107,7 +107,8 @@ duplicate source trees and historical verification reports.
   callable annotation text with frozen declaration references so composites can
   retain contracts originating in different lexical environments. Complete mixed
   static sorts and captured/local aliases, and solve pending Source equations
-  before certifying a producing context.
+  before certifying a producing context. Finish Source coverage for normalized
+  and generic operation input headers and typed record members.
 - Complete shared value derivations for historical heap reads, callback results
   and generated inputs to parallel workers, scope/channel bodies, iterators,
   variant/recovery callbacks, resources and foreign calls. Their unmigrated
@@ -121,8 +122,11 @@ duplicate source trees and historical verification reports.
 - Implement conditional bindings (`if let`, `while let`) and array/tuple rest
   patterns. Complete record-rest, nested closure/default
   and retained-handler transport covered by the corpus.
-- Complete static extent/sort contexts, shared-constant audits and builtin source
-  declarations. Keep object identity separate from each reference's declared view.
+- Complete static extent/sort contexts, ordinary callable Const arguments,
+  shared-constant audits and builtin source declarations. Ordinary explicit Const
+  calls still reach bare-type checking (`E0318`); the floating-default cases in
+  `tests/conformance/numeric.ril` retain this gap. Keep object identity separate
+  from each reference's declared view.
 - Resolve compiler and native acceptance failures on both platforms, then expose
   symbol and capability introspection through immutable analysis snapshots.
 

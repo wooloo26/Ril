@@ -215,7 +215,7 @@ impl Checker {
                 {
                     return Err(SourceTypesError::Unresolved);
                 }
-                input.birth_source().cloned()
+                input.input_source().cloned()
             })(),
             EntryOrigin::Generated { .. } => {
                 self.generated_input_source_schema(&call.entry.origin, slot)

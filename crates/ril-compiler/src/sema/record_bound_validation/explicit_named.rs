@@ -24,6 +24,7 @@ pub(crate) struct CallSite<'a> {
 
 pub(crate) struct BindingSite<'a> {
     pub owner: CallableOwner,
+    pub statement: ril_compiler_core::ids::StmtId,
     pub binding: &'a ril_syntax::ast::Binding,
 }
 
@@ -45,9 +46,27 @@ pub(crate) struct SourceSites<'a> {
     generic: Vec<Site<'a>>,
     pub calls: Vec<CallSite<'a>>,
     pub bindings: Vec<BindingSite<'a>>,
+    binding_index: BTreeMap<(CallableOwner, ril_compiler_core::ids::PatternId), usize>,
     pub assignments: Vec<AssignmentSite<'a>>,
     pub lambdas: Vec<CallSite<'a>>,
     pub functions: Vec<FunctionSite<'a>>,
+}
+
+impl SourceSites<'_> {
+    pub(super) fn binding_site(
+        &self,
+        owner: CallableOwner,
+        root: ril_compiler_core::ids::PatternId,
+        work: &mut usize,
+    ) -> Check<&BindingSite<'_>> {
+        *work = work
+            .checked_sub(2 + self.binding_index.len().checked_ilog2().unwrap_or(0) as usize)
+            .ok_or("storage declaration lookup exceeds its shared work bound")?;
+        self.binding_index
+            .get(&(owner, root))
+            .and_then(|index| self.bindings.get(*index))
+            .ok_or_else(|| "storage read has no original binding declaration".into())
+    }
 }
 
 enum Pending<'a> {
@@ -72,14 +91,26 @@ fn declaration_only(function: &ril_syntax::ast::Function) -> bool {
 }
 
 pub(super) fn source_sites(facts: &SemanticFacts) -> Check<SourceSites<'_>> {
-    source_sites_inner(facts, true)
+    source_sites_inner(facts, true, &mut { LIMIT })
 }
 
 pub(crate) fn source_sites_base(facts: &SemanticFacts) -> Check<SourceSites<'_>> {
-    source_sites_inner(facts, false)
+    source_sites_base_with_work(facts, &mut { LIMIT })
 }
 
-fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<SourceSites<'_>> {
+pub(crate) fn source_sites_base_with_work<'a>(
+    facts: &'a SemanticFacts,
+    work: &mut usize,
+) -> Check<SourceSites<'a>> {
+    source_sites_inner(facts, false, work)
+}
+
+fn source_sites_inner<'a>(
+    facts: &'a SemanticFacts,
+    include_generated: bool,
+    work: &mut usize,
+) -> Check<SourceSites<'a>> {
+    *work = work.checked_sub(1).ok_or("source query budget exhausted")?;
     let mut generated = if include_generated {
         super::super::checker::checked_generated_source_roots(facts)?
     } else {
@@ -112,12 +143,16 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
             generic: Vec::new(),
             calls: Vec::new(),
             bindings: Vec::new(),
+            binding_index: BTreeMap::new(),
             assignments: Vec::new(),
             lambdas: Vec::new(),
             functions: Vec::new(),
         });
     }
     let mut headers: BTreeMap<DefinitionId, &FunctionInfo> = BTreeMap::new();
+    *work = work
+        .checked_sub(facts.functions.len())
+        .ok_or("source headers budget exhausted")?;
     for function in &facts.functions {
         if let Some(previous) = headers.insert(function.definition, function) {
             require(
@@ -130,13 +165,15 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
         .source_program
         .as_deref()
         .ok_or_else(|| "named input replay has no frozen actual Program".to_owned())?;
+    *work = work
+        .checked_sub(program.statements.len())
+        .ok_or("source roots budget exhausted")?;
     pending.extend(
         program
             .statements
             .iter()
             .map(|statement| Pending::Statement(CallableOwner::Global, statement, 0)),
     );
-    let mut work = LIMIT;
     let mut result = Vec::new();
     let mut calls = Vec::new();
     let mut bindings = Vec::new();
@@ -145,6 +182,35 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
     let mut functions = Vec::new();
     let mut expressions = BTreeMap::new();
     let mut effects = BTreeMap::new();
+    if include_generated {
+        // Original-only lookup above remains available to the independent
+        // specialization replay; taking these roots must never certify them.
+        super::super::external_instance_validation::validate(facts, work)?;
+        *work = work
+            .checked_sub(facts.external_instances.len())
+            .ok_or("generated declaration roots exceed their source work bound")?;
+        for instance in &facts.external_instances {
+            let info = facts
+                .functions
+                .get(instance.callable)
+                .ok_or("generated declaration has no callable source")?;
+            let owner = CallableOwner::Function(info.definition);
+            let function = &instance.syntax;
+            *work = work
+                .checked_sub(1 + function.parameters.len() * 2 + function.signature_where.len())
+                .ok_or("generated defaults exceed their source frontier work bound")?;
+            functions.push(FunctionSite { owner, function });
+            for statement in &function.signature_where {
+                pending.push(Pending::Statement(owner, statement, 0));
+            }
+            for parameter in &function.parameters {
+                pending.push(Pending::Pattern(owner, &parameter.pattern, 0));
+                if let Some(default) = &parameter.default {
+                    pending.push(Pending::Expression(owner, default, None, 0));
+                }
+            }
+        }
+    }
     loop {
         let node = match pending.pop() {
             Some(node) => node,
@@ -153,7 +219,7 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
                 None => break,
             },
         };
-        work = work
+        *work = work
             .checked_sub(1)
             .ok_or_else(|| "explicit named source walk exceeds its work bound".to_owned())?;
         match node {
@@ -164,7 +230,13 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
                 )?;
                 match &statement.kind {
                     StmtKind::Binding(binding) => {
-                        bindings.push(BindingSite { owner, binding });
+                        bindings.push(BindingSite {
+                            owner,
+                            statement: statement
+                                .hir_id
+                                .ok_or("binding statement has no original HIR identity")?,
+                            binding,
+                        });
                         pending.push(Pending::Expression(owner, &binding.value, None, depth + 1));
                         pending.push(Pending::Pattern(owner, &binding.pattern, depth + 1));
                         pending.extend(binding.fallback.iter().map(|expression| {
@@ -502,12 +574,28 @@ fn source_sites_inner(facts: &SemanticFacts, include_generated: bool) -> Check<S
             "explicit named pending source exceeds its work bound",
         )?;
     }
+    let mut binding_index = BTreeMap::new();
+    for (index, binding) in bindings.iter().enumerate() {
+        *work = work
+            .checked_sub(2 + binding_index.len().checked_ilog2().unwrap_or(0) as usize)
+            .ok_or("storage declaration index exceeds its shared work bound")?;
+        let root = binding
+            .binding
+            .pattern
+            .hir_id
+            .ok_or("binding pattern has no original HIR identity")?;
+        require(
+            binding_index.insert((binding.owner, root), index).is_none(),
+            "binding declaration repeats an original HIR pattern",
+        )?;
+    }
     Ok(SourceSites {
         effects,
         expressions,
         generic: result,
         calls,
         bindings,
+        binding_index,
         assignments,
         lambdas,
         functions,

@@ -23,6 +23,8 @@ mod constructor_inputs;
 mod graph_sources;
 #[path = "call_input_source_headers.rs"]
 mod headers;
+#[path = "numeric_source_declarations.rs"]
+mod numeric_sources;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
 #[path = "storage_input_source.rs"]
@@ -74,7 +76,7 @@ impl Checker {
             .get(&event)
             .and_then(|inputs| inputs.get(&slot))
             .ok_or(SourceTypesError::MissingNode)?
-            .birth_source()
+            .input_source()
             .cloned()
     }
     pub(super) fn receive_application_source(
@@ -131,7 +133,7 @@ impl Checker {
             .get(&event)?
             .get(&slot)?
             .clone();
-        let (actual, actual_environment) = match input.birth_source() {
+        let (actual, actual_environment) = match input.input_source() {
             Ok(Some(source)) => source,
             Ok(None) => return None,
             Err(error) => {
@@ -385,14 +387,26 @@ impl Checker {
         packet: &mut EvaluatedValue,
         syntax: &Expr,
         frame: &Frame,
-        work: &mut WorkLimit,
+        mut lease: crate::sema::application_effect::WorkLease,
     ) {
+        enum Capture {
+            Ordinary(Option<(SourceSchema, FrozenEnvironment)>),
+            Numeric {
+                hole: ril_compiler_core::ids::NumericHoleId,
+                birth: crate::sema::numeric_selection::NumericBirth,
+                environment: FrozenEnvironment,
+            },
+        }
         if packet.has_captured_source() {
+            if let Err(error) = self.application_effect.return_work(lease) {
+                packet.fail_current_source(error);
+            }
             self.unsupported(syntax.span, "evaluation Source basis was already captured");
             return;
         }
         let mut fresh = None;
-        let capture = (|| {
+        let work = lease.work();
+        let mut capture = (|| {
             work.charge(4)?;
             let observation = packet.observation.ok_or(SourceTypesError::MissingNode)?;
             let fact = self
@@ -443,20 +457,127 @@ impl Checker {
             fresh = Some(std::sync::Arc::new(
                 construction.ok_or(SourceTypesError::BudgetExceeded)?,
             ));
-            self.original_source_receiving_schema(&packet.value, syntax, frame, work)
+            let source = self.original_source_receiving_schema_at(
+                &packet.value,
+                syntax,
+                frame,
+                work,
+                Some(observation),
+            )?;
+            if source.is_none()
+                && let Ty::NumericHole(hole) = packet.value.ty
+            {
+                let birth = self.pending_numeric_packet_birth(packet, hole, work)?;
+                let environment = self.capture_typing_environment();
+                if environment.is_poisoned() {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                Ok(Capture::Numeric {
+                    hole,
+                    birth,
+                    environment,
+                })
+            } else {
+                Ok(Capture::Ordinary(source))
+            }
         })();
+        // Do not publish an apparently successful basis until all nested
+        // recorder work has completed under the same original allowance.
+        if let Err(error) = self.application_effect.return_work(lease) {
+            capture = Err(error);
+        }
+        let failure = capture.as_ref().err().cloned();
         if let Err(error) = &capture {
             self.unsupported(
                 syntax.span,
                 format!("evaluation Source capture failed: {error}"),
             );
         }
-        if let Err(error) = packet.capture_birth_source(capture, fresh) {
+        let captured = match capture {
+            Ok(Capture::Numeric {
+                hole,
+                birth,
+                environment,
+            }) => packet.capture_numeric_birth_source(hole, birth, environment, fresh),
+            result => packet.capture_birth_source(
+                result.map(|capture| match capture {
+                    Capture::Ordinary(source) => source,
+                    Capture::Numeric { .. } => unreachable!("numeric capture handled above"),
+                }),
+                fresh,
+            ),
+        };
+        if let Some(error) = failure {
+            packet.fail_current_source(error);
+        }
+        if let Err(error) = captured {
             self.unsupported(
                 syntax.span,
                 format!("evaluation Source basis could not be captured: {error}"),
             );
         }
+    }
+
+    /// Map the existing frozen packet to its actual public parameter slot.
+    pub(super) fn publish_numeric_call_input(
+        &mut self,
+        event: CopyCallEventId,
+        preparation: usize,
+        slot: usize,
+        packet: std::sync::Arc<EvaluatedValue>,
+        frame: &Frame,
+    ) -> Result<(), SourceTypesError> {
+        if !self.application_effect.admit(8) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        let (hole, birth, resolution) = packet
+            .numeric_source_derivation()
+            .ok_or(SourceTypesError::Unresolved)?;
+        let row = self
+            .call_arguments
+            .get(preparation)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let token = row
+            .supplied
+            .get(&(slot as u32))
+            .ok_or(SourceTypesError::MissingNode)?;
+        let numeric = self
+            .numeric
+            .holes
+            .get(hole.0 as usize)
+            .filter(|record| record.id == hole)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let fact = self
+            .application_effect
+            .expressions
+            .get(token.expression)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if row.source_event != event
+            || !row.slots_bound
+            || row.slots.get(slot) != Some(&crate::sema::default_uses::ArgumentSource::Supplied)
+            || packet.observation != Some(token.expression)
+            || packet.allocation_epoch != token.allocation_epoch
+            || numeric.birth != *birth
+            || !std::sync::Arc::ptr_eq(self.numeric.resolution(hole)?, resolution)
+            || fact.value.ty != Ty::NumericHole(hole)
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let context = self.invocation_context(frame.callable_owner);
+        let input = self
+            .call_input_source
+            .supplied
+            .get_mut(&event)
+            .and_then(|inputs| inputs.get_mut(&slot))
+            .ok_or(SourceTypesError::MissingNode)?;
+        if input.context != context
+            || input.default.is_some()
+            || !input.packet.shares_birth(&packet)
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        input.packet = packet;
+        Ok(())
     }
 
     /// Map the existing frozen packet to its actual public parameter slot.
@@ -794,7 +915,7 @@ impl Checker {
             .chain(self.call_input_source.defaults.values())
             .filter(|input| input.observation == Some(observation.0 as usize));
         let first = captured.next();
-        let captured_source = first.map(|input| input.birth_source().cloned());
+        let captured_source = first.map(|input| input.input_source().cloned());
         if captured.any(|input| {
             !first.is_some_and(|first| std::sync::Arc::ptr_eq(&first.packet, &input.packet))
         }) {
@@ -1142,7 +1263,7 @@ fn input_compatible(
     input: &Input,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {
-    match input.birth_source() {
+    match input.input_source() {
         Ok(Some((actual, environment))) if !environment.is_poisoned() => {
             expected.receive_schema(actual, Some(input.fresh()), work)
         }

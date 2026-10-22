@@ -41,7 +41,7 @@ impl Checker {
                 .storage_supplied_input(event, 0, &args[0].1, span, frame)
                 .ok_or(SourceTypesError::MissingNode)?;
             let (original, environment) = receiver
-                .birth_source()?
+                .input_source()?
                 .as_ref()
                 .ok_or(SourceTypesError::Unresolved)?;
             if environment.is_poisoned() {
@@ -156,7 +156,7 @@ fn storage_compatible(
     input: &Input,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {
-    if let Some((actual, _)) = input.birth_source()?
+    if let Some((actual, _)) = input.input_source()?
         && let (Some(expected), Some(actual)) = (
             expected.callable_annotations(work)?,
             actual.callable_annotations(work)?,

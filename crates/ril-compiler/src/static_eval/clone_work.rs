@@ -193,6 +193,19 @@ impl Meter<'_> {
         }
         Ok(())
     }
+    fn effect_declaration(&self, value: &EffectDeclaration, depth: usize) -> Result<()> {
+        self.text(&value.name)?;
+        for parameter in &value.generics {
+            self.generic(parameter, depth + 1)?;
+        }
+        for function in &value.operations {
+            self.function(function, depth + 1)?;
+        }
+        for ty in &value.members {
+            self.ty(ty, depth + 1)?;
+        }
+        Ok(())
+    }
     fn statement(&self, value: &Stmt, depth: usize) -> Result<()> {
         self.node(depth)?;
         match &value.kind {
@@ -208,18 +221,7 @@ impl Meter<'_> {
             }
             StmtKind::Function(value) => self.function(value, depth + 1)?,
             StmtKind::Type(value) => self.type_declaration(value, depth + 1)?,
-            StmtKind::Effect(value) => {
-                self.text(&value.name)?;
-                for parameter in &value.generics {
-                    self.generic(parameter, depth + 1)?;
-                }
-                for function in &value.operations {
-                    self.function(function, depth + 1)?;
-                }
-                for ty in &value.members {
-                    self.ty(ty, depth + 1)?;
-                }
-            }
+            StmtKind::Effect(value) => self.effect_declaration(value, depth)?,
             StmtKind::Use(value) => {
                 self.strings(value.path.iter())?;
                 if let Some(alias) = &value.alias {
@@ -602,6 +604,14 @@ pub(super) fn callable(budget: &budget::Budget, value: &StaticCallable) -> Resul
 }
 pub(super) fn function(budget: &budget::Budget, value: &Function) -> Result<()> {
     Meter(budget).function(value, 0)
+}
+pub(super) fn statement(budget: &budget::Budget, value: &Stmt) -> Result<()> {
+    Meter(budget).statement(value, 0)
+}
+pub(super) fn effect_declaration(budget: &budget::Budget, value: &EffectDeclaration) -> Result<()> {
+    let meter = Meter(budget);
+    meter.node(0)?;
+    meter.effect_declaration(value, 0)
 }
 pub(super) fn expression(budget: &budget::Budget, value: &Expr) -> Result<()> {
     Meter(budget).expr(value, 0)

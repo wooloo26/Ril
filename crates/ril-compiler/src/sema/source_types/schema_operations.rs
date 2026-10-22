@@ -73,6 +73,25 @@ fn freeze(
 }
 
 impl SourceSchema {
+    /// Only actual transparent graph edges expose a scalar representation.
+    /// Nominal or unresolved spelling is never interpreted as a scalar name.
+    pub(crate) fn scalar_representation(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Option<SourceScalar>, SourceTypesError> {
+        super::super::reception::complete(&self.types, self.root, work)?;
+        let root = self.read_root(work)?;
+        Ok(match self.types.get(root)? {
+            SourceNode::Scalar(scalar) => Some(*scalar),
+            SourceNode::Binder(_)
+            | SourceNode::OpaqueName { .. }
+            | SourceNode::StaticValue(_)
+            | SourceNode::OpaqueComputation(_)
+            | SourceNode::Unresolved { .. } => return Err(SourceTypesError::Unresolved),
+            _ => None,
+        })
+    }
+
     /// Read one original root UID. Immutable qualification is a real shell and
     /// is not discarded when deciding whether this is a bare binder receiver.
     pub(crate) fn bare_binder_identity(
@@ -807,6 +826,100 @@ mod tests {
         let mut builder = SourceBuilder::new().unwrap();
         let root = builder.insert(SourceNode::Scalar(kind), &mut work).unwrap();
         freeze(builder, root, Some(TypeExprId(17)), &mut work).unwrap()
+    }
+
+    #[test]
+    fn scalar_representation_uses_graph_edges_and_rejects_poison_cycles_and_spelling() {
+        let mut work = WorkLimit::new(4096);
+        let mut builder = SourceBuilder::new().unwrap();
+        let leaf = builder
+            .insert(SourceNode::Scalar(SourceScalar::I8), &mut work)
+            .unwrap();
+        let alias = builder
+            .insert(
+                SourceNode::Alias {
+                    declaration: "Narrow".into(),
+                    target: leaf,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let shell = builder
+            .insert(
+                SourceNode::Container {
+                    kind: SourceContainer::Immutable,
+                    arguments: vec![alias],
+                },
+                &mut work,
+            )
+            .unwrap();
+        let wrapped = freeze(builder, shell, None, &mut work).unwrap();
+        assert_eq!(
+            wrapped.scalar_representation(&mut WorkLimit::new(4096)),
+            Ok(Some(SourceScalar::I8))
+        );
+        assert!(matches!(
+            wrapped.scalar_representation(&mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        let array = SourceSchema::array(SourceLength::Dynamic, &wrapped, None, &mut work).unwrap();
+        assert_eq!(
+            array.scalar_representation(&mut WorkLimit::new(4096)),
+            Ok(None)
+        );
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder
+            .insert(
+                SourceNode::OpaqueName {
+                    name: "i8".into(),
+                    arguments: vec![],
+                },
+                &mut work,
+            )
+            .unwrap();
+        let opaque = freeze(builder, root, None, &mut work).unwrap();
+        assert_eq!(
+            opaque.scalar_representation(&mut WorkLimit::new(4096)),
+            Err(SourceTypesError::Unresolved)
+        );
+        let poison =
+            SourceSchema::import(&ArgumentKey::Closed("unfinished".into()), None, &mut work)
+                .unwrap();
+        let poisoned_array =
+            SourceSchema::array(SourceLength::Dynamic, &poison, None, &mut work).unwrap();
+        assert_eq!(
+            poisoned_array.scalar_representation(&mut WorkLimit::new(4096)),
+            Err(SourceTypesError::Unresolved)
+        );
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder.reserve(&mut work).unwrap();
+        builder
+            .define(
+                root,
+                SourceNode::Container {
+                    kind: SourceContainer::Immutable,
+                    arguments: vec![root],
+                },
+                &mut work,
+            )
+            .unwrap();
+        let cyclic = freeze(builder, root, None, &mut work).unwrap();
+        assert_eq!(
+            cyclic.scalar_representation(&mut WorkLimit::new(4096)),
+            Err(SourceTypesError::AliasCycle)
+        );
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder
+            .insert(
+                SourceNode::Nominal(super::super::super::standard_data::Nominal::ProcessError),
+                &mut work,
+            )
+            .unwrap();
+        let nominal = freeze(builder, root, None, &mut work).unwrap();
+        assert_eq!(
+            nominal.scalar_representation(&mut WorkLimit::new(4096)),
+            Ok(None)
+        );
     }
 
     #[test]

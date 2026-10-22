@@ -3,11 +3,12 @@
 use crate::sema::clone_work;
 use crate::sema::context::{FrozenEnvironment, TypingEnvironment};
 use crate::sema::model::Env;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 pub(super) struct TypeSourceDomain {
     pub environment: TypingEnvironment,
     pub storage: super::storage_sources::State,
+    lexical: RefCell<Option<crate::hir::lexical::LexicalBindings>>,
     work: Cell<usize>,
     pub exhausted: Cell<bool>,
 }
@@ -17,6 +18,7 @@ impl Default for TypeSourceDomain {
         Self {
             environment: Default::default(),
             storage: Default::default(),
+            lexical: RefCell::new(None),
             work: Cell::new(16 * 1024 * 1024),
             exhausted: Cell::new(false),
         }
@@ -24,6 +26,43 @@ impl Default for TypeSourceDomain {
 }
 
 impl TypeSourceDomain {
+    /// Original HIR replacement invalidates only derived name lookup. Frozen
+    /// declaration environments and observed Source graphs remain untouched.
+    pub(super) fn reset_header_queries(&self) {
+        *self.lexical.borrow_mut() = None;
+    }
+
+    pub(super) fn with_header_index<R>(
+        &self,
+        hir: &crate::hir::HirProgram,
+        query: impl FnOnce(
+            &crate::hir::lexical::LexicalBindings,
+        ) -> Result<R, crate::sema::source_types::SourceTypesError>,
+    ) -> Result<R, crate::sema::source_types::SourceTypesError> {
+        use crate::sema::source_types::SourceTypesError;
+        if self.exhausted.get() {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        let mut index = self.lexical.borrow_mut();
+        let mut remaining = self.work.get();
+        let admitted = match index.as_mut() {
+            Some(index) => index.refresh_generated(hir, &mut remaining),
+            None => crate::hir::lexical::LexicalBindings::new(hir, &mut remaining)
+                .map(|new| *index = Some(new)),
+        };
+        self.work.set(remaining);
+        if let Err(error) = admitted {
+            *index = None;
+            return Err(match error {
+                crate::hir::nodes::LowerError::Budget(_) => {
+                    self.exhausted.set(true);
+                    SourceTypesError::BudgetExceeded
+                }
+                _ => SourceTypesError::Unresolved,
+            });
+        }
+        query(index.as_ref().ok_or(SourceTypesError::MissingNode)?)
+    }
     fn admit_clone(&self, environment: &TypingEnvironment) -> bool {
         if self.exhausted.get() {
             return false;
@@ -104,6 +143,79 @@ impl TypeSourceDomain {
 mod tests {
     use super::*;
     use crate::sema::model::Ty;
+
+    #[test]
+    fn header_name_index_is_paid_once_and_queries_keep_their_own_budget() {
+        use crate::hir::{lexical::TypeNameBinding, nodes::StmtKind};
+        use crate::sema::source_types::SourceTypesError;
+        let parsed = ril_syntax::parse(ril_test::case_source(
+            "tests/conformance/numeric.ril::shadowed-alias-pattern-safe",
+        ));
+        assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
+        let mut program = parsed.program;
+        let hir = crate::hir::HirProgram::lower_identified(
+            &mut program,
+            crate::hir::nodes::InputOrigin::Source,
+        )
+        .unwrap();
+        let syntax = hir
+            .statements()
+            .find_map(|(_, statement)| match &statement.kind {
+                StmtKind::Function(function) if function.name == "matches_local" => {
+                    function.parameters[0].ty
+                }
+                _ => None,
+            })
+            .unwrap();
+        let domain = TypeSourceDomain::default();
+        let query = |index: &crate::hir::lexical::LexicalBindings| {
+            index
+                .lookup_type(syntax, &mut 4096)
+                .map_err(|_| SourceTypesError::Unresolved)
+        };
+        let original = domain.with_header_index(&hir, query).unwrap();
+        assert!(matches!(original, TypeNameBinding::Declaration(_)));
+        let remaining = domain.work.get();
+        assert!(remaining < 16 * 1024 * 1024);
+        // A single remaining domain unit admits the unchanged index lookup;
+        // it cannot possibly rewalk this complete original program.
+        domain.work.set(1);
+        assert_eq!(domain.with_header_index(&hir, query).unwrap(), original);
+        assert_eq!(domain.work.get(), 0);
+        assert!(matches!(
+            domain.with_header_index(&hir, query),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(domain.exhausted.get());
+        domain.reset_header_queries();
+        assert!(matches!(
+            domain.with_header_index(&hir, query),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+    }
+
+    #[test]
+    fn replacing_original_header_input_requires_fresh_index_admission() {
+        use crate::sema::source_types::SourceTypesError;
+        let parsed = ril_syntax::parse(ril_test::case_source(
+            "tests/conformance/numeric.ril::deferred-arithmetic-safe",
+        ));
+        assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
+        let mut program = parsed.program;
+        let hir = crate::hir::HirProgram::lower_identified(
+            &mut program,
+            crate::hir::nodes::InputOrigin::Source,
+        )
+        .unwrap();
+        let domain = TypeSourceDomain::default();
+        domain.with_header_index(&hir, |_| Ok(())).unwrap();
+        domain.reset_header_queries();
+        domain.work.set(0);
+        assert!(matches!(
+            domain.with_header_index(&hir, |_| Ok(())),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+    }
 
     #[test]
     fn nested_type_capture_is_rejected_before_copying_an_exhausted_environment() {

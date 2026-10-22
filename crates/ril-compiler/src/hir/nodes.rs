@@ -47,6 +47,8 @@ pub enum LexicalOwner {
 pub enum GeneratedKind {
     IteratorAdapter,
     StaticMaterialization,
+    /// A closed static application with an independently replayed template.
+    StaticSpecialization,
     Desugaring,
     /// Reading the expected value of a Name, literal, or nullary tag pattern.
     PatternValue,
@@ -736,6 +738,37 @@ impl HirProgram {
         );
         let id = self.mint_generated_expr(source, anchor, kind, owner, limits)?;
         if let Err(error) = identify::expression(self, source, id, limits) {
+            self.expressions.truncate(before.0);
+            self.statements.truncate(before.1);
+            self.patterns.truncate(before.2);
+            self.generics.truncate(before.3);
+            self.types.truncate(before.4);
+            self.generated_roots.truncate(before.5);
+            return Err(error);
+        }
+        Ok(id)
+    }
+
+    /// Append and identify a generated declaration as one transaction. All
+    /// descendants receive new IDs; the original template remains unchanged.
+    pub fn mint_generated_identified_statement(
+        &mut self,
+        source: &mut ast::Stmt,
+        anchor: NodeId,
+        kind: GeneratedKind,
+        owner: LexicalOwner,
+        limits: HirLimits,
+    ) -> Result<StmtId, LowerError> {
+        let before = (
+            self.expressions.len(),
+            self.statements.len(),
+            self.patterns.len(),
+            self.generics.len(),
+            self.types.len(),
+            self.generated_roots.len(),
+        );
+        let id = lower::generated_statement(self, source, anchor, kind, owner, limits)?;
+        if let Err(error) = identify::statement(self, source, id, limits) {
             self.expressions.truncate(before.0);
             self.statements.truncate(before.1);
             self.patterns.truncate(before.2);

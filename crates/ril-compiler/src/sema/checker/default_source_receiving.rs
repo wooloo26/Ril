@@ -70,6 +70,17 @@ impl Checker {
         let receipts = &self.default_uses;
         let hir = &self.semantic_hir;
         let moves = &self.recency_moves;
+        let numeric_holes = &self.numeric.holes;
+        let numeric_uses = &self.numeric.uses;
+        let numeric_selections = &self.numeric.selections;
+        let numeric_session = &self.numeric.replay;
+        let bindings = &self.bindings;
+        let constructors = &self.constructors;
+        let source_types = self.type_source.storage.live_types();
+        let witnesses = &self.invocation_witnesses;
+        let explanations = &self.explanations;
+        let open = self.application_effect.current_activation();
+        let layout = self.layout;
         let original = self.application_effect.with_evaluation_work(
             |expressions, evaluations, activations, work| {
                 *work = work
@@ -171,6 +182,61 @@ impl Checker {
                     || receipt.evaluation_complete != (snapshot.value.ty != Ty::Never)
                 {
                     return Err(SourceTypesError::Unresolved);
+                }
+                let numeric = crate::sema::numeric_selection::checked_resolution_at_inputs(
+                    crate::sema::numeric_selection::NumericReplayInputs {
+                        semantic_hir: Some(hir),
+                        target_layout: Some(layout),
+                        numeric_holes,
+                        numeric_uses,
+                        numeric_selections,
+                        activations,
+                        evaluations,
+                        expressions,
+                        allocation_history: moves,
+                        bindings,
+                        constructors,
+                        source_types: crate::sema::numeric_selection::NumericSourceTypes::Live(
+                            source_types,
+                        ),
+                        witnesses,
+                        explanations,
+                        open,
+                        session: Some(numeric_session),
+                        subject: None,
+                        frozen: None,
+                        query: None,
+                    },
+                    evaluation.id,
+                    work,
+                )?;
+                if let Some((_, resolution)) = numeric {
+                    let mut selected_birth = crate::sema::evaluated::transport_value_at(
+                        &observed.value,
+                        moves,
+                        evaluation.allocation_epoch,
+                        evaluation.allocation_epoch,
+                        work,
+                    )?;
+                    resolution.apply(&mut selected_birth, work)?;
+                    original_default_value(
+                        &selected_birth,
+                        evaluation.allocation_epoch,
+                        &snapshot.value,
+                        epoch,
+                        value,
+                        moves,
+                        work,
+                    )?;
+                    // Selection supplies a checked comparison view, never a
+                    // replacement for the immutable original Source descriptor.
+                    return crate::sema::evaluated::transport_value_at(
+                        &observed.value,
+                        moves,
+                        evaluation.allocation_epoch,
+                        evaluation.allocation_epoch,
+                        work,
+                    );
                 }
                 original_default_value(
                     &observed.value,

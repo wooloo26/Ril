@@ -146,7 +146,7 @@ impl Replay<'_> {
                 && self.observations.row(callee.0, work)?.context == context,
             "copy Source changed its actual primitive identity or context",
         )?;
-        crate::sema::checker::actual_prelude_name(self.facts, context, application.callee, name)?;
+        self.actual_prelude_name(context, application.callee, name, work)?;
         *work = work
             .checked_sub(self.facts.call_arguments.len())
             .ok_or_else(|| "copy Source operand lookup exceeds its work bound".to_owned())?;

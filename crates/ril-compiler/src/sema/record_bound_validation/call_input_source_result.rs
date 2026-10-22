@@ -122,7 +122,7 @@ impl Replay<'_> {
         let Some(event) = matched else {
             return Ok(None);
         };
-        super::super::super::checker::actual_prelude_name(self.facts, context, callee, identity)?;
+        self.actual_prelude_name(context, callee, identity, work)?;
         let preparation = self.input_preparation(event.id, work)?;
         require(
             preparation.target.is_none()
@@ -388,14 +388,9 @@ impl Replay<'_> {
                 &selected,
                 0,
             )?;
-            if let Some(key) = receiving_path(
-                self,
-                context,
-                &site.binding.value,
-                expression,
-                &key,
-                &mut 4096,
-            ) {
+            if let Some(key) =
+                receiving_path(self, context, &site.binding.value, expression, &key, work)?
+            {
                 receivers.push(key);
             }
         }
@@ -479,8 +474,8 @@ impl Replay<'_> {
                             argument.expression,
                             expression,
                             key,
-                            &mut 4096,
-                        )
+                            work,
+                        )?
                     {
                         receivers.push(key);
                     }
@@ -515,8 +510,7 @@ impl Replay<'_> {
                     &selected,
                     0,
                 )?;
-                if let Some(key) = receiving_path(self, context, tail, expression, &key, &mut 4096)
-                {
+                if let Some(key) = receiving_path(self, context, tail, expression, &key, work)? {
                     receivers.push(key);
                 }
             }
@@ -972,20 +966,23 @@ impl Replay<'_> {
         root: &Expr,
         key: &ArgumentKey,
         context: InvocationContext,
-    ) -> Option<ArgumentKey> {
-        let application = AstApplication::from_ast(root)?;
+        work: &mut usize,
+    ) -> Check<Option<ArgumentKey>> {
+        let Some(application) = AstApplication::from_ast(root) else {
+            return Ok(None);
+        };
         let callee = application.callee;
         let arguments = &application.operands;
         if arguments.len() != 1
             || arguments[0].label.is_some()
             || arguments[0].mode != ril_syntax::ast::ParameterMode::Read
         {
-            return None;
+            return Ok(None);
         }
         let identity = match &callee.kind {
             ExprKind::Name(name) => name.as_str(),
             ExprKind::Path(path) if path.len() == 2 && path[0] == "Prelude" => path[1].as_str(),
-            _ => return None,
+            _ => return Ok(None),
         };
         let index = match (identity, key) {
             ("Some", ArgumentKey::Name { name, arguments })
@@ -1003,10 +1000,9 @@ impl Replay<'_> {
             {
                 1
             }
-            _ => return None,
+            _ => return Ok(None),
         };
-        super::super::super::checker::actual_prelude_name(self.facts, context, callee, identity)
-            .ok()?;
+        self.actual_prelude_name(context, callee, identity, work)?;
         let matches=self.facts.copy_call_events.iter().filter(|event| {
             if event.owner!=context.owner||event.parent!=context.invocation||!event.matches_source(root) {return false;}
             let Some(token)=event.callee_expression else {return false};
@@ -1037,12 +1033,14 @@ impl Replay<'_> {
                         }))).count()==1
         }).count();
         if matches == 0 {
-            return None;
+            return Ok(None);
         }
         let ArgumentKey::Name { arguments, .. } = key else {
             unreachable!()
         };
-        Some(arguments[index].clone())
+        crate::sema::clone_work::key(work, &arguments[index], 0)
+            .ok_or("carrier payload clone exceeds its work bound")?;
+        Ok(Some(arguments[index].clone()))
     }
 
     pub(super) fn producing_result_causes(
@@ -1240,16 +1238,20 @@ fn receiving_path(
     target: &Expr,
     key: &ArgumentKey,
     work: &mut usize,
-) -> Option<ArgumentKey> {
-    *work = work.checked_sub(1)?;
+) -> Check<Option<ArgumentKey>> {
+    *work = work.checked_sub(1).ok_or("receiving path work exhausted")?;
     if std::ptr::eq(root, target) {
-        return Some(key.clone());
+        crate::sema::clone_work::key(work, key, 0)
+            .ok_or("receiving path key clone work exhausted")?;
+        return Ok(Some(key.clone()));
     }
     if let Some(application) = AstApplication::from_ast(root) {
         if application.operands.len() != 1 {
-            return None;
+            return Ok(None);
         }
-        let payload = replay.carrier_payload_key(root, key, context)?;
+        let Some(payload) = replay.carrier_payload_key(root, key, context, work)? else {
+            return Ok(None);
+        };
         return receiving_path(
             replay,
             context,
@@ -1260,13 +1262,22 @@ fn receiving_path(
         );
     }
     match (&root.kind, key) {
-        (ExprKind::Tuple(items), ArgumentKey::Tuple(keys)) if items.len() == keys.len() => items
-            .iter()
-            .zip(keys)
-            .find_map(|(item, key)| receiving_path(replay, context, item, target, key, work)),
-        (ExprKind::Array(items), ArgumentKey::Array { element, .. }) => items
-            .iter()
-            .find_map(|item| receiving_path(replay, context, item, target, element, work)),
+        (ExprKind::Tuple(items), ArgumentKey::Tuple(keys)) if items.len() == keys.len() => {
+            for (item, key) in items.iter().zip(keys) {
+                if let Some(key) = receiving_path(replay, context, item, target, key, work)? {
+                    return Ok(Some(key));
+                }
+            }
+            Ok(None)
+        }
+        (ExprKind::Array(items), ArgumentKey::Array { element, .. }) => {
+            for item in items {
+                if let Some(key) = receiving_path(replay, context, item, target, element, work)? {
+                    return Ok(Some(key));
+                }
+            }
+            Ok(None)
+        }
         (
             ExprKind::Control {
                 operation: ril_syntax::ast::ControlOperation::Return,
@@ -1274,7 +1285,7 @@ fn receiving_path(
             },
             _,
         ) => receiving_path(replay, context, value, target, key, work),
-        _ => None,
+        _ => Ok(None),
     }
 }
 

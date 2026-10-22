@@ -569,7 +569,6 @@ impl Plan {
             .filter(|observation| matches(observation.context))
             .map(|observation| facts.expressions[observation.expression].clone())
             .collect();
-        selected.contextual_types.clear();
         selected.implicit_unwraps.clear();
         selected.variant_projections.clear();
         selected.static_key_checks.clear();
@@ -584,17 +583,6 @@ impl Plan {
             match &witness.kind {
                 InvocationWitnessKind::NumericSelection(selection) => {
                     selected.numeric_selections.push(selection.clone())
-                }
-                InvocationWitnessKind::ContextualType(ty) => {
-                    if selected
-                        .contextual_types
-                        .insert(site(witness.span), ty.clone())
-                        .is_some_and(|old| old != *ty)
-                    {
-                        return Err(unsupported(
-                            "effect specialization has inconsistent contextual literal types",
-                        ));
-                    }
                 }
                 InvocationWitnessKind::ImplicitUnwrap(proof) => {
                     if selected
@@ -670,21 +658,6 @@ impl Plan {
                 }
             }
         }
-        // A contextual write is not necessarily emitted when the expression
-        // already has the selected numeric type. Use that invocation's solved
-        // Value as the fallback; a later explicit contextual witness wins.
-        // Non-literal sites are harmless here: only literal() reads this map.
-        for fact in &selected.expressions {
-            if matches!(
-                fact.value.ty,
-                crate::sema::model::Ty::Int(_) | crate::sema::model::Ty::Float(_)
-            ) {
-                selected
-                    .contextual_types
-                    .entry(site(fact.span))
-                    .or_insert_with(|| fact.value.ty.clone());
-            }
-        }
         Ok(selected)
     }
 }
@@ -700,14 +673,13 @@ enum CallableShape {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Shape {
     numeric: BTreeMap<
-        Site,
+        crate::sema::numeric_selection::NumericSite,
         (
             crate::numeric_literals::NumberType,
             crate::numeric_literals::EncodedNumber,
         ),
     >,
     expressions: BTreeMap<Site, ExpressionShape>,
-    contextual: BTreeMap<Site, crate::sema::model::Ty>,
     unwraps: BTreeMap<Site, (u32, Vec<String>)>,
     variants: BTreeMap<Site, (String, bool)>,
     budgets: BTreeMap<Site, u64>,
@@ -746,6 +718,18 @@ fn callable_shape(
     })
 }
 fn shape(facts: &SemanticFacts, original: &SemanticFacts) -> Result<Shape, NotImplemented> {
+    let mut numeric = BTreeMap::new();
+    for selection in &facts.numeric_selections {
+        let current = (selection.ty, selection.encoded.clone());
+        if numeric
+            .insert(selection.site, current.clone())
+            .is_some_and(|previous| previous != current)
+        {
+            return Err(unsupported(
+                "one actual invocation has conflicting numeric receipts for an original site",
+            ));
+        }
+    }
     let mut expressions = BTreeMap::new();
     for fact in &facts.expressions {
         let callables = fact
@@ -769,7 +753,11 @@ fn shape(facts: &SemanticFacts, original: &SemanticFacts) -> Result<Shape, NotIm
                 })
                 .collect()
         });
-        let current = (fact.value.ty.clone(), callables, signature);
+        let current = (
+            super::numeric::resolved_type(original, &fact.value.ty)?,
+            callables,
+            signature,
+        );
         if expressions
             .insert(site(fact.span), current.clone())
             .is_some_and(|old| old != current)
@@ -780,9 +768,8 @@ fn shape(facts: &SemanticFacts, original: &SemanticFacts) -> Result<Shape, NotIm
         }
     }
     Ok(Shape {
-        numeric: facts.numeric_selections.iter().map(|selection|(site(selection.span),(selection.ty,selection.encoded.clone()))).collect(),
+        numeric,
         expressions,
-        contextual: facts.contextual_types.clone(),
         unwraps: facts
             .implicit_unwraps
             .iter()

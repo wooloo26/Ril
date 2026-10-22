@@ -1708,11 +1708,59 @@ fn transfer_evidence(
     replay: &Replay,
 ) -> Check {
     if from == ScopeId(u32::MAX) {
-        if facts.external_instances.iter().any(|external| {
-            external
-                .sites
-                .contains(&(event.span.file.0, event.span.start, event.span.end))
-        }) {
+        let call = event
+            .source_event
+            .and_then(|id| {
+                facts
+                    .copy_call_events
+                    .get(id.0 as usize)
+                    .filter(|call| call.id == id)
+            })
+            .ok_or("outside producer adoption has no actual call event")?;
+        let callee = call
+            .callee_expression
+            .and_then(|id| facts.evaluations.get(id))
+            .ok_or("outside producer adoption has no physical callee")?;
+        let identity = callee
+            .identity
+            .ok_or("outside producer adoption callee has no HIR occurrence")?;
+        let value = facts
+            .expressions
+            .get(callee.id.0 as usize)
+            .ok_or("outside producer adoption callee value is absent")?;
+        let [super::model::Callable::Named(target)] = value.value.callables.as_slice() else {
+            return Err("outside producer adoption callee is not one foreign instance".into());
+        };
+        let info = facts
+            .functions
+            .get(*target)
+            .ok_or("outside producer adoption target is absent")?;
+        let mut invocations = facts.copy_invocations.iter().filter(|invocation| {
+            invocation.source_event == Some(call.id) && invocation.target == info.definition
+        });
+        let returned = invocations
+            .next()
+            .and_then(|invocation| invocation.result.as_ref());
+        if invocations.next().is_some() {
+            return Err("outside producer call has ambiguous return carriers".into());
+        }
+        if call.target == Some(info.definition)
+            && facts.external_instances.iter().any(|external| {
+                external.callable == *target
+                    && external.applications.iter().any(|application| {
+                        application.occurrence == identity
+                            && facts
+                                .activations
+                                .get(identity.activation.0 as usize)
+                                .is_some_and(|activation| activation.result == Some(callee.id))
+                    })
+            })
+            && returned.is_some_and(|result| {
+                result.value.cause == source.value.cause
+                    && present(result, case, replay)
+                        .is_ok_and(|present| producers.is_subset(&present))
+            })
+        {
             return Ok(());
         }
         return Err("outside producer adoption lacks its actual external return reception".into());

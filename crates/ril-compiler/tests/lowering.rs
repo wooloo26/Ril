@@ -128,7 +128,8 @@ fn core_retains_budget_termination_without_erasing_divergent_action_evidence() {
 
 #[test]
 fn core_retains_generic_identity_and_all_traceable_semantic_evidence() {
-    let session = Session::new(b"fn identity<T>(value:T)->T { value }".to_vec());
+    let session =
+        Session::new(b"fn identity<T>(value:T)->T { value }\nfn encoded()->f32{16777217}".to_vec());
     let verified = session.verify().unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     assert_eq!(core.functions[0].generic_parameters.len(), 1);
@@ -151,10 +152,35 @@ fn core_retains_generic_identity_and_all_traceable_semantic_evidence() {
     );
     assert_eq!(core.provenance.causes, verified.facts().explanations.causes);
     assert_eq!(core.provenance.generic_binders[0].name, "T");
+    assert!(!verified.facts().numeric_uses.is_empty());
     assert_eq!(
-        core.provenance.contextual_types.len(),
-        verified.facts().contextual_types.len()
+        core.provenance.numeric_uses.len(),
+        verified.facts().numeric_uses.len()
     );
+    assert_eq!(
+        core.provenance.numeric_selections.len(),
+        verified.facts().numeric_selections.len()
+    );
+    for (source, lowered) in verified
+        .facts()
+        .numeric_uses
+        .iter()
+        .zip(&core.provenance.numeric_uses)
+    {
+        assert_eq!(lowered.id, source.id);
+        assert_eq!(lowered.hole, source.hole);
+        assert_eq!(lowered.selection, source.selection);
+        assert_eq!(lowered.birth.source, source.birth.occurrence.source);
+        assert_eq!(lowered.birth.activation, source.birth.occurrence.activation);
+        let selected = source
+            .selection
+            .expect("a verified numeric use is selected");
+        let selection = &core.provenance.numeric_selections[selected.0 as usize];
+        assert_eq!(selection.id, selected);
+        assert_eq!(selection.literal, lowered.id);
+        assert_eq!(selection.site, lowered.site);
+        assert_eq!(selection.birth, lowered.birth);
+    }
 }
 #[test]
 fn verification_keeps_the_full_resolved_source_when_meta_definitions_are_materialized() {

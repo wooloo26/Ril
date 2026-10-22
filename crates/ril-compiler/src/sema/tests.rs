@@ -490,18 +490,9 @@ fn numeric_contexts_are_recorded_without_promoting_selected_values() {
         result.unsupported
     );
     let program = result.program.unwrap();
-    let map = &program.facts().contextual_types;
-    for (text, ty, selected_type) in [
-        (
-            "127",
-            Ty::Int("i8".into()),
-            crate::numeric_literals::NumberType::I8,
-        ),
-        (
-            "1.25",
-            Ty::Float("f32".into()),
-            crate::numeric_literals::NumberType::F32,
-        ),
+    for (text, selected_type) in [
+        ("127", crate::numeric_literals::NumberType::I8),
+        ("1.25", crate::numeric_literals::NumberType::F32),
     ] {
         let offset = source.find(text).unwrap() as u32;
         let selections: Vec<_> = program
@@ -512,12 +503,12 @@ fn numeric_contexts_are_recorded_without_promoting_selected_values() {
                 selection.span.start == offset && selection.span.end == offset + text.len() as u32
             })
             .collect();
-        if selections.is_empty() {
-            assert_eq!(map.get(&(0, offset, offset + text.len() as u32)), Some(&ty));
-        } else {
-            for selection in selections {
-                assert_eq!(selection.ty, selected_type);
-            }
+        assert!(
+            !selections.is_empty(),
+            "missing actual numeric selection for {text}"
+        );
+        for selection in selections {
+            assert_eq!(selection.ty, selected_type);
         }
     }
     rejects(

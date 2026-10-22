@@ -117,6 +117,9 @@ pub(super) fn lower(
                     crate::sema::builtin_sources::BuiltinDeclaration::Generic(id) => {
                         p::BuiltinDeclaration::Generic(*id)
                     }
+                    crate::sema::builtin_sources::BuiltinDeclaration::Numeric(id) => {
+                        p::BuiltinDeclaration::Numeric(*id)
+                    }
                 },
                 environment: contracts.environment(&mut graph.types, &value.environment),
                 concrete_effects: value.concrete_effects.clone(),

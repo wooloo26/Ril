@@ -1,12 +1,12 @@
 //! Pending scalar arithmetic keeps its source operator tree. Solving it only
 //! selects types and leaf encodings; it never evaluates a runtime expression.
 use super::super::numeric_selection::{
-    NumericDomain, NumericHole, NumericHoleState, NumericOperand, NumericSelection, NumericTerm,
-    NumericUse,
+    NumericBirth, NumericDomain, NumericHole, NumericHoleState, NumericOperand, NumericSelection,
+    NumericTerm, NumericUse,
 };
 use super::*;
-use crate::numeric_literals::{EncodedNumber, ExactLiteral, NumberType, ParseLimit};
-use num_traits::ToPrimitive;
+use crate::numeric_literals::{ExactLiteral, NumberType, ParseLimit};
+use crate::sema::source_types::SourceTypesError;
 use ril_compiler_core::ids::{NumericHoleId, NumericSelectionId, NumericUseId};
 
 pub(super) fn candidate(expression: &Expr) -> bool {
@@ -26,16 +26,81 @@ pub(super) fn candidate(expression: &Expr) -> bool {
     }
 }
 
-fn operand(value: &Value) -> NumericOperand {
-    NumericOperand {
-        ty: value.ty.clone(),
-        constant: value.constant.clone(),
-        encoded: None,
-        dependencies: value.numeric.clone(),
-    }
-}
-
 impl Checker {
+    fn numeric_operand(
+        &mut self,
+        value: &Value,
+        source: ril_compiler_core::ids::ExprId,
+        birth: NumericBirth,
+    ) -> Result<NumericOperand, SourceTypesError> {
+        let start = self
+            .application_effect
+            .activations
+            .get(birth.occurrence.activation.0 as usize)
+            .ok_or(SourceTypesError::MissingNode)?
+            .start_expression;
+        let end = self.application_effect.expressions.len();
+        let candidates = self.application_effect.occurrences(source, birth.context);
+        let from = candidates.partition_point(|index| *index < start);
+        let to = candidates.partition_point(|index| *index < end);
+        let cost = to - from + 4 + value.numeric.uses.len() + value.numeric.selections.len();
+        if !self.application_effect.admit(cost) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        self.application_effect
+            .with_work(|work| crate::sema::clone_work::ty(work, &value.ty, 0))
+            .ok_or(SourceTypesError::BudgetExceeded)?;
+        let candidates = self.application_effect.occurrences(source, birth.context);
+        let mut children = candidates[from..to].iter().filter_map(|index| {
+            let record = self.application_effect.evaluations.get(*index)?;
+            let identity = record.identity?;
+            let activation = self
+                .application_effect
+                .activations
+                .get(identity.activation.0 as usize)?;
+            (activation.parent == Some(birth.occurrence.activation)
+                && activation.kind != crate::sema::application_effect::ActivationKind::Emission)
+                .then_some((record.id, activation))
+        });
+        let (observation, child) = children.next().ok_or(SourceTypesError::MissingNode)?;
+        if children.next().is_some() || child.context != birth.context || child.scope != birth.scope
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let fact = self
+            .application_effect
+            .expressions
+            .get(observation.0 as usize)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let record = self
+            .application_effect
+            .evaluations
+            .get(observation.0 as usize)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if record.id != observation
+            || record.identity
+                != Some(crate::sema::application_effect::OccurrenceIdentity {
+                    source,
+                    activation: child.id,
+                })
+            || fact.source_id != Some(source)
+            || fact.allocation_epoch != record.allocation_epoch
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let hole = match fact.value.ty {
+            Ty::NumericHole(id) => Some(id),
+            _ => None,
+        };
+        Ok(NumericOperand {
+            observation,
+            hole,
+            ty: value.ty.clone(),
+            constant: value.constant.clone(),
+            encoded: None,
+            dependencies: value.numeric.clone(),
+        })
+    }
     pub(super) fn resolve_numeric_operands(
         &mut self,
         left: &mut Value,
@@ -45,6 +110,20 @@ impl Checker {
         if !matches!(left.ty, Ty::NumericHole(_)) && !matches!(right.ty, Ty::NumericHole(_)) {
             return;
         }
+        let roots: Vec<_> = [&*left, &*right]
+            .into_iter()
+            .filter_map(|value| match value.ty {
+                Ty::NumericHole(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let preferences = match self.numeric_preferences(&roots) {
+            Ok(preferences) => preferences,
+            Err(error) => {
+                self.unsupported(span, format!("numeric preferences failed: {error}"));
+                return;
+            }
+        };
         let mut selected = [&*left, &*right].into_iter().find_map(|value| {
             (!value.unsuffixed_numeric && super::numeric::numeric_type(&value.ty).is_some())
                 .then(|| value.ty.clone())
@@ -53,21 +132,31 @@ impl Checker {
             if selected.is_some() {
                 break;
             }
-            selected = [&*left, &*right].into_iter().find_map(|value| {
+            for value in [&*left, &*right] {
                 let Ty::NumericHole(id) = value.ty else {
-                    return None;
+                    continue;
                 };
-                if defaults {
-                    self.numeric_preference(id)
-                } else {
-                    self.numeric_rigid_preference(id)
+                selected = match preferences.get(id, defaults) {
+                    Ok(preferred) => preferred,
+                    Err(error) => {
+                        self.unsupported(
+                            span,
+                            format!("numeric preference lookup failed: {error}"),
+                        );
+                        return;
+                    }
+                };
+                if selected.is_some() {
+                    break;
                 }
-            });
+            }
         }
         let selected = selected.unwrap_or_else(|| Ty::Int("int".into()));
         for value in [left, right] {
             if matches!(value.ty, Ty::NumericHole(_)) {
-                self.commit_numeric_value(value, &selected);
+                if let Err(error) = self.commit_numeric_value(value, &selected) {
+                    self.unsupported(span, format!("numeric operand resolution failed: {error}"));
+                }
             } else if value.unsuffixed_numeric && value.ty != selected {
                 self.unsupported(
                     span,
@@ -81,10 +170,8 @@ impl Checker {
         &mut self,
         expression: &Expr,
         frame: &Frame,
+        subject: Option<&EvaluatedValue>,
     ) -> Option<Value> {
-        if self.numeric.deferred_depth == 0 {
-            return None;
-        }
         let (literal, span, minus) = match &expression.kind {
             ExprKind::Literal(literal @ (Literal::Integer(_) | Literal::Float(_))) => {
                 (literal, expression.span, None)
@@ -97,14 +184,23 @@ impl Checker {
             },
             _ => return None,
         };
-        if let Literal::Float(text) = literal
-            && !matches!(crate::static_eval::committed_float::decode(text), Ok(None))
-        {
-            return None;
-        }
         let limit = ParseLimit {
             max_bytes: 1_048_576,
         };
+        let text_len = match literal {
+            Literal::Integer(text) | Literal::Float(text) => text.len(),
+            _ => 0,
+        };
+        if !self
+            .application_effect
+            .admit(text_len.saturating_mul(4).saturating_add(16))
+        {
+            self.unsupported(
+                expression.span,
+                "pending numeric literal exceeds its work bound",
+            );
+            return Some(Value::scalar(Ty::Unknown, None, CauseId(0)));
+        }
         let parsed = match literal {
             Literal::Integer(text) => ExactLiteral::integer(text, minus.is_some(), limit),
             Literal::Float(text) => ExactLiteral::decimal(text, minus.is_some(), limit),
@@ -123,8 +219,19 @@ impl Checker {
                 return Some(Value::scalar(Ty::Unknown, None, cause));
             }
         };
-        if exact.written_type().is_some() {
-            return None;
+        if let Some(selected) = exact.written_type().or_else(|| {
+            (self.numeric.deferred_depth == 0).then_some(if matches!(literal, Literal::Float(_)) {
+                NumberType::F64
+            } else {
+                NumberType::Int
+            })
+        }) {
+            return self.numeric_expected_literal(
+                expression,
+                &crate::sema::numeric_selection::selected_ty(selected),
+                frame,
+                subject,
+            );
         }
         let cause = self.cause(
             CauseKind::Source,
@@ -133,18 +240,37 @@ impl Checker {
             [],
         );
         let context = self.invocation_context(frame.callable_owner);
+        let birth = match self.numeric_birth() {
+            Ok(birth)
+                if birth.context == context
+                    && Some(birth.occurrence.source) == expression.hir_id =>
+            {
+                birth
+            }
+            _ => {
+                self.unsupported(
+                    expression.span,
+                    "pending numeric literal has no actual activation",
+                );
+                return Some(Value::scalar(Ty::Unknown, None, cause));
+            }
+        };
+        let site = self.numeric_literal_site(expression)?;
         let use_id = NumericUseId(self.numeric.uses.len() as u32);
+        let id = NumericHoleId(self.numeric.holes.len() as u32);
         self.numeric.uses.push(NumericUse {
             id: use_id,
+            hole: id,
+            site,
+            birth,
+            selection: None,
             exact,
             span,
-            immediate_minus: minus,
             cause,
-            context,
         });
-        let id = NumericHoleId(self.numeric.holes.len() as u32);
         self.numeric.holes.push(NumericHole {
             id,
+            birth,
             domain: if matches!(literal, Literal::Float(_)) {
                 NumericDomain::FloatOnly
             } else {
@@ -194,6 +320,38 @@ impl Checker {
             [left.cause, right.cause],
         );
         let id = NumericHoleId(self.numeric.holes.len() as u32);
+        let prepared = (|| {
+            let birth = self.numeric_birth()?;
+            let original = self
+                .semantic_hir
+                .expression(birth.occurrence.source)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let crate::hir::nodes::ExprKind::Binary {
+                operator: actual,
+                left: left_id,
+                right: right_id,
+            } = &original.kind
+            else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            if actual != operator {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let (left_id, right_id) = (*left_id, *right_id);
+            let left = self.numeric_operand(left, left_id, birth)?;
+            let right = self.numeric_operand(right, right_id, birth)?;
+            Ok((birth, left, right))
+        })();
+        let (birth, left_operand, right_operand) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("numeric binary lost its actual operand occurrences: {error}"),
+                );
+                return Some(Value::scalar(Ty::Unknown, None, cause));
+            }
+        };
         let float_only = |value: &Value| match value.ty {
             Ty::NumericHole(id) => {
                 self.numeric.holes[id.0 as usize].domain == NumericDomain::FloatOnly
@@ -208,11 +366,12 @@ impl Checker {
         };
         self.numeric.holes.push(NumericHole {
             id,
+            birth,
             domain,
             term: NumericTerm::Binary {
                 operator: operator.into(),
-                left: Box::new(operand(left)),
-                right: Box::new(operand(right)),
+                left: Box::new(left_operand),
+                right: Box::new(right_operand),
             },
             state: NumericHoleState::Pending,
             span,
@@ -233,12 +392,42 @@ impl Checker {
             return None;
         };
         let id = NumericHoleId(self.numeric.holes.len() as u32);
+        let prepared = (|| {
+            let birth = self.numeric_birth()?;
+            let original = self
+                .semantic_hir
+                .expression(birth.occurrence.source)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let crate::hir::nodes::ExprKind::Unary {
+                operator: actual,
+                operand,
+            } = &original.kind
+            else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            if actual != operator {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let operand = *operand;
+            Ok((birth, self.numeric_operand(value, operand, birth)?))
+        })();
+        let (birth, operand) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("numeric unary lost its actual operand occurrence: {error}"),
+                );
+                return Some(Value::scalar(Ty::Unknown, None, value.cause));
+            }
+        };
         self.numeric.holes.push(NumericHole {
             id,
+            birth,
             domain: self.numeric.holes[child.0 as usize].domain,
             term: NumericTerm::Unary {
                 operator: operator.into(),
-                operand: Box::new(operand(value)),
+                operand: Box::new(operand),
             },
             state: NumericHoleState::Pending,
             span,
@@ -248,26 +437,19 @@ impl Checker {
         Some(result)
     }
 
-    pub(super) fn numeric_rigid_preference(&self, id: NumericHoleId) -> Option<Ty> {
-        fn visit(checker: &Checker, value: &NumericOperand) -> Option<Ty> {
-            match value.ty {
-                Ty::NumericHole(id) => checker.numeric_rigid_preference(id),
-                _ => super::numeric::numeric_type(&value.ty).map(|_| value.ty.clone()),
-            }
-        }
-        match &self.numeric.holes[id.0 as usize].term {
-            NumericTerm::Unary { operand, .. } => visit(self, operand),
-            NumericTerm::Binary { left, right, .. } => {
-                visit(self, left).or_else(|| visit(self, right))
-            }
-            _ => None,
-        }
+    pub(super) fn numeric_preferences(
+        &mut self,
+        roots: &[NumericHoleId],
+    ) -> Result<crate::sema::numeric_selection::NumericPreferences, SourceTypesError> {
+        let holes = &self.numeric.holes;
+        self.application_effect
+            .with_work(|work| crate::sema::numeric_selection::preferences(holes, roots, work))
     }
-    pub(super) fn numeric_preference(&self, id: NumericHoleId) -> Option<Ty> {
-        self.numeric_rigid_preference(id).or_else(|| {
-            (self.numeric.holes[id.0 as usize].domain == NumericDomain::FloatOnly)
-                .then(|| Ty::Float("f64".into()))
-        })
+    pub(super) fn numeric_preference(
+        &mut self,
+        id: NumericHoleId,
+    ) -> Result<Option<Ty>, SourceTypesError> {
+        self.numeric_preferences(&[id])?.get(id, true)
     }
 
     pub(super) fn numeric_arithmetic_constant(
@@ -275,43 +457,14 @@ impl Checker {
         ty: &Ty,
         constant: Option<Constant>,
     ) -> Option<Constant> {
-        let Some(Constant::Integer(number)) = constant else {
+        if !matches!(constant, Some(Constant::Integer(_))) {
             return constant;
-        };
-        let selected = super::numeric::numeric_type(ty)?;
-        if matches!(selected, NumberType::F32 | NumberType::F64) {
-            return None;
         }
-        let text = number.to_string();
-        let (text, negative) = text
-            .strip_prefix('-')
-            .map_or((text.as_str(), false), |text| (text, true));
-        ExactLiteral::integer(text, negative, ParseLimit { max_bytes: 128 })
-            .ok()?
-            .select(selected, self.layout)
-            .ok()?;
-        Some(Constant::Integer(number))
-    }
-
-    fn resolve_numeric_operand(
-        &mut self,
-        value: NumericOperand,
-        selected: NumberType,
-        cause: CauseId,
-        span: Span,
-    ) -> NumericOperand {
-        if let Ty::NumericHole(id) = value.ty {
-            return self.resolve_numeric_hole(id, selected, cause);
-        }
-        if super::numeric::numeric_type(&value.ty) != Some(selected) {
-            self.error(
-                "E0301",
-                span,
-                "stored or suffixed numeric operand cannot be reselected",
-                [cause],
-            );
-        }
-        value
+        crate::sema::numeric_selection::arithmetic_constant(
+            super::numeric::numeric_type(ty)?,
+            constant,
+            self.layout,
+        )
     }
 
     fn resolve_numeric_hole(
@@ -319,155 +472,163 @@ impl Checker {
         id: NumericHoleId,
         selected: NumberType,
         cause: CauseId,
-    ) -> NumericOperand {
-        if let Some(value) = self.numeric.resolved.get(&id) {
-            let value = value.clone();
-            if super::numeric::numeric_type(&value.ty) != Some(selected) {
+    ) -> Result<std::sync::Arc<crate::sema::numeric_selection::NumericResolution>, SourceTypesError>
+    {
+        if let Ok(resolution) = self.numeric.resolution(id) {
+            if resolution.number_type != selected {
+                let span = self.numeric.holes[id.0 as usize].span;
                 self.error(
                     "E0301",
-                    self.numeric.holes[id.0 as usize].span,
+                    span,
                     "numeric expression has contradictory selected types",
                     [cause],
                 );
+                return Err(SourceTypesError::Unresolved);
             }
-            return value;
+            return Ok(resolution.clone());
         }
-        let hole = self.numeric.holes[id.0 as usize].clone();
-        let signed_operand = match &hole.term {
-            NumericTerm::Literal(use_id) => {
-                let use_ = &self.numeric.uses[use_id.0 as usize];
-                use_.immediate_minus.map(|_| use_.span)
-            }
-            _ => None,
-        };
-        let ty = super::numeric_application::selected_type(selected);
-        let mut output = NumericOperand {
-            ty: ty.clone(),
-            constant: None,
-            encoded: None,
-            dependencies: Default::default(),
-        };
-        match hole.term {
-            NumericTerm::Literal(use_id) => {
-                let use_ = self.numeric.uses[use_id.0 as usize].clone();
-                output.dependencies.uses.insert(use_id);
-                match use_.exact.select(selected, self.layout) {
-                    Ok(encoded) => {
-                        output.constant = match &encoded {
-                            EncodedNumber::Integer { value, .. } => Some(Constant::Integer(*value)),
-                            EncodedNumber::BigInteger(value) => {
-                                value.to_i128().map(Constant::Integer)
-                            }
-                            EncodedNumber::Float(_) => None,
-                        };
-                        let selection_id = NumericSelectionId(self.numeric.selections.len() as u32);
-                        output.dependencies.selections.insert(selection_id);
-                        let selection = NumericSelection {
-                            id: selection_id,
-                            literal: use_id,
-                            span: use_.span,
-                            context: use_.context,
-                            ty: selected,
-                            layout: self.layout,
-                            encoded: encoded.clone(),
-                            cause: use_.cause,
-                        };
-                        self.numeric.selections.push(selection.clone());
-                        self.invocation_witnesses.push(super::super::effect_identity::InvocationWitness{context:use_.context,span:use_.span,kind:super::super::effect_identity::InvocationWitnessKind::NumericSelection(selection)});
-                        output.encoded = Some(encoded);
-                    }
-                    Err(error) => {
-                        self.numeric_error(error, hole.span, cause);
-                        self.numeric.holes[id.0 as usize].state = NumericHoleState::Invalid;
-                        return output;
-                    }
-                }
-            }
-            NumericTerm::Binary {
-                operator,
-                left,
-                right,
-            } => {
-                let left = self.resolve_numeric_operand(*left, selected, cause, hole.span);
-                let right = self.resolve_numeric_operand(*right, selected, cause, hole.span);
-                output.dependencies.include(&left.dependencies);
-                output.dependencies.include(&right.dependencies);
-                // This optional diagnostic fact has the same conservative
-                // arithmetic folding as the ordinary path. Division, overflow
-                // and floating arithmetic keep their runtime execution.
-                output.constant = match (&left.constant, &right.constant, operator.as_str()) {
-                    (Some(Constant::Integer(left)), Some(Constant::Integer(right)), "+") => {
-                        left.checked_add(*right).map(Constant::Integer)
-                    }
-                    (Some(Constant::Integer(left)), Some(Constant::Integer(right)), "-") => {
-                        left.checked_sub(*right).map(Constant::Integer)
-                    }
-                    (Some(Constant::Integer(left)), Some(Constant::Integer(right)), "*") => {
-                        left.checked_mul(*right).map(Constant::Integer)
-                    }
-                    _ => None,
-                };
-            }
-            NumericTerm::Unary { operator, operand } => {
-                let value = self.resolve_numeric_operand(*operand, selected, cause, hole.span);
-                output.dependencies = value.dependencies;
-                output.constant = if operator == "-" {
-                    match value.constant {
-                        Some(Constant::Integer(value)) => {
-                            value.checked_neg().map(Constant::Integer)
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
+        if !self.application_effect.admit(4) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        let hole = self
+            .numeric
+            .holes
+            .get(id.0 as usize)
+            .filter(|hole| hole.id == id)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if matches!(hole.state, NumericHoleState::Invalid) {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let span = hole.span;
+        let (literal, children) = match &hole.term {
+            NumericTerm::Literal(use_id) => (Some(*use_id), vec![]),
+            NumericTerm::Unary { operand, .. } => (None, operand.hole.into_iter().collect()),
+            NumericTerm::Binary { left, right, .. } => {
+                (None, left.hole.into_iter().chain(right.hole).collect())
             }
             NumericTerm::Join(_) => {
                 self.unsupported(
-                    hole.span,
+                    span,
                     "deferred branch numeric selection requires an exit-aware term proof",
                 );
-                return output;
+                return Err(SourceTypesError::Unresolved);
             }
-        }
-        output.constant = self.numeric_arithmetic_constant(&output.ty, output.constant);
-        self.numeric.holes[id.0 as usize].state = NumericHoleState::Committed {
-            ty: selected,
-            cause,
         };
-        self.numeric.resolved.insert(id, output.clone());
-        for fact in &mut self.application_effect.expressions {
-            if fact.value.ty == Ty::NumericHole(id) {
-                fact.value.ty = output.ty.clone();
-                fact.value.constant = if signed_operand == Some(fact.span) {
-                    None
-                } else {
-                    output.constant.clone()
-                };
-                fact.value.numeric = output.dependencies.clone();
-                fact.value.unsuffixed_numeric = false;
+        for child in &children {
+            if child.0 >= id.0 {
+                return Err(SourceTypesError::Unresolved);
             }
+            self.resolve_numeric_hole(*child, selected, cause)?;
         }
-        output
+        if let Some(use_id) = literal {
+            let use_ = self
+                .numeric
+                .uses
+                .get(use_id.0 as usize)
+                .filter(|use_| use_.id == use_id && use_.hole == id)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let cost = use_.exact.magnitude().map_or_else(
+                || use_.exact.decimal_magnitude().map_or(0, str::len),
+                |n| n.bits().div_ceil(8) as usize,
+            );
+            if !self.application_effect.admit(cost.saturating_add(4)) {
+                return Err(SourceTypesError::BudgetExceeded);
+            }
+            let encoded = match use_.exact.select(selected, self.layout) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    self.numeric_error(error, span, cause);
+                    self.numeric.holes[id.0 as usize].state = NumericHoleState::Invalid;
+                    return Err(SourceTypesError::Unresolved);
+                }
+            };
+            let use_ = &self.numeric.uses[use_id.0 as usize];
+            let selection = NumericSelection {
+                id: NumericSelectionId(self.numeric.selections.len() as u32),
+                literal: use_id,
+                site: use_.site,
+                birth: use_.birth,
+                span: use_.span,
+                ty: selected,
+                layout: self.layout,
+                encoded,
+                cause: use_.cause,
+            };
+            self.numeric.selections.push(selection.clone());
+            self.numeric.uses[use_id.0 as usize].selection = Some(selection.id);
+            self.invocation_witnesses
+                .push(super::super::effect_identity::InvocationWitness {
+                    context: selection.birth.context,
+                    span: selection.span,
+                    kind: super::super::effect_identity::InvocationWitnessKind::NumericSelection(
+                        selection,
+                    ),
+                });
+        }
+        let numeric = &self.numeric;
+        let result = self.application_effect.with_work(|work| {
+            let mut memo = BTreeMap::new();
+            for child in &children {
+                let result = numeric.resolution(*child)?.try_clone(work)?;
+                *work = work
+                    .checked_sub(1)
+                    .ok_or(SourceTypesError::BudgetExceeded)?;
+                memo.insert(*child, result);
+            }
+            crate::sema::numeric_selection::evaluate_cached(
+                crate::sema::numeric_selection::NumericInputs {
+                    holes: &numeric.holes,
+                    uses: &numeric.uses,
+                    selections: &numeric.selections,
+                    layout: self.layout,
+                },
+                id,
+                selected,
+                work,
+                &mut memo,
+            )
+        });
+        let result = match result {
+            Ok(result) => std::sync::Arc::new(result),
+            Err(error) => {
+                self.numeric.holes[id.0 as usize].state = NumericHoleState::Invalid;
+                self.unsupported(span, format!("numeric term could not be resolved: {error}"));
+                return Err(error);
+            }
+        };
+        self.numeric.holes[id.0 as usize].state = NumericHoleState::Committed {
+            cause,
+            resolution: result.clone(),
+        };
+        Ok(result)
     }
 
-    pub(super) fn commit_numeric_value(&mut self, value: &mut Value, expected: &Ty) {
+    pub(super) fn commit_numeric_value(
+        &mut self,
+        value: &mut Value,
+        expected: &Ty,
+    ) -> Result<Option<NumericHoleId>, SourceTypesError> {
         let Ty::NumericHole(id) = value.ty else {
-            return;
+            return Ok(None);
         };
         let Some(selected) = super::numeric::numeric_type(expected) else {
+            let span = self
+                .numeric
+                .holes
+                .get(id.0 as usize)
+                .ok_or(SourceTypesError::MissingNode)?
+                .span;
             self.error(
                 "E0301",
-                self.numeric.holes[id.0 as usize].span,
+                span,
                 "numeric literal expression requires a numeric selected type",
                 [value.cause],
             );
-            return;
+            return Err(SourceTypesError::Unresolved);
         };
-        let resolved = self.resolve_numeric_hole(id, selected, value.cause);
-        value.ty = resolved.ty;
-        value.constant = resolved.constant;
-        value.numeric = resolved.dependencies;
-        value.unsuffixed_numeric = false;
+        let resolved = self.resolve_numeric_hole(id, selected, value.cause)?;
+        self.application_effect
+            .with_work(|work| resolved.apply(value, work))?;
+        Ok(Some(id))
     }
 }

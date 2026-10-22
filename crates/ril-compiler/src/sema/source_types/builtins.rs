@@ -228,7 +228,7 @@ impl BuiltinId {
     pub(crate) fn definition(self) -> &'static Definition {
         &DEFINITIONS[self.0 as usize]
     }
-    pub(crate) fn bit(self) -> u64 {
+    pub(crate) fn bit(self) -> u128 {
         1 << (16 + self.0)
     }
 }
@@ -238,6 +238,18 @@ static CONSTANTS: &[(&str, Schema)] = &[
     ("Os::NativeError::WrongPlatform", ERROR),
     ("Os::Platform::Windows", PLATFORM),
     ("Os::Platform::Posix", PLATFORM),
+    (
+        "Num::NumError::InvalidSyntax",
+        Nominal(super::standard_data::Nominal::NumError),
+    ),
+    (
+        "Num::NumError::OutOfRange",
+        Nominal(super::standard_data::Nominal::NumError),
+    ),
+    (
+        "Num::NumError::InvalidRadix",
+        Nominal(super::standard_data::Nominal::NumError),
+    ),
 ];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ConstantId(u8);
@@ -251,8 +263,8 @@ impl ConstantId {
     pub(crate) fn definition(self) -> (&'static str, Schema) {
         CONSTANTS[self.0 as usize]
     }
-    pub(crate) fn bit(self) -> u64 {
-        1 << (48 + self.0)
+    pub(crate) fn bit(self) -> u128 {
+        1 << (96 + self.0)
     }
 }
 pub(crate) fn constant(name: &str) -> Option<Schema> {

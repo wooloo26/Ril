@@ -51,6 +51,7 @@ fn nominal(declaration: super::standard_data::Nominal) -> p::SourceNominal {
         N::ProcessExitStatus => p::SourceNominal::ProcessExitStatus,
         N::ProcessError => p::SourceNominal::ProcessError,
         N::IoErrorKind => p::SourceNominal::IoErrorKind,
+        N::NumError => p::SourceNominal::NumError,
     }
 }
 

@@ -16,11 +16,18 @@ impl HirProgram {
     /// Return direct structural children, bounded before each allocation.
     /// Origin anchors and lexical owners are references, not child edges.
     pub fn children(&self, id: NodeId, limit: usize) -> Result<Vec<NodeId>, WalkError> {
+        self.children_with_work(id, &mut { limit })
+    }
+
+    /// Spend the caller's monotone allowance before growing the frontier.
+    pub fn children_with_work(
+        &self,
+        id: NodeId,
+        work: &mut usize,
+    ) -> Result<Vec<NodeId>, WalkError> {
         let mut children = Vec::new();
         self.child_edges(id, &mut |child| {
-            if children.len() >= limit {
-                return Err(WalkError::Budget);
-            }
+            *work = work.checked_sub(1).ok_or(WalkError::Budget)?;
             children.push(child);
             Ok(())
         })?;

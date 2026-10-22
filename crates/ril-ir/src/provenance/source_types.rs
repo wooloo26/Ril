@@ -75,6 +75,7 @@ pub enum SourceNominal {
     ProcessExitStatus,
     ProcessError,
     IoErrorKind,
+    NumError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

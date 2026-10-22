@@ -22,6 +22,34 @@ pub(super) struct State {
 }
 
 impl State {
+    pub(super) fn declared_operand_source_schema(
+        &self,
+        syntax: &Expr,
+        env: &Env,
+        work: &mut WorkLimit,
+    ) -> BindingSchema {
+        let mut path = Vec::new();
+        let mut budget = work.remaining();
+        let name = source_path(syntax, &mut path, &mut budget);
+        work.charge(work.remaining() - budget)?;
+        let Some(name) = name else { return Ok(None) };
+        let Some(binding) = env.get(name) else {
+            return Ok(None);
+        };
+        let Some((schema, environment)) =
+            self.types.binding_schema_if_known(*binding, None, work)?
+        else {
+            return Ok(None);
+        };
+        let steps = crate::sema::source_types::steps_in(&path, work)?;
+        schema
+            .project_steps_if_structural(&steps, work)
+            .map(|schema| schema.map(|schema| (schema, environment)))
+    }
+    pub(super) fn live_types(&self) -> &crate::sema::source_types::LiveSourceTypes {
+        &self.types
+    }
+
     pub(super) fn into_parts(
         self,
     ) -> (
@@ -289,36 +317,6 @@ impl Checker {
         })
     }
 
-    /// Static constraint lookup only. This projects the immutable declaration
-    /// view, never the binding's current value, heap contents or numeric data.
-    pub(super) fn declared_operand_source_schema(
-        &self,
-        syntax: &Expr,
-        frame: &Frame,
-        work: &mut WorkLimit,
-    ) -> BindingSchema {
-        let mut path = Vec::new();
-        let mut budget = work.remaining();
-        let name = source_path(syntax, &mut path, &mut budget);
-        work.charge(work.remaining() - budget)?;
-        let Some(name) = name else { return Ok(None) };
-        let Some(binding) = frame.env.get(name) else {
-            return Ok(None);
-        };
-        let Some((schema, environment)) = self
-            .type_source
-            .storage
-            .types
-            .binding_schema_if_known(*binding, None, work)?
-        else {
-            return Ok(None);
-        };
-        let steps = crate::sema::source_types::steps_in(&path, work)?;
-        schema
-            .project_steps_if_structural(&steps, work)
-            .map(|schema| schema.map(|schema| (schema, environment)))
-    }
-
     pub(super) fn prepare_storage_binding_source(
         &mut self,
         binding: &Binding,
@@ -382,11 +380,12 @@ impl Checker {
             }
         } else {
             original.as_ref().and_then(|original| {
-                match self.original_source_receiving_schema(
+                match self.original_source_receiving_schema_at(
                     &original.value,
                     &binding.value,
                     frame,
                     &mut work,
+                    Some(initializer.expression),
                 ) {
                     Ok(Some((schema, captured))) => {
                         environment = captured;

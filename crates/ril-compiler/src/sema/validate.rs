@@ -95,6 +95,18 @@ pub fn solved_facts(facts: &SemanticFacts) -> Result<ValidatedStructure, Vec<Val
     };
     validator.structure();
     validator.boundaries();
+    if let Err(error) = super::external_instance_validation::validate(facts, &mut 4_000_000) {
+        validator.issue(ValidationIssueKind::StaticArgument(error), None, None);
+    }
+    if let Err(error) = super::numeric_selection::validate(facts, &mut 4_000_000) {
+        validator.issue(
+            ValidationIssueKind::EvaluationIdentity(format!(
+                "numeric occurrence or exact resolution is invalid: {error}"
+            )),
+            None,
+            None,
+        );
+    }
     if let Err(error) = facts
         .source_types
         .validate(&mut super::source_types::WorkLimit::new(4_000_000))

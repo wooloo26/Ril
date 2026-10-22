@@ -61,7 +61,14 @@ impl Checker {
                 return Err(SourceTypesError::Unresolved);
             };
             let input = self.application_effect.expressions[*operand].value.clone();
-            let source = self.raw_original_source_schema(&input, left, frame, work, depth + 1)?;
+            let source = self.raw_original_source_schema(
+                &input,
+                left,
+                frame,
+                work,
+                depth + 1,
+                Some(*operand),
+            )?;
             return source
                 .map(|(schema, env)| {
                     Ok((
@@ -128,6 +135,7 @@ impl Checker {
             frame,
             work,
             depth + 1,
+            Some(operand),
         )?;
         source
             .map(|(schema, env)| Ok((schema.copy_view(mode, work)?, env)))
@@ -225,8 +233,14 @@ impl Checker {
                 }
             }
             let child_value = fact.value.clone();
-            let Some((schema, child_environment)) =
-                self.raw_original_source_schema(&child_value, child, frame, work, depth + 1)?
+            let Some((schema, child_environment)) = self.raw_original_source_schema(
+                &child_value,
+                child,
+                frame,
+                work,
+                depth + 1,
+                Some(index),
+            )?
             else {
                 return Ok(None);
             };

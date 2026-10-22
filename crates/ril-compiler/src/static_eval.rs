@@ -34,9 +34,36 @@ pub(crate) fn charge_type_syntax_clone(syntax: &TypeExpr, work: &mut usize) -> O
     *work = usize::try_from(budget.work_remaining()).ok()?;
     result.ok()
 }
+pub(crate) fn charge_expression_syntax_clone(syntax: &Expr, work: &mut usize) -> Option<()> {
+    let budget = budget::Budget::with_work(u64::try_from(*work).ok()?);
+    let result = clone_work::expression(&budget, syntax);
+    *work = usize::try_from(budget.work_remaining()).ok()?;
+    result.ok()
+}
 pub(crate) fn charge_parameter_syntax_clone(syntax: &Parameter, work: &mut usize) -> Option<()> {
     let budget = budget::Budget::with_work(u64::try_from(*work).ok()?);
     let result = clone_work::parameter(&budget, syntax);
+    *work = usize::try_from(budget.work_remaining()).ok()?;
+    result.ok()
+}
+pub(crate) fn charge_function_syntax_clone(syntax: &Function, work: &mut usize) -> Option<()> {
+    let budget = budget::Budget::with_work(u64::try_from(*work).ok()?);
+    let result = clone_work::function(&budget, syntax);
+    *work = usize::try_from(budget.work_remaining()).ok()?;
+    result.ok()
+}
+pub(crate) fn charge_statement_syntax_clone(syntax: &Stmt, work: &mut usize) -> Option<()> {
+    let budget = budget::Budget::with_work(u64::try_from(*work).ok()?);
+    let result = clone_work::statement(&budget, syntax);
+    *work = usize::try_from(budget.work_remaining()).ok()?;
+    result.ok()
+}
+pub(crate) fn charge_effect_declaration_clone(
+    syntax: &EffectDeclaration,
+    work: &mut usize,
+) -> Option<()> {
+    let budget = budget::Budget::with_work(u64::try_from(*work).ok()?);
+    let result = clone_work::effect_declaration(&budget, syntax);
     *work = usize::try_from(budget.work_remaining()).ok()?;
     result.ok()
 }

@@ -6,6 +6,46 @@ use super::*;
 use crate::hir::application::Operand;
 use crate::numeric_literals::{ExactLiteral, NumberType, ParseLimit};
 
+struct NumericInputSnapshot {
+    substitutions: BTreeMap<String, Ty>,
+    parameter_templates: Vec<Option<Ty>>,
+    binders: BTreeSet<String>,
+}
+
+fn numeric_input_snapshot(
+    application: &NumericPreparedApplication,
+    work: &mut usize,
+) -> Result<NumericInputSnapshot, crate::sema::source_types::SourceTypesError> {
+    use crate::sema::source_types::SourceTypesError;
+    *work = work
+        .checked_sub(
+            application.substitutions.len()
+                + application.parameter_templates.len()
+                + application.binders.len()
+                + 1,
+        )
+        .ok_or(SourceTypesError::BudgetExceeded)?;
+    for (name, ty) in &application.substitutions {
+        *work = work
+            .checked_sub(1 + name.len().div_ceil(32))
+            .ok_or(SourceTypesError::BudgetExceeded)?;
+        crate::sema::clone_work::ty(work, ty, 0).ok_or(SourceTypesError::BudgetExceeded)?;
+    }
+    for ty in application.parameter_templates.iter().flatten() {
+        crate::sema::clone_work::ty(work, ty, 0).ok_or(SourceTypesError::BudgetExceeded)?;
+    }
+    for name in &application.binders {
+        *work = work
+            .checked_sub(1 + name.len().div_ceil(32))
+            .ok_or(SourceTypesError::BudgetExceeded)?;
+    }
+    Ok(NumericInputSnapshot {
+        substitutions: application.substitutions.clone(),
+        parameter_templates: application.parameter_templates.clone(),
+        binders: application.binders.clone(),
+    })
+}
+
 pub(super) struct PrimitiveNumericPrefix<'a> {
     pub event: CopyCallEventId,
     pub preparation: usize,
@@ -22,21 +62,7 @@ pub(super) struct NumericInputContext<'a> {
 }
 
 pub(super) fn selected_type(ty: NumberType) -> Ty {
-    let name = match ty {
-        NumberType::Int => "int",
-        NumberType::I8 => "i8",
-        NumberType::I16 => "i16",
-        NumberType::I32 => "i32",
-        NumberType::I64 => "i64",
-        NumberType::U8 => "u8",
-        NumberType::U16 => "u16",
-        NumberType::U32 => "u32",
-        NumberType::U64 => "u64",
-        NumberType::BigInt => "bigint",
-        NumberType::F32 => return Ty::Float("f32".into()),
-        NumberType::F64 => return Ty::Float("f64".into()),
-    };
-    Ty::Int(name.into())
+    crate::sema::numeric_selection::selected_ty(ty)
 }
 
 impl Checker {
@@ -70,47 +96,53 @@ impl Checker {
             );
             return vec![None; mapping.len()];
         }
-        let receiver = arguments
-            .iter()
-            .zip(mapping)
-            .find(|(_, slot)| **slot == Ok(0))
-            .map(
-                |(argument, _)| match prefixes.iter().find(|input| input.role == argument.role) {
-                    Some(input) => {
-                        let original = self
-                            .call_arguments
-                            .get(preparation)
-                            .filter(|row| row.source_event == event)
-                            .is_some_and(|row| {
-                                row.evaluated.iter().any(|child| {
-                                    child.role == input.role
-                                        && Some(child.observation.expression)
-                                            == input.value.observation
-                                        && child.observation.allocation_epoch
-                                            == input.value.allocation_epoch
-                                })
-                            });
-                        if original {
-                            input.value.birth_source().cloned()
-                        } else {
-                            Err(crate::sema::source_types::SourceTypesError::MissingNode)
+        let storage = &self.type_source.storage;
+        let preparations = &self.call_arguments;
+        let parameters = self.application_effect.with_work(|remaining| {
+            let mut work = crate::sema::source_types::WorkLimit::new(*remaining);
+            let answer = (|| {
+                let receiver = arguments
+                    .iter()
+                    .zip(mapping)
+                    .find(|(_, slot)| **slot == Ok(0))
+                    .map(|(argument, _)| {
+                        match prefixes.iter().find(|input| input.role == argument.role) {
+                            Some(input) => {
+                                let original = preparations
+                                    .get(preparation)
+                                    .filter(|row| row.source_event == event)
+                                    .is_some_and(|row| {
+                                        row.evaluated.iter().any(|child| {
+                                            child.role == input.role
+                                                && Some(child.observation.expression)
+                                                    == input.value.observation
+                                                && child.observation.allocation_epoch
+                                                    == input.value.allocation_epoch
+                                        })
+                                    });
+                                if original {
+                                    input.value.birth_source().cloned()
+                                } else {
+                                    Err(crate::sema::source_types::SourceTypesError::MissingNode)
+                                }
+                            }
+                            None => storage.declared_operand_source_schema(
+                                argument.expression,
+                                &frame.env,
+                                &mut work,
+                            ),
                         }
-                    }
-                    None => self.declared_operand_source_schema(
-                        argument.expression,
-                        frame,
-                        &mut crate::sema::source_types::WorkLimit::new(16384),
-                    ),
-                },
-            );
-        let parameters = (|| {
-            let receiver = receiver.transpose()?.flatten();
-            crate::sema::source_types::polymorphic::numeric_parameters_schema(
-                id,
-                receiver.as_ref().map(|(schema, _)| schema),
-                &mut crate::sema::source_types::WorkLimit::new(16384),
-            )
-        })();
+                    });
+                let receiver = receiver.transpose()?.flatten();
+                crate::sema::source_types::polymorphic::numeric_parameters_schema(
+                    id,
+                    receiver.as_ref().map(|(schema, _)| schema),
+                    &mut work,
+                )
+            })();
+            *remaining = work.remaining();
+            answer
+        });
         let parameters = match parameters {
             Ok(parameters) => Some(parameters),
             Err(error) => {
@@ -432,14 +464,14 @@ impl Checker {
         &mut self,
         event: CopyCallEventId,
         args: &mut [(ParameterMode, Value, Span)],
-    ) {
+    ) -> Result<(), crate::sema::source_types::SourceTypesError> {
         if args.iter().any(|(_, value, _)| value.ty == Ty::Never) {
             for (_, value, _) in args.iter_mut() {
                 if let Ty::NumericHole(id) = value.ty {
                     let expected = self
-                        .numeric_preference(id)
+                        .numeric_preference(id)?
                         .unwrap_or_else(|| Ty::Int("int".into()));
-                    self.commit_numeric_value(value, &expected);
+                    self.commit_numeric_value(value, &expected)?;
                 }
             }
             // No body enters; every currently supported literal context is
@@ -452,6 +484,7 @@ impl Checker {
                 .collect();
             application.phase = ApplicationPhase::Solved;
         }
+        Ok(())
     }
 
     pub(super) fn solve_numeric_slots(
@@ -460,10 +493,10 @@ impl Checker {
         slots: &mut [Option<(ParameterMode, EvaluatedValue, Span)>],
     ) -> Result<(), crate::sema::source_types::SourceTypesError> {
         use crate::sema::source_types::SourceTypesError;
-        let Some(application) = self.numeric.applications.get(&event).cloned() else {
+        if !self.numeric.applications.contains_key(&event) {
             return Ok(());
-        };
-        if !self.application_effect.admit(slots.len()) {
+        }
+        if !self.application_effect.admit(slots.len().saturating_mul(2)) {
             return Err(SourceTypesError::BudgetExceeded);
         }
         let actual: Vec<_> = slots
@@ -481,7 +514,24 @@ impl Checker {
         {
             return Ok(());
         }
-        let mut selected = application.substitutions.clone();
+        let application = self
+            .numeric
+            .applications
+            .get(&event)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let application = self
+            .application_effect
+            .with_work(|work| numeric_input_snapshot(application, work))?;
+        let roots: Vec<_> = actual
+            .iter()
+            .flatten()
+            .filter_map(|(value, _)| match value.ty {
+                Ty::NumericHole(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let preferences = self.numeric_preferences(&roots)?;
+        let mut selected = application.substitutions;
         for (actual, template) in actual.iter().zip(&application.parameter_templates) {
             let (Some((value, span)), Some(template)) = (actual, template) else {
                 continue;
@@ -520,11 +570,7 @@ impl Checker {
                 {
                     continue;
                 }
-                let preferred = if defaults {
-                    self.numeric_preference(id)
-                } else {
-                    self.numeric_rigid_preference(id)
-                };
+                let preferred = preferences.get(id, defaults)?;
                 if let Some(preferred) = preferred
                     && !super::types::unify_call_types(
                         template,
@@ -549,10 +595,7 @@ impl Checker {
             if !matches!(value.value.ty, Ty::NumericHole(_)) {
                 continue;
             }
-            self.prepare_evaluation_packet(value, *span)?;
-            value.invalidate_current_source();
-            let value = &mut value.value;
-            let Ty::NumericHole(id) = value.ty else {
+            let Ty::NumericHole(id) = value.value.ty else {
                 unreachable!()
             };
             let Some(template) = application
@@ -570,8 +613,8 @@ impl Checker {
             let mut unresolved = BTreeSet::new();
             expected.generic_names(&mut unresolved);
             if !unresolved.is_disjoint(&application.binders) {
-                expected = self
-                    .numeric_preference(id)
+                expected = preferences
+                    .get(id, true)?
                     .unwrap_or_else(|| Ty::Int("int".into()));
                 if !super::types::unify_call_types(
                     template,
@@ -583,11 +626,11 @@ impl Checker {
                         "E0301",
                         *span,
                         "numeric default conflicts with a selected generic type",
-                        [value.cause],
+                        [value.value.cause],
                     );
                 }
             }
-            self.commit_numeric_value(value, &expected);
+            self.select_numeric_packet(value, &expected, *span)?;
         }
         self.numeric
             .applications
@@ -712,5 +755,53 @@ impl Checker {
             .expect("prepared application");
         application.static_arguments = arguments;
         application.phase = ApplicationPhase::Frozen;
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    #[test]
+    fn numeric_input_snapshots_admit_the_complete_selected_fields_before_copying() {
+        let application = NumericPreparedApplication {
+            event: CopyCallEventId(0),
+            span: Span {
+                file: FileId(0),
+                start: 0,
+                end: 0,
+            },
+            target: None,
+            context: crate::sema::effect_identity::InvocationContext {
+                invocation: None,
+                owner: None,
+                closure: None,
+                closure_invocation: None,
+                budget_validation: false,
+                default_use: None,
+            },
+            expected_result: None,
+            arguments: Vec::new(),
+            substitutions: BTreeMap::from([(
+                "T".into(),
+                Ty::Tuple(vec![Ty::Float("f32".into()); 64]),
+            )]),
+            parameter_templates: vec![Some(Ty::Tuple(vec![Ty::Generic("T".into()); 64]))],
+            binders: BTreeSet::from(["T".into()]),
+            static_arguments: Vec::new(),
+            phase: ApplicationPhase::Collecting,
+        };
+        for allowance in [0, 8, 64] {
+            assert!(matches!(
+                numeric_input_snapshot(&application, &mut { allowance }),
+                Err(crate::sema::source_types::SourceTypesError::BudgetExceeded)
+            ));
+        }
+        let snapshot = numeric_input_snapshot(&application, &mut 4096).unwrap();
+        assert_eq!(snapshot.substitutions, application.substitutions);
+        assert_eq!(
+            snapshot.parameter_templates,
+            application.parameter_templates
+        );
+        assert_eq!(snapshot.binders, application.binders);
     }
 }

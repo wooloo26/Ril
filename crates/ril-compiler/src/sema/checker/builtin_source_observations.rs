@@ -7,23 +7,29 @@ use crate::sema::{builtin_sources::BuiltinSourceObservation, effect_identity::In
 
 #[path = "builtin_source_validation.rs"]
 mod validation;
-pub(crate) use validation::actual_prelude_name;
+pub(crate) use validation::BuiltinNameIndex;
 pub(crate) use validation::validate;
+
+pub(crate) struct CanonicalBuiltinUse<'a> {
+    pub(crate) value: &'a Value,
+    pub(crate) actual: &'a Expr,
+    pub(crate) context: InvocationContext,
+    pub(crate) observation: usize,
+}
 
 pub(crate) fn original_canonical_key(
     facts: &SemanticFacts,
-    value: &Value,
-    actual: &Expr,
-    context: InvocationContext,
+    usage: &CanonicalBuiltinUse<'_>,
+    names: &BuiltinNameIndex<'_>,
+    work: &mut crate::sema::source_types::WorkLimit,
 ) -> Result<Option<crate::sema::effect_identity::ArgumentKey>, String> {
-    validation::original_canonical_key(facts, value, actual, context)
+    validation::original_canonical_key(facts, usage, names, work)
 }
 
 pub(crate) fn original_canonical_source(
     facts: &SemanticFacts,
-    value: &Value,
-    actual: &Expr,
-    context: InvocationContext,
+    usage: &CanonicalBuiltinUse<'_>,
+    names: &BuiltinNameIndex<'_>,
     work: &mut crate::sema::source_types::WorkLimit,
 ) -> Result<
     Option<(
@@ -32,7 +38,16 @@ pub(crate) fn original_canonical_source(
     )>,
     String,
 > {
-    validation::original_canonical_source(facts, value, actual, context, work)
+    validation::original_canonical_source(facts, usage, names, work)
+}
+
+pub(crate) fn original_numeric_declaration(
+    facts: &SemanticFacts,
+    usage: &CanonicalBuiltinUse<'_>,
+    names: &BuiltinNameIndex<'_>,
+    work: &mut crate::sema::source_types::WorkLimit,
+) -> Result<Option<ril_compiler_core::numeric_builtins::NumericBuiltin>, String> {
+    validation::original_numeric_declaration(facts, usage, names, work)
 }
 
 struct Pending {
@@ -55,6 +70,50 @@ impl State {
 }
 
 impl Checker {
+    pub(super) fn numeric_builtin_observation(
+        &self,
+        expression: usize,
+        context: InvocationContext,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<
+        Option<ril_compiler_core::numeric_builtins::NumericBuiltin>,
+        crate::sema::source_types::SourceTypesError,
+    > {
+        use crate::sema::source_types::SourceTypesError;
+        let actual = self
+            .application_effect
+            .expressions
+            .get(expression)
+            .ok_or(SourceTypesError::MissingNode)?;
+        work.charge(self.builtin_sources.observations.len())?;
+        let mut matches = self
+            .builtin_sources
+            .observations
+            .iter()
+            .filter(|row| row.expression == expression);
+        let Some(row) = matches.next() else {
+            return Ok(None);
+        };
+        let BuiltinDeclaration::Numeric(id) = row.full_header else {
+            return Ok(None);
+        };
+        if matches.next().is_some()
+            || row.context != context
+            || row.identity != id.name()
+            || row.cause != actual.value.cause
+            || !crate::sema::builtin_sources::is_catalog_environment(&row.environment)
+            || !row.concrete_effects.is_empty()
+            || !row.written_formals.is_empty()
+            || !row.captures.is_empty()
+            || actual.value.ty != Ty::Unknown
+            || actual.value.signature.is_some()
+            || !actual.value.sources.is_empty()
+            || !matches!(actual.value.callables.as_slice(), [Callable::Builtin(name)] if name == id.name())
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok(Some(id))
+    }
     /// Original direct leaf only. The index is recovered from the unique
     /// physical observation and full Value, never from a current builtin tag.
     pub(super) fn original_canonical_builtin_source_schema(
@@ -62,6 +121,7 @@ impl Checker {
         value: &Value,
         actual: &Expr,
         frame: &Frame,
+        actual_observation: Option<usize>,
         work: &mut crate::sema::source_types::WorkLimit,
     ) -> Result<
         Option<(
@@ -70,7 +130,7 @@ impl Checker {
         )>,
         crate::sema::source_types::SourceTypesError,
     > {
-        use crate::sema::source_types::{SourceSchema, SourceTypesError};
+        use crate::sema::source_types::SourceTypesError;
         let context = self.invocation_context(frame.callable_owner);
         let name = match &actual.kind {
             ExprKind::Name(name) => {
@@ -89,55 +149,69 @@ impl Checker {
         if !value.sources.is_empty() {
             return Ok(None);
         }
+        work.charge(
+            (1 + name.len().div_ceil(32))
+                .saturating_mul(1 + self.operations.len().checked_ilog2().unwrap_or(0) as usize),
+        )?;
+        if self.operations.contains_key(&name) {
+            return Ok(None);
+        }
+        let Some(contract) = builtin_source_types::contract(&name, actual.span) else {
+            return Ok(None);
+        };
+        let actual_observation = actual_observation.ok_or(SourceTypesError::MissingNode)?;
         work.charge(self.builtin_sources.observations.len())?;
         let mut matching = self
             .builtin_sources
             .observations
             .iter()
-            .filter(|observation| {
-                observation.context == context
-                    && observation.identity == name
-                    && observation.cause == value.cause
-                    && self
-                        .application_effect
-                        .expressions
-                        .get(observation.expression)
-                        .is_some_and(|fact| {
-                            fact.source_id.is_some()
-                                && fact.source_id == actual.hir_id
-                                && fact.value == *value
-                        })
-                    && self
-                        .application_effect
-                        .contexts
-                        .get(observation.expression)
-                        .is_some_and(|row| {
-                            row.expression == observation.expression && row.context == context
-                        })
-            });
+            .filter(|observation| observation.expression == actual_observation);
         let Some(observation) = matching.next() else {
-            return Ok(None);
+            return Err(SourceTypesError::MissingNode);
         };
-        if matching.next().is_some() {
+        if matching.next().is_some()
+            || observation.context != context
+            || observation.identity != name
+            || observation.cause != value.cause
+            || observation.full_header != contract.source
+            || !self
+                .application_effect
+                .expressions
+                .get(actual_observation)
+                .is_some_and(|fact| fact.source_id.is_some() && fact.source_id == actual.hir_id)
+            || !self
+                .application_effect
+                .evaluations
+                .get(actual_observation)
+                .is_some_and(|record| {
+                    record.id.0 as usize == actual_observation
+                        && record.context == context
+                        && record
+                            .identity
+                            .is_some_and(|identity| Some(identity.source) == actual.hir_id)
+                })
+        {
             return Err(SourceTypesError::Unresolved);
         }
         work.charge(8)?;
         if !crate::sema::builtin_sources::is_catalog_environment(&observation.environment) {
             return Err(SourceTypesError::Unresolved);
         }
+        let before = work.remaining();
+        let mut remaining = before;
+        let agrees = crate::sema::evaluated::same_birth_value(
+            &self.application_effect.expressions[actual_observation].value,
+            value,
+            &mut remaining,
+        );
+        work.charge(before - remaining)?;
+        if !agrees? {
+            return Err(SourceTypesError::Unresolved);
+        }
         // Normalize only against the canonical builtin data schemas, not a
         // caller's local aliases. Keep all original annotations in the key.
-        let key = builtin_source_types::source_key(&observation.full_header)
-            .ok_or(SourceTypesError::Unresolved)?;
-        SourceSchema::import(
-            &key,
-            observation
-                .full_header
-                .syntax()
-                .and_then(|syntax| syntax.hir_id),
-            work,
-        )
-        .map(|schema| Some((schema, observation.environment.clone())))
+        builtin_source_types::source_schema(&observation.full_header, work)
+            .map(|schema| schema.map(|schema| (schema, observation.environment.clone())))
     }
 
     pub(super) fn mark_canonical_builtin_source(
@@ -249,6 +323,11 @@ impl Checker {
             _ => return,
         };
         let original_declaration = match &pending.contract.source {
+            BuiltinDeclaration::Numeric(id) => {
+                value.signature.is_none()
+                    && value.ty == Ty::Unknown
+                    && matches!(value.callables.as_slice(), [Callable::Builtin(actual)] if actual == id.name())
+            }
             BuiltinDeclaration::Generic(id) => {
                 value.signature.is_none()
                     && value.ty == Ty::Unknown
@@ -325,6 +404,55 @@ impl Checker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actual_effect_declarations_keep_their_source_when_they_shadow_a_catalog_name() {
+        let case = "tests/regressions/builtin-source.ril::shadowed-effect-declaration";
+        for target in ["pointer32", "pointer64"] {
+            let verified = crate::Session::with_options(
+                ril_test::case_bytes(case).to_vec(),
+                crate::CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
+                },
+            )
+            .verify()
+            .unwrap_or_else(|failure| panic!("{case} on {target}: {failure:?}"));
+            let facts = verified.facts();
+            let declaration = facts
+                .source_program
+                .as_ref()
+                .unwrap()
+                .statements
+                .iter()
+                .find_map(|statement| match &statement.kind {
+                    ril_syntax::ast::StmtKind::Effect(effect)
+                        if effect
+                            .operations
+                            .iter()
+                            .any(|operation| operation.name == "from_string") =>
+                    {
+                        statement.hir_id
+                    }
+                    _ => None,
+                })
+                .expect("the corpus declares the shadowing effect");
+            assert!(facts.operations.values().any(|operation| {
+                operation
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.effect == declaration && source.index == 0)
+            }));
+            assert!(
+                facts
+                    .builtin_source_observations
+                    .iter()
+                    .all(|row| row.identity != "Path::from_string"),
+                "an actual effect operation must retain its own declaration rather than a catalog receipt"
+            );
+            validate(facts).unwrap();
+        }
+    }
 
     #[test]
     fn closed_builtin_evidence_is_bound_to_original_hir_and_full_activation() {
@@ -467,20 +595,25 @@ mod tests {
         };
         let observed = &original.builtin_source_observations[0];
         let actual = &original.expressions[observed.expression].value;
+        let names = BuiltinNameIndex::new_with_work(original, &mut 16384).unwrap();
+        let usage = CanonicalBuiltinUse {
+            value: actual,
+            actual: &binding.value,
+            context: observed.context,
+            observation: observed.expression,
+        };
         let first = original_canonical_source(
             original,
-            actual,
-            &binding.value,
-            observed.context,
+            &usage,
+            &names,
             &mut crate::sema::source_types::WorkLimit::new(16384),
         )
         .unwrap()
         .unwrap();
         let second = original_canonical_source(
             original,
-            actual,
-            &binding.value,
-            observed.context,
+            &usage,
+            &names,
             &mut crate::sema::source_types::WorkLimit::new(16384),
         )
         .unwrap()
@@ -498,9 +631,8 @@ mod tests {
         assert!(
             original_canonical_source(
                 original,
-                actual,
-                &binding.value,
-                observed.context,
+                &usage,
+                &names,
                 &mut crate::sema::source_types::WorkLimit::new(0)
             )
             .is_err()
@@ -556,12 +688,12 @@ mod tests {
                 "physical builtin mutation {mutation} erased a required Source proof"
             );
             if mutation >= 7 {
+                let names = BuiltinNameIndex::new_with_work(&changed, &mut 16384).unwrap();
                 assert!(
                     original_canonical_source(
                         &changed,
-                        actual,
-                        &binding.value,
-                        observed.context,
+                        &usage,
+                        &names,
                         &mut crate::sema::source_types::WorkLimit::new(16384)
                     )
                     .is_err(),

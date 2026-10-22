@@ -5,6 +5,25 @@ use ril_compiler_core::{ids::ExprId, source::Span};
 use ril_syntax::ast::{self, ParameterMode};
 const MAX_OPERANDS: usize = 1_000_000;
 
+/// Borrow the original value callee beneath written static application layers.
+/// This resolves no name, evaluates no static argument and manufactures no
+/// source occurrence; consumers still authenticate the returned lexical role.
+pub(crate) fn callee_base_with_work<'a>(
+    mut callee: &'a ast::Expr,
+    work: &mut usize,
+) -> Result<&'a ast::Expr, &'static str> {
+    for _ in 0..128 {
+        *work = work
+            .checked_sub(1)
+            .ok_or("callee identity work exhausted")?;
+        match &callee.kind {
+            ast::ExprKind::Generic { base, .. } => callee = base,
+            _ => return Ok(callee),
+        }
+    }
+    Err("callee static application nesting exceeds its work bound")
+}
+
 /// Bind in written order without changing evaluation order. The same public
 /// interface relation serves emission and independent argument replay.
 pub fn bind_slots<'p, 'a>(
@@ -281,6 +300,25 @@ impl HirProgram {
 mod tests {
     use super::*;
     use ril_compiler_core::source::FileId;
+
+    #[test]
+    fn static_callee_layers_keep_the_original_base_identity_and_shared_work() {
+        use crate::sema::recursive::review_fixture as fixture;
+        let mut source = fixture::program();
+        let expression = fixture::call_mut(fixture::function_mut(&mut source, "recur"));
+        let ast::ExprKind::Call { callee, .. } = &expression.kind else {
+            panic!("call");
+        };
+        let ast::ExprKind::Generic { base, .. } = &callee.kind else {
+            panic!("generic");
+        };
+        let mut work = 2;
+        let actual = callee_base_with_work(callee, &mut work).unwrap();
+        assert_eq!(actual.hir_id, base.hir_id);
+        assert!(std::ptr::eq(actual, base.as_ref()));
+        assert_eq!(work, 0);
+        assert!(callee_base_with_work(callee, &mut work).is_err());
+    }
 
     fn span() -> Span {
         Span {

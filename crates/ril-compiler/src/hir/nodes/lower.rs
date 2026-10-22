@@ -835,6 +835,53 @@ pub(super) fn generated(
     owner: LexicalOwner,
     limits: HirLimits,
 ) -> Result<ExprId, LowerError> {
+    match generated_node(
+        hir,
+        GeneratedInput::Expression(source),
+        anchor,
+        kind,
+        owner,
+        limits,
+    )? {
+        NodeId::Expr(id) => Ok(id),
+        _ => unreachable!("generated expression has its expression identity"),
+    }
+}
+
+pub(super) fn generated_statement(
+    hir: &mut HirProgram,
+    source: &ast::Stmt,
+    anchor: NodeId,
+    kind: GeneratedKind,
+    owner: LexicalOwner,
+    limits: HirLimits,
+) -> Result<StmtId, LowerError> {
+    match generated_node(
+        hir,
+        GeneratedInput::Statement(source),
+        anchor,
+        kind,
+        owner,
+        limits,
+    )? {
+        NodeId::Stmt(id) => Ok(id),
+        _ => unreachable!("generated statement has its statement identity"),
+    }
+}
+
+enum GeneratedInput<'a> {
+    Expression(&'a ast::Expr),
+    Statement(&'a ast::Stmt),
+}
+
+fn generated_node(
+    hir: &mut HirProgram,
+    source: GeneratedInput<'_>,
+    anchor: NodeId,
+    kind: GeneratedKind,
+    owner: LexicalOwner,
+    limits: HirLimits,
+) -> Result<NodeId, LowerError> {
     if hir.info(anchor).is_none() || !owner_exists(hir, owner) {
         return Err(LowerError::MissingAnchor);
     }
@@ -847,7 +894,7 @@ pub(super) fn generated(
         hir.generics.len(),
         hir.types.len(),
     );
-    let result = Lower {
+    let mut lower = Lower {
         hir,
         left: limits,
         origin: NodeOrigin::Generated {
@@ -855,11 +902,14 @@ pub(super) fn generated(
             anchor,
             kind,
         },
-    }
-    .expr(source, owner, 0);
+    };
+    let result = match source {
+        GeneratedInput::Expression(source) => lower.expr(source, owner, 0).map(NodeId::Expr),
+        GeneratedInput::Statement(source) => lower.stmt(source, owner, 0).map(NodeId::Stmt),
+    };
     match result {
         Ok(id) => {
-            hir.generated_roots.push(NodeId::Expr(id));
+            hir.generated_roots.push(id);
             Ok(id)
         }
         Err(error) => {

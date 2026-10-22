@@ -21,7 +21,7 @@ impl Checker {
         self.input_header_schema(&key, witness.syntax.hir_id, environment, work)
     }
 
-    pub(super) fn input_original_header_schema(
+    pub(in crate::sema::checker) fn input_original_header_schema(
         &self,
         syntax: &TypeExpr,
         environment: FrozenEnvironment,
@@ -65,7 +65,28 @@ impl Checker {
         frame: &Frame,
         work: &mut WorkLimit,
     ) -> InputSource {
-        let source = self.raw_original_source_schema(value, syntax, frame, work, 0)?;
+        let observation = self
+            .application_effect
+            .current_activation()
+            .and_then(|id| self.application_effect.activations.get(id.0 as usize))
+            .filter(|activation| {
+                activation.source == syntax.hir_id
+                    && activation.context == self.invocation_context(frame.callable_owner)
+            })
+            .and_then(|activation| activation.result)
+            .map(|id| id.0 as usize);
+        self.original_source_receiving_schema_at(value, syntax, frame, work, observation)
+    }
+
+    pub(in crate::sema::checker) fn original_source_receiving_schema_at(
+        &mut self,
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+        work: &mut WorkLimit,
+        observation: Option<usize>,
+    ) -> InputSource {
+        let source = self.raw_original_source_schema(value, syntax, frame, work, 0, observation)?;
         let Some((schema, environment)) = source else {
             return Ok(None);
         };
@@ -125,10 +146,17 @@ impl Checker {
         frame: &Frame,
         work: &mut WorkLimit,
         depth: usize,
+        observation: Option<usize>,
     ) -> InputSource {
         work.charge(1)?;
         if depth >= 64 {
             return Err(SourceTypesError::BudgetExceeded);
+        }
+        if let Some(source) = self.external_static_callee_source(value, syntax, frame, work)? {
+            return Ok(Some(source));
+        }
+        if let Some(source) = self.numeric_static_callee_source(value, syntax, frame, work)? {
+            return Ok(Some(source));
         }
         if let Some(source) = self.storage_binding_source_schema(value, syntax, frame) {
             return source;
@@ -196,11 +224,14 @@ impl Checker {
             return Ok(Some(source));
         }
         if let Some(source) =
-            self.original_canonical_builtin_source_schema(value, syntax, frame, work)?
+            self.original_canonical_builtin_source_schema(value, syntax, frame, observation, work)?
         {
             return Ok(Some(source));
         }
         if let Some(source) = self.original_closure_source_schema(value, work)? {
+            return Ok(Some(source));
+        }
+        if let Some(source) = self.original_named_header_source_schema(value, syntax, work)? {
             return Ok(Some(source));
         }
         if let Some(witness) = &value.source_type_witness {
@@ -231,82 +262,6 @@ impl Checker {
                     Ok(target.schema.map(|schema| (schema, environment.clone())))
                 });
             }
-            if let [Callable::Named(index)] = value.callables.as_slice() {
-                let function = self.functions[*index].clone();
-                if !function.syntax.generics.is_empty() {
-                    return Ok(None);
-                }
-                work.charge(
-                    1 + function.syntax.parameters.len() + function.syntax.annotations.len(),
-                )?;
-                let declaration = function
-                    .hir_id
-                    .and_then(|id| self.semantic_hir.statement(id))
-                    .ok_or(SourceTypesError::MissingNode)?;
-                let crate::hir::nodes::StmtKind::Function(original) = &declaration.kind else {
-                    return Err(SourceTypesError::Unresolved);
-                };
-                if original.name != function.syntax.name
-                    || original.parameters.len() != function.syntax.parameters.len()
-                    || original.return_type
-                        != function
-                            .syntax
-                            .return_type
-                            .as_ref()
-                            .and_then(|ty| ty.hir_id)
-                    || original.annotations.len() != function.syntax.annotations.len()
-                    || !matches!(binding.value.callables.as_slice(), [Callable::Named(actual)] if actual == index)
-                {
-                    return Err(SourceTypesError::Unresolved);
-                }
-                let environment = function.typing_environment;
-                let mut parameters = Vec::new();
-                for (parameter, original) in
-                    function.syntax.parameters.iter().zip(&original.parameters)
-                {
-                    let Some(header) = parameter.ty.as_ref() else {
-                        return Ok(None);
-                    };
-                    if header.hir_id != original.ty
-                        || parameter.pattern.hir_id != Some(original.pattern)
-                        || parameter.mode != original.mode
-                    {
-                        return Err(SourceTypesError::Unresolved);
-                    }
-                    let Some((schema, _)) =
-                        self.input_original_header_schema(header, environment.clone(), work)?
-                    else {
-                        return Ok(None);
-                    };
-                    parameters.push((parameter.mode, schema));
-                }
-                let result = if let Some(header) = &function.syntax.return_type {
-                    let Some((schema, _)) =
-                        self.input_original_header_schema(header, environment.clone(), work)?
-                    else {
-                        return Ok(None);
-                    };
-                    schema
-                } else {
-                    SourceSchema::tuple(&[], None, work)?
-                };
-                let mut annotations = Vec::new();
-                for (annotation, original) in function
-                    .syntax
-                    .annotations
-                    .iter()
-                    .zip(&original.annotations)
-                {
-                    work.text(&annotation.text)?;
-                    if annotation.kind != original.kind || annotation.text != original.text {
-                        return Err(SourceTypesError::Unresolved);
-                    }
-                    annotations.push(annotation.text.replace(' ', ""));
-                }
-                let schema =
-                    SourceSchema::callable(&parameters, &result, &annotations, None, work)?;
-                return Ok(Some((schema, environment)));
-            }
         }
         if let Some(source) =
             self.original_composite_source_schema(value, syntax, frame, work, depth)?
@@ -314,6 +269,160 @@ impl Checker {
             return Ok(Some(source));
         }
         Ok(None)
+    }
+
+    /// Qualified module references keep their canonical Path node after name
+    /// normalization. The original declaration owns their callable header's
+    /// interpretation, just as it does for an unqualified Name. Stored public
+    /// views have already been handled before entering this declaration path.
+    fn original_named_header_source_schema(
+        &self,
+        value: &Value,
+        syntax: &Expr,
+        work: &mut WorkLimit,
+    ) -> InputSource {
+        let name = match &syntax.kind {
+            ExprKind::Name(name) => std::borrow::Cow::Borrowed(name.as_str()),
+            ExprKind::Path(path) => {
+                work.charge(path.len() + 1)?;
+                for part in path {
+                    work.text(part)?;
+                }
+                std::borrow::Cow::Owned(path.join("::"))
+            }
+            _ => return Ok(None),
+        };
+        let Some(id) = value.sources.first() else {
+            return Ok(None);
+        };
+        let binding = self
+            .bindings
+            .get(*id)
+            .ok_or(SourceTypesError::MissingNode)?;
+        work.text(&binding.name)?;
+        work.text(&name)?;
+        if value.sources.len() != 1 || binding.parameter || binding.name != name.as_ref() {
+            return Ok(None);
+        }
+        let [Callable::Named(index)] = value.callables.as_slice() else {
+            return Ok(None);
+        };
+        let function = self
+            .functions
+            .get(*index)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if !function.syntax.generics.is_empty() {
+            return Ok(None);
+        }
+        work.charge(1 + function.syntax.parameters.len() + function.syntax.annotations.len())?;
+        work.text(&function.syntax.name)?;
+        let declaration = function
+            .hir_id
+            .and_then(|id| self.semantic_hir.statement(id))
+            .ok_or(SourceTypesError::MissingNode)?;
+        let crate::hir::nodes::StmtKind::Function(original) = &declaration.kind else {
+            return Err(SourceTypesError::Unresolved);
+        };
+        work.text(&original.name)?;
+        if original.name != function.syntax.name
+            || original.name != binding.name
+            || function.lexical.get(name.as_ref()) != Some(id)
+            || original.parameters.len() != function.syntax.parameters.len()
+            || original.return_type
+                != function
+                    .syntax
+                    .return_type
+                    .as_ref()
+                    .and_then(|ty| ty.hir_id)
+            || original.annotations.len() != function.syntax.annotations.len()
+            || !matches!(binding.value.callables.as_slice(), [Callable::Named(actual)] if actual == index)
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let environment = &function.typing_environment;
+        let mut parameters = Vec::with_capacity(function.syntax.parameters.len());
+        for (parameter, original) in function.syntax.parameters.iter().zip(&original.parameters) {
+            let Some(header) = parameter.ty.as_ref() else {
+                return Ok(None);
+            };
+            if header.hir_id != original.ty
+                || parameter.pattern.hir_id != Some(original.pattern)
+                || parameter.mode != original.mode
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let Some((schema, _)) =
+                self.input_original_header_schema(header, environment.clone(), work)?
+            else {
+                return Ok(None);
+            };
+            parameters.push((parameter.mode, schema));
+        }
+        let result = if let Some(header) = &function.syntax.return_type {
+            let Some((schema, _)) =
+                self.input_original_header_schema(header, environment.clone(), work)?
+            else {
+                return Ok(None);
+            };
+            schema
+        } else {
+            SourceSchema::tuple(&[], None, work)?
+        };
+        let mut annotations = Vec::with_capacity(function.syntax.annotations.len());
+        for (annotation, original) in function
+            .syntax
+            .annotations
+            .iter()
+            .zip(&original.annotations)
+        {
+            work.text(&annotation.text)?;
+            work.text(&original.text)?;
+            if annotation.kind != original.kind || annotation.text != original.text {
+                return Err(SourceTypesError::Unresolved);
+            }
+            annotations.push(annotation.text.replace(' ', ""));
+        }
+        let schema = SourceSchema::callable(&parameters, &result, &annotations, None, work)?;
+        // A nested declaration captures actual generic Source selections at
+        // creation. Its original header still names the declaration's UID;
+        // applying those selections after composition keeps both every graph
+        // edge and the selected view's interpretation intact.
+        let required = schema.binder_identities(work)?;
+        work.charge(required.len())?;
+        let mut replacements = BTreeMap::new();
+        let mut dependencies = Vec::with_capacity(required.len());
+        for identity in &required {
+            work.text(identity)?;
+            work.charge(
+                1 + environment
+                    .generic_sources
+                    .len()
+                    .checked_ilog2()
+                    .unwrap_or(0) as usize,
+            )?;
+            let Some(source) = environment.generic_sources.get(identity) else {
+                continue;
+            };
+            if source.environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            work.charge(2 + replacements.len().checked_ilog2().unwrap_or(0) as usize)?;
+            replacements.insert(identity.clone(), source.schema.clone());
+            dependencies.push((&source.schema, &source.environment));
+        }
+        let selected = schema.substitute(&replacements, work)?;
+        let selected_environment = if !selected.requires_environment(work)? {
+            environment.clone()
+        } else if schema.requires_declaration_environment(work)? {
+            producing_result::result_environment(
+                dependencies.into_iter().chain([(&schema, environment)]),
+                environment,
+                work,
+            )?
+        } else {
+            producing_result::result_environment(dependencies, environment, work)?
+        };
+        Ok(Some((selected, selected_environment)))
     }
 
     /// A published callable view owns its result contract. Follow the real
@@ -369,6 +478,27 @@ impl Checker {
         {
             return Err(SourceTypesError::Unresolved);
         }
+        let parent = self.source_projection_occurrence(
+            syntax.hir_id.ok_or(SourceTypesError::MissingNode)?,
+            value,
+            context,
+            work,
+        )?;
+        if self
+            .source_projection_receipts()
+            .child_observation(
+                parent,
+                application
+                    .callee
+                    .hir_id
+                    .ok_or(SourceTypesError::MissingNode)?,
+                work,
+            )?
+            .0 as usize
+            != token
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
         if let [Callable::Builtin(name)] = callee.value.callables.as_slice()
             && let Some(operation) = self.operations.get(name)
         {
@@ -393,8 +523,14 @@ impl Checker {
             return Ok(Some((result, environment)));
         }
         let callee = callee.value.clone();
-        let Some((schema, environment)) =
-            self.raw_original_source_schema(&callee, application.callee, frame, work, depth + 1)?
+        let Some((schema, environment)) = self.raw_original_source_schema(
+            &callee,
+            application.callee,
+            frame,
+            work,
+            depth + 1,
+            Some(token),
+        )?
         else {
             return Ok(None);
         };

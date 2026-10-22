@@ -18,6 +18,7 @@ pub(super) enum Identity {
     Closed(crate::sema::source_types::builtins::BuiltinId),
     Constant(crate::sema::source_types::builtins::ConstantId),
     Generic(GenericBuiltin),
+    Numeric(ril_compiler_core::numeric_builtins::NumericBuiltin),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ impl Identity {
             Self::Closed(id) => id.definition().name,
             Self::Constant(id) => id.definition().0,
             Self::Generic(id) => id.name(),
+            Self::Numeric(id) => id.name(),
         }
     }
 }
@@ -56,6 +58,15 @@ impl Identity {
 /// not this operation's source. Unsupported builtin schemas remain absent.
 pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
     use crate::sema::source_types::{WorkLimit, builtins};
+    if let Some(id) = ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(canonical_name) {
+        return Some(Contract {
+            identity: Identity::Numeric(id),
+            source: BuiltinDeclaration::Numeric(id),
+            effects: &[],
+            written_formals: &[],
+            captures: BTreeSet::new(),
+        });
+    }
     if let Some(id) = GenericBuiltin::lookup(canonical_name) {
         return Some(Contract {
             identity: Identity::Generic(id),
@@ -133,7 +144,10 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
             },
             "Process::ProcessError",
         ),
-        Identity::Closed(_) | Identity::Constant(_) | Identity::Generic(_) => unreachable!(),
+        Identity::Closed(_)
+        | Identity::Constant(_)
+        | Identity::Generic(_)
+        | Identity::Numeric(_) => unreachable!(),
     };
     Some(Contract {
         identity,
@@ -168,6 +182,7 @@ pub(super) fn source_key(
     declaration: &BuiltinDeclaration,
 ) -> Option<crate::sema::effect_identity::ArgumentKey> {
     match declaration {
+        BuiltinDeclaration::Numeric(_) => None,
         BuiltinDeclaration::Generic(id) => Some(
             crate::sema::effect_identity::ArgumentKey::GenericBuiltin(*id),
         ),
@@ -179,6 +194,28 @@ pub(super) fn source_key(
             Some(key)
         }
     }
+}
+
+pub(super) fn source_schema(
+    declaration: &BuiltinDeclaration,
+    work: &mut crate::sema::source_types::WorkLimit,
+) -> Result<
+    Option<crate::sema::source_types::SourceSchema>,
+    crate::sema::source_types::SourceTypesError,
+> {
+    use crate::sema::source_types::{SourceSchema, SourceTypesError};
+    if let BuiltinDeclaration::Numeric(id) = declaration {
+        return crate::sema::source_types::numeric::definition(*id)
+            .map(|definition| definition.schema(work))
+            .transpose();
+    }
+    let key = source_key(declaration).ok_or(SourceTypesError::Unresolved)?;
+    SourceSchema::import(
+        &key,
+        declaration.syntax().and_then(|syntax| syntax.hir_id),
+        work,
+    )
+    .map(Some)
 }
 
 #[cfg(test)]

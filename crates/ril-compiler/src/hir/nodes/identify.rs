@@ -984,6 +984,28 @@ pub(super) fn expression(
     .expr(source, id, 0)
 }
 
+pub(super) fn statement(
+    hir: &HirProgram,
+    source: &mut ast::Stmt,
+    id: StmtId,
+    limits: HirLimits,
+) -> Result<(), LowerError> {
+    Identify {
+        hir,
+        left: limits,
+        write: false,
+        validate_ids: false,
+    }
+    .stmt(source, id, 0)?;
+    Identify {
+        hir,
+        left: limits,
+        write: true,
+        validate_ids: false,
+    }
+    .stmt(source, id, 0)
+}
+
 pub(super) fn validate_type_syntax(
     hir: &HirProgram,
     source: &mut ast::TypeExpr,
@@ -1257,6 +1279,84 @@ mod tests {
         assert!(
             matches!(hir.expression(id).unwrap().info.origin, NodeOrigin::Generated { generation: 0, anchor: actual, .. } if actual == anchor)
         );
+    }
+
+    #[test]
+    fn generated_statement_identification_rolls_back_every_arena_before_publishing_ids() {
+        let mut source = program(name("original"));
+        let mut hir = HirProgram::lower_identified(&mut source, InputOrigin::Source).unwrap();
+        let anchor = NodeId::Stmt(source.statements[0].hir_id.unwrap());
+        let before = hir.node_count();
+        let mut generated = ast::Stmt {
+            hir_id: Some(StmtId(99)),
+            span: span(),
+            kind: ast::StmtKind::Expr {
+                expression: record(name("actual"), name("different")),
+                terminated: false,
+            },
+        };
+        assert_eq!(
+            hir.mint_generated_identified_statement(
+                &mut generated,
+                anchor,
+                GeneratedKind::StaticSpecialization,
+                LexicalOwner::Module,
+                HirLimits::default(),
+            ),
+            Err(LowerError::Correspondence)
+        );
+        assert_eq!(hir.node_count(), before);
+        assert!(hir.generated_roots().is_empty());
+        assert_eq!(generated.hir_id, Some(StmtId(99)));
+        let ast::StmtKind::Expr { expression, .. } = &mut generated.kind else {
+            unreachable!()
+        };
+        assert_eq!(expression.hir_id, None);
+        let ast::ExprKind::Record {
+            fields, members, ..
+        } = &mut expression.kind
+        else {
+            unreachable!()
+        };
+        let ast::RecordMember::Field(member) = &members[0] else {
+            unreachable!()
+        };
+        assert_eq!(member.value.hir_id, None);
+        fields[0].value = member.value.clone();
+        let limited = HirLimits {
+            nodes: 1,
+            ..HirLimits::default()
+        };
+        assert!(matches!(
+            hir.mint_generated_identified_statement(
+                &mut generated,
+                anchor,
+                GeneratedKind::StaticSpecialization,
+                LexicalOwner::Module,
+                limited,
+            ),
+            Err(LowerError::Budget(_))
+        ));
+        assert_eq!(hir.node_count(), before);
+        assert!(hir.generated_roots().is_empty());
+        assert_eq!(generated.hir_id, Some(StmtId(99)));
+        let id = hir
+            .mint_generated_identified_statement(
+                &mut generated,
+                anchor,
+                GeneratedKind::StaticSpecialization,
+                LexicalOwner::Module,
+                HirLimits::default(),
+            )
+            .unwrap();
+        assert_eq!(generated.hir_id, Some(id));
+        assert_ne!(id, StmtId(99));
+        assert_eq!(hir.generated_roots(), &[NodeId::Stmt(id)]);
+        assert!(matches!(hir.statement(id).unwrap().info.origin,
+            NodeOrigin::Generated { generation: 0, anchor: actual,
+                kind: GeneratedKind::StaticSpecialization } if actual == anchor));
+        hir.validate_statement_syntax(&mut generated, id, HirLimits::default())
+            .unwrap();
     }
 
     #[test]

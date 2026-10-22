@@ -7,6 +7,8 @@ impl Checker {
         args: &[(ParameterMode, Value, Span)],
         span: Span,
         caller: &mut Frame,
+        verifying: bool,
+        callback_epoch: usize,
     ) -> Option<Value> {
         let info = self.functions[id].clone();
         let summary = self
@@ -26,6 +28,13 @@ impl Checker {
         let mut frame = self.frame(info.lexical.clone(), false);
         frame.definition = Some(info.definition);
         frame.callable_owner = Some(CallableOwner::Function(info.definition));
+        if let Some(&invocation) = self.copy_invocation_stack.last() {
+            self.scopes.set_origin(
+                frame.owner,
+                crate::sema::scopes::ScopeOrigin::Named(invocation),
+            );
+        }
+        self.scopes.set_parent(frame.owner, caller.owner);
         let mut inputs = Vec::new();
         let mut loans = BTreeMap::new();
         for (index, parameter) in info.syntax.parameters.iter().enumerate() {
@@ -175,9 +184,16 @@ impl Checker {
                 }
             }
         }
+        for access in &mut frame.obligations.accesses {
+            access.transport(&self.recency_moves);
+        }
         self.check_exclusivity(&frame.obligations.accesses, span);
         self.check_annotations(&info.syntax, &frame, info.owner);
+        let invocation = self.named_invocation_summary(id, &frame, &returned);
+        self.record_effect_invocation(&info, span, &invocation, verifying, callback_epoch);
+        self.invocations.push(invocation);
         self.end_invocation_loans(&mut result, &frame, &loans, span);
+        self.completed_invocation = Some((frame.owner, frame.obligations.clone()));
         for &binding in &frame.locals {
             self.check_authority_use(binding);
             self.bindings[binding].alive = false;

@@ -6,6 +6,9 @@ use std::sync::{
 
 static NEXT_ARENA: AtomicU64 = AtomicU64::new(1);
 
+#[path = "graph_imports.rs"]
+mod imports;
+
 /// An ID cannot be mistaken for the same ordinal in an unrelated snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceTypeId {
@@ -247,6 +250,7 @@ impl SourceNode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceTypesError {
+    InvalidEvidence(String),
     BudgetExceeded,
     ForeignIdentity,
     MissingNode,
@@ -273,7 +277,11 @@ pub enum SourceTypesError {
 
 impl std::fmt::Display for SourceTypesError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Self::InvalidEvidence(reason) = self {
+            return write!(formatter, "original Source evidence failed: {reason}");
+        }
         formatter.write_str(match self {
+            Self::InvalidEvidence(_) => unreachable!("evidence reason rendered above"),
             Self::BudgetExceeded => "source type reconstruction budget exhausted",
             Self::ForeignIdentity => "source type identity belongs to another snapshot",
             Self::MissingNode => "source type node is missing or unfinished",
@@ -331,6 +339,10 @@ pub(crate) struct SourceBuilder {
     arena: u64,
     nodes: Vec<Option<Arc<SourceNode>>>,
     retained: usize,
+    /// Only immutable source arenas may enter this address-based copy index.
+    /// It shares structure; it does not certify completeness or compatibility.
+    imports: std::collections::BTreeMap<SourceTypeId, SourceTypeId>,
+    import_order: Vec<SourceTypeId>,
 }
 
 impl SourceBuilder {
@@ -342,6 +354,8 @@ impl SourceBuilder {
             arena,
             nodes: vec![],
             retained: 0,
+            imports: std::collections::BTreeMap::new(),
+            import_order: vec![],
         })
     }
     pub(crate) fn reserve(
@@ -432,10 +446,15 @@ impl SourceBuilder {
             nodes: nodes.into(),
         })
     }
-    pub(super) fn checkpoint(&self) -> (usize, usize) {
-        (self.nodes.len(), self.retained)
+    pub(super) fn checkpoint(&self) -> (usize, usize, usize) {
+        (self.nodes.len(), self.retained, self.import_order.len())
     }
-    pub(super) fn rollback(&mut self, checkpoint: (usize, usize)) {
+    pub(super) fn rollback(&mut self, checkpoint: (usize, usize, usize)) {
+        while self.import_order.len() > checkpoint.2 {
+            if let Some(source) = self.import_order.pop() {
+                self.imports.remove(&source);
+            }
+        }
         self.nodes.truncate(checkpoint.0);
         self.retained = checkpoint.1;
     }

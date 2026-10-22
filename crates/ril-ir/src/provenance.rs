@@ -16,6 +16,8 @@ mod callable_entries;
 pub use callable_entries::*;
 mod generated_sources;
 pub use generated_sources::*;
+mod numeric;
+pub use numeric::*;
 mod storage_sources;
 pub use storage_sources::*;
 mod source_types;
@@ -65,6 +67,8 @@ pub struct Graph {
     pub closure_exposures: Vec<ClosureExposure>,
     pub closure_discards: Vec<ClosureDiscard>,
     pub closure_exclusivity_certificate: Option<ClosureExclusivityCertificate>,
+    pub numeric_uses: Vec<NumericUse>,
+    pub numeric_holes: Vec<NumericHole>,
     pub numeric_selections: Vec<NumericSelection>,
     pub condition_evaluations: Vec<ConditionEvaluation>,
     pub specializations: Vec<crate::specialization::Instance>,
@@ -76,7 +80,6 @@ pub struct Graph {
     pub copy_template_closure: Option<CopyTemplateClosure>,
     pub copy_boundaries: Vec<CopyBoundary>,
     pub types: Vec<Type>,
-    pub contextual_types: Vec<(Span, TypeId)>,
     pub generic_binders: Vec<GenericBinder>,
     pub static_definitions: Vec<StaticDefinition>,
     pub result_duties: Vec<ResultDuty>,
@@ -525,6 +528,9 @@ pub struct GenericBinder {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
+    /// Historical numeric producers retain their unresolved identity. Only an
+    /// authenticated committed resolution supplies an executable number type.
+    NumericHole(ril_compiler_core::ids::NumericHoleId),
     Unknown,
     Never,
     Unit,
@@ -642,34 +648,6 @@ pub enum Constant {
     Bool(bool),
     Unit,
 }
-#[derive(Debug, Clone, Default)]
-pub struct NumericDependencies {
-    pub uses: Vec<ril_compiler_core::ids::NumericUseId>,
-    pub selections: Vec<ril_compiler_core::ids::NumericSelectionId>,
-}
-#[derive(Debug, Clone)]
-pub enum NumericEncoding {
-    Integer { value: i128, bits: u8, signed: bool },
-    BigInteger(String),
-    Float { bits: u8, payload: u64 },
-}
-#[derive(Debug, Clone)]
-pub struct NumericSelection {
-    pub id: ril_compiler_core::ids::NumericSelectionId,
-    pub literal: ril_compiler_core::ids::NumericUseId,
-    pub span: Span,
-    pub invocation: Option<CopyInstanceId>,
-    pub owner: Option<CallableOwner>,
-    pub closure: Option<u32>,
-    pub closure_invocation: Option<u32>,
-    pub default_use: Option<u32>,
-    pub budget_validation: bool,
-    pub ty: TypeId,
-    pub layout: ril_compiler_core::target::TargetLayout,
-    pub encoded: NumericEncoding,
-    pub cause: CauseId,
-}
-
 #[derive(Debug, Clone)]
 pub struct SourceTypeWitness {
     /// Canonical source identity, independent of its runtime representation.

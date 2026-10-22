@@ -45,7 +45,7 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> SourceExpression {
-        self.expression_packet_mode(expr, frame, expected, source, false)
+        self.expression_packet_mode(expr, frame, expected, source, false, None)
     }
 
     pub(super) fn expression_source_packet(
@@ -55,7 +55,18 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> SourceExpression {
-        self.expression_packet_mode(expr, frame, expected, source, true)
+        self.expression_packet_mode(expr, frame, expected, source, true, None)
+    }
+
+    pub(super) fn expression_pattern_value(
+        &mut self,
+        expr: &Expr,
+        frame: &mut Frame,
+        expected: Option<&Ty>,
+        subject: Option<&EvaluatedValue>,
+    ) -> Value {
+        self.expression_packet_mode(expr, frame, expected, None, false, subject)
+            .value
     }
 
     fn expression_packet_mode(
@@ -65,6 +76,7 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
         capture_source: bool,
+        pattern_subject: Option<&EvaluatedValue>,
     ) -> SourceExpression {
         self.cancellation_checkpoint(expr.span, frame);
         if self.analysis_depth >= 64 || self.analysis_visits >= 1_000_000 {
@@ -124,8 +136,8 @@ impl Checker {
         let mut source_call_event = None;
         let mut value = expected
             .as_ref()
-            .and_then(|ty| self.numeric_expected_literal(expr, ty, frame))
-            .or_else(|| self.numeric_pending_literal(expr, frame))
+            .and_then(|ty| self.numeric_expected_literal(expr, ty, frame, pattern_subject))
+            .or_else(|| self.numeric_pending_literal(expr, frame, pattern_subject))
             .unwrap_or_else(|| {
                 self.expression_inner(
                     expr,
@@ -146,14 +158,6 @@ impl Checker {
         if let Some(source) = expr.hir_id {
             self.read_epochs
                 .insert((source, frame.owner), self.write_events.len());
-        }
-        if value.unsuffixed_numeric
-            && matches!(value.ty, Ty::Int(_) | Ty::Float(_))
-            && let Some(ty) =
-                self.contextual_types
-                    .get(&(expr.span.file.0, expr.span.start, expr.span.end))
-        {
-            value.ty = ty.clone();
         }
         self.infer_expression_source_type(&mut value, expr);
         self.channel_boolean_evaluation(&mut value, expr.span, frame);
@@ -201,12 +205,8 @@ impl Checker {
             &self.application_effect.evaluations[observation],
         );
         if capture_source {
-            self.capture_evaluation_source(
-                &mut packet,
-                expr,
-                frame,
-                &mut crate::sema::source_types::WorkLimit::new(16384),
-            );
+            let lease = self.application_effect.lease_work(16384);
+            self.capture_evaluation_source(&mut packet, expr, frame, lease);
         }
         self.transport_evaluation_packet(&mut packet, expr.span);
         let value = &packet.value;
@@ -1462,10 +1462,22 @@ impl Checker {
                 }
                 if b.ty == Ty::Never && before.is_none() {
                     if let Ty::NumericHole(id) = a.ty {
-                        let expected = self
-                            .numeric_preference(id)
-                            .unwrap_or_else(|| Ty::Int("int".into()));
-                        self.commit_numeric_value(&mut a, &expected);
+                        let expected = match self.numeric_preference(id) {
+                            Ok(preferred) => preferred.unwrap_or_else(|| Ty::Int("int".into())),
+                            Err(error) => {
+                                self.unsupported(
+                                    expr.span,
+                                    format!("abrupt numeric preference failed: {error}"),
+                                );
+                                return b;
+                            }
+                        };
+                        if let Err(error) = self.commit_numeric_value(&mut a, &expected) {
+                            self.unsupported(
+                                expr.span,
+                                format!("abrupt numeric prefix selection failed: {error}"),
+                            );
+                        }
                     }
                     return b;
                 }
@@ -1509,26 +1521,6 @@ impl Checker {
                 }
                 let shift = matches!(operator.as_str(), "<<" | ">>");
                 let provisional = a.unsuffixed_numeric && b.unsuffixed_numeric;
-                if !shift
-                    && a.unsuffixed_numeric
-                    && !b.unsuffixed_numeric
-                    && matches!(b.ty, Ty::Int(_) | Ty::Float(_))
-                {
-                    if !self.legacy_numeric_context(&a, &b.ty, left.span) {
-                        return Value::scalar(Ty::Unknown, None, a.cause);
-                    }
-                    a.ty = b.ty.clone();
-                }
-                if !shift
-                    && b.unsuffixed_numeric
-                    && !a.unsuffixed_numeric
-                    && matches!(a.ty, Ty::Int(_) | Ty::Float(_))
-                {
-                    if !self.legacy_numeric_context(&b, &a.ty, right.span) {
-                        return Value::scalar(Ty::Unknown, None, b.cause);
-                    }
-                    b.ty = a.ty.clone();
-                }
                 let numeric = matches!(a.ty, Ty::Int(_) | Ty::Float(_));
                 let arithmetic = matches!(
                     operator.as_str(),

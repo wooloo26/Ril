@@ -474,6 +474,34 @@ mod tests {
     }
 
     #[test]
+    fn shared_imports_keep_frozen_environments_distinct() {
+        let source = recursive_schema();
+        let first_environment = FrozenEnvironment::default();
+        let second_environment = FrozenEnvironment::default();
+        let mut live = LiveSourceTypes::default();
+        let first = live
+            .intern_schema(
+                &source,
+                first_environment.clone(),
+                &mut WorkLimit::new(4096),
+            )
+            .unwrap();
+        let checkpoint = live.builder.as_ref().unwrap().checkpoint();
+        let second = live
+            .intern_schema(&source, second_environment.clone(), &mut WorkLimit::new(16))
+            .unwrap();
+        assert_eq!(live.builder.as_ref().unwrap().checkpoint(), checkpoint);
+        assert_eq!(first.ty, second.ty);
+        assert_ne!(first.environment, second.environment);
+        let frozen = live.freeze();
+        for (view, environment) in [(first, first_environment), (second, second_environment)] {
+            let (schema, actual) = frozen.view_schema(view, &mut WorkLimit::new(16)).unwrap();
+            assert_eq!(schema.root_id(), view.ty);
+            assert_eq!(actual.id(), environment.id());
+        }
+    }
+
+    #[test]
     fn intern_failure_keeps_old_roots_and_cannot_publish_an_environment_or_foreign_view() {
         let source = recursive_schema();
         let environment = FrozenEnvironment::default();
@@ -483,8 +511,9 @@ mod tests {
             .unwrap();
         let checkpoint = live.builder.as_ref().unwrap().checkpoint();
         let unpublished = FrozenEnvironment::default();
+        let uncopied = recursive_schema();
         assert_eq!(
-            live.intern_schema(&source, unpublished.clone(), &mut WorkLimit::new(20)),
+            live.intern_schema(&uncopied, unpublished.clone(), &mut WorkLimit::new(20)),
             Err(SourceTypesError::BudgetExceeded)
         );
         assert_eq!(live.builder.as_ref().unwrap().checkpoint(), checkpoint);

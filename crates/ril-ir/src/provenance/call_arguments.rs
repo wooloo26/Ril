@@ -44,6 +44,7 @@ pub struct InvocationExpression {
 pub enum BuiltinDeclaration {
     Syntax(ContractSyntax),
     Generic(ril_compiler_core::builtin_calls::GenericBuiltin),
+    Numeric(ril_compiler_core::numeric_builtins::NumericBuiltin),
 }
 
 #[derive(Debug, Clone)]

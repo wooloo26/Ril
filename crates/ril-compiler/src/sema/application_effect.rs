@@ -1,5 +1,6 @@
 //! Owned application observations. Source identity, evaluation identity and
 //! allocation recency are recorded together, without rewriting past values.
+use super::source_types::{SourceTypesError, WorkLimit};
 use super::{
     ExpressionFact, SemanticFacts,
     copy_contract::CopyCallEventId,
@@ -11,6 +12,7 @@ use ril_compiler_core::{
     source::Span,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 mod activations;
 mod entries;
 pub(crate) mod generated_entries;
@@ -52,7 +54,21 @@ pub(crate) struct ApplicationEffectDomain {
     closure_sources: BTreeMap<(CallableOwner, ExprId), ClosureSiteId>,
     by_source: BTreeMap<(ExprId, InvocationContext), Vec<usize>>,
     remaining: usize,
+    work_owner: Arc<()>,
     pub exhausted: bool,
+}
+
+/// Linear temporary credit, removed from the recorder before a query starts.
+/// The owner only authenticates refunds; it supplies no semantic authority.
+pub(crate) struct WorkLease {
+    owner: Arc<()>,
+    issued: usize,
+    work: WorkLimit,
+}
+impl WorkLease {
+    pub(crate) fn work(&mut self) -> &mut WorkLimit {
+        &mut self.work
+    }
 }
 
 impl Default for ApplicationEffectDomain {
@@ -68,12 +84,49 @@ impl Default for ApplicationEffectDomain {
             closure_sources: BTreeMap::new(),
             by_source: BTreeMap::new(),
             remaining: 4_000_000,
+            work_owner: Arc::new(()),
             exhausted: false,
         }
     }
 }
 
 impl ApplicationEffectDomain {
+    /// Reserve at most the query's old local cap. Nested recorder work can
+    /// spend only the unleased remainder, never the same credit twice.
+    pub(crate) fn lease_work(&mut self, cap: usize) -> WorkLease {
+        if self.exhausted {
+            self.remaining = 0;
+        }
+        let issued = self.remaining.min(cap);
+        self.remaining -= issued;
+        WorkLease {
+            owner: self.work_owner.clone(),
+            issued,
+            work: WorkLimit::new(issued),
+        }
+    }
+
+    /// Consume the lease exactly once. Only its unused, original credit may
+    /// return, and an exhausted recorder can never regain spending power.
+    pub(crate) fn return_work(&mut self, lease: WorkLease) -> Result<(), SourceTypesError> {
+        if !Arc::ptr_eq(&self.work_owner, &lease.owner) || lease.work.remaining() > lease.issued {
+            self.exhausted = true;
+            self.remaining = 0;
+            return Err(SourceTypesError::ForeignIdentity);
+        }
+        if self.exhausted {
+            self.remaining = 0;
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        let Some(remaining) = self.remaining.checked_add(lease.work.remaining()) else {
+            self.exhausted = true;
+            self.remaining = 0;
+            return Err(SourceTypesError::BudgetExceeded);
+        };
+        self.remaining = remaining;
+        Ok(())
+    }
+
     /// Pure HIR cursor queries spend the same monotone work allowance as
     /// application recording. A failed query must be handled by its caller;
     /// this interface never grants a fresh allowance for another prefix.
@@ -140,8 +193,13 @@ impl ApplicationEffectDomain {
             })
     }
     pub(crate) fn admit(&mut self, count: usize) -> bool {
+        if self.exhausted {
+            self.remaining = 0;
+            return false;
+        }
         let Some(remaining) = self.remaining.checked_sub(count) else {
             self.exhausted = true;
+            self.remaining = 0;
             return false;
         };
         self.remaining = remaining;
@@ -441,6 +499,140 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leased_capture_and_nested_work_spend_one_total_allowance() {
+        let mut domain = ApplicationEffectDomain {
+            remaining: 100,
+            ..Default::default()
+        };
+        let mut lease = domain.lease_work(16);
+        assert_eq!(domain.remaining, 84);
+        assert_eq!(lease.work().remaining(), 16);
+        lease.work().charge(9).unwrap();
+        assert!(domain.admit(11));
+        domain.return_work(lease).unwrap();
+        assert_eq!(domain.remaining, 80);
+        assert!(!domain.exhausted);
+
+        let mut outer = domain.lease_work(20);
+        let mut inner = domain.lease_work(13);
+        outer.work().charge(3).unwrap();
+        inner.work().charge(5).unwrap();
+        domain.return_work(outer).unwrap();
+        domain.return_work(inner).unwrap();
+        assert_eq!(domain.remaining, 72);
+    }
+
+    #[test]
+    fn work_refunds_cannot_restore_exhaustion_or_cross_recorder_ownership() {
+        let mut domain = ApplicationEffectDomain {
+            remaining: 7,
+            ..Default::default()
+        };
+        let lease = domain.lease_work(16384);
+        assert_eq!(domain.remaining, 0);
+        assert!(!domain.admit(1));
+        assert_eq!(
+            domain.return_work(lease),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+        assert!(domain.exhausted);
+        assert_eq!(domain.remaining, 0);
+        let mut empty = domain.lease_work(16384);
+        assert_eq!(empty.work().remaining(), 0);
+        assert_eq!(
+            domain.return_work(empty),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+
+        let mut first = ApplicationEffectDomain {
+            remaining: 12,
+            ..Default::default()
+        };
+        let mut other = ApplicationEffectDomain {
+            remaining: 19,
+            ..Default::default()
+        };
+        let lease = first.lease_work(8);
+        assert_eq!(
+            other.return_work(lease),
+            Err(SourceTypesError::ForeignIdentity)
+        );
+        assert_eq!(first.remaining, 4);
+        assert!(other.exhausted);
+        assert_eq!(other.remaining, 0);
+    }
+
+    #[test]
+    fn failed_admission_cannot_leave_smaller_requests_spendable() {
+        let mut domain = ApplicationEffectDomain {
+            remaining: 6,
+            ..Default::default()
+        };
+        assert!(!domain.admit(7));
+        assert!(domain.exhausted);
+        assert_eq!(domain.remaining, 0);
+        assert!(!domain.admit(1));
+        assert!(!domain.admit(0));
+        assert_eq!(domain.remaining, 0);
+    }
+
+    #[test]
+    fn capture_budget_failure_remains_distinct_from_unknown_and_uncaptured_source() {
+        use crate::sema::{
+            evaluated::EvaluatedValue,
+            model::{Ty, Value},
+        };
+        use ril_compiler_core::diagnostic::CauseId;
+        let value = || Value::scalar(Ty::Unit, None, CauseId(0));
+        let uncaptured = EvaluatedValue::new(value(), 0);
+        assert!(matches!(
+            uncaptured.input_source(),
+            Err(SourceTypesError::SourceNotCaptured)
+        ));
+        let mut domain = ApplicationEffectDomain {
+            remaining: 6,
+            ..Default::default()
+        };
+        let mut lease = domain.lease_work(16384);
+        let failure = lease.work().charge(7).unwrap_err();
+        let mut failed = EvaluatedValue::new(value(), 0);
+        failed.capture_birth_source(Err(failure), None).unwrap();
+        domain.return_work(lease).unwrap();
+        assert_eq!(
+            domain.remaining, 6,
+            "a rejected preflight allocated and consumed nothing"
+        );
+        assert!(matches!(
+            failed.input_source(),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        let mut unknown = EvaluatedValue::new(value(), 0);
+        unknown.capture_birth_source(Ok(None), None).unwrap();
+        assert!(matches!(unknown.input_source(), Ok(None)));
+        let mut attempted = EvaluatedValue::new(value(), 0);
+        let lease = domain.lease_work(16384);
+        assert!(!domain.admit(1));
+        let error = domain.return_work(lease).unwrap_err();
+        attempted
+            .capture_birth_source(Err(error.clone()), None)
+            .unwrap();
+        attempted.fail_current_source(error);
+        assert!(
+            matches!(unknown.birth_source(), Ok(None)),
+            "a genuinely unknown birth remains distinct from failed capture"
+        );
+        assert!(matches!(
+            attempted.birth_source(),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(attempted.has_captured_source());
+        assert!(matches!(
+            attempted.input_source(),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+    }
 
     #[test]
     fn static_closure_identity_ignores_equal_or_changed_diagnostic_spans() {

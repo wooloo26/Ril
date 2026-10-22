@@ -13,6 +13,7 @@ use ril_compiler_core::{
     ids::{CallableOwner, ClosureSiteId, DefinitionId, ExprId, StmtId},
     source::{FileId, Span},
 };
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 type Failure = (Span, Option<CauseId>, String);
@@ -23,6 +24,19 @@ fn require(condition: bool, reason: &str) -> Check {
     condition.then_some(()).ok_or_else(|| reason.to_owned())
 }
 
+fn charge(work: &Cell<usize>, amount: usize) -> Check {
+    let remaining = work
+        .get()
+        .checked_sub(amount)
+        .ok_or("evaluation identity shared work exhausted")?;
+    work.set(remaining);
+    Ok(())
+}
+
+fn lookup_work(length: usize) -> usize {
+    length.checked_ilog2().unwrap_or(0) as usize + 1
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
     Module,
@@ -30,16 +44,67 @@ enum Owner {
     Lambda(ExprId),
 }
 
-struct Replay<'a> {
+enum NamedOwner {
+    Declared(Option<StmtId>),
+    Conflict,
+}
+
+struct Replay<'a, 'w> {
     facts: &'a SemanticFacts,
     hir: &'a HirProgram,
+    work: &'w Cell<usize>,
     observations: BTreeMap<usize, &'a InvocationExpression>,
     preparations: BTreeMap<CopyCallEventId, &'a CallArguments>,
-    functions: BTreeMap<DefinitionId, Vec<Option<StmtId>>>,
+    functions: BTreeMap<DefinitionId, NamedOwner>,
     closures: BTreeMap<ClosureSiteId, ExprId>,
 }
 
-impl Replay<'_> {
+impl Replay<'_, '_> {
+    fn charge(&self, amount: usize) -> Check {
+        charge(self.work, amount)
+    }
+
+    fn text(&self, text: &str) -> Check {
+        self.charge(text.len().div_ceil(32))
+    }
+
+    /// HIR application views allocate their operand vector. Admit the real
+    /// written children and labels before asking for that borrowed view.
+    fn admit_application(&self, root: ExprId) -> Check {
+        self.charge(1)?;
+        let expression = self
+            .hir
+            .expression(root)
+            .ok_or("application root is absent")?;
+        let written = match &expression.kind {
+            hir::ExprKind::Call { arguments, .. } => Some(arguments),
+            hir::ExprKind::Binary {
+                operator, right, ..
+            } if matches!(operator.as_str(), "|>" | "!>") => {
+                self.charge(2)?;
+                match &self
+                    .hir
+                    .expression(*right)
+                    .ok_or("pipeline right operand is absent")?
+                    .kind
+                {
+                    hir::ExprKind::Call { arguments, .. } => Some(arguments),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(arguments) = written {
+            self.charge(arguments.len())?;
+            for argument in arguments {
+                if let Some(label) = &argument.label {
+                    self.text(label)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn pattern_value_sources(&self) -> Check<BTreeSet<ExprId>> {
         require(
             self.hir.generated_roots().len() <= LIMIT,
@@ -48,6 +113,7 @@ impl Replay<'_> {
         let mut patterns = BTreeMap::new();
         let mut values = BTreeSet::new();
         for (ordinal, &node) in self.hir.generated_roots().iter().enumerate() {
+            self.charge(3 + lookup_work(patterns.len()) + lookup_work(values.len()))?;
             let hir::NodeId::Expr(id) = node else {
                 continue;
             };
@@ -79,8 +145,24 @@ impl Replay<'_> {
                 "one static pattern minted multiple static value expressions",
             )?;
             let same = match (&pattern.kind, &expression.kind) {
-                (hir::PatternKind::Name(a), hir::ExprKind::Name(b)) => a == b,
-                (hir::PatternKind::Literal(a), hir::ExprKind::Literal(b)) => a == b,
+                (hir::PatternKind::Name(a), hir::ExprKind::Name(b)) => {
+                    self.text(a)?;
+                    self.text(b)?;
+                    a == b
+                }
+                (hir::PatternKind::Literal(a), hir::ExprKind::Literal(b)) => {
+                    for literal in [a, b] {
+                        match literal {
+                            ril_syntax::ast::Literal::Integer(text)
+                            | ril_syntax::ast::Literal::Float(text)
+                            | ril_syntax::ast::Literal::String(text)
+                            | ril_syntax::ast::Literal::RawString(text)
+                            | ril_syntax::ast::Literal::Bytes(text) => self.text(text)?,
+                            _ => {}
+                        }
+                    }
+                    a == b
+                }
                 (
                     hir::PatternKind::Constructor {
                         path,
@@ -88,7 +170,13 @@ impl Replay<'_> {
                         parenthesized,
                     },
                     hir::ExprKind::Path(actual),
-                ) => arguments.is_empty() && !parenthesized && path == actual,
+                ) => {
+                    self.charge(path.len() + actual.len())?;
+                    for part in path.iter().chain(actual) {
+                        self.text(part)?;
+                    }
+                    arguments.is_empty() && !parenthesized && path == actual
+                }
                 _ => false,
             };
             require(
@@ -105,6 +193,7 @@ impl Replay<'_> {
         index: usize,
         source: ExprId,
     ) -> Check<(&ExpressionFact, InvocationContext)> {
+        self.charge(1 + lookup_work(self.observations.len()))?;
         let value = self
             .facts
             .expressions
@@ -123,6 +212,7 @@ impl Replay<'_> {
     }
     fn static_owner(&self, mut owner: LexicalOwner) -> Check<Owner> {
         for _ in 0..256 {
+            self.charge(1)?;
             owner = match owner {
                 LexicalOwner::Module => return Ok(Owner::Module),
                 LexicalOwner::Lambda(id) => {
@@ -188,22 +278,26 @@ impl Replay<'_> {
         self.lexical_owner(context.owner)
     }
     fn lexical_owner(&self, owner: Option<CallableOwner>) -> Check<Owner> {
+        self.charge(1)?;
         match owner {
             Some(CallableOwner::Global) => Ok(Owner::Module),
             Some(CallableOwner::Function(id)) => {
-                let declarations = self
+                self.charge(lookup_work(self.functions.len()))?;
+                let declaration = self
                     .functions
                     .get(&id)
                     .ok_or("call's named owner is absent")?;
-                let first = declarations
-                    .first()
-                    .copied()
-                    .flatten()
-                    .ok_or("call's named owner has no HIR identity")?;
-                require(
-                    declarations.iter().all(|id| *id == Some(first)),
-                    "copies of a named owner disagree on their static HIR identity",
-                )?;
+                let first = match declaration {
+                    NamedOwner::Declared(Some(id)) => *id,
+                    NamedOwner::Declared(None) => {
+                        return Err("call's named owner has no HIR identity".into());
+                    }
+                    NamedOwner::Conflict => {
+                        return Err(
+                            "copies of a named owner disagree on their static HIR identity".into(),
+                        );
+                    }
+                };
                 require(
                     self.hir
                         .statement(first)
@@ -213,6 +307,7 @@ impl Replay<'_> {
                 Ok(Owner::Function(first))
             }
             Some(CallableOwner::Lambda(site)) => {
+                self.charge(lookup_work(self.closures.len()))?;
                 let source = self
                     .closures
                     .get(&site)
@@ -227,10 +322,7 @@ impl Replay<'_> {
     }
 
     fn closure_coverage(&self) -> Check {
-        let mut work = 4 * LIMIT;
-        work = work
-            .checked_sub(self.facts.closure_sites.len())
-            .ok_or("closure site replay budget exhausted")?;
+        self.charge(self.facts.closure_sites.len())?;
         for site in &self.facts.closure_sites {
             let syntax = self
                 .hir
@@ -251,9 +343,7 @@ impl Replay<'_> {
         }
         let mut inhabited = BTreeSet::new();
         for closure in &self.facts.closures {
-            work = work
-                .checked_sub(closure.parameters.len().saturating_add(1))
-                .ok_or("closure object replay budget exhausted")?;
+            self.charge(closure.parameters.len().saturating_add(1) + lookup_work(inhabited.len()))?;
             let site = closure
                 .site
                 .and_then(|id| self.facts.closure_sites.get(id.0 as usize))
@@ -294,9 +384,7 @@ impl Replay<'_> {
         // A real lambda emission owns a closure object even if every producer
         // site row or callable tag has been deleted. Generated adapter recipes
         // have their separate actual HIR origin and are checked as objects above.
-        let _remaining = work
-            .checked_sub(self.facts.expressions.len())
-            .ok_or("closure emission replay budget exhausted")?;
+        self.charge(self.facts.expressions.len())?;
         for (index, fact) in self.facts.expressions.iter().enumerate() {
             let Some(source) = fact.source_id else {
                 continue;
@@ -320,6 +408,7 @@ impl Replay<'_> {
                 .site
                 .and_then(|id| self.facts.closure_sites.get(id.0 as usize))
                 .ok_or("actual HIR lambda lost its lexical site")?;
+            self.charge(lookup_work(self.observations.len()))?;
             let context = self
                 .observations
                 .get(&index)
@@ -346,6 +435,7 @@ impl Replay<'_> {
             .hir
             .expression(source)
             .ok_or("application HIR identity is absent")?;
+        self.admit_application(source)?;
         let application = self
             .hir
             .application(source)?
@@ -366,6 +456,7 @@ impl Replay<'_> {
             .preparations
             .get(&event.id)
             .ok_or("application lost its reserved preparation")?;
+        self.charge(lookup_work(self.preparations.len()) + preparation.evaluated.len())?;
         require(
             preparation.target == event.target,
             "application preparation resolved target differs from its actual event",
@@ -381,6 +472,7 @@ impl Replay<'_> {
         let mut callee = None;
         let mut operands = BTreeMap::new();
         for evaluation in &preparation.evaluated {
+            self.charge(lookup_work(operands.len()) + lookup_work(self.observations.len()))?;
             require(
                 !abrupt && order.next() == Some(evaluation.role),
                 "application evaluation is not its actual ordered prefix",
@@ -445,6 +537,7 @@ impl Replay<'_> {
                 "unbound application claims normal completion or received parameter slots",
             )?;
             for token in operands.values() {
+                self.charge(lookup_work(self.observations.len()))?;
                 require(
                     self.observations[&token.expression].argument_of.is_none(),
                     "unbound operand claims a parameter slot",
@@ -458,6 +551,12 @@ impl Replay<'_> {
             "abrupt callee claims parameter binding",
         )?;
         let signature = callee_value.value.signature.as_ref();
+        let signature_size = signature.map_or(application.operands.len(), Vec::len);
+        require(
+            signature_size <= LIMIT,
+            "application public signature exceeds its work bound",
+        )?;
+        self.charge(signature_size)?;
         let labels = if let Some(signature) = signature {
             crate::hir::application::parameter_labels(signature)
         } else if let Some(id) = super::builtin_sources::generic_reference(&callee_value.value) {
@@ -472,6 +571,7 @@ impl Replay<'_> {
         )?;
         let mut names = BTreeSet::new();
         for name in labels.iter().flatten() {
+            self.charge(lookup_work(names.len()) * (1 + name.len().div_ceil(32)))?;
             require(
                 names.insert(name),
                 "public callable signature repeats a label",
@@ -479,11 +579,23 @@ impl Replay<'_> {
         }
         let mut occupied = BTreeSet::new();
         let mut consumed = BTreeSet::new();
+        // bind_slots builds two ordered indexes and walks each operand once.
+        let binding_cost = lookup_work(labels.len() + application.operands.len());
+        self.charge((labels.len() + application.operands.len()) * binding_cost * 2)?;
+        for name in labels.iter().flatten() {
+            self.charge(binding_cost * name.len().div_ceil(32))?;
+        }
+        for operand in &application.operands {
+            if let Some(label) = operand.label {
+                self.charge(binding_cost * label.len().div_ceil(32))?;
+            }
+        }
         let mapping = crate::hir::application::bind_slots(
             &labels,
             application.operands.iter().map(|operand| operand.label),
         );
         for (operand, slot) in application.operands.iter().zip(mapping) {
+            self.charge(lookup_work(count) * 4 + lookup_work(self.observations.len()))?;
             let slot = slot.map_err(|code| {
                 format!("application violates its original parameter binding: {code}")
             })?;
@@ -514,6 +626,7 @@ impl Replay<'_> {
         let prefix_abrupt = abrupt;
         let mut previous = previous.unwrap();
         for (slot, origin) in preparation.slots.iter().enumerate() {
+            self.charge(2 + lookup_work(consumed.len()) + lookup_work(occupied.len()))?;
             match origin {
                 ArgumentSource::Supplied => require(
                     consumed.contains(&(slot as u32)),
@@ -593,6 +706,19 @@ impl Replay<'_> {
     }
 }
 pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
+    validate_with_work(facts, &mut (4 * LIMIT))
+}
+
+/// Query callers lend their remaining work to the entire replay. All nested
+/// owner, closure and application checks consume that same allowance.
+pub(crate) fn validate_with_work(facts: &SemanticFacts, work: &mut usize) -> Result<(), Failure> {
+    let shared = Cell::new(*work);
+    let result = validate_inner(facts, &shared);
+    *work = shared.get();
+    result
+}
+
+fn validate_inner(facts: &SemanticFacts, work: &Cell<usize>) -> Result<(), Failure> {
     let fallback = facts
         .file
         .map(|file| Span {
@@ -606,6 +732,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             end: 0,
         });
     let fail = |message: String| (fallback, None, message);
+    charge(work, 1).map_err(fail)?;
     require(
         facts.expressions.len() <= LIMIT
             && facts.invocation_expressions.len() <= LIMIT
@@ -621,6 +748,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     )
     .map_err(fail)?;
     let Some(hir) = facts.semantic_hir.as_deref() else {
+        charge(work, facts.expressions.len()).map_err(fail)?;
         return require(
             facts.source_program.is_none()
                 && facts.copy_call_events.is_empty()
@@ -637,12 +765,14 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     let mut replay = Replay {
         facts,
         hir,
+        work,
         observations: BTreeMap::new(),
         preparations: BTreeMap::new(),
         functions: BTreeMap::new(),
         closures: BTreeMap::new(),
     };
     for row in &facts.invocation_expressions {
+        charge(work, 1 + lookup_work(replay.observations.len())).map_err(fail)?;
         require(
             row.expression < facts.expressions.len()
                 && replay.observations.insert(row.expression, row).is_none(),
@@ -652,6 +782,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     }
     let mut evaluated_roots = BTreeSet::new();
     for row in &facts.call_arguments {
+        charge(work, 1 + lookup_work(replay.preparations.len())).map_err(fail)?;
         require(
             facts
                 .copy_call_events
@@ -667,6 +798,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         )
         .map_err(fail)?;
         for step in &row.evaluated {
+            charge(work, lookup_work(evaluated_roots.len())).map_err(fail)?;
             require(
                 evaluated_roots.insert(step.observation.expression),
                 "two application prefixes claim the same actual evaluation root",
@@ -679,6 +811,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     // prefix. An abrupt default itself still owns its genuine earlier defaults
     // and its own slot, so completion alone must not erase their evidence.
     for (index, default) in facts.default_uses.iter().enumerate() {
+        charge(work, 1 + lookup_work(replay.preparations.len())).map_err(fail)?;
         let DefaultOrigin::Call(event) = default.origin else {
             continue;
         };
@@ -693,6 +826,11 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         )
         .map_err(|message| (default.span, None, message))?;
     }
+    charge(
+        work,
+        facts.copy_invocations.len() + facts.closure_invocations.len(),
+    )
+    .map_err(fail)?;
     for (source_event, span) in facts
         .copy_invocations
         .iter()
@@ -707,6 +845,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
                 .map(|event| (event, invocation.site))
         }))
     {
+        charge(work, lookup_work(replay.preparations.len())).map_err(fail)?;
         require(
             replay
                 .preparations
@@ -719,7 +858,11 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         .map_err(|message| (span, None, message))?;
     }
     for row in &facts.invocation_expressions {
+        charge(work, 1 + lookup_work(replay.preparations.len())).map_err(fail)?;
         if let Some((event, slot)) = row.argument_of {
+            if let Some(preparation) = replay.preparations.get(&event) {
+                charge(work, lookup_work(preparation.supplied.len())).map_err(fail)?;
+            }
             require(
                 replay
                     .preparations
@@ -732,14 +875,24 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
         }
     }
     for function in &facts.functions {
+        charge(work, 1 + lookup_work(replay.functions.len())).map_err(fail)?;
         replay
             .functions
             .entry(function.definition)
-            .or_default()
-            .push(function.hir_id);
+            .and_modify(|entry| {
+                if !matches!(entry, NamedOwner::Declared(id) if *id == function.hir_id) {
+                    *entry = NamedOwner::Conflict;
+                }
+            })
+            .or_insert(NamedOwner::Declared(function.hir_id));
     }
     let mut site_sources = BTreeSet::new();
     for (index, site) in facts.closure_sites.iter().enumerate() {
+        charge(
+            work,
+            1 + lookup_work(site_sources.len()) + lookup_work(replay.closures.len()),
+        )
+        .map_err(fail)?;
         require(
             site.id.0 as usize == index
                 && site_sources.insert((site.owner, site.source))
@@ -753,6 +906,13 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     let mut results = BTreeSet::new();
     let mut previous_occurrences = BTreeMap::new();
     for (index, event) in facts.copy_call_events.iter().enumerate() {
+        charge(
+            work,
+            1 + lookup_work(previous_occurrences.len())
+                + lookup_work(results.len())
+                + lookup_work(replay.observations.len()),
+        )
+        .map_err(fail)?;
         require(
             event.id.0 as usize == index,
             "call event identity differs from its arena slot",
@@ -790,6 +950,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
     // A source Call may run many times. Its dynamic root observations, not a
     // uniqueness check on ExprId or the mutable event list, require coverage.
     for (index, expression) in facts.expressions.iter().enumerate() {
+        charge(work, 1 + lookup_work(pattern_values.len())).map_err(fail)?;
         let id = expression.source_id.ok_or_else(|| {
             (
                 expression.span,
@@ -805,6 +966,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             )
         })?;
         if pattern_values.contains(&id) {
+            charge(work, lookup_work(replay.observations.len())).map_err(fail)?;
             let context = replay
                 .observations
                 .get(&index)
@@ -823,6 +985,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             )
             .map_err(|message| (expression.span, Some(expression.value.cause), message))?;
         }
+        replay.admit_application(id).map_err(fail)?;
         if hir
             .application(id)
             .map_err(|message| {
@@ -834,6 +997,7 @@ pub fn validate(facts: &SemanticFacts) -> Result<(), Failure> {
             })?
             .is_some()
         {
+            charge(work, lookup_work(results.len())).map_err(fail)?;
             require(
                 results.contains(&index),
                 "an actual HIR Call root lost its dynamic call event",
@@ -898,6 +1062,35 @@ mod tests {
     }
     fn model(arguments: usize, events: usize, repeat: bool) -> SemanticFacts {
         application_model(arguments, events, repeat, false)
+    }
+
+    #[test]
+    fn evaluation_replay_consumes_the_callers_exact_remaining_work() {
+        let facts = model(3, 2, true);
+        let mut remaining = 100_000;
+        validate_with_work(&facts, &mut remaining).unwrap();
+        let required = 100_000 - remaining;
+        assert!(required > facts.expressions.len());
+        let mut exact = required;
+        validate_with_work(&facts, &mut exact).unwrap();
+        assert_eq!(exact, 0);
+        assert!(
+            validate_with_work(&facts, &mut exact)
+                .unwrap_err()
+                .2
+                .contains("shared work exhausted")
+        );
+        let mut short = required - 1;
+        assert!(
+            validate_with_work(&facts, &mut short)
+                .unwrap_err()
+                .2
+                .contains("shared work exhausted")
+        );
+        validate(&facts).unwrap();
+        let mut deleted = facts.clone();
+        deleted.call_arguments.clear();
+        assert!(validate_with_work(&deleted, &mut 100_000).is_err());
     }
     fn application_model(
         arguments: usize,

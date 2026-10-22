@@ -343,6 +343,56 @@ impl Checker {
         self.remember_result_carrier(callee, &value, copy_call_event, frame);
         value
     }
+    pub(super) fn named_invocation_summary(
+        &self,
+        id: usize,
+        frame: &Frame,
+        returned_nodes: &BTreeSet<NodeId>,
+    ) -> super::super::summary::InvocationSummary {
+        let mut summary = super::super::summary::InvocationSummary {
+            activation: Some(frame.owner),
+            context: Some(self.invocation_context(frame.callable_owner)),
+            channel_messages: self.channel_invocation_messages(frame.owner),
+            copy_boundaries: frame.obligations.copy_boundaries.clone(),
+            performed_operations: frame.obligations.performed_operations.clone(),
+            selected_handlers: frame.obligations.selected_handlers.clone(),
+            handler_environment: frame.obligations.handler_environment,
+            effects: frame.obligations.effects.clone(),
+            symbolic_uses: frame.obligations.symbolic_uses.clone(),
+            ..Default::default()
+        };
+        for (&binding, &mode) in &frame.obligations.named {
+            summary.concrete_state.insert(
+                binding as u32,
+                match mode {
+                    Mode::Read => super::super::summary::Access::Read,
+                    Mode::Write => super::super::summary::Access::Write,
+                    Mode::Retain => super::super::summary::Access::Retain,
+                },
+            );
+        }
+        for access in &frame.obligations.accesses {
+            for &node in &access.origins.nodes {
+                for &participant in &access.participants {
+                    summary.accesses.insert(super::super::summary::Footprint {
+                        origin: node,
+                        participant,
+                        access: match access.mode {
+                            Mode::Read => super::super::summary::Access::Read,
+                            Mode::Write => super::super::summary::Access::Write,
+                            Mode::Retain => super::super::summary::Access::Retain,
+                        },
+                    });
+                }
+            }
+        }
+        summary.escaped_origins = returned_nodes.clone();
+        if frame.obligations.symbolic {
+            summary.unresolved.insert(id as u32);
+        }
+        summary
+    }
+
     pub(super) fn invoke_named_unrecorded(
         &mut self,
         id: usize,
@@ -495,7 +545,14 @@ impl Checker {
         }
         if self.call_stack.contains(&id) {
             if let Some(caller) = caller.as_mut()
-                && let Some(value) = self.instantiate_recursive(id, &args, span, caller)
+                && let Some(value) = self.instantiate_recursive(
+                    id,
+                    &args,
+                    span,
+                    caller,
+                    verifying,
+                    effect_callback_epoch,
+                )
             {
                 self.restore_typing_environment(previous_typing);
                 self.universal = previous_universal;
@@ -1036,47 +1093,7 @@ impl Checker {
         if function.body.is_some() {
             self.check_annotations(function, &frame, info.owner);
         }
-        let mut summary = super::super::summary::InvocationSummary {
-            activation: Some(frame.owner),
-            context: Some(self.invocation_context(frame.callable_owner)),
-            channel_messages: self.channel_invocation_messages(frame.owner),
-            copy_boundaries: frame.obligations.copy_boundaries.clone(),
-            performed_operations: frame.obligations.performed_operations.clone(),
-            selected_handlers: frame.obligations.selected_handlers.clone(),
-            handler_environment: frame.obligations.handler_environment,
-            effects: frame.obligations.effects.clone(),
-            symbolic_uses: frame.obligations.symbolic_uses.clone(),
-            ..Default::default()
-        };
-        for (&binding, &mode) in &frame.obligations.named {
-            summary.concrete_state.insert(
-                binding as u32,
-                match mode {
-                    Mode::Read => super::super::summary::Access::Read,
-                    Mode::Write => super::super::summary::Access::Write,
-                    Mode::Retain => super::super::summary::Access::Retain,
-                },
-            );
-        }
-        for access in &frame.obligations.accesses {
-            for &node in &access.origins.nodes {
-                for &participant in &access.participants {
-                    summary.accesses.insert(super::super::summary::Footprint {
-                        origin: node,
-                        participant,
-                        access: match access.mode {
-                            Mode::Read => super::super::summary::Access::Read,
-                            Mode::Write => super::super::summary::Access::Write,
-                            Mode::Retain => super::super::summary::Access::Retain,
-                        },
-                    });
-                }
-            }
-        }
-        summary.escaped_origins = returned_nodes.clone();
-        if frame.obligations.symbolic {
-            summary.unresolved.insert(id as u32);
-        }
+        let summary = self.named_invocation_summary(id, &frame, &returned_nodes);
         if verifying {
             let returned = self.expanded(&result.ty, &mut BTreeSet::new());
             let declared = self.expanded(

@@ -25,7 +25,11 @@ fn charge(work: &mut usize, cost: usize) -> Check {
 }
 
 impl<'a> ObservationIndex<'a> {
+    #[cfg(test)]
     pub(super) fn new(facts: &'a SemanticFacts) -> Check<Self> {
+        Self::new_with_work(facts, &mut { MAX_OBSERVATIONS })
+    }
+    pub(super) fn new_with_work(facts: &'a SemanticFacts, work: &mut usize) -> Check<Self> {
         require(
             facts.expressions.len() <= MAX_OBSERVATIONS
                 && facts.invocation_expressions.len() <= MAX_OBSERVATIONS,
@@ -34,6 +38,10 @@ impl<'a> ObservationIndex<'a> {
         let mut by_expression = BTreeMap::new();
         let mut by_source: BTreeMap<_, Vec<_>> = BTreeMap::new();
         for row in &facts.invocation_expressions {
+            charge(
+                work,
+                3 + lookup_work(by_expression.len()) + lookup_work(by_source.len()),
+            )?;
             let fact = facts.expressions.get(row.expression).ok_or_else(|| {
                 "Source observation index has an out-of-arena expression".to_owned()
             })?;
@@ -56,6 +64,10 @@ impl<'a> ObservationIndex<'a> {
             }
         }
         for indices in by_source.values_mut() {
+            charge(
+                work,
+                indices.len().saturating_mul(lookup_work(indices.len())),
+            )?;
             indices.sort_unstable();
         }
         Ok(Self {

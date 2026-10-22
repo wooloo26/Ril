@@ -45,7 +45,15 @@ impl Replay<'_> {
                 .expressions
                 .get(observation)
                 .ok_or("lambda formal read is absent")?;
-            self.parameter_declaration_context(root_ast, &fact.value, context, Some(observation))?;
+            header_work(work, |remaining| {
+                self.parameter_declaration_context(
+                    root_ast,
+                    &fact.value,
+                    context,
+                    Some(observation),
+                    remaining,
+                )
+            })?;
             let sites = super::explicit_named::source_sites_base(self.facts)?;
             if let Some(source) = header_work(work, |remaining| {
                 self.inferred_closure_parameter_schema(binding, &sites, remaining)
@@ -95,8 +103,15 @@ impl Replay<'_> {
             name == &info.name && fact.value.sources == BTreeSet::from([binding]),
             "formal Source declaration read borrowed another named binding",
         )?;
-        let declaration =
-            self.parameter_declaration_context(root_ast, &fact.value, context, Some(observation))?;
+        let declaration = header_work(work, |remaining| {
+            self.parameter_declaration_context(
+                root_ast,
+                &fact.value,
+                context,
+                Some(observation),
+                remaining,
+            )
+        })?;
         require(
             declaration == info.context && declaration.invocation == Some(instance),
             "formal Source graph borrowed another named receiver activation",

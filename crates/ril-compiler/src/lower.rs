@@ -11,6 +11,7 @@ mod budget;
 mod concurrent;
 mod constants;
 mod foreign;
+mod numeric;
 mod patterns;
 mod specialize;
 
@@ -157,8 +158,19 @@ pub fn lower_core_for(
             .or_insert(current);
     }
     let binding_patterns = patterns::BindingPatterns::new(program.facts())?;
+    let numeric_index = numeric::NumericIndex::new(
+        &program.facts().numeric_uses,
+        crate::sema::source_types::WorkLimit::new(4_000_000),
+    )?;
     let mut lower = Lower {
         binding_patterns: &binding_patterns,
+        numeric_index: &numeric_index,
+        numeric_view: numeric_index.view(
+            &program.facts().numeric_selections,
+            &program.facts().numeric_uses,
+            &program.facts().numeric_selections,
+            layout,
+        )?,
         specializations: &specializations,
         specialization_context: None,
         default_context: None,
@@ -192,7 +204,6 @@ pub fn lower_core_for(
         ),
         next_temporary: 0,
         generic_types,
-        contextual_types: &program.facts().contextual_types,
         specialized_builtins: builtin_observations
             .into_iter()
             .filter_map(|(span, name)| name.map(|name| (span, name)))
@@ -261,6 +272,13 @@ pub fn lower_core_for(
             .ok_or_else(|| unsupported("specialization template syntax is missing"))?;
         let mut selected = Lower {
             binding_patterns: lower.binding_patterns,
+            numeric_index: lower.numeric_index,
+            numeric_view: lower.numeric_index.view(
+                &facts.numeric_selections,
+                &program.facts().numeric_uses,
+                &program.facts().numeric_selections,
+                layout,
+            )?,
             specializations: &specializations,
             specialization_context: Some(index),
             default_context: None,
@@ -275,7 +293,6 @@ pub fn lower_core_for(
             next_definition: lower.next_definition,
             next_temporary: lower.next_temporary,
             generic_types: lower.generic_types.clone(),
-            contextual_types: &facts.contextual_types,
             specialized_builtins: specialize::builtins(&facts)?,
             operations: lower.operations.clone(),
             expression_operations: instance.operations.clone(),
@@ -338,6 +355,8 @@ pub fn lower_core_for(
 }
 struct Lower<'a> {
     binding_patterns: &'a patterns::BindingPatterns,
+    numeric_index: &'a numeric::NumericIndex,
+    numeric_view: numeric::NumericView,
     specializations: &'a specialize::Plan,
     specialization_context: Option<usize>,
     default_context: Option<u32>,
@@ -352,7 +371,6 @@ struct Lower<'a> {
     next_definition: u32,
     next_temporary: u32,
     generic_types: std::collections::BTreeMap<(DefinitionId, u32), TypeId>,
-    contextual_types: &'a std::collections::BTreeMap<(u32, u32, u32), crate::sema::model::Ty>,
     specialized_builtins: std::collections::BTreeMap<(u32, u32, u32), String>,
     operations: std::collections::BTreeMap<String, u64>,
     expression_operations: std::collections::BTreeMap<(u32, u32, u32), u64>,
@@ -581,6 +599,13 @@ impl Lower<'_> {
         };
         let mut nested = Lower {
             binding_patterns: self.binding_patterns,
+            numeric_index: self.numeric_index,
+            numeric_view: self.numeric_index.view(
+                &facts.numeric_selections,
+                &self.all_facts.numeric_uses,
+                &self.all_facts.numeric_selections,
+                self.layout,
+            )?,
             specializations: self.specializations,
             specialization_context: Some(index),
             default_context: Some(parameter_index),
@@ -595,7 +620,6 @@ impl Lower<'_> {
             next_definition: self.next_definition,
             next_temporary: self.next_temporary,
             generic_types: self.generic_types.clone(),
-            contextual_types: &facts.contextual_types,
             specialized_builtins: specialize::builtins(&facts)?,
             operations: self.operations.clone(),
             expression_operations: self
@@ -732,9 +756,18 @@ impl Lower<'_> {
         Ok(match &pattern.kind {
             ast::PatternKind::Name(name) => ir::Pattern::Name(name.clone()),
             ast::PatternKind::Wildcard => ir::Pattern::Wildcard,
-            ast::PatternKind::Literal(literal) => {
-                ir::Pattern::Literal(self.literal(literal, pattern.span)?)
-            }
+            ast::PatternKind::Literal(literal) => ir::Pattern::Literal(self.literal(
+                literal,
+                if matches!(literal, ast::Literal::Integer(_) | ast::Literal::Float(_)) {
+                    Some(crate::sema::numeric_selection::NumericSite::Pattern(
+                        pattern.hir_id.ok_or_else(|| {
+                            unsupported("numeric pattern has no original HIR identity")
+                        })?,
+                    ))
+                } else {
+                    None
+                },
+            )?),
             ast::PatternKind::Value(expression) => {
                 ir::Pattern::Value(Box::new(self.expression(expression)?))
             }
@@ -981,9 +1014,19 @@ impl Lower<'_> {
             ast::ExprKind::Literal(ast::Literal::String(text)) => {
                 return self.string_expression(text, expression.span);
             }
-            ast::ExprKind::Literal(literal) => {
-                ir::ExprKind::Literal(self.literal(literal, expression.span)?)
-            }
+            ast::ExprKind::Literal(literal) => ir::ExprKind::Literal(self.literal(
+                literal,
+                if matches!(literal, ast::Literal::Integer(_) | ast::Literal::Float(_)) {
+                    Some(crate::sema::numeric_selection::NumericSite::Expression {
+                        literal: expression.hir_id.ok_or_else(|| {
+                            unsupported("numeric literal has no original HIR identity")
+                        })?,
+                        immediate_minus: None,
+                    })
+                } else {
+                    None
+                },
+            )?),
             ast::ExprKind::Name(name) if self.facts.constant_pool.references.contains_key(name) => {
                 ir::ExprKind::ConstRef(self.facts.constant_pool.references[name])
             }
@@ -1015,16 +1058,15 @@ impl Lower<'_> {
             ),
             ast::ExprKind::Path(path) => ir::ExprKind::Name(path.join("::")),
             ast::ExprKind::Generic { base, .. } => {
-                let site = (
-                    expression.span.file.0,
-                    expression.span.start,
-                    expression.span.end,
-                );
                 let instances: std::collections::BTreeSet<_> = self
                     .facts
                     .external_instances
                     .iter()
-                    .filter(|instance| instance.sites.contains(&site))
+                    .filter(|instance| {
+                        instance.applications.iter().any(|application| {
+                            Some(application.occurrence.source) == expression.hir_id
+                        })
+                    })
                     .map(|instance| instance.syntax.name.clone())
                     .collect();
                 if instances.len() > 1 {
@@ -1176,8 +1218,16 @@ impl Lower<'_> {
                         operand.kind,
                         ast::ExprKind::Literal(ast::Literal::Integer(_) | ast::Literal::Float(_))
                     )
-                    && let Some(literal) =
-                        self.selected_numeric_literal(operand.span, Some(expression.span))?
+                    && let Some(literal) = self.selected_numeric_literal(
+                        crate::sema::numeric_selection::NumericSite::Expression {
+                            literal: operand.hir_id.ok_or_else(|| {
+                                unsupported("signed numeric literal has no original HIR identity")
+                            })?,
+                            immediate_minus: Some(expression.hir_id.ok_or_else(|| {
+                                unsupported("numeric sign has no original HIR identity")
+                            })?),
+                        },
+                    )?
                 {
                     return Ok(ir::Expr {
                         kind: ir::ExprKind::Literal(literal),
@@ -1188,24 +1238,23 @@ impl Lower<'_> {
                     && let ast::ExprKind::Literal(ast::Literal::Integer(text)) = &operand.kind
                     && !text.ends_with("bigint")
                 {
-                    let literal =
-                        match self.literal(&ast::Literal::Integer(text.clone()), operand.span)? {
-                            ir::Literal::Integer {
-                                value,
-                                bits,
-                                signed,
-                            } => ir::Literal::Integer {
-                                value: value.checked_neg().ok_or_else(|| {
-                                    unsupported("integer literal exceeds supported width")
-                                })?,
-                                bits,
-                                signed,
-                            },
-                            ir::Literal::BigInteger(value) => {
-                                ir::Literal::BigInteger(format!("-{value}"))
-                            }
-                            _ => return Err(unsupported("invalid verified numeric literal")),
-                        };
+                    let literal = match self.literal(&ast::Literal::Integer(text.clone()), None)? {
+                        ir::Literal::Integer {
+                            value,
+                            bits,
+                            signed,
+                        } => ir::Literal::Integer {
+                            value: value.checked_neg().ok_or_else(|| {
+                                unsupported("integer literal exceeds supported width")
+                            })?,
+                            bits,
+                            signed,
+                        },
+                        ir::Literal::BigInteger(value) => {
+                            ir::Literal::BigInteger(format!("-{value}"))
+                        }
+                        _ => return Err(unsupported("invalid verified numeric literal")),
+                    };
                     return Ok(ir::Expr {
                         kind: ir::ExprKind::Literal(literal),
                         span: expression.span,
@@ -1428,6 +1477,13 @@ impl Lower<'_> {
                         .closure_facts(self.all_facts, index, site)?;
                     let mut nested = Lower {
                         binding_patterns: self.binding_patterns,
+                        numeric_index: self.numeric_index,
+                        numeric_view: self.numeric_index.view(
+                            &facts.numeric_selections,
+                            &self.all_facts.numeric_uses,
+                            &self.all_facts.numeric_selections,
+                            self.layout,
+                        )?,
                         specializations: self.specializations,
                         specialization_context: Some(index),
                         default_context: None,
@@ -1442,7 +1498,6 @@ impl Lower<'_> {
                         next_definition: self.next_definition,
                         next_temporary: self.next_temporary,
                         generic_types: self.generic_types.clone(),
-                        contextual_types: &facts.contextual_types,
                         specialized_builtins: specialize::builtins(&facts)?,
                         operations: self.operations.clone(),
                         expression_operations: self
@@ -1605,156 +1660,6 @@ impl Lower<'_> {
             }
         }
         Ok(lowered)
-    }
-    fn literal(&self, literal: &ast::Literal, span: Span) -> Result<ir::Literal, NotImplemented> {
-        if matches!(literal, ast::Literal::Integer(_) | ast::Literal::Float(_))
-            && let Some(selected) = self.selected_numeric_literal(span, None)?
-        {
-            return Ok(selected);
-        }
-        let context = self
-            .contextual_types
-            .get(&(span.file.0, span.start, span.end));
-        Ok(match literal {
-            ast::Literal::Unit => ir::Literal::Unit,
-            ast::Literal::Bool(value) => ir::Literal::Bool(*value),
-            ast::Literal::Integer(text) => {
-                if let Some(digits) = text.strip_suffix("bigint") {
-                    ir::Literal::BigInteger(digits.replace('_', ""))
-                } else if !["int", "i64", "u64", "i32", "u32", "i16", "u16", "i8", "u8"]
-                    .iter()
-                    .any(|suffix| text.ends_with(suffix))
-                    && let Some(crate::sema::model::Ty::Int(name)) = context
-                {
-                    if name == "bigint" {
-                        ir::Literal::BigInteger(text.replace('_', ""))
-                    } else {
-                        self.integer(&format!("{text}{name}"))?
-                    }
-                } else {
-                    self.integer(text)?
-                }
-            }
-            ast::Literal::Float(text) => {
-                match crate::static_eval::committed_float::decode(text) {
-                    Ok(Some(committed)) => {
-                        return Ok(ir::Literal::Float {
-                            value: committed.value(),
-                            bits: committed.width,
-                        });
-                    }
-                    Err(()) => {
-                        return Err(unsupported(
-                            "invalid committed floating-point literal witness",
-                        ));
-                    }
-                    Ok(None) => {}
-                }
-                let (text, bits) = if let Some(value) = text.strip_suffix("f32") {
-                    (value, 32)
-                } else {
-                    let bits = if !text.ends_with("f64")
-                        && matches!(context, Some(crate::sema::model::Ty::Float(name)) if name == "f32")
-                    {
-                        32
-                    } else {
-                        64
-                    };
-                    (text.strip_suffix("f64").unwrap_or(text), bits)
-                };
-                ir::Literal::Float {
-                    value: if bits == 32 {
-                        f64::from(
-                            text.replace('_', "")
-                                .parse::<f32>()
-                                .map_err(|_| unsupported("invalid floating literal"))?,
-                        )
-                    } else {
-                        text.replace('_', "")
-                            .parse::<f64>()
-                            .map_err(|_| unsupported("invalid floating literal"))?
-                    },
-                    bits,
-                }
-            }
-            ast::Literal::String(text) => {
-                ir::Literal::String(decode_text(&text[1..text.len() - 1])?)
-            }
-            ast::Literal::RawString(text) => ir::Literal::String(text[1..text.len() - 1].into()),
-            ast::Literal::Bytes(text) => {
-                ir::Literal::Bytes(decode_bytes(&text[2..text.len() - 1])?)
-            }
-        })
-    }
-    fn selected_numeric_literal(
-        &self,
-        span: Span,
-        immediate_minus: Option<Span>,
-    ) -> Result<Option<ir::Literal>, NotImplemented> {
-        let mut selected = None;
-        for fact in &self.facts.numeric_selections {
-            if fact.span != span || fact.context.owner != self.callable_owner {
-                continue;
-            }
-            let usage = self
-                .all_facts
-                .numeric_uses
-                .get(fact.literal.0 as usize)
-                .filter(|usage| {
-                    usage.id == fact.literal && usage.context == fact.context && usage.span == span
-                })
-                .ok_or_else(|| {
-                    unsupported("numeric selection has no matching actual literal use")
-                })?;
-            if usage.immediate_minus != immediate_minus {
-                return Err(unsupported(
-                    "numeric literal sign must be consumed at its proved unary boundary",
-                ));
-            }
-            if selected.as_ref().is_some_and(
-                |previous: &&crate::sema::numeric_selection::NumericSelection| {
-                    previous.ty != fact.ty || previous.encoded != fact.encoded
-                },
-            ) {
-                return Err(unsupported(
-                    "one emitted numeric literal has incompatible actual selections",
-                ));
-            }
-            selected = Some(fact);
-        }
-        if selected.is_none()
-            && self
-                .all_facts
-                .numeric_uses
-                .iter()
-                .any(|usage| usage.span == span && usage.context.owner == self.callable_owner)
-        {
-            return Err(unsupported(
-                "numeric literal lacks a selection in its actual invocation view",
-            ));
-        }
-        Ok(selected.map(|selection| match &selection.encoded {
-            crate::numeric_literals::EncodedNumber::Integer {
-                value,
-                bits,
-                signed,
-                ..
-            } => ir::Literal::Integer {
-                value: *value,
-                bits: *bits,
-                signed: *signed,
-            },
-            crate::numeric_literals::EncodedNumber::BigInteger(value) => {
-                ir::Literal::BigInteger(value.to_string())
-            }
-            crate::numeric_literals::EncodedNumber::Float(value) => ir::Literal::Float {
-                value: value.as_f64(),
-                bits: match value.format() {
-                    crate::numeric_literals::FloatFormat::F32 => 32,
-                    crate::numeric_literals::FloatFormat::F64 => 64,
-                },
-            },
-        }))
     }
     fn propagation_tag(&self, span: Span) -> Result<&'static str, NotImplemented> {
         fn family(ty: &crate::sema::model::Ty) -> Option<&'static str> {

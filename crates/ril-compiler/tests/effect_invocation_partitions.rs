@@ -151,7 +151,7 @@ fn numeric_unwrap_and_budget_witnesses_do_not_borrow_a_global_span_entry() {
                 assert!(causes.insert(proof.cause.0));
                 assert!(!proof.callee_coverage.is_empty());
             }
-            InvocationWitnessKind::ContextualType(_) => numeric = true,
+            InvocationWitnessKind::NumericSelection(_) => numeric = true,
             _ => {}
         }
     }

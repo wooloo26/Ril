@@ -407,3 +407,30 @@ fn exact(items:[str:[0][2]int]){}
 fn example(){let empty:[0][3]int=[];let values=["one":empty];exact(values)}
 --@ end-file
 --@ end-case
+
+--@ source: recursive-static-input-receipts
+--@ file: source.ril
+halt fn down(count:int)->int{if count>0{down(count-1)}else{0}}
+halt fn recur<T>(count:int,value:T)->T{if count>0{recur<T>(count-1,value)}else{value}}
+halt fn sibling<U>(count:int,value:U)->U{if count>0{sibling<U>(count-1,value)}else{value}}
+pub fn test_native(){
+    assert(down(3)==0)
+    assert(recur<int>(3,7)==7 && sibling<int>(3,7)==7)
+}
+--@ end-file
+--@ end-source
+
+--@ case: recursive-static-input-receipts
+--@ mode: check-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: recursive-static-input-receipts-native
+--@ use-source: recursive-static-input-receipts
+--@ end-case
+
+--@ case: recursive-static-input-receipts-native
+--@ mode: run-pass
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: recursive-static-input-receipts
+--@ entry: test_native
+--@ use-source: recursive-static-input-receipts
+--@ end-case

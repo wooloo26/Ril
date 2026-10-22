@@ -11,6 +11,73 @@ pub fn test_i16_boundaries() {
 --@ end-file
 --@ end-case
 
+--@ case: static-floating-receipts
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: static-floating-widening
+--@ entry: test_static_floating_receipts
+--@ file: static-floating-receipts.ril
+meta let ROUNDED: f32 = 16777217
+meta let NEGATIVE_ZERO: f32 = -0.0f32
+meta let NEGATIVE: f64 = -1.5f64
+meta let NOT_A_NUMBER: f64 = 0.0f64 / 0.0f64
+fn fixed<value: f32>(number: f32 = value) -> f32 { number }
+fn fixed_wide<value: f64>(number: f64 = value) -> f64 { number }
+pub fn test_static_floating_receipts() &{ROUNDED, NEGATIVE_ZERO, NEGATIVE, NOT_A_NUMBER} {
+    assert(ROUNDED == 16777216.0f32)
+    assert(1.0f32 / NEGATIVE_ZERO < 0.0f32)
+    assert(1.0f32 / (-NEGATIVE_ZERO) > 0.0f32)
+    assert(NEGATIVE == -1.5f64)
+    assert(NOT_A_NUMBER != NOT_A_NUMBER)
+    assert(fixed<16777217>() == 16777216.0f32)
+    let zero = fixed<-0.0f32>()
+    assert(1.0f32 / zero < 0.0f32)
+    assert(1.0f32 / (-fixed<-0.0f32>()) > 0.0f32)
+    assert(fixed_wide<-1.5f64>() == -1.5f64)
+    let nan = fixed_wide<(0.0f64 / 0.0f64)>()
+    assert(nan != nan)
+}
+--@ end-file
+--@ end-case
+
+--@ case: external-const-floating-defaults
+--@ mode: check-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ file: main.ril
+use api
+fn example() {
+    let rounded: f32 = Api::fixed<16777217.0f32>()
+    let negative_zero: f32 = Api::fixed<-0.0f32>()
+    let negative: f64 = Api::wide<-1.5f64>()
+    let nan: f64 = Api::wide<(0.0f64 / 0.0f64)>()
+    let negated_nan: f32 = Api::negated<(0.0f32 / 0.0f32)>()
+    let negated_wide_nan: f64 = Api::negated_wide<(0.0f64 / 0.0f64)>()
+    let flipped: f32 = -negative_zero
+}
+--@ end-file
+--@ file: api.d.ril
+pub fn fixed<value: f32>(number: f32 = value) -> f32
+pub fn wide<value: f64>(number: f64 = value) -> f64
+pub fn negated<value: f32>(number: f32 = -value) -> f32
+pub fn negated_wide<value: f64>(number: f64 = -value) -> f64
+--@ end-file
+--@ end-case
+
+--@ case: static-floating-widening
+--@ mode: check-fail
+--@ spec: SPEC#numeric-literals
+--@ companion: static-floating-receipts
+-- Error [E0301]: a committed f32 value cannot be implicitly selected as f64.
+--@ file: static-floating-widening.ril
+meta let ROUNDED: f32 = 16777217
+fn example() &{ROUNDED} {
+    let widened: f64 = ROUNDED
+}
+--@ end-file
+--@ end-case
+
 --@ case: i16-overflow-safe
 --@ mode: run-pass
 --@ spec: SPEC#arithmetic-and-wrapping-operators
@@ -298,6 +365,223 @@ pub fn test_u8_overflow_safe() {
 --@ file: u8-overflow.ril
 pub fn test_u8_overflow() {
     let _ = 255u8 + 1u8
+}
+--@ end-file
+--@ end-case
+
+--@ case: deferred-arithmetic-safe
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: deferred-arithmetic-overflow
+--@ entry: test_deferred_arithmetic_safe
+--@ file: deferred-arithmetic-safe.ril
+fn identity<T>(value: T) -> T { value }
+fn choose<T>(left: T, right: T) -> T { left }
+pub fn test_deferred_arithmetic_safe() {
+    let operations = .{get: \value -> value}
+    let result = choose(126 + 1, operations.get(3i8))
+    assert(result == 127i8)
+}
+--@ end-file
+--@ end-case
+
+--@ case: deferred-arithmetic-overflow
+--@ mode: run-panic
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#arithmetic-and-wrapping-operators
+--@ companion: deferred-arithmetic-safe
+--@ entry: test_deferred_arithmetic_overflow
+-- Panics: arithmetic selected as i8 still overflows before choose enters.
+--@ file: deferred-arithmetic-overflow.ril
+fn identity<T>(value: T) -> T { value }
+fn choose<T>(left: T, right: T) -> T { left }
+pub fn test_deferred_arithmetic_overflow() {
+    let operations = .{get: \value -> value}
+    let _ = choose(127 + 1, operations.get(3i8))
+}
+--@ end-file
+--@ end-case
+
+--@ case: sibling-literal-occurrences
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ entry: test_sibling_literal_occurrences
+--@ file: sibling-literal-occurrences.ril
+pub fn test_sibling_literal_occurrences() {
+    let pair: (f32, f32) = (16777217, 16777217)
+    assert(pair.0 == 16777216.0f32)
+    assert(pair.1 == 16777216.0f32)
+}
+--@ end-file
+--@ end-case
+
+--@ case: default-literal-occurrences
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ entry: test_default_literal_occurrences
+--@ file: default-literal-occurrences.ril
+fn rounded(value: f32 = 16777217) -> f32 { value }
+fn nested() -> f32 { rounded() }
+pub fn test_default_literal_occurrences() {
+    assert(rounded() == 16777216.0f32)
+    assert(nested() == 16777216.0f32)
+}
+--@ end-file
+--@ end-case
+
+--@ case: pattern-literal-occurrences
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ entry: test_pattern_literal_occurrences
+--@ file: pattern-literal-occurrences.ril
+fn classify(value: i8) -> int {
+    match value { 7 -> 1, 8 -> 2, _ -> 3 }
+}
+pub fn test_pattern_literal_occurrences() {
+    assert(classify(7i8) == 1)
+    assert(classify(8i8) == 2)
+    assert(classify(-128i8) == 3)
+}
+--@ end-file
+--@ end-case
+
+--@ case: lexical-numeric-shadow
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ entry: test_lexical_numeric_shadow
+--@ file: lexical-numeric-shadow.ril
+pub fn test_lexical_numeric_shadow() {
+    let number = 1
+    let before = number
+    let nested = {
+        let number = number + 1
+        number
+    }
+    assert(before == 1)
+    assert(nested == 2)
+    assert(number == 1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: hoisted-numeric-capture
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+--@ entry: test_hoisted_numeric_capture
+--@ file: hoisted-numeric-capture.ril
+pub fn test_hoisted_numeric_capture() {
+    let number = 3
+    assert(read_number() == 3)
+where
+    fn read_number() -> int &{closure, number} { number }
+}
+--@ end-file
+--@ end-case
+
+--@ case: floating-alias-patterns
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#pattern-matching
+--@ entry: test_floating_alias_patterns
+--@ file: floating-alias-patterns.ril
+type Rounded = f32
+fn matches_rounded(value: Rounded) -> bool {
+    match value { 16777217 -> true, _ -> false }
+}
+pub fn test_floating_alias_patterns() {
+    assert(matches_rounded(16777216.0f32))
+    assert(!matches_rounded(16777218.0f32))
+}
+--@ end-file
+--@ end-case
+
+--@ case: nested-alias-patterns
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#pattern-matching
+--@ entry: test_nested_alias_patterns
+--@ file: nested-alias-patterns.ril
+type Narrow = i8
+type Frozen = Immut<Narrow>
+fn classify_nested(value: (Frozen, Narrow)) -> int {
+    match value { (127, _) -> 1, (_, 7) -> 2, _ -> 3 }
+}
+pub fn test_nested_alias_patterns() {
+    assert(classify_nested((127i8, 7i8)) == 1)
+    assert(classify_nested((0i8, 7i8)) == 2)
+    assert(classify_nested((0i8, 8i8)) == 3)
+}
+--@ end-file
+--@ end-case
+
+--@ case: alias-pattern-range-safe
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#pattern-matching
+--@ companion: alias-pattern-range-overflow
+--@ entry: test_alias_pattern_range_safe
+--@ file: alias-pattern-range-safe.ril
+type Narrow = i8
+fn matches_narrow(value: Narrow) -> bool {
+    match value { 127 -> true, _ -> false }
+}
+pub fn test_alias_pattern_range_safe() {
+    assert(matches_narrow(127i8))
+    assert(!matches_narrow(0i8))
+}
+--@ end-file
+--@ end-case
+
+--@ case: alias-pattern-range-overflow
+--@ mode: check-fail
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#pattern-matching
+--@ companion: alias-pattern-range-safe
+-- Error [E0326]: 128 is outside the numeric pattern's actual i8 view.
+--@ file: alias-pattern-range-overflow.ril
+type Narrow = i8
+fn matches_narrow(value: Narrow) -> bool {
+    match value { 128 -> true, _ -> false }
+}
+--@ end-file
+--@ end-case
+
+--@ case: shadowed-alias-pattern-safe
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#pattern-matching
+--@ companion: shadowed-alias-pattern-overflow
+--@ entry: test_shadowed_alias_pattern_safe
+--@ file: shadowed-alias-pattern-safe.ril
+type Narrow = i64
+fn matches_local(value: Narrow) -> bool
+where
+    type Narrow = i8
+{
+    match value { 127 -> true, _ -> false }
+}
+pub fn test_shadowed_alias_pattern_safe() {
+    assert(matches_local(127i8))
+    assert(!matches_local(0i8))
+}
+--@ end-file
+--@ end-case
+
+--@ case: shadowed-alias-pattern-overflow
+--@ mode: check-fail
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#pattern-matching
+--@ companion: shadowed-alias-pattern-safe
+-- Error [E0326]: the inner i8 alias cannot borrow the outer i64 range.
+--@ file: shadowed-alias-pattern-overflow.ril
+type Narrow = i64
+fn matches_local(value: Narrow) -> bool
+where
+    type Narrow = i8
+{
+    match value { 128 -> true, _ -> false }
 }
 --@ end-file
 --@ end-case

@@ -10,6 +10,7 @@ use ril_syntax::ast::{ParameterMode, PatternKind};
 mod call_arguments;
 mod callable_entries;
 use callable_entries::callable_entry;
+mod numeric;
 mod record_bounds;
 mod storage_sources;
 
@@ -1099,66 +1100,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                     .map(|(object, instances)| (*object, instances.iter().copied().collect()))
                     .collect(),
             });
-    graph.numeric_selections = facts
-        .numeric_selections
-        .iter()
-        .map(|selection| {
-            use crate::numeric_literals::{EncodedNumber, FloatFormat, NumberType};
-            let selected_type = match selection.ty {
-                NumberType::Int => m::Ty::Int("int".into()),
-                NumberType::I8 => m::Ty::Int("i8".into()),
-                NumberType::I16 => m::Ty::Int("i16".into()),
-                NumberType::I32 => m::Ty::Int("i32".into()),
-                NumberType::I64 => m::Ty::Int("i64".into()),
-                NumberType::U8 => m::Ty::Int("u8".into()),
-                NumberType::U16 => m::Ty::Int("u16".into()),
-                NumberType::U32 => m::Ty::Int("u32".into()),
-                NumberType::U64 => m::Ty::Int("u64".into()),
-                NumberType::BigInt => m::Ty::Int("bigint".into()),
-                NumberType::F32 => m::Ty::Float("f32".into()),
-                NumberType::F64 => m::Ty::Float("f64".into()),
-            };
-            p::NumericSelection {
-                id: selection.id,
-                literal: selection.literal,
-                span: selection.span,
-                invocation: selection
-                    .context
-                    .invocation
-                    .map(|id| p::CopyInstanceId(id.0)),
-                owner: selection.context.owner,
-                closure: selection.context.closure.map(|id| id as u32),
-                closure_invocation: selection.context.closure_invocation.map(|id| id.0),
-                default_use: selection.context.default_use.map(|id| id.0),
-                budget_validation: selection.context.budget_validation,
-                ty: ty(&mut graph.types, &selected_type),
-                layout: selection.layout,
-                cause: selection.cause,
-                encoded: match &selection.encoded {
-                    EncodedNumber::Integer {
-                        value,
-                        bits,
-                        signed,
-                        ..
-                    } => p::NumericEncoding::Integer {
-                        value: *value,
-                        bits: *bits,
-                        signed: *signed,
-                    },
-                    EncodedNumber::BigInteger(value) => {
-                        p::NumericEncoding::BigInteger(value.to_string())
-                    }
-                    EncodedNumber::Float(value) => p::NumericEncoding::Float {
-                        bits: match value.format() {
-                            FloatFormat::F32 => 32,
-                            FloatFormat::F64 => 64,
-                        },
-                        payload: value.bits(),
-                    },
-                },
-            }
-        })
-        .collect();
+    numeric::retain(&mut graph, facts)?;
     graph.condition_evaluations = facts
         .condition_evaluations
         .iter()
@@ -1305,20 +1247,6 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
             span: event.span,
             resumed_boundary: event.resumed_boundary,
             cause: event.cause,
-        })
-        .collect();
-    graph.contextual_types = facts
-        .contextual_types
-        .iter()
-        .map(|(&(file, start, end), ty)| {
-            (
-                Span {
-                    file: ril_compiler_core::source::FileId(file),
-                    start,
-                    end,
-                },
-                self::ty(&mut graph.types, ty),
-            )
         })
         .collect();
     graph.origins = facts
@@ -2374,9 +2302,7 @@ impl ReturnContracts {
 }
 pub(crate) fn ty(types: &mut Vec<p::Type>, value: &m::Ty) -> TypeId {
     let converted = match value {
-        m::Ty::NumericHole(_) => {
-            unreachable!("uncommitted numeric hole crossed the verified boundary")
-        }
+        m::Ty::NumericHole(id) => p::Type::NumericHole(*id),
         m::Ty::Unknown => p::Type::Unknown,
         m::Ty::Never => p::Type::Never,
         m::Ty::Unit => p::Type::Unit,

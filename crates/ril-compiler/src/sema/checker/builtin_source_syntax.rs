@@ -2,9 +2,8 @@
 //! builtin summary obligations are checked separately for every observation.
 use super::*;
 use crate::hir::nodes::{self as hir, NodeId as SyntaxId};
-use ril_compiler_core::ids::ExprId;
+use ril_compiler_core::ids::{DefinitionId, ExprId, StmtId};
 
-#[derive(Clone)]
 struct Candidate {
     source: Option<SyntaxId>,
     owner: CallableOwner,
@@ -12,40 +11,155 @@ struct Candidate {
     shadowed: bool,
 }
 
-pub(super) struct NameIndex<'a> {
+pub(crate) struct NameIndex<'a> {
     facts: &'a SemanticFacts,
     candidates: BTreeMap<SyntaxId, Vec<Candidate>>,
 }
 
+fn name_work(work: &mut usize, units: usize) -> Result<(), String> {
+    *work = work
+        .checked_sub(units)
+        .ok_or("builtin lexical Source exceeds its shared work bound")?;
+    Ok(())
+}
+
+type DeclarationOwners = BTreeMap<(CallableOwner, StmtId), DefinitionId>;
+
+fn declaration_owners(
+    facts: &SemanticFacts,
+    work: &mut usize,
+) -> Result<DeclarationOwners, String> {
+    let mut owners = BTreeMap::new();
+    let mut definitions = BTreeMap::new();
+    name_work(work, 1 + facts.functions.len())?;
+    for info in &facts.functions {
+        let (Some(parent), Some(source)) = (info.lexical_owner, info.hir_id) else {
+            continue;
+        };
+        name_work(
+            work,
+            2 + owners.len().checked_ilog2().unwrap_or(0) as usize
+                + definitions.len().checked_ilog2().unwrap_or(0) as usize,
+        )?;
+        let original = facts
+            .semantic_hir
+            .as_deref()
+            .and_then(|hir| hir.statement(source))
+            .ok_or("builtin function owner has no canonical declaration")?;
+        let hir::StmtKind::Function(function) = &original.kind else {
+            return Err("builtin function owner names a non-function declaration".into());
+        };
+        name_work(work, 2 + info.syntax.name.len() + function.name.len())?;
+        if info.syntax.name != function.name {
+            return Err("builtin function owner changed its canonical name".into());
+        }
+        if owners
+            .insert((parent, source), info.definition)
+            .is_some_and(|previous| previous != info.definition)
+            || definitions
+                .insert((parent, info.definition), source)
+                .is_some_and(|previous| previous != source)
+        {
+            return Err("builtin function owner has ambiguous declaration identities".into());
+        }
+    }
+    Ok(owners)
+}
+
 impl<'a> NameIndex<'a> {
-    pub(super) fn new(facts: &'a SemanticFacts) -> Result<Self, String> {
+    pub(crate) fn new_with_work(
+        facts: &'a SemanticFacts,
+        work: &mut usize,
+    ) -> Result<Self, String> {
+        name_work(work, 1)?;
         let program = facts
             .source_program
             .as_deref()
             .ok_or("builtin source has no frozen actual Program")?;
+        let owners = declaration_owners(facts, work)?;
         let mut walker = Walk {
             facts,
-            work: 65536,
+            owners,
+            work,
             found: Vec::new(),
         };
         walker.statements(&program.statements, CallableOwner::Global, 0, 0)?;
-        if walker.work < walker.found.len() {
-            return Err("builtin lexical index exceeds its work bound".into());
-        }
         let mut candidates = BTreeMap::<_, Vec<_>>::new();
         for candidate in walker.found {
             if let Some(source) = candidate.source {
+                name_work(
+                    walker.work,
+                    2 + candidates.len().checked_ilog2().unwrap_or(0) as usize,
+                )?;
                 candidates.entry(source).or_default().push(candidate);
             }
         }
         Ok(Self { facts, candidates })
     }
 
+    pub(crate) fn needs_preparation(
+        facts: &SemanticFacts,
+        work: &mut usize,
+    ) -> Result<bool, String> {
+        name_work(work, 1)?;
+        if !facts.builtin_source_observations.is_empty() {
+            return Ok(true);
+        }
+        name_work(work, facts.expressions.len())?;
+        for fact in &facts.expressions {
+            name_work(work, fact.value.callables.len())?;
+            for callable in &fact.value.callables {
+                let name = match callable {
+                    Callable::Builtin(name) | Callable::Constructor(name) => name,
+                    _ => continue,
+                };
+                name_work(work, 1 + name.len())?;
+                if matches!(
+                    name.strip_prefix("Prelude::").unwrap_or(name),
+                    "Some" | "Ok" | "Err" | "None" | "clone" | "clone_immut"
+                ) || builtin_bit(name) != 0
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Cheap applicability only. It does not authenticate lexical resolution,
+    /// a physical observation, or any previously checked declaration.
+    pub(crate) fn is_candidate(actual: &Expr, work: &mut usize) -> Result<bool, String> {
+        name_work(work, 1)?;
+        Ok(match &actual.kind {
+            ExprKind::Name(name) => {
+                name_work(work, 1 + name.len())?;
+                builtin_bit(name) != 0
+            }
+            ExprKind::Path(path) if path.len() <= 3 && path.iter().all(|part| part.len() <= 64) => {
+                name_work(work, 1 + path.len() * 2)?;
+                for part in path {
+                    name_work(work, 1 + part.len())?;
+                }
+                builtin_bit(&path.join("::")) != 0
+            }
+            _ => false,
+        })
+    }
+
+    pub(crate) fn matches_facts(&self, facts: &SemanticFacts) -> bool {
+        std::ptr::eq(self.facts, facts)
+    }
+
     fn candidate(
         &self,
         owner: Option<CallableOwner>,
         source: ExprId,
+        work: &mut usize,
     ) -> Result<&Candidate, String> {
+        name_work(
+            work,
+            2 + self.candidates.len().checked_ilog2().unwrap_or(0) as usize,
+        )?;
         let hir = self
             .facts
             .semantic_hir
@@ -54,6 +168,15 @@ impl<'a> NameIndex<'a> {
         let node = hir
             .expression(source)
             .ok_or("builtin source HIR is absent")?;
+        if let hir::ExprKind::Name(name) = &node.kind {
+            name_work(work, 1 + name.len())?;
+        }
+        if let hir::ExprKind::Path(path) = &node.kind {
+            name_work(work, path.len())?;
+            for part in path {
+                name_work(work, 1 + part.len())?;
+            }
+        }
         let source = match node.info.origin {
             hir::NodeOrigin::Generated {
                 anchor: SyntaxId::Pattern(id),
@@ -95,11 +218,13 @@ impl<'a> NameIndex<'a> {
         Ok(candidate)
     }
 
-    pub(super) fn direct_identity(
+    pub(crate) fn direct_identity(
         &self,
         owner: Option<CallableOwner>,
         source: ExprId,
+        work: &mut usize,
     ) -> Result<Option<String>, String> {
+        name_work(work, 1)?;
         let hir = self
             .facts
             .semantic_hir
@@ -108,6 +233,21 @@ impl<'a> NameIndex<'a> {
         let node = hir
             .expression(source)
             .ok_or("builtin source HIR is absent")?;
+        match &node.kind {
+            hir::ExprKind::Name(name) => name_work(work, 1 + name.len())?,
+            hir::ExprKind::Path(path) => {
+                name_work(
+                    work,
+                    path.len()
+                        .checked_mul(2)
+                        .ok_or("builtin path work overflow")?,
+                )?;
+                for part in path {
+                    name_work(work, 1 + part.len())?;
+                }
+            }
+            _ => {}
+        }
         let name = match &node.kind {
             crate::hir::nodes::ExprKind::Name(name) if builtin_bit(name) != 0 => name.clone(),
             crate::hir::nodes::ExprKind::Path(path)
@@ -120,21 +260,24 @@ impl<'a> NameIndex<'a> {
         if builtin_bit(&name) == 0 {
             return Ok(None);
         }
-        let candidate = self.candidate(owner, source)?;
+        let candidate = self.candidate(owner, source, work)?;
         if candidate.name != name {
             return Err("builtin reference differs from its original HIR name".into());
         }
+        name_work(work, 1 + candidate.name.len())?;
         Ok((!candidate.shadowed && builtin_bit(&candidate.name) != 0)
             .then(|| candidate.name.clone()))
     }
 
-    pub(super) fn actual_name(
+    pub(crate) fn actual_name(
         &self,
         owner: Option<CallableOwner>,
         source: ExprId,
         name: &str,
+        work: &mut usize,
     ) -> Result<(), String> {
-        if self.direct_identity(owner, source)?.as_deref() == Some(name) {
+        name_work(work, 1 + name.len())?;
+        if self.direct_identity(owner, source, work)?.as_deref() == Some(name) {
             return Ok(());
         }
         Err(
@@ -144,56 +287,74 @@ impl<'a> NameIndex<'a> {
     }
 }
 
-/// A lexical lookup only. Call-site, caller activation, complete argument
-/// receipts and original constructor value must be checked independently.
-pub(super) fn actual_prelude_name(
-    facts: &SemanticFacts,
-    context: InvocationContext,
-    actual: &Expr,
-    identity: &str,
-) -> Result<(), String> {
-    let identity = identity.strip_prefix("Prelude::").unwrap_or(identity);
-    if !matches!(identity, "Some" | "Ok" | "Err" | "clone" | "clone_immut") {
-        return Err("Prelude source lookup does not implement this primitive".into());
+impl NameIndex<'_> {
+    /// Lexical resolution only. Physical callee/operand, caller activation and
+    /// value transport are authenticated by the enclosing Source query.
+    pub(crate) fn actual_prelude_name(
+        &self,
+        context: InvocationContext,
+        actual: &Expr,
+        identity: &str,
+        work: &mut usize,
+    ) -> Result<(), String> {
+        name_work(work, 1 + identity.len())?;
+        let identity = identity.strip_prefix("Prelude::").unwrap_or(identity);
+        if !matches!(identity, "Some" | "Ok" | "Err" | "clone" | "clone_immut") {
+            return Err("Prelude source lookup does not implement this primitive".into());
+        }
+        let name = match &actual.kind {
+            ExprKind::Name(name) => {
+                name_work(work, 1 + name.len())?;
+                name.clone()
+            }
+            ExprKind::Path(path) => {
+                name_work(
+                    work,
+                    1 + path
+                        .len()
+                        .checked_mul(2)
+                        .ok_or("Prelude path work overflow")?,
+                )?;
+                for piece in path {
+                    name_work(work, 1 + piece.len())?;
+                }
+                path.join("::")
+            }
+            _ => return Err("Prelude constructor source is not an actual Name or Path".into()),
+        };
+        name_work(work, 10 + identity.len())?;
+        if name != identity && name != format!("Prelude::{identity}") {
+            return Err("Prelude constructor source names a different declaration".into());
+        }
+        let source = actual
+            .hir_id
+            .ok_or("Prelude primitive has no original HIR identity")?;
+        let candidate = self.candidate(context.owner, source, work)?;
+        name_work(work, 1 + candidate.name.len())?;
+        if candidate.name != name || candidate.shadowed {
+            return Err(
+                "Prelude constructor is shadowed or absent in its actual lexical owner".into(),
+            );
+        }
+        Ok(())
     }
-    let name = match &actual.kind {
-        ExprKind::Name(name) => name.clone(),
-        ExprKind::Path(path) => path.join("::"),
-        _ => return Err("Prelude constructor source is not an actual Name or Path".into()),
-    };
-    if name != identity && name != format!("Prelude::{identity}") {
-        return Err("Prelude constructor source names a different declaration".into());
-    }
-    let source = actual
-        .hir_id
-        .ok_or_else(|| "Prelude primitive has no original HIR identity".to_owned())?;
-    let candidate = actual_candidate(facts, context.owner, source)?;
-    if candidate.name != name || candidate.shadowed {
-        return Err("Prelude constructor is shadowed or absent in its actual lexical owner".into());
-    }
-    Ok(())
 }
 
-fn actual_candidate(
-    facts: &SemanticFacts,
-    owner: Option<CallableOwner>,
-    source: ExprId,
-) -> Result<Candidate, String> {
-    Ok(NameIndex::new(facts)?.candidate(owner, source)?.clone())
-}
-
-fn builtin_bit(name: &str) -> u64 {
+fn builtin_bit(name: &str) -> u128 {
     match name {
         "File::read_chunk" => 1,
         "File::write" => 2,
         "Process::wait" => 4,
         "Process::terminate" => 8,
-        "Array::push" => 1 << 52,
-        "Array::insert" => 1 << 53,
-        "Array::truncate" => 1 << 54,
-        "Map::set" => 1 << 55,
-        other => crate::sema::source_types::builtins::BuiltinId::lookup(other)
-            .map(|id| id.bit())
+        "Array::push" => 1 << 112,
+        "Array::insert" => 1 << 113,
+        "Array::truncate" => 1 << 114,
+        "Map::set" => 1 << 115,
+        other => ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(other)
+            .map(|id| id.lexical_bit())
+            .or_else(|| {
+                crate::sema::source_types::builtins::BuiltinId::lookup(other).map(|id| id.bit())
+            })
             .or_else(|| {
                 crate::sema::source_types::builtins::ConstantId::lookup(other).map(|id| id.bit())
             })
@@ -201,7 +362,7 @@ fn builtin_bit(name: &str) -> u64 {
     }
 }
 
-fn bit(name: &str) -> u64 {
+fn bit(name: &str) -> u128 {
     match name {
         "Some" => 1 << 4,
         "Ok" => 1 << 5,
@@ -220,25 +381,23 @@ fn bit(name: &str) -> u64 {
     }
 }
 
-struct Walk<'a> {
+struct Walk<'a, 'w> {
     facts: &'a SemanticFacts,
-    work: usize,
+    owners: DeclarationOwners,
+    work: &'w mut usize,
     found: Vec<Candidate>,
 }
 
-impl Walk<'_> {
+impl Walk<'_, '_> {
     fn charge(&mut self, depth: usize) -> Result<(), String> {
         if depth >= 128 {
             return Err("builtin lexical Source exceeds its nesting bound".into());
         }
-        self.work = self
-            .work
-            .checked_sub(1)
-            .ok_or("builtin lexical Source exceeds its work bound")?;
+        name_work(self.work, 1)?;
         Ok(())
     }
 
-    fn pattern_names(&mut self, pattern: &Pattern, depth: usize) -> Result<u64, String> {
+    fn pattern_names(&mut self, pattern: &Pattern, depth: usize) -> Result<u128, String> {
         self.charge(depth)?;
         let mut mask = 0;
         match &pattern.kind {
@@ -269,7 +428,7 @@ impl Walk<'_> {
         Ok(mask)
     }
 
-    fn declaration_names(&mut self, statement: &Stmt, depth: usize) -> Result<u64, String> {
+    fn declaration_names(&mut self, statement: &Stmt, depth: usize) -> Result<u128, String> {
         self.charge(depth)?;
         let mut mask = 0;
         match &statement.kind {
@@ -281,12 +440,14 @@ impl Walk<'_> {
                 mask |= bit(&declaration.name);
                 for variant in &declaration.variants {
                     self.charge(depth)?;
+                    name_work(self.work, 3 + declaration.name.len() + variant.name.len())?;
                     mask |= bit(&format!("{}::{}", declaration.name, variant.name));
                 }
             }
             StmtKind::Effect(effect) => {
                 for operation in &effect.operations {
                     self.charge(depth)?;
+                    name_work(self.work, 3 + effect.name.len() + operation.name.len())?;
                     mask |= bit(&format!("{}::{}", effect.name, operation.name));
                 }
             }
@@ -294,7 +455,7 @@ impl Walk<'_> {
                 if import.glob {
                     // Unresolved wildcard imports do not establish which
                     // declaration supplies a constructor spelling.
-                    mask = u64::MAX;
+                    mask = u128::MAX;
                 } else {
                     if let Some(alias) = &import.alias {
                         mask |= bit(alias);
@@ -318,13 +479,14 @@ impl Walk<'_> {
         &mut self,
         statements: &[Stmt],
         owner: CallableOwner,
-        mut shadow: u64,
+        mut shadow: u128,
         depth: usize,
     ) -> Result<(), String> {
         for statement in statements {
             shadow |= self.declaration_names(statement, depth)?;
         }
         for statement in statements {
+            self.charge(depth)?;
             match &statement.kind {
                 StmtKind::Binding(binding) => {
                     self.expr(&binding.value, owner, shadow, depth + 1)?;
@@ -334,18 +496,35 @@ impl Walk<'_> {
                     self.pattern(&binding.pattern, owner, shadow, depth + 1)?;
                 }
                 StmtKind::Function(function) => {
-                    let mut definitions = BTreeSet::new();
-                    let facts = self.facts;
-                    for info in &facts.functions {
-                        self.charge(depth)?;
-                        if info.syntax == *function {
-                            definitions.insert(info.definition);
-                        }
-                    }
-                    if definitions.len() != 1 {
+                    let source = statement
+                        .hir_id
+                        .ok_or("builtin function scope lost its original declaration identity")?;
+                    name_work(
+                        self.work,
+                        1 + self.owners.len().checked_ilog2().unwrap_or(0) as usize,
+                    )?;
+                    let Some(&definition) = self.owners.get(&(owner, source)) else {
                         continue;
+                    };
+                    let hir = self
+                        .facts
+                        .semantic_hir
+                        .as_deref()
+                        .ok_or("builtin function scope has no canonical HIR")?;
+                    // The original body is authenticated once, independently
+                    // of the number of dynamic FunctionInfo instances.
+                    for _ in 0..2 {
+                        crate::static_eval::charge_statement_syntax_clone(statement, self.work)
+                            .ok_or(
+                                "builtin canonical scope syntax exceeds its shared work bound",
+                            )?;
                     }
-                    let child_owner = CallableOwner::Function(*definitions.first().unwrap());
+                    let mut original = statement.clone();
+                    hir.validate_statement_syntax(&mut original, source, hir::HirLimits::default())
+                        .map_err(|error| {
+                            format!("builtin canonical scope differs from HIR: {error}")
+                        })?;
+                    let child_owner = CallableOwner::Function(definition);
                     let mut child_shadow = shadow;
                     for parameter in &function.generics {
                         self.charge(depth)?;
@@ -397,7 +576,7 @@ impl Walk<'_> {
         &mut self,
         block: &Block,
         owner: CallableOwner,
-        shadow: u64,
+        shadow: u128,
         depth: usize,
     ) -> Result<(), String> {
         // where declarations share the body's lexical scope.
@@ -409,35 +588,47 @@ impl Walk<'_> {
         self.statements(&block.statements, owner, scope, depth + 1)
     }
 
-    fn lambda_owner(&self, parent: CallableOwner, source: Option<ExprId>) -> Option<CallableOwner> {
-        let source = source?;
-        let matching: Vec<_> = self
+    fn lambda_owner(
+        &mut self,
+        parent: CallableOwner,
+        source: Option<ExprId>,
+    ) -> Result<Option<CallableOwner>, String> {
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        name_work(self.work, 1 + self.facts.closure_sites.len())?;
+        let mut matching = self
             .facts
             .closure_sites
             .iter()
-            .filter(|site| site.owner == parent && site.source == source)
-            .collect();
-        let [site] = matching.as_slice() else {
-            return None;
+            .filter(|site| site.owner == parent && site.source == source);
+        let Some(site) = matching.next() else {
+            return Ok(None);
         };
-        Some(CallableOwner::Lambda(site.id))
+        if matching.next().is_some() {
+            return Ok(None);
+        }
+        Ok(Some(CallableOwner::Lambda(site.id)))
     }
 
     fn pattern(
         &mut self,
         pattern: &Pattern,
         owner: CallableOwner,
-        shadow: u64,
+        shadow: u128,
         depth: usize,
     ) -> Result<(), String> {
         self.charge(depth)?;
         match &pattern.kind {
-            PatternKind::Name(name) if bit(name) != 0 => self.found.push(Candidate {
-                source: pattern.hir_id.map(SyntaxId::Pattern),
-                owner,
-                name: name.clone(),
-                shadowed: shadow & bit(name) != 0,
-            }),
+            PatternKind::Name(name) if bit(name) != 0 => {
+                name_work(self.work, 2 + name.len())?;
+                self.found.push(Candidate {
+                    source: pattern.hir_id.map(SyntaxId::Pattern),
+                    owner,
+                    name: name.clone(),
+                    shadowed: shadow & bit(name) != 0,
+                });
+            }
             PatternKind::Constructor {
                 path,
                 arguments,
@@ -447,6 +638,10 @@ impl Walk<'_> {
                 && path.len() <= 3
                 && path.iter().all(|piece| piece.len() <= 64) =>
             {
+                name_work(self.work, 2 + path.len() * 2)?;
+                for part in path {
+                    name_work(self.work, 1 + part.len())?;
+                }
                 let name = path.join("::");
                 if bit(&name) != 0 {
                     self.found.push(Candidate {
@@ -482,20 +677,27 @@ impl Walk<'_> {
         &mut self,
         expression: &Expr,
         owner: CallableOwner,
-        shadow: u64,
+        shadow: u128,
         depth: usize,
     ) -> Result<(), String> {
         self.charge(depth)?;
         match &expression.kind {
-            ExprKind::Name(name) if bit(name) != 0 => self.found.push(Candidate {
-                source: expression.hir_id.map(SyntaxId::Expr),
-                owner,
-                name: name.clone(),
-                shadowed: shadow & bit(name) != 0,
-            }),
+            ExprKind::Name(name) if bit(name) != 0 => {
+                name_work(self.work, 2 + name.len())?;
+                self.found.push(Candidate {
+                    source: expression.hir_id.map(SyntaxId::Expr),
+                    owner,
+                    name: name.clone(),
+                    shadowed: shadow & bit(name) != 0,
+                });
+            }
             ExprKind::Path(path) => {
                 if path.len() > 3 || path.iter().any(|piece| piece.len() > 64) {
                     return Ok(());
+                }
+                name_work(self.work, 2 + path.len() * 2)?;
+                for part in path {
+                    name_work(self.work, 1 + part.len())?;
                 }
                 let name = path.join("::");
                 if bit(&name) == 0 {
@@ -514,7 +716,7 @@ impl Walk<'_> {
             ExprKind::Lambda {
                 parameters, body, ..
             } => {
-                if let Some(child_owner) = self.lambda_owner(owner, expression.hir_id) {
+                if let Some(child_owner) = self.lambda_owner(owner, expression.hir_id)? {
                     let mut child_shadow = shadow;
                     for parameter in parameters {
                         child_shadow |= self.pattern_names(&parameter.pattern, depth + 1)?;
@@ -643,6 +845,387 @@ impl Walk<'_> {
 mod prelude_tests {
     use super::*;
 
+    fn function_model() -> (SemanticFacts, StmtId, ExprId) {
+        let source = ril_test::case_source("tests/stdlib/num.ril::numeric-callable-views");
+        let mut parsed = ril_syntax::parse(source);
+        assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
+        let hir = crate::hir::nodes::HirProgram::lower_identified(
+            &mut parsed.program,
+            crate::hir::nodes::InputOrigin::Source,
+        )
+        .unwrap();
+        let statement = parsed
+            .program
+            .statements
+            .iter()
+            .find(|statement| matches!(statement.kind, StmtKind::Function(_)))
+            .unwrap();
+        let StmtKind::Function(function) = &statement.kind else {
+            unreachable!()
+        };
+        let declaration = statement.hir_id.unwrap();
+        let StmtKind::Binding(binding) = &function.body.as_ref().unwrap().statements[0].kind else {
+            unreachable!("numeric callable fixture begins with the direct parse declaration")
+        };
+        let expression = binding.value.hir_id.unwrap();
+        assert!(matches!(&hir.expression(expression).unwrap().kind,
+            hir::ExprKind::Path(path) if path == &["Num", "parse_int"]));
+        let info = FunctionInfo {
+            hir_id: Some(declaration),
+            definition: DefinitionId(0),
+            lexical_owner: Some(CallableOwner::Global),
+            typing_environment: Default::default(),
+            syntax: function.clone(),
+            lexical: Default::default(),
+            owner: None,
+            handler_context: vec![],
+            lexical_scope: 0,
+            environment: None,
+            captures: Default::default(),
+            writes: Default::default(),
+            environment_published: false,
+        };
+        (
+            SemanticFacts {
+                functions: vec![info],
+                source_program: Some(std::sync::Arc::new(parsed.program)),
+                semantic_hir: Some(std::sync::Arc::new(hir)),
+                ..Default::default()
+            },
+            declaration,
+            expression,
+        )
+    }
+
+    #[test]
+    fn name_preparation_sees_prelude_builtin_and_constructor_forms() {
+        for name in [
+            "Some",
+            "Ok",
+            "Err",
+            "None",
+            "clone",
+            "clone_immut",
+            "Prelude::Some",
+            "Prelude::None",
+        ] {
+            for constructor in [false, true] {
+                let mut value = Value::scalar(Ty::Unknown, None, CauseId(0));
+                value.callables.push(if constructor {
+                    Callable::Constructor(name.into())
+                } else {
+                    Callable::Builtin(name.into())
+                });
+                let mut facts = SemanticFacts::default();
+                facts.expressions.push(crate::sema::ExpressionFact {
+                    source_id: None,
+                    allocation_epoch: 0,
+                    span: Span {
+                        file: FileId(0),
+                        start: 0,
+                        end: 0,
+                    },
+                    value,
+                });
+                assert!(NameIndex::needs_preparation(&facts, &mut 4096).unwrap());
+                assert!(NameIndex::needs_preparation(&facts, &mut 0).is_err());
+            }
+        }
+        assert!(!NameIndex::needs_preparation(&SemanticFacts::default(), &mut 4096).unwrap());
+    }
+
+    #[test]
+    fn function_owner_index_reuses_declarations_across_dynamic_instances() {
+        let (mut facts, _, expression) = function_model();
+        let mut work = 4_000_000;
+        let names = NameIndex::new_with_work(&facts, &mut work).unwrap();
+        assert_eq!(
+            names
+                .direct_identity(
+                    Some(CallableOwner::Function(DefinitionId(0))),
+                    expression,
+                    &mut work
+                )
+                .unwrap()
+                .as_deref(),
+            Some("Num::parse_int")
+        );
+        let baseline = 4_000_000 - work;
+        drop(names);
+        let copies = 128;
+        let template = facts.functions[0].clone();
+        facts
+            .functions
+            .extend((0..copies).map(|_| template.clone()));
+        let mut work = 4_000_000;
+        let names = NameIndex::new_with_work(&facts, &mut work).unwrap();
+        assert_eq!(
+            names
+                .direct_identity(
+                    Some(CallableOwner::Function(DefinitionId(0))),
+                    expression,
+                    &mut work
+                )
+                .unwrap()
+                .as_deref(),
+            Some("Num::parse_int")
+        );
+        assert!(
+            4_000_000 - work < baseline + copies * 128,
+            "each dynamic instance must cost registry admission, not another complete body traversal"
+        );
+        for units in [0, 1] {
+            assert!(NameIndex::new_with_work(&facts, &mut { units }).is_err());
+        }
+    }
+
+    #[test]
+    fn function_owner_index_rejects_missing_ambiguous_cross_owner_and_forged_bodies() {
+        let (facts, declaration, expression) = function_model();
+        let owner = Some(CallableOwner::Function(DefinitionId(0)));
+        for mutation in 0..4 {
+            let mut changed = facts.clone();
+            match mutation {
+                0 => changed.functions[0].hir_id = None,
+                1 => {
+                    let mut second = changed.functions[0].clone();
+                    second.definition = DefinitionId(1);
+                    changed.functions.push(second);
+                }
+                2 => {
+                    changed.functions[0].lexical_owner =
+                        Some(CallableOwner::Function(DefinitionId(99)))
+                }
+                _ => {
+                    let original =
+                        std::sync::Arc::make_mut(changed.source_program.as_mut().unwrap());
+                    let statement = original
+                        .statements
+                        .iter_mut()
+                        .find(|statement| statement.hir_id == Some(declaration))
+                        .unwrap();
+                    let StmtKind::Function(function) = &mut statement.kind else {
+                        unreachable!()
+                    };
+                    let StmtKind::Binding(binding) =
+                        &mut function.body.as_mut().unwrap().statements[0].kind
+                    else {
+                        unreachable!()
+                    };
+                    let ExprKind::Path(path) = &mut binding.value.kind else {
+                        unreachable!()
+                    };
+                    *path.last_mut().unwrap() = "parse_f32".into();
+                }
+            }
+            match NameIndex::new_with_work(&changed, &mut 4_000_000) {
+                Err(_) => {}
+                Ok(names) => assert!(
+                    names.direct_identity(owner, expression, &mut 4096).is_err(),
+                    "mutation {mutation} borrowed another declaration owner"
+                ),
+            }
+        }
+        let mut moved = facts.clone();
+        let program = std::sync::Arc::make_mut(moved.source_program.as_mut().unwrap());
+        let statement = program
+            .statements
+            .iter_mut()
+            .find(|statement| statement.hir_id == Some(declaration))
+            .unwrap();
+        statement.span.start += 10;
+        let StmtKind::Function(function) = &mut statement.kind else {
+            unreachable!()
+        };
+        function.span.start += 10;
+        let names = NameIndex::new_with_work(&moved, &mut 4_000_000).unwrap();
+        assert_eq!(
+            names
+                .direct_identity(owner, expression, &mut 4096)
+                .unwrap()
+                .as_deref(),
+            Some("Num::parse_int"),
+            "diagnostic spans cannot select an owner"
+        );
+    }
+
+    #[test]
+    fn hoist_declaration_identity_uses_some_statement_ids_and_the_lexical_owner() {
+        let (mut facts, declaration, _) = function_model();
+        let owner = Some(CallableOwner::Global);
+        assert_eq!(
+            crate::sema::checker::declaration_definition(
+                &facts.functions,
+                owner,
+                Some(declaration)
+            ),
+            Some(DefinitionId(0))
+        );
+        assert_eq!(
+            crate::sema::checker::declaration_definition(
+                &facts.functions,
+                owner,
+                Some(StmtId(u32::MAX))
+            ),
+            None,
+            "an equal name/span is not another declaration's identity"
+        );
+        assert_eq!(
+            crate::sema::checker::declaration_definition(&facts.functions, None, Some(declaration)),
+            None
+        );
+        assert_eq!(
+            crate::sema::checker::declaration_definition(
+                &facts.functions,
+                Some(CallableOwner::Function(DefinitionId(99))),
+                Some(declaration)
+            ),
+            None
+        );
+        facts.functions[0].syntax.span.start += 10;
+        assert_eq!(
+            crate::sema::checker::declaration_definition(
+                &facts.functions,
+                owner,
+                Some(declaration)
+            ),
+            Some(DefinitionId(0))
+        );
+        facts.functions[0].hir_id = None;
+        assert_eq!(
+            crate::sema::checker::declaration_definition(&facts.functions, owner, None),
+            None,
+            "two missing identities cannot authorize reuse"
+        );
+    }
+
+    fn model(large_declaration: bool) -> SemanticFacts {
+        let span = Span {
+            file: FileId(0),
+            start: 0,
+            end: 0,
+        };
+        let mut statements = Vec::new();
+        if large_declaration {
+            statements.push(Stmt {
+                hir_id: None,
+                span,
+                kind: StmtKind::Type(TypeDeclaration {
+                    visibility: Default::default(),
+                    is_halt: false,
+                    name: "x".repeat(1024 * 1024),
+                    generics: vec![],
+                    value: None,
+                    variants: vec![Variant {
+                        name: "Variant".into(),
+                        generics: vec![],
+                        payload: None,
+                        result: None,
+                        annotations: vec![],
+                        span,
+                    }],
+                    opaque: false,
+                    nominal: true,
+                    span,
+                }),
+            });
+        }
+        statements.push(Stmt {
+            hir_id: None,
+            span,
+            kind: StmtKind::Expr {
+                expression: Expr {
+                    hir_id: None,
+                    span,
+                    kind: ExprKind::Path(vec!["Num".into(), "parse_int".into()]),
+                },
+                terminated: false,
+            },
+        });
+        let mut program = Program { statements };
+        let hir = crate::hir::nodes::HirProgram::lower_identified(
+            &mut program,
+            crate::hir::nodes::InputOrigin::Source,
+        )
+        .unwrap();
+        SemanticFacts {
+            source_program: Some(std::sync::Arc::new(program)),
+            semantic_hir: Some(std::sync::Arc::new(hir)),
+            ..SemanticFacts::default()
+        }
+    }
+
+    #[test]
+    fn name_index_prepays_owned_names_and_borrows_exact_construction_work() {
+        let facts = model(true);
+        for units in [0, 1] {
+            let mut work = units;
+            assert!(NameIndex::new_with_work(&facts, &mut work).is_err());
+            assert!(work <= units);
+        }
+        let initial = 16_000_000;
+        let mut work = initial;
+        let names = NameIndex::new_with_work(&facts, &mut work).unwrap();
+        assert!(names.matches_facts(&facts));
+        let other = model(false);
+        assert!(!names.matches_facts(&other));
+        let used = initial - work;
+        assert!(
+            used >= 1024 * 1024,
+            "formatting a declaration's owned variant name is admitted before allocation"
+        );
+        let mut exact = used;
+        assert!(NameIndex::new_with_work(&facts, &mut exact).is_ok());
+        assert_eq!(exact, 0);
+        let mut short = used - 1;
+        assert!(NameIndex::new_with_work(&facts, &mut short).is_err());
+    }
+
+    #[test]
+    fn name_index_lookups_cannot_refill_the_shared_allowance() {
+        let facts = model(false);
+        let names = NameIndex::new_with_work(&facts, &mut 65536).unwrap();
+        let StmtKind::Expr { expression, .. } =
+            &facts.source_program.as_ref().unwrap().statements[0].kind
+        else {
+            unreachable!()
+        };
+        let source = expression.hir_id.unwrap();
+        let owner = Some(CallableOwner::Global);
+        for units in [0, 1] {
+            assert!(
+                names
+                    .direct_identity(owner, source, &mut { units })
+                    .is_err()
+            );
+        }
+        let initial = 65536;
+        let mut work = initial;
+        assert_eq!(
+            names
+                .direct_identity(owner, source, &mut work)
+                .unwrap()
+                .as_deref(),
+            Some("Num::parse_int")
+        );
+        let used = initial - work;
+        let mut exact = used;
+        assert_eq!(
+            names
+                .direct_identity(owner, source, &mut exact)
+                .unwrap()
+                .as_deref(),
+            Some("Num::parse_int")
+        );
+        assert_eq!(exact, 0);
+        assert!(names.direct_identity(owner, source, &mut exact).is_err());
+        assert!(
+            names
+                .direct_identity(owner, source, &mut { used - 1 })
+                .is_err()
+        );
+    }
+
     fn lookup(source: &str, spelling: &str, identity: &str) -> Result<(), String> {
         let mut parsed = ril_syntax::parse(source);
         assert!(parsed.is_ok(), "{source}: {:?}", parsed.diagnostics);
@@ -656,9 +1239,12 @@ mod prelude_tests {
             semantic_hir: Some(std::sync::Arc::new(hir)),
             ..SemanticFacts::default()
         };
+        let mut work = 65536;
+        let owners = declaration_owners(&facts, &mut work)?;
         let mut walk = Walk {
             facts: &facts,
-            work: 65536,
+            owners,
+            work: &mut work,
             found: vec![],
         };
         walk.statements(
@@ -677,8 +1263,8 @@ mod prelude_tests {
         let Some(SyntaxId::Expr(source)) = candidate.source else {
             panic!("fixture must select a physical expression")
         };
-        actual_prelude_name(
-            &facts,
+        let names = NameIndex::new_with_work(&facts, &mut work)?;
+        names.actual_prelude_name(
             InvocationContext {
                 invocation: None,
                 owner: Some(CallableOwner::Global),
@@ -700,6 +1286,7 @@ mod prelude_tests {
                 kind: ExprKind::Name(spelling.into()),
             },
             identity,
+            &mut work,
         )
     }
 

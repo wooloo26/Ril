@@ -3,7 +3,9 @@ use super::*;
 #[derive(Clone)]
 pub(super) struct EffectInfo {
     pub source: Option<ril_compiler_core::ids::StmtId>,
-    pub syntax: EffectDeclaration,
+    pub syntax: std::sync::Arc<EffectDeclaration>,
+    pub declaration: std::sync::Arc<EffectDeclaration>,
+    pub arguments: std::sync::Arc<[TypeExpr]>,
     pub environment: crate::sema::context::FrozenEnvironment,
     pub scope: ScopeId,
     pub context: crate::sema::effect_identity::InvocationContext,
@@ -1108,6 +1110,30 @@ impl Checker {
             self.type_source.environment.generic_context = previous;
             return;
         }
+        if effect.operations.is_empty() {
+            return;
+        }
+        let mut source_work = crate::sema::source_types::WorkLimit::new(16384);
+        let source = self.declared_effect_source(effect, &effect.arguments, &mut source_work);
+        let source = match source {
+            Ok(source) => Some(source.operations),
+            Err(error) => {
+                self.unsupported(
+                    effect.span,
+                    format!("original effect operation Source graph is unavailable: {error}"),
+                );
+                None
+            }
+        };
+        self.declare_operations_with_source(effect, source.as_ref(), &mut source_work);
+    }
+
+    fn declare_operations_with_source(
+        &mut self,
+        effect: &EffectInfo,
+        source: Option<&crate::sema::source_types::SourceSchema>,
+        source_work: &mut crate::sema::source_types::WorkLimit,
+    ) {
         for (operation_index, operation) in effect.operations.iter().enumerate() {
             let name = format!("{}::{}", effect.name, operation.name);
             let identity = self.operations.get(&name).map_or_else(
@@ -1133,49 +1159,26 @@ impl Checker {
                 .as_ref()
                 .map(|ty| self.ty(ty))
                 .unwrap_or(Ty::Unit);
-            let signature = self.with_typing_environment(&effect.environment, |checker| {
-                use crate::sema::effect_identity::ArgumentKey;
-                let parameters = operation
-                    .parameters
-                    .iter()
-                    .map(|parameter| {
-                        Some((
-                            parameter.mode,
-                            checker
-                                .freeze_source_receiving_target(parameter.ty.as_ref()?)
-                                .schema
-                                .as_ref()?
-                                .key()
-                                .ok()?,
-                        ))
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                let result = match &operation.return_type {
-                    // OperationSignature's remaining legacy representation is
-                    // isolated here. Recursive/unavailable export remains NI.
-                    Some(syntax) => checker
-                        .freeze_source_receiving_target(syntax)
-                        .schema
-                        .as_ref()?
-                        .key()
-                        .ok()?,
-                    None => ArgumentKey::Tuple(vec![]),
-                };
-                crate::sema::source_types::SourceSchema::import(
-                    &ArgumentKey::Callable {
-                        parameters,
-                        result: Box::new(result),
-                        annotations: operation
-                            .annotations
-                            .iter()
-                            .map(|row| row.text.replace(' ', ""))
-                            .collect(),
-                    },
-                    None,
-                    &mut crate::sema::source_types::WorkLimit::new(16384),
-                )
-                .ok()
-            });
+            let signature = source
+                .map(|source| {
+                    source.project_steps(
+                        &[crate::sema::source_types::SourcePath::Tuple(
+                            operation_index as u32,
+                        )],
+                        source_work,
+                    )
+                })
+                .transpose();
+            let signature = match signature {
+                Ok(signature) => signature,
+                Err(error) => {
+                    self.unsupported(
+                        operation.span,
+                        format!("original effect operation Source graph is unavailable: {error}"),
+                    );
+                    None
+                }
+            };
             self.operations.insert(
                 name.clone(),
                 OperationFact {
@@ -1276,6 +1279,12 @@ impl Checker {
             );
             return None;
         };
+        if declaration.generics.is_empty()
+            && arguments.is_empty()
+            && !declaration.arguments.is_empty()
+        {
+            return Some(declaration.name.clone());
+        }
         if crate::static_eval::effects::mentions_enclosing_binders(
             &declaration,
             &[],
@@ -1299,19 +1308,18 @@ impl Checker {
                 return None;
             }
         };
-        let instance = match crate::static_eval::effects::instantiate(
-            &declaration,
-            &arguments,
-            &self.types,
-            self.layout,
-        ) {
+        let mut source_work = crate::sema::source_types::WorkLimit::new(16384);
+        let instance = match self.declared_effect_source(&declaration, &arguments, &mut source_work)
+        {
             Ok(instance) => instance,
-            Err(crate::static_eval::ArgumentNormalizationError::Diagnostic(code, message)) => {
+            Err(crate::sema::source_types::declarations::EffectSourceError::Normalization(
+                crate::static_eval::ArgumentNormalizationError::Diagnostic(code, message),
+            )) => {
                 self.error(code, span, message, []);
                 return None;
             }
-            Err(crate::static_eval::ArgumentNormalizationError::Unsupported(message)) => {
-                self.unsupported(span, message);
+            Err(error) => {
+                self.unsupported(span, error.to_string());
                 return None;
             }
         };
@@ -1327,7 +1335,7 @@ impl Checker {
             );
             return None;
         }
-        for (parameter, argument) in declaration.generics.iter().zip(&instance.arguments) {
+        for (parameter, argument) in declaration.generics.iter().zip(instance.arguments.iter()) {
             if let Err(message) = self.effect_argument_syntax(argument) {
                 self.unsupported(span, message);
                 return None;
@@ -1365,6 +1373,8 @@ impl Checker {
             existing.sites.insert((span.file.0, span.start, span.end));
             return Some(existing.name.clone());
         }
+        let signatures = instance.operations;
+        let arguments = instance.arguments;
         let instance = instance.declaration;
         let name = instance.name.clone();
         if self.local_effects.contains(family) {
@@ -1376,8 +1386,10 @@ impl Checker {
             scope: declaration.scope,
             context: declaration.context,
             syntax: instance,
+            declaration: declaration.declaration.clone(),
+            arguments,
         };
-        self.declare_operations(&instance);
+        self.declare_operations_with_source(&instance, Some(&signatures), &mut source_work);
         self.effect_instances
             .push(super::super::effect_identity::EffectInstance {
                 key,

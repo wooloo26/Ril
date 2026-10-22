@@ -1,18 +1,38 @@
 //! Values held across later evaluation must follow allocation-site recency.
 //! Each wrapper belongs to one Checker's monotonically growing move history.
 //! It must not be transferred between checkers or reused with a rolled-back log.
+use crate::numeric_literals::NumberType;
 use crate::sema::{
     application_effect::OccurrenceIdentity,
     context::FrozenEnvironment,
     effect_identity::InvocationContext,
     facts::NodeId,
     model::{Callable, CallableReturnBound, Value},
+    numeric_selection::{NumericBirth, NumericResolution},
     source_reception::Construction,
-    source_types::{SourceSchema, SourceTypesError},
+    source_types::{SourceScalar, SourceSchema, SourceTypesError, WorkLimit},
 };
+use ril_compiler_core::ids::NumericHoleId;
 use std::sync::Arc;
 
 pub(crate) type CheckedSource = Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError>;
+
+pub(crate) fn numeric_source_scalar(number: NumberType) -> SourceScalar {
+    match number {
+        NumberType::Int => SourceScalar::Int,
+        NumberType::I8 => SourceScalar::I8,
+        NumberType::I16 => SourceScalar::I16,
+        NumberType::I32 => SourceScalar::I32,
+        NumberType::I64 => SourceScalar::I64,
+        NumberType::U8 => SourceScalar::U8,
+        NumberType::U16 => SourceScalar::U16,
+        NumberType::U32 => SourceScalar::U32,
+        NumberType::U64 => SourceScalar::U64,
+        NumberType::BigInt => SourceScalar::BigInt,
+        NumberType::F32 => SourceScalar::F32,
+        NumberType::F64 => SourceScalar::F64,
+    }
+}
 
 fn opaque_construction() -> &'static Construction {
     static OPAQUE: std::sync::OnceLock<Construction> = std::sync::OnceLock::new();
@@ -34,6 +54,7 @@ pub(crate) struct EvaluationBirth {
 enum SourceCapture {
     Uncaptured,
     Captured(Arc<BirthSource>),
+    NumericPending(Arc<NumericSourceBasis>),
 }
 
 #[derive(Debug)]
@@ -42,9 +63,25 @@ struct BirthSource {
     fresh: Option<Arc<Construction>>,
 }
 
+#[derive(Debug)]
+struct NumericSourceBasis {
+    hole: NumericHoleId,
+    birth: NumericBirth,
+    environment: FrozenEnvironment,
+    fresh: Option<Arc<Construction>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct NumericSourceDerivation {
+    basis: Arc<NumericSourceBasis>,
+    resolution: Arc<NumericResolution>,
+    source: Option<(SourceSchema, FrozenEnvironment)>,
+}
+
 #[derive(Clone, Debug)]
 enum CurrentSource {
     Birth,
+    Numeric(Arc<NumericSourceDerivation>),
     Pending,
     Failed(SourceTypesError),
 }
@@ -85,7 +122,126 @@ impl EvaluatedValue {
     }
 
     pub(crate) fn has_captured_source(&self) -> bool {
-        matches!(self.birth.source, SourceCapture::Captured(_))
+        !matches!(self.birth.source, SourceCapture::Uncaptured)
+    }
+
+    pub(crate) fn capture_numeric_birth_source(
+        &mut self,
+        hole: NumericHoleId,
+        birth: NumericBirth,
+        environment: FrozenEnvironment,
+        fresh: Option<Arc<Construction>>,
+    ) -> Result<(), SourceTypesError> {
+        if self.has_captured_source() {
+            return Err(SourceTypesError::AlreadyDefined);
+        }
+        if !matches!(self.current_source, CurrentSource::Birth)
+            || self.observation.is_none()
+            || self.identity.is_none()
+            || self.birth_context.is_none()
+            || self.value.ty != super::model::Ty::NumericHole(hole)
+            || birth.allocation_epoch > self.allocation_epoch
+            || environment.is_poisoned()
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        self.birth.source = SourceCapture::NumericPending(Arc::new(NumericSourceBasis {
+            hole,
+            birth,
+            environment,
+            fresh,
+        }));
+        Ok(())
+    }
+
+    pub(crate) fn apply_numeric_resolution(
+        &mut self,
+        hole: NumericHoleId,
+        resolution: Arc<NumericResolution>,
+        work: &mut usize,
+    ) -> Result<(), SourceTypesError> {
+        let basis = match &self.birth.source {
+            SourceCapture::NumericPending(basis) if basis.hole == hole => basis,
+            SourceCapture::Captured(basis) => {
+                return Err(match &basis.result {
+                    Err(error) => error.clone(),
+                    _ => SourceTypesError::Unresolved,
+                });
+            }
+            SourceCapture::Uncaptured => return Err(SourceTypesError::SourceNotCaptured),
+            _ => return Err(SourceTypesError::Unresolved),
+        };
+        match &self.current_source {
+            CurrentSource::Birth => {}
+            CurrentSource::Numeric(previous) => {
+                if !Arc::ptr_eq(&previous.basis, basis)
+                    || !Arc::ptr_eq(&previous.resolution, &resolution)
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+            }
+            CurrentSource::Pending => return Err(SourceTypesError::SourceViewPending),
+            CurrentSource::Failed(error) => return Err(error.clone()),
+        }
+        *work = work
+            .checked_sub(3)
+            .ok_or(SourceTypesError::BudgetExceeded)?;
+        if !resolution.matches_value(&self.value, work)? {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let mut graph_work = WorkLimit::new(*work);
+        let source = SourceSchema::scalar(
+            numeric_source_scalar(resolution.number_type),
+            None,
+            &mut graph_work,
+        );
+        *work = graph_work.remaining();
+        let source = Some((source?, basis.environment.clone()));
+        self.current_source = CurrentSource::Numeric(Arc::new(NumericSourceDerivation {
+            basis: basis.clone(),
+            resolution,
+            source,
+        }));
+        Ok(())
+    }
+
+    pub(crate) fn numeric_source_derivation(
+        &self,
+    ) -> Option<(NumericHoleId, &NumericBirth, &Arc<NumericResolution>)> {
+        match &self.current_source {
+            CurrentSource::Numeric(derived) => Some((
+                derived.basis.hole,
+                &derived.basis.birth,
+                &derived.resolution,
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn shares_birth(&self, other: &Self) -> bool {
+        self.observation == other.observation
+            && self.identity == other.identity
+            && self.birth_context == other.birth_context
+            && self.allocation_epoch == other.allocation_epoch
+            && match (&self.birth.source, &other.birth.source) {
+                (SourceCapture::Uncaptured, SourceCapture::Uncaptured) => true,
+                (SourceCapture::Captured(a), SourceCapture::Captured(b)) => Arc::ptr_eq(a, b),
+                (SourceCapture::NumericPending(a), SourceCapture::NumericPending(b)) => {
+                    Arc::ptr_eq(a, b)
+                }
+                _ => false,
+            }
+    }
+
+    /// A numeric selection is the original input's explicit pending choice.
+    /// An ordinary receiving change still consumes only its birth schema.
+    pub(crate) fn input_source(
+        &self,
+    ) -> Result<&Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError> {
+        match self.current_source {
+            CurrentSource::Numeric(_) | CurrentSource::Failed(_) => self.current_source(),
+            _ => self.birth_source(),
+        }
     }
 
     /// Only an authenticated original-input role may consume this basis. The
@@ -96,6 +252,7 @@ impl EvaluatedValue {
         match &self.birth.source {
             SourceCapture::Uncaptured => Err(SourceTypesError::SourceNotCaptured),
             SourceCapture::Captured(basis) => basis.result.as_ref().map_err(Clone::clone),
+            SourceCapture::NumericPending(_) => Err(SourceTypesError::SourceViewPending),
         }
     }
 
@@ -104,6 +261,7 @@ impl EvaluatedValue {
     ) -> Result<&Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError> {
         match &self.current_source {
             CurrentSource::Birth => self.birth_source(),
+            CurrentSource::Numeric(derived) => Ok(&derived.source),
             CurrentSource::Pending => Err(SourceTypesError::SourceViewPending),
             CurrentSource::Failed(error) => Err(error.clone()),
         }
@@ -112,6 +270,10 @@ impl EvaluatedValue {
     pub(crate) fn fresh(&self) -> &Construction {
         match &self.birth.source {
             SourceCapture::Captured(basis) => match basis.fresh.as_deref() {
+                Some(fresh) => fresh,
+                None => opaque_construction(),
+            },
+            SourceCapture::NumericPending(basis) => match basis.fresh.as_deref() {
                 Some(fresh) => fresh,
                 None => opaque_construction(),
             },
@@ -539,6 +701,20 @@ pub(crate) fn transport_value_at(
     Ok(value)
 }
 
+/// Prove that a held value has only followed the actual allocation history.
+/// This is required before a numeric choice changes any current projection.
+pub(crate) fn same_transported_birth(
+    birth: &Value,
+    birth_epoch: usize,
+    current: &Value,
+    current_epoch: usize,
+    moves: &[(NodeId, NodeId)],
+    work: &mut usize,
+) -> Result<bool, SourceTypesError> {
+    let expected = transport_value_at(birth, moves, birth_epoch, current_epoch, work)?;
+    same_birth_value(&expected, current, work)
+}
+
 #[cfg(test)]
 mod packet_tests {
     use super::*;
@@ -798,6 +974,192 @@ mod packet_tests {
         assert_eq!(
             packet.birth_source().unwrap().as_ref().unwrap().1.id(),
             environment
+        );
+    }
+
+    fn pending_numeric_packet() -> EvaluatedValue {
+        let original = packet();
+        let mut value = Value::scalar(Ty::NumericHole(NumericHoleId(3)), None, CauseId(0));
+        value
+            .numeric
+            .uses
+            .insert(ril_compiler_core::ids::NumericUseId(1));
+        value.results.insert(7);
+        value.outer_results.insert(7);
+        value.participants.insert(Participant::Loan(LoanId(3)));
+        let record = EvaluationRecord {
+            id: EvaluationOccurrenceId(2),
+            identity: original.identity,
+            scope: ScopeId(0),
+            context: original.birth_context.unwrap(),
+            allocation_epoch: 0,
+        };
+        let mut packet = EvaluatedValue::observed(value, 2, &record);
+        packet
+            .capture_numeric_birth_source(
+                NumericHoleId(3),
+                NumericBirth {
+                    occurrence: record.identity.unwrap(),
+                    scope: record.scope,
+                    context: record.context,
+                    allocation_epoch: 0,
+                },
+                FrozenEnvironment::default(),
+                Some(Arc::new(Construction::Opaque)),
+            )
+            .unwrap();
+        packet
+    }
+
+    fn numeric_resolution() -> Arc<NumericResolution> {
+        let encoded = crate::numeric_literals::ExactLiteral::integer(
+            "16777217",
+            false,
+            crate::numeric_literals::ParseLimit { max_bytes: 64 },
+        )
+        .unwrap()
+        .select(
+            NumberType::F32,
+            ril_compiler_core::target::TargetLayout::POINTER64,
+        )
+        .unwrap();
+        Arc::new(NumericResolution {
+            number_type: NumberType::F32,
+            constant: None,
+            encoded: Some(encoded),
+            dependencies: crate::sema::numeric_selection::NumericDependencies {
+                uses: BTreeSet::from([ril_compiler_core::ids::NumericUseId(1)]),
+                selections: BTreeSet::from([ril_compiler_core::ids::NumericSelectionId(2)]),
+            },
+        })
+    }
+
+    #[test]
+    fn numeric_source_keeps_pending_birth_and_all_non_numeric_duties() {
+        let mut packet = pending_numeric_packet();
+        let original = packet.try_clone(&mut 4096).unwrap();
+        let resolution = numeric_resolution();
+        resolution.apply(&mut packet.value, &mut 4096).unwrap();
+        packet
+            .apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut 4096)
+            .unwrap();
+        let (schema, environment) = packet.current_source().unwrap().as_ref().unwrap();
+        assert_eq!(
+            schema.key().unwrap(),
+            crate::sema::effect_identity::ArgumentKey::Name {
+                name: "f32".into(),
+                arguments: vec![],
+            }
+        );
+        let environment = environment.id();
+        assert!(packet.shares_birth(&original));
+        assert_eq!(
+            packet.birth_source().unwrap_err(),
+            SourceTypesError::SourceViewPending
+        );
+        assert_eq!(packet.value.results, original.value.results);
+        assert_eq!(packet.value.outer_results, original.value.outer_results);
+        assert_eq!(packet.value.participants, original.value.participants);
+        assert_eq!(packet.value.permission, original.value.permission);
+        assert_eq!(packet.allocation_epoch, original.allocation_epoch);
+        assert_eq!(packet.identity, original.identity);
+        let (_, _, retained) = packet.numeric_source_derivation().unwrap();
+        assert!(Arc::ptr_eq(retained, &resolution));
+        packet
+            .transport_checked(&[(NodeId(1), NodeId(6))], &mut 4096)
+            .unwrap();
+        assert_eq!(
+            packet.current_source().unwrap().as_ref().unwrap().1.id(),
+            environment
+        );
+        let cloned = packet.try_clone(&mut 4096).unwrap();
+        assert_eq!(
+            cloned.current_source().unwrap().as_ref().unwrap().1.id(),
+            environment
+        );
+        packet.invalidate_current_source();
+        assert_eq!(
+            packet.current_source().unwrap_err(),
+            SourceTypesError::SourceViewPending
+        );
+    }
+
+    #[test]
+    fn numeric_admission_cannot_hide_changes_to_held_permissions_or_duties() {
+        let birth = packet();
+        let moves = [(NodeId(1), NodeId(6))];
+        let mut held = birth.try_clone(&mut 4096).unwrap();
+        held.transport_checked(&moves, &mut 4096).unwrap();
+        assert_eq!(
+            same_transported_birth(&birth.value, 0, &held.value, 1, &moves, &mut 4096),
+            Ok(true)
+        );
+        let changes: [fn(&mut Value); 8] = [
+            |value| value.permission = Permission::Write,
+            |value| value.publication = crate::sema::facts::Publication::Immutable,
+            |value| value.participants.clear(),
+            |value| value.results.clear(),
+            |value| value.outer_results.clear(),
+            |value| value.marker = !value.marker,
+            |value| {
+                value
+                    .condition_inspections
+                    .evaluations
+                    .insert(crate::sema::result_conditions::ConditionEvaluationId(99));
+            },
+            |value| value.condition_inspections.channel_when_true.incomplete = true,
+        ];
+        for change in changes {
+            let mut changed = held.try_clone(&mut 4096).unwrap();
+            change(&mut changed.value);
+            assert_eq!(
+                same_transported_birth(&birth.value, 0, &changed.value, 1, &moves, &mut 4096),
+                Ok(false)
+            );
+        }
+        assert!(matches!(
+            same_transported_birth(&birth.value, 0, &held.value, 1, &moves, &mut 0),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(matches!(
+            same_transported_birth(&birth.value, 1, &held.value, 0, &moves, &mut 4096),
+            Err(SourceTypesError::Unresolved)
+        ));
+    }
+
+    #[test]
+    fn numeric_source_cannot_replace_unknown_error_or_an_unrelated_pending_birth() {
+        let resolution = numeric_resolution();
+        for outcome in [
+            Ok(None),
+            Err(SourceTypesError::MissingNode),
+            Err(SourceTypesError::BudgetExceeded),
+        ] {
+            let mut packet = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
+            packet.capture_birth_source(outcome, None).unwrap();
+            resolution.apply(&mut packet.value, &mut 4096).unwrap();
+            assert!(
+                packet
+                    .apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut 4096)
+                    .is_err()
+            );
+            assert!(packet.numeric_source_derivation().is_none());
+        }
+        let mut pending = pending_numeric_packet();
+        resolution.apply(&mut pending.value, &mut 4096).unwrap();
+        assert_eq!(
+            pending.apply_numeric_resolution(NumericHoleId(4), resolution.clone(), &mut 4096),
+            Err(SourceTypesError::Unresolved)
+        );
+        assert_eq!(
+            pending.apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut 0),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+        assert!(pending.numeric_source_derivation().is_none());
+        pending.value.numeric.selections.clear();
+        assert_eq!(
+            pending.apply_numeric_resolution(NumericHoleId(3), resolution, &mut 4096),
+            Err(SourceTypesError::Unresolved)
         );
     }
 

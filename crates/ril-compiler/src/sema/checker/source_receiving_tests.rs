@@ -113,6 +113,7 @@ fn append_fixture(checker: &mut Checker, statement: Stmt) -> Stmt {
         .cloned()
         .unwrap_or_default();
     program.statements.push(statement);
+    checker.type_source.reset_header_queries();
     checker.semantic_hir = crate::hir::HirProgram::lower_identified(
         &mut program,
         crate::hir::nodes::InputOrigin::Source,

@@ -97,7 +97,7 @@ pub(crate) fn ty(work: &mut usize, value: &Ty, depth: usize) -> Option<()> {
     }
     Some(())
 }
-fn key(work: &mut usize, value: &ArgumentKey, depth: usize) -> Option<()> {
+pub(crate) fn key(work: &mut usize, value: &ArgumentKey, depth: usize) -> Option<()> {
     charge(work, 1)?;
     if depth > 128 {
         return None;

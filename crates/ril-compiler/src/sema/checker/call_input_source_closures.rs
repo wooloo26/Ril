@@ -113,7 +113,11 @@ impl Checker {
             return;
         }
         let context = self.invocation_context(frame.callable_owner);
-        if self
+        let mut work = WorkLimit::new(16384);
+        if work.charge(self.application_effect.contexts.len()).is_err() {
+            return;
+        }
+        let mut observations = self
             .application_effect
             .contexts
             .iter()
@@ -126,20 +130,32 @@ impl Checker {
                         .is_some_and(|fact| {
                             fact.source_id.is_some()
                                 && fact.source_id == closure.body.hir_id
+                                && self
+                                    .application_effect
+                                    .evaluations
+                                    .get(row.expression)
+                                    .is_some_and(|record| record.scope == frame.owner)
                                 && fact.value.cause == result.cause
                                 && fact.value.ty == result.ty
                         })
             })
-            .count()
-            != 1
-        {
+            .map(|row| row.expression);
+        let Some(observation) = observations.next() else {
+            return;
+        };
+        if observations.next().is_some() {
             return;
         }
-        let mut work = WorkLimit::new(16384);
         let declaration_environment = closure.contract.typing_environment.clone();
         let composed = (|| -> InputSource {
-            let Some((result, result_environment)) =
-                self.raw_original_source_schema(result, &closure.body, frame, &mut work, 0)?
+            let Some((result, result_environment)) = self.raw_original_source_schema(
+                result,
+                &closure.body,
+                frame,
+                &mut work,
+                0,
+                Some(observation),
+            )?
             else {
                 return Ok(None);
             };

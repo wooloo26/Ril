@@ -129,6 +129,7 @@ impl Replay<'_> {
         value: &Value,
         context: InvocationContext,
         observation: Option<usize>,
+        work: &mut usize,
     ) -> Check<InvocationContext> {
         let binding_id = *value
             .sources
@@ -147,15 +148,14 @@ impl Replay<'_> {
                 .is_some_and(|pattern| matches!(&pattern.kind,crate::hir::nodes::PatternKind::Name(name) if name == &binding.name)),
             "formal Source declaration is not its actual HIR Name pattern",
         )?;
-        let index =
-            self.original_source_root(expression, value, context, observation, &mut 4096)?;
+        let index = self.original_source_root(expression, value, context, observation, work)?;
         let read = self
             .facts
             .evaluations
             .get(index)
             .ok_or_else(|| "formal Source read has no actual scope".to_owned())?;
         let declaration = binding.context;
-        let operation = self.frames.operation(binding.owner)?;
+        let operation = self.frames.operation(binding.owner, work)?;
         if let Some(operation) = &operation {
             require(
                 binding.context == operation.entry.context
@@ -213,7 +213,7 @@ impl Replay<'_> {
         {
             return Ok(declaration);
         }
-        if let Some(handler) = self.storage_handler(context, read.scope)? {
+        if let Some(handler) = self.storage_handler(context, read.scope, work)? {
             require(
                 handler.lexical.get(&binding.name) == Some(&binding_id),
                 "formal Source read is absent from its actual handler capture",
@@ -259,8 +259,9 @@ impl Replay<'_> {
     pub(super) fn operation_formal_source_key(
         &self,
         binding: &crate::sema::model::BindingInfo,
+        work: &mut usize,
     ) -> Check<Option<ArgumentKey>> {
-        let Some(frame) = self.frames.operation(binding.owner)? else {
+        let Some(frame) = self.frames.operation(binding.owner, work)? else {
             return Ok(None);
         };
         let slots: Vec<_> = frame
@@ -291,16 +292,17 @@ impl Replay<'_> {
                 ) == Some(source.environment.id()),
             "operation formal Source borrowed another declaration environment",
         )?;
-        let signature = self.frames.receiver_signature(&frame)?;
+        let signature = self.frames.receiver_signature(&frame, work)?;
         let ArgumentKey::Callable { parameters, .. } = signature.declared else {
             return Err("operation parameter has no callable Source signature".into());
         };
-        let key = parameters
+        let key = &parameters
             .get(*slot)
             .ok_or("operation parameter is outside its Source signature")?
-            .1
-            .clone();
-        Ok(Some(key))
+            .1;
+        crate::sema::clone_work::key(work, key, 0)
+            .ok_or("operation parameter Source clone exceeds its shared work bound")?;
+        Ok(Some(key.clone()))
     }
 
     pub(super) fn lambda_formal_source_key(

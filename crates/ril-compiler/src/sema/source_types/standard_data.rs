@@ -10,6 +10,7 @@ pub(crate) enum Nominal {
     ProcessExitStatus,
     ProcessError,
     IoErrorKind,
+    NumError,
 }
 
 const UNIT: Schema = Scalar(SourceScalar::Unit);
@@ -58,6 +59,7 @@ impl Nominal {
             "Process::ExitStatus" => Self::ProcessExitStatus,
             "Process::ProcessError" => Self::ProcessError,
             "Io::ErrorKind" => Self::IoErrorKind,
+            "Num::NumError" => Self::NumError,
             _ => return None,
         })
     }
@@ -69,11 +71,17 @@ impl Nominal {
             Self::ProcessExitStatus => "Process::ExitStatus",
             Self::ProcessError => "Process::ProcessError",
             Self::IoErrorKind => "Io::ErrorKind",
+            Self::NumError => "Num::NumError",
         }
     }
 
     pub(crate) fn variants(self) -> &'static [(&'static str, Option<Schema>)] {
         match self {
+            Self::NumError => &[
+                ("InvalidSyntax", None),
+                ("OutOfRange", None),
+                ("InvalidRadix", None),
+            ],
             Self::ProcessInput => &[("Inherit", None), ("Null", None), ("Data", Some(BYTES))],
             Self::ProcessOutputMode => &[("Inherit", None), ("Null", None), ("Capture", None)],
             Self::ProcessExitStatus => &[("Exited", Some(U32)), ("Signaled", Some(INT))],
@@ -141,6 +149,40 @@ mod tests {
     use super::*;
     use crate::sema::effect_identity::ArgumentKey;
     use crate::sema::source_types::{SourceBuilder, SourceSensitivity, SourceTypeQueries};
+
+    #[test]
+    fn closed_numeric_error_witness_retains_the_catalog_nominal_declaration() {
+        let span = ril_compiler_core::source::Span {
+            file: ril_compiler_core::source::FileId(0),
+            start: 0,
+            end: 1,
+        };
+        let syntax = Schema::Nominal(Nominal::NumError)
+            .syntax(span, &mut WorkLimit::new(128))
+            .unwrap();
+        let mut witness = crate::sema::model::SourceTypeWitness {
+            key: crate::static_eval::normalized_argument_key(&syntax),
+            syntax,
+        };
+        assert!(witness.validate_closed());
+        assert!(crate::sema::source_type_validation::resolved_names(
+            &witness,
+            &Default::default()
+        ));
+        let ril_syntax::ast::TypeKind::Name { arguments, .. } = &mut witness.syntax.kind else {
+            unreachable!();
+        };
+        arguments.push(
+            Schema::Scalar(SourceScalar::Unit)
+                .syntax(span, &mut WorkLimit::new(128))
+                .unwrap(),
+        );
+        witness.key = crate::static_eval::normalized_argument_key(&witness.syntax);
+        assert!(
+            !crate::sema::source_type_validation::resolved_names(&witness, &Default::default()),
+            "a closed catalog nominal declaration does not invent generic arguments"
+        );
+    }
 
     #[test]
     fn closed_nominal_declarations_are_distinct_and_unknown_or_applied_names_stay_unproved() {

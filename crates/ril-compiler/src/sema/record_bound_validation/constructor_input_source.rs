@@ -19,6 +19,11 @@ impl Replay<'_> {
             !environment.is_poisoned(),
             "constructor instance has a poisoned interpretation",
         )?;
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("constructor instance has no original HIR")?;
         let context = HeaderContext {
             declarations: &self.facts.external_type_declarations,
             program: self
@@ -26,12 +31,14 @@ impl Replay<'_> {
                 .source_program
                 .as_deref()
                 .ok_or("constructor instance has no original Program")?,
-            hir: self
-                .facts
-                .semantic_hir
-                .as_deref()
-                .ok_or("constructor instance has no original HIR")?,
+            hir,
+            lexical: self
+                .lexical
+                .as_ref()
+                .ok_or("constructor instance has no lexical index")?,
             binders: &environment.generic_context,
+            functions: &self.facts.functions,
+            generic_binders: &self.facts.generic_binders,
             layout: self
                 .facts
                 .target_layout

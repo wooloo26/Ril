@@ -275,15 +275,27 @@ impl Replay<'_> {
         }
         // Catalog and original effect declarations can supply a never result;
         // a current Builtin tag or an arbitrary value witness cannot do so.
-        let mut budget = WorkLimit::new(*work);
-        let catalog = crate::sema::checker::original_canonical_builtin_source(
-            self.facts,
-            &callee.value,
-            application.callee,
-            context,
-            &mut budget,
-        );
-        *work = budget.remaining();
+        let catalog =
+            if crate::sema::checker::BuiltinNameIndex::is_candidate(application.callee, work)? {
+                let names = self.builtin_source_names(work)?;
+                let mut budget = WorkLimit::new(*work);
+                let catalog = crate::sema::checker::original_canonical_builtin_source(
+                    self.facts,
+                    &crate::sema::checker::CanonicalBuiltinUse {
+                        value: &callee.value,
+                        actual: application.callee,
+                        context,
+                        observation: callee_observation,
+                    },
+                    &names,
+                    &mut budget,
+                );
+                *work = budget.remaining();
+                drop(names);
+                catalog
+            } else {
+                Ok(None)
+            };
         if let Some((schema, _)) = catalog? {
             let mut budget = WorkLimit::new(*work);
             let parts = schema.callable_parts(&mut budget);
@@ -306,6 +318,7 @@ impl Replay<'_> {
                     .hir_id
                     .ok_or("abrupt effect callee has no HIR selector")?,
                 context,
+                work,
             )?;
             if let ArgumentKey::Callable { result, .. } = signature.expanded {
                 return Ok(*result == never);
@@ -926,18 +939,13 @@ impl Replay<'_> {
             return None;
         }
         let id = *value.sources.first()?;
-        let rows: Vec<_> = self
-            .facts
-            .binding_sources
-            .iter()
-            .filter(|row| row.binding == id)
-            .collect();
+        let row = self.storage_bindings.get(&id).copied();
         let parameter = self
             .facts
             .bindings
             .get(id)
             .is_some_and(|binding| binding.parameter);
-        if rows.is_empty() && !parameter {
+        if row.is_none() && !parameter {
             return None;
         }
         let source = expression.hir_id?;
@@ -1009,10 +1017,7 @@ impl Replay<'_> {
             };
         }
         let original = (|| {
-            require(
-                rows.len() == 1,
-                "storage Name has duplicate declaration sources",
-            )?;
+            let row = row.ok_or("storage Name has no declaration source")?;
             let binding = self
                 .facts
                 .bindings
@@ -1030,14 +1035,21 @@ impl Replay<'_> {
                 .get(root)
                 .ok_or("storage read lost its actual scope")?;
             require(
-                (read.scope == rows[0].activation && context == rows[0].context)
-                    || self.storage_captured_binding(
+                (read.scope == row.activation && context == row.context) || {
+                    let before = work.remaining();
+                    let mut remaining = before;
+                    let result = self.storage_captured_binding(
                         context,
                         read.scope,
                         plan.name(),
                         id,
-                        rows[0],
-                    )?,
+                        row,
+                        &mut remaining,
+                    );
+                    work.charge(before - remaining)
+                        .map_err(|error| error.to_string())?;
+                    result?
+                },
                 "storage input borrowed a binding from another lexical activation",
             )?;
             require(
@@ -1277,12 +1289,17 @@ impl Replay<'_> {
         .map(Some)
     }
 
-    fn storage_activation(&self, context: InvocationContext, activation: ScopeId) -> Check {
+    fn storage_activation(
+        &self,
+        context: InvocationContext,
+        activation: ScopeId,
+        work: &mut usize,
+    ) -> Check {
         require(
             self.facts.scopes.contains(&activation),
             "storage activation is not allocated",
         )?;
-        if self.storage_handler(context, activation)?.is_some() {
+        if self.storage_handler(context, activation, work)?.is_some() {
             return Ok(());
         }
         // A named call inside a closure keeps the outer closure's dynamic
@@ -1351,8 +1368,9 @@ impl Replay<'_> {
         &self,
         context: InvocationContext,
         activation: ScopeId,
+        work: &mut usize,
     ) -> Check<Option<&HandlerFact>> {
-        let Some(frame) = self.frames.operation(activation)? else {
+        let Some(frame) = self.frames.operation(activation, work)? else {
             return Ok(None);
         };
         require(
@@ -1462,8 +1480,9 @@ impl Replay<'_> {
         name: &str,
         id: BindingId,
         declaration: &BindingSource,
+        work: &mut usize,
     ) -> Check<bool> {
-        if let Some(handler) = self.storage_handler(context, activation)? {
+        if let Some(handler) = self.storage_handler(context, activation, work)? {
             return Ok(handler.lexical.get(name) == Some(&id));
         }
         match context.owner {
@@ -1515,6 +1534,7 @@ impl Replay<'_> {
         declaration: &super::explicit_named::BindingSite<'_>,
         plan: &PatternPlan,
         roots: &mut SourceRoots,
+        work: &mut usize,
     ) -> Check<Option<crate::sema::source_types::SourceSchema>> {
         let binding = self
             .facts
@@ -1525,7 +1545,7 @@ impl Replay<'_> {
             !binding.parameter && binding.owner == row.activation && binding.context == row.context,
             "storage declaration borrowed a parameter or another frame",
         )?;
-        self.storage_activation(row.context, row.activation)?;
+        self.storage_activation(row.context, row.activation, work)?;
         let owner = declaration.owner;
         let declaration = declaration.binding;
         require(
@@ -1724,8 +1744,14 @@ impl Replay<'_> {
                 let (site, plan) = originals
                     .get(&(owner, row.declaration))
                     .ok_or("storage declaration lost its original HIR binding root")?;
-                let reconstructed =
-                    self.storage_declared_schema(row, &sites, site, plan, &mut roots)?;
+                let reconstructed = self.storage_declared_schema(
+                    row,
+                    &sites,
+                    site,
+                    plan,
+                    &mut roots,
+                    &mut plan_work,
+                )?;
                 let binding = self
                     .facts
                     .bindings
@@ -1830,7 +1856,7 @@ impl Replay<'_> {
                     covered.insert(write.rhs.expression),
                     "storage writes borrowed one RHS occurrence twice",
                 )?;
-                self.storage_activation(write.context, write.activation)?;
+                self.storage_activation(write.context, write.activation, &mut plan_work)?;
                 let originals: Vec<_> = sites
                     .assignments
                     .iter()
@@ -1881,6 +1907,7 @@ impl Replay<'_> {
                                     name,
                                     *id,
                                     declaration,
+                                    &mut plan_work,
                                 )?,
                                 "storage target is not the actual captured lexical binding",
                             )?;
@@ -2434,6 +2461,17 @@ mod tests {
             .unwrap();
         Replay {
             facts,
+            numeric_session: Default::default(),
+            source_query: Default::default(),
+            builtin_names: Default::default(),
+            storage_bindings: Default::default(),
+            storage_admissions: Default::default(),
+            lexical: facts.semantic_hir.as_deref().map(|hir| {
+                std::sync::Arc::new(
+                    crate::hir::lexical::LexicalBindings::new(hir, &mut callable_input_work)
+                        .unwrap(),
+                )
+            }),
             generated_entries,
             callable_input_work,
             frames: crate::sema::scopes::FrameIndex::new(facts).unwrap(),
@@ -2500,23 +2538,23 @@ mod tests {
         });
         assert!(
             replay(&facts)
-                .storage_activation(current, ScopeId(20))
+                .storage_activation(current, ScopeId(20), &mut 65536)
                 .is_ok()
         );
         assert!(
             replay(&facts)
-                .storage_activation(current, ScopeId(10))
+                .storage_activation(current, ScopeId(10), &mut 65536)
                 .is_err()
         );
         current.owner = Some(CallableOwner::Lambda(ClosureSiteId(0)));
         assert!(
             replay(&facts)
-                .storage_activation(current, ScopeId(10))
+                .storage_activation(current, ScopeId(10), &mut 65536)
                 .is_ok()
         );
         assert!(
             replay(&facts)
-                .storage_activation(current, ScopeId(20))
+                .storage_activation(current, ScopeId(20), &mut 65536)
                 .is_err()
         );
     }
@@ -2526,12 +2564,26 @@ mod tests {
         let (mut facts, current) = model();
         assert!(
             replay(&facts)
-                .storage_captured_binding(current, ScopeId(20), "counter", 1, &source(1))
+                .storage_captured_binding(
+                    current,
+                    ScopeId(20),
+                    "counter",
+                    1,
+                    &source(1),
+                    &mut 65536
+                )
                 .unwrap()
         );
         assert!(
             !replay(&facts)
-                .storage_captured_binding(current, ScopeId(20), "counter", 0, &source(0))
+                .storage_captured_binding(
+                    current,
+                    ScopeId(20),
+                    "counter",
+                    0,
+                    &source(0),
+                    &mut 65536
+                )
                 .unwrap()
         );
         facts.bindings[1].owner = ScopeId(10);
@@ -2540,13 +2592,13 @@ mod tests {
         local.context = current;
         assert!(
             !replay(&facts)
-                .storage_captured_binding(current, ScopeId(20), "counter", 1, &local)
+                .storage_captured_binding(current, ScopeId(20), "counter", 1, &local, &mut 65536)
                 .unwrap()
         );
         facts.functions[1].captures.insert(1);
         assert!(
             replay(&facts)
-                .storage_captured_binding(current, ScopeId(20), "counter", 1, &local)
+                .storage_captured_binding(current, ScopeId(20), "counter", 1, &local, &mut 65536)
                 .unwrap()
         );
         // Without a physical callee no convenient same-definition copy can
@@ -2554,14 +2606,14 @@ mod tests {
         facts.copy_invocations[0].source_event = None;
         assert!(
             !replay(&facts)
-                .storage_captured_binding(current, ScopeId(20), "counter", 1, &local)
+                .storage_captured_binding(current, ScopeId(20), "counter", 1, &local, &mut 65536)
                 .unwrap()
         );
         facts.functions[0].lexical.insert("counter".into(), 1);
         facts.functions[0].captures.insert(1);
         assert!(
             replay(&facts)
-                .storage_captured_binding(current, ScopeId(20), "counter", 1, &local)
+                .storage_captured_binding(current, ScopeId(20), "counter", 1, &local, &mut 65536)
                 .unwrap()
         );
     }
@@ -2605,12 +2657,12 @@ mod tests {
             });
         assert!(
             replay(&facts)
-                .storage_activation(current, ScopeId(30))
+                .storage_activation(current, ScopeId(30), &mut 65536)
                 .is_err()
         );
         assert!(
             replay(&facts)
-                .storage_handler(current, ScopeId(30))
+                .storage_handler(current, ScopeId(30), &mut 65536)
                 .unwrap()
                 .is_none()
         );
@@ -2618,13 +2670,13 @@ mod tests {
         foreign.invocation = Some(InstanceId(99));
         assert!(
             replay(&facts)
-                .storage_activation(foreign, ScopeId(30))
+                .storage_activation(foreign, ScopeId(30), &mut 65536)
                 .is_err()
         );
         facts.operation_loan_starts[0].operation = 8;
         assert!(
             replay(&facts)
-                .storage_activation(current, ScopeId(30))
+                .storage_activation(current, ScopeId(30), &mut 65536)
                 .is_err()
         );
     }

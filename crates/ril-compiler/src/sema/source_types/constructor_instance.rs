@@ -69,11 +69,7 @@ pub(crate) fn constructor_instance(
         work.text(part)?;
     }
     let name = path.join("::");
-    let mut header = Header {
-        context,
-        aliases: BTreeMap::new(),
-        builder: SourceBuilder::new()?,
-    };
+    let mut header = Header::new(context)?;
     let candidate = context
         .declarations
         .get(&name)
@@ -155,7 +151,7 @@ pub(crate) fn constructor_instance(
         let arguments = normalized
             .arguments
             .iter()
-            .map(|argument| header.ty(argument, true, work, 0))
+            .map(|argument| header.ty(argument, true, false, work, 0))
             .collect::<Result<_, _>>()?;
         header
             .builder
@@ -185,7 +181,7 @@ pub(crate) fn constructor_instance(
             .map(|syntax| {
                 charge_syntax(&syntax, work)?;
                 header
-                    .ty(&syntax, true, work, 0)
+                    .ty(&syntax, true, false, work, 0)
                     .map(|root| (syntax, root, original))
             })
             .transpose()?;

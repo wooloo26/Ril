@@ -1,17 +1,21 @@
-//! Resolve transparent global declarations into finite source graphs. Only
-//! original HIR declaration edges can turn an opaque name into structural
-//! evidence. Generic, opaque and captured interpretations stay unresolved.
+//! Resolve original declaration edges into finite source graphs. Actual type
+//! occurrences keep their lexical declaration and generic parameter identities;
+//! legacy views without an occurrence retain conservative module-only lookup.
 use super::{
     LegacySourceExport, SourceSchema, SourceSensitivity, SourceTypeQueries, graph::*, legacy,
 };
+use crate::hir::lexical::{LexicalBindings, TypeNameBinding};
 use crate::hir::nodes::{self as hir, HirProgram};
 use crate::sema::effect_identity::ArgumentKey;
-use ril_compiler_core::ids::{StmtId, TypeExprId};
+use ril_compiler_core::ids::{GenericParamId, StmtId, TypeExprId};
 use std::collections::{BTreeMap, BTreeSet};
 #[path = "original_header.rs"]
 mod original_header;
 pub(crate) use original_header::{DeclaredConstructorInstance, constructor_instance};
-pub(crate) use original_header::{HeaderContext, elaborate_original_header, original_header};
+pub(crate) use original_header::{
+    EffectSource, EffectSourceError, HeaderContext, effect_source, elaborate_original_header,
+    original_header,
+};
 
 #[derive(Clone, Copy)]
 struct Alias {
@@ -22,10 +26,66 @@ struct Alias {
 struct Resolve<'a> {
     hir: &'a HirProgram,
     aliases: BTreeMap<String, Option<Alias>>,
-    definitions: BTreeMap<StmtId, SourceTypeId>,
-    syntax: BTreeMap<TypeExprId, SourceTypeId>,
+    definitions: BTreeMap<(StmtId, TypeScope), SourceTypeId>,
+    syntax: BTreeMap<(TypeExprId, TypeScope), SourceTypeId>,
+    lexical: Option<&'a LexicalBindings>,
+    substitutions: BTreeMap<GenericParamId, SourceTypeId>,
     copied: BTreeMap<SourceTypeId, SourceTypeId>,
     builder: SourceBuilder,
+}
+
+type TypeScope = Vec<(GenericParamId, SourceTypeId)>;
+
+fn lexical_error(error: hir::LowerError) -> SourceTypesError {
+    match error {
+        hir::LowerError::Budget(_) => SourceTypesError::BudgetExceeded,
+        _ => SourceTypesError::Unresolved,
+    }
+}
+
+/// Resolve an actual HIR type occurrence in its original lexical environment.
+/// Legacy graph names lack this declaration identity and keep their separate
+/// conservative ingress; they cannot borrow this lookup's local aliases.
+#[cfg(test)]
+pub(crate) fn type_schema(
+    id: TypeExprId,
+    hir: &HirProgram,
+    work: &mut WorkLimit,
+) -> Result<SourceSchema, SourceTypesError> {
+    work.charge(1)?;
+    hir.type_expression(id)
+        .ok_or(SourceTypesError::MissingNode)?;
+    let mut remaining = work.remaining();
+    let before = remaining;
+    let lexical = LexicalBindings::new(hir, &mut remaining);
+    work.charge(before - remaining)?;
+    let lexical = lexical.map_err(lexical_error)?;
+    type_schema_with_lexical(id, hir, &lexical, work)
+}
+
+pub(crate) fn type_schema_with_lexical(
+    id: TypeExprId,
+    hir: &HirProgram,
+    lexical: &LexicalBindings,
+    work: &mut WorkLimit,
+) -> Result<SourceSchema, SourceTypesError> {
+    work.charge(1)?;
+    hir.type_expression(id)
+        .ok_or(SourceTypesError::MissingNode)?;
+    work.charge(1)?;
+    let mut resolver = Resolve {
+        hir,
+        aliases: BTreeMap::new(),
+        definitions: BTreeMap::new(),
+        syntax: BTreeMap::new(),
+        lexical: Some(lexical),
+        substitutions: BTreeMap::new(),
+        copied: BTreeMap::new(),
+        builder: SourceBuilder::new()?,
+    };
+    let root = resolver.ty(id, work, 0)?;
+    let graph = resolver.freeze(root, work)?;
+    SourceSchema::copy_from(&graph.types, graph.root, Some(id), work)
 }
 
 struct DeclaredGraph {
@@ -239,6 +299,8 @@ impl<'a> Resolve<'a> {
             aliases,
             definitions: BTreeMap::new(),
             syntax: BTreeMap::new(),
+            lexical: None,
+            substitutions: BTreeMap::new(),
             copied: BTreeMap::new(),
             builder: SourceBuilder::new()?,
         })
@@ -268,6 +330,127 @@ impl Resolve<'_> {
         Ok(())
     }
 
+    fn scope_key(&self, work: &mut WorkLimit) -> Result<TypeScope, SourceTypesError> {
+        work.charge(self.substitutions.len())?;
+        Ok(self
+            .substitutions
+            .iter()
+            .map(|(id, value)| (*id, *value))
+            .collect())
+    }
+
+    fn type_binding(
+        &self,
+        syntax: TypeExprId,
+        work: &mut WorkLimit,
+    ) -> Result<Option<TypeNameBinding>, SourceTypesError> {
+        let Some(lexical) = &self.lexical else {
+            return Ok(None);
+        };
+        let mut remaining = work.remaining();
+        let before = remaining;
+        let result = lexical.lookup_type(syntax, &mut remaining);
+        work.charge(before - remaining)?;
+        result.map(Some).map_err(lexical_error)
+    }
+
+    fn declared_type(
+        &mut self,
+        declaration: StmtId,
+        arguments: &[SourceTypeId],
+        work: &mut WorkLimit,
+        depth: usize,
+    ) -> Result<SourceTypeId, SourceTypesError> {
+        Self::step(work, depth)?;
+        let statement = self
+            .hir
+            .statement(declaration)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let hir::StmtKind::Type {
+            name,
+            generics,
+            value,
+            variants,
+            opaque,
+            nominal,
+            ..
+        } = &statement.kind
+        else {
+            return Err(SourceTypesError::Unresolved);
+        };
+        work.charge(generics.len() + arguments.len() + 1)?;
+        work.text(name)?;
+        if generics.len() != arguments.len() {
+            return Err(SourceTypesError::NeedsStaticElaboration);
+        }
+        if *opaque || *nominal || !variants.is_empty() {
+            return self.builder.insert(
+                SourceNode::OpaqueName {
+                    name: name.clone(),
+                    arguments: arguments.to_vec(),
+                },
+                work,
+            );
+        }
+        let value = value.ok_or(SourceTypesError::Unresolved)?;
+        work.charge(self.substitutions.len() + generics.len())?;
+        let mut substitutions = self.substitutions.clone();
+        for (parameter, argument) in generics.iter().zip(arguments) {
+            let generic = self
+                .hir
+                .generic(*parameter)
+                .ok_or(SourceTypesError::MissingNode)?;
+            if generic.info.owner != hir::LexicalOwner::Declaration(declaration) {
+                return Err(SourceTypesError::Unresolved);
+            }
+            if let Some(bound) = generic.bound {
+                let kind = &self
+                    .hir
+                    .type_expression(bound)
+                    .ok_or(SourceTypesError::MissingNode)?
+                    .kind;
+                let hir::TypeKind::Name { path, arguments } = kind else {
+                    return Err(SourceTypesError::NeedsStaticElaboration);
+                };
+                work.charge(path.len() + arguments.len())?;
+                for part in path {
+                    work.text(part)?;
+                }
+                if path.len() != 1
+                    || path[0] != "Type"
+                    || !arguments.is_empty()
+                    || self.type_binding(bound, work)? != Some(TypeNameBinding::Unbound)
+                {
+                    return Err(SourceTypesError::NeedsStaticElaboration);
+                }
+            }
+            substitutions.insert(*parameter, *argument);
+        }
+        work.charge(substitutions.len())?;
+        let scope: TypeScope = substitutions
+            .iter()
+            .map(|(id, value)| (*id, *value))
+            .collect();
+        let key = (declaration, scope);
+        if let Some(root) = self.definitions.get(&key) {
+            return Ok(*root);
+        }
+        let root = self.builder.reserve(work)?;
+        self.definitions.insert(key, root);
+        let previous = std::mem::replace(&mut self.substitutions, substitutions);
+        let target = self.ty(value, work, depth + 1);
+        self.substitutions = previous;
+        self.builder.define(
+            root,
+            SourceNode::Alias {
+                declaration: name.clone(),
+                target: target?,
+            },
+            work,
+        )?;
+        Ok(root)
+    }
+
     fn alias(
         &mut self,
         name: &str,
@@ -278,12 +461,13 @@ impl Resolve<'_> {
         let Some(alias) = self.aliases.get(name).copied().flatten() else {
             return Ok(None);
         };
-        if let Some(&id) = self.definitions.get(&alias.declaration) {
+        let key = (alias.declaration, Vec::new());
+        if let Some(&id) = self.definitions.get(&key) {
             return Ok(Some(id));
         }
         work.text(name)?;
         let id = self.builder.reserve(work)?;
-        self.definitions.insert(alias.declaration, id);
+        self.definitions.insert(key, id);
         let target = self.ty(alias.value, work, depth + 1)?;
         self.builder.define(
             id,
@@ -330,7 +514,8 @@ impl Resolve<'_> {
         depth: usize,
     ) -> Result<SourceTypeId, SourceTypesError> {
         Self::step(work, depth)?;
-        if let Some(&output) = self.syntax.get(&id) {
+        let syntax_key = (id, self.scope_key(work)?);
+        if let Some(&output) = self.syntax.get(&syntax_key) {
             return Ok(output);
         }
         let syntax = self
@@ -344,21 +529,54 @@ impl Resolve<'_> {
                     work.text(name)?;
                 }
                 let name = path.join("::");
+                let binding = self.type_binding(id, work)?;
+                match binding {
+                    Some(TypeNameBinding::Other) => return Err(SourceTypesError::Unresolved),
+                    Some(TypeNameBinding::Generic(parameter)) => {
+                        if !arguments.is_empty() {
+                            return Err(SourceTypesError::NeedsStaticElaboration);
+                        }
+                        let root = self
+                            .substitutions
+                            .get(&parameter)
+                            .copied()
+                            .ok_or(SourceTypesError::Unresolved)?;
+                        self.syntax.insert(syntax_key, root);
+                        return Ok(root);
+                    }
+                    _ => {}
+                }
                 let arguments = arguments
                     .iter()
                     .map(|id| self.ty(*id, work, depth + 1))
                     .collect::<Result<Vec<_>, _>>()?;
+                if let Some(TypeNameBinding::Declaration(declaration)) = binding {
+                    let root = self.declared_type(declaration, &arguments, work, depth + 1)?;
+                    self.syntax.insert(syntax_key, root);
+                    return Ok(root);
+                }
                 if arguments.is_empty() {
                     if let Some(scalar) = legacy::scalar(&name) {
                         return self.remember(id, SourceNode::Scalar(scalar), work);
                     }
-                    if let Some(output) = self.alias(&name, work, depth + 1)? {
-                        self.syntax.insert(id, output);
+                    if binding.is_none()
+                        && let Some(output) = self.alias(&name, work, depth + 1)?
+                    {
+                        self.syntax.insert(syntax_key, output);
                         return Ok(output);
+                    }
+                    if binding.is_some()
+                        && let Some(schema) = super::standard_data::schema(&name)
+                    {
+                        let root = schema.insert(&mut self.builder, work)?;
+                        self.syntax.insert(syntax_key, root);
+                        return Ok(root);
                     }
                 }
                 if let Some(kind) = legacy::container(&name) {
                     SourceNode::Container { kind, arguments }
+                } else if binding.is_some() {
+                    return Err(SourceTypesError::Unresolved);
                 } else {
                     SourceNode::OpaqueName { name, arguments }
                 }
@@ -473,7 +691,8 @@ impl Resolve<'_> {
         work: &mut WorkLimit,
     ) -> Result<SourceTypeId, SourceTypesError> {
         let id = self.builder.insert(node, work)?;
-        self.syntax.insert(syntax, id);
+        let key = (syntax, self.scope_key(work)?);
+        self.syntax.insert(key, id);
         Ok(id)
     }
 }
@@ -482,6 +701,169 @@ impl Resolve<'_> {
 mod tests {
     use super::*;
     use ril_syntax::ast::{StmtKind, TypeExpr, TypeField, TypeKind};
+
+    fn parameter_header(program: &ril_syntax::ast::Program) -> (HirProgram, TypeExprId) {
+        let hir = HirProgram::lower(program).unwrap();
+        let header = hir
+            .roots()
+            .iter()
+            .find_map(|id| {
+                let hir::StmtKind::Function(function) = &hir.statement(*id)?.kind else {
+                    return None;
+                };
+                function.parameters.first()?.ty
+            })
+            .unwrap();
+        (hir, header)
+    }
+
+    #[test]
+    fn original_type_headers_resolve_aliases_in_their_own_lexical_scope() {
+        for (case, expected) in [
+            ("floating-alias-patterns", SourceScalar::F32),
+            ("alias-pattern-range-safe", SourceScalar::I8),
+            ("shadowed-alias-pattern-safe", SourceScalar::I8),
+        ] {
+            let source = ril_test::case_source(&format!("tests/conformance/numeric.ril::{case}"));
+            let parsed = ril_syntax::parse(source);
+            assert!(parsed.is_ok());
+            let (hir, header) = parameter_header(&parsed.program);
+            let schema = type_schema(header, &hir, &mut WorkLimit::new(65_536)).unwrap();
+            assert_eq!(schema.original(), Some(header));
+            assert_eq!(
+                schema.scalar_representation(&mut WorkLimit::new(4096)),
+                Ok(Some(expected))
+            );
+            assert!(matches!(
+                type_schema(header, &hir, &mut WorkLimit::new(0)),
+                Err(SourceTypesError::BudgetExceeded)
+            ));
+            assert!(matches!(
+                type_schema(TypeExprId(u32::MAX), &hir, &mut WorkLimit::new(4096)),
+                Err(SourceTypesError::MissingNode)
+            ));
+        }
+        let parsed = ril_syntax::parse(ril_test::case_source(
+            "tests/conformance/numeric.ril::nested-alias-patterns",
+        ));
+        let (hir, header) = parameter_header(&parsed.program);
+        let tuple = type_schema(header, &hir, &mut WorkLimit::new(65_536)).unwrap();
+        for index in 0..2 {
+            let field = tuple
+                .project_steps(
+                    &[super::super::SourcePath::Tuple(index)],
+                    &mut WorkLimit::new(4096),
+                )
+                .unwrap();
+            assert_eq!(
+                field.scalar_representation(&mut WorkLimit::new(4096)),
+                Ok(Some(SourceScalar::I8))
+            );
+        }
+    }
+
+    #[test]
+    fn applied_alias_parameters_are_keyed_by_actual_generic_ids_and_arguments() {
+        let mut parsed = ril_syntax::parse(ril_test::case_source(
+            "tests/conformance/numeric.ril::floating-alias-patterns",
+        ))
+        .program;
+        let StmtKind::Type(declaration) = &mut parsed.statements[0].kind else {
+            unreachable!()
+        };
+        let span = declaration.span;
+        declaration
+            .generics
+            .push(ril_syntax::ast::GenericParameter {
+                name: "T".into(),
+                bound: None,
+                default: None,
+                span,
+                hir_id: None,
+            });
+        let name = |name: &str| TypeExpr {
+            kind: TypeKind::Name {
+                path: vec![name.into()],
+                arguments: vec![],
+            },
+            text: String::new(),
+            span,
+            hir_id: None,
+        };
+        declaration.value = Some(name("T"));
+        let StmtKind::Function(function) = &mut parsed.statements[1].kind else {
+            unreachable!()
+        };
+        function.parameters[0].ty = Some(TypeExpr {
+            kind: TypeKind::Tuple(
+                ["i8", "f64"]
+                    .into_iter()
+                    .map(|argument| TypeExpr {
+                        kind: TypeKind::Name {
+                            path: vec!["Rounded".into()],
+                            arguments: vec![name(argument)],
+                        },
+                        text: String::new(),
+                        span,
+                        hir_id: None,
+                    })
+                    .collect(),
+            ),
+            text: String::new(),
+            span,
+            hir_id: None,
+        });
+        let (hir, header) = parameter_header(&parsed);
+        let schema = type_schema(header, &hir, &mut WorkLimit::new(65_536)).unwrap();
+        for (index, expected) in [SourceScalar::I8, SourceScalar::F64]
+            .into_iter()
+            .enumerate()
+        {
+            let field = schema
+                .project_steps(
+                    &[super::super::SourcePath::Tuple(index as u32)],
+                    &mut WorkLimit::new(4096),
+                )
+                .unwrap();
+            assert_eq!(
+                field.scalar_representation(&mut WorkLimit::new(4096)),
+                Ok(Some(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn type_headers_do_not_bypass_value_shadows_or_invent_unselected_generic_uids() {
+        let source =
+            ril_test::case_source("tests/conformance/numeric.ril::floating-alias-patterns");
+        let mut parsed = ril_syntax::parse(source).program;
+        let StmtKind::Function(function) = &mut parsed.statements[1].kind else {
+            unreachable!()
+        };
+        function.name = "f32".into();
+        let (hir, header) = parameter_header(&parsed);
+        assert!(matches!(
+            type_schema(header, &hir, &mut WorkLimit::new(65_536)),
+            Err(SourceTypesError::Unresolved)
+        ));
+
+        let mut parsed = ril_syntax::parse(source).program;
+        let StmtKind::Function(function) = &mut parsed.statements[1].kind else {
+            unreachable!()
+        };
+        function.generics.push(ril_syntax::ast::GenericParameter {
+            name: "Rounded".into(),
+            bound: None,
+            default: None,
+            span: function.span,
+            hir_id: None,
+        });
+        let (hir, header) = parameter_header(&parsed);
+        assert!(matches!(
+            type_schema(header, &hir, &mut WorkLimit::new(65_536)),
+            Err(SourceTypesError::Unresolved)
+        ));
+    }
 
     fn original() -> ril_syntax::ast::Program {
         ril_syntax::parse(ril_test::case_source(

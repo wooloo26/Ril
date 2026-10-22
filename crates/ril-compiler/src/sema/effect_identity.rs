@@ -171,7 +171,6 @@ pub struct InvocationWitness {
 #[derive(Debug, Clone)]
 pub enum InvocationWitnessKind {
     NumericSelection(super::numeric_selection::NumericSelection),
-    ContextualType(super::model::Ty),
     ImplicitUnwrap(super::ImplicitUnwrap),
     VariantProjection(super::VariantProjection),
     StaticKey(usize),

@@ -11,6 +11,26 @@ impl Checker {
         let Callable::Builtin(name) = &value.callables[0] else {
             return;
         };
+        if let Some(id) = ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(name) {
+            let target = self.freeze_source_receiving_target(syntax);
+            let mut work = crate::sema::source_types::WorkLimit::new(16384);
+            let selected = target
+                .schema
+                .as_ref()
+                .ok_or(crate::sema::source_types::SourceTypesError::Unresolved)
+                .and_then(|target| {
+                    let declaration = crate::sema::source_types::numeric::definition(id)
+                        .ok_or(crate::sema::source_types::SourceTypesError::Unresolved)?
+                        .schema(&mut work)?;
+                    target.receive_schema(&declaration, None, &mut work)
+                });
+            match selected {
+                Ok(true) => value.ty = self.ty(syntax),
+                Ok(false) => self.error("E0301", syntax.span, "numeric callable view must preserve its full original parameter arity, modes and result", [value.cause]),
+                Err(error) => self.unsupported(syntax.span, format!("numeric callable view requires its original Source declaration: {error}")),
+            }
+            return;
+        }
         let Some(id) = ril_compiler_core::builtin_calls::GenericBuiltin::lookup(name) else {
             return;
         };

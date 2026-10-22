@@ -76,9 +76,6 @@ impl Replay<'_> {
         *work = work
             .checked_sub(function.syntax.parameters.len() + self.facts.bindings.len())
             .ok_or("named Source header selection exceeds its work bound")?;
-        // This authenticates owned/captured static positions and every scoped
-        // remainder receipt even when a complete actual graph already exists.
-        let selected_keys = self.input_selected_keys(call)?;
         let raw = function
             .syntax
             .parameters
@@ -131,6 +128,14 @@ impl Replay<'_> {
                 schema.binder_identities(budget)
             })?);
         }
+        // A complete declaration graph with no Type/row UID needs no actual
+        // static selection. A missing selection for a genuine UID remains an
+        // error; this is applicability derived from the original graph.
+        let selected_keys = if required.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.input_selected_keys(call)?
+        };
         for identity in required {
             *work = work
                 .checked_sub(1 + identity.len().div_ceil(32))
@@ -181,16 +186,14 @@ impl Replay<'_> {
     ) -> Check<OriginalSource> {
         source_reception::complete(key, work)
             .ok_or("original static Source selection exceeds its complete key admission")?;
-        let owned = self.input_static_arguments(call)?;
         *work = work
-            .checked_sub(owned.len() + self.facts.effect_invocations.len())
+            .checked_sub(self.facts.effect_invocations.len())
             .ok_or("original static Source lookup exceeds its work bound")?;
-        let row = self
-            .facts
-            .effect_invocations
-            .iter()
-            .find(|row| row.invocation == Some(call.id))
-            .ok_or("original static Source has no actual invocation")?;
+        let row = self.input_static_environment(call)?;
+        let owned = &row.arguments;
+        *work = work
+            .checked_sub(owned.len())
+            .ok_or("original static Source lookup exceeds its work bound")?;
         *work = work
             .checked_sub(row.captured_arguments.len())
             .ok_or("captured static Source lookup exceeds its work bound")?;
@@ -839,6 +842,123 @@ fn read_root(
 mod tests {
     use super::*;
     use crate::sema::source_types::SourceLength;
+
+    #[test]
+    fn recursive_input_sources_only_demand_real_static_receipts_for_graph_dependencies() {
+        let source = ril_test::case_source(
+            "tests/regressions/source-transport.ril::recursive-static-input-receipts",
+        );
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let baseline = program.facts();
+        let definition = |name: &str| {
+            baseline
+                .functions
+                .iter()
+                .find(|function| function.syntax.name == name)
+                .unwrap()
+                .definition
+        };
+        let down = definition("down");
+        let recursive = |target| {
+            baseline
+                .copy_invocations
+                .iter()
+                .find(|call| call.target == target && call.caller == Some(target))
+                .unwrap()
+        };
+        let down_call = recursive(down).id;
+        let mut no_static = baseline.clone();
+        assert!(
+            no_static
+                .effect_invocations
+                .iter()
+                .any(|row| row.invocation == Some(down_call))
+        );
+        no_static
+            .effect_invocations
+            .retain(|row| row.invocation != Some(down_call));
+        let replay = Replay::new(&no_static).unwrap();
+        let schemas = replay
+            .named_input_source_schemas(
+                &no_static.copy_invocations[down_call.0 as usize],
+                &mut 262_144,
+            )
+            .unwrap();
+        assert!(schemas.selected.is_empty());
+        assert!(schemas.raw.iter().flatten().all(|(schema, _)| {
+            schema
+                .binder_identities(&mut WorkLimit::new(4096))
+                .unwrap()
+                .is_empty()
+        }));
+
+        let recur_call = recursive(definition("recur")).id;
+        let sibling_call = recursive(definition("sibling")).id;
+        let expected_row = baseline
+            .effect_invocations
+            .iter()
+            .find(|row| row.invocation == Some(recur_call))
+            .unwrap();
+        assert_eq!(expected_row.arguments.len(), 1);
+        let sibling_row = baseline
+            .effect_invocations
+            .iter()
+            .find(|row| row.invocation == Some(sibling_call))
+            .unwrap();
+        assert_ne!(
+            expected_row.arguments[0].binder,
+            sibling_row.arguments[0].binder
+        );
+        let replay = Replay::new(baseline).unwrap();
+        let original = replay
+            .named_input_source_schemas(
+                &baseline.copy_invocations[recur_call.0 as usize],
+                &mut 262_144,
+            )
+            .unwrap();
+        assert!(original.raw.iter().flatten().any(|(schema, _)| {
+            !schema
+                .binder_identities(&mut WorkLimit::new(4096))
+                .unwrap()
+                .is_empty()
+        }));
+        for mutation in 0..4 {
+            let mut changed = baseline.clone();
+            let index = changed
+                .effect_invocations
+                .iter()
+                .position(|row| row.invocation == Some(recur_call))
+                .unwrap();
+            match mutation {
+                0 => {
+                    changed.effect_invocations.remove(index);
+                }
+                1 => changed
+                    .effect_invocations
+                    .push(changed.effect_invocations[index].clone()),
+                2 => {
+                    changed.effect_invocations[index].arguments[0].binder =
+                        sibling_row.arguments[0].binder.clone()
+                }
+                3 => {
+                    changed.effect_invocations[index] = sibling_row.clone();
+                }
+                _ => unreachable!(),
+            }
+            let replay = Replay::new(&changed).unwrap();
+            assert!(
+                replay
+                    .named_input_source_schemas(
+                        &changed.copy_invocations[recur_call.0 as usize],
+                        &mut 262_144
+                    )
+                    .is_err(),
+                "recursive static receipt mutation {mutation} was accepted"
+            );
+        }
+    }
 
     #[test]
     fn row_graph_equations_keep_hidden_extents_modes_and_their_work_bound() {

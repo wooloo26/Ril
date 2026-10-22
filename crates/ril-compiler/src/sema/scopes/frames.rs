@@ -31,6 +31,16 @@ fn require(condition: bool, message: &str) -> Result<(), String> {
     condition.then_some(()).ok_or_else(|| message.to_owned())
 }
 
+fn signature_work<T>(
+    work: &mut usize,
+    query: impl FnOnce(&mut crate::sema::source_types::WorkLimit) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut budget = crate::sema::source_types::WorkLimit::new(*work);
+    let result = query(&mut budget);
+    *work = budget.remaining();
+    result
+}
+
 impl<'a> FrameIndex<'a> {
     pub(crate) fn preparations(
         &self,
@@ -46,40 +56,75 @@ impl<'a> FrameIndex<'a> {
         operation: &OperationFact,
         selector: ril_compiler_core::ids::ExprId,
         context: InvocationContext,
+        work: &mut usize,
     ) -> Result<super::signatures::Signature, String> {
-        self.signatures.signature(
-            operation,
-            selector,
-            super::signatures::SignatureContext::Evaluation(context),
-        )
+        signature_work(work, |work| {
+            self.signatures.signature(
+                operation,
+                selector,
+                super::signatures::SignatureContext::Evaluation(context),
+                work,
+            )
+        })
     }
     pub(crate) fn receiver_signature(
         &self,
         frame: &OperationFrame<'_>,
+        work: &mut usize,
     ) -> Result<super::signatures::Signature, String> {
-        self.signatures.signature(
-            frame.operation,
-            frame
-                .arm
-                .operation
-                .hir_id
-                .ok_or("operation receiver lost its selector")?,
-            super::signatures::SignatureContext::Declaration(&frame.handler.typing_environment),
-        )
+        signature_work(work, |work| {
+            self.signatures.signature(
+                frame.operation,
+                frame
+                    .arm
+                    .operation
+                    .hir_id
+                    .ok_or("operation receiver lost its selector")?,
+                super::signatures::SignatureContext::Declaration(&frame.handler.typing_environment),
+                work,
+            )
+        })
     }
+    #[cfg(test)]
     pub(crate) fn new(facts: &'a SemanticFacts) -> Result<Self, String> {
+        Self::new_with_work(facts, &mut 4_000_000)
+    }
+    pub(crate) fn new_with_work(
+        facts: &'a SemanticFacts,
+        work: &mut usize,
+    ) -> Result<Self, String> {
+        let signatures = super::signatures::SignatureIndex::new_with_work(facts, work)?;
+        Self::with_signatures(facts, signatures, work)
+    }
+
+    pub(crate) fn new_with_lexical(
+        facts: &'a SemanticFacts,
+        lexical: Option<std::sync::Arc<crate::hir::lexical::LexicalBindings>>,
+        work: &mut usize,
+    ) -> Result<Self, String> {
+        let signatures = super::signatures::SignatureIndex::new_with_lexical(facts, lexical, work)?;
+        Self::with_signatures(facts, signatures, work)
+    }
+
+    fn with_signatures(
+        facts: &'a SemanticFacts,
+        signatures: super::signatures::SignatureIndex<'a>,
+        work: &mut usize,
+    ) -> Result<Self, String> {
         require(
             facts.scopes.records().len() <= 1_000_000 && facts.operations.len() <= 1_000_000,
             "frame receiver index exceeds its work bound",
         )?;
-        let mut work = 4_000_000usize;
+        *work = work
+            .checked_sub(1)
+            .ok_or("frame receiver index exceeds its work bound")?;
         for count in [
             facts.operations.len(),
             facts.activations.len(),
             facts.default_uses.len(),
             facts.scopes.records().len(),
         ] {
-            work = work
+            *work = work
                 .checked_sub(count)
                 .ok_or("frame receiver index exceeds its work bound")?;
         }
@@ -116,7 +161,7 @@ impl<'a> FrameIndex<'a> {
         // Generated entries are authenticated once from their original
         // operation and actual evaluation records, including zero inputs.
         // These borrowed proofs live only in this independent replay index.
-        let generated_records = GeneratedEntryRecords::new(facts, &mut work)?;
+        let generated_records = GeneratedEntryRecords::new(facts, work)?;
         let mut generated_operations = BTreeMap::new();
         for scope in facts.scopes.records() {
             let ScopeOrigin::Operation(entry) = &scope.origin else {
@@ -140,14 +185,14 @@ impl<'a> FrameIndex<'a> {
                         arguments: &(),
                     },
                     GeneratedTarget::Operation(entry.operation),
-                    &mut work,
+                    work,
                 )?
                 .ok_or("generated operation receiver lost its entry origin")?;
             generated_operations.insert(scope.id, proof);
         }
         Ok(Self {
             facts,
-            signatures: super::signatures::SignatureIndex::new(facts)?,
+            signatures,
             operations,
             first_parent,
             preparations,
@@ -155,7 +200,14 @@ impl<'a> FrameIndex<'a> {
         })
     }
 
-    pub(crate) fn operation(&self, scope: ScopeId) -> Result<Option<OperationFrame<'a>>, String> {
+    pub(crate) fn operation(
+        &self,
+        scope: ScopeId,
+        work: &mut usize,
+    ) -> Result<Option<OperationFrame<'a>>, String> {
+        *work = work
+            .checked_sub(1)
+            .ok_or("operation frame query exceeds its shared work bound")?;
         let Some(ScopeRecord {
             origin: ScopeOrigin::Operation(entry),
             parent: scope_parent,
@@ -214,11 +266,14 @@ impl<'a> FrameIndex<'a> {
         let arm = matches
             .next()
             .ok_or("operation receiver borrowed another handler body")?;
-        self.signatures.signature(
-            operation,
-            original.operation,
-            super::signatures::SignatureContext::Declaration(&handler.typing_environment),
-        )?;
+        signature_work(work, |work| {
+            self.signatures.signature(
+                operation,
+                original.operation,
+                super::signatures::SignatureContext::Declaration(&handler.typing_environment),
+                work,
+            )
+        })?;
         require(
             matches.next().is_none()
                 && original.body == body
@@ -397,15 +452,15 @@ impl<'a> FrameIndex<'a> {
 }
 
 pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), String> {
-    let index = FrameIndex::new(facts)?;
+    let mut work = 4_000_000;
+    let index = FrameIndex::new_with_work(facts, &mut work)?;
     let mut frames = BTreeMap::new();
     for record in facts.scopes.records() {
-        if let Some(frame) = index.operation(record.id)? {
+        if let Some(frame) = index.operation(record.id, &mut work)? {
             frames.insert(record.id, frame);
         }
     }
     if let Some(hir) = facts.semantic_hir.as_deref() {
-        let mut work = 1_000_000usize;
         for (expression, record) in facts.expressions.iter().zip(&facts.evaluations) {
             work = work
                 .checked_sub(1)

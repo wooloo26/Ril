@@ -8,6 +8,7 @@ pub(crate) mod declarations;
 mod graph;
 mod index;
 mod legacy;
+pub(crate) mod numeric;
 pub(crate) mod polymorphic;
 pub(crate) mod projection_receipts;
 mod queries;

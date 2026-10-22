@@ -9,6 +9,7 @@ use crate::sema::{
 };
 
 type HeldArgument = (ParameterMode, EvaluatedValue, Span);
+type FrozenArgument = (ParameterMode, std::sync::Arc<EvaluatedValue>, Span);
 
 #[derive(Clone, Copy)]
 struct ApplicationSite {
@@ -371,7 +372,7 @@ impl Checker {
                         syntax.span,
                     ));
                 }
-                self.finish_numeric_arguments(event, &mut prefix);
+                self.finish_numeric_arguments(event, &mut prefix)?;
                 self.immediate_scope_arguments = original_scope_arguments;
                 match self
                     .application_effect
@@ -474,20 +475,41 @@ impl Checker {
             if !matches!(held.value.ty, Ty::NumericHole(_)) {
                 continue;
             }
-            self.prepare_evaluation_packet(held, application.span)?;
-            held.invalidate_current_source();
-            let value = &mut held.value;
-            if let Ty::NumericHole(id) = value.ty {
+            if let Ty::NumericHole(id) = held.value.ty {
                 let expected = contexts
                     .get(index)
                     .and_then(Option::as_ref)
                     .filter(|ty| super::numeric::numeric_type(ty).is_some())
-                    .cloned()
-                    .or_else(|| self.numeric_preference(id))
-                    .unwrap_or_else(|| Ty::Int("int".into()));
-                self.commit_numeric_value(value, &expected);
+                    .cloned();
+                let expected = match expected {
+                    Some(expected) => expected,
+                    None => self
+                        .numeric_preference(id)?
+                        .unwrap_or_else(|| Ty::Int("int".into())),
+                };
+                self.select_numeric_packet(held, &expected, application.span)?;
             }
         }
+        let slots = slots
+            .into_iter()
+            .enumerate()
+            .map(|(slot, held)| {
+                held.map(|(mode, packet, span)| {
+                    let packet = std::sync::Arc::new(packet);
+                    if packet.numeric_source_derivation().is_some() {
+                        self.publish_numeric_call_input(
+                            site.event,
+                            site.preparation,
+                            slot,
+                            packet.clone(),
+                            frame,
+                        )?;
+                    }
+                    Ok((mode, packet, span))
+                })
+                .transpose()
+            })
+            .collect::<Result<Vec<_>, SourceTypesError>>()?;
         let args = if callee.signature.is_some() {
             self.finish_application_slots(application, &callee, site, slots, frame)?
         } else {
@@ -495,7 +517,7 @@ impl Checker {
                 .into_iter()
                 .flatten()
                 .map(|(mode, held, span)| {
-                    Ok((mode, self.consume_evaluation_packet(held, span)?, span))
+                    Ok((mode, self.read_evaluation_packet(&held, span)?, span))
                 })
                 .collect::<Result<_, SourceTypesError>>()?;
             self.call_arguments[site.preparation].evaluation_complete =
@@ -503,7 +525,7 @@ impl Checker {
                     && self.call_arguments[site.preparation].supplied.len()
                         == application.operands.len();
             self.check_public_call_input_sources(&callee, application.callee, event, frame);
-            self.finish_numeric_arguments(event, &mut args);
+            self.finish_numeric_arguments(event, &mut args)?;
             args
         };
         self.window_future_expressions(&[], frame);
@@ -663,7 +685,7 @@ impl Checker {
         application: &AstApplication<'_>,
         callee: &Value,
         site: ApplicationSite,
-        mut slots: Vec<Option<HeldArgument>>,
+        mut slots: Vec<Option<FrozenArgument>>,
         frame: &mut Frame,
     ) -> Result<Vec<(ParameterMode, Value, Span)>, SourceTypesError> {
         let ApplicationSite {
@@ -800,19 +822,14 @@ impl Checker {
                     )?;
                     self.call_arguments[preparation].slots[index] =
                         super::super::default_uses::ArgumentSource::Default(use_id);
-                    let original = self
-                        .clone_evaluation_packet(&packet, default.span)
-                        .inspect_err(|_| {
-                            self.default_uses[use_id.0 as usize].status =
-                                super::super::copy_contract::CopyInvocationStatus::Unsupported;
-                        })?;
+                    let packet = std::sync::Arc::new(packet);
                     self.record_default_call_input_source(
                         source_event,
                         index,
                         use_id,
                         default,
                         defaults,
-                        std::sync::Arc::new(original),
+                        packet.clone(),
                     );
                     (parameter.mode, packet, default.span)
                 } else {
@@ -832,7 +849,10 @@ impl Checker {
                         {
                             let value =
                                 self.formal_value(ty, index as u32, span, &mut BTreeSet::new());
-                            EvaluatedValue::new(value, self.recency_moves.len())
+                            std::sync::Arc::new(EvaluatedValue::new(
+                                value,
+                                self.recency_moves.len(),
+                            ))
                         },
                         span,
                     )
@@ -883,15 +903,16 @@ impl Checker {
             // Producers created by actual defaults belong to the application.
             // Transport their duties unchanged; supplying an argument must never
             // borrow an inspection performed by an omitted default in another call.
-            for (_, value, value_span) in &mut result {
-                self.prepare_evaluation_packet(value, *value_span)?;
-                self.transfer_results(&value.value, defaults.owner, frame.owner);
+            for (_, value, value_span) in &result {
+                let current = self.read_evaluation_packet(value, *value_span)?;
+                self.transfer_results(&current, defaults.owner, frame.owner);
             }
             if let Some((_, exit, _)) = result
                 .iter()
                 .find(|(_, value, _)| value.value.ty == Ty::Never)
             {
-                self.finish_results(defaults.owner, &exit.value);
+                let current = self.read_evaluation_packet(exit, span)?;
+                self.finish_results(defaults.owner, &current);
             } else {
                 let unit = self.unit(span);
                 self.finish_results(defaults.owner, &unit);
@@ -921,11 +942,9 @@ impl Checker {
         self.check_public_call_input_sources(callee, callee_syntax, source_event, frame);
         let mut result = result
             .into_iter()
-            .map(|(mode, value, span)| {
-                Ok((mode, self.consume_evaluation_packet(value, span)?, span))
-            })
+            .map(|(mode, value, span)| Ok((mode, self.read_evaluation_packet(&value, span)?, span)))
             .collect::<Result<Vec<_>, SourceTypesError>>()?;
-        self.finish_numeric_arguments(source_event, &mut result);
+        self.finish_numeric_arguments(source_event, &mut result)?;
         Ok(result)
     }
 }

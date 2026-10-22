@@ -12,6 +12,73 @@ struct SourceSelection<'a> {
 }
 
 impl Checker {
+    pub(super) fn declared_effect_source(
+        &self,
+        effect: &super::effects::EffectInfo,
+        arguments: &[TypeExpr],
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<
+        crate::sema::source_types::declarations::EffectSource,
+        crate::sema::source_types::declarations::EffectSourceError,
+    > {
+        use crate::sema::source_types::declarations::{HeaderContext, effect_source};
+        if effect.environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved.into());
+        }
+        work.charge(self.effect_type_binders.len() + effect.environment.generic_context.len())?;
+        let mut binders = BTreeMap::new();
+        for (name, identity) in self
+            .effect_type_binders
+            .iter()
+            .chain(&effect.environment.generic_context)
+        {
+            work.text(name)?;
+            work.text(identity)?;
+            if binders
+                .insert(name.clone(), identity.clone())
+                .is_some_and(|previous| previous != *identity)
+            {
+                return Err(SourceTypesError::Unresolved.into());
+            }
+        }
+        let original = effect.source.ok_or(SourceTypesError::MissingNode)?;
+        let program = self
+            .checked_source
+            .as_deref()
+            .ok_or(SourceTypesError::MissingNode)?;
+        let mut result = self
+            .type_source
+            .with_header_index(&self.semantic_hir, |lexical| {
+                Ok(effect_source(
+                    original,
+                    &effect.declaration,
+                    arguments,
+                    HeaderContext {
+                        declarations: &self.types,
+                        program,
+                        hir: &self.semantic_hir,
+                        lexical,
+                        binders: &binders,
+                        functions: &self.functions,
+                        generic_binders: &self.generic_binders,
+                        layout: self.layout,
+                    },
+                    work,
+                ))
+            })??;
+        work.charge(effect.environment.generic_sources.len())?;
+        let mut selected = BTreeMap::new();
+        for (identity, selection) in &effect.environment.generic_sources {
+            work.text(identity)?;
+            if selection.environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved.into());
+            }
+            selected.insert(identity.clone(), selection.schema.clone());
+        }
+        result.operations = result.operations.substitute(&selected, work)?;
+        Ok(result)
+    }
+
     pub(super) fn original_header_source_schema(
         &self,
         syntax: &TypeExpr,
@@ -62,22 +129,28 @@ impl Checker {
         use crate::sema::source_types::declarations::{
             HeaderContext, elaborate_original_header, original_header,
         };
-        let context = HeaderContext {
-            declarations: &self.types,
-            program: self
-                .checked_source
-                .as_deref()
-                .ok_or(SourceTypesError::MissingNode)?,
-            hir: &self.semantic_hir,
-            binders,
-            layout: self.layout,
-        };
-        match original_header(syntax, context, work) {
-            Err(SourceTypesError::NeedsStaticElaboration) => {
-                elaborate_original_header(syntax, context, work)
-            }
-            result => result,
-        }
+        self.type_source
+            .with_header_index(&self.semantic_hir, |lexical| {
+                let context = HeaderContext {
+                    declarations: &self.types,
+                    program: self
+                        .checked_source
+                        .as_deref()
+                        .ok_or(SourceTypesError::MissingNode)?,
+                    hir: &self.semantic_hir,
+                    lexical,
+                    binders,
+                    functions: &self.functions,
+                    generic_binders: &self.generic_binders,
+                    layout: self.layout,
+                };
+                match original_header(syntax, context, work) {
+                    Err(SourceTypesError::NeedsStaticElaboration) => {
+                        elaborate_original_header(syntax, context, work)
+                    }
+                    result => result,
+                }
+            })
     }
 
     pub(super) fn declared_constructor_instance_source(
@@ -93,20 +166,26 @@ impl Checker {
         if environment.is_poisoned() {
             return Err(SourceTypesError::Unresolved);
         }
-        constructor_instance(
-            syntax,
-            HeaderContext {
-                declarations: &self.types,
-                program: self
-                    .checked_source
-                    .as_deref()
-                    .ok_or(SourceTypesError::MissingNode)?,
-                hir: &self.semantic_hir,
-                binders: &environment.generic_context,
-                layout: self.layout,
-            },
-            work,
-        )
+        self.type_source
+            .with_header_index(&self.semantic_hir, |lexical| {
+                constructor_instance(
+                    syntax,
+                    HeaderContext {
+                        declarations: &self.types,
+                        program: self
+                            .checked_source
+                            .as_deref()
+                            .ok_or(SourceTypesError::MissingNode)?,
+                        hir: &self.semantic_hir,
+                        lexical,
+                        binders: &environment.generic_context,
+                        functions: &self.functions,
+                        generic_binders: &self.generic_binders,
+                        layout: self.layout,
+                    },
+                    work,
+                )
+            })
     }
 
     pub(super) fn extend_closed_generic_sources(

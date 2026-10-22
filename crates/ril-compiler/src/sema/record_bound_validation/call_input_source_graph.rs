@@ -171,6 +171,11 @@ impl Replay<'_> {
                 .entry(name.clone())
                 .or_insert_with(|| identity.clone());
         }
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("original Source header has no HIR")?;
         let context = HeaderContext {
             declarations: &self.facts.external_type_declarations,
             program: self
@@ -178,12 +183,14 @@ impl Replay<'_> {
                 .source_program
                 .as_deref()
                 .ok_or("original Source header has no program")?,
-            hir: self
-                .facts
-                .semantic_hir
-                .as_deref()
-                .ok_or("original Source header has no HIR")?,
+            hir,
+            lexical: self
+                .lexical
+                .as_ref()
+                .ok_or("original Source header has no lexical index")?,
             binders: &binders,
+            functions: &self.facts.functions,
+            generic_binders: &self.facts.generic_binders,
             layout: self
                 .facts
                 .target_layout
@@ -223,17 +230,27 @@ impl Replay<'_> {
         work: &mut usize,
         visit: SourceVisit,
     ) -> Check<Option<OriginalSource>> {
-        let mut builtin_work = WorkLimit::new(*work);
-        let builtin = crate::sema::checker::original_canonical_builtin_source(
-            self.facts,
-            value,
-            expression,
-            context,
-            &mut builtin_work,
-        );
-        *work = builtin_work.remaining();
-        if let Some(source) = builtin? {
-            return Ok(Some(source));
+        if crate::sema::checker::BuiltinNameIndex::is_candidate(expression, work)? {
+            let observation =
+                self.original_source_root(expression, value, context, visit.observation, work)?;
+            let names = self.builtin_source_names(work)?;
+            let mut builtin_work = WorkLimit::new(*work);
+            let builtin = crate::sema::checker::original_canonical_builtin_source(
+                self.facts,
+                &crate::sema::checker::CanonicalBuiltinUse {
+                    value,
+                    actual: expression,
+                    context,
+                    observation,
+                },
+                &names,
+                &mut builtin_work,
+            );
+            *work = builtin_work.remaining();
+            drop(names);
+            if let Some(source) = builtin? {
+                return Ok(Some(source));
+            }
         }
         if let Some(source) = self.original_constructor_result_schema(
             expression,
@@ -242,6 +259,13 @@ impl Replay<'_> {
             visit.observation,
             work,
         )? {
+            return Ok(Some(source));
+        }
+        let root =
+            self.original_source_root(expression, value, context, visit.observation, work)?;
+        if let Some(source) =
+            self.public_builtin_result_source(expression, root, context, sites, work)?
+        {
             return Ok(Some(source));
         }
         let environment = self.source_graph_environment(context, visit.observation, work)?;
@@ -262,7 +286,19 @@ impl Replay<'_> {
                 .source_substitute_schema(schema, environment, &selected, work)
                 .map(Some);
         }
-        if let ExprKind::Name(name) = &expression.kind {
+        let name = match &expression.kind {
+            ExprKind::Name(name) => Some(Cow::Borrowed(name.as_str())),
+            ExprKind::Path(path) => {
+                source_scan_work(work, path.len() + 1)?;
+                for part in path {
+                    source_scan_work(work, part.len().div_ceil(32))?;
+                }
+                Some(Cow::Owned(path.join("::")))
+            }
+            _ => None,
+        };
+        if let Some(name) = name {
+            let name = name.as_ref();
             if let Some(original) = self.facts.constant_pool.source_views.get(name) {
                 require(
                     original.validate_closed()
@@ -280,12 +316,16 @@ impl Replay<'_> {
                     .bindings
                     .get(id)
                     .ok_or("original header Name has no binding")?;
+                source_scan_work(
+                    work,
+                    binding.name.len().div_ceil(32) + name.len().div_ceil(32),
+                )?;
                 require(
-                    binding.name == *name,
+                    binding.name == name,
                     "original header borrowed another named binding",
                 )?;
                 if binding.parameter {
-                    if let Some(key) = self.operation_formal_source_key(binding)? {
+                    if let Some(key) = self.operation_formal_source_key(binding, work)? {
                         return self
                             .source_header_schema(&key, binding.typing_environment.clone(), work)
                             .map(Some);
@@ -323,7 +363,7 @@ impl Replay<'_> {
                             .ok_or("function parameter has no original Source header")?;
                         parameters.push((
                             parameter.mode,
-                            self.source_type_header(
+                            self.source_type_header_raw(
                                 syntax,
                                 &scope,
                                 function.typing_environment.clone(),
@@ -333,7 +373,7 @@ impl Replay<'_> {
                         ));
                     }
                     let result = if let Some(result) = &function.syntax.return_type {
-                        self.source_type_header(
+                        self.source_type_header_raw(
                             result,
                             &scope,
                             function.typing_environment.clone(),
@@ -348,16 +388,54 @@ impl Replay<'_> {
                         )?
                         .0
                     };
-                    let annotations: Vec<_> = function
-                        .syntax
-                        .annotations
-                        .iter()
-                        .map(|annotation| annotation.text.clone())
-                        .collect();
+                    let mut annotations = Vec::with_capacity(function.syntax.annotations.len());
+                    for annotation in &function.syntax.annotations {
+                        source_scan_work(work, annotation.text.len().div_ceil(32))?;
+                        annotations.push(annotation.text.clone());
+                    }
                     let schema = schema_work(work, |budget| {
                         SourceSchema::callable(&parameters, &result, &annotations, None, budget)
                     })?;
-                    return Ok(Some((schema, function.typing_environment.clone())));
+                    let required = schema_work(work, |budget| schema.binder_identities(budget))?;
+                    source_scan_work(work, required.len())?;
+                    let mut selected = BTreeMap::new();
+                    for identity in required {
+                        source_scan_work(
+                            work,
+                            1 + identity.len().div_ceil(32)
+                                + function
+                                    .typing_environment
+                                    .generic_sources
+                                    .len()
+                                    .checked_ilog2()
+                                    .unwrap_or(0) as usize,
+                        )?;
+                        let Some(source) =
+                            function.typing_environment.generic_sources.get(&identity)
+                        else {
+                            continue;
+                        };
+                        require(
+                            !source.environment.is_poisoned(),
+                            "captured function Source lost its frozen interpretation",
+                        )?;
+                        source_scan_work(
+                            work,
+                            2 + selected.len().checked_ilog2().unwrap_or(0) as usize,
+                        )?;
+                        selected.insert(
+                            identity,
+                            (source.schema.clone(), source.environment.clone()),
+                        );
+                    }
+                    return self
+                        .source_substitute_schema(
+                            schema,
+                            function.typing_environment.clone(),
+                            &selected,
+                            work,
+                        )
+                        .map(Some);
                 }
             }
         }
@@ -797,7 +875,18 @@ impl Replay<'_> {
             visit.depth < 64,
             "original Source graph ancestry exceeds its bound",
         )?;
-        self.original_source_root(expression, value, context, visit.observation, work)?;
+        let root =
+            self.original_source_root(expression, value, context, visit.observation, work)?;
+        if let Some(source) =
+            self.numeric_static_callee_source(expression, value, root, context, work)?
+        {
+            return Ok(Some(source));
+        }
+        if matches!(self.facts.expressions[root].value.ty, Ty::NumericHole(_)) {
+            return self
+                .original_numeric_source_schema(root, context, work)
+                .map(Some);
+        }
         if let Some(source) = self.storage_binding_source_schema(
             expression,
             value,
@@ -805,7 +894,68 @@ impl Replay<'_> {
             visit.observation,
             SourceRead::Received,
         ) {
-            return source;
+            let source = source?;
+            if source.is_some() {
+                self.authenticate_storage_read(root, sites, work)?;
+            }
+            return Ok(source);
+        }
+        if matches!(expression.kind, ExprKind::Generic { .. })
+            && let Some(authenticated) =
+                crate::sema::external_instance_validation::application_instance(
+                    self.facts,
+                    ril_compiler_core::ids::EvaluationOccurrenceId(
+                        u32::try_from(root)
+                            .map_err(|_| "foreign callee observation identity overflow")?,
+                    ),
+                    sites,
+                    work,
+                )?
+        {
+            let function = authenticated.function();
+            let environment = function.typing_environment.clone();
+            let scope = super::reception::environment_scope(&environment, work)?;
+            *work = work
+                .checked_sub(function.syntax.parameters.len() + function.syntax.annotations.len())
+                .ok_or("foreign callable Source graph exceeds its work bound")?;
+            let mut parameters = Vec::with_capacity(function.syntax.parameters.len());
+            for parameter in &function.syntax.parameters {
+                let header = parameter
+                    .ty
+                    .as_ref()
+                    .ok_or("foreign callable has an untyped parameter")?;
+                let (schema, selected_environment) =
+                    self.source_type_header(header, &scope, environment.clone(), work)?;
+                let dependent = schema_work(work, |budget| schema.requires_environment(budget))?;
+                require(
+                    !dependent || selected_environment.id() == environment.id(),
+                    "foreign callable parameter borrowed another declaration environment",
+                )?;
+                parameters.push((parameter.mode, schema));
+            }
+            let result = if let Some(header) = &function.syntax.return_type {
+                let (schema, selected_environment) =
+                    self.source_type_header(header, &scope, environment.clone(), work)?;
+                let dependent = schema_work(work, |budget| schema.requires_environment(budget))?;
+                require(
+                    !dependent || selected_environment.id() == environment.id(),
+                    "foreign callable result borrowed another declaration environment",
+                )?;
+                schema
+            } else {
+                schema_work(work, |budget| SourceSchema::tuple(&[], None, budget))?
+            };
+            let mut annotations = Vec::with_capacity(function.syntax.annotations.len());
+            for annotation in &function.syntax.annotations {
+                *work = work
+                    .checked_sub(1 + annotation.text.len().div_ceil(32))
+                    .ok_or("foreign callable annotations exceed their work bound")?;
+                annotations.push(annotation.text.replace(' ', ""));
+            }
+            let schema = schema_work(work, |budget| {
+                SourceSchema::callable(&parameters, &result, &annotations, None, budget)
+            })?;
+            return Ok(Some((schema, environment)));
         }
         if let ExprKind::Generic { base, .. } = &expression.kind
             && matches!(value.callables.as_slice(), [Callable::Named(_)])
@@ -868,6 +1018,38 @@ impl Replay<'_> {
             return Ok(Some((schema, environment)));
         }
         Ok(Some((schema, environment)))
+    }
+
+    /// A selected scalar comes from the independently replayed numeric term,
+    /// while the historical expression keeps its original hole descriptor.
+    /// Neither an erased current type nor a missing schema selects this path.
+    pub(super) fn original_numeric_source_schema(
+        &self,
+        observation: usize,
+        context: InvocationContext,
+        work: &mut usize,
+    ) -> Check<OriginalSource> {
+        let observation_id = ril_compiler_core::ids::EvaluationOccurrenceId(
+            u32::try_from(observation).map_err(|_| "numeric occurrence is outside its arena")?,
+        );
+        let (_, resolution) = crate::sema::numeric_selection::checked_resolution_in_query(
+            self.facts,
+            observation_id,
+            &self.numeric_session,
+            &self.source_query,
+            work,
+        )
+        .map_err(|error| format!("numeric Source derivation could not be replayed: {error}"))?
+        .ok_or("numeric Source derivation has no actual hole resolution")?;
+        let schema = schema_work(work, |budget| {
+            SourceSchema::scalar(
+                crate::sema::evaluated::numeric_source_scalar(resolution.number_type),
+                None,
+                budget,
+            )
+        })?;
+        let environment = self.source_graph_environment(context, Some(observation), work)?;
+        Ok((schema, environment))
     }
 }
 
