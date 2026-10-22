@@ -318,7 +318,7 @@ impl Replay<'_> {
             .map_err(|error| format!("legacy lambda formal Source export: {error}"))
     }
 
-    pub(super) fn lambda_formal_source_schema(
+    pub(in crate::sema::record_bound_validation) fn lambda_formal_source_schema(
         &self,
         expression: &Expr,
         value: &Value,
@@ -394,7 +394,12 @@ impl Replay<'_> {
             let observation =
                 self.original_source_root(expression, value, reading, visit.observation, work)?;
             self.inferred_lambda_receipt(invocation, *slot, value, observation, work)?;
-            return self.closure_entry_source_schema(invocation, *slot, sites, work, visit.depth);
+            return self
+                .inferred_closure_parameter_schema(*value.sources.first().unwrap(), sites, work)?
+                .flatten()
+                .ok_or_else(|| {
+                    "inferred lambda input has no complete admitted Source graph".into()
+                });
         };
         self.source_type_header(
             annotation,
@@ -512,36 +517,71 @@ impl Replay<'_> {
         else {
             unreachable!()
         };
-        if parameters.iter().any(|parameter| parameter.ty.is_none()) {
-            return Ok(None);
-        }
         let scope = self.lambda_input_scope(site.owner)?;
         let parameter_headers = parameters;
-        let parameters = parameter_headers
+        let written_parameters = parameter_headers
             .iter()
             .map(|parameter| {
-                Ok((
+                let Some(syntax) = parameter.ty.as_ref() else {
+                    return Ok(None);
+                };
+                Ok(Some((
                     parameter.mode,
                     self.source_type_header(
-                        parameter.ty.as_ref().unwrap(),
+                        syntax,
                         &scope,
                         closure.contract.typing_environment.clone(),
                         work,
                     )?,
-                ))
+                )))
             })
             .collect::<Check<Vec<_>>>()?;
         let mut keys = Vec::new();
         for invocation in self.facts.closure_invocations.iter().filter(|invocation| {
             invocation.closure == *index
                 && invocation.probe
-                && invocation.site == site.span
                 && invocation.parent_named == closure.creation_invocation
                 && invocation.parent_closure == closure.creation_closure
                 && invocation.source_event.is_none()
                 && invocation.status == CopyInvocationStatus::Completed
                 && invocation.activation.is_some()
         }) {
+            let mut parameters = Vec::new();
+            for (slot, parameter) in parameter_headers.iter().enumerate() {
+                if let Some(written) = &written_parameters[slot] {
+                    parameters.push(written.clone());
+                    continue;
+                }
+                *work = work
+                    .checked_sub(self.facts.bindings.len())
+                    .ok_or("inferred lambda parameter index work exhausted")?;
+                let mut bindings = self
+                    .facts
+                    .bindings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, binding)| {
+                        binding.parameter
+                            && Some(binding.owner) == invocation.activation
+                            && binding.context.closure_invocation == Some(invocation.id)
+                            && binding.pattern.is_some()
+                            && binding.pattern == parameter.pattern.hir_id
+                    });
+                let (binding, _) = bindings
+                    .next()
+                    .ok_or("inferred lambda parameter receiver is absent")?;
+                require(
+                    bindings.next().is_none(),
+                    "inferred lambda has duplicate parameter receivers",
+                )?;
+                let Some(source) = self
+                    .inferred_closure_parameter_schema(binding, sites, work)?
+                    .flatten()
+                else {
+                    return Ok(None);
+                };
+                parameters.push((parameter.mode, source));
+            }
             for parameter in parameter_headers {
                 let mut names = Vec::new();
                 parameter_names(&parameter.pattern, &mut names, &mut 4096)?;

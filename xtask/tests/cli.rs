@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::Path,
     process::{Command, Output},
@@ -20,13 +21,19 @@ fn corpus_cli_lists_validates_and_extracts_without_execution() {
     let listed = String::from_utf8(list.stdout).unwrap();
     let cases =
         ril_test::discover_cases(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests")).unwrap();
-    assert_eq!(listed.lines().count(), cases.len());
+    let expected = cases
+        .iter()
+        .map(|case| format!("{}\t{}", case.id, case.meta.mode))
+        .collect::<Vec<_>>();
+    assert!(!expected.is_empty());
+    assert_eq!(listed.lines().collect::<Vec<_>>(), expected);
     assert_eq!(
         cases
             .iter()
-            .filter(|case| !case.bundle.starts_with("tests/regressions/"))
-            .count(),
-        1067
+            .map(|case| &case.id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        cases.len()
     );
     let valid = invoke(&["corpus", "validate"]);
     assert!(valid.status.success());

@@ -121,8 +121,28 @@ impl SourceSchema {
         Ok(matches!(node, SourceNode::GenericBuiltin(actual) if *actual == declaration))
     }
 
-    pub(super) fn graph(&self) -> (&SourceTypes, SourceTypeId) {
+    pub(crate) fn graph(&self) -> (&SourceTypes, SourceTypeId) {
         (&self.types, self.root)
+    }
+
+    /// This is the retained node identity, without unaliasing or a new graph.
+    pub(crate) fn root_id(&self) -> SourceTypeId {
+        self.root
+    }
+
+    /// A shared arena may also contain unrelated declarations. A view can
+    /// select only a node reachable from this actual source root.
+    pub(crate) fn view_at(
+        &self,
+        root: SourceTypeId,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        self.types.get(root)?;
+        if !self.types.reachable([self.root], work)?.contains(&root) {
+            return Err(SourceTypesError::MissingProjection);
+        }
+        Self::frozen_view(&self.types, root, self.original, work)
     }
 
     /// An immutable snapshot can lend its existing arena without rebuilding
@@ -288,66 +308,46 @@ impl SourceSchema {
         excluded: &std::collections::BTreeSet<String>,
         work: &mut WorkLimit,
     ) -> Result<Self, SourceTypesError> {
-        use std::collections::{BTreeMap, BTreeSet};
-        let mut cursor = Some(self.root);
-        let mut seen = BTreeSet::new();
-        let mut fields = BTreeMap::new();
-        let tail = loop {
-            work.charge(1)?;
-            let Some(id) = cursor else { break None };
-            let id = self.types.unalias(id, work)?;
-            if !seen.insert(id) {
-                return Err(SourceTypesError::RowCycle);
-            }
-            match self.types.get(id)? {
-                SourceNode::Record { fields: next, row } => {
-                    for field in next {
-                        work.charge(1)?;
-                        work.text(&field.label)?;
-                        if fields
-                            .insert(field.label.clone(), (field.mutable, field.value))
-                            .is_some()
-                        {
-                            return Err(SourceTypesError::DuplicateField);
-                        }
-                    }
-                    cursor = *row;
-                }
-                SourceNode::Binder(_) if seen.len() > 1 => break Some(id),
-                _ => return Err(SourceTypesError::Unresolved),
-            }
-        };
+        use std::collections::BTreeMap;
+        let (parts, tail) = self
+            .record_parts(work)?
+            .ok_or(SourceTypesError::Unresolved)?;
+        work.charge(parts.len())?;
+        let mut fields: BTreeMap<_, _> = parts
+            .into_iter()
+            .map(|(label, mutable, value)| (label, (mutable, value.root_id())))
+            .collect();
         for label in excluded {
             work.text(label)?;
             if fields.remove(label).is_none() {
                 return Err(SourceTypesError::MissingProjection);
             }
         }
+        let tail = match tail {
+            Some(tail) if fields.is_empty() => return Ok(tail),
+            tail => tail.map(|tail| tail.root_id()),
+        };
         let mut builder = SourceBuilder::new()?;
         let mapping = self.types.copy_into(
             fields.values().map(|(_, id)| *id).chain(tail),
             &mut builder,
             work,
         )?;
-        let root = if let Some(tail) = tail.filter(|_| fields.is_empty()) {
-            mapping[&tail]
-        } else {
-            work.charge(fields.len())?;
-            builder.insert(
-                SourceNode::Record {
-                    fields: fields
-                        .into_iter()
-                        .map(|(label, (mutable, value))| SourceField {
-                            label,
-                            mutable,
-                            value: mapping[&value],
-                        })
-                        .collect(),
-                    row: tail.map(|id| mapping[&id]),
-                },
-                work,
-            )?
-        };
+        work.charge(fields.len())?;
+        let root = builder.insert(
+            SourceNode::Record {
+                fields: fields
+                    .into_iter()
+                    .map(|(label, (mutable, value))| SourceField {
+                        label,
+                        mutable,
+                        value: mapping[&value],
+                    })
+                    .collect(),
+                row: tail.map(|id| mapping[&id]),
+            },
+            work,
+        )?;
         Ok(Self {
             types: builder.freeze(work)?,
             root,

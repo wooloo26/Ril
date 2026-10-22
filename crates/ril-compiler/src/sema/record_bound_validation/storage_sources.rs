@@ -932,13 +932,12 @@ impl Replay<'_> {
             .iter()
             .filter(|row| row.binding == id)
             .collect();
-        let named_parameter = self.facts.bindings.get(id).is_some_and(|binding| {
-            binding.parameter
-                && self.facts.scopes.get(&binding.owner).is_some_and(|scope| {
-                    matches!(scope.origin, crate::sema::scopes::ScopeOrigin::Named(_))
-                })
-        });
-        if rows.is_empty() && !named_parameter {
+        let parameter = self
+            .facts
+            .bindings
+            .get(id)
+            .is_some_and(|binding| binding.parameter);
+        if rows.is_empty() && !parameter {
             return None;
         }
         let source = expression.hir_id?;
@@ -949,7 +948,7 @@ impl Replay<'_> {
             Ok(None) => return None,
             Err(error) => return Some(Err(error.to_string())),
         };
-        if named_parameter {
+        if parameter {
             let projected = (|| -> Check<_> {
                 let root =
                     self.original_source_root(expression, value, context, observation, &mut 4096)?;

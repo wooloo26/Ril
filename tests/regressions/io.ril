@@ -18,7 +18,29 @@ fn example(){
 --@ case: io-callback-empty-write-inspection
 --@ mode: check-pass
 --@ spec: STD#error-and-stream-contracts
+--@ companion: io-callback-empty-write-capture
 --@ use-source: source-io-callback-empty-write-inspection
+--@ end-case
+
+--@ case: io-callback-empty-write-capture
+--@ mode: check-fail
+--@ spec: STD#error-and-stream-contracts
+--@ companion: io-callback-empty-write-inspection
+-- Error [E0534]: An empty write still checks the operation's latent capture contract.
+--@ file: source.ril
+use ril/io
+type Writer={mut calls:int}
+fn example(){
+    let external:[2]u8=[1u8,2u8]
+    let mut writer=Writer.{calls:0}
+    let callback=\mut current:Writer,data:bytes->{
+        current.calls+=1
+        assert(external[0]==1u8)
+        .{written:len(data),error:None}
+    }
+    assert(Io::write_all(mut writer,b"",.{write:callback}) is Ok(_)|Err(_))
+}
+--@ end-file
 --@ end-case
 
 --@ source: source-io-callback-result-inspection

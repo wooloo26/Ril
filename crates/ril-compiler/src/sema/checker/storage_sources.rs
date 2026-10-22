@@ -82,6 +82,31 @@ impl Checker {
             .binding_schema_if_known(binding, original, work)
     }
     pub(super) fn record_parameter_source(&mut self, binding: BindingId, name: &str, span: Span) {
+        if let Some(source) = self.inferred_closure_parameter_source(binding, name) {
+            let (schema, environment) = match source {
+                Ok(Some((schema, environment))) => (Some(schema), environment),
+                Ok(None) => (None, self.bindings[binding].typing_environment.clone()),
+                Err(error) => {
+                    self.unsupported(
+                        span,
+                        format!("inferred closure parameter lost its actual Source: {error}"),
+                    );
+                    return;
+                }
+            };
+            if let Err(error) =
+                self.type_source
+                    .storage
+                    .types
+                    .record_schema(binding, schema.as_ref(), environment)
+            {
+                self.unsupported(
+                    span,
+                    format!("inferred closure parameter graph admission failed: {error}"),
+                );
+            }
+            return;
+        }
         let environment = self.bindings[binding].typing_environment.clone();
         let named = self
             .scopes
@@ -244,17 +269,11 @@ impl Checker {
                         + checker.scoped_source_identities.len()
                         + checker.generic_bound_checks.len(),
                 )?;
-                let info = checker
-                    .functions
-                    .iter()
-                    .find(|info| info.definition == definition)
-                    .ok_or(SourceTypesError::Unresolved)?
-                    .clone();
                 // The actual selection can come from a nested product's
                 // independently recorded scoped identity. An erased ordinary
                 // substitution never reconstructs its missing Source.
-                let actual = checker.actual_input_source_schemas(&info,event,span,&mut work)?;
-                SourceSchema::import(&key,syntax.hir_id,&mut work)?.substitute(&actual,&mut work)?
+                let actual = checker.actual_input_source_schemas(definition,event,span,&mut work)?;
+                checker.original_header_source_schema(&syntax,&mut work)?.substitute(&actual,&mut work)?
             } else {
                 let Some(schema) = checker.freeze_source_receiving_target(&syntax).schema else {
                     return Ok(None);

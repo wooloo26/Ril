@@ -17,6 +17,44 @@ impl Checker {
     /// target is frozen before entering the body, not when a Return is read.
     pub(super) fn freeze_source_receiving_target(&mut self, syntax: &TypeExpr) -> Target {
         let environment = self.capture_typing_environment();
+        let source = if syntax.hir_id.is_some() {
+            let mut work = 16384;
+            if crate::static_eval::charge_type_syntax_clone(syntax, &mut work).is_some() {
+                Some(source_reception::TargetSource {
+                    header: Arc::new(syntax.clone()),
+                    path: vec![],
+                    environment: environment.clone(),
+                })
+            } else {
+                self.unsupported(
+                    syntax.span,
+                    "original receiving header exceeds its copy work bound",
+                );
+                None
+            }
+        } else {
+            None
+        };
+        match self.freeze_key_projection_target(syntax, source.as_ref(), &environment) {
+            Ok(Some(target)) => return target,
+            Ok(None) => {}
+            Err(error) => {
+                self.unsupported(
+                    syntax.span,
+                    format!("static projection receiving source failed: {error}"),
+                );
+                return Target {
+                    source,
+                    static_projection: None,
+                    environment,
+                    span: syntax.span,
+                    schema: None,
+                    syntax: None,
+                    empty_array_context: None,
+                    sensitivity: SchemaSensitivity::Unknown,
+                };
+            }
+        }
         let frozen = self
             .source_type_from_syntax(syntax)
             .and_then(|witness| {
@@ -93,20 +131,9 @@ impl Checker {
             None
         };
         let schema = (|| {
-            use crate::sema::source_types::{SourceSchema, SourceTypesError, WorkLimit};
+            use crate::sema::source_types::{SourceTypesError, WorkLimit};
             let mut work = WorkLimit::new(16384);
-            if let Some(schema) = self.const_nominal_source_schema(syntax, &mut work)? {
-                return Ok(Some(schema));
-            }
-            let captured = !environment.generic_sources.is_empty();
-            let raw = if captured {
-                self.record_bound_key(syntax, &self.record_bound_scope())
-            } else {
-                key.clone()
-                    .or_else(|| self.record_bound_key(syntax, &self.record_bound_scope()))
-            };
-            let Some(raw) = raw else { return Ok(None) };
-            let schema = SourceSchema::import(&raw, syntax.hir_id, &mut work)?;
+            let schema = self.original_header_source_schema(syntax, &mut work)?;
             for identity in schema.binder_identities(&mut work)? {
                 if let Some(binder) = self.generic_binders.get(&identity) {
                     work.charge(self.functions.len())?;
@@ -139,13 +166,43 @@ impl Checker {
                 }
                 selected.insert(identity.clone(), source.schema.clone());
             }
+            // A declaration interpreted in its own actual named activation
+            // uses that entry's static equations, including rigid UID choices
+            // which have no closed compatibility witness. HIR ownership keeps
+            // a callee operand context from borrowing the caller's entry.
+            let required = schema.binder_identities(&mut work)?;
+            if !required.is_empty()
+                && let Some((definition, event, span)) = self
+                    .copy_invocation_stack
+                    .last()
+                    .and_then(|id| self.copy_invocations.get(id.0 as usize))
+                    .map(|call| (call.target, call.source_event, call.span))
+            {
+                work.charge(self.functions.len())?;
+                let source_owner = syntax
+                    .hir_id
+                    .and_then(|id| self.semantic_hir.type_expression(id))
+                    .map(|node| node.info.owner);
+                let in_original_frame = self
+                    .functions
+                    .iter()
+                    .find(|info| info.definition == definition)
+                    .and_then(|info| info.hir_id)
+                    .is_some_and(|source| {
+                        source_owner == Some(crate::hir::nodes::LexicalOwner::Declaration(source))
+                    });
+                if in_original_frame {
+                    for (identity, source) in
+                        self.actual_input_source_schemas(definition, event, span, &mut work)?
+                    {
+                        if required.contains(&identity) {
+                            selected.entry(identity).or_insert(source);
+                        }
+                    }
+                }
+            }
             let schema = schema.substitute(&selected, &mut work)?;
-            crate::sema::source_types::declarations::resolve_schema(
-                &schema,
-                &self.semantic_hir,
-                &mut work,
-            )
-            .map(Some)
+            Ok(Some(schema))
         })();
         let schema = match schema {
             Ok(schema) => schema,
@@ -158,6 +215,8 @@ impl Checker {
             }
         };
         Target {
+            source,
+            static_projection: None,
             environment,
             span: syntax.span,
             schema,
@@ -238,7 +297,11 @@ impl Checker {
                 self.application_effect
                     .expressions
                     .get(index)
-                    .is_some_and(|fact| fact.span == actual.span && fact.value == *value)
+                    .is_some_and(|fact| {
+                        fact.source_id.is_some()
+                            && fact.source_id == actual.hir_id
+                            && fact.value == *value
+                    })
                     && self
                         .application_effect
                         .contexts
@@ -267,39 +330,56 @@ impl Checker {
             let expression = self.application_effect.expressions.get(index)?;
             (context.expression == index
                 && context.context == self.invocation_context(frame.callable_owner)
-                && expression.span == actual.span)
+                && expression.source_id.is_some()
+                && expression.source_id == actual.hir_id)
                 .then(|| expression.value.clone())
         });
-        let answer = (|| {
+        let answer = (|| -> Result<bool, String> {
             use crate::sema::source_types::{SourceTypesError, WorkLimit};
-            let original = original.as_ref().ok_or(SourceTypesError::MissingNode)?;
+            let original = original
+                .as_ref()
+                .ok_or("original receiving observation is absent")?;
             let fresh = source_reception::construction(actual, &mut work)
-                .ok_or(SourceTypesError::BudgetExceeded)?;
+                .ok_or_else(|| SourceTypesError::BudgetExceeded.to_string())?;
             let mut graph_work = WorkLimit::new(16384);
-            let original_source =
-                self.original_source_receiving_schema(original, actual, frame, &mut graph_work)?;
+            let original_source = self
+                .original_source_receiving_schema(original, actual, frame, &mut graph_work)
+                .map_err(|error| format!("original read Source: {error}"))?;
             // Recency transport may change graph identities, but it must not
             // change immutable source coordinates before this boundary. This
             // comparison also rejects passing an unrelated historical token.
-            let current_source =
-                self.original_source_receiving_schema(value, actual, frame, &mut graph_work)?;
+            let current_source = self
+                .original_source_receiving_schema(value, actual, frame, &mut graph_work)
+                .map_err(|error| format!("transported read Source: {error}"))?;
             match (&original_source, &current_source) {
                 (Some((original, original_env)), Some((current, current_env))) => {
-                    let equivalent = original.equivalent(current, &mut graph_work)?;
-                    let dependent = original.requires_environment(&mut graph_work)?;
+                    let equivalent = original
+                        .equivalent(current, &mut graph_work)
+                        .map_err(|error| format!("immutable Source comparison: {error}"))?;
+                    let dependent = original
+                        .requires_environment(&mut graph_work)
+                        .map_err(|error| format!("Source environment dependence: {error}"))?;
                     if original_env.is_poisoned()
                         || current_env.is_poisoned()
                         || !equivalent
                         || (dependent && original_env.id() != current_env.id())
                     {
-                        return Err(SourceTypesError::Unresolved);
+                        return Err(
+                            "read transport changed its immutable Source or frozen environment"
+                                .into(),
+                        );
                     }
-                    target.receive_schema(original, Some(&fresh), &mut graph_work)
+                    target
+                        .receive_schema(original, Some(&fresh), &mut graph_work)
+                        .map_err(|error| format!("declared Source reception: {error}"))
                 }
                 (None, None) => expected
-                    .empty_context(&fresh, &mut graph_work)?
-                    .ok_or(SourceTypesError::Unresolved),
-                _ => Err(SourceTypesError::Unresolved),
+                    .empty_context(&fresh, &mut graph_work)
+                    .map_err(|error| format!("empty Source reception: {error}"))?
+                    .ok_or_else(|| {
+                        "receiving has no original Source graph or fresh empty construction".into()
+                    }),
+                _ => Err("read transport changed Source availability".into()),
             }
         })();
         match answer {
@@ -467,6 +547,20 @@ pub(super) fn qualified_source_aliases_in(
 /// Project the already frozen record schema. A field is never re-resolved in
 /// the environment reached after evaluating earlier members.
 pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
+    let source = match target
+        .source
+        .as_ref()
+        .map(|source| {
+            source.projected(
+                crate::sema::source_types::SourcePath::Field(name.into()),
+                &mut crate::sema::source_types::WorkLimit::new(4096),
+            )
+        })
+        .transpose()
+    {
+        Ok(source) => source,
+        Err(_) => return failed_projection_target(target, span),
+    };
     let schema = target
         .schema
         .as_ref()
@@ -484,6 +578,8 @@ pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
         .as_ref()
         .map_or(SchemaSensitivity::Unknown, graph_sensitivity);
     Target {
+        source,
+        static_projection: None,
         environment: target.environment.clone(),
         span,
         schema,
@@ -493,7 +589,22 @@ pub(super) fn member_target(target: &Target, name: &str, span: Span) -> Target {
     }
 }
 
-fn graph_sensitivity(schema: &crate::sema::source_types::SourceSchema) -> SchemaSensitivity {
+fn failed_projection_target(target: &Target, span: Span) -> Target {
+    Target {
+        source: None,
+        static_projection: None,
+        environment: target.environment.clone(),
+        span,
+        schema: None,
+        syntax: None,
+        empty_array_context: None,
+        sensitivity: SchemaSensitivity::Unknown,
+    }
+}
+
+pub(super) fn graph_sensitivity(
+    schema: &crate::sema::source_types::SourceSchema,
+) -> SchemaSensitivity {
     use crate::sema::source_types::{SourceSensitivity, WorkLimit};
     match schema.sensitivity(&mut WorkLimit::new(16384)) {
         SourceSensitivity::Sensitive { .. } => SchemaSensitivity::Required,
@@ -587,6 +698,23 @@ fn fixture_key(target: &Target) -> Option<ArgumentKey> {
 /// Project the target of an actual tuple construction member. Conditions,
 /// intervening statements and unrelated nested blocks never use this target.
 pub(super) fn tuple_target(target: &Target, index: usize, span: Span) -> Target {
+    let Ok(coordinate) = index.try_into() else {
+        return failed_projection_target(target, span);
+    };
+    let source = match target
+        .source
+        .as_ref()
+        .map(|source| {
+            source.projected(
+                crate::sema::source_types::SourcePath::Tuple(coordinate),
+                &mut crate::sema::source_types::WorkLimit::new(4096),
+            )
+        })
+        .transpose()
+    {
+        Ok(source) => source,
+        Err(_) => return failed_projection_target(target, span),
+    };
     let schema = index.try_into().ok().and_then(|index| {
         target
             .schema
@@ -602,6 +730,8 @@ pub(super) fn tuple_target(target: &Target, index: usize, span: Span) -> Target 
             _ => None,
         });
     Target {
+        source,
+        static_projection: None,
         environment: target.environment.clone(),
         span,
         sensitivity: schema
@@ -617,6 +747,20 @@ pub(super) fn tuple_target(target: &Target, index: usize, span: Span) -> Target 
 /// arrays retain their invariant original element source; this projection
 /// alone is never evidence that the operand is an array literal.
 pub(super) fn array_element_target(target: &Target, span: Span) -> Target {
+    let source = match target
+        .source
+        .as_ref()
+        .map(|source| {
+            source.projected(
+                crate::sema::source_types::SourcePath::Element,
+                &mut crate::sema::source_types::WorkLimit::new(4096),
+            )
+        })
+        .transpose()
+    {
+        Ok(source) => source,
+        Err(_) => return failed_projection_target(target, span),
+    };
     let schema = target.schema.as_ref().and_then(|schema| {
         schema
             .array_parts(&mut crate::sema::source_types::WorkLimit::new(16384))
@@ -632,6 +776,8 @@ pub(super) fn array_element_target(target: &Target, span: Span) -> Target {
             _ => None,
         });
     Target {
+        source,
+        static_projection: None,
         environment: target.environment.clone(),
         span,
         sensitivity: schema
@@ -646,24 +792,34 @@ pub(super) fn array_element_target(target: &Target, span: Span) -> Target {
 mod projection_tests {
     use super::*;
 
-    fn annotation(source: &str) -> TypeExpr {
-        let parsed = ril_syntax::parse(&format!("let SOURCE:{source}=[]"));
-        assert!(parsed.is_ok(), "{source}: {:?}", parsed.diagnostics);
-        let StmtKind::Binding(binding) = &parsed.program.statements[0].kind else {
-            panic!("binding fixture");
-        };
-        binding.ty.clone().unwrap()
-    }
-
     #[test]
     fn projections_keep_full_nested_coordinates_and_missing_parts_unknown() {
         let mut checker = Checker::new(FileId(0));
         let target =
-            checker.freeze_source_receiving_target(&annotation("([0][3]int,fn([2]int)->int)"));
+            super::tests::freeze_fixture_target(&mut checker, "([0][3]int,fn([2]int)->int)");
         let array = tuple_target(&target, 0, target.span);
         let element = array_element_target(&array, target.span);
         assert_eq!(target.environment.id(), array.environment.id());
         assert_eq!(target.environment.id(), element.environment.id());
+        let original = target.source.as_ref().unwrap();
+        let array_source = array.source.as_ref().unwrap();
+        let element_source = element.source.as_ref().unwrap();
+        assert!(original.header.hir_id.is_some());
+        assert!(Arc::ptr_eq(&original.header, &array_source.header));
+        assert!(Arc::ptr_eq(&original.header, &element_source.header));
+        assert_eq!(
+            array_source.path,
+            [crate::sema::source_types::SourcePath::Tuple(0)]
+        );
+        assert_eq!(
+            element_source.path,
+            [
+                crate::sema::source_types::SourcePath::Tuple(0),
+                crate::sema::source_types::SourcePath::Element,
+            ]
+        );
+        assert_eq!(original.environment.id(), array_source.environment.id());
+        assert_eq!(original.environment.id(), element_source.environment.id());
         assert!(
             matches!(&fixture_key(&element), Some(ArgumentKey::Array { length: Some(n), .. }) if n=="const(int:3)")
         );
@@ -682,6 +838,59 @@ mod projection_tests {
             assert!(unknown.schema.is_none() && unknown.syntax.is_none());
             assert_eq!(target.environment.id(), unknown.environment.id());
         }
+        let mut exhausted = target.clone();
+        exhausted.source.as_mut().unwrap().path =
+            vec![crate::sema::source_types::SourcePath::Element; 64];
+        let poisoned = tuple_target(&exhausted, 0, target.span);
+        assert!(poisoned.source.is_none());
+        assert!(poisoned.schema.is_none());
+        assert!(poisoned.syntax.is_none());
+        assert!(poisoned.empty_array_context.is_none());
+        assert_eq!(poisoned.sensitivity, SchemaSensitivity::Unknown);
+    }
+
+    #[test]
+    fn record_array_projections_keep_the_original_header_path_and_environment() {
+        use crate::sema::source_types::{SourcePath, SourceTypesError, WorkLimit};
+        let mut checker = Checker::new(FileId(0));
+        let target =
+            super::tests::freeze_fixture_target(&mut checker, "{callback:[0](fn([2]int)->[2]int)}");
+        let original = target.source.as_ref().unwrap();
+        let captured = original.environment.id();
+        checker
+            .type_source
+            .environment
+            .generic_context
+            .insert("later".into(), "unrelated:later".into());
+        let field = member_target(&target, "callback", target.span);
+        let element = array_element_target(&field, target.span);
+        let projected = element.source.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&original.header, &projected.header));
+        assert_eq!(
+            projected.path,
+            [SourcePath::Field("callback".into()), SourcePath::Element]
+        );
+        assert_eq!(projected.environment.id(), captured);
+        assert!(element.schema.is_some());
+        assert!(matches!(
+            original.projected(SourcePath::Element, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(original.path.is_empty());
+        let mut exhausted = field.clone();
+        exhausted.source.as_mut().unwrap().path = vec![SourcePath::Element; 64];
+        let poisoned = array_element_target(&exhausted, target.span);
+        assert!(
+            poisoned.source.is_none() && poisoned.schema.is_none() && poisoned.syntax.is_none()
+        );
+        assert_eq!(poisoned.sensitivity, SchemaSensitivity::Unknown);
+        let mut exhausted = target.clone();
+        exhausted.source.as_mut().unwrap().path = vec![SourcePath::Element; 64];
+        let poisoned = member_target(&exhausted, "callback", target.span);
+        assert!(
+            poisoned.source.is_none() && poisoned.schema.is_none() && poisoned.syntax.is_none()
+        );
+        assert_eq!(poisoned.sensitivity, SchemaSensitivity::Unknown);
     }
 
     #[test]
@@ -697,7 +906,7 @@ mod projection_tests {
             .environment
             .generic_substitutions
             .insert("declaration:T".into(), Ty::Str);
-        let syntax = annotation("T");
+        let syntax = super::tests::annotation(&mut checker, "T");
         let target = checker.freeze_source_receiving_target(&syntax);
         checker
             .type_source

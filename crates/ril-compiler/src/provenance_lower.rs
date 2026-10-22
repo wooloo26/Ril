@@ -253,7 +253,7 @@ fn copy_invocation(
         entry: p::CallableEntry {
             parent: record.entry.parent,
             caller_context: resumption_context(record.entry.caller_context),
-            origin: callable_entries::entry_origin(&record.entry.origin),
+            origin: callable_entries::entry_origin(&record.entry.origin, types, contracts),
             allocation_epoch: record.entry.allocation_epoch as u64,
             arguments: record
                 .entry
@@ -1266,7 +1266,11 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                         parent: entry.parent,
                         caller_context: resumption_context(entry.caller_context),
                         context: resumption_context(entry.context),
-                        origin: callable_entries::entry_origin(&entry.origin),
+                        origin: callable_entries::entry_origin(
+                            &entry.origin,
+                            &mut graph.types,
+                            &mut contracts,
+                        ),
                         allocation_epoch: entry.allocation_epoch as u64,
                     },
                 },

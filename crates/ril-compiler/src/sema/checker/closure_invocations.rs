@@ -35,8 +35,16 @@ impl Checker {
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
         caller: &mut Frame,
+        source: std::sync::Arc<crate::sema::application_effect::SignatureProbeSource>,
     ) -> Value {
-        self.invoke_recorded_closure(id, args, span, caller, true, EntryOrigin::SignatureProbe)
+        self.invoke_recorded_closure(
+            id,
+            args,
+            span,
+            caller,
+            true,
+            EntryOrigin::SignatureProbe(source),
+        )
     }
 
     fn invoke_recorded_closure(

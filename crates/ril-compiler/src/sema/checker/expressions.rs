@@ -199,10 +199,19 @@ impl Checker {
             // an earlier failure cannot erase a later declaration's own Source.
             frame.return_source_valid = false;
             if let Some(target) = source
-                && let Some(syntax) = target.syntax.as_deref()
+                && let (Some(syntax), Some(origin)) =
+                    (target.syntax.as_deref(), target.source.as_ref())
             {
-                self.with_typing_environment(&target.environment, |checker| {
-                    checker.check_receiving_callable_bounds(&value, syntax);
+                self.with_typing_environment(&origin.environment, |checker| {
+                    checker.check_receiving_callable_bounds_from(
+                        &value,
+                        syntax,
+                        &super::contracts::SignatureSource {
+                            header: &origin.header,
+                            environment: origin.environment.clone(),
+                            path: origin.path.clone(),
+                        },
+                    );
                 });
             }
         }
@@ -2085,47 +2094,31 @@ impl Checker {
                 annotations,
                 body,
             } => {
-                let contextual =
-                    source
-                        .and_then(|target| target.syntax.as_deref())
-                        .and_then(|syntax| match &syntax.kind {
-                            TypeKind::Callable {
-                                parameters: expected,
-                                result,
-                                ..
-                            } if expected.len() == parameters.len()
-                                && expected
-                                    .iter()
-                                    .zip(parameters)
-                                    .all(|(expected, actual)| expected.mode == actual.mode) =>
-                            {
-                                Some((expected, result))
-                            }
-                            _ => None,
-                        });
-                let mut elaborated = parameters.clone();
-                let mut result_type = return_type.clone();
-                if let Some((expected_parameters, expected_result)) = contextual {
-                    for (actual, expected) in elaborated.iter_mut().zip(expected_parameters) {
-                        if actual.ty.is_none() {
-                            actual.ty = expected.ty.clone();
-                        }
-                    }
-                    if result_type.is_none() {
-                        result_type = expected_result.as_deref().cloned();
-                    }
-                }
-                // This elaborates missing syntax, then runs the existing
-                // latent invocation/body checks with those real parameters.
-                // No expected descriptor is installed on an unchecked body.
-                self.lambda(
-                    &elaborated,
-                    result_type.as_ref(),
+                let mut value = self.lambda(
+                    parameters,
+                    return_type.as_ref(),
                     annotations,
                     body,
                     expr,
                     frame,
-                )
+                );
+                if let Some(target) = source
+                    && let (Some(syntax), Some(origin)) =
+                        (target.syntax.as_deref(), target.source.as_ref())
+                {
+                    self.with_typing_environment(&origin.environment, |checker| {
+                        checker.ascribe_signature_from(
+                            &mut value,
+                            syntax,
+                            &super::contracts::SignatureSource {
+                                header: &origin.header,
+                                environment: origin.environment.clone(),
+                                path: origin.path.clone(),
+                            },
+                        );
+                    });
+                }
+                value
             }
             _ => {
                 self.unsupported(

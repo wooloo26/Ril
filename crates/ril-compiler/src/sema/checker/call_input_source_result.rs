@@ -580,8 +580,7 @@ impl Checker {
                     return None;
                 }
             }
-            let key =
-                self.original_source_header_key(target.syntax.return_type.as_ref()?, &scope)?;
+            let key = self.record_bound_key(target.syntax.return_type.as_ref()?, &scope)?;
             let rows: Vec<_> = self
                 .effect_invocations
                 .iter()
@@ -606,13 +605,25 @@ impl Checker {
         if environment.is_poisoned() {
             return Err(SourceTypesError::Unresolved);
         }
-        let schema = if let Some(schema) = self.const_nominal_source_schema(original, work)? {
-            schema
-        } else {
-            self.input_header_schema(&key, original.hir_id, environment.clone(), work)?
-                .ok_or(SourceTypesError::Unresolved)?
-                .0
-        };
+        work.charge(scope.types.len() + scope.rows.len() + environment.generic_context.len())?;
+        let mut names = environment.generic_context.clone();
+        names.extend(scope.types.clone());
+        for (name, id) in &scope.rows {
+            let row = self
+                .bound_rows
+                .get(id.0 as usize)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let crate::sema::model::rows::RowIdentity::Binder(identity) = &row.identity else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            if names
+                .insert(name.clone(), identity.clone())
+                .is_some_and(|old| old != *identity)
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+        }
+        let schema = self.original_header_source_schema_in(original, &names, work)?;
         let mut selected = BTreeMap::new();
         work.charge(row.arguments.len() + row.captured_arguments.len())?;
         for (index, argument) in row.arguments.iter().enumerate() {
@@ -977,7 +988,7 @@ impl Checker {
     }
 }
 
-fn result_environment<'a>(
+pub(super) fn result_environment<'a>(
     parts: impl IntoIterator<Item = (&'a SourceSchema, &'a FrozenEnvironment)>,
     fallback: &FrozenEnvironment,
     work: &mut WorkLimit,

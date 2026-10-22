@@ -235,3 +235,10 @@ fn row_remainders_cannot_forget_empty_inner_dimensions() {
     rejects("row-remainder-empty-inner-dimension-conflict", "E0301");
     rejects("explicit-row-remainder-dimension-conflict", "E0301");
 }
+
+#[test]
+fn original_headers_preserve_nested_const_arguments() {
+    accepts("nested-const-original-headers");
+    rejects("nested-const-callback-value-conflict", "E0301");
+    rejects("nested-const-header-sort-conflict", "E0323");
+}

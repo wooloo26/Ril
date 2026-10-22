@@ -13,12 +13,16 @@ use ril_compiler_core::{
 use std::collections::{BTreeMap, BTreeSet};
 mod activations;
 mod entries;
+mod signature_inputs;
 pub use activations::{ActivationKind, EvaluationActivation};
 mod parameters;
 pub(crate) use entries::record_field_source;
-pub(crate) use entries::signature_assumption;
 pub use entries::{CallableEntry, EntryArgument, EntryOrigin, InputOrigin, ScalarInput};
 pub(crate) use entries::{ScalarSource, record_callback};
+pub(crate) use signature_inputs::{
+    AuthenticatedSignatureInput, closure_signature_assumption, signature_assumption,
+};
+pub use signature_inputs::{SignatureFormal, SignatureProbeSource};
 
 /// The static node and its actual evaluation activation form one occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

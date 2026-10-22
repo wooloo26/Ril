@@ -10,7 +10,7 @@ pub(super) fn callable_entry(
         parent: entry.parent,
         caller_context: resumption_context(entry.caller_context),
         allocation_epoch: entry.allocation_epoch as u64,
-        origin: entry_origin(&entry.origin),
+        origin: entry_origin(&entry.origin, types, contracts),
         arguments: entry
             .arguments
             .iter()
@@ -24,11 +24,29 @@ pub(super) fn callable_entry(
     }
 }
 
-pub(super) fn entry_origin(origin: &a::EntryOrigin) -> p::EntryOrigin {
+pub(super) fn entry_origin(
+    origin: &a::EntryOrigin,
+    types: &mut Vec<p::Type>,
+    contracts: &mut ReturnContracts,
+) -> p::EntryOrigin {
     match origin {
         a::EntryOrigin::Application(id) => p::EntryOrigin::Application(p::CopyCallEventId(id.0)),
         a::EntryOrigin::DeclarationProbe => p::EntryOrigin::DeclarationProbe,
-        a::EntryOrigin::SignatureProbe => p::EntryOrigin::SignatureProbe,
+        a::EntryOrigin::SignatureProbe(source) => {
+            p::EntryOrigin::SignatureProbe(p::SignatureProbeSource {
+                source: source.source,
+                path: source.path.as_ref().clone(),
+                environment: contracts.environment(types, &source.environment),
+                formals: source
+                    .formals
+                    .iter()
+                    .map(|formal| p::SignatureFormal {
+                        slot: formal.slot,
+                        binding: formal.binding as u32,
+                    })
+                    .collect(),
+            })
+        }
         a::EntryOrigin::Unresolved => p::EntryOrigin::Unresolved,
         a::EntryOrigin::Generated {
             anchor,

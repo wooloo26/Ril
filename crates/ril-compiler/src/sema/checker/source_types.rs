@@ -1,6 +1,7 @@
 //! Complete, immutable source type identity; never an authority or shape proof.
 use super::io_types as io;
 use super::*;
+use crate::sema::source_types::SourceTypesError;
 use std::sync::Arc;
 
 struct SourceSelection<'a> {
@@ -11,42 +12,101 @@ struct SourceSelection<'a> {
 }
 
 impl Checker {
-    pub(super) fn const_nominal_source_schema(
+    pub(super) fn original_header_source_schema(
         &self,
         syntax: &TypeExpr,
         work: &mut crate::sema::source_types::WorkLimit,
-    ) -> Result<
-        Option<crate::sema::source_types::SourceSchema>,
-        crate::sema::source_types::SourceTypesError,
-    > {
-        use crate::sema::source_types::{SourceSchema, SourceTypesError};
-        let TypeKind::Name { path, arguments } = &syntax.kind else {
-            return Ok(None);
-        };
-        work.charge(path.len() + 1)?;
-        for part in path {
-            work.text(part)?;
+    ) -> Result<crate::sema::source_types::SourceSchema, crate::sema::source_types::SourceTypesError>
+    {
+        use crate::sema::model::rows::RowIdentity;
+        work.charge(
+            self.effect_type_binders.len() + self.type_source.environment.generic_context.len(),
+        )?;
+        for (name, identity) in self
+            .effect_type_binders
+            .iter()
+            .chain(&self.type_source.environment.generic_context)
+        {
+            work.text(name)?;
+            work.text(identity)?;
         }
-        let name = path.join("::");
-        let Some(declaration) = self.types.get(&name) else {
-            return Ok(None);
+        let mut binders = self.effect_type_binders.clone();
+        binders.extend(self.type_source.environment.generic_context.clone());
+        let scope = self.record_bound_scope();
+        work.charge(scope.rows.len())?;
+        for (name, id) in scope.rows {
+            let row = self
+                .bound_rows
+                .get(id.0 as usize)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let RowIdentity::Binder(identity) = &row.identity else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            if binders
+                .insert(name, identity.clone())
+                .is_some_and(|old| old != *identity)
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+        }
+        self.original_header_source_schema_in(syntax, &binders, work)
+    }
+
+    pub(super) fn original_header_source_schema_in(
+        &self,
+        syntax: &TypeExpr,
+        binders: &BTreeMap<String, String>,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<crate::sema::source_types::SourceSchema, crate::sema::source_types::SourceTypesError>
+    {
+        use crate::sema::source_types::declarations::{
+            HeaderContext, elaborate_original_header, original_header,
         };
-        if declaration.name != name {
+        let context = HeaderContext {
+            declarations: &self.types,
+            program: self
+                .checked_source
+                .as_deref()
+                .ok_or(SourceTypesError::MissingNode)?,
+            hir: &self.semantic_hir,
+            binders,
+            layout: self.layout,
+        };
+        match original_header(syntax, context, work) {
+            Err(SourceTypesError::NeedsStaticElaboration) => {
+                elaborate_original_header(syntax, context, work)
+            }
+            result => result,
+        }
+    }
+
+    pub(super) fn declared_constructor_instance_source(
+        &self,
+        syntax: &TypeExpr,
+        environment: &crate::sema::context::FrozenEnvironment,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<
+        crate::sema::source_types::declarations::DeclaredConstructorInstance,
+        SourceTypesError,
+    > {
+        use crate::sema::source_types::declarations::{HeaderContext, constructor_instance};
+        if environment.is_poisoned() {
             return Err(SourceTypesError::Unresolved);
         }
-        let mut remaining = work.remaining();
-        let normalized = crate::static_eval::const_nominal::closed_const_nominal_arguments(
-            declaration,
-            arguments,
-            &self.types,
-            self.layout,
-            &mut remaining,
-        );
-        work.charge(work.remaining() - remaining)?;
-        let Some(arguments) = normalized.map_err(|_| SourceTypesError::Unresolved)? else {
-            return Ok(None);
-        };
-        SourceSchema::certified_const_nominal(&name, &arguments, syntax.hir_id, work).map(Some)
+        constructor_instance(
+            syntax,
+            HeaderContext {
+                declarations: &self.types,
+                program: self
+                    .checked_source
+                    .as_deref()
+                    .ok_or(SourceTypesError::MissingNode)?,
+                hir: &self.semantic_hir,
+                binders: &environment.generic_context,
+                layout: self.layout,
+            },
+            work,
+        )
     }
 
     pub(super) fn extend_closed_generic_sources(
@@ -165,7 +225,7 @@ impl Checker {
         }
     }
     pub(super) fn register_constructor_source_type(&mut self, name: &str, syntax: &TypeExpr) {
-        use crate::sema::source_types::{SourceSchema, SourceTypesError, WorkLimit};
+        use crate::sema::source_types::WorkLimit;
         let Some(info) = self.constructors.get(name) else {
             self.unsupported(
                 syntax.span,
@@ -174,6 +234,8 @@ impl Checker {
             return;
         };
         let environment = info.typing_environment.clone();
+        let tag = info.tag.clone();
+        let has_payload = info.has_payload;
         let mut generics = BTreeSet::new();
         info.owner.generic_names(&mut generics);
         let template = !generics.is_empty();
@@ -182,31 +244,22 @@ impl Checker {
             if environment.is_poisoned() {
                 return Err(SourceTypesError::Unresolved);
             }
-            let key = crate::static_eval::effects::bounded_argument_key(
-                syntax,
-                &environment.generic_context,
-            )
-            .ok_or(SourceTypesError::BudgetExceeded)?;
             let witness = self.with_typing_environment(&environment, |checker| {
                 checker.source_type_from_syntax(syntax)
             });
             let source = if template {
                 None
             } else {
-                let schema =
-                    if let Some(schema) = self.const_nominal_source_schema(syntax, &mut work)? {
-                        schema
-                    } else if let Some(witness) = &witness {
-                        let key = crate::static_eval::effects::bounded_argument_key(
-                            &witness.syntax,
-                            &BTreeMap::new(),
-                        )
-                        .ok_or(SourceTypesError::BudgetExceeded)?;
-                        SourceSchema::import(&key, witness.syntax.hir_id, &mut work)?
-                    } else {
-                        SourceSchema::import(&key, syntax.hir_id, &mut work)?
-                    };
-                Some(self.intern_source_schema(&schema, environment.clone(), &mut work)?)
+                let instance =
+                    self.declared_constructor_instance_source(syntax, &environment, &mut work)?;
+                if instance
+                    .payloads
+                    .get(&tag)
+                    .is_none_or(|payload| payload.is_some() != has_payload)
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                Some(self.intern_source_schema(&instance.schema, environment.clone(), &mut work)?)
             };
             Ok((source, witness))
         })();

@@ -8,6 +8,40 @@ use crate::sema::{
 use ril_syntax::ast::PatternKind;
 
 impl Replay<'_> {
+    fn declared_constructor_instance_schema(
+        &self,
+        syntax: &TypeExpr,
+        environment: &FrozenEnvironment,
+        work: &mut usize,
+    ) -> Check<crate::sema::source_types::declarations::DeclaredConstructorInstance> {
+        use crate::sema::source_types::declarations::{HeaderContext, constructor_instance};
+        require(
+            !environment.is_poisoned(),
+            "constructor instance has a poisoned interpretation",
+        )?;
+        let context = HeaderContext {
+            declarations: &self.facts.external_type_declarations,
+            program: self
+                .facts
+                .source_program
+                .as_deref()
+                .ok_or("constructor instance has no original Program")?,
+            hir: self
+                .facts
+                .semantic_hir
+                .as_deref()
+                .ok_or("constructor instance has no original HIR")?,
+            binders: &environment.generic_context,
+            layout: self
+                .facts
+                .target_layout
+                .ok_or("constructor instance has no frozen layout")?,
+        };
+        super::graph_sources::schema_work(work, |budget| {
+            constructor_instance(syntax, context, budget)
+        })
+    }
+
     fn registered_constructor_result_source(
         &self,
         constructor: &ConstructorInfo,
@@ -82,6 +116,9 @@ impl Replay<'_> {
             .source_program
             .as_ref()
             .ok_or("constructor result has no frozen Source program")?;
+        *work = work
+            .checked_sub(program.statements.len())
+            .ok_or("constructor declaration coverage exceeds its work bound")?;
         require(program.statements.iter().any(|statement|
             matches!(&statement.kind, StmtKind::Type(actual) if actual == declaration))
             || declaration == &crate::sema::model::iteration::step_declaration(),
@@ -143,24 +180,11 @@ impl Replay<'_> {
                 name == constructor.tag,
                 "constructor result instance targets another declaration",
             )?;
-            let layout = self
-                .facts
-                .target_layout
-                .ok_or("constructor result lost its frozen layout")?;
-            let normalized = crate::static_eval::normalize_constructor_arguments(
-                declaration,
-                arguments,
-                &self.facts.external_type_declarations,
-                layout,
-            )
-            .map_err(|_| {
-                "constructor result instance cannot normalize its actual arguments".to_owned()
-            })?;
-            require(
-                normalized.payloads.contains_key(&constructor.tag),
-                "constructor result instance excludes the actual variant",
-            )?;
-            normalized.arguments
+            for argument in arguments {
+                crate::static_eval::charge_type_syntax_clone(argument, work)
+                    .ok_or("constructor instance arguments exceed their syntax bound")?;
+            }
+            arguments.clone()
         };
         let expected = declaration_result.unwrap_or_else(|| TypeExpr {
             hir_id: None,
@@ -190,10 +214,15 @@ impl Replay<'_> {
             admitted_environment.id() == environment.id(),
             "constructor result borrowed another Source environment",
         )?;
-        let (expected, _) =
-            self.source_type_header(&expected, &BoundScope::default(), environment.clone(), work)?;
-        let (cached, _) =
-            self.source_type_header(written, &BoundScope::default(), environment, work)?;
+        let expected = self.declared_constructor_instance_schema(&expected, &environment, work)?;
+        require(
+            expected.payloads.contains_key(&constructor.tag),
+            "constructor result instance excludes the actual variant",
+        )?;
+        let expected = expected.schema;
+        let cached = self
+            .declared_constructor_instance_schema(written, &environment, work)?
+            .schema;
         require(
             super::graph_sources::schema_work(work, |budget| expected.equivalent(&actual, budget))?
                 && super::graph_sources::schema_work(work, |budget| {
@@ -267,7 +296,21 @@ impl Replay<'_> {
         &self,
         constructor: &ConstructorInfo,
         callee_syntax: &Expr,
+        work: &mut usize,
     ) -> Check<TypeExpr> {
+        if let Some(written) = constructor.source_syntax.as_deref() {
+            let mut instance = self.declared_constructor_instance_schema(
+                written,
+                &constructor.typing_environment,
+                work,
+            )?;
+            return instance
+                .payloads
+                .remove(&constructor.tag)
+                .ok_or("constructor declaration instance excludes the selected payload tag")?
+                .map(|payload| payload.syntax)
+                .ok_or_else(|| "nullary constructor has no declared payload".into());
+        }
         let family = match &constructor.owner {
             Ty::Named(name)
             | Ty::Applied {
@@ -383,11 +426,12 @@ impl Replay<'_> {
             .facts
             .target_layout
             .ok_or_else(|| "constructor instance has no frozen static layout".to_owned())?;
-        let normalized = crate::static_eval::normalize_constructor_arguments(
+        let normalized = crate::static_eval::normalize_constructor_arguments_bounded(
             declaration,
             arguments,
             &self.facts.external_type_declarations,
             layout,
+            work,
         )
         .map_err(|_| {
             "constructor instance source cannot independently normalize its true arguments"
@@ -424,7 +468,8 @@ impl Replay<'_> {
                     "constructor source lost its actual registered tag".to_owned()
                 })?;
             self.registered_constructor_result_source(constructor, callee_syntax, &mut 16384)?;
-            let payload = self.original_constructor_payload(constructor, callee_syntax)?;
+            let payload =
+                self.original_constructor_payload(constructor, callee_syntax, &mut 16384)?;
             let payload_key = self.normalized_key(&payload, &BoundScope::default())?;
             if source_reception::sensitive(&payload_key, &mut 4096) == Some(false) {
                 continue;
@@ -444,6 +489,40 @@ impl Replay<'_> {
                         "constructor source changed its single tuple payload boundary".into(),
                     );
                 }
+            };
+            let expected = if let Some(written) = constructor.source_syntax.as_deref() {
+                let mut instance = self.declared_constructor_instance_schema(
+                    written,
+                    &constructor.typing_environment,
+                    &mut 16384,
+                )?;
+                let payload = instance
+                    .payloads
+                    .remove(&constructor.tag)
+                    .ok_or("constructor payload instance excludes its actual tag")?
+                    .ok_or("nullary declaration claims an input payload")?;
+                if arguments.len() == 1 {
+                    vec![payload.schema]
+                } else {
+                    let parts = payload
+                        .schema
+                        .tuple_parts(&mut WorkLimit::new(16384))
+                        .map_err(|error| error.to_string())?
+                        .ok_or("constructor payload has no original tuple boundary")?;
+                    require(
+                        parts.len() == arguments.len(),
+                        "constructor payload changed its original tuple arity",
+                    )?;
+                    parts
+                }
+            } else {
+                expected
+                    .iter()
+                    .map(|key| {
+                        self.source_header_schema(key, FrozenEnvironment::default(), &mut 16384)
+                            .map(|(schema, _)| schema)
+                    })
+                    .collect::<Check<Vec<_>>>()?
             };
             let preparations: Vec<_> = self
                 .facts
@@ -482,7 +561,17 @@ impl Replay<'_> {
                 )?;
             }
             for (slot, expected) in expected.iter().enumerate() {
-                if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+                let required = match expected.sensitivity(&mut WorkLimit::new(16384)) {
+                    crate::sema::source_types::SourceSensitivity::Absent { .. } => false,
+                    crate::sema::source_types::SourceSensitivity::Sensitive { .. }
+                    | crate::sema::source_types::SourceSensitivity::Unknown {
+                        reason: crate::sema::source_types::SourceTypesError::Unresolved,
+                    } => true,
+                    crate::sema::source_types::SourceSensitivity::Unknown { reason } => {
+                        return Err(format!("constructor Source query failed: {reason}"));
+                    }
+                };
+                if !required {
                     continue;
                 }
                 require(
@@ -532,8 +621,6 @@ impl Replay<'_> {
                     source_reception::construction(actual_syntax, &mut 4096).ok_or_else(|| {
                         "constructor source construction exceeds its replay budget".to_owned()
                     })?;
-                let (expected, _) =
-                    self.source_header_schema(expected, FrozenEnvironment::default(), &mut 16384)?;
                 let answer = if let Some(answer) = expected
                     .empty_context(&fresh, &mut WorkLimit::new(4096))
                     .map_err(|error| error.to_string())?

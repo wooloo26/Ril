@@ -14,6 +14,102 @@ use std::sync::Arc;
 const KEY_TOKEN: &str = "\0ril.source.key:";
 
 impl Checker {
+    pub(super) fn freeze_key_projection_target(
+        &mut self,
+        syntax: &TypeExpr,
+        source: Option<&source_reception::TargetSource>,
+        environment: &crate::sema::context::FrozenEnvironment,
+    ) -> Result<Option<Target>, crate::sema::source_types::SourceTypesError> {
+        use crate::sema::source_types::{SourcePath, SourceTypesError};
+        let TypeKind::ComputedProjection { base, key } = &syntax.kind else {
+            return Ok(None);
+        };
+        let ExprKind::Name(name) = &key.kind else {
+            return Ok(None);
+        };
+        let Some(identity) = self.genuine_source_key(name) else {
+            return Ok(None);
+        };
+        let source = source.ok_or(SourceTypesError::MissingNode)?;
+        if !source.path.is_empty() || source.header.hir_id != syntax.hir_id {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let mut work = WorkLimit::new(16384);
+        for _ in 0..2 {
+            let mut remaining = work.remaining();
+            let admitted = crate::static_eval::charge_type_syntax_clone(syntax, &mut remaining);
+            work.charge(work.remaining() - remaining)?;
+            admitted.ok_or(SourceTypesError::BudgetExceeded)?;
+        }
+        let mut original = syntax.clone();
+        self.semantic_hir
+            .validate_type_syntax(
+                &mut original,
+                syntax.hir_id.ok_or(SourceTypesError::MissingNode)?,
+                crate::hir::nodes::HirLimits::default(),
+            )
+            .map_err(|error| match error {
+                crate::hir::nodes::LowerError::Budget(_) => SourceTypesError::BudgetExceeded,
+                _ => SourceTypesError::Unresolved,
+            })?;
+        // Freeze the complete base before evaluating the incoming projection;
+        // later alias or generic scopes cannot reinterpret this coordinate.
+        let base = self
+            .freeze_source_receiving_target(base)
+            .schema
+            .ok_or(SourceTypesError::Unresolved)?;
+        let schema = self
+            .type_source
+            .environment
+            .static_key_arguments
+            .get(&identity)
+            .map(|coordinate| {
+                let step = match coordinate {
+                    StaticCoordinate::Label(label) => SourcePath::Field(label.clone()),
+                    StaticCoordinate::Index(index) => SourcePath::Tuple(
+                        (*index)
+                            .try_into()
+                            .map_err(|_| SourceTypesError::MissingProjection)?,
+                    ),
+                };
+                base.project_steps(&[step], &mut work)
+            })
+            .transpose()?;
+        let sensitivity = schema.as_ref().map_or(
+            source_reception::SchemaSensitivity::Unknown,
+            super::source_receiving::graph_sensitivity,
+        );
+        let compatibility = if schema.is_none() {
+            let mut remaining = work.remaining();
+            let admitted = crate::static_eval::charge_type_syntax_clone(syntax, &mut remaining);
+            work.charge(work.remaining() - remaining)?;
+            admitted.ok_or(SourceTypesError::BudgetExceeded)?;
+            work.text(&identity)?;
+            let mut frozen = syntax.clone();
+            frozen.hir_id = None;
+            let TypeKind::ComputedProjection { key, .. } = &mut frozen.kind else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            key.kind = ExprKind::Name(format!("{KEY_TOKEN}{identity}"));
+            Some(Arc::new(frozen))
+        } else {
+            self.freeze_static_source_type(syntax)
+        };
+        Ok(Some(Target {
+            source: Some(source.clone()),
+            static_projection: Some(source_reception::StaticProjectionTarget {
+                key: identity,
+                base,
+            }),
+            environment: environment.clone(),
+            span: syntax.span,
+            schema,
+            syntax: compatibility,
+            empty_array_context: None,
+            sensitivity,
+        }))
+    }
+
     pub(super) fn bounded_static_source_input(&self, syntax: &TypeExpr) -> Option<ArgumentKey> {
         fn admit(key: &ArgumentKey, work: &mut usize, depth: usize) -> Option<()> {
             *work = work.checked_sub(1)?;
@@ -122,6 +218,7 @@ impl Checker {
                 return None;
             };
             let identity = self.genuine_source_key(name)?;
+            let original_base = base.as_ref();
             let base = self.effect_argument_syntax(base).ok()?;
             let base_key = crate::static_eval::effects::bounded_argument_key(
                 &base,
@@ -156,7 +253,7 @@ impl Checker {
                 text: String::new(),
                 span: syntax.span,
                 kind: TypeKind::ComputedProjection {
-                    base: Box::new(base),
+                    base: Box::new(original_base.clone()),
                     key: Box::new(frozen_key),
                 },
             }));
@@ -254,11 +351,15 @@ impl Checker {
         observed: usize,
         frame: &Frame,
     ) -> Option<bool> {
-        let (expected_base, expected_key) = expected;
+        let (_expected_base, expected_key) = expected;
         let ExprKind::Name(name) = &expected_key.kind else {
             return None;
         };
         let identity = self.genuine_source_key(name)?;
+        let frozen = target.static_projection.as_ref()?;
+        if frozen.key != identity {
+            return Some(false);
+        }
         let ExprKind::ComputedField { base, key } = &actual.kind else {
             return None;
         };
@@ -309,11 +410,7 @@ impl Checker {
         if !parents.contains(&base_value.cause) {
             return None;
         }
-        let expected = self
-            .with_typing_environment(&target.environment, |checker| {
-                checker.freeze_source_receiving_target(expected_base)
-            })
-            .schema?;
+        let expected = &frozen.base;
         let original =
             match self.original_source_receiving_schema(&base_value, base, frame, &mut work) {
                 Ok(Some((schema, environment))) if !environment.is_poisoned() => schema,

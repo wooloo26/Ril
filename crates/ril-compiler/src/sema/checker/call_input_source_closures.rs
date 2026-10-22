@@ -109,10 +109,6 @@ impl Checker {
             || invocation.parent_named != closure.creation_invocation
             || invocation.parent_closure != closure.creation_closure
             || !frame.return_source_valid
-            || closure
-                .parameters
-                .iter()
-                .any(|parameter| parameter.ty.is_none())
         {
             return;
         }
@@ -154,23 +150,44 @@ impl Checker {
             };
             let mut parameters = Vec::new();
             for parameter in &closure.parameters {
-                let Some(syntax) = parameter.ty.as_ref() else {
-                    return Ok(None);
-                };
-                let target = self.with_typing_environment(&declaration_environment, |checker| {
-                    checker.freeze_source_receiving_target(syntax)
-                });
-                let Some(schema) = target.schema else {
-                    return Ok(None);
+                let (schema, parameter_environment) = if let Some(syntax) = parameter.ty.as_ref() {
+                    let target = self
+                        .with_typing_environment(&declaration_environment, |checker| {
+                            checker.freeze_source_receiving_target(syntax)
+                        });
+                    let Some(schema) = target.schema else {
+                        return Ok(None);
+                    };
+                    (schema, declaration_environment.clone())
+                } else {
+                    work.charge(frame.locals.len())?;
+                    let mut bindings = frame.locals.iter().filter(|&&binding| {
+                        self.bindings.get(binding).is_some_and(|info| {
+                            info.parameter
+                                && info.owner == frame.owner
+                                && info.pattern.is_some()
+                                && info.pattern == parameter.pattern.hir_id
+                        })
+                    });
+                    let binding = *bindings.next().ok_or(SourceTypesError::MissingNode)?;
+                    if bindings.next().is_some() {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    let Some(source) =
+                        self.parameter_source_schema_if_known(binding, None, &mut work)?
+                    else {
+                        return Ok(None);
+                    };
+                    source
                 };
                 if schema.requires_environment(&mut work)? {
                     if environment
                         .as_ref()
-                        .is_some_and(|original| original.id() != declaration_environment.id())
+                        .is_some_and(|original| original.id() != parameter_environment.id())
                     {
                         return Err(SourceTypesError::Unresolved);
                     }
-                    environment = Some(declaration_environment.clone());
+                    environment = Some(parameter_environment);
                 }
                 parameters.push((parameter.mode, schema));
             }
@@ -271,39 +288,58 @@ impl Checker {
             }
         }
         for bound in value.callable_returns.iter().filter(|bound| !bound.raw) {
-            let mut parameters = value
-                .signature
-                .clone()
-                .ok_or(SourceTypesError::Unresolved)?;
-            for parameter in &mut parameters {
-                parameter.default = None;
+            if bound.syntax.hir_id.is_none() {
+                // A contextual return projection is not another written type.
+                // Its actual probe retains the complete original header and
+                // exact receiver, so select its result directly from that graph.
+                let [Callable::Closure(closure)] = value.callables.as_slice() else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                let (id, _, _) = self
+                    .call_input_source
+                    .closure_views
+                    .get(closure)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let call = self
+                    .closure_invocations
+                    .get(*id as usize)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let crate::sema::application_effect::EntryOrigin::SignatureProbe(source) =
+                    &call.entry.origin
+                else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                if call.closure != *closure
+                    || source.environment.id() != bound.typing_environment.id()
+                    || !bound.callables.contains(&Callable::Closure(*closure))
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                let source = source.clone();
+                let root = self.with_typing_environment(&source.environment, |checker| {
+                    checker.original_header_source_schema(&source.header, work)
+                })?;
+                let callable = root.project_steps(&source.path, work)?;
+                let (_, expected) = callable
+                    .callable_parts(work)?
+                    .ok_or(SourceTypesError::MissingProjection)?;
+                let (expected, _) =
+                    self.selected_input_schema(expected, source.environment.clone(), work)?;
+                let (_, actual) = schema
+                    .callable_parts(work)?
+                    .ok_or(SourceTypesError::MissingProjection)?;
+                if !actual.equivalent(&expected, work)? {
+                    return Ok(false);
+                }
+                continue;
             }
-            let syntax = TypeExpr {
-                hir_id: None,
-                text: String::new(),
-                span: bound.span,
-                kind: TypeKind::Callable {
-                    parameters,
-                    result: Some(Box::new(bound.syntax.clone())),
-                    annotations: annotations
-                        .iter()
-                        .map(|text| ril_syntax::ast::Annotation {
-                            kind: if text.starts_with('@') {
-                                ril_syntax::ast::AnnotationKind::Effect
-                            } else {
-                                ril_syntax::ast::AnnotationKind::Capability
-                            },
-                            text: text.clone(),
-                            span: bound.span,
-                        })
-                        .collect(),
-                },
-            };
-            let original = self
-                .with_typing_environment(&bound.typing_environment, |checker| {
-                    checker.freeze_source_receiving_target(&syntax).schema
-                })
-                .ok_or(SourceTypesError::Unresolved)?;
+            let parameters = schema.callable_parameters(work)?;
+            let result = self.with_typing_environment(&bound.typing_environment, |checker| {
+                checker.original_header_source_schema(&bound.syntax, work)
+            })?;
+            let (result, _) =
+                self.selected_input_schema(result, bound.typing_environment.clone(), work)?;
+            let original = SourceSchema::callable(&parameters, &result, &annotations, None, work)?;
             if !original.equivalent(schema, work)? {
                 return Ok(false);
             }

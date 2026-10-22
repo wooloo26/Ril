@@ -1,6 +1,36 @@
 use super::*;
 use std::sync::Arc;
 
+/// A temporary path through a real receiving header. Alias instantiation and
+/// standard interface elaboration never create another original Source root.
+pub(super) struct SignatureSource<'a> {
+    pub header: &'a TypeExpr,
+    pub environment: crate::sema::context::FrozenEnvironment,
+    pub path: Vec<crate::sema::source_types::SourcePath>,
+}
+
+impl SignatureSource<'_> {
+    fn project(
+        &self,
+        step: crate::sema::source_types::SourcePath,
+    ) -> Result<Self, crate::sema::source_types::SourceTypesError> {
+        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+        work.charge(self.path.len() + 1)?;
+        for step in self.path.iter().chain(std::iter::once(&step)) {
+            if let crate::sema::source_types::SourcePath::Field(label) = step {
+                work.text(label)?;
+            }
+        }
+        let mut path = self.path.clone();
+        path.push(step);
+        Ok(Self {
+            header: self.header,
+            environment: self.environment.clone(),
+            path,
+        })
+    }
+}
+
 /// The comma makes `closure` a contextual group header. Without it the
 /// same spelling is an ordinary module binding, even before name resolution.
 pub(super) struct StateGroup<'a> {
@@ -197,7 +227,12 @@ impl Checker {
 
     /// Keep contextual result contracts on the particular callable value. A
     /// closure definition can flow through several differently sealed values.
-    pub(super) fn ascribe_callable_return(&mut self, value: &mut Value, syntax: &TypeExpr) {
+    pub(super) fn ascribe_callable_return(
+        &mut self,
+        value: &mut Value,
+        syntax: &TypeExpr,
+        origin: &SignatureSource<'_>,
+    ) {
         fn result_syntax(
             checker: &Checker,
             syntax: &TypeExpr,
@@ -238,7 +273,7 @@ impl Checker {
             syntax: result,
             span: syntax.span,
             callables: value.callables.clone(),
-            typing_environment: self.capture_typing_environment(),
+            typing_environment: origin.environment.clone(),
         };
         let same_stage = |previous: &Arc<CallableReturnBound>| {
             !previous.raw
@@ -545,28 +580,42 @@ impl Checker {
             );
         }
     }
-    pub(super) fn ascribe_callable_bounds(
+    pub(super) fn signature_source<'a>(&self, syntax: &'a TypeExpr) -> SignatureSource<'a> {
+        let environment = self
+            .callable_type_source(syntax)
+            .and_then(|id| self.type_contract_environments.get(&id))
+            .map(|source| source.typing_environment.clone())
+            .unwrap_or_else(|| self.capture_typing_environment());
+        SignatureSource {
+            header: syntax,
+            environment,
+            path: Vec::new(),
+        }
+    }
+
+    pub(super) fn ascribe_callable_bounds_from(
         &mut self,
         value: &mut Value,
         syntax: &TypeExpr,
         annotations: &[Annotation],
+        origin: &SignatureSource<'_>,
     ) -> BoundProbe {
-        if annotations.is_empty() {
+        let contextual_closure = value.callables.iter().any(|callable| {
+            matches!(callable, Callable::Closure(id) if !self.checked_closures.contains(id))
+        });
+        if annotations.is_empty() && !contextual_closure {
             return BoundProbe::Open;
         }
         self.validate_empty_callable_rows(&value.ty, annotations, syntax.span);
         let source = self.callable_type_source(syntax);
-        let typing_environment = source
-            .and_then(|source| self.type_contract_environments.get(&source))
-            .map(|environment| environment.typing_environment.clone())
-            .unwrap_or_else(|| self.capture_typing_environment());
+        let typing_environment = origin.environment.clone();
         let bound = CallableBound {
             annotations: annotations.to_vec(),
             source: source.map(ril_compiler_core::ids::CallableContractSource::Type),
             typing_environment,
             span: syntax.span,
         };
-        if !value.callable_bounds.contains(&bound) {
+        if !annotations.is_empty() && !value.callable_bounds.contains(&bound) {
             value.callable_bounds.push(bound.clone());
         }
         let key = (
@@ -639,6 +688,51 @@ impl Checker {
             self.probing_contracts.remove(&key);
             return BoundProbe::Unresolved;
         };
+        let header = origin.header;
+        let mut header_work = crate::sema::source_types::WorkLimit::new(32768);
+        if crate::sema::application_effect::SignatureProbeSource::validate_header(
+            header,
+            &self.semantic_hir,
+            &mut header_work,
+        )
+        .is_err()
+        {
+            self.unsupported(
+                syntax.span,
+                "signature probe header differs from its canonical HIR",
+            );
+            self.probing_contracts.remove(&key);
+            return BoundProbe::Unresolved;
+        }
+        let path_admitted = (|| {
+            header_work.charge(origin.path.len())?;
+            for step in &origin.path {
+                if let crate::sema::source_types::SourcePath::Field(label) = step {
+                    header_work.text(label)?;
+                }
+            }
+            Ok::<_, crate::sema::source_types::SourceTypesError>(())
+        })();
+        if path_admitted.is_err() {
+            self.unsupported(
+                syntax.span,
+                "signature Source projection exceeded its work bound",
+            );
+            self.probing_contracts.remove(&key);
+            return BoundProbe::Unresolved;
+        }
+        if !self
+            .application_effect
+            .admit(32768 - header_work.remaining() + parameters.len() + 1)
+        {
+            self.unsupported(
+                syntax.span,
+                "signature probe source admission exhausted its work bound",
+            );
+            self.probing_contracts.remove(&key);
+            return BoundProbe::Unresolved;
+        }
+        let header = Arc::new(header.clone());
         // Check fixed body obligations at ascription even when the value is
         // never called. Symbolic callback dependence is constrained again at
         // each invocation with the actual callback values.
@@ -646,7 +740,10 @@ impl Checker {
         let handlers = std::mem::take(&mut self.active_handlers);
         let previous_completed = self.completed_invocation.clone();
         let mut context = self.frame(bound.typing_environment.contract_bindings.clone(), true);
+        context.input_environment = Some(bound.typing_environment.clone());
         let mut arguments = Vec::new();
+        let mut formals = Vec::new();
+        let previous_environment = self.enter_typing_environment(&bound.typing_environment);
         for (index, parameter) in parameters.iter().enumerate() {
             let ty = parameter
                 .ty
@@ -675,11 +772,28 @@ impl Checker {
                 true,
             );
             let argument = self.bindings[binding].value.clone();
+            formals.push(crate::sema::application_effect::SignatureFormal {
+                slot: index as u32,
+                binding,
+            });
             arguments.push((parameter.mode, argument, parameter.span));
         }
+        self.restore_typing_environment(previous_environment);
+        let probe_source = Arc::new(crate::sema::application_effect::SignatureProbeSource {
+            source: header.hir_id.expect("authenticated callable header"),
+            header,
+            path: Arc::new(origin.path.clone()),
+            environment: bound.typing_environment.clone(),
+            formals: Arc::new(formals),
+        });
         let invocation_state = self.snapshot_flow();
         let mut complete = !value.callables.is_empty();
         for callable in value.callables.clone() {
+            if annotations.is_empty()
+                && !matches!(callable, Callable::Closure(id) if !self.checked_closures.contains(&id))
+            {
+                continue;
+            }
             self.restore_preview(&invocation_state);
             self.widen_callable_environment(&callable);
             self.completed_invocation = None;
@@ -691,11 +805,31 @@ impl Checker {
                         arguments.clone(),
                         syntax.span,
                         Some(&mut context),
-                        crate::sema::application_effect::EntryOrigin::SignatureProbe,
+                        crate::sema::application_effect::EntryOrigin::SignatureProbe(
+                            probe_source.clone(),
+                        ),
                     );
                 }
                 Callable::Closure(id) => {
-                    self.invoke_closure_signature(id, arguments.clone(), syntax.span, &mut context);
+                    let returned = self.invoke_closure_signature(
+                        id,
+                        arguments.clone(),
+                        syntax.span,
+                        &mut context,
+                        probe_source.clone(),
+                    );
+                    self.with_typing_environment(&probe_source.environment, |checker| {
+                        if let Ty::Callable(_, expected) = checker.ty(syntax)
+                            && !checker.compatible_at(&returned.ty, &expected, syntax.span.file)
+                        {
+                            checker.error(
+                                "E0301",
+                                syntax.span,
+                                "anonymous function result does not fit callable context",
+                                [returned.cause],
+                            );
+                        }
+                    });
                 }
                 Callable::Symbolic(..) => {
                     complete = false;
@@ -744,11 +878,14 @@ impl Checker {
         &self,
         syntax: &TypeExpr,
     ) -> Option<ril_compiler_core::ids::TypeExprId> {
-        let mut syntax = syntax;
+        self.callable_type_header(syntax)?.hir_id
+    }
+
+    fn callable_type_header<'a>(&'a self, mut syntax: &'a TypeExpr) -> Option<&'a TypeExpr> {
         let mut seen = BTreeSet::new();
         for _ in 0..64 {
             match &syntax.kind {
-                TypeKind::Callable { .. } => return syntax.hir_id,
+                TypeKind::Callable { .. } => return Some(syntax),
                 TypeKind::Name { path, .. } => {
                     let name = path.join("::");
                     if !seen.insert(name.clone()) {
@@ -765,25 +902,53 @@ impl Checker {
     /// A failed source reception must not suppress an independently required
     /// capability diagnostic. Probe the bound on a private value descriptor;
     /// keep its actual signature, return contracts and source witness intact.
-    pub(super) fn check_receiving_callable_bounds(
+    pub(super) fn check_receiving_callable_bounds_from(
         &mut self,
         value: &Value,
         syntax: &TypeExpr,
+        source: &SignatureSource<'_>,
     ) -> BoundProbe {
         if let Some((_, annotations)) = self.callable_syntax(syntax, &mut BTreeSet::new()) {
             let mut constrained = value.clone();
-            return self.ascribe_callable_bounds(&mut constrained, syntax, &annotations);
+            return self.ascribe_callable_bounds_from(
+                &mut constrained,
+                syntax,
+                &annotations,
+                source,
+            );
         }
         // A source failure at a container must still expose its actual latent
         // child violations. Work in the existing definition transaction so
         // receiving ascription cannot replace any continuing field schema.
         let preview = self.snapshot_flow();
         let mut constrained = value.clone();
-        self.ascribe_nested_callable_bounds(&mut constrained, syntax);
+        self.ascribe_nested_callable_bounds_from(&mut constrained, syntax, source);
         self.restore_definition_state(&preview);
         BoundProbe::Unresolved
     }
-    pub(super) fn ascribe_nested_callable_bounds(&mut self, value: &mut Value, syntax: &TypeExpr) {
+    fn ascribe_projected_signature(
+        &mut self,
+        value: &mut Value,
+        syntax: &TypeExpr,
+        source: &SignatureSource<'_>,
+        step: crate::sema::source_types::SourcePath,
+    ) {
+        match source.project(step) {
+            Ok(source) => self.ascribe_signature_from(value, syntax, &source),
+            Err(error) => self.unsupported(
+                syntax.span,
+                format!("signature Source path admission failed: {error}"),
+            ),
+        }
+    }
+
+    pub(super) fn ascribe_nested_callable_bounds_from(
+        &mut self,
+        value: &mut Value,
+        syntax: &TypeExpr,
+        source: &SignatureSource<'_>,
+    ) {
+        use crate::sema::source_types::SourcePath;
         let key = (
             syntax.span.file.0,
             syntax.span.start,
@@ -793,25 +958,28 @@ impl Checker {
         if !self.nested_contracts.insert(key) {
             return;
         }
-        let mut slots: Vec<(Slot, TypeExpr)> = Vec::new();
+        let mut slots: Vec<(Slot, TypeExpr, SourcePath)> = Vec::new();
         match &syntax.kind {
-            TypeKind::Record { fields, .. } => slots.extend(
-                fields
-                    .iter()
-                    .map(|field| (Slot::Field(field.name.clone()), field.ty.clone())),
-            ),
-            TypeKind::Tuple(items) => slots.extend(
-                items
-                    .iter()
-                    .enumerate()
-                    .map(|(index, ty)| (Slot::Tuple(index as u32), ty.clone())),
-            ),
+            TypeKind::Record { fields, .. } => slots.extend(fields.iter().map(|field| {
+                (
+                    Slot::Field(field.name.clone()),
+                    field.ty.clone(),
+                    SourcePath::Field(field.name.clone()),
+                )
+            })),
+            TypeKind::Tuple(items) => slots.extend(items.iter().enumerate().map(|(index, ty)| {
+                (
+                    Slot::Tuple(index as u32),
+                    ty.clone(),
+                    SourcePath::Tuple(index as u32),
+                )
+            })),
             TypeKind::Array { element, .. } => {
                 for (node, slot) in self.fields.keys() {
                     if value.origins.nodes.contains(node)
                         && matches!(slot, Slot::Index(_) | Slot::AnyIndex)
                     {
-                        slots.push((slot.clone(), *element.clone()));
+                        slots.push((slot.clone(), *element.clone(), SourcePath::Element));
                     }
                 }
             }
@@ -821,18 +989,24 @@ impl Checker {
             } => {
                 for (node, slot) in self.fields.keys() {
                     if value.origins.nodes.contains(node) {
-                        let expected = if matches!(slot,Slot::Field(name)if name=="key") {
-                            key
+                        let (expected, projection) = if matches!(slot,Slot::Field(name)if name=="key")
+                        {
+                            (key, SourcePath::MapKey)
                         } else {
-                            element
+                            (element, SourcePath::MapValue)
                         };
-                        slots.push((slot.clone(), *expected.clone()));
+                        slots.push((slot.clone(), *expected.clone(), projection));
                     }
                 }
             }
             TypeKind::Optional(inner) => {
                 if let Some(payload) = &mut value.option_payload {
-                    self.ascribe_signature(payload, inner);
+                    self.ascribe_projected_signature(
+                        payload,
+                        inner,
+                        source,
+                        SourcePath::OptionalPayload,
+                    );
                 }
             }
             TypeKind::Name { path, arguments } => {
@@ -844,7 +1018,7 @@ impl Checker {
                         && let Some(body) = declaration.value
                     {
                         if declaration.generics.is_empty() {
-                            self.ascribe_signature(value, &body);
+                            self.ascribe_signature_from(value, &body, source);
                         } else if syntax_contains_callable(&body) {
                             self.unsupported(syntax.span,"nested generic callable qualifications require instantiated syntax");
                         }
@@ -854,23 +1028,47 @@ impl Checker {
                     match (builtin, arguments.as_slice()) {
                         ("Option", [inner]) => {
                             if let Some(payload) = &mut value.option_payload {
-                                self.ascribe_signature(payload, inner);
+                                self.ascribe_projected_signature(
+                                    payload,
+                                    inner,
+                                    source,
+                                    SourcePath::OptionalPayload,
+                                );
                             }
                         }
                         ("Result", [ok, error]) => {
                             if let Some(payload) = &mut value.result_success {
-                                self.ascribe_signature(payload, ok);
+                                self.ascribe_projected_signature(
+                                    payload,
+                                    ok,
+                                    source,
+                                    SourcePath::ResultSuccess,
+                                );
                             }
                             if let Some(payload) = &mut value.result_error {
-                                self.ascribe_signature(payload, error);
+                                self.ascribe_projected_signature(
+                                    payload,
+                                    error,
+                                    source,
+                                    SourcePath::ResultError,
+                                );
                             }
                             if let Some(payload) = &mut value.result_payload
                                 && let Some(success) = value.result_tag
                             {
-                                self.ascribe_signature(payload, if success { ok } else { error });
+                                self.ascribe_projected_signature(
+                                    payload,
+                                    if success { ok } else { error },
+                                    source,
+                                    if success {
+                                        SourcePath::ResultSuccess
+                                    } else {
+                                        SourcePath::ResultError
+                                    },
+                                );
                             }
                         }
-                        ("Immut", [inner]) => self.ascribe_signature(value, inner),
+                        ("Immut", [inner]) => self.ascribe_signature_from(value, inner, source),
                         _ => {}
                     }
                 }
@@ -878,9 +1076,14 @@ impl Checker {
             _ => {}
         }
         for node in value.origins.nodes.clone() {
-            for (slot, expected) in &slots {
+            for (slot, expected, projection) in &slots {
                 if let Some(mut child) = self.fields.get(&(node, slot.clone())).cloned() {
-                    self.ascribe_signature(&mut child, expected);
+                    self.ascribe_projected_signature(
+                        &mut child,
+                        expected,
+                        source,
+                        projection.clone(),
+                    );
                     self.fields.insert((node, slot.clone()), child);
                 }
             }

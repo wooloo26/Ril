@@ -1956,43 +1956,6 @@ impl Checker {
                 );
             }
         }
-        if let Ty::Callable(parameters, result) = self.expanded(ty, &mut BTreeSet::new()) {
-            for callable in &value.callables {
-                if let Callable::Closure(id) = callable
-                    && !self.checked_closures.contains(id)
-                {
-                    let closure = self.closures[*id].clone();
-                    let preview = self.snapshot_flow();
-                    let args = parameters
-                        .iter()
-                        .enumerate()
-                        .map(|(i, ty)| {
-                            let mode = closure
-                                .parameters
-                                .get(i)
-                                .map(|p| p.mode)
-                                .unwrap_or_default();
-                            (
-                                mode,
-                                self.formal_value(ty.clone(), i as u32, span, &mut BTreeSet::new()),
-                                span,
-                            )
-                        })
-                        .collect();
-                    let mut context = self.frame(closure.lexical.clone(), true);
-                    let returned = self.invoke_closure_signature(*id, args, span, &mut context);
-                    if !self.compatible_at(&returned.ty, &result, span.file) {
-                        self.error(
-                            "E0301",
-                            span,
-                            "anonymous function result does not fit callable context",
-                            [returned.cause],
-                        );
-                    }
-                    self.restore_definition_state(&preview);
-                }
-            }
-        }
         if !self.compatible_at(&value.ty, ty, span.file)
             && !self.literal_shape_compatible(value, &visible_ty)
             && !self.constructor_callable_compatible(value, ty)
@@ -2425,6 +2388,16 @@ impl Checker {
     }
 
     pub(super) fn ascribe_signature(&mut self, value: &mut Value, syntax: &TypeExpr) {
+        let source = self.signature_source(syntax);
+        self.ascribe_signature_from(value, syntax, &source);
+    }
+
+    pub(super) fn ascribe_signature_from(
+        &mut self,
+        value: &mut Value,
+        syntax: &TypeExpr,
+        source: &super::contracts::SignatureSource<'_>,
+    ) {
         if let TypeKind::Name { path, arguments } = &syntax.kind
             && arguments.is_empty()
             && self
@@ -2445,7 +2418,7 @@ impl Checker {
             return;
         }
         if let Some(instantiated) = self.instantiated_callable_alias(syntax) {
-            self.ascribe_signature(value, &instantiated);
+            self.ascribe_signature_from(value, &instantiated, source);
             return;
         }
         self.instantiate_builtin_signature(value, syntax);
@@ -2461,17 +2434,17 @@ impl Checker {
         if let Some(schema) =
             io::operation_type(syntax).or_else(|| super::iter_types::schema(syntax))
         {
-            self.ascribe_signature(value, &schema);
+            self.ascribe_signature_from(value, &schema, source);
             return;
         }
         if let Some((parameters, annotations)) = self.callable_syntax(syntax, &mut BTreeSet::new())
         {
             self.check_signature_modes(value, syntax);
             value.signature = Some(parameters);
-            self.ascribe_callable_return(value, syntax);
-            self.ascribe_callable_bounds(value, syntax, &annotations);
+            self.ascribe_callable_return(value, syntax, source);
+            self.ascribe_callable_bounds_from(value, syntax, &annotations, source);
         }
-        self.ascribe_nested_callable_bounds(value, syntax);
+        self.ascribe_nested_callable_bounds_from(value, syntax, source);
         self.ascribe_source_type(value, syntax);
     }
     pub(super) fn check_storage_shape(

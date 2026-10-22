@@ -261,17 +261,6 @@ impl Replay<'_> {
         Ok(true)
     }
 
-    pub(in crate::sema::record_bound_validation) fn input_parameter_source_key(
-        &self,
-        syntax: &TypeExpr,
-        scope: &BoundScope,
-    ) -> Check<Option<ArgumentKey>> {
-        if !self.parameter_has_type_source(syntax, scope)? {
-            return Ok(None);
-        }
-        self.input_callable_source_key(syntax, scope).map(Some)
-    }
-
     pub(super) fn producing_result_contexts(
         &self,
         sites: &super::super::explicit_named::SourceSites<'_>,
@@ -666,134 +655,254 @@ impl Replay<'_> {
         })
     }
 
-    pub(super) fn public_input_source_keys(
+    pub(super) fn public_input_source_schemas(
         &self,
         syntax: &Expr,
         callee: &Value,
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
         observation: Option<usize>,
-    ) -> Check<Vec<Option<ArgumentKey>>> {
-        let public = observation.map_or_else(
-            || self.original_source_key(syntax, callee, context, sites),
-            |index| self.original_observed_source_key(syntax, index, context, sites),
-        );
-        if let Ok(ArgumentKey::Callable { parameters, .. }) = public {
-            return Ok(parameters.into_iter().map(|(_, key)| Some(key)).collect());
+        work: &mut usize,
+    ) -> Check<Vec<(ril_syntax::ast::ParameterMode, Option<OriginalSource>)>> {
+        let public = self.original_source_schema_inner(
+            syntax,
+            callee,
+            context,
+            sites,
+            work,
+            SourceVisit {
+                depth: 0,
+                observation,
+            },
+        )?;
+        if let Some((schema, environment)) = public {
+            let (parameters, _) =
+                super::graph_sources::schema_work(work, |budget| schema.callable_parts(budget))?
+                    .ok_or("public input Source is not an original callable graph")?;
+            return Ok(parameters
+                .into_iter()
+                .map(|(mode, schema)| (mode, Some((schema, environment.clone()))))
+                .collect());
         }
         require(
             !callee.callables.is_empty(),
             "public input has no actual callable target",
         )?;
-        let mut common = None;
+        *work = work
+            .checked_sub(callee.callables.len())
+            .ok_or("public callable alternatives exceed their Source work bound")?;
+        let mut common: Option<Vec<(ril_syntax::ast::ParameterMode, Option<OriginalSource>)>> =
+            None;
         for callable in &callee.callables {
-            let keys =
-                match callable {
-                    crate::sema::model::Callable::Closure(index) => {
-                        let closure =
-                            self.facts.closures.get(*index).ok_or_else(|| {
-                                "public input closure target is absent".to_owned()
-                            })?;
-                        let site = self
-                            .facts
-                            .closure_sites
-                            .iter()
-                            .find(|site| Some(site.id) == closure.site)
-                            .ok_or_else(|| {
-                                "public input closure has no genuine lexical site".to_owned()
-                            })?;
-                        let headers: Vec<_> = sites
-                            .lambdas
-                            .iter()
-                            .filter(|header| {
-                                header.owner == site.owner
-                                    && closure.hir_id.is_some()
-                                    && header.expression.hir_id == closure.hir_id
-                            })
-                            .collect();
-                        let [header] = headers.as_slice() else {
-                            return Err("public input lambda header is not unique".into());
-                        };
-                        let ExprKind::Lambda { parameters, .. } = &header.expression.kind else {
-                            unreachable!()
-                        };
-                        let scope = self.lambda_input_scope(site.owner)?;
-                        let selected = match closure.creation_invocation {
-                            Some(id) => self.input_selected_keys(
-                                self.facts.copy_invocations.get(id.0 as usize).ok_or_else(
-                                    || "public lambda creation instance is absent".to_owned(),
-                                )?,
-                            )?,
-                            None => BTreeMap::new(),
-                        };
-                        parameters
-                            .iter()
-                            .map(|parameter| match &parameter.ty {
-                                None => Ok(None),
-                                Some(syntax) => {
-                                    let key = self.input_callable_source_key(syntax, &scope)?;
-                                    let key = input_select_key(&key, &selected, 0)?;
-                                    Ok((source_reception::sensitive(&key, &mut 4096)
-                                        != Some(false))
-                                    .then_some(key))
+            let parameters = match callable {
+                crate::sema::model::Callable::Closure(index) => {
+                    let closure = self
+                        .facts
+                        .closures
+                        .get(*index)
+                        .ok_or("public input closure target is absent")?;
+                    *work = work
+                        .checked_sub(self.facts.closure_sites.len() + sites.lambdas.len())
+                        .ok_or("public closure header lookup exceeds its work bound")?;
+                    let mut matching = self
+                        .facts
+                        .closure_sites
+                        .iter()
+                        .filter(|site| Some(site.id) == closure.site);
+                    let site = matching
+                        .next()
+                        .ok_or("public input closure has no genuine lexical site")?;
+                    require(
+                        matching.next().is_none(),
+                        "public input closure has multiple lexical sites",
+                    )?;
+                    let headers: Vec<_> = sites
+                        .lambdas
+                        .iter()
+                        .filter(|header| {
+                            header.owner == site.owner
+                                && closure.hir_id.is_some()
+                                && header.expression.hir_id == closure.hir_id
+                        })
+                        .collect();
+                    let [header] = headers.as_slice() else {
+                        return Err("public input lambda header is not unique".into());
+                    };
+                    let ExprKind::Lambda { parameters, .. } = &header.expression.kind else {
+                        return Err("public input lexical site is not a lambda".into());
+                    };
+                    let scope = self.lambda_input_scope(site.owner)?;
+                    let selected_keys = match closure.creation_invocation {
+                        Some(id) => self.input_selected_keys(
+                            self.facts
+                                .copy_invocations
+                                .get(id.0 as usize)
+                                .filter(|call| call.id == id)
+                                .ok_or("public lambda creation instance is absent")?,
+                        )?,
+                        None => BTreeMap::new(),
+                    };
+                    *work = work
+                        .checked_sub(parameters.len())
+                        .ok_or("public lambda parameter graph exceeds its work bound")?;
+                    let mut output = Vec::with_capacity(parameters.len());
+                    for parameter in parameters {
+                        let source = if let Some(syntax) = &parameter.ty {
+                            if self.parameter_has_type_source(syntax, &scope)? {
+                                let (schema, environment) = self.source_type_header(
+                                    syntax,
+                                    &scope,
+                                    closure.contract.typing_environment.clone(),
+                                    work,
+                                )?;
+                                let required = super::graph_sources::schema_work(work, |budget| {
+                                    schema.binder_identities(budget)
+                                })?;
+                                let mut selected = BTreeMap::new();
+                                for identity in required {
+                                    *work = work
+                                        .checked_sub(1)
+                                        .ok_or("public lambda Source selection work exhausted")?;
+                                    if closure
+                                        .contract
+                                        .typing_environment
+                                        .generic_sources
+                                        .contains_key(&identity)
+                                    {
+                                        continue;
+                                    }
+                                    let Some(key) = selected_keys.get(&identity) else {
+                                        continue;
+                                    };
+                                    if matches!(key,ArgumentKey::Binder {identity: actual,..} if actual == &identity)
+                                    {
+                                        continue;
+                                    }
+                                    let creation = closure.creation_invocation
+                                        .and_then(|id| self.facts.copy_invocations.get(id.0 as usize)
+                                            .filter(|call| call.id == id))
+                                        .ok_or("public lambda selection lost its original creation invocation")?;
+                                    let source = self.original_input_selection_schema(
+                                        creation, &identity, key, work,
+                                    )?;
+                                    selected.insert(identity, source);
                                 }
-                            })
-                            .collect::<Check<Vec<_>>>()?
+                                Some(self.source_substitute_schema(
+                                    schema,
+                                    environment,
+                                    &selected,
+                                    work,
+                                )?)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        output.push((parameter.mode, source));
                     }
-                    crate::sema::model::Callable::Symbolic(..)
-                        if self.symbolic_source_has_no_inputs(callee) =>
-                    {
-                        Vec::new()
+                    output
+                }
+                crate::sema::model::Callable::Symbolic(..)
+                    if self.symbolic_source_has_no_inputs(callee, work)? =>
+                {
+                    Vec::new()
+                }
+                _ => return Err("public input target has no complete Source parameters".into()),
+            };
+            if let Some(previous) = &common {
+                require(
+                    previous.len() == parameters.len(),
+                    "public input alternatives disagree about their arity",
+                )?;
+                for ((left_mode, left), (right_mode, right)) in previous.iter().zip(&parameters) {
+                    require(
+                        left_mode == right_mode,
+                        "public input alternatives changed their parameter mode",
+                    )?;
+                    match (left, right) {
+                        (None, None) => {}
+                        (Some((left, left_env)), Some((right, right_env))) => {
+                            let equivalent = super::graph_sources::schema_work(work, |budget| {
+                                left.equivalent(right, budget)
+                            })?;
+                            let dependent = super::graph_sources::schema_work(work, |budget| {
+                                left.requires_environment(budget)
+                            })?;
+                            require(
+                                equivalent
+                                    && !left_env.is_poisoned()
+                                    && !right_env.is_poisoned()
+                                    && (!dependent || left_env.id() == right_env.id()),
+                                "public input alternatives disagree about their Source coordinates or interpretation",
+                            )?;
+                        }
+                        _ => return Err(
+                            "public input alternatives changed their declared Source availability"
+                                .into(),
+                        ),
                     }
-                    _ => return Err("public input target has no complete Source parameters".into()),
-                };
-            require(
-                common.as_ref().is_none_or(|previous| previous == &keys),
-                "public input alternatives disagree about their Source parameter coordinates",
-            )?;
-            common = Some(keys);
+                }
+            } else {
+                common = Some(parameters)
+            }
         }
         common.ok_or_else(|| "public input has no Source parameter proof".into())
     }
 
-    fn symbolic_source_has_no_inputs(&self, callee: &Value) -> bool {
-        let sources: BTreeSet<_> = callee
+    fn symbolic_source_has_no_inputs(&self, callee: &Value, work: &mut usize) -> Check<bool> {
+        let source_work = callee
             .callback_parameters
-            .union(&callee.sources)
-            .copied()
-            .collect();
-        !sources.is_empty()
-            && sources.iter().all(|id| {
-                let Some(binding) = self.facts.bindings.get(*id) else {
-                    return false;
-                };
-                if !binding.parameter {
-                    return false;
+            .len()
+            .checked_add(callee.sources.len())
+            .and_then(|count| count.checked_add(1))
+            .ok_or("symbolic input source count overflow")?;
+        *work = work
+            .checked_sub(source_work)
+            .ok_or("symbolic input source union exceeds its work bound")?;
+        let mut found = false;
+        for id in callee.callback_parameters.union(&callee.sources) {
+            found = true;
+            let Some(binding) = self.facts.bindings.get(*id) else {
+                return Ok(false);
+            };
+            if !binding.parameter {
+                return Ok(false);
+            }
+            *work = work
+                .checked_sub(self.facts.functions.len())
+                .ok_or("symbolic input declaration lookup exceeds its work bound")?;
+            let mut header = None;
+            for function in &self.facts.functions {
+                if binding.context.owner != Some(CallableOwner::Function(function.definition)) {
+                    continue;
                 }
-                let headers: Vec<_> = self
-                    .facts
-                    .functions
-                    .iter()
-                    .filter(|function| {
-                        binding.context.owner == Some(CallableOwner::Function(function.definition))
-                    })
-                    .flat_map(|function| function.syntax.parameters.iter())
-                    .filter(|parameter| {
-                        parameter.pattern.hir_id.is_some()
-                            && parameter.pattern.hir_id == binding.pattern
-                    })
-                    .collect();
-                let [parameter] = headers.as_slice() else {
-                    return false;
-                };
-                let Some(mut syntax) = parameter.ty.as_ref() else {
-                    return false;
-                };
-                if let TypeKind::Optional(inner) = &syntax.kind {
-                    syntax = inner;
+                *work = work
+                    .checked_sub(function.syntax.parameters.len())
+                    .ok_or("symbolic input parameter lookup exceeds its work bound")?;
+                for parameter in &function.syntax.parameters {
+                    if parameter.pattern.hir_id.is_some()
+                        && parameter.pattern.hir_id == binding.pattern
+                        && header.replace(parameter).is_some()
+                    {
+                        return Ok(false);
+                    }
                 }
-                matches!(&syntax.kind,TypeKind::Callable {parameters,..} if parameters.is_empty())
-            })
+            }
+            let Some(parameter) = header else {
+                return Ok(false);
+            };
+            let Some(mut syntax) = parameter.ty.as_ref() else {
+                return Ok(false);
+            };
+            if let TypeKind::Optional(inner) = &syntax.kind {
+                syntax = inner;
+            }
+            if !matches!(&syntax.kind,TypeKind::Callable {parameters,..} if parameters.is_empty()) {
+                return Ok(false);
+            }
+        }
+        Ok(found)
     }
 
     pub(in crate::sema::record_bound_validation) fn lambda_input_scope(

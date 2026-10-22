@@ -15,6 +15,33 @@ pub(super) fn schema_work<T>(
 }
 
 impl Replay<'_> {
+    /// A sealed finite compatibility witness is normalized type evidence, not
+    /// an original HIR header. Its value/constant origin is authenticated by
+    /// the caller before this distinct, single ingress is used.
+    pub(in crate::sema::record_bound_validation) fn closed_witness_source_schema(
+        &self,
+        witness: &crate::sema::model::SourceTypeWitness,
+        environment: FrozenEnvironment,
+        work: &mut usize,
+    ) -> Check<OriginalSource> {
+        for _ in 0..3 {
+            crate::static_eval::charge_type_syntax_clone(&witness.syntax, work)
+                .ok_or("closed Source witness exceeds its validation work bound")?;
+        }
+        require(
+            witness.validate_closed()
+                && crate::sema::source_type_validation::resolved_names(
+                    witness,
+                    &self.facts.external_type_declarations,
+                ),
+            "closed Source witness is inconsistent or unresolved",
+        )?;
+        let key =
+            crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new())
+                .ok_or("closed Source witness exceeds its syntax admission")?;
+        self.source_header_schema(&key, environment, work)
+    }
+
     pub(in crate::sema::record_bound_validation) fn source_selected_schemas(
         &self,
         environment: &FrozenEnvironment,
@@ -112,110 +139,79 @@ impl Replay<'_> {
         environment: FrozenEnvironment,
         work: &mut usize,
     ) -> Check<OriginalSource> {
-        if let TypeKind::Name { path, arguments } = &syntax.kind {
+        let (schema, environment) =
+            self.source_type_header_raw(syntax, scope, environment, work)?;
+        let selected = self.source_selected_schemas(&environment, work)?;
+        self.source_substitute_schema(schema, environment, &selected, work)
+    }
+
+    pub(in crate::sema::record_bound_validation) fn source_type_header_raw(
+        &self,
+        syntax: &TypeExpr,
+        scope: &BoundScope,
+        environment: FrozenEnvironment,
+        work: &mut usize,
+    ) -> Check<OriginalSource> {
+        use crate::sema::source_types::declarations::{
+            HeaderContext, elaborate_original_header, original_header,
+        };
+        require(
+            !environment.is_poisoned(),
+            "original Source header has a poisoned interpretation",
+        )?;
+        let mut binders = self.key_scope(scope)?;
+        *work = work
+            .checked_sub(environment.generic_context.len())
+            .ok_or("original Source binder map exceeds its work bound")?;
+        for (name, identity) in &environment.generic_context {
             *work = work
-                .checked_sub(path.len() + 1)
-                .ok_or("Const Source declaration lookup exceeds its work bound")?;
-            for part in path {
-                *work = work
-                    .checked_sub(part.len().div_ceil(32))
-                    .ok_or("Const Source declaration name exceeds its work bound")?;
-            }
-            let name = path.join("::");
-            if let Some(declaration) = self.facts.external_type_declarations.get(&name) {
-                require(
-                    declaration.name == name,
-                    "Const Source lookup substituted another declaration's name",
-                )?;
-                let arguments = crate::static_eval::const_nominal::closed_const_nominal_arguments(
-                    declaration,
-                    arguments,
-                    &self.facts.external_type_declarations,
-                    self.facts
-                        .target_layout
-                        .ok_or("Const Source has no original target layout")?,
-                    work,
-                )?;
-                if let Some(arguments) = arguments {
-                    let program = self
-                        .facts
-                        .source_program
-                        .as_ref()
-                        .ok_or("Const Source has no original declaration program")?;
-                    *work = work
-                        .checked_sub(program.statements.len())
-                        .ok_or("Const Source declaration coverage exceeds its work bound")?;
-                    require(program.statements.iter().any(|statement|
-                        matches!(&statement.kind, StmtKind::Type(actual) if actual == declaration)),
-                        "Const Source is not its actual original declaration")?;
-                    require(
-                        !environment.is_poisoned(),
-                        "Const Source lost its original interpretation",
-                    )?;
-                    let source = schema_work(work, |budget| {
-                        SourceSchema::certified_const_nominal(
-                            &name,
-                            &arguments,
-                            syntax.hir_id,
-                            budget,
-                        )
-                    })?;
-                    return Ok((source, environment));
-                }
-            }
+                .checked_sub(name.len().div_ceil(32) + identity.len().div_ceil(32))
+                .ok_or("original Source binder names exceed their work bound")?;
+            binders
+                .entry(name.clone())
+                .or_insert_with(|| identity.clone());
         }
-        // Written headers have not necessarily had their static expressions
-        // elaborated yet. A genuine regular declaration graph is already a
-        // complete representation of recursion and must not enter the finite
-        // alias normalizer. Unevaluated extents still need ordinary static
-        // elaboration; no other admission or observed-graph error can fallback.
-        let raw =
-            crate::static_eval::effects::bounded_argument_key(syntax, &self.key_scope(scope)?)
-                .ok_or("original Source header exceeds its syntax bound")?;
-        let mut budget = WorkLimit::new(*work);
-        let direct = crate::sema::source_types::declarations::schema(
-            &raw,
-            self.facts
+        let context = HeaderContext {
+            declarations: &self.facts.external_type_declarations,
+            program: self
+                .facts
+                .source_program
+                .as_deref()
+                .ok_or("original Source header has no program")?,
+            hir: self
+                .facts
                 .semantic_hir
                 .as_deref()
-                .ok_or("original Source header has no canonical HIR")?,
-            &mut budget,
-        );
-        *work = budget.remaining();
-        let recursive = match direct {
-            Ok(schema) => {
-                let mut budget = WorkLimit::new(*work);
-                let cyclic = schema.has_cycles(&mut budget);
-                *work = budget.remaining();
-                match cyclic {
-                    Ok(true) => Some(schema),
-                    Ok(false) => None,
-                    Err(error) => {
-                        return Err(format!("original declaration Source topology: {error}"));
-                    }
-                }
-            }
-            Err(crate::sema::source_types::SourceTypesError::NeedsStaticElaboration) => None,
-            Err(error) => return Err(format!("original declaration Source graph: {error}")),
+                .ok_or("original Source header has no HIR")?,
+            binders: &binders,
+            layout: self
+                .facts
+                .target_layout
+                .ok_or("original Source header has no layout")?,
         };
-        if let Some(schema) = recursive {
-            let selected = self.source_selected_schemas(&environment, work)?;
-            return self.source_substitute_schema(
-                schema.with_original(syntax.hir_id),
-                environment,
-                &selected,
-                work,
-            );
+        let schema = schema_work(work, |budget| {
+            match original_header(syntax, context, budget) {
+                Err(crate::sema::source_types::SourceTypesError::NeedsStaticElaboration) => {
+                    elaborate_original_header(syntax, context, budget)
+                }
+                result => result,
+            }
+        })?;
+        for identity in schema_work(work, |budget| schema.binder_identities(budget))? {
+            if self.facts.generic_binders.contains_key(&identity) {
+                require(
+                    self.input_type_sort(&identity)?,
+                    "original Source used a non-Type coordinate as a Type",
+                )?;
+            } else {
+                *work = work
+                    .checked_sub(self.facts.bound_rows.len())
+                    .ok_or("original Source row identity exceeds its work bound")?;
+                require(self.facts.bound_rows.iter().any(|row| matches!(&row.identity, RowIdentity::Binder(actual) if actual == &identity)),
+                    "original Source has no genuine Type or row identity")?;
+            }
         }
-        let key = self.input_callable_source_key(syntax, scope)?;
-        let selected = self.source_selected_schemas(&environment, work)?;
-        let (schema, environment) = self.source_header_schema(&key, environment, work)?;
-        self.source_substitute_schema(
-            schema.with_original(syntax.hir_id),
-            environment,
-            &selected,
-            work,
-        )
+        Ok((schema, environment))
     }
 
     fn original_source_header_schema(
@@ -274,7 +270,7 @@ impl Replay<'_> {
                     "constant Source differs from its sealed original header",
                 )?;
                 return self
-                    .source_type_header(&original.syntax, &BoundScope::default(), environment, work)
+                    .closed_witness_source_schema(original, environment, work)
                     .map(Some);
             }
             if value.sources.len() == 1 {
@@ -448,16 +444,8 @@ impl Replay<'_> {
         // A sealed closed descriptor is a header ingress, not a projection of
         // a retained graph. Composite/copy/storage paths were handled above.
         if let Some(witness) = &value.source_type_witness {
-            require(
-                witness.validate_closed()
-                    && crate::sema::source_type_validation::resolved_names(
-                        witness,
-                        &self.facts.external_type_declarations,
-                    ),
-                "original closed Source witness is inconsistent or unresolved",
-            )?;
             return self
-                .source_type_header(&witness.syntax, &BoundScope::default(), environment, work)
+                .closed_witness_source_schema(witness, environment, work)
                 .map(Some);
         }
         if matches!(value.ty, Ty::Generic(_)) {
@@ -880,5 +868,72 @@ impl Replay<'_> {
             return Ok(Some((schema, environment)));
         }
         Ok(Some((schema, environment)))
+    }
+}
+
+#[cfg(test)]
+mod closed_ingress_tests {
+    use super::*;
+
+    #[test]
+    fn normalized_closed_witness_does_not_impersonate_an_original_hir_header() {
+        let source = ril_test::case_source(
+            "tests/regressions/source-transport.ril::fresh-tuple-construction",
+        );
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let facts = program.facts();
+        let replay = Replay::new(facts).unwrap();
+        let sites = super::super::super::explicit_named::source_sites_base(facts).unwrap();
+        let written = sites
+            .bindings
+            .iter()
+            .find_map(|site| site.binding.ty.as_ref())
+            .unwrap();
+        let environment = FrozenEnvironment::default();
+        let original = replay
+            .source_type_header(
+                written,
+                &BoundScope::default(),
+                environment.clone(),
+                &mut 16384,
+            )
+            .unwrap();
+        let mut witness = crate::sema::model::SourceTypeWitness {
+            key: crate::static_eval::normalized_argument_key(written),
+            syntax: written.clone(),
+        };
+        witness.syntax.hir_id = None;
+        assert!(
+            replay
+                .source_type_header(
+                    &witness.syntax,
+                    &BoundScope::default(),
+                    environment.clone(),
+                    &mut 16384
+                )
+                .is_err()
+        );
+        let admitted = replay
+            .closed_witness_source_schema(&witness, environment.clone(), &mut 16384)
+            .unwrap();
+        assert!(
+            original
+                .0
+                .equivalent(&admitted.0, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        assert!(
+            replay
+                .closed_witness_source_schema(&witness, environment.clone(), &mut 0)
+                .is_err()
+        );
+        witness.key.push_str("forged");
+        assert!(
+            replay
+                .closed_witness_source_schema(&witness, environment, &mut 16384)
+                .is_err()
+        );
     }
 }

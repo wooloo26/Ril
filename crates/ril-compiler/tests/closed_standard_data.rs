@@ -183,9 +183,44 @@ fn signature_assumptions_are_universal_formals_and_cannot_supply_concrete_data()
     let first = facts
         .copy_invocations
         .iter()
-        .position(|call| call.entry.origin == EntryOrigin::SignatureProbe)
+        .position(|call| matches!(call.entry.origin, EntryOrigin::SignatureProbe(_)))
         .unwrap();
-    for mutation in 0..7 {
+    let core = ril_compiler::lower::lower_core(&program).unwrap();
+    let EntryOrigin::SignatureProbe(source) = &facts.copy_invocations[first].entry.origin else {
+        unreachable!()
+    };
+    let ril_ir::provenance::EntryOrigin::SignatureProbe(retained) =
+        &core.provenance.copy_invocations[first].entry.origin
+    else {
+        unreachable!()
+    };
+    assert_eq!(retained.source, source.source);
+    assert_eq!(retained.path, *source.path);
+    assert!(
+        !source.path.is_empty(),
+        "record callback retains its real field projection"
+    );
+    assert_eq!(retained.formals.len(), source.formals.len());
+    for (retained_formal, formal) in retained.formals.iter().zip(source.formals.iter()) {
+        assert_eq!(retained_formal.slot, formal.slot);
+        assert_eq!(retained_formal.binding as usize, formal.binding);
+        assert_eq!(
+            retained.environment,
+            core.provenance.bindings[formal.binding].typing_environment
+        );
+    }
+    let mut relocated = facts.clone();
+    let EntryOrigin::SignatureProbe(source) = &mut relocated.copy_invocations[first].entry.origin
+    else {
+        unreachable!()
+    };
+    let header = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(source).header);
+    header.span.start = header.span.start.saturating_add(1);
+    assert!(
+        solved_facts(&relocated).is_ok(),
+        "signature header spans are diagnostic locations"
+    );
+    for mutation in 0..16 {
         let mut changed = facts.clone();
         let binding = *changed.copy_invocations[first].entry.arguments[0]
             .1
@@ -224,6 +259,49 @@ fn signature_assumptions_are_universal_formals_and_cannot_supply_concrete_data()
                 .1
                 .nodes
                 .clear(),
+            7 => changed.copy_invocations[first].entry.origin = EntryOrigin::Unresolved,
+            8..16 => {
+                let EntryOrigin::SignatureProbe(source) =
+                    &mut changed.copy_invocations[first].entry.origin
+                else {
+                    unreachable!()
+                };
+                let source = std::sync::Arc::make_mut(source);
+                match mutation {
+                    8 => source.source = ril_compiler_core::ids::TypeExprId(u32::MAX),
+                    9 => source.environment = source.environment.thaw().freeze(),
+                    10 => std::sync::Arc::make_mut(&mut source.formals)[0].slot = u32::MAX,
+                    11 => std::sync::Arc::make_mut(&mut source.formals)[0].binding = usize::MAX,
+                    12 => {
+                        std::sync::Arc::make_mut(&mut source.path).push(
+                            ril_compiler_core::projection::TypeProjection::Field(
+                                "ril__missing".into(),
+                            ),
+                        );
+                    }
+                    13 => {
+                        let header = std::sync::Arc::make_mut(&mut source.header);
+                        header.kind = ril_syntax::ast::TypeKind::Name {
+                            path: vec!["bool".into()],
+                            arguments: Vec::new(),
+                        };
+                    }
+                    14 => {
+                        let header = std::sync::Arc::make_mut(&mut source.header);
+                        let child = match &mut header.kind {
+                            ril_syntax::ast::TypeKind::Name { arguments, .. } => &mut arguments[0],
+                            ril_syntax::ast::TypeKind::Callable { parameters, .. } => {
+                                parameters[0].ty.as_mut().unwrap()
+                            }
+                            ril_syntax::ast::TypeKind::Record { fields, .. } => &mut fields[0].ty,
+                            _ => unreachable!(),
+                        };
+                        child.hir_id = Some(ril_compiler_core::ids::TypeExprId(u32::MAX));
+                    }
+                    15 => std::sync::Arc::make_mut(&mut source.path).clear(),
+                    _ => unreachable!(),
+                }
+            }
             _ => unreachable!(),
         }
         assert!(

@@ -61,6 +61,15 @@ enum Target {
     Named(DefinitionId),
 }
 
+struct EntrySource<'a, 'p, A> {
+    entry: &'a CallableEntry<A>,
+    caller_activation: Option<crate::sema::facts::ScopeId>,
+    target: Target,
+    slot: usize,
+    sites: &'a super::super::explicit_named::SourceSites<'p>,
+    depth: usize,
+}
+
 impl Target {
     fn matches(self, callable: &crate::sema::model::Callable, facts: &SemanticFacts) -> bool {
         match (self, callable) {
@@ -77,7 +86,38 @@ impl Target {
 }
 
 impl Replay<'_> {
-    pub(super) fn inferred_lambda_receipt(
+    fn signature_entry_graph<A: Arguments>(
+        &self,
+        entry: &CallableEntry<A>,
+        work: &mut usize,
+    ) -> Check {
+        let EntryOrigin::SignatureProbe(source) = &entry.origin else {
+            return Ok(());
+        };
+        let scope = super::reception::environment_scope(&source.environment, work)?;
+        let (root, _) =
+            self.source_type_header_raw(&source.header, &scope, source.environment.clone(), work)?;
+        let parameters = super::graph_sources::schema_work(work, |budget| {
+            root.project_steps(&source.path, budget)?
+                .callable_parameters(budget)
+        })?;
+        require(
+            parameters.len() == entry.arguments.len(),
+            "signature entry changed its original graph arity",
+        )?;
+        for (slot, (mode, _)) in parameters.iter().enumerate() {
+            require(
+                entry
+                    .arguments
+                    .argument(slot)
+                    .is_some_and(|(actual, _)| actual == *mode),
+                "signature entry changed its original graph parameter mode",
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::sema::record_bound_validation) fn inferred_lambda_receipt(
         &self,
         call: &ClosureInvocation,
         slot: usize,
@@ -681,36 +721,52 @@ impl Replay<'_> {
         }
     }
 
-    pub(super) fn closure_entry_source_schema(
+    pub(in crate::sema::record_bound_validation) fn closure_entry_source_schema_if_known(
         &self,
         call: &ClosureInvocation,
         slot: usize,
         sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
         depth: usize,
-    ) -> Check<OriginalSource> {
-        self.entry_source_schema(
-            &call.entry,
-            Some(call.caller_activation),
-            Target::Closure(call.closure),
-            slot,
-            sites,
+    ) -> Check<Option<OriginalSource>> {
+        if matches!(call.entry.origin, EntryOrigin::SignatureProbe(_)) {
+            let hir = self
+                .facts
+                .semantic_hir
+                .as_deref()
+                .ok_or("signature closure input has no original HIR")?;
+            let auth = super::graph_sources::schema_work(work, |budget| {
+                crate::sema::application_effect::closure_signature_assumption(
+                    call,
+                    slot,
+                    hir,
+                    &self.facts.bindings,
+                    self.facts.allocation_history.len(),
+                    budget,
+                )
+            })?;
+            let scope = super::reception::environment_scope(auth.environment, work)?;
+            let (root, environment) =
+                self.source_type_header_raw(auth.header, &scope, auth.environment.clone(), work)?;
+            let parameter = super::graph_sources::schema_work(work, |budget| {
+                auth.parameter_schema(&root, budget)
+            })?;
+            let selected = self.source_selected_schemas(&environment, work)?;
+            return self
+                .source_substitute_schema(parameter, environment, &selected, work)
+                .map(Some);
+        }
+        self.entry_source_schema_if_known(
+            EntrySource {
+                entry: &call.entry,
+                caller_activation: Some(call.caller_activation),
+                target: Target::Closure(call.closure),
+                slot,
+                sites,
+                depth,
+            },
             work,
-            depth,
         )
-    }
-
-    pub(super) fn named_entry_source_key(
-        &self,
-        call: &CopyInvocation,
-        slot: usize,
-        sites: &super::super::explicit_named::SourceSites<'_>,
-        work: &mut usize,
-    ) -> Check<ArgumentKey> {
-        self.named_entry_source_schema(call, slot, sites, work)?
-            .0
-            .key()
-            .map_err(|error| format!("legacy named input Source export: {error}"))
     }
 
     pub(super) fn named_entry_source_schema(
@@ -743,6 +799,33 @@ impl Replay<'_> {
         work: &mut usize,
         depth: usize,
     ) -> Check<OriginalSource> {
+        self.entry_source_schema_if_known(
+            EntrySource {
+                entry,
+                caller_activation,
+                target,
+                slot,
+                sites,
+                depth,
+            },
+            work,
+        )?
+        .ok_or_else(|| "callable input has no complete original graph".into())
+    }
+
+    fn entry_source_schema_if_known<A: Arguments>(
+        &self,
+        source: EntrySource<'_, '_, A>,
+        work: &mut usize,
+    ) -> Check<Option<OriginalSource>> {
+        let EntrySource {
+            entry,
+            caller_activation,
+            target,
+            slot,
+            sites,
+            depth,
+        } = source;
         require(
             depth < 64,
             "callable input Source ancestry exceeds its bound",
@@ -757,19 +840,23 @@ impl Replay<'_> {
             let Input::Scalar(kind) = input else {
                 unreachable!()
             };
-            return self.source_header_schema(
-                &ArgumentKey::Name {
-                    name: match kind {
-                        crate::sema::application_effect::ScalarInput::PositiveInt => "int",
-                        crate::sema::application_effect::ScalarInput::ByteSuffix(_)
-                        | crate::sema::application_effect::ScalarInput::BufferedBytes(_) => "bytes",
-                    }
-                    .into(),
-                    arguments: vec![],
-                },
-                FrozenEnvironment::default(),
-                work,
-            );
+            return self
+                .source_header_schema(
+                    &ArgumentKey::Name {
+                        name: match kind {
+                            crate::sema::application_effect::ScalarInput::PositiveInt => "int",
+                            crate::sema::application_effect::ScalarInput::ByteSuffix(_)
+                            | crate::sema::application_effect::ScalarInput::BufferedBytes(_) => {
+                                "bytes"
+                            }
+                        }
+                        .into(),
+                        arguments: vec![],
+                    },
+                    FrozenEnvironment::default(),
+                    work,
+                )
+                .map(Some);
         };
         let syntax = sites
             .expressions
@@ -777,32 +864,43 @@ impl Replay<'_> {
             .ok_or("callable input lost its original indexed expression")?;
         let fact = &self.facts.expressions[observation];
         let context = self.observations.row(observation, work)?.context;
-        let (schema, environment) = self
-            .original_source_schema_inner(
-                syntax,
-                &fact.value,
-                context,
-                sites,
-                work,
-                SourceVisit {
-                    depth: depth + 1,
-                    observation: Some(observation),
-                },
-            )?
-            .ok_or("callable input has no complete original graph")?;
+        let Some((schema, environment)) = self.original_source_schema_inner(
+            syntax,
+            &fact.value,
+            context,
+            sites,
+            work,
+            SourceVisit {
+                depth: depth + 1,
+                observation: Some(observation),
+            },
+        )?
+        else {
+            return Ok(None);
+        };
         if let Some(id) = copy {
             super::graph_sources::schema_work(work, |budget| {
                 schema.copy_view(self.facts.copy_boundaries[id.0 as usize].mode, budget)
             })
-            .map(|schema| (schema, environment))
+            .map(|schema| Some((schema, environment)))
         } else {
-            Ok((schema, environment))
+            Ok(Some((schema, environment)))
         }
     }
 
     pub(in crate::sema::record_bound_validation) fn callable_inputs(&self) -> Check {
         let mut work = 16_000_000usize;
+        let sites = super::super::explicit_named::source_sites_base(self.facts)?;
+        work = work
+            .checked_sub(self.facts.bindings.len())
+            .ok_or("inferred formal coverage work exhausted")?;
+        for (binding, info) in self.facts.bindings.iter().enumerate() {
+            if info.parameter {
+                self.inferred_closure_parameter_schema(binding, &sites, &mut work)?;
+            }
+        }
         for call in &self.facts.closure_invocations {
+            self.signature_entry_graph(&call.entry, &mut work)?;
             if !matches!(
                 call.entry.origin,
                 EntryOrigin::Application(_) | EntryOrigin::Generated { .. }
@@ -820,6 +918,7 @@ impl Replay<'_> {
             }
         }
         for call in &self.facts.copy_invocations {
+            self.signature_entry_graph(&call.entry, &mut work)?;
             if !matches!(
                 call.entry.origin,
                 EntryOrigin::Application(_) | EntryOrigin::Generated { .. }

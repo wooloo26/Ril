@@ -8,10 +8,58 @@ use super::effect_identity::ArgumentKey;
 use ril_syntax::ast::{Expr, ExprKind, RecordMember};
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone)]
+pub(crate) struct TargetSource {
+    pub(crate) header: std::sync::Arc<ril_syntax::ast::TypeExpr>,
+    pub(crate) path: Vec<super::source_types::SourcePath>,
+    pub(crate) environment: super::context::FrozenEnvironment,
+}
+
+impl TargetSource {
+    pub(crate) fn projected(
+        &self,
+        step: super::source_types::SourcePath,
+        work: &mut super::source_types::WorkLimit,
+    ) -> Result<Self, super::source_types::SourceTypesError> {
+        use super::source_types::{SourcePath, SourceTypesError};
+        if self.path.len() >= 64 {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        work.charge(1 + self.path.len())?;
+        for step in self.path.iter().chain(std::iter::once(&step)) {
+            match step {
+                SourcePath::Field(name) => work.text(name)?,
+                SourcePath::RecordRemainder(names) => {
+                    work.charge(names.len())?;
+                    for name in names {
+                        work.text(name)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut path = self.path.clone();
+        path.push(step);
+        Ok(Self {
+            header: self.header.clone(),
+            path,
+            environment: self.environment.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StaticProjectionTarget {
+    pub(crate) key: String,
+    pub(crate) base: super::source_types::SourceSchema,
+}
+
 /// Complete expected source frozen at its real elaboration point.
 /// None retains an unresolved source obligation; it is not an erased fallback.
 #[derive(Debug, Clone)]
 pub(crate) struct Target {
+    pub(crate) source: Option<TargetSource>,
+    pub(crate) static_projection: Option<StaticProjectionTarget>,
     /// The complete interpretation captured before evaluating the incoming
     /// value. Projections retain this same environment identity.
     pub(crate) environment: super::context::FrozenEnvironment,

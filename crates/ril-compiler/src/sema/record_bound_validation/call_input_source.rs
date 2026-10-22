@@ -13,8 +13,12 @@ mod constructor_inputs;
 mod entries;
 #[path = "call_input_source_graph.rs"]
 mod graph_sources;
+#[path = "inferred_parameter_sources.rs"]
+mod inferred_parameters;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
+#[path = "call_input_source_reception.rs"]
+mod reception;
 #[path = "storage_input_source.rs"]
 mod storage_inputs;
 use crate::sema::{
@@ -39,9 +43,9 @@ pub(crate) struct OriginalOperandSources<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct SourceVisit {
-    depth: usize,
-    observation: Option<usize>,
+pub(super) struct SourceVisit {
+    pub(super) depth: usize,
+    pub(super) observation: Option<usize>,
 }
 impl<'a> OriginalOperandSources<'a> {
     pub(crate) fn new(facts: &'a SemanticFacts) -> Check<Self> {
@@ -339,164 +343,6 @@ impl Replay<'_> {
             return Err("operation result has no complete Source signature".into());
         };
         Ok(Some(*result))
-    }
-    fn input_row_equations(
-        &self,
-        raw: &ArgumentKey,
-        actual: &ArgumentKey,
-        selected: &BTreeMap<String, ArgumentKey>,
-        owner: DefinitionId,
-        work: &mut usize,
-        depth: usize,
-    ) -> Check {
-        require(
-            depth < 64 && *work > 0,
-            "call input row equations exceed their source budget",
-        )?;
-        *work -= 1;
-        match (raw, actual) {
-            (
-                ArgumentKey::Record { fields, row },
-                ArgumentKey::Record {
-                    fields: present,
-                    row: actual_tail,
-                },
-            ) => {
-                for (name, _, field) in fields {
-                    if let Some((_, _, value)) = present.iter().find(|(label, _, _)| label == name)
-                    {
-                        self.input_row_equations(field, value, selected, owner, work, depth + 1)?;
-                    }
-                }
-                if let Some(tail) = row
-                    && let ArgumentKey::Binder { identity, .. } = &**tail
-                {
-                    let declarations: Vec<_> = self.facts.bound_rows.iter().filter(|row|
-                        row.definition == owner && matches!(&row.identity, RowIdentity::Binder(actual) if actual == identity)).collect();
-                    if let [declaration] = declarations.as_slice() {
-                        let required: BTreeMap<_, _> = fields
-                            .iter()
-                            .map(|(name, mode, _)| {
-                                let field = present
-                                    .iter()
-                                    .find(|(label, _, _)| label == name)
-                                    .ok_or_else(|| {
-                                        "call input row equation lost a genuine required field"
-                                            .to_owned()
-                                    })?;
-                                require(
-                                    *mode == field.1,
-                                    "call input row equation changed a field mode",
-                                )?;
-                                Ok((name.clone(), (field.1, field.2.clone())))
-                            })
-                            .collect::<Check<_>>()?;
-                        let tail = match actual_tail {
-                            None => RowTail::Closed,
-                            Some(tail) => {
-                                let ArgumentKey::Binder { identity, .. } = &**tail else {
-                                    return Err(
-                                        "call input actual row has no canonical rigid tail".into(),
-                                    );
-                                };
-                                let declarations: Vec<_> = self.facts.bound_rows.iter().filter(|row|
-                                    matches!(&row.identity, RowIdentity::Binder(actual) if actual == identity)).collect();
-                                let [declaration] = declarations.as_slice() else {
-                                    return Err(
-                                        "call input actual row has no unique genuine declaration"
-                                            .into(),
-                                    );
-                                };
-                                RowTail::Open(OpenTail {
-                                    identity: declaration.identity.clone(),
-                                    lacks: declaration.lacks.clone(),
-                                })
-                            }
-                        };
-                        let actual = Row {
-                            fields: present
-                                .iter()
-                                .map(|(name, mode, key)| (name.clone(), (*mode, key.clone())))
-                                .collect(),
-                            tail,
-                        };
-                        let residual = OpenTail {
-                            // Solver-only variable for this equation. Even a
-                            // recursive activation's same declaration UID is
-                            // rigid on the actual/caller side.
-                            identity: RowIdentity::Fresh {
-                                owner: format!("call-source:{}", owner.0),
-                                ordinal: u64::from(declaration.id.0),
-                            },
-                            lacks: declaration.lacks.clone(),
-                        };
-                        let mut solver =
-                            Solver::new("original call input", [residual.identity.clone()]);
-                        if let RowTail::Open(tail) = &actual.tail {
-                            solver
-                                .declare_rigid(tail.identity.clone(), tail.lacks.clone())
-                                .map_err(|_| {
-                                    "call input actual tail changed its genuine rigid role"
-                                        .to_owned()
-                                })?;
-                        }
-                        let remainder = crate::sema::record_bound_shapes::entail(
-                            &mut solver,
-                            &required,
-                            Some(&residual),
-                            &actual,
-                        )
-                        .map_err(|_| {
-                            "call input selected row does not solve its actual source equation"
-                                .to_owned()
-                        })?;
-                        let fields: Vec<_> = remainder
-                            .fields
-                            .into_iter()
-                            .map(|(name, (mode, key))| (name, mode, key))
-                            .collect();
-                        let tail = match remainder.tail {
-                            RowTail::Closed => None,
-                            RowTail::Open(tail) => {
-                                let RowIdentity::Binder(identity) = tail.identity else {
-                                    return Err(
-                                        "call input row equation invented an unregistered tail"
-                                            .into(),
-                                    );
-                                };
-                                Some(Box::new(ArgumentKey::Binder {
-                                    identity,
-                                    sort: StaticBinderSort::Type,
-                                }))
-                            }
-                        };
-                        let remainder = match (fields, tail) {
-                            (fields, Some(tail)) if fields.is_empty() => *tail,
-                            (fields, tail) => ArgumentKey::Record { fields, row: tail },
-                        };
-                        let choice = selected
-                            .get(identity)
-                            .cloned()
-                            .unwrap_or_else(|| (**row.as_ref().unwrap()).clone());
-                        require(
-                            choice == remainder,
-                            "call input closed/open row selection differs from its independently solved actual remainder",
-                        )?;
-                    }
-                }
-            }
-            (ArgumentKey::Tuple(left), ArgumentKey::Tuple(right)) => {
-                for (left, right) in left.iter().zip(right) {
-                    self.input_row_equations(left, right, selected, owner, work, depth + 1)?;
-                }
-            }
-            (
-                ArgumentKey::Array { element: left, .. },
-                ArgumentKey::Array { element: right, .. },
-            ) => self.input_row_equations(left, right, selected, owner, work, depth + 1)?,
-            _ => {}
-        }
-        Ok(())
     }
     fn input_operand_interval(
         &self,
@@ -814,37 +660,6 @@ impl Replay<'_> {
             "Source has multiple matching physical root observations",
         )?;
         Ok(root)
-    }
-
-    /// Receiving an actual empty array needs no invented element Source. Its
-    /// element type comes from this boundary's complete, frozen declaration.
-    /// Opaque/stored values always require their own original Source key.
-    fn input_source_reception(
-        &self,
-        expected: &ArgumentKey,
-        expression: &Expr,
-        value: &Value,
-        context: InvocationContext,
-        sites: &super::explicit_named::SourceSites<'_>,
-        observation: Option<usize>,
-    ) -> Check<Option<ArgumentKey>> {
-        let fresh = source_reception::construction(expression, &mut 4096)
-            .ok_or_else(|| "call input construction Source exceeds its work bound".to_owned())?;
-        if let Some(fits) = source_reception::empty_context(expected, &fresh, &mut 4096) {
-            require(fits, "empty call input differs from its receiving Source")?;
-            return Ok(None);
-        }
-        let actual = match observation {
-            Some(observation) => {
-                self.original_observed_source_key(expression, observation, context, sites)?
-            }
-            None => self.original_source_key(expression, value, context, sites)?,
-        };
-        require(
-            source_reception::compatible(expected, &actual, Some(&fresh), &mut 4096) == Some(true),
-            "call input original whole source does not prove its receiving coordinates",
-        )?;
-        Ok(Some(actual))
     }
 
     fn original_source_key_inner(
@@ -1953,8 +1768,9 @@ impl Replay<'_> {
             };
             run().map_err(|message| (event.span, None, message))?;
         }
+        let mut input_work = 16_000_000usize;
         for call in &self.facts.copy_invocations {
-            let run = || -> Check {
+            let mut run = || -> Check {
                 let function = self.function(call.target)?;
                 if function.syntax.parameters.is_empty() {
                     return Ok(());
@@ -1968,83 +1784,89 @@ impl Replay<'_> {
                 {
                     return Ok(());
                 }
-                if function.syntax.generics.is_empty() {
-                    let scope = self.scope(call.target)?;
-                    let needs = function
-                        .syntax
-                        .parameters
-                        .iter()
-                        .filter_map(|parameter| parameter.ty.as_ref())
-                        .map(|syntax| {
-                            self.input_callable_source_key(syntax, &scope).map(|key| {
-                                source_reception::sensitive(&key, &mut 4096) != Some(false)
-                            })
-                        })
-                        .collect::<Check<Vec<_>>>()?;
-                    if needs.iter().all(|needed| !needed) {
-                        return Ok(());
-                    }
-                }
-                let scope = self.scope(call.target)?;
-                let selected = self.input_selected_keys(call)?;
-                let expected: Vec<_> = function
-                    .syntax
-                    .parameters
+                let schemas = self.named_input_source_schemas(call, &mut input_work)?;
+                let expected = &schemas.expected;
+                input_work = input_work
+                    .checked_sub(expected.len())
+                    .ok_or("call input source obligations exceed their work bound")?;
+                let required = expected
                     .iter()
-                    .map(|parameter| {
-                        parameter.ty.as_ref().map_or(Ok(None), |syntax| {
-                            self.input_parameter_source_key(syntax, &scope)?
-                                .map(|key| input_select_key(&key, &selected, 0))
-                                .transpose()
+                    .map(|source| {
+                        source.as_ref().map_or(Ok(false), |(schema, _)| {
+                            self.input_graph_required(schema, &mut input_work)
                         })
                     })
-                    .collect::<Check<_>>()?;
-                let needs = expected
-                    .iter()
-                    .flatten()
-                    .map(|key| {
-                        source_reception::sensitive(key, &mut 4096)
-                            .ok_or_else(|| "call input formal source is incomplete".to_owned())
-                    })
-                    .collect::<Check<Vec<_>>>()?
-                    .into_iter()
-                    .any(|needed| needed);
-                if !needs {
+                    .collect::<Check<Vec<_>>>()?;
+                if required.iter().all(|required| !required) {
                     return Ok(());
                 }
-                if call.entry.origin == crate::sema::application_effect::EntryOrigin::SignatureProbe
-                {
+                if matches!(
+                    call.entry.origin,
+                    crate::sema::application_effect::EntryOrigin::SignatureProbe(_)
+                ) {
                     require(
                         call.source_event.is_none() && !call.declaration_probe,
                         "signature assumption claimed a physical application",
                     )?;
                     for (slot, expected) in expected.iter().enumerate() {
-                        let Some(expected) = expected else { continue };
-                        if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+                        let Some((expected, _)) = expected else {
+                            continue;
+                        };
+                        if !required[slot] {
                             continue;
                         }
-                        let input = &call
-                            .entry
-                            .arguments
-                            .get(slot)
-                            .ok_or("signature assumption lost its input")?
-                            .1;
-                        let actual = crate::sema::application_effect::signature_assumption(
-                            input,
-                            call.caller_activation,
-                            call.entry.caller_context,
-                            &self.facts.bindings,
-                            &mut 4096,
-                        )
-                        .ok_or("signature input is not its original universal formal")?;
+                        let hir = self
+                            .facts
+                            .semantic_hir
+                            .as_deref()
+                            .ok_or("signature input has no original HIR")?;
+                        let actual = graph_sources::schema_work(&mut input_work, |budget| {
+                            crate::sema::application_effect::signature_assumption(
+                                call,
+                                slot,
+                                hir,
+                                &self.facts.bindings,
+                                self.facts.allocation_history.len(),
+                                budget,
+                            )
+                        })?;
                         require(
-                            source_reception::compatible(
-                                expected,
-                                &actual,
-                                Some(&source_reception::Construction::Opaque),
-                                &mut 4096,
-                            ) == Some(true),
-                            "signature input differs from the original declared source",
+                            function
+                                .syntax
+                                .parameters
+                                .get(slot)
+                                .is_some_and(|parameter| parameter.mode == actual.mode),
+                            "signature input changed its original parameter mode",
+                        )?;
+                        let scope =
+                            reception::environment_scope(actual.environment, &mut input_work)?;
+                        let root = self.source_type_header(
+                            actual.header,
+                            &scope,
+                            actual.environment.clone(),
+                            &mut input_work,
+                        )?;
+                        let actual = (
+                            graph_sources::schema_work(&mut input_work, |budget| {
+                                actual.parameter_schema(&root.0, budget)
+                            })?,
+                            root.1,
+                        );
+                        self.receive_input_source_graph(
+                            expected,
+                            Some(&actual),
+                            &source_reception::Construction::Opaque,
+                            &mut input_work,
+                        )?;
+                        let (raw, _) = schemas.raw[slot]
+                            .as_ref()
+                            .ok_or("signature input lost its original target header")?;
+                        self.input_row_graph_equations(
+                            raw,
+                            &actual.0,
+                            &schemas.selected,
+                            call.target,
+                            &mut input_work,
                         )?;
                     }
                     return Ok(());
@@ -2054,31 +1876,29 @@ impl Replay<'_> {
                     crate::sema::application_effect::EntryOrigin::Generated { .. }
                 ) {
                     for (index, expected) in expected.iter().enumerate() {
-                        let Some(expected) = expected else { continue };
-                        if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+                        let Some((expected, _)) = expected else {
+                            continue;
+                        };
+                        if !required[index] {
                             continue;
                         }
-                        let actual = self.named_entry_source_key(call, index, &sites, &mut 4096)?;
-                        require(
-                            source_reception::compatible(
-                                expected,
-                                &actual,
-                                Some(&source_reception::Construction::Opaque),
-                                &mut 4096,
-                            ) == Some(true),
-                            "generated callable input does not prove its receiving coordinates",
+                        let actual =
+                            self.named_entry_source_schema(call, index, &sites, &mut input_work)?;
+                        self.receive_input_source_graph(
+                            expected,
+                            Some(&actual),
+                            &source_reception::Construction::Opaque,
+                            &mut input_work,
                         )?;
-                        let raw = self.input_callable_source_key(
-                            function.syntax.parameters[index].ty.as_ref().unwrap(),
-                            &scope,
-                        )?;
-                        self.input_row_equations(
-                            &raw,
-                            &actual,
-                            &selected,
+                        let (raw, _) = schemas.raw[index]
+                            .as_ref()
+                            .ok_or("generated input lost its original source header")?;
+                        self.input_row_graph_equations(
+                            raw,
+                            &actual.0,
+                            &schemas.selected,
                             call.target,
-                            &mut 4096,
-                            0,
+                            &mut input_work,
                         )?;
                     }
                     return Ok(());
@@ -2155,16 +1975,16 @@ impl Replay<'_> {
                     "call input supplied tokens have missing or excess actual slots",
                 )?;
                 for (index, expected) in expected.iter().enumerate() {
-                    let Some(expected) = expected else {
+                    let Some((expected, _)) = expected else {
                         continue;
                     };
-                    if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+                    if !required[index] {
                         continue;
                     }
                     let entry = call.entry.arguments.get(index).ok_or_else(|| {
                         "call input entry lacks its original whole argument".to_owned()
                     })?;
-                    let (syntax, original, epoch, source_context) = match preparation
+                    let (syntax, original, epoch, source_context, observation) = match preparation
                         .slots
                         .get(index)
                     {
@@ -2207,7 +2027,13 @@ impl Replay<'_> {
                                 context,
                                 &sites,
                             )?;
-                            (*syntax, &expression.value, token.allocation_epoch, context)
+                            (
+                                *syntax,
+                                &expression.value,
+                                token.allocation_epoch,
+                                context,
+                                token.expression,
+                            )
                         }
                         Some(ArgumentSource::Default(id)) => {
                             require(
@@ -2257,6 +2083,9 @@ impl Replay<'_> {
                                     default_use: Some(*id),
                                     ..default.caller
                                 },
+                                default.result_expression.ok_or(
+                                    "call input default lost its physical result observation",
+                                )?,
                             )
                         }
                         _ => {
@@ -2272,25 +2101,26 @@ impl Replay<'_> {
                         epoch,
                         call.entry.allocation_epoch,
                     )?;
-                    if let Some(actual) = self.input_source_reception(
+                    if let Some(actual) = self.input_source_reception_schema(
                         expected,
-                        syntax,
-                        original,
-                        source_context,
+                        reception::InputSourceOccurrence {
+                            expression: syntax,
+                            value: original,
+                            context: source_context,
+                            observation,
+                        },
                         &sites,
-                        None,
+                        &mut input_work,
                     )? {
-                        let raw = self.input_callable_source_key(
-                            function.syntax.parameters[index].ty.as_ref().unwrap(),
-                            &scope,
-                        )?;
-                        self.input_row_equations(
-                            &raw,
-                            &actual,
-                            &selected,
+                        let (raw, _) = schemas.raw[index]
+                            .as_ref()
+                            .ok_or("call input lost its original source header")?;
+                        self.input_row_graph_equations(
+                            raw,
+                            &actual.0,
+                            &schemas.selected,
                             call.target,
-                            &mut 4096,
-                            0,
+                            &mut input_work,
                         )?;
                     }
                 }
@@ -2313,17 +2143,24 @@ impl Replay<'_> {
             .ok_or_else(|| "public callable input has no actual application".to_owned())?;
         let callee_syntax = application.callee;
         let arguments = &application.operands;
-        let parameters = self.public_input_source_keys(
+        let mut work = 262_144usize;
+        let parameters = self.public_input_source_schemas(
             callee_syntax,
             callee,
             context,
             sites,
             event.callee_expression,
+            &mut work,
         )?;
-        if parameters.iter().all(|key| {
-            key.as_ref()
-                .is_none_or(|key| source_reception::sensitive(key, &mut 4096) == Some(false))
-        }) {
+        let required = parameters
+            .iter()
+            .map(|(_, source)| {
+                source.as_ref().map_or(Ok(false), |(schema, _)| {
+                    self.input_graph_required(schema, &mut work)
+                })
+            })
+            .collect::<Check<Vec<_>>>()?;
+        if required.iter().all(|required| !required) {
             return Ok(());
         }
         let rows: Vec<_> = self
@@ -2362,12 +2199,17 @@ impl Replay<'_> {
             preparation.supplied.len() == written.len(),
             "public callable Source lost or added a supplied operand",
         )?;
-        for (slot, expected) in parameters.iter().enumerate() {
-            let Some(expected) = expected else { continue };
-            if source_reception::sensitive(expected, &mut 4096) == Some(false) {
+        for (slot, (_, expected)) in parameters.iter().enumerate() {
+            let Some((expected, _)) = expected else {
+                continue;
+            };
+            if !required[slot] {
                 continue;
             }
-            let (actual_syntax, value, actual_context) = match preparation.slots.get(slot) {
+            let (actual_syntax, value, actual_context, observation) = match preparation
+                .slots
+                .get(slot)
+            {
                 Some(ArgumentSource::Supplied) => {
                     let actual_syntax = written.get(&slot).ok_or_else(|| {
                         "public callable input lacks its written operand".to_owned()
@@ -2400,7 +2242,7 @@ impl Replay<'_> {
                         "public callable input token borrowed another actual event or slot",
                     )?;
                     self.input_operand_interval(event, slot, token.expression, context, sites)?;
-                    (*actual_syntax, &value.value, context)
+                    (*actual_syntax, &value.value, context, token.expression)
                 }
                 Some(ArgumentSource::Default(id)) => {
                     let default = self
@@ -2448,17 +2290,23 @@ impl Replay<'_> {
                             default_use: Some(*id),
                             ..default.caller
                         },
+                        default.result_expression.ok_or(
+                            "public callable default lost its physical result observation",
+                        )?,
                     )
                 }
                 _ => return Err("public callable input lacks a full-source operand".into()),
             };
-            self.input_source_reception(
+            self.input_source_reception_schema(
                 expected,
-                actual_syntax,
-                value,
-                actual_context,
+                reception::InputSourceOccurrence {
+                    expression: actual_syntax,
+                    value,
+                    context: actual_context,
+                    observation,
+                },
                 sites,
-                None,
+                &mut work,
             )?;
         }
         Ok(())

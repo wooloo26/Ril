@@ -7,6 +7,7 @@ struct Identify<'a> {
     hir: &'a HirProgram,
     left: HirLimits,
     write: bool,
+    validate_ids: bool,
 }
 impl Identify<'_> {
     fn enter(&mut self, depth: usize) -> Result<(), LowerError> {
@@ -187,6 +188,9 @@ impl Identify<'_> {
             self.text(&parameter.name, &expected.name)?;
             self.opt_type(parameter.bound.as_mut(), expected.bound, depth + 1)?;
             self.opt_type(parameter.default.as_mut(), expected.default, depth + 1)?;
+            if self.validate_ids {
+                self.equal(parameter.hir_id == Some(*id))?;
+            }
             if self.write {
                 parameter.hir_id = Some(*id);
             }
@@ -371,6 +375,9 @@ impl Identify<'_> {
                 self.expr(expression, *b, d)?;
             }
             _ => return Err(LowerError::Correspondence),
+        }
+        if self.validate_ids {
+            self.equal(actual.hir_id == Some(id))?;
         }
         if self.write {
             actual.hir_id = Some(id);
@@ -712,6 +719,9 @@ impl Identify<'_> {
             | (ast::ExprKind::Error, ExprKind::Error) => {}
             _ => return Err(LowerError::Correspondence),
         }
+        if self.validate_ids {
+            self.equal(actual.hir_id == Some(id))?;
+        }
         if self.write {
             actual.hir_id = Some(id);
         }
@@ -838,6 +848,9 @@ impl Identify<'_> {
             (ast::TypeKind::Error, TypeKind::Error) => {}
             _ => return Err(LowerError::Correspondence),
         }
+        if self.validate_ids {
+            self.equal(actual.hir_id == Some(id))?;
+        }
         if self.write {
             actual.hir_id = Some(id);
         }
@@ -917,6 +930,9 @@ impl Identify<'_> {
             (ast::PatternKind::Value(a), PatternKind::Value(b)) => self.expr(a, *b, d)?,
             _ => return Err(LowerError::Correspondence),
         }
+        if self.validate_ids {
+            self.equal(actual.hir_id == Some(id))?;
+        }
         if self.write {
             actual.hir_id = Some(id);
         }
@@ -933,6 +949,7 @@ pub(super) fn program(
         hir,
         left: limits,
         write: false,
+        validate_ids: false,
     }
     .statements(&mut source.statements, &hir.roots, 0)?;
     // The only intervening mutation is ID assignment, which the pairing never
@@ -941,6 +958,7 @@ pub(super) fn program(
         hir,
         left: limits,
         write: true,
+        validate_ids: false,
     }
     .statements(&mut source.statements, &hir.roots, 0)
 }
@@ -954,14 +972,61 @@ pub(super) fn expression(
         hir,
         left: limits,
         write: false,
+        validate_ids: false,
     }
     .expr(source, id, 0)?;
     Identify {
         hir,
         left: limits,
         write: true,
+        validate_ids: false,
     }
     .expr(source, id, 0)
+}
+
+pub(super) fn validate_type_syntax(
+    hir: &HirProgram,
+    source: &mut ast::TypeExpr,
+    id: TypeExprId,
+    limits: HirLimits,
+) -> Result<(), LowerError> {
+    Identify {
+        hir,
+        left: limits,
+        write: false,
+        validate_ids: true,
+    }
+    .ty(source, id, 0)
+}
+
+pub(super) fn validate_catalog_declaration(
+    hir: &HirProgram,
+    source: &mut ast::Stmt,
+    id: StmtId,
+    limits: HirLimits,
+) -> Result<(), LowerError> {
+    Identify {
+        hir,
+        left: limits,
+        write: false,
+        validate_ids: false,
+    }
+    .stmt(source, id, 0)
+}
+
+pub(super) fn validate_statement_syntax(
+    hir: &HirProgram,
+    source: &mut ast::Stmt,
+    id: StmtId,
+    limits: HirLimits,
+) -> Result<(), LowerError> {
+    Identify {
+        hir,
+        left: limits,
+        write: false,
+        validate_ids: true,
+    }
+    .stmt(source, id, 0)
 }
 
 #[cfg(test)]

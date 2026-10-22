@@ -105,13 +105,16 @@ duplicate source trees and historical verification reports.
   open rows and qualified callables through inputs, returns, captures, constructors
   and containers, then remove the remaining closed-witness adapters. Replace raw
   callable annotation text with frozen declaration references so composites can
-  retain contracts originating in different lexical environments. Migrate the
-  remaining named/public input checks from legacy keys, and solve pending Source
-  equations before certifying a producing context.
+  retain contracts originating in different lexical environments. Complete mixed
+  static sorts and captured/local aliases, and solve pending Source equations
+  before certifying a producing context.
 - Complete shared value derivations for historical heap reads, callback results
-  and generated constructor inputs. Iterator creation recipes do not certify
-  individual transitions. Finish generated I/O observations, channel payloads,
-  handler activations and resumption transport. Resolve the nine-scope channel replay
+  and generated inputs to parallel workers, scope/channel bodies, iterators,
+  variant/recovery callbacks, resources and foreign calls. Their unmigrated
+  `EntryOrigin::Unresolved` inputs now leave inferred closure parameters
+  uncertified. Iterator creation recipes do not certify individual transitions.
+  Finish channel payloads, handler activations and resumption transport.
+  Resolve the nine-scope channel replay
   case with finite work while preserving unknown guard/history obligations.
 - Implement conditional bindings (`if let`, `while let`) and array/tuple rest
   patterns. Complete record-rest, nested closure/default

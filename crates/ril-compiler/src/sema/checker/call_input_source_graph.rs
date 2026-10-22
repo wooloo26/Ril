@@ -3,6 +3,61 @@
 use super::*;
 
 impl Checker {
+    // The remaining finite closed-witness adapter has its own admission rule.
+    // A witness is not an original HIR header, and must not bypass that
+    // header's identity checks by presenting a missing or normalized ID.
+    fn closed_witness_input_schema(
+        &self,
+        witness: &SourceTypeWitness,
+        environment: FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> InputSource {
+        if !witness.validate_closed() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let key =
+            crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new())
+                .ok_or(SourceTypesError::BudgetExceeded)?;
+        self.input_header_schema(&key, witness.syntax.hir_id, environment, work)
+    }
+
+    pub(super) fn input_original_header_schema(
+        &self,
+        syntax: &TypeExpr,
+        environment: FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> InputSource {
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        work.charge(environment.generic_context.len() + environment.bound_row_context.len())?;
+        for (name, identity) in &environment.generic_context {
+            work.text(name)?;
+            work.text(identity)?;
+        }
+        let mut binders = environment.generic_context.clone();
+        for (name, id) in &environment.bound_row_context {
+            work.text(name)?;
+            let row = self
+                .bound_rows
+                .get(id.0 as usize)
+                .filter(|row| row.id == *id)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let crate::sema::model::rows::RowIdentity::Binder(identity) = &row.identity else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            work.text(identity)?;
+            if binders
+                .insert(name.clone(), identity.clone())
+                .is_some_and(|old| old != *identity)
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+        }
+        let schema = self.original_header_source_schema_in(syntax, &binders, work)?;
+        Ok(Some((schema, environment)))
+    }
+
     pub(in crate::sema::checker) fn original_source_receiving_schema(
         &mut self,
         value: &Value,
@@ -109,14 +164,8 @@ impl Checker {
             if !original.validate_closed() || value.source_type_witness.as_ref() != Some(original) {
                 return Err(SourceTypesError::Unresolved);
             }
-            let key = crate::static_eval::effects::bounded_argument_key(
-                &original.syntax,
-                &BTreeMap::new(),
-            )
-            .ok_or(SourceTypesError::BudgetExceeded)?;
-            return self.input_header_schema(
-                &key,
-                original.syntax.hir_id,
+            return self.closed_witness_input_schema(
+                original,
                 self.capture_typing_environment(),
                 work,
             );
@@ -158,14 +207,8 @@ impl Checker {
             if !witness.validate_closed() {
                 return Err(SourceTypesError::Unresolved);
             }
-            let key = crate::static_eval::effects::bounded_argument_key(
-                &witness.syntax,
-                &BTreeMap::new(),
-            )
-            .ok_or(SourceTypesError::BudgetExceeded)?;
-            return self.input_header_schema(
-                &key,
-                witness.syntax.hir_id,
+            return self.closed_witness_input_schema(
+                witness,
                 self.capture_typing_environment(),
                 work,
             );
@@ -190,39 +233,79 @@ impl Checker {
             }
             if let [Callable::Named(index)] = value.callables.as_slice() {
                 let function = self.functions[*index].clone();
-                if binding.span != function.syntax.span || !function.syntax.generics.is_empty() {
+                if !function.syntax.generics.is_empty() {
                     return Ok(None);
                 }
-                let mut parameters = function.syntax.parameters.clone();
-                for parameter in &mut parameters {
-                    parameter.default = None;
-                }
-                let header = TypeExpr {
-                    hir_id: None,
-                    text: String::new(),
-                    span: syntax.span,
-                    kind: TypeKind::Callable {
-                        parameters,
-                        result: function.syntax.return_type.clone().map(Box::new),
-                        annotations: function.syntax.annotations.clone(),
-                    },
+                work.charge(
+                    1 + function.syntax.parameters.len() + function.syntax.annotations.len(),
+                )?;
+                let declaration = function
+                    .hir_id
+                    .and_then(|id| self.semantic_hir.statement(id))
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let crate::hir::nodes::StmtKind::Function(original) = &declaration.kind else {
+                    return Err(SourceTypesError::Unresolved);
                 };
-                let mut budget = work.remaining();
-                super::super::source_receiving::resolved_symbolic_names(
-                    &header,
-                    &function.typing_environment.generic_context,
-                    &self.types,
-                    &mut budget,
-                    0,
-                )
-                .ok_or(SourceTypesError::Unresolved)?;
-                work.charge(work.remaining() - budget)?;
-                let key = crate::static_eval::effects::bounded_argument_key(
-                    &header,
-                    &function.typing_environment.generic_context,
-                )
-                .ok_or(SourceTypesError::BudgetExceeded)?;
-                return self.input_header_schema(&key, None, function.typing_environment, work);
+                if original.name != function.syntax.name
+                    || original.parameters.len() != function.syntax.parameters.len()
+                    || original.return_type
+                        != function
+                            .syntax
+                            .return_type
+                            .as_ref()
+                            .and_then(|ty| ty.hir_id)
+                    || original.annotations.len() != function.syntax.annotations.len()
+                    || !matches!(binding.value.callables.as_slice(), [Callable::Named(actual)] if actual == index)
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                let environment = function.typing_environment;
+                let mut parameters = Vec::new();
+                for (parameter, original) in
+                    function.syntax.parameters.iter().zip(&original.parameters)
+                {
+                    let Some(header) = parameter.ty.as_ref() else {
+                        return Ok(None);
+                    };
+                    if header.hir_id != original.ty
+                        || parameter.pattern.hir_id != Some(original.pattern)
+                        || parameter.mode != original.mode
+                    {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    let Some((schema, _)) =
+                        self.input_original_header_schema(header, environment.clone(), work)?
+                    else {
+                        return Ok(None);
+                    };
+                    parameters.push((parameter.mode, schema));
+                }
+                let result = if let Some(header) = &function.syntax.return_type {
+                    let Some((schema, _)) =
+                        self.input_original_header_schema(header, environment.clone(), work)?
+                    else {
+                        return Ok(None);
+                    };
+                    schema
+                } else {
+                    SourceSchema::tuple(&[], None, work)?
+                };
+                let mut annotations = Vec::new();
+                for (annotation, original) in function
+                    .syntax
+                    .annotations
+                    .iter()
+                    .zip(&original.annotations)
+                {
+                    work.text(&annotation.text)?;
+                    if annotation.kind != original.kind || annotation.text != original.text {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    annotations.push(annotation.text.replace(' ', ""));
+                }
+                let schema =
+                    SourceSchema::callable(&parameters, &result, &annotations, None, work)?;
+                return Ok(Some((schema, environment)));
             }
         }
         if let Some(source) =

@@ -1,6 +1,6 @@
 //! Evaluation ancestry and original callable inputs retained through Core.
 use super::*;
-use ril_compiler_core::ids::{ActivationEpochId, EvaluationOccurrenceId, ExprId};
+use ril_compiler_core::ids::{ActivationEpochId, EvaluationOccurrenceId, ExprId, TypeExprId};
 
 #[derive(Debug, Clone)]
 pub struct ScopeRecord {
@@ -66,6 +66,20 @@ pub enum ScalarInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureFormal {
+    pub slot: u32,
+    pub binding: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureProbeSource {
+    pub source: TypeExprId,
+    pub path: Vec<ril_compiler_core::projection::TypeProjection>,
+    pub environment: FrozenEnvironmentId,
+    pub formals: Vec<SignatureFormal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryOrigin {
     Application(CopyCallEventId),
     Generated {
@@ -74,7 +88,7 @@ pub enum EntryOrigin {
         inputs: Vec<InputOrigin>,
     },
     DeclarationProbe,
-    SignatureProbe,
+    SignatureProbe(SignatureProbeSource),
     Unresolved,
 }
 

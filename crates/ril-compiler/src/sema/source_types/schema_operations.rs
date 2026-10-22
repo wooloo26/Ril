@@ -6,6 +6,7 @@ use ril_syntax::ast::ParameterMode;
 use std::collections::{BTreeMap, BTreeSet};
 
 type CallableParts = (Vec<(ParameterMode, SourceSchema)>, SourceSchema);
+type RecordParts = (Vec<(String, bool, SourceSchema)>, Option<SourceSchema>);
 
 fn annotation_environment(
     annotations: &[String],
@@ -112,6 +113,7 @@ impl SourceSchema {
     /// Topology only: an actual backedge is different from a shared acyclic
     /// child. Complete the bounded walk even after finding a cycle so another
     /// bad edge or exhausted budget cannot be hidden behind that backedge.
+    #[cfg(test)]
     pub(crate) fn has_cycles(&self, work: &mut WorkLimit) -> Result<bool, SourceTypesError> {
         work.charge(1)?;
         let mut pending = vec![(self.root, false)];
@@ -564,6 +566,65 @@ impl SourceSchema {
         }
     }
 
+    /// Flatten only the row spine. Field views and a final rigid tail retain
+    /// their exact nodes in this original arena, including recursive members.
+    pub(crate) fn record_parts(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Option<RecordParts>, SourceTypesError> {
+        super::super::reception::complete(&self.types, self.root, work)?;
+        let mut cursor = self.read_root(work)?;
+        let mut seen = BTreeSet::new();
+        let mut fields = BTreeMap::new();
+        let tail = loop {
+            work.charge(1)?;
+            cursor = self.types.unalias(cursor, work)?;
+            if !seen.insert(cursor) {
+                return Err(SourceTypesError::RowCycle);
+            }
+            let node = self.types.get(cursor)?;
+            node.charge(work)?;
+            match node {
+                SourceNode::Record { fields: next, row } => {
+                    for field in next {
+                        work.charge(1)?;
+                        if fields
+                            .insert(field.label.as_str(), (field.mutable, field.value))
+                            .is_some()
+                        {
+                            return Err(SourceTypesError::DuplicateField);
+                        }
+                    }
+                    let Some(row) = row else { break None };
+                    cursor = *row;
+                }
+                SourceNode::Binder(_) if seen.len() > 1 => {
+                    break Some(Self::frozen_view(&self.types, cursor, self.original, work)?);
+                }
+                SourceNode::Binder(_)
+                | SourceNode::OpaqueName { .. }
+                | SourceNode::StaticValue(_)
+                | SourceNode::OpaqueComputation(_)
+                | SourceNode::Unresolved { .. } => return Err(SourceTypesError::Unresolved),
+                _ if seen.len() == 1 => return Ok(None),
+                _ => return Err(SourceTypesError::Unresolved),
+            }
+        };
+        work.charge(fields.len())?;
+        let fields = fields
+            .into_iter()
+            .map(|(label, (mutable, root))| {
+                work.text(label)?;
+                Ok((
+                    label.to_owned(),
+                    mutable,
+                    Self::frozen_view(&self.types, root, self.original, work)?,
+                ))
+            })
+            .collect::<Result<_, SourceTypesError>>()?;
+        Ok(Some((fields, tail)))
+    }
+
     pub(crate) fn callable_parts(
         &self,
         work: &mut WorkLimit,
@@ -746,6 +807,244 @@ mod tests {
         let mut builder = SourceBuilder::new().unwrap();
         let root = builder.insert(SourceNode::Scalar(kind), &mut work).unwrap();
         freeze(builder, root, Some(TypeExprId(17)), &mut work).unwrap()
+    }
+
+    #[test]
+    fn record_parts_flatten_alias_rows_without_changing_original_node_identities() {
+        let mut work = WorkLimit::new(16384);
+        let mut builder = SourceBuilder::new().unwrap();
+        let integer = builder
+            .insert(SourceNode::Scalar(SourceScalar::Int), &mut work)
+            .unwrap();
+        let inner = builder
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(3),
+                    element: integer,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let empty = builder
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(0),
+                    element: inner,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let tail = builder
+            .insert(SourceNode::Binder("actual:R".into()), &mut work)
+            .unwrap();
+        let rest = builder
+            .insert(
+                SourceNode::Record {
+                    fields: vec![SourceField {
+                        label: "tail_field".into(),
+                        mutable: true,
+                        value: integer,
+                    }],
+                    row: Some(tail),
+                },
+                &mut work,
+            )
+            .unwrap();
+        let rest = builder
+            .insert(
+                SourceNode::Alias {
+                    declaration: "original:row".into(),
+                    target: rest,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let root = builder
+            .insert(
+                SourceNode::Record {
+                    fields: vec![SourceField {
+                        label: "head".into(),
+                        mutable: false,
+                        value: empty,
+                    }],
+                    row: Some(rest),
+                },
+                &mut work,
+            )
+            .unwrap();
+        let root = builder
+            .insert(
+                SourceNode::Alias {
+                    declaration: "original:record".into(),
+                    target: root,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let root = builder
+            .insert(
+                SourceNode::Container {
+                    kind: SourceContainer::Immutable,
+                    arguments: vec![root],
+                },
+                &mut work,
+            )
+            .unwrap();
+        let unrelated = builder
+            .insert(SourceNode::Scalar(SourceScalar::Bool), &mut work)
+            .unwrap();
+        let source = freeze(builder, root, Some(TypeExprId(37)), &mut work).unwrap();
+        let (fields, remainder) = source.record_parts(&mut work).unwrap().unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_eq!((fields[0].0.as_str(), fields[0].1), ("head", false));
+        assert_eq!(fields[0].2.root_id(), empty);
+        assert_eq!((fields[1].0.as_str(), fields[1].1), ("tail_field", true));
+        assert_eq!(fields[1].2.root_id(), integer);
+        let remainder = remainder.unwrap();
+        assert_eq!(remainder.root_id(), tail);
+        assert_eq!(remainder.original(), source.original());
+        assert_eq!(
+            remainder.bare_binder_identity(&mut work).unwrap(),
+            Some("actual:R".into())
+        );
+        assert_eq!(source.view_at(empty, &mut work).unwrap().root_id(), empty);
+        assert_eq!(
+            source.view_at(unrelated, &mut work).unwrap_err(),
+            SourceTypesError::MissingProjection
+        );
+        assert_eq!(
+            source
+                .view_at(scalar(SourceScalar::Int).root_id(), &mut work)
+                .unwrap_err(),
+            SourceTypesError::ForeignIdentity
+        );
+        let excluded = BTreeSet::from(["head".into(), "tail_field".into()]);
+        let remainder = source.record_remainder(&excluded, &mut work).unwrap();
+        assert_eq!(remainder.root_id(), tail);
+        assert_eq!(remainder.original(), source.original());
+        assert!(matches!(
+            source.record_parts(&mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(matches!(
+            source.view_at(empty, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+    }
+
+    #[test]
+    fn record_parts_reject_duplicate_fields_and_circular_or_poisoned_rows() {
+        let mut work = WorkLimit::new(16384);
+        let inner = SourceSchema::record(
+            &[("same".into(), false, scalar(SourceScalar::Int))],
+            None,
+            None,
+            &mut work,
+        )
+        .unwrap();
+        let duplicate = SourceSchema::record(
+            &[("same".into(), true, scalar(SourceScalar::Bool))],
+            Some(&inner),
+            None,
+            &mut work,
+        )
+        .unwrap();
+        assert_eq!(
+            duplicate.record_parts(&mut work).unwrap_err(),
+            SourceTypesError::DuplicateField
+        );
+        assert_eq!(
+            duplicate
+                .record_remainder(&BTreeSet::new(), &mut work)
+                .unwrap_err(),
+            SourceTypesError::DuplicateField
+        );
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder.reserve(&mut work).unwrap();
+        builder
+            .define(
+                root,
+                SourceNode::Record {
+                    fields: vec![],
+                    row: Some(root),
+                },
+                &mut work,
+            )
+            .unwrap();
+        let cycle = freeze(builder, root, None, &mut work).unwrap();
+        assert_eq!(
+            cycle.record_parts(&mut work).unwrap_err(),
+            SourceTypesError::RowCycle
+        );
+        for poison in [
+            SourceNode::OpaqueComputation("unknown row".into()),
+            SourceNode::Unresolved {
+                description: "missing row".into(),
+                arguments: vec![],
+            },
+            SourceNode::OpaqueName {
+                name: "unresolved nominal row".into(),
+                arguments: vec![],
+            },
+            SourceNode::Scalar(SourceScalar::Int),
+        ] {
+            let mut builder = SourceBuilder::new().unwrap();
+            let root = builder.insert(poison, &mut work).unwrap();
+            let row = freeze(builder, root, None, &mut work).unwrap();
+            let record = SourceSchema::record(&[], Some(&row), None, &mut work).unwrap();
+            assert_eq!(
+                record.record_parts(&mut work).unwrap_err(),
+                SourceTypesError::Unresolved
+            );
+        }
+        assert!(
+            scalar(SourceScalar::Int)
+                .record_parts(&mut work)
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            binder("actual:Unknown").record_parts(&mut work),
+            Err(SourceTypesError::Unresolved)
+        ));
+        let poison = SourceSchema::import(
+            &ArgumentKey::Closed("unknown element".into()),
+            None,
+            &mut work,
+        )
+        .unwrap();
+        let incomplete =
+            SourceSchema::array(SourceLength::Dynamic, &poison, None, &mut work).unwrap();
+        assert!(matches!(
+            incomplete.record_parts(&mut work),
+            Err(SourceTypesError::Unresolved)
+        ));
+    }
+
+    #[test]
+    fn record_parts_keep_recursive_members_as_original_graph_views() {
+        let source = recursive(3);
+        let mut work = WorkLimit::new(4096);
+        let (fields, tail) = source.record_parts(&mut work).unwrap().unwrap();
+        assert!(tail.is_none());
+        assert_eq!(fields[0].0, "again");
+        assert_eq!(fields[0].2.root_id(), source.root_id());
+        assert_eq!(fields[0].2.original(), source.original());
+        assert_eq!(fields[1].0, "empty");
+        assert!(fields[1].1);
+        let (length, inner) = fields[1].2.array_parts(&mut work).unwrap().unwrap();
+        assert_eq!(length, SourceLength::Fixed(0));
+        assert_eq!(
+            inner.array_parts(&mut work).unwrap().unwrap().0,
+            SourceLength::Fixed(3)
+        );
+        assert!(source.key().is_err());
+        let remainder = source
+            .record_remainder(&BTreeSet::from(["empty".into()]), &mut work)
+            .unwrap();
+        let (remaining, _) = remainder.record_parts(&mut work).unwrap().unwrap();
+        assert_eq!(remaining[0].0, "again");
+        assert!(remaining[0].2.equivalent(&source, &mut work).unwrap());
     }
 
     #[test]

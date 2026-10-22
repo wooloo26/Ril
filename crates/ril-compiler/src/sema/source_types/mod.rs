@@ -16,6 +16,7 @@ mod retained;
 mod schema;
 mod selection;
 pub(crate) mod standard_data;
+mod standard_views;
 mod substitution;
 mod syntax_projection;
 

@@ -68,6 +68,7 @@ fn read(mut reader: Reader, maximum: int) -> Result<Io::ReadChunk, Io::IoError> 
 }
 pub fn test_native() {
     let mut reader = Reader.{scratch: [], calls: 0}
+    let _: Io::ReadOps<Reader> = .{read: read}
     assert(Io::read_all(mut reader, .{read: read}) is Ok(b""))
     assert(Io::read_all(mut reader, .{read: read}) is Ok(b""))
     assert(reader.calls == 2)

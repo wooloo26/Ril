@@ -39,6 +39,42 @@ impl Replay<'_> {
             .scopes
             .get(&info.owner)
             .ok_or("formal Source declaration has no actual receiver frame")?;
+        if matches!(scope_record.origin, ScopeOrigin::Closure(_)) {
+            let fact = self
+                .facts
+                .expressions
+                .get(observation)
+                .ok_or("lambda formal read is absent")?;
+            self.parameter_declaration_context(root_ast, &fact.value, context, Some(observation))?;
+            let sites = super::explicit_named::source_sites_base(self.facts)?;
+            if let Some(source) = header_work(work, |remaining| {
+                self.inferred_closure_parameter_schema(binding, &sites, remaining)
+            })? {
+                return Ok(source);
+            }
+            let expected = header_work(work, |remaining| {
+                self.lambda_formal_source_schema(
+                    root_ast,
+                    &fact.value,
+                    context,
+                    &sites,
+                    remaining,
+                    super::call_input_source::SourceVisit {
+                        depth: 0,
+                        observation: Some(observation),
+                    },
+                )
+            })?;
+            require(
+                self.facts.source_types.validate_binding_schema(
+                    binding,
+                    Some(&expected.0),
+                    expected.1.id(),
+                ),
+                "written lambda formal differs from its original admitted Source",
+            )?;
+            return Ok(Some(expected));
+        }
         let ScopeOrigin::Named(instance) = scope_record.origin else {
             // Operation arms can retain an enclosing Function owner in their
             // context. Their signatures come from the operation receiver.
@@ -224,7 +260,7 @@ mod tests {
 
     #[test]
     fn const_formal_header_admits_a_static_value_without_waiving_opaque_computations() {
-        use crate::sema::source_types::SourceTypesError;
+        use crate::sema::source_types::{SourceNode, SourceTypesError};
         let source = ril_test::case_source(
             "tests/regressions/source-transport.ril::const-nominal-formal-source-graph",
         );
@@ -249,10 +285,18 @@ mod tests {
                 &mut 16384,
             )
             .unwrap();
-        let normalized = schema.key().unwrap();
-        assert!(matches!(normalized,
-            ArgumentKey::Name { ref name, ref arguments }
-                if name == "Token" && matches!(arguments.as_slice(), [ArgumentKey::Closed(_)])));
+        let TypeKind::Name { path, .. } = &syntax.kind else {
+            panic!("the fixture must retain its actual nominal header")
+        };
+        let arguments = schema
+            .opaque_arguments(&path.join("::"), 1, &mut WorkLimit::new(4096))
+            .unwrap()
+            .unwrap();
+        let (types, root) = arguments[0].graph();
+        assert!(matches!(
+            types.get(root).unwrap(),
+            SourceNode::StaticValue(_)
+        ));
         assert!(
             schema
                 .equivalent(&schema, &mut WorkLimit::new(4096))

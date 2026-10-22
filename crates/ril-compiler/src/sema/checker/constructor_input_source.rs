@@ -94,7 +94,97 @@ impl Checker {
         let Some(constructor) = self.constructors.get(name).cloned() else {
             return false;
         };
-        let Some(payload) = constructor.payload_syntax else {
+        let interpreted = if let Some(written) = constructor.source_syntax.as_deref() {
+            match self.declared_constructor_instance_source(
+                written,
+                &constructor.typing_environment,
+                &mut WorkLimit::new(16384),
+            ) {
+                Ok(mut instance) => match instance.payloads.remove(&constructor.tag) {
+                    Some(payload) => payload.map(|payload| (payload.syntax, payload.schema)),
+                    None => {
+                        self.unsupported(
+                            constructor.span,
+                            "constructor instance excludes its original payload tag",
+                        );
+                        return false;
+                    }
+                },
+                Err(error) => {
+                    self.unsupported(
+                        constructor.span,
+                        format!("constructor declaration instance source failed: {error}"),
+                    );
+                    return false;
+                }
+            }
+        } else if let Some((family, payload)) =
+            crate::sema::source_types::standard_data::constructor_payload(&constructor.tag)
+        {
+            let mut work = WorkLimit::new(16384);
+            let source = (|| {
+                if constructor.nominal
+                    || !constructor.has_payload
+                    || !matches!(&constructor.owner, Ty::Named(name) if name == family.name())
+                    || constructor.typing_environment.is_poisoned()
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                let syntax = payload.syntax(constructor.span, &mut work)?;
+                let actual = constructor
+                    .payload_syntax
+                    .as_ref()
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let canonical =
+                    crate::static_eval::effects::bounded_argument_key(&syntax, &BTreeMap::new())
+                        .ok_or(SourceTypesError::BudgetExceeded)?;
+                let actual =
+                    crate::static_eval::effects::bounded_argument_key(actual, &BTreeMap::new())
+                        .ok_or(SourceTypesError::BudgetExceeded)?;
+                if actual != canonical {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                let (types, root) = payload.graph(&mut work)?;
+                let schema = SourceSchema::copy_from(&types, root, None, &mut work)?;
+                Ok((syntax, schema))
+            })();
+            match source {
+                Ok(source) => Some(source),
+                Err(error) => {
+                    self.unsupported(
+                        constructor.span,
+                        format!("canonical constructor payload source failed: {error}"),
+                    );
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        let mut declared_graphs = None;
+        let interpreted_syntax = if let Some((syntax, schema)) = interpreted {
+            let graphs = if args.len() == 1 {
+                vec![schema]
+            } else {
+                match schema.tuple_parts(&mut WorkLimit::new(16384)) {
+                    Ok(Some(items)) if items.len() == args.len() => items,
+                    Ok(_) => return true,
+                    Err(error) => {
+                        self.unsupported(
+                            constructor.span,
+                            format!("constructor tuple payload source failed: {error}"),
+                        );
+                        return false;
+                    }
+                }
+            };
+            declared_graphs = Some(graphs);
+            Some(syntax)
+        } else {
+            None
+        };
+        let declared_payload = interpreted_syntax.or_else(|| constructor.payload_syntax.clone());
+        let Some(payload) = declared_payload else {
             if args.is_empty() {
                 return true;
             }
@@ -111,7 +201,39 @@ impl Checker {
         };
         let mut valid = true;
         for (slot, (syntax, (_, value, span))) in syntax.iter().zip(args).enumerate() {
-            let target = self.freeze_source_receiving_target(syntax);
+            let target = if let Some(graphs) = &declared_graphs {
+                let Some(schema) = graphs.get(slot) else {
+                    return false;
+                };
+                let sensitivity = match schema.sensitivity(&mut WorkLimit::new(16384)) {
+                    crate::sema::source_types::SourceSensitivity::Absent { .. } => {
+                        source_reception::SchemaSensitivity::NotRequired
+                    }
+                    crate::sema::source_types::SourceSensitivity::Sensitive { .. }
+                    | crate::sema::source_types::SourceSensitivity::Unknown {
+                        reason: SourceTypesError::Unresolved,
+                    } => source_reception::SchemaSensitivity::Required,
+                    crate::sema::source_types::SourceSensitivity::Unknown { reason } => {
+                        self.unsupported(
+                            *span,
+                            format!("constructor payload Source query failed: {reason}"),
+                        );
+                        return false;
+                    }
+                };
+                source_reception::Target {
+                    environment: constructor.typing_environment.clone(),
+                    span: syntax.span,
+                    schema: Some(schema.clone()),
+                    syntax: Some(std::sync::Arc::new(syntax.clone())),
+                    empty_array_context: None,
+                    sensitivity,
+                    source: None,
+                    static_projection: None,
+                }
+            } else {
+                self.freeze_source_receiving_target(syntax)
+            };
             if target.sensitivity == source_reception::SchemaSensitivity::NotRequired {
                 continue;
             }

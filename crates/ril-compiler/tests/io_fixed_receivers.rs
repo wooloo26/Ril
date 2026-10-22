@@ -197,6 +197,26 @@ fn receiver_result_debts_require_the_actual_callback_to_inspect_them() {
     ril_compiler::lower::lower_core(&verified).unwrap();
 }
 
+#[test]
+fn empty_writes_still_check_the_actual_callbacks_capture_contract() {
+    let source = ril_test::case_bytes("tests/regressions/io.ril::io-callback-empty-write-capture");
+    for layout in ["pointer32", "pointer64"] {
+        let outcome = Session::with_options(
+            source.to_vec(),
+            ril_compiler::CheckOptions {
+                target: layout.into(),
+                ..Default::default()
+            },
+        )
+        .check();
+        assert!(
+            matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+            if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0534")),
+            "{layout}: {outcome:?}"
+        );
+    }
+}
+
 fn rejects(source: &str, code: &str) {
     let outcome = Session::new(source.as_bytes().to_vec()).check();
     assert!(

@@ -7,6 +7,16 @@ fn example(){let first=leaf(1);let second=leaf(first);assert(second==1)}
 --@ end-file
 --@ end-case
 
+--@ case: generic-source-observation-fixture
+--@ mode: check-pass
+--@ spec: SPEC#type-identity-and-subtyping
+--@ file: source.ril no-final-newline
+fn owner<U>(value:U)->U{value}
+fn other<V>(other:V){}
+fn keys<T,K:keyof T>(record:T,key:K){}
+--@ end-file
+--@ end-case
+
 --@ case: call-result-never-root
 --@ mode: check-pass
 --@ spec: SPEC#type-identity-and-subtyping

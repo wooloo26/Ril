@@ -12,5 +12,7 @@ pub enum TypeProjection {
     OptionalPayload,
     ResultSuccess,
     ResultError,
+    CallableParameter(u32),
+    CallableResult,
     RecordRemainder(BTreeSet<String>),
 }

@@ -107,7 +107,7 @@ pub enum EntryOrigin {
         inputs: Vec<InputOrigin>,
     },
     DeclarationProbe,
-    SignatureProbe,
+    SignatureProbe(Arc<super::SignatureProbeSource>),
     /// An unmigrated generated entry retains an explicit source obligation.
     Unresolved,
 }
@@ -127,121 +127,11 @@ impl super::ApplicationEffectDomain {
     pub(crate) fn snapshot_origin(&mut self, origin: &EntryOrigin) -> Option<EntryOrigin> {
         let cost = match origin {
             EntryOrigin::Generated { inputs, .. } => inputs.len() + 1,
+            EntryOrigin::SignatureProbe(_) => 1,
             _ => 0,
         };
         self.admit(cost).then(|| origin.clone())
     }
-}
-
-/// Universal signature inputs are type assumptions, never observations of a
-/// program value. Admit only the original, unconstrained formal graph in its
-/// hypothetical caller; all receiving coordinates still come from the header.
-pub(crate) fn signature_assumption(
-    input: &crate::sema::copy_contract::CopyValueSnapshot,
-    scope: Option<crate::sema::facts::ScopeId>,
-    context: super::InvocationContext,
-    bindings: &[crate::sema::model::BindingInfo],
-    work: &mut usize,
-) -> Option<crate::sema::effect_identity::ArgumentKey> {
-    use crate::sema::{
-        facts::OriginKind,
-        model::{Callable, Constant, Ty},
-    };
-    *work = work.checked_sub(1 + input.nodes.len() + input.relations.len())?;
-    if input.relations.iter().any(|(left, right, relation)| {
-        left != right
-            && (relation.equal == crate::sema::relations::Condition::TRUE
-                || relation.disjoint == crate::sema::relations::Condition::TRUE)
-    }) {
-        return None;
-    }
-    if context.owner.is_some() || input.value.sources.len() != 1 {
-        return None;
-    }
-    let id = *input.value.sources.first()?;
-    let binding = bindings.get(id)?;
-    let source = input.value.source_type_witness.as_deref()?;
-    let declared = binding.value.source_type_witness.as_deref()?;
-    if !binding.parameter
-        || binding.pattern.is_some()
-        || Some(binding.owner) != scope
-        || binding.context != context
-        || !binding.forwarded.is_empty()
-        || !source.validate_closed()
-        || !declared.validate_closed()
-        || binding.value.origins.nodes != input.value.origins.nodes
-    {
-        return None;
-    }
-    let mut values = vec![&input.value];
-    let nodes: std::collections::BTreeSet<_> = input.nodes.iter().map(|node| node.origin).collect();
-    if nodes.len() != input.nodes.len() {
-        return None;
-    }
-    for node in &input.nodes {
-        if !matches!(node.fact.kind, OriginKind::Formal(_)) {
-            return None;
-        }
-        *work = work.checked_sub(node.fields.len())?;
-        let mut slots = std::collections::BTreeSet::new();
-        if node.fact.fields.len() != node.fields.len() {
-            return None;
-        }
-        for (slot, value) in &node.fields {
-            if !slots.insert(slot) || node.fact.fields.get(slot) != Some(&value.origins.nodes) {
-                return None;
-            }
-        }
-        values.extend(node.fields.iter().map(|(_, value)| value));
-    }
-    while let Some(value) = values.pop() {
-        *work = work.checked_sub(6 + value.variant_witnesses.len())?;
-        *work = work.checked_sub(value.origins.nodes.len())?;
-        if !value.origins.nodes.is_subset(&nodes) {
-            return None;
-        }
-        if value.constant.is_some()
-            && !(value.constant == Some(Constant::Unit) && value.ty == Ty::Unit)
-            || value.construction
-            || value.marker
-            || value.retention_result
-            || value.option_tag.is_some()
-            || value.result_tag.is_some()
-            || value.variant_tag.is_some()
-            || value.static_coordinate.is_some()
-            || !value.scoped.is_empty()
-            || value
-                .callables
-                .iter()
-                .any(|callable| !matches!(callable, Callable::Symbolic(..)))
-        {
-            return None;
-        }
-        values.extend(
-            [
-                &value.option_payload,
-                &value.result_payload,
-                &value.result_success,
-                &value.result_error,
-                &value.variant_payload,
-            ]
-            .into_iter()
-            .flatten()
-            .map(Box::as_ref),
-        );
-        values.extend(value.variant_witnesses.values().map(Box::as_ref));
-    }
-    let key = crate::static_eval::effects::bounded_argument_key(
-        &source.syntax,
-        &std::collections::BTreeMap::new(),
-    )?;
-    let declared = crate::static_eval::effects::bounded_argument_key(
-        &declared.syntax,
-        &std::collections::BTreeMap::new(),
-    )?;
-    crate::sema::source_reception::complete(&key, work)?;
-    crate::sema::source_reception::complete(&declared, work)?;
-    (key == declared).then_some(key)
 }
 
 pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
@@ -350,6 +240,58 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                 "callable entry changed its original inputs, modes or caller context".into(),
             );
         }
+        let mut source_work = crate::sema::source_types::WorkLimit::new(work);
+        if let EntryOrigin::SignatureProbe(source) = &entry.origin {
+            if !call.probe
+                || call.source_event.is_some()
+                || entry.arguments.len() != source.formals.len()
+            {
+                return Err("signature closure entry changed its original role or arity".into());
+            }
+            source
+                .validate(
+                    facts
+                        .semantic_hir
+                        .as_deref()
+                        .ok_or("signature entry lost its original HIR")?,
+                    &mut source_work,
+                )
+                .map_err(|error| format!("signature closure header failed: {error}"))?;
+        }
+        for (slot, (mode, argument, _)) in entry.arguments.iter().enumerate() {
+            if let EntryOrigin::SignatureProbe(source) = &entry.origin {
+                source
+                    .authenticate(
+                        slot,
+                        super::signature_inputs::SignatureInput {
+                            value: argument,
+                            mode: *mode,
+                            scope: Some(call.caller_activation),
+                            context: entry.caller_context,
+                        },
+                        facts
+                            .semantic_hir
+                            .as_deref()
+                            .ok_or("signature entry lost its original HIR")?,
+                        &facts.bindings,
+                        &mut source_work,
+                    )
+                    .map_err(|error| {
+                        format!("signature closure input lost its original header: {error}")
+                    })?;
+            } else if super::signature_inputs::requires_signature_origin(
+                argument,
+                Some(call.caller_activation),
+                entry.caller_context,
+                &facts.bindings,
+                &mut source_work,
+            )
+            .map_err(|error| format!("signature closure input role failed: {error}"))?
+            {
+                return Err("universal closure input lost its signature entry source".into());
+            }
+        }
+        work = source_work.remaining();
         match &entry.origin {
             EntryOrigin::Application(event) => {
                 let event = facts
@@ -397,7 +339,7 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                 }
                 generated.insert((*anchor, call.closure));
             }
-            EntryOrigin::DeclarationProbe | EntryOrigin::SignatureProbe => {
+            EntryOrigin::DeclarationProbe | EntryOrigin::SignatureProbe(_) => {
                 if !call.probe {
                     return Err("declaration entry claimed an actual invocation".into());
                 }
@@ -469,6 +411,54 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                 "named callable entry changed its original input modes or caller context".into(),
             );
         }
+        let mut source_work = crate::sema::source_types::WorkLimit::new(work);
+        if let EntryOrigin::SignatureProbe(source) = &entry.origin {
+            if call.source_event.is_some()
+                || call.declaration_probe
+                || call.caller_owner.is_some()
+                || entry.arguments.len() != source.formals.len()
+            {
+                return Err("signature named entry changed its original role or arity".into());
+            }
+            source
+                .validate(
+                    facts
+                        .semantic_hir
+                        .as_deref()
+                        .ok_or("signature entry lost its original HIR")?,
+                    &mut source_work,
+                )
+                .map_err(|error| format!("signature named header failed: {error}"))?;
+        }
+        for (slot, (_, argument)) in entry.arguments.iter().enumerate() {
+            if matches!(entry.origin, EntryOrigin::SignatureProbe(_)) {
+                super::signature_assumption(
+                    call,
+                    slot,
+                    facts
+                        .semantic_hir
+                        .as_deref()
+                        .ok_or("signature entry lost its original HIR")?,
+                    &facts.bindings,
+                    facts.allocation_history.len(),
+                    &mut source_work,
+                )
+                .map_err(|error| {
+                    format!("signature named input lost its original header: {error}")
+                })?;
+            } else if super::signature_inputs::requires_signature_origin(
+                &argument.value,
+                call.caller_activation,
+                entry.caller_context,
+                &facts.bindings,
+                &mut source_work,
+            )
+            .map_err(|error| format!("signature named input role failed: {error}"))?
+            {
+                return Err("universal named input lost its signature entry source".into());
+            }
+        }
+        work = source_work.remaining();
         match entry.origin {
             EntryOrigin::Application(id) => {
                 let event = facts
@@ -543,7 +533,7 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                 return Err("named declaration probe claimed an actual invocation".into());
             }
             EntryOrigin::DeclarationProbe
-            | EntryOrigin::SignatureProbe
+            | EntryOrigin::SignatureProbe(_)
             | EntryOrigin::Unresolved => {}
         }
     }

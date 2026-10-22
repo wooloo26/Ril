@@ -60,6 +60,60 @@ fn example(){let other=Token<"wrong">(7);let received=identity(other)}
 --@ end-file
 --@ end-case
 
+--@ source: nested-const-original-headers
+--@ file: source.ril
+type Token<size:int>(int)
+type Packet={items:[0]Token<1>,callback:fn(Token<1>)->Token<1>}
+type ConstNode={value:Token<1>,following:?ConstNode}
+fn token_one(value:Token<1>)->Token<1>{value}
+fn token_two(value:Token<2>)->Token<2>{value}
+fn keep_callback(value:fn(Token<1>)->Token<1>)->fn(Token<1>)->Token<1>{value}
+fn keep_array(value:[2]Token<1>)->[2]Token<1>{value}
+fn keep_record(value:Packet)->Packet{value}
+fn keep_node(value:ConstNode)->ConstNode{value}
+fn keep_generic<U>(value:{item:U,token:Token<1>})->{item:U,token:Token<1>}{value}
+pub fn test_native(){let original:Token<1>=Token<1>(7);assert(inner(token_one(original))==7)}
+--@ end-file
+--@ end-source
+
+--@ case: nested-const-original-headers
+--@ mode: check-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: nested-const-original-headers-native
+--@ use-source: nested-const-original-headers
+--@ end-case
+
+--@ case: nested-const-original-headers-native
+--@ mode: run-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: nested-const-original-headers
+--@ entry: test_native
+--@ use-source: nested-const-original-headers
+--@ end-case
+
+--@ case: nested-const-callback-value-conflict
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: nested-const-original-headers
+-- Error [E0301]: A callback preserves the Const coordinates in its parameter and result.
+--@ file: source.ril
+type Token<size:int>(int)
+fn other(value:Token<2>)->Token<2>{value}
+fn example(){let callback:fn(Token<1>)->Token<1>=other}
+--@ end-file
+--@ end-case
+
+--@ case: nested-const-header-sort-conflict
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: nested-const-original-headers
+-- Error [E0323]: A Const slot inside a callable retains its declaration's value sort.
+--@ file: source.ril
+type Token<size:int>(int)
+fn example(value:fn(Token<"wrong">)->Token<1>){ }
+--@ end-file
+--@ end-case
+
 --@ case: explicit-record-field-dimension
 --@ mode: check-fail
 --@ spec: SPEC#complete-provenance-and-optional-annotations

@@ -76,26 +76,45 @@ impl Checker {
         };
         let mut operations = args[count - 1].1.clone();
         operations.permission = Permission::Read;
-        self.set_contract_environment(&frame.env);
-        self.ascribe_signature(&mut operations, &syntax);
         let expected = self.ty(&syntax);
         self.require_type(&operations, &expected, args[count - 1].2);
-        let callback = self.project(
+        let mut callback = self.project(
             &operations,
             Slot::Field(if read { "read" } else { "write" }.into()),
             span,
             frame,
             true,
         );
-        if callback.signature.as_ref().is_none_or(|parameters| {
-            parameters.len() != 2
-                || parameters[0].mode != ParameterMode::Mut
-                || parameters[1].mode != ParameterMode::Read
-        }) {
-            self.unsupported(
+        // This is the standard operation's constraint on its actual generated
+        // invocation. The declaration is a catalog contract, not a hypothetical
+        // call whose formals can be manufactured from the receiver's shape.
+        callback.callable_bounds.push(CallableBound {
+            annotations: vec![Annotation {
+                kind: AnnotationKind::Capability,
+                text: "&mut".into(),
+                span,
+            }],
+            source: None,
+            typing_environment: crate::sema::builtin_sources::catalog_environment().clone(),
+            span,
+        });
+        match callback.signature.as_ref() {
+            Some(parameters) if parameters.len() == 2 => {
+                if parameters[0].mode != ParameterMode::Mut
+                    || parameters[1].mode != ParameterMode::Read
+                {
+                    self.error(
+                        "E0407",
+                        args[count - 1].2,
+                        "stream operation parameter modes must be temporary mut followed by read",
+                        [callback.cause],
+                    );
+                }
+            }
+            _ => self.unsupported(
                 span,
                 "stream operation needs a complete two-parameter temporary-mut callable signature",
-            );
+            ),
         }
         let input = if read {
             Value::scalar(

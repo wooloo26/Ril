@@ -1,12 +1,59 @@
 //! Declaration normalization and actual instance selection are separate steps.
 //! This keeps open rows and qualified callable fields out of erased Ty reifiers.
 use super::*;
-use crate::sema::model::rows::RowIdentity;
+use crate::sema::effect_identity::StaticBinderSort;
 
 impl Checker {
+    pub(in crate::sema::checker) fn selected_input_schema(
+        &self,
+        schema: SourceSchema,
+        environment: FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
+        let required = schema.binder_identities(work)?;
+        if schema.root_is_binder(work)?
+            && let Some(identity) = required.first()
+            && schema.equivalent_key(
+                &ArgumentKey::Binder {
+                    identity: identity.clone(),
+                    sort: StaticBinderSort::Type,
+                },
+                work,
+            )?
+            && let Some(selected) = environment.generic_sources.get(identity)
+        {
+            if selected.environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            return Ok((selected.schema.clone(), selected.environment.clone()));
+        }
+        work.charge(environment.generic_sources.len())?;
+        let mut selected = BTreeMap::new();
+        let mut dependencies = Vec::new();
+        for (identity, source) in &environment.generic_sources {
+            work.text(identity)?;
+            if source.environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            selected.insert(identity.clone(), source.schema.clone());
+            if required.contains(identity) {
+                dependencies.push((&source.schema, &source.environment));
+            }
+        }
+        let result = schema.substitute(&selected, work)?;
+        if !result.requires_environment(work)? {
+            return Ok((result, environment));
+        }
+        if schema.requires_declaration_environment(work)? {
+            dependencies.push((&schema, &environment));
+        }
+        let selected_environment =
+            super::producing_result::result_environment(dependencies, &environment, work)?;
+        Ok((result, selected_environment))
+    }
     pub(in crate::sema::checker) fn actual_input_source_schemas(
         &mut self,
-        info: &FunctionInfo,
+        definition: ril_compiler_core::ids::DefinitionId,
         event: Option<CopyCallEventId>,
         span: Span,
         work: &mut WorkLimit,
@@ -14,18 +61,35 @@ impl Checker {
         let mut selected = BTreeMap::new();
         let mut deferred = Vec::new();
         let mut owned = Vec::new();
+        work.charge(self.functions.len())?;
+        let info = self
+            .functions
+            .iter()
+            .find(|info| info.definition == definition)
+            .ok_or(SourceTypesError::MissingNode)?;
         work.charge(info.syntax.generics.len() + info.typing_environment.generic_context.len())?;
-        for parameter in &info.syntax.generics {
+        for (index, parameter) in info.syntax.generics.iter().enumerate() {
             let identity = self
                 .type_source
                 .environment
                 .generic_context
                 .get(&parameter.name)
                 .ok_or(SourceTypesError::Unresolved)?;
+            if !self.generic_binders.get(identity).is_some_and(|binder| {
+                binder.definition == definition
+                    && binder.index as usize == index
+                    && binder.name == parameter.name
+            }) {
+                return Err(SourceTypesError::Unresolved);
+            }
+            work.text(&parameter.name)?;
+            work.text(identity)?;
             owned.push((parameter.name.clone(), identity.clone()));
         }
         for (name, identity) in &info.typing_environment.generic_context {
             if !owned.iter().any(|(_, actual)| actual == identity) {
+                work.text(name)?;
+                work.text(identity)?;
                 owned.push((name.clone(), identity.clone()));
             }
         }
@@ -68,11 +132,11 @@ impl Checker {
             .copy_invocation_stack
             .last()
             .and_then(|id| self.copy_invocations.get(id.0 as usize))
-            .filter(|call| call.target == info.definition && call.source_event == event);
+            .filter(|call| call.target == definition && call.source_event == event);
         let Some(invocation) = invocation else {
             return self.complete_input_static_schemas(selected, deferred, span, work);
         };
-        let context = self.invocation_context(Some(CallableOwner::Function(info.definition)));
+        let context = self.invocation_context(Some(CallableOwner::Function(definition)));
         if context.invocation != Some(invocation.id) {
             return Err(SourceTypesError::Unresolved);
         }
@@ -86,7 +150,7 @@ impl Checker {
                 .get(source.required.0 as usize)
                 .ok_or(SourceTypesError::MissingNode)?;
             if bound.id != source.required
-                || bound.definition != info.definition
+                || bound.definition != definition
                 || bound.binder != source.binder
                 || source.occurrences.is_empty()
             {
@@ -147,44 +211,5 @@ impl Checker {
             selected.insert(identity, SourceSchema::import(&key, syntax.hir_id, work)?);
         }
         Ok(selected)
-    }
-
-    pub(super) fn original_source_header_key(
-        &self,
-        syntax: &TypeExpr,
-        scope: &crate::sema::record_bounds::BoundScope,
-    ) -> Option<ArgumentKey> {
-        let mut names = scope.types.clone();
-        for (name, id) in &scope.rows {
-            let row = self.bound_rows.get(id.0 as usize)?;
-            let RowIdentity::Binder(identity) = &row.identity else {
-                return None;
-            };
-            if names.get(name).is_some_and(|existing| existing != identity) {
-                return None;
-            }
-            names.insert(name.clone(), identity.clone());
-        }
-        let mut work = 4096;
-        let syntax = super::super::source_receiving::qualified_source_aliases_in(
-            self,
-            syntax,
-            scope,
-            &mut BTreeSet::new(),
-            &mut work,
-            0,
-        )?;
-        let syntax =
-            super::super::source_types::expand_builtin_source_syntax(&self.types, &syntax, 0)?;
-        super::super::source_receiving::resolved_symbolic_names(
-            &syntax,
-            &names,
-            &self.types,
-            &mut work,
-            0,
-        )?;
-        let key = self.record_bound_key(&syntax, scope)?;
-        source_reception::complete(&key, &mut work)?;
-        Some(key)
     }
 }

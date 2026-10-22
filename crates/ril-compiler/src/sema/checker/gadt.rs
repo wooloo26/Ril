@@ -194,6 +194,8 @@ impl Checker {
             syntax: Some(std::sync::Arc::new(syntax)),
             empty_array_context: None,
             sensitivity: crate::sema::source_reception::SchemaSensitivity::NotRequired,
+            source: None,
+            static_projection: None,
         })
     }
 

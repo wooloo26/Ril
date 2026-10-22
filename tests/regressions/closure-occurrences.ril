@@ -101,3 +101,38 @@ pub fn test_native() {
 }
 --@ end-file
 --@ end-case
+
+--@ case: contextual-signature-preview
+--@ mode: run-pass
+--@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+--@ entry: test_native
+--@ file: source.ril
+pub fn test_native() {
+    let increment: fn(int) -> int = \value -> value + 1
+    assert(increment(41) == 42)
+}
+--@ end-file
+--@ end-case
+
+--@ case: contextual-signature-result-mismatch
+--@ mode: check-fail
+--@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- Error [E0301]: reject an uncalled contextual lambda with the wrong result
+--@ file: source.ril
+fn example() {
+    let callback: fn(int) -> int = \value -> true
+}
+--@ end-file
+--@ end-case
+
+--@ case: contextual-signature-closure-argument-mismatch
+--@ mode: check-fail
+--@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- Error [E0301]: a closure's written callback parameter checks its lambda result
+--@ file: source.ril
+fn example() {
+    let apply = \callback: fn(int) -> int -> callback(1)
+    apply(\value -> true)
+}
+--@ end-file
+--@ end-case

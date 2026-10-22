@@ -8,6 +8,10 @@ use crate::hir::nodes::{self as hir, HirProgram};
 use crate::sema::effect_identity::ArgumentKey;
 use ril_compiler_core::ids::{StmtId, TypeExprId};
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "original_header.rs"]
+mod original_header;
+pub(crate) use original_header::{DeclaredConstructorInstance, constructor_instance};
+pub(crate) use original_header::{HeaderContext, elaborate_original_header, original_header};
 
 #[derive(Clone, Copy)]
 struct Alias {
@@ -442,7 +446,7 @@ impl Resolve<'_> {
                     annotations: rows,
                 }
             }
-            _ => return self.unknown("declaration requires a frozen type computation", work),
+            _ => return Err(SourceTypesError::NeedsStaticElaboration),
         };
         self.remember(id, node, work)
     }

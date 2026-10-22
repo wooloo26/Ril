@@ -1553,6 +1553,7 @@ impl Checker {
                 }
                 if let Some(ty) = &param.ty {
                     let mut held = EvaluatedValue::new(value, self.recency_moves.len());
+                    self.ascribe_signature(held.current_mut(&self.recency_moves), ty);
                     self.check_storage_shape(&held.current(&self.recency_moves), ty, &mut frame);
                     let ty = self.ty(ty);
                     self.require_type(&held.current(&self.recency_moves), &ty, arg_span);
@@ -1638,9 +1639,26 @@ impl Checker {
             .lambda_contract(id)
             .and_then(|contract| contract.return_type.clone());
         self.set_contract_environment(&frame.env);
-        let frozen_return_source = return_syntax
+        let mut frozen_return_source = return_syntax
             .as_ref()
             .map(|syntax| self.freeze_source_receiving_target(syntax));
+        if frozen_return_source.is_none() {
+            match self.signature_closure_return_target(id, span) {
+                Ok(target) => frozen_return_source = target,
+                Err(error) => self.unsupported(
+                    span,
+                    format!("closure result context lost its original Source: {error}"),
+                ),
+            }
+        }
+        if frame.expected_return.is_none()
+            && let Some(target) = &frozen_return_source
+            && let Some(syntax) = &target.syntax
+        {
+            frame.expected_return = Some(
+                self.with_typing_environment(&target.environment, |checker| checker.ty(syntax)),
+            );
+        }
         frame.expected_return_source = frozen_return_source.clone();
         let expected_return = frame.expected_return.clone();
         let mut result = self
