@@ -53,7 +53,7 @@ mod evaluated;
 #[cfg(test)]
 mod execution_oracle;
 mod explicit_named;
-use evaluated::EvaluatedValue;
+use super::evaluated::EvaluatedValue;
 mod bound_writes;
 mod expressions;
 mod external_calls;
@@ -1708,7 +1708,8 @@ impl Checker {
                             expected.as_ref(),
                             source_target.as_ref(),
                         );
-                        (received.value, received.source_valid, received.observation)
+                        let observation = received.observation;
+                        (received.value, received.source_valid, observation)
                     };
                 let initializer =
                     initializer.map(|expression| super::storage_sources::StorageObservation {

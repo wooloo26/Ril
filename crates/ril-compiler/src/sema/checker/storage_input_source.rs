@@ -41,9 +41,7 @@ impl Checker {
                 .storage_supplied_input(event, 0, &args[0].1, span, frame)
                 .ok_or(SourceTypesError::MissingNode)?;
             let (original, environment) = receiver
-                .source
-                .as_ref()
-                .map_err(Clone::clone)?
+                .birth_source()?
                 .as_ref()
                 .ok_or(SourceTypesError::Unresolved)?;
             if environment.is_poisoned() {
@@ -158,7 +156,7 @@ fn storage_compatible(
     input: &Input,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {
-    if let Ok(Some((actual, _))) = &input.source
+    if let Some((actual, _)) = input.birth_source()?
         && let (Some(expected), Some(actual)) = (
             expected.callable_annotations(work)?,
             actual.callable_annotations(work)?,
@@ -192,11 +190,15 @@ mod tests {
             default_use: None,
         };
         let mut packet = EvaluatedValue::new(Value::scalar(Ty::Unknown, None, CauseId(0)), 0);
-        packet.source = Ok(Some((
-            SourceSchema::import(&key, None, &mut WorkLimit::new(16384)).unwrap(),
-            FrozenEnvironment::default(),
-        )));
-        packet.fresh = std::sync::Arc::new(fresh);
+        packet
+            .capture_birth_source(
+                Ok(Some((
+                    SourceSchema::import(&key, None, &mut WorkLimit::new(16384)).unwrap(),
+                    FrozenEnvironment::default(),
+                ))),
+                Some(std::sync::Arc::new(fresh)),
+            )
+            .unwrap();
         Input {
             context,
             packet: std::sync::Arc::new(packet),

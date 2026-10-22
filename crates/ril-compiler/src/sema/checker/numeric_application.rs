@@ -91,7 +91,7 @@ impl Checker {
                                 })
                             });
                         if original {
-                            input.value.source.clone()
+                            input.value.birth_source().cloned()
                         } else {
                             Err(crate::sema::source_types::SourceTypesError::MissingNode)
                         }
@@ -550,7 +550,7 @@ impl Checker {
                 continue;
             }
             self.prepare_evaluation_packet(value, *span)?;
-            value.source = Err(SourceTypesError::Unresolved);
+            value.invalidate_current_source();
             let value = &mut value.value;
             let Ty::NumericHole(id) = value.ty else {
                 unreachable!()

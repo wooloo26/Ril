@@ -186,7 +186,7 @@ impl Checker {
                 let window = self.begin_explicit_named_callee(syntax, frame);
                 let packet = self.expression_source_packet(syntax, frame, None, None);
                 let observation = packet.observation;
-                let value = &packet.value;
+                let value = packet.value();
                 let explicit = self.end_explicit_named_callee(window, observation);
                 self.append_application_evaluation(application, site, role, &packet, frame);
                 self.complete_copy_call_callee(
@@ -208,7 +208,7 @@ impl Checker {
                             let mut work = crate::sema::source_types::WorkLimit::new(*remaining);
                             let result = work
                                 .charge(3)
-                                .and_then(|()| packet.source.clone())
+                                .and_then(|()| packet.current_source().cloned())
                                 .and_then(|source| {
                                     source
                                         .map(|(schema, environment)| {
@@ -475,7 +475,7 @@ impl Checker {
                 continue;
             }
             self.prepare_evaluation_packet(held, application.span)?;
-            held.source = Err(SourceTypesError::Unresolved);
+            held.invalidate_current_source();
             let value = &mut held.value;
             if let Ty::NumericHole(id) = value.ty {
                 let expected = contexts
@@ -524,7 +524,7 @@ impl Checker {
                     let epoch = self.recency_moves.len();
                     let moves = &self.recency_moves;
                     self.application_effect.with_work(|work| {
-                        super::evaluated::transport_value_at(value, moves, epoch, epoch, work)
+                        crate::sema::evaluated::transport_value_at(value, moves, epoch, epoch, work)
                     })
                 })
                 .transpose()?
@@ -858,7 +858,7 @@ impl Checker {
                     self.set_contract_environment(&defaults.env);
                     if source_valid {
                         self.prepare_evaluation_packet(&mut received, value.2)?;
-                        received.source = Err(SourceTypesError::Unresolved);
+                        received.invalidate_current_source();
                         self.ascribe_signature(&mut received.value, ty);
                         let expected = self.ty(ty);
                         self.prepare_evaluation_packet(&mut received, value.2)?;

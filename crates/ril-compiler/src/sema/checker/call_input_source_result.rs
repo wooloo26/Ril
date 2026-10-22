@@ -156,7 +156,7 @@ impl Checker {
             {
                 return Err(SourceTypesError::Unresolved);
             }
-            let Some((active_schema, active_environment)) = input.source.clone()? else {
+            let Some((active_schema, active_environment)) = input.birth_source().cloned()? else {
                 return Ok(None);
             };
             let inactive = if let Some(target) = source {
@@ -875,7 +875,7 @@ impl Checker {
             if input.context != call.entry.caller_context {
                 return Err(SourceTypesError::Unresolved);
             }
-            let Some((schema, environment)) = input.source.as_ref().map_err(Clone::clone)? else {
+            let Some((schema, environment)) = input.birth_source()? else {
                 continue;
             };
             if environment.is_poisoned() {

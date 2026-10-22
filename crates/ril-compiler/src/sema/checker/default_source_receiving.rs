@@ -25,24 +25,29 @@ fn original_default_value(
     moves: &[(NodeId, NodeId)],
     work: &mut usize,
 ) -> Result<Value, SourceTypesError> {
-    let completed =
-        super::evaluated::transport_value_at(birth, moves, birth_epoch, completion_epoch, work)?;
-    if !super::evaluated::same_birth_value(&completed, completion, work)? {
+    let completed = crate::sema::evaluated::transport_value_at(
+        birth,
+        moves,
+        birth_epoch,
+        completion_epoch,
+        work,
+    )?;
+    if !crate::sema::evaluated::same_birth_value(&completed, completion, work)? {
         return Err(SourceTypesError::Unresolved);
     }
-    let current = super::evaluated::transport_value_at(
+    let current = crate::sema::evaluated::transport_value_at(
         completion,
         moves,
         completion_epoch,
         moves.len(),
         work,
     )?;
-    if !super::evaluated::same_birth_value(&current, received, work)? {
+    if !crate::sema::evaluated::same_birth_value(&current, received, work)? {
         return Err(SourceTypesError::Unresolved);
     }
     // Source reconstruction keeps the actual birth descriptor. Comparing a
     // later, transported copy never rewrites that historical observation.
-    super::evaluated::transport_value_at(birth, moves, birth_epoch, birth_epoch, work)
+    crate::sema::evaluated::transport_value_at(birth, moves, birth_epoch, birth_epoch, work)
 }
 
 impl Checker {

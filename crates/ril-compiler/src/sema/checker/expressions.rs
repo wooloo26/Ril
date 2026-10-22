@@ -34,7 +34,8 @@ impl Checker {
         expected: Option<&Ty>,
     ) -> (Value, Option<usize>) {
         let observed = self.expression_expected_source(expr, frame, expected, None);
-        (observed.value, observed.observation)
+        let observation = observed.observation;
+        (observed.value, observation)
     }
 
     pub(super) fn expression_expected_source(

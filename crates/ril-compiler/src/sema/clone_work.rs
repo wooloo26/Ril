@@ -26,7 +26,7 @@ fn row(work: &mut usize, tail: &OpenTail) -> Option<()> {
     }
     Some(())
 }
-pub(in crate::sema::checker) fn ty(work: &mut usize, value: &Ty, depth: usize) -> Option<()> {
+pub(crate) fn ty(work: &mut usize, value: &Ty, depth: usize) -> Option<()> {
     charge(work, 1)?;
     if depth > 128 {
         return None;
@@ -158,7 +158,7 @@ fn key(work: &mut usize, value: &ArgumentKey, depth: usize) -> Option<()> {
     Some(())
 }
 
-pub(super) fn environment(value: &TypingEnvironment, work: &mut usize) -> Option<()> {
+pub(crate) fn environment(value: &TypingEnvironment, work: &mut usize) -> Option<()> {
     charge(work, 1)?;
     for (name, identity) in &value.generic_context {
         text(work, name)?;
@@ -200,7 +200,7 @@ pub(super) fn environment(value: &TypingEnvironment, work: &mut usize) -> Option
     Some(())
 }
 
-pub(super) fn bindings(value: &Env, work: &mut usize) -> Option<()> {
+pub(crate) fn bindings(value: &Env, work: &mut usize) -> Option<()> {
     charge(work, 1)?;
     for name in value.keys() {
         text(work, name)?;

@@ -250,6 +250,12 @@ pub enum SourceTypesError {
     BudgetExceeded,
     ForeignIdentity,
     MissingNode,
+    /// A packet has not run its original Source capture yet. Graph queries do
+    /// not produce this obligation or treat it as a missing graph node.
+    SourceNotCaptured,
+    /// The packet's current view changed after birth and needs its existing
+    /// receiving/selection evidence. The immutable birth Source is unchanged.
+    SourceViewPending,
     AlreadyDefined,
     DuplicateField,
     InvalidContainer,
@@ -271,6 +277,10 @@ impl std::fmt::Display for SourceTypesError {
             Self::BudgetExceeded => "source type reconstruction budget exhausted",
             Self::ForeignIdentity => "source type identity belongs to another snapshot",
             Self::MissingNode => "source type node is missing or unfinished",
+            Self::SourceNotCaptured => "original evaluation Source has not been captured",
+            Self::SourceViewPending => {
+                "current evaluation Source view requires its change evidence"
+            }
             Self::AlreadyDefined => "source type node or binding is already defined",
             Self::DuplicateField => "source record fields overlap",
             Self::InvalidContainer => "source container has an invalid argument count",

@@ -52,7 +52,7 @@ pub(super) struct State {
     closure_views: BTreeMap<usize, (u32, SourceSchema, FrozenEnvironment)>,
 }
 
-type InputSource = super::evaluated::CheckedSource;
+type InputSource = crate::sema::evaluated::CheckedSource;
 
 struct Operand {
     source_id: Option<ril_compiler_core::ids::ExprId>,
@@ -74,8 +74,8 @@ impl Checker {
             .get(&event)
             .and_then(|inputs| inputs.get(&slot))
             .ok_or(SourceTypesError::MissingNode)?
-            .source
-            .clone()
+            .birth_source()
+            .cloned()
     }
     pub(super) fn receive_application_source(
         &mut self,
@@ -131,7 +131,7 @@ impl Checker {
             .get(&event)?
             .get(&slot)?
             .clone();
-        let (actual, actual_environment) = match &input.source {
+        let (actual, actual_environment) = match input.birth_source() {
             Ok(Some(source)) => source,
             Ok(None) => return None,
             Err(error) => {
@@ -387,8 +387,13 @@ impl Checker {
         frame: &Frame,
         work: &mut WorkLimit,
     ) {
+        if packet.has_captured_source() {
+            self.unsupported(syntax.span, "evaluation Source basis was already captured");
+            return;
+        }
+        let mut fresh = None;
         let capture = (|| {
-            work.charge(3)?;
+            work.charge(4)?;
             let observation = packet.observation.ok_or(SourceTypesError::MissingNode)?;
             let fact = self
                 .application_effect
@@ -422,17 +427,22 @@ impl Checker {
             }
             let mut equality_work = work.remaining();
             let before_equality = equality_work;
-            let same =
-                super::evaluated::same_birth_value(&fact.value, &packet.value, &mut equality_work);
+            let same = crate::sema::evaluated::same_birth_value(
+                &fact.value,
+                &packet.value,
+                &mut equality_work,
+            );
             work.charge(before_equality - equality_work)?;
             if !same? {
                 return Err(SourceTypesError::Unresolved);
             }
             let mut remaining = work.remaining();
             let before = remaining;
-            let fresh = source_reception::construction(syntax, &mut remaining);
+            let construction = source_reception::construction(syntax, &mut remaining);
             work.charge(before - remaining)?;
-            packet.fresh = std::sync::Arc::new(fresh.ok_or(SourceTypesError::BudgetExceeded)?);
+            fresh = Some(std::sync::Arc::new(
+                construction.ok_or(SourceTypesError::BudgetExceeded)?,
+            ));
             self.original_source_receiving_schema(&packet.value, syntax, frame, work)
         })();
         if let Err(error) = &capture {
@@ -441,7 +451,12 @@ impl Checker {
                 format!("evaluation Source capture failed: {error}"),
             );
         }
-        packet.source = capture;
+        if let Err(error) = packet.capture_birth_source(capture, fresh) {
+            self.unsupported(
+                syntax.span,
+                format!("evaluation Source basis could not be captured: {error}"),
+            );
+        }
     }
 
     /// Map the existing frozen packet to its actual public parameter slot.
@@ -779,7 +794,7 @@ impl Checker {
             .chain(self.call_input_source.defaults.values())
             .filter(|input| input.observation == Some(observation.0 as usize));
         let first = captured.next();
-        let captured_source = first.map(|input| input.source.clone());
+        let captured_source = first.map(|input| input.birth_source().cloned());
         if captured.any(|input| {
             !first.is_some_and(|first| std::sync::Arc::ptr_eq(&first.packet, &input.packet))
         }) {
@@ -1127,12 +1142,12 @@ fn input_compatible(
     input: &Input,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {
-    match &input.source {
+    match input.birth_source() {
         Ok(Some((actual, environment))) if !environment.is_poisoned() => {
-            expected.receive_schema(actual, Some(&input.fresh), work)
+            expected.receive_schema(actual, Some(input.fresh()), work)
         }
         Ok(None) => expected
-            .empty_context(&input.fresh, work)?
+            .empty_context(input.fresh(), work)?
             .ok_or(SourceTypesError::Unresolved),
         Ok(Some(_)) => Err(SourceTypesError::Unresolved),
         Err(error) => Err(error.clone()),
