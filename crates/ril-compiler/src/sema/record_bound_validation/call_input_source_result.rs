@@ -73,35 +73,57 @@ impl Replay<'_> {
         {
             return Ok(None);
         }
-        let events: Vec<_> = self.facts.copy_call_events.iter().filter(|event| {
-            event.matches_source(expression) && event.owner == context.owner && event.parent == context.invocation
-                && event.result_expression.is_some_and(|index| {
-                    self.facts.expressions.get(index).is_some_and(|fact| fact.source_id.is_some() && fact.source_id == expression.hir_id && fact.value == *value)
-                        && self.observations.row(index, work).is_ok_and(|row| row.context == context)
-                })
-                && event.callee_expression.is_some_and(|index| {
-                    self.facts.expressions.get(index).is_some_and(|fact| fact.source_id.is_some() && fact.source_id == callee.hir_id && fact.value.sources.is_empty()
-                        && matches!(fact.value.callables.as_slice(), [crate::sema::model::Callable::Builtin(name)]
-                            if name.strip_prefix("Prelude::").unwrap_or(name) == identity))
-                        && self.observations.row(index, work).is_ok_and(|row| row.context == context)
-                })
-        }).collect();
-        if events.is_empty() {
-            return Ok(None);
+        source_scan_work(work, self.facts.copy_call_events.len())?;
+        let mut matched = None;
+        for event in &self.facts.copy_call_events {
+            if !event.matches_source(expression)
+                || event.owner != context.owner
+                || event.parent != context.invocation
+            {
+                continue;
+            }
+            let Some(result) = event.result_expression else {
+                continue;
+            };
+            let Some(actual) = self.facts.expressions.get(result) else {
+                continue;
+            };
+            if actual.source_id.is_none()
+                || actual.source_id != expression.hir_id
+                || actual.value != *value
+            {
+                continue;
+            }
+            if self.observations.row(result, work)?.context != context {
+                continue;
+            }
+            let Some(callee_observation) = event.callee_expression else {
+                continue;
+            };
+            let Some(actual) = self.facts.expressions.get(callee_observation) else {
+                continue;
+            };
+            if actual.source_id.is_none()
+                || actual.source_id != callee.hir_id
+                || !actual.value.sources.is_empty()
+                || !matches!(actual.value.callables.as_slice(), [crate::sema::model::Callable::Builtin(name)]
+                    if name.strip_prefix("Prelude::").unwrap_or(name) == identity)
+            {
+                continue;
+            }
+            if self.observations.row(callee_observation, work)?.context != context {
+                continue;
+            }
+            require(
+                matched.replace(event).is_none(),
+                "open Result Source borrowed another carrier event",
+            )?;
         }
-        let [event] = events.as_slice() else {
-            return Err("open Result Source borrowed another carrier event".into());
+        let Some(event) = matched else {
+            return Ok(None);
         };
         super::super::super::checker::actual_prelude_name(self.facts, context, callee, identity)?;
-        let preparations: Vec<_> = self
-            .facts
-            .call_arguments
-            .iter()
-            .filter(|row| row.source_event == event.id)
-            .collect();
-        let [preparation] = preparations.as_slice() else {
-            return Err("open Result Source lacks its actual supplied operand".into());
-        };
+        let preparation = self.input_preparation(event.id, work)?;
         require(
             preparation.target.is_none()
                 && preparation.evaluation_complete
@@ -118,18 +140,15 @@ impl Replay<'_> {
             .expressions
             .get(token.expression)
             .ok_or_else(|| "open Result Source operand is absent".to_owned())?;
+        let operand_context = self.observations.row(token.expression, work)?;
         require(
             operand.source_id.is_some()
                 && operand.source_id == arguments[0].expression.hir_id
-                && self
-                    .observations
-                    .row(token.expression, work)
-                    .is_ok_and(|row| {
-                        row.context == context && row.argument_of == Some((event.id, 0))
-                    }),
+                && operand_context.context == context
+                && operand_context.argument_of == Some((event.id, 0)),
             "open Result Source operand borrowed another physical occurrence",
         )?;
-        self.input_operand_interval(event, 0, token.expression, context, sites)?;
+        self.input_operand_interval(event, 0, token.expression, context, work)?;
         let payload = if success {
             value.result_success.as_deref()
         } else {
@@ -158,7 +177,7 @@ impl Replay<'_> {
                 observation: Some(token.expression),
             },
         )?;
-        let receiver = self.producing_receiver_key(expression, value, context, sites)?;
+        let receiver = self.producing_receiver_key(expression, value, context, sites, work)?;
         let ArgumentKey::Name { name, arguments } = receiver else {
             return Err("open Result Source has no actual Result receiver".into());
         };
@@ -264,8 +283,10 @@ impl Replay<'_> {
     pub(super) fn producing_result_contexts(
         &self,
         sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
     ) -> Check {
         for call in &self.facts.copy_invocations {
+            source_scan_work(work, 1)?;
             let Some(returned) = &call.result else {
                 continue;
             };
@@ -277,45 +298,52 @@ impl Replay<'_> {
                 .source_event
                 .and_then(|id| self.facts.copy_call_events.get(id.0 as usize))
                 .ok_or_else(|| "producing result lost its actual source event".to_owned())?;
-            let source: Vec<_> = sites
-                .calls
-                .iter()
-                .filter(|site| {
-                    Some(site.owner) == context.owner && event.matches_source(site.expression)
-                })
-                .collect();
-            let [source] = source.as_slice() else {
-                return Err("producing result has no unique actual Call AST".into());
-            };
-            let roots: Vec<_> = self
-                .facts
-                .invocation_expressions
-                .iter()
-                .filter_map(|observation| {
-                    if observation.context != context {
-                        return None;
-                    }
-                    let value = self.facts.expressions.get(observation.expression)?;
-                    if value.source_id.is_none() || value.source_id != event.source_id {
-                        return None;
-                    }
-                    self.producing_result_causes(value.value.cause)
-                        .ok()
-                        .filter(|causes| causes.contains(&returned.value.cause.0))
-                        .map(|_| (observation.expression, &value.value))
-                })
-                .collect();
-            let [(observation, actual)] = roots.as_slice() else {
-                return Err("producing result lost its unique root Source observation".into());
-            };
-            self.validate_producing_result_transport(call, actual)?;
+            let source = unique_source_record(
+                &sites.calls,
+                work,
+                "producing result has multiple actual Call ASTs",
+                |site| Some(site.owner) == context.owner && event.matches_source(site.expression),
+            )?
+            .ok_or("producing result has no actual Call AST")?;
+            let candidates = self.observations.range(
+                event
+                    .source_id
+                    .ok_or("producing result has no original HIR source")?,
+                context,
+                0..self.facts.expressions.len(),
+                work,
+            )?;
+            source_scan_work(work, candidates.len())?;
+            let mut root = None;
+            for &observation in candidates {
+                let value = self
+                    .facts
+                    .expressions
+                    .get(observation)
+                    .ok_or("producing result root is outside its value arena")?;
+                if self
+                    .producing_result_causes(value.value.cause, work)?
+                    .contains(&returned.value.cause.0)
+                {
+                    require(
+                        root.replace((observation, &value.value)).is_none(),
+                        "producing result has multiple root Source observations",
+                    )?;
+                }
+            }
+            let (observation, actual) =
+                root.ok_or("producing result lost its root Source observation")?;
+            self.validate_producing_result_transport(call, actual, work)?;
             let original_key =
-                self.original_observed_source_key(source.expression, *observation, context, sites)?;
-            if !self.producing_type_selections(call, actual)?.is_empty() {
+                self.original_observed_source_key(source.expression, observation, context, sites)?;
+            if !self
+                .producing_type_selections(call, actual, work)?
+                .is_empty()
+            {
                 let expected =
-                    self.producing_receiver_key(source.expression, actual, context, sites)?;
+                    self.producing_receiver_key(source.expression, actual, context, sites, work)?;
                 require(
-                    source_reception::compatible(&expected, &original_key, None, &mut 4096)
+                    source_reception::compatible(&expected, &original_key, None, work)
                         == Some(true),
                     "producing Type selection does not fit its actual Source receiver",
                 )?;
@@ -330,6 +358,7 @@ impl Replay<'_> {
         actual: &Value,
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
     ) -> Check<ArgumentKey> {
         let scope = match context.owner {
             Some(CallableOwner::Function(owner)) => self.scope(owner)?,
@@ -343,6 +372,7 @@ impl Replay<'_> {
             .transpose()?
             .unwrap_or_default();
         let mut receivers = Vec::new();
+        source_scan_work(work, sites.bindings.len() + sites.calls.len())?;
         for site in &sites.bindings {
             if Some(site.owner) != context.owner {
                 continue;
@@ -377,12 +407,14 @@ impl Replay<'_> {
                 .ok_or_else(|| "producing receiver has no original application".to_owned())?;
             let callee = application.callee;
             let arguments = &application.operands;
+            source_scan_work(work, arguments.len())?;
             if !arguments
                 .iter()
                 .any(|argument| receiving_contains(argument.expression, expression, &mut 4096))
             {
                 continue;
             }
+            source_scan_work(work, self.facts.copy_call_events.len())?;
             for event in &self.facts.copy_call_events {
                 if !event.matches_source(site.expression)
                     || event.owner != context.owner
@@ -439,7 +471,7 @@ impl Replay<'_> {
                     if !std::ptr::eq(&value.value, actual) {
                         continue;
                     }
-                    self.input_operand_interval(event, slot, token.expression, context, sites)?;
+                    self.input_operand_interval(event, slot, token.expression, context, work)?;
                     if let Some((_, key)) = parameters.get(slot)
                         && let Some(key) = receiving_path(
                             self,
@@ -701,37 +733,31 @@ impl Replay<'_> {
                         .closures
                         .get(*index)
                         .ok_or("public input closure target is absent")?;
-                    *work = work
-                        .checked_sub(self.facts.closure_sites.len() + sites.lambdas.len())
-                        .ok_or("public closure header lookup exceeds its work bound")?;
-                    let mut matching = self
+                    source_scan_work(work, 1)?;
+                    let id = closure
+                        .site
+                        .ok_or("public input closure has no lexical site")?;
+                    let site = self
                         .facts
                         .closure_sites
-                        .iter()
-                        .filter(|site| Some(site.id) == closure.site);
-                    let site = matching
-                        .next()
+                        .get(id.0 as usize)
+                        .filter(|site| site.id == id)
                         .ok_or("public input closure has no genuine lexical site")?;
-                    require(
-                        matching.next().is_none(),
-                        "public input closure has multiple lexical sites",
-                    )?;
-                    let headers: Vec<_> = sites
-                        .lambdas
-                        .iter()
-                        .filter(|header| {
+                    let header = unique_source_record(
+                        &sites.lambdas,
+                        work,
+                        "public input lambda header is not unique",
+                        |header| {
                             header.owner == site.owner
                                 && closure.hir_id.is_some()
                                 && header.expression.hir_id == closure.hir_id
-                        })
-                        .collect();
-                    let [header] = headers.as_slice() else {
-                        return Err("public input lambda header is not unique".into());
-                    };
+                        },
+                    )?
+                    .ok_or("public input lambda header is absent")?;
                     let ExprKind::Lambda { parameters, .. } = &header.expression.kind else {
                         return Err("public input lexical site is not a lambda".into());
                     };
-                    let scope = self.lambda_input_scope(site.owner)?;
+                    let scope = self.lambda_input_scope(site.owner, work)?;
                     let selected_keys = match closure.creation_invocation {
                         Some(id) => self.input_selected_keys(
                             self.facts
@@ -908,26 +934,33 @@ impl Replay<'_> {
     pub(in crate::sema::record_bound_validation) fn lambda_input_scope(
         &self,
         mut owner: CallableOwner,
+        work: &mut usize,
     ) -> Check<BoundScope> {
         let mut seen = BTreeSet::new();
         loop {
+            source_scan_work(work, 1)?;
             require(
                 seen.len() < 256 && seen.insert(owner),
                 "public lambda lexical Source ancestry is cyclic or too deep",
             )?;
             match owner {
-                CallableOwner::Function(definition) => return self.scope(definition),
+                CallableOwner::Function(definition) => {
+                    source_scan_work(
+                        work,
+                        self.facts.functions.len()
+                            + self.facts.generic_binders.len()
+                            + self.facts.bound_rows.len(),
+                    )?;
+                    return self.scope(definition);
+                }
                 CallableOwner::Global => return Ok(BoundScope::default()),
                 CallableOwner::Lambda(id) => {
-                    let sites: Vec<_> = self
+                    let site = self
                         .facts
                         .closure_sites
-                        .iter()
+                        .get(id.0 as usize)
                         .filter(|site| site.id == id)
-                        .collect();
-                    let [site] = sites.as_slice() else {
-                        return Err("public lambda ancestor is not unique".into());
-                    };
+                        .ok_or("public lambda ancestor has no original site identity")?;
                     owner = site.owner;
                 }
             }
@@ -1012,14 +1045,16 @@ impl Replay<'_> {
         Some(arguments[index].clone())
     }
 
-    pub(super) fn producing_result_causes(&self, root: CauseId) -> Check<BTreeSet<u32>> {
+    pub(super) fn producing_result_causes(
+        &self,
+        root: CauseId,
+        work: &mut usize,
+    ) -> Check<BTreeSet<u32>> {
+        source_scan_work(work, 1)?;
         let mut seen = BTreeSet::new();
         let mut pending = vec![root];
-        let mut work = 4096usize;
         while let Some(id) = pending.pop() {
-            work = work
-                .checked_sub(1)
-                .ok_or_else(|| "producing result cause budget exhausted".to_owned())?;
+            source_scan_work(work, 1)?;
             let cause = self
                 .facts
                 .explanations
@@ -1027,6 +1062,7 @@ impl Replay<'_> {
                 .get(id.0 as usize)
                 .ok_or_else(|| "producing result has an absent cause".to_owned())?;
             if seen.insert(id.0) {
+                source_scan_work(work, cause.parents.len())?;
                 pending.extend(cause.parents.iter().copied());
             }
         }
@@ -1037,9 +1073,10 @@ impl Replay<'_> {
         &self,
         call: &CopyInvocation,
         actual: &Value,
+        work: &mut usize,
     ) -> Check<BTreeMap<String, ArgumentKey>> {
         let mut keys = self.input_selected_keys(call)?;
-        let selections = self.producing_type_selections(call, actual)?;
+        let selections = self.producing_type_selections(call, actual, work)?;
         for (binder, selected) in selections {
             let key = match selected {
                 Ty::Generic(identity) => {
@@ -1088,37 +1125,40 @@ impl Replay<'_> {
         &self,
         call: &CopyInvocation,
         actual: &Value,
+        work: &mut usize,
     ) -> Check<BTreeMap<String, Ty>> {
         let returned = &call
             .result
             .as_ref()
             .ok_or_else(|| "producing result snapshot is absent".to_owned())?
             .value;
-        let before = self.producing_result_causes(returned.cause)?;
-        let after = self.producing_result_causes(actual.cause)?;
+        let before = self.producing_result_causes(returned.cause, work)?;
+        let after = self.producing_result_causes(actual.cause, work)?;
         require(
             after.contains(&returned.cause.0),
             "producing result borrowed another instance's cause",
         )?;
-        let summaries: Vec<_> = self
-            .facts
-            .invocations
-            .iter()
-            .filter(|summary| {
+        let summary = unique_source_record(
+            &self.facts.invocations,
+            work,
+            "producing result has multiple actual invocation summaries",
+            |summary| {
                 summary.context.is_some_and(|context| {
                     context.invocation == Some(call.id)
                         && context.owner == Some(CallableOwner::Function(call.target))
                 })
-            })
-            .collect();
-        let [summary] = summaries.as_slice() else {
+            },
+        )?;
+        let Some(summary) = summary else {
             return Ok(BTreeMap::new());
         };
         let activation = summary
             .activation
             .ok_or_else(|| "producing result lacks its actual activation".to_owned())?;
         let mut selected = BTreeMap::new();
+        source_scan_work(work, self.facts.inference_resolutions.len())?;
         for row in &self.facts.inference_resolutions {
+            source_scan_work(work, row.binder.len().div_ceil(32))?;
             if !after.contains(&row.cause.0) || !after.contains(&row.origin.0) {
                 continue;
             }
@@ -1137,6 +1177,7 @@ impl Replay<'_> {
                 "producing result borrowed another declaration's meta",
             )?;
             self.type_binder(binder)?;
+            source_scan_work(work, self.facts.inference_resolutions.len())?;
             require(
                 self.facts
                     .inference_resolutions
@@ -1164,15 +1205,16 @@ impl Replay<'_> {
         &self,
         call: &CopyInvocation,
         actual: &Value,
+        work: &mut usize,
     ) -> Check {
         let original = &call
             .result
             .as_ref()
             .ok_or_else(|| "producing result snapshot is absent".to_owned())?
             .value;
-        let selected = self.producing_type_selections(call, actual)?;
+        let selected = self.producing_type_selections(call, actual, work)?;
         require(
-            type_transport(&original.ty, &actual.ty, &selected, &mut 4096),
+            type_transport(&original.ty, &actual.ty, &selected, work),
             "producing result changed an already selected type coordinate",
         )?;
         require(

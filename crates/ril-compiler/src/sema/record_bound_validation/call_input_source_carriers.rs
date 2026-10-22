@@ -63,7 +63,6 @@ impl Replay<'_> {
         expression: &Expr,
         root: usize,
         context: InvocationContext,
-        sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
     ) -> Check<Option<CarrierInput>> {
         let Some(application) = AstApplication::from_ast(expression) else {
@@ -165,7 +164,7 @@ impl Replay<'_> {
                 && token.allocation_epoch <= self.facts.allocation_history.len(),
             "carrier Source operand borrowed another occurrence, context or epoch",
         )?;
-        self.input_operand_interval(event, 0, token.expression, context, sites)?;
+        self.input_operand_interval(event, 0, token.expression, context, work)?;
         let result = &self.facts.expressions[root].value;
         let payload = match identity {
             "Some" => {
@@ -237,8 +236,7 @@ impl Replay<'_> {
         }
         let root =
             self.original_source_root(expression, value, context, visit.observation, work)?;
-        let Some(carrier) = self.source_carrier_input(expression, root, context, sites, work)?
-        else {
+        let Some(carrier) = self.source_carrier_input(expression, root, context, work)? else {
             return Ok(None);
         };
         let application = AstApplication::from_ast(expression).unwrap();
@@ -300,7 +298,6 @@ impl Replay<'_> {
         root: &Expr,
         target: ReceivingOccurrence<'_>,
         schema: &SourceSchema,
-        sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
         depth: usize,
     ) -> Check<Option<SourceSchema>> {
@@ -363,7 +360,7 @@ impl Replay<'_> {
                 operation: ril_syntax::ast::ControlOperation::Return,
                 value: Some(value),
             } => {
-                return self.receiving_graph_path(value, target, schema, sites, work, depth + 1);
+                return self.receiving_graph_path(value, target, schema, work, depth + 1);
             }
             _ => {}
         }
@@ -374,7 +371,7 @@ impl Replay<'_> {
             let projected = super::graph_sources::schema_work(work, |budget| {
                 schema.project_steps(&[step], budget)
             })?;
-            return self.receiving_graph_path(child, target, &projected, sites, work, depth + 1);
+            return self.receiving_graph_path(child, target, &projected, work, depth + 1);
         }
         if let Some(application) = AstApplication::from_ast(root)
             && application.operands.len() == 1
@@ -400,7 +397,7 @@ impl Replay<'_> {
                     continue;
                 }
                 let Some(carrier) =
-                    self.source_carrier_input(root, observation, target.context, sites, work)?
+                    self.source_carrier_input(root, observation, target.context, work)?
                 else {
                     continue;
                 };
@@ -418,7 +415,7 @@ impl Replay<'_> {
                     0,
                     carrier.operand,
                     target.context,
-                    sites,
+                    work,
                 )?;
                 found = Some(carrier.projection);
             }
@@ -430,7 +427,6 @@ impl Replay<'_> {
                     application.operands[0].expression,
                     target,
                     &projected,
-                    sites,
                     work,
                     depth + 1,
                 );
@@ -454,7 +450,7 @@ impl Replay<'_> {
         };
         let scope = context
             .owner
-            .map(|owner| self.lambda_input_scope(owner))
+            .map(|owner| self.lambda_input_scope(owner, work))
             .transpose()?
             .unwrap_or_default();
         let environment = self.source_graph_environment(context, Some(observation), work)?;
@@ -486,14 +482,9 @@ impl Replay<'_> {
                     self.source_graph_environment(context, Some(outer), work)?;
                 let (schema, original_environment) =
                     self.source_type_header(syntax, &scope, original_environment, work)?;
-                if let Some(schema) = self.receiving_graph_path(
-                    &site.binding.value,
-                    receiving,
-                    &schema,
-                    sites,
-                    work,
-                    0,
-                )? {
+                if let Some(schema) =
+                    self.receiving_graph_path(&site.binding.value, receiving, &schema, work, 0)?
+                {
                     receivers.push((schema, original_environment));
                 }
             }
@@ -612,7 +603,7 @@ impl Replay<'_> {
                             )?,
                         "receiving call borrowed another supplied occurrence",
                     )?;
-                    self.input_operand_interval(event, slot, token.expression, context, sites)?;
+                    self.input_operand_interval(event, slot, token.expression, context, work)?;
                     let selected_environment = if let Some(target) = event.target {
                         *work = work
                             .checked_sub(self.facts.copy_invocations.len())
@@ -653,7 +644,6 @@ impl Replay<'_> {
                         operand.expression,
                         receiving,
                         &parameter,
-                        sites,
                         work,
                         0,
                     )? {
@@ -694,7 +684,7 @@ impl Replay<'_> {
                     let (schema, header_environment) =
                         self.source_type_header(syntax, &scope, environment.clone(), work)?;
                     if let Some(schema) =
-                        self.receiving_graph_path(root, receiving, &schema, sites, work, 0)?
+                        self.receiving_graph_path(root, receiving, &schema, work, 0)?
                     {
                         receivers.push((schema, header_environment));
                     }

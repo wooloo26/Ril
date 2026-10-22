@@ -455,6 +455,7 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
     ) -> Check {
+        let mut input_work = 16384;
         let application = AstApplication::from_ast(syntax)
             .ok_or_else(|| "constructor source has no genuine application".to_owned())?;
         let callee_syntax = application.callee;
@@ -609,7 +610,13 @@ impl Replay<'_> {
                             == 1,
                     "constructor source operand belongs to another event, slot or Source occurrence",
                 )?;
-                self.input_operand_interval(event, slot, token.expression, context, sites)?;
+                self.input_operand_interval(
+                    event,
+                    slot,
+                    token.expression,
+                    context,
+                    &mut input_work,
+                )?;
                 let actual = self.original_observed_source_schema_with_work(
                     actual_syntax,
                     token.expression,

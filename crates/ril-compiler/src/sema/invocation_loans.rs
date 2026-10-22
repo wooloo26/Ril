@@ -6,7 +6,11 @@ use super::{
     facts::{LoanId, Participant, ScopeId},
     model::{Origins, Value},
 };
-use ril_compiler_core::{diagnostic::CauseId, ids::CallableOwner, source::Span};
+use ril_compiler_core::{
+    diagnostic::CauseId,
+    ids::{CallableOwner, DefinitionId, PatternId, StmtId},
+    source::Span,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone)]
@@ -27,47 +31,230 @@ pub struct InvocationLoanStart {
     pub span: Span,
 }
 
+fn charge(work: &mut usize, count: usize) -> Result<(), String> {
+    *work = work
+        .checked_sub(count)
+        .ok_or_else(|| "formal loan binding coverage exceeds its work bound".to_owned())?;
+    Ok(())
+}
+
+/// Borrowed declaration/birth lookup, shared by every formal loan in this
+/// replay. Final values may already have had their ended loans normalized.
+struct FormalBindings<'a> {
+    facts: &'a super::SemanticFacts,
+    named: BTreeMap<DefinitionId, Option<StmtId>>,
+    bindings: BTreeMap<(ScopeId, PatternId, &'a str), usize>,
+    patterns: BTreeMap<PatternId, Vec<crate::hir::nodes::PatternBinding>>,
+}
+
+impl<'a> FormalBindings<'a> {
+    fn new(facts: &'a super::SemanticFacts, work: &mut usize) -> Result<Self, String> {
+        charge(work, facts.functions.len())?;
+        charge(work, facts.bindings.len())?;
+        let mut named = BTreeMap::new();
+        for function in &facts.functions {
+            if named
+                .insert(function.definition, function.hir_id)
+                .is_some_and(|previous| previous != function.hir_id)
+            {
+                return Err(
+                    "formal loan declaration has inconsistent original HIR identities".into(),
+                );
+            }
+        }
+        let mut bindings = BTreeMap::new();
+        for (id, binding) in facts.bindings.iter().enumerate() {
+            if !binding.parameter {
+                continue;
+            }
+            let Some(pattern) = binding.pattern else {
+                continue;
+            };
+            charge(work, binding.name.len().div_ceil(32))?;
+            if bindings
+                .insert((binding.owner, pattern, binding.name.as_str()), id)
+                .is_some()
+            {
+                return Err(
+                    "formal loan has duplicate binding births for one receiver pattern".into(),
+                );
+            }
+        }
+        Ok(Self {
+            facts,
+            named,
+            bindings,
+            patterns: BTreeMap::new(),
+        })
+    }
+
+    fn hir(&self) -> Result<&'a crate::hir::nodes::HirProgram, String> {
+        self.facts
+            .semantic_hir
+            .as_deref()
+            .ok_or_else(|| "formal loan has no canonical HIR declarations".to_owned())
+    }
+
+    fn named_parameters(
+        &self,
+        owner: DefinitionId,
+        work: &mut usize,
+    ) -> Result<&'a [crate::hir::nodes::Parameter], String> {
+        charge(work, 1)?;
+        let hir = self.hir()?;
+        let declaration = self
+            .named
+            .get(&owner)
+            .copied()
+            .flatten()
+            .and_then(|id| hir.statement(id))
+            .ok_or("formal loan has no original named declaration")?;
+        let crate::hir::nodes::StmtKind::Function(function) = &declaration.kind else {
+            return Err("formal loan named header is not an original function".into());
+        };
+        Ok(&function.parameters)
+    }
+
+    fn closure_parameters(
+        &self,
+        call: &super::effect_identity::ClosureInvocation,
+        work: &mut usize,
+    ) -> Result<&'a [crate::hir::nodes::Parameter], String> {
+        charge(work, 2)?;
+        let closure = self
+            .facts
+            .closures
+            .get(call.closure)
+            .ok_or("formal loan closure object is absent")?;
+        let site = closure
+            .site
+            .and_then(|id| {
+                self.facts
+                    .closure_sites
+                    .get(id.0 as usize)
+                    .filter(|site| site.id == id)
+            })
+            .ok_or("formal loan closure has no original site")?;
+        if closure.hir_id != Some(site.source) {
+            return Err("formal loan closure borrowed another original header".into());
+        }
+        let original = self
+            .hir()?
+            .expression(site.source)
+            .ok_or("formal loan original lambda is absent")?;
+        let crate::hir::nodes::ExprKind::Lambda { parameters, .. } = &original.kind else {
+            return Err("formal loan closure header is not an original lambda".into());
+        };
+        Ok(parameters)
+    }
+
+    fn expected(
+        &mut self,
+        activation: ScopeId,
+        pattern: PatternId,
+        context: super::effect_identity::InvocationContext,
+        work: &mut usize,
+    ) -> Result<BTreeSet<usize>, String> {
+        charge(work, 1)?;
+        if !self.patterns.contains_key(&pattern) {
+            let plan = self
+                .hir()?
+                .pattern_bindings(pattern, work)
+                .map_err(|error| format!("formal loan original parameter pattern: {error}"))?;
+            self.patterns.insert(pattern, plan);
+        }
+        let plan = &self.patterns[&pattern];
+        charge(work, plan.len())?;
+        let mut expected = BTreeSet::new();
+        for leaf in plan {
+            charge(work, leaf.name.len().div_ceil(32))?;
+            let id = self
+                .bindings
+                .get(&(activation, leaf.pattern, leaf.name.as_str()))
+                .copied()
+                .ok_or("formal loan parameter is missing an original binding birth")?;
+            if self.facts.bindings[id].context != context {
+                return Err(
+                    "formal loan binding belongs to another actual invocation context".into(),
+                );
+            }
+            expected.insert(id);
+        }
+        Ok(expected)
+    }
+}
+
 pub fn validate(facts: &super::SemanticFacts) -> Result<(), (Span, Option<CauseId>, String)> {
     use super::copy_contract::CopyInvocationStatus;
+    let fallback = facts
+        .invocation_loan_starts
+        .first()
+        .map(|start| start.span)
+        .or_else(|| facts.copy_invocations.first().map(|call| call.span))
+        .or_else(|| facts.closure_invocations.first().map(|call| call.site))
+        .unwrap_or(Span {
+            file: ril_compiler_core::source::FileId(0),
+            start: 0,
+            end: 0,
+        });
+    let mut work = 4_000_000usize;
+    let mut formal =
+        FormalBindings::new(facts, &mut work).map_err(|message| (fallback, None, message))?;
     let mut starts = BTreeMap::new();
+    let mut named_starts = BTreeMap::new();
+    let mut closure_starts = BTreeMap::new();
     for start in &facts.invocation_loan_starts {
         let fail = |message: &str| (start.span, Some(start.cause), message.to_owned());
+        charge(&mut work, 1 + start.bindings.len() + start.parents.len())
+            .map_err(|message| fail(&message))?;
         if starts.insert(start.loan, start).is_some()
             || facts.loan_parents.get(&start.loan) != Some(&start.parents)
             || start.source.participants != start.parents
             || start.source.origins != start.origins
             || !facts.scopes.contains(&start.activation)
             || start.allocation_epoch > facts.allocation_history.len()
-            || start.bindings.iter().any(|id| {
-                facts
-                    .bindings
-                    .get(*id)
-                    .is_none_or(|binding| !binding.parameter || binding.owner != start.activation)
-            })
         {
             return Err(fail(
                 "formal loan entry does not match its actual source and loan registry",
             ));
         }
-        let mode = match start.owner {
+        let (mode, pattern, context) = match start.owner {
             Some(CallableOwner::Function(owner)) => {
-                start
+                let call = start
                     .named
                     .and_then(|id| facts.copy_invocations.get(id.0 as usize))
                     .filter(|call| {
                         Some(call.id) == start.named
                             && call.target == owner
                             && call.status == CopyInvocationStatus::Completed
+                            && start.closure == call.entry.caller_context.closure_invocation
+                            && start.allocation_epoch >= call.entry.allocation_epoch
                     })
                     .ok_or_else(|| {
                         fail("formal loan has no matching completed named invocation")
                     })?;
-                facts
-                    .functions
-                    .iter()
-                    .find(|function| function.definition == owner)
-                    .and_then(|function| function.syntax.parameters.get(start.parameter as usize))
-                    .map(|parameter| parameter.mode)
+                if !facts.scopes.get(&start.activation).is_some_and(|scope|
+                    matches!(scope.origin, super::scopes::ScopeOrigin::Named(id) if Some(id) == start.named))
+                    || named_starts.insert((call.id, start.parameter), start).is_some()
+                {
+                    return Err(fail("formal loan borrowed another named receiver or duplicated its slot"));
+                }
+                let parameter = formal
+                    .named_parameters(owner, &mut work)
+                    .map_err(|message| fail(&message))?
+                    .get(start.parameter as usize)
+                    .ok_or_else(|| {
+                        fail("formal loan parameter is outside its original named header")
+                    })?;
+                (
+                    parameter.mode,
+                    parameter.pattern,
+                    super::effect_identity::InvocationContext {
+                        owner: start.owner,
+                        invocation: start.named,
+                        ..call.entry.caller_context
+                    },
+                )
             }
             Some(CallableOwner::Lambda(site)) => {
                 let call = start
@@ -77,38 +264,70 @@ pub fn validate(facts: &super::SemanticFacts) -> Result<(), (Span, Option<CauseI
                         Some(call.id) == start.closure
                             && call.parent_named == start.named
                             && call.status == CopyInvocationStatus::Completed
+                            && call.activation == Some(start.activation)
+                            && start.allocation_epoch >= call.entry.allocation_epoch
                     })
                     .ok_or_else(|| {
                         fail("formal loan has no matching completed closure invocation")
                     })?;
-                facts
-                    .closures
-                    .get(call.closure)
-                    .filter(|closure| closure.site == Some(site))
-                    .and_then(|closure| closure.parameters.get(start.parameter as usize))
-                    .map(|parameter| parameter.mode)
+                if !facts.closures.get(call.closure).is_some_and(|closure| closure.site == Some(site))
+                    || !facts.scopes.get(&start.activation).is_some_and(|scope|
+                        matches!(scope.origin, super::scopes::ScopeOrigin::Closure(id) if id == call.id))
+                    || closure_starts.insert((call.id, start.parameter), start).is_some()
+                {
+                    return Err(fail("formal loan borrowed another closure receiver or duplicated its slot"));
+                }
+                let parameter = formal
+                    .closure_parameters(call, &mut work)
+                    .map_err(|message| fail(&message))?
+                    .get(start.parameter as usize)
+                    .ok_or_else(|| {
+                        fail("formal loan parameter is outside its original lambda header")
+                    })?;
+                (
+                    parameter.mode,
+                    parameter.pattern,
+                    super::effect_identity::InvocationContext {
+                        owner: start.owner,
+                        invocation: call.parent_named,
+                        closure: Some(call.closure),
+                        closure_invocation: Some(call.id),
+                        ..call.entry.caller_context
+                    },
+                )
             }
-            _ => None,
+            _ => return Err(fail("formal loan has no original callable owner")),
         };
         if mode
-            != Some(if start.retained {
+            != if start.retained {
                 ril_syntax::ast::ParameterMode::SharedMut
             } else {
                 ril_syntax::ast::ParameterMode::Mut
-            })
+            }
         {
             return Err(fail(
                 "formal loan parameter or lexical owner differs from the declaration",
+            ));
+        }
+        let expected = formal
+            .expected(start.activation, pattern, context, &mut work)
+            .map_err(|message| fail(&message))?;
+        charge(&mut work, expected.len()).map_err(|message| fail(&message))?;
+        if start.bindings != expected {
+            return Err(fail(
+                "formal loan binding coverage differs from its original receiver parameter",
             ));
         }
     }
     let mut ended = BTreeMap::new();
     for end in &facts.invocation_loan_ends {
         let fail = |message: &str| (end.span, Some(end.cause), message.to_owned());
+        charge(&mut work, 1 + end.loans.len()).map_err(|message| fail(&message))?;
         if end.loans.is_empty() || !facts.scopes.contains(&end.activation) {
             return Err(fail("invocation loan end has no actual local loans"));
         }
         for (loan, parents) in &end.loans {
+            charge(&mut work, parents.len()).map_err(|message| fail(&message))?;
             let start = starts
                 .get(loan)
                 .ok_or_else(|| fail("invocation loan end has no formal entry"))?;
@@ -141,32 +360,15 @@ pub fn validate(facts: &super::SemanticFacts) -> Result<(), (Span, Option<CauseI
         if call.status != CopyInvocationStatus::Completed {
             continue;
         }
-        let Some(function) = facts
-            .functions
-            .iter()
-            .find(|function| function.definition == call.target)
-        else {
-            return Err((
-                call.span,
-                None,
-                "completed named invocation has no declaration".into(),
-            ));
-        };
-        for (index, parameter) in function.syntax.parameters.iter().enumerate() {
+        let parameters = formal
+            .named_parameters(call.target, &mut work)
+            .map_err(|message| (call.span, None, message))?;
+        charge(&mut work, parameters.len()).map_err(|message| (call.span, None, message))?;
+        for (index, parameter) in parameters.iter().enumerate() {
             if parameter.mode == ril_syntax::ast::ParameterMode::Read {
                 continue;
             }
-            if facts
-                .invocation_loan_starts
-                .iter()
-                .filter(|start| {
-                    start.owner == Some(CallableOwner::Function(call.target))
-                        && start.named == Some(call.id)
-                        && start.parameter == index as u32
-                })
-                .count()
-                != 1
-            {
+            if !named_starts.contains_key(&(call.id, index as u32)) {
                 return Err((
                     call.span,
                     None,
@@ -179,28 +381,15 @@ pub fn validate(facts: &super::SemanticFacts) -> Result<(), (Span, Option<CauseI
         if call.status != CopyInvocationStatus::Completed {
             continue;
         }
-        let Some(closure) = facts.closures.get(call.closure) else {
-            return Err((
-                call.site,
-                None,
-                "completed closure invocation has no object".into(),
-            ));
-        };
-        for (index, parameter) in closure.parameters.iter().enumerate() {
+        let parameters = formal
+            .closure_parameters(call, &mut work)
+            .map_err(|message| (call.site, None, message))?;
+        charge(&mut work, parameters.len()).map_err(|message| (call.site, None, message))?;
+        for (index, parameter) in parameters.iter().enumerate() {
             if parameter.mode == ril_syntax::ast::ParameterMode::Read {
                 continue;
             }
-            if facts
-                .invocation_loan_starts
-                .iter()
-                .filter(|start| {
-                    start.owner == closure.site.map(CallableOwner::Lambda)
-                        && start.closure == Some(call.id)
-                        && start.parameter == index as u32
-                })
-                .count()
-                != 1
-            {
+            if !closure_starts.contains_key(&(call.id, index as u32)) {
                 return Err((
                     call.site,
                     None,

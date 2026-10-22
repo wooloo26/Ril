@@ -183,7 +183,7 @@ impl Replay<'_> {
                 && row.argument_of == Some((event.id, 0)),
             "copy Source input borrowed another physical operand",
         )?;
-        self.input_operand_interval(event, 0, token.expression, context, sites)?;
+        self.input_operand_interval(event, 0, token.expression, context, work)?;
         let key = self.original_source_schema_inner(
             application.operands[0].expression,
             &original.value,

@@ -32,6 +32,23 @@ pub fn test_native() {
 --@ end-file
 --@ end-case
 
+--@ case: derive-distinct-targets
+--@ mode: run-pass
+--@ spec: SPEC#functional-updates-via-derive
+--@ entry: test_native
+--@ file: source.ril
+type Document = { mut title: str }
+fn first_title(mut draft: Document) &mut { draft.title = "First" }
+fn second_title(mut draft: Document) &mut { draft.title = "Second" }
+pub fn test_native() {
+    let source = clone_immut(Document.{ title: "Guide" })
+    let first = source |> derive first_title
+    let second = source |> derive second_title
+    assert(source.title == "Guide" && first.title == "First" && second.title == "Second")
+}
+--@ end-file
+--@ end-case
+
 --@ case: derive-named-repeated-activation
 --@ mode: run-pass
 --@ spec: SPEC#functional-updates-via-derive
@@ -197,6 +214,26 @@ fn example() {
 --@ end-file
 --@ end-case
 
+--@ case: derive-resumed-answer
+--@ mode: run-pass
+--@ spec: SPEC#functional-updates-via-derive
+--@ companion: derive-construction
+--@ entry: test_derive_resumed_answer
+--@ file: source.ril
+type Counter = { mut value: int }
+eff Read { get() -> int }
+pub fn test_derive_resumed_answer() {
+    let result = {
+        with Read::get() -> (resume 7) |> derive \mut draft: Counter -> {
+            draft.value += 1
+        }
+        Counter.{ value: Read::get() }
+    }
+    assert(result.value == 8)
+}
+--@ end-file
+--@ end-case
+
 --@ case: derive-live-input
 --@ mode: check-fail
 --@ spec: SPEC#functional-updates-via-derive
@@ -221,6 +258,30 @@ type Document = { mut title: str }
 fn example() {
     let source = Document.{ title: "Guide" }
     let revised = source |> derive \mut draft -> draft
+}
+--@ end-file
+--@ end-case
+
+--@ case: derive-resume-completion
+--@ mode: run-pass
+--@ spec: SPEC#functional-updates-via-derive
+--@ spec: SPEC#effect-handlers
+--@ entry: test_native
+--@ file: source.ril
+type Document = { mut title: str }
+eff Read { get() -> int }
+fn original() -> Immut<Document> @Read {
+    let number = Read::get()
+    assert(number == 7)
+    clone_immut(Document.{ title: "Guide" })
+}
+fn revise(mut draft: Document) &mut { draft.title = "Revised" }
+pub fn test_native() {
+    let revised: Immut<Document> = {
+        with Read::get() -> (resume 7) |> derive revise
+        original()
+    }
+    assert(revised.title == "Revised")
 }
 --@ end-file
 --@ end-case

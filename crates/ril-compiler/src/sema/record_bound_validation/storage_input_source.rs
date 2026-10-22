@@ -19,6 +19,7 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
     ) -> Check {
+        let mut input_work = 16384;
         let [Callable::Builtin(name)] = callee.callables.as_slice() else {
             return Ok(());
         };
@@ -82,7 +83,7 @@ impl Replay<'_> {
             labels.len() == arity,
             "primitive public interface changed its arity",
         )?;
-        let original = |slot: usize| -> Check<usize> {
+        let original = |slot: usize, work: &mut usize| -> Check<usize> {
             let index = mapping
                 .iter()
                 .position(|actual| *actual == slot)
@@ -96,20 +97,16 @@ impl Replay<'_> {
                 .expressions
                 .get(supplied.expression)
                 .ok_or_else(|| "storage intrinsic operand observation is absent".to_owned())?;
+            let observation = self.observations.row(supplied.expression, work)?;
             require(
                 supplied.allocation_epoch <= self.facts.allocation_history.len()
                     && value.source_id.is_some()
                     && value.source_id == arguments[index].expression.hir_id
-                    && self
-                        .observations
-                        .row(supplied.expression, &mut 4096)
-                        .is_ok_and(|row| {
-                            row.context == context
-                                && row.argument_of == Some((event.id, slot as u32))
-                        }),
+                    && observation.context == context
+                    && observation.argument_of == Some((event.id, slot as u32)),
                 "storage intrinsic operand borrowed another occurrence, epoch or context",
             )?;
-            self.input_operand_interval(event, slot, supplied.expression, context, sites)?;
+            self.input_operand_interval(event, slot, supplied.expression, context, work)?;
             Ok(supplied.expression)
         };
         let (receiver, _) = self
@@ -119,7 +116,7 @@ impl Replay<'_> {
                     .position(|slot| *slot == 0)
                     .ok_or("primitive receiver is absent")?]
                 .expression,
-                original(0)?,
+                original(0, &mut input_work)?,
                 context,
                 sites,
                 &mut 16384,
@@ -141,7 +138,7 @@ impl Replay<'_> {
                 }
                 crate::sema::source_types::SourceSensitivity::Sensitive { .. } => {}
             }
-            let observation = original(slot)?;
+            let observation = original(slot, &mut input_work)?;
             let written = mapping
                 .iter()
                 .position(|actual| *actual == slot)

@@ -403,7 +403,7 @@ impl Replay<'_> {
         };
         self.source_type_header(
             annotation,
-            &self.lambda_input_scope(site.owner)?,
+            &self.lambda_input_scope(site.owner, work)?,
             binding.typing_environment.clone(),
             work,
         )
@@ -517,7 +517,7 @@ impl Replay<'_> {
         else {
             unreachable!()
         };
-        let scope = self.lambda_input_scope(site.owner)?;
+        let scope = self.lambda_input_scope(site.owner, work)?;
         let parameter_headers = parameters;
         let written_parameters = parameter_headers
             .iter()

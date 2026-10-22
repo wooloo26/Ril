@@ -1560,6 +1560,7 @@ impl Replay<'_> {
             binding.typing_environment.id(),
         );
         if let std::collections::btree_map::Entry::Vacant(entry) = roots.entry(identity) {
+            let mut source_work = 16384;
             let original = if declaration.ty.is_none() {
                 self.storage_binding_source_schema(
                     &declaration.value,
@@ -1582,13 +1583,13 @@ impl Replay<'_> {
                 original.map(|(schema, _)| schema)
             } else {
                 if let Some(syntax) = &declaration.ty {
-                    let scope = self.lambda_input_scope(owner)?;
+                    let scope = self.lambda_input_scope(owner, &mut source_work)?;
                     Some(
                         self.source_type_header(
                             syntax,
                             &scope,
                             binding.typing_environment.clone(),
-                            &mut 16384,
+                            &mut source_work,
                         )?
                         .0,
                     )
@@ -1598,7 +1599,7 @@ impl Replay<'_> {
                         row.initializer.expression,
                         row.context,
                         sites,
-                        &mut 16384,
+                        &mut source_work,
                     )?
                     .map(|(schema, _)| schema)
                 }
@@ -2424,8 +2425,17 @@ mod tests {
         (facts, current)
     }
     fn replay(facts: &SemanticFacts) -> Replay<'_> {
+        let mut callable_input_work = 16_000_000;
+        let generated_entries =
+            crate::sema::application_effect::generated_entries::GeneratedEntryIndex::new(
+                facts,
+                &mut callable_input_work,
+            )
+            .unwrap();
         Replay {
             facts,
+            generated_entries,
+            callable_input_work,
             frames: crate::sema::scopes::FrameIndex::new(facts).unwrap(),
             blocks: None,
             observations: super::super::observation_index::ObservationIndex::new(facts).unwrap(),

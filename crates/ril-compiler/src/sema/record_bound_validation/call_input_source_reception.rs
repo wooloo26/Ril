@@ -230,7 +230,7 @@ impl Replay<'_> {
             } else if argument.definition == call.target {
                 let context = self.input_caller_context(call)?;
                 let scope = context.owner.map_or(Ok(BoundScope::default()), |owner| {
-                    self.lambda_input_scope(owner)
+                    self.lambda_input_scope(owner, work)
                 })?;
                 let observation = call
                     .source_event

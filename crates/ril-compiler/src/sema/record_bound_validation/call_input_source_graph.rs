@@ -246,7 +246,7 @@ impl Replay<'_> {
         }
         let environment = self.source_graph_environment(context, visit.observation, work)?;
         if let Some(observation) = visit.observation
-            && let Some(key) = self.operation_result_source(observation)?
+            && let Some(key) = self.operation_result_source(observation, work)?
         {
             return self.source_header_schema(&key, environment, work).map(Some);
         }
@@ -383,7 +383,7 @@ impl Replay<'_> {
                     "returned Source borrowed another physical call",
                 )?;
                 if let Some(target) = event.target {
-                    let causes = self.producing_result_causes(value.cause)?;
+                    let causes = self.producing_result_causes(value.cause, work)?;
                     let instances: Vec<_> =
                         self.facts
                             .copy_invocations
@@ -396,7 +396,7 @@ impl Replay<'_> {
                             })
                             .collect();
                     if let [instance] = instances.as_slice() {
-                        self.validate_producing_result_transport(instance, value)?;
+                        self.validate_producing_result_transport(instance, value, work)?;
                         let token = event
                             .callee_expression
                             .ok_or("returned Source has no original callee token")?;
@@ -579,7 +579,7 @@ impl Replay<'_> {
         let environment = self.source_graph_environment(context, visit.observation, work)?;
         let scope = context
             .owner
-            .map(|owner| self.lambda_input_scope(owner))
+            .map(|owner| self.lambda_input_scope(owner, work))
             .transpose()?
             .unwrap_or_default();
         let (schema, environment) = self.source_type_header(ty, &scope, environment, work)?;

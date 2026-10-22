@@ -114,6 +114,8 @@ duplicate source trees and historical verification reports.
   `EntryOrigin::Unresolved` inputs now leave inferred closure parameters
   uncertified. Iterator creation recipes do not certify individual transitions.
   Finish channel payloads, handler activations and resumption transport.
+  Resume completions nested inside expressions still need their actual protected
+  answer; the current direct-resume path substitutes unit for those completions.
   Resolve the nine-scope channel replay
   case with finite work while preserving unknown guard/history obligations.
 - Implement conditional bindings (`if let`, `while let`) and array/tuple rest

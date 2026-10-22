@@ -56,7 +56,7 @@ impl ScopeIndex {
     pub fn iter(&self) -> impl Iterator<Item = &ScopeId> {
         self.entries.keys()
     }
-    pub fn records(&self) -> impl Iterator<Item = &ScopeRecord> {
+    pub fn records(&self) -> impl ExactSizeIterator<Item = &ScopeRecord> {
         self.entries.values()
     }
     pub fn get(&self, id: &ScopeId) -> Option<&ScopeRecord> {

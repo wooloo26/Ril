@@ -3,6 +3,9 @@ use super::*;
 use crate::hir::nodes::{self as hir, LexicalOwner};
 use crate::sema::{
     SemanticFacts,
+    application_effect::generated_entries::{
+        AuthenticatedGeneratedEntry, EntryView, GeneratedEntryRecords, GeneratedTarget,
+    },
     model::{HandlerFact, OperationFact},
 };
 use ril_compiler_core::ids::StmtId;
@@ -13,6 +16,7 @@ pub(crate) struct FrameIndex<'a> {
     first_parent: BTreeMap<ScopeId, Option<ActivationEpochId>>,
     preparations: BTreeMap<ScopeId, Vec<&'a crate::sema::default_uses::DefaultUse>>,
     signatures: super::signatures::SignatureIndex<'a>,
+    generated_operations: BTreeMap<ScopeId, AuthenticatedGeneratedEntry<'a>>,
 }
 
 pub(crate) struct OperationFrame<'a> {
@@ -65,9 +69,20 @@ impl<'a> FrameIndex<'a> {
     }
     pub(crate) fn new(facts: &'a SemanticFacts) -> Result<Self, String> {
         require(
-            facts.scopes.records().count() <= 1_000_000 && facts.operations.len() <= 1_000_000,
+            facts.scopes.records().len() <= 1_000_000 && facts.operations.len() <= 1_000_000,
             "frame receiver index exceeds its work bound",
         )?;
+        let mut work = 4_000_000usize;
+        for count in [
+            facts.operations.len(),
+            facts.activations.len(),
+            facts.default_uses.len(),
+            facts.scopes.records().len(),
+        ] {
+            work = work
+                .checked_sub(count)
+                .ok_or("frame receiver index exceeds its work bound")?;
+        }
         let mut operations = BTreeMap::new();
         for operation in facts.operations.values() {
             require(
@@ -98,12 +113,45 @@ impl<'a> FrameIndex<'a> {
                 preparations.entry(root.scope).or_default().push(receipt);
             }
         }
+        // Generated entries are authenticated once from their original
+        // operation and actual evaluation records, including zero inputs.
+        // These borrowed proofs live only in this independent replay index.
+        let generated_records = GeneratedEntryRecords::new(facts, &mut work)?;
+        let mut generated_operations = BTreeMap::new();
+        for scope in facts.scopes.records() {
+            let ScopeOrigin::Operation(entry) = &scope.origin else {
+                continue;
+            };
+            if !matches!(entry.origin, EntryOrigin::Generated { .. }) {
+                continue;
+            }
+            let caller_activation = entry
+                .parent
+                .and_then(|id| facts.activations.get(id.0 as usize))
+                .map(|parent| parent.scope);
+            let proof = generated_records
+                .authenticate(
+                    EntryView {
+                        origin: &entry.origin,
+                        parent: entry.parent,
+                        caller_activation,
+                        caller_context: entry.caller_context,
+                        allocation_epoch: entry.allocation_epoch,
+                        arguments: &(),
+                    },
+                    GeneratedTarget::Operation(entry.operation),
+                    &mut work,
+                )?
+                .ok_or("generated operation receiver lost its entry origin")?;
+            generated_operations.insert(scope.id, proof);
+        }
         Ok(Self {
             facts,
             signatures: super::signatures::SignatureIndex::new(facts)?,
             operations,
             first_parent,
             preparations,
+            generated_operations,
         })
     }
 
@@ -331,27 +379,10 @@ impl<'a> FrameIndex<'a> {
                     "operation declaration probe borrowed another creation scope",
                 )?;
             }
-            EntryOrigin::Generated {
-                anchor,
-                callee,
-                inputs,
-            } => {
-                let parent = parent.ok_or("generated operation receiver lost its actual parent")?;
-                let value = facts
-                    .expressions
-                    .get(callee.0 as usize)
-                    .ok_or("generated operation callee is absent")?;
-                require(
-                    *anchor == parent.id
-                        && inputs.is_empty()
-                        && operation.name == "Div::exhausted"
-                        && matches!(value.value.callables.as_slice(), [crate::sema::model::Callable::Builtin(name)] if name == "Div::budget")
-                        && facts
-                            .evaluations
-                            .get(callee.0 as usize)
-                            .is_some_and(|record| record.context == entry.caller_context),
-                    "generated exhaustion receiver lost its actual budget application",
-                )?;
+            EntryOrigin::Generated { .. } => {
+                self.generated_operations
+                    .get(&scope)
+                    .ok_or("generated operation receiver has no original entry proof")?;
             }
             _ => return Err("operation receiver has an unresolved entry origin".into()),
         }

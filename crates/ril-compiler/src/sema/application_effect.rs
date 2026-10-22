@@ -13,6 +13,7 @@ use ril_compiler_core::{
 use std::collections::{BTreeMap, BTreeSet};
 mod activations;
 mod entries;
+pub(crate) mod generated_entries;
 mod signature_inputs;
 pub use activations::{ActivationKind, EvaluationActivation};
 mod parameters;

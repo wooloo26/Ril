@@ -89,6 +89,8 @@ const LIMIT: usize = 65_536;
 
 struct Replay<'a> {
     facts: &'a SemanticFacts,
+    generated_entries: super::application_effect::generated_entries::GeneratedEntryIndex<'a>,
+    callable_input_work: usize,
     frames: super::scopes::FrameIndex<'a>,
     observations: observation_index::ObservationIndex<'a>,
     blocks: Option<crate::hir::blocks::BlockIndex>,
@@ -204,8 +206,16 @@ impl<'a> Replay<'a> {
                 }
             }
         }
+        let mut callable_input_work = 16_000_000usize;
+        let generated_entries =
+            super::application_effect::generated_entries::GeneratedEntryIndex::new(
+                facts,
+                &mut callable_input_work,
+            )?;
         Ok(Self {
             facts,
+            generated_entries,
+            callable_input_work,
             frames: super::scopes::FrameIndex::new(facts)?,
             observations,
             blocks,
