@@ -587,6 +587,34 @@ fn block_correspondence_rejects_partial_reordered_and_cross_connected_member_ids
         index.source_block(&outside),
         Err(BlockIndexError::MissingNode(NodeId::Stmt(StmtId(u32::MAX))))
     );
+    let mut work = 4096;
+    assert!(
+        index
+            .matches_source_at_with_budget(blocks[0].0, original, &mut work)
+            .unwrap()
+    );
+    assert!(
+        !index
+            .matches_source_at_with_budget(blocks[1].0, original, &mut work)
+            .unwrap()
+    );
+    for changed in [
+        &suffix,
+        &truncated,
+        &reordered,
+        &missing_where,
+        &changed_roles,
+        &crossed,
+        &duplicated,
+        &missing_id,
+        &outside,
+    ] {
+        assert!(
+            !index
+                .matches_source_at_with_budget(blocks[0].0, changed, &mut work)
+                .unwrap()
+        );
+    }
     assert!(matches!(
         index.block(BlockAnchor::ExpressionBody(ExprId(u32::MAX))),
         Err(BlockIndexError::UnknownAnchor(_))
@@ -664,6 +692,11 @@ fn every_direct_block_kind_has_one_anchor_and_control_or_terminated_tails_stay_a
         };
         let anchor = BlockAnchor::ExpressionBody(expression.hir_id.unwrap());
         assert!(index.block(anchor).is_ok());
+        assert!(
+            index
+                .matches_source_at_with_budget(anchor, block, &mut 4096)
+                .unwrap()
+        );
         if number == 3 {
             assert_eq!(index.source_block(block).unwrap(), None);
         } else {
@@ -724,6 +757,10 @@ fn block_index_construction_and_queries_charge_shared_work_without_partial_resul
     }
     assert_eq!(
         index.source_block_with_budget(block, &mut 0),
+        Err(BlockIndexError::Budget)
+    );
+    assert_eq!(
+        index.matches_source_at_with_budget(anchor, block, &mut 0),
         Err(BlockIndexError::Budget)
     );
     assert!(matches!(

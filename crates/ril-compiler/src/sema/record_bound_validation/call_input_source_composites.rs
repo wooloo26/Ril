@@ -232,16 +232,20 @@ impl Replay<'_> {
                 .blocks
                 .as_ref()
                 .ok_or_else(|| "block Source has no original HIR block index".to_owned())?;
-            let anchor = blocks
-                .source_block_with_budget(block, work)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "block Source is not a complete original block".to_owned())?;
+            let source = expression
+                .hir_id
+                .ok_or("block Source lost its original HIR owner")?;
+            let anchor = ril_compiler_core::ids::BlockAnchor::ExpressionBody(source);
             require(
-                Some(anchor)
-                    == expression
-                        .hir_id
-                        .map(ril_compiler_core::ids::BlockAnchor::ExpressionBody),
-                "block Source borrowed another original block owner",
+                self.facts
+                    .semantic_hir
+                    .as_deref()
+                    .and_then(|hir| hir.expression(source))
+                    .is_some_and(|node| matches!(node.kind, crate::hir::nodes::ExprKind::Block(_)))
+                    && blocks
+                        .matches_source_at_with_budget(anchor, block, work)
+                        .map_err(|error| error.to_string())?,
+                "block Source is not a complete original block at its actual HIR owner",
             )?;
             let Some((statement, tail_id)) = blocks
                 .tail_with_budget(anchor, work)

@@ -286,8 +286,27 @@ impl BlockIndex {
             return Ok(None);
         };
         let original = self.block_with_budget(anchor, work)?;
-        charge(work, count)?;
-        let same = original.statements.len() == block.statements.len()
+        Ok(Self::matches_source(original, block, work)?.then_some(anchor))
+    }
+
+    /// The caller supplies the actual owner; empty blocks cannot recover it
+    /// from member statements. This checks syntax membership, not completion.
+    pub fn matches_source_at_with_budget(
+        &self,
+        anchor: BlockAnchor,
+        block: &ast::Block,
+        work: &mut usize,
+    ) -> Result<bool, BlockIndexError> {
+        Self::matches_source(self.block_with_budget(anchor, work)?, block, work)
+    }
+
+    pub(crate) fn matches_source(
+        original: &hir::Block,
+        block: &ast::Block,
+        work: &mut usize,
+    ) -> Result<bool, BlockIndexError> {
+        charge(work, 1 + block.statements.len() + block.where_items.len())?;
+        Ok(original.statements.len() == block.statements.len()
             && original.where_items.len() == block.where_items.len()
             && original
                 .statements
@@ -298,8 +317,7 @@ impl BlockIndex {
                 .where_items
                 .iter()
                 .zip(&block.where_items)
-                .all(|(id, statement)| statement.hir_id == Some(*id));
-        Ok(same.then_some(anchor))
+                .all(|(id, statement)| statement.hir_id == Some(*id)))
     }
 
     /// A structural candidate only. Its real evaluation may still be Never,

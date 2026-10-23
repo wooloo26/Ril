@@ -500,21 +500,17 @@ impl Checker {
                     matches!(statement.kind, crate::hir::nodes::StmtKind::Handler(_))
                 })
         });
-        if syntax.hir_id != Some(identity.source)
-            || record.context != context
-            || block.statements.len() != canonical.statements.len()
-            || block.where_items.len() != canonical.where_items.len()
-            || block
-                .statements
-                .iter()
-                .zip(&canonical.statements)
-                .any(|(actual, original)| actual.hir_id != Some(*original))
-            || block
-                .where_items
-                .iter()
-                .zip(&canonical.where_items)
-                .any(|(actual, original)| actual.hir_id != Some(*original))
-        {
+        if syntax.hir_id != Some(identity.source) || record.context != context {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let mut remaining = work.remaining();
+        let matches =
+            crate::hir::blocks::BlockIndex::matches_source(canonical, block, &mut remaining);
+        work.charge(work.remaining() - remaining)?;
+        if !matches.map_err(|error| match error {
+            crate::hir::blocks::BlockIndexError::Budget => SourceTypesError::BudgetExceeded,
+            _ => SourceTypesError::Unresolved,
+        })? {
             return Err(SourceTypesError::Unresolved);
         }
         let mut remaining = work.remaining();

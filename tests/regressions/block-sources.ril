@@ -1,0 +1,32 @@
+--@ case: empty-block-contexts
+--@ mode: run-pass
+--@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+--@ entry: test_native
+--@ file: source.ril
+fn classify(value: ?int) {
+    if value is Some(1) {} else if value is Some(2) {} else {}
+}
+
+pub fn test_native() {
+    classify(None)
+    classify(Some(1))
+    classify(Some(2))
+    let unit: () = {}
+    assert(unit == ())
+    let empty = \-> {}
+    empty()
+}
+--@ end-file
+--@ end-case
+
+--@ case: empty-block-type-mismatch
+--@ mode: check-fail
+--@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+--@ companion: empty-block-contexts
+-- Error [E0301]: the empty block returns unit, not int
+--@ file: source.ril
+fn invalid() {
+    let value: int = {}
+}
+--@ end-file
+--@ end-case
