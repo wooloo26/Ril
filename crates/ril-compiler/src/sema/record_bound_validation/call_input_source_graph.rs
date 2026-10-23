@@ -402,10 +402,8 @@ impl Replay<'_> {
                     "original header borrowed another named binding",
                 )?;
                 if binding.parameter {
-                    if let Some(key) = self.operation_formal_source_key(binding, work)? {
-                        return self
-                            .source_header_schema(&key, binding.typing_environment.clone(), work)
-                            .map(Some);
+                    if let Some(source) = self.operation_formal_source_schema(binding, work)? {
+                        return Ok(Some(source));
                     }
                     if matches!(binding.context.owner, Some(CallableOwner::Lambda(_))) {
                         return self

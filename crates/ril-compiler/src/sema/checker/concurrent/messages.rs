@@ -4,8 +4,6 @@ use crate::sema::channel_messages::{ChannelAnchor, ChannelGuard, ChannelMessageI
 use crate::sema::channel_production::ProductionCase;
 #[path = "messages_conditions.rs"]
 mod conditions;
-#[path = "messages_formals.rs"]
-mod formals;
 #[path = "messages_optionals.rs"]
 mod optionals;
 

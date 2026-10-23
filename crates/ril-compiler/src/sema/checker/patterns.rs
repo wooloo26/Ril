@@ -623,12 +623,7 @@ impl Checker {
                 // A constructor excluded by a known tag still needs ordinary
                 // payload typing. Its invented formal shape exists only in a
                 // fully restored preview, never in an executable path's state.
-                self.formal_value(
-                    subject.ty.clone(),
-                    u32::MAX,
-                    arm.pattern.span,
-                    &mut BTreeSet::new(),
-                )
+                self.preview_pattern_subject(&subject, &subject_packet, arm.pattern.span)
             };
             let unreachable = previous
                 .iter()

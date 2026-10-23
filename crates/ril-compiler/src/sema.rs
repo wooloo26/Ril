@@ -57,6 +57,7 @@ pub(crate) mod source_query;
 pub(crate) mod source_reception;
 #[cfg(test)]
 mod source_reception_review_tests;
+pub(crate) mod source_shapes;
 mod source_type_validation;
 pub mod source_types;
 pub(crate) mod source_types_ref;

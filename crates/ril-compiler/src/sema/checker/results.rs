@@ -76,16 +76,27 @@ impl Checker {
         Self::result_value(success, payload, cause, id)
     }
     fn result_value(success: bool, payload: Value, cause: CauseId, id: u32) -> Value {
-        let mut value = payload.clone();
-        value.source_type_witness = None;
-        value.condition_inspections = Default::default();
-        value.ty = if success {
+        let ty = if success {
             Ty::Result(Box::new(payload.ty.clone()), Box::new(Ty::Unknown))
         } else {
             Ty::Result(Box::new(Ty::Unknown), Box::new(payload.ty.clone()))
         };
+        let mut value = Self::result_carrier(payload.clone(), ty, cause, id);
         value.result_success = success.then(|| Box::new(payload.clone()));
         value.result_error = (!success).then(|| Box::new(payload.clone()));
+        value.result_payload = Some(Box::new(payload));
+        value.result_tag = Some(success);
+        value
+    }
+
+    /// Both a known tag and an incoming union use the same carrier operation.
+    /// Payload-specific interfaces do not become interfaces of the Result.
+    pub(super) fn result_carrier(mut value: Value, ty: Ty, cause: CauseId, id: u32) -> Value {
+        value.source_type_witness = None;
+        value.condition_inspections = Default::default();
+        value.ty = ty;
+        value.result_success = None;
+        value.result_error = None;
         value.unsuffixed_numeric = false;
         value.literal_number = false;
         value.callables.clear();
@@ -99,9 +110,9 @@ impl Checker {
         value.variant_payload = None;
         value.variant_witnesses.clear();
         value.variant_tag = None;
-        value.result_payload = Some(Box::new(payload));
+        value.result_payload = None;
         value.constant = None;
-        value.result_tag = Some(success);
+        value.result_tag = None;
         value.outer_results = [id].into();
         value.must_outer_results = [id].into();
         value.results.insert(id);

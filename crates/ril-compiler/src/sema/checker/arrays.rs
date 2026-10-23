@@ -3,6 +3,78 @@
 use super::*;
 
 impl Checker {
+    pub(super) fn preview_pattern_subject(
+        &mut self,
+        subject: &Value,
+        packet: &EvaluatedValue,
+        span: Span,
+    ) -> Value {
+        let mut formal =
+            self.formal_value(subject.ty.clone(), u32::MAX, span, &mut BTreeSet::new());
+        // An excluded tag supplies no actual payload and cannot restore a
+        // stronger access view while its syntax is checked.
+        formal.permission = formal.permission.meet(subject.permission);
+        formal.publication = if subject.publication == Publication::Immutable {
+            Publication::Immutable
+        } else {
+            Publication::Live
+        };
+        let mut lease = self.application_effect.lease_work(16384);
+        let shapes = (|| {
+            let source = packet.input_source(
+                crate::sema::source_types_ref::SourceTypesRef::Live(
+                    self.type_source.storage.live_types(),
+                ),
+                lease.work(),
+            )?;
+            let Some((schema, environment)) = source.into_known() else {
+                return Ok(BTreeMap::new());
+            };
+            if environment.is_poisoned() {
+                return Err(crate::sema::source_types::SourceTypesError::Unresolved);
+            }
+            crate::sema::source_shapes::assumed_array_lengths(
+                &schema,
+                &formal,
+                &self.heap,
+                &self.fields,
+                lease.work(),
+            )
+        })();
+        let returned = self.application_effect.return_work(lease);
+        match shapes.and_then(|shapes| returned.map(|()| shapes)) {
+            Ok(shapes) => {
+                if !self.application_effect.admit(shapes.len()) {
+                    self.unsupported(span, "pattern shape installation exceeded its work bound");
+                    return formal;
+                }
+                if shapes.iter().any(|(node, length)| {
+                    self.array_lengths
+                        .get(node)
+                        .is_some_and(|prior| prior.is_some_and(|prior| prior != *length))
+                }) {
+                    self.unsupported(
+                        span,
+                        "pattern Source shape conflicts with an existing symbolic constraint",
+                    );
+                    return formal;
+                }
+                for (node, length) in shapes {
+                    self.array_lengths.insert(node, Some(length));
+                    self.fixed_arrays.insert(node);
+                    if length == 1 {
+                        self.prove_single_formal_member(node);
+                    }
+                }
+            }
+            Err(error) => self.unsupported(
+                span,
+                format!("pattern preview needs its original Source shape constraints: {error}"),
+            ),
+        }
+        formal
+    }
+
     pub(super) fn known_array_length(&self, value: &Value) -> Option<u64> {
         let mut common = None;
         if value.origins.nodes.is_empty() {
@@ -260,6 +332,11 @@ impl Checker {
                     .into_iter()
                     .enumerate()
                 {
+                    let payload = payload.as_ref().or_else(|| {
+                        (value.result_tag == Some(index == 0))
+                            .then_some(value.result_payload.as_ref())
+                            .flatten()
+                    });
                     if let Some(payload) = payload {
                         self.array_shape_inner(payload, &arguments[index], seen, promise);
                     } else if value.result_tag != Some(index == 0) && value.result_tag.is_some() {

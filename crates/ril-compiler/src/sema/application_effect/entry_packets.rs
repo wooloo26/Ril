@@ -829,15 +829,17 @@ impl<'a> Replay<'a> {
                             }
                             answer => answer,
                         };
-                        require(
-                            self.source_result(
-                                observation,
-                                "original graph equivalence",
-                                equivalent,
-                                work,
-                            )?,
-                            "entry Source differs from its independently rebuilt graph",
-                        )?;
+                        if !self.source_result(
+                            observation,
+                            "original graph equivalence",
+                            equivalent,
+                            work,
+                        )? {
+                            let diagnostic = self.source_diagnostic(observation, work)?;
+                            return Err(format!(
+                                "entry Source differs from its independently rebuilt graph: {diagnostic}"
+                            ));
+                        }
                         let dependency =
                             graph(work, |budget| expected.requires_environment(budget));
                         if self.source_result(

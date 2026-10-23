@@ -318,6 +318,18 @@ impl Replay<'_> {
         binding: &crate::sema::model::BindingInfo,
         work: &mut usize,
     ) -> Check<Option<ArgumentKey>> {
+        self.operation_formal_source_schema(binding, work)?
+            .map(|(schema, _)| {
+                super::graph_sources::schema_work(work, |budget| schema.key_with_work(budget))
+            })
+            .transpose()
+    }
+
+    pub(super) fn operation_formal_source_schema(
+        &self,
+        binding: &crate::sema::model::BindingInfo,
+        work: &mut usize,
+    ) -> Check<Option<OriginalSource>> {
         let Some(frame) = self.frames.operation(binding.owner, work)? else {
             return Ok(None);
         };
@@ -363,16 +375,23 @@ impl Replay<'_> {
             .get(slot)
             .ok_or("operation parameter is outside its Source signature")?
             .1;
-        crate::sema::clone_work::key(work, key, 0)
-            .ok_or("operation parameter Source clone exceeds its shared work bound")?;
-        if Some(pattern_root) == binding.pattern {
-            return Ok(Some(key.clone()));
-        }
         let hir = self
             .facts
             .semantic_hir
             .as_deref()
             .ok_or("operation formal has no original HIR")?;
+        // A record-rest binder is introduced by its whole record PatternId.
+        // Equal IDs alone therefore do not prove an empty Source projection.
+        if Some(pattern_root) == binding.pattern
+            && hir.pattern(pattern_root).is_some_and(|pattern| {
+                matches!(&pattern.kind,
+                crate::hir::nodes::PatternKind::Name(name) if name == &binding.name)
+            })
+        {
+            return self
+                .source_header_schema(key, source.environment.clone(), work)
+                .map(Some);
+        }
         let declaration = hir
             .statement(source.effect)
             .ok_or("operation formal lost its original effect")?;
@@ -395,15 +414,8 @@ impl Replay<'_> {
             let schema = SourceSchema::import(key, Some(original), budget)?;
             crate::sema::source_types::declarations::resolve_schema(&schema, hir, budget)
         })?;
-        self.parameter_binding_projection(
-            binding,
-            pattern_root,
-            &schema,
-            &source.environment,
-            work,
-        )?
-        .map(|schema| schema.key().map_err(|error| error.to_string()))
-        .transpose()
+        self.parameter_binding_projection(binding, pattern_root, &schema, &source.environment, work)
+            .map(|schema| schema.map(|schema| (schema, source.environment.clone())))
     }
 
     pub(super) fn lambda_formal_source_key(

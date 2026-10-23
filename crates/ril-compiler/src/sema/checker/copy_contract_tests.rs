@@ -267,12 +267,11 @@ fn missing_result_payloads_keep_each_latent_or_forbidden_member() {
         ]
         .into(),
     );
-    let source = checker.formal_value(
-        Ty::Result(Box::new(payload), Box::new(Ty::Str)),
-        0,
-        span(),
-        &mut BTreeSet::new(),
-    );
+    // This control deliberately models a partial Result. Ordinary formal
+    // construction now retains both payload graphs, so it is not a missing
+    // payload fixture anymore.
+    let source = checker.formal_result(Ty::Result(Box::new(payload), Box::new(Ty::Str)), span());
+    assert!(source.result_success.is_none() && source.result_error.is_none());
     let boundary = checker.copy_boundary(&source, span(), &frame, false);
     for qualification in [
         Constituent::Deferred(AbstractMember::DataBinder("A".into())),

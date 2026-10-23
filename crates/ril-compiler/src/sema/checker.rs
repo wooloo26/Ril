@@ -58,6 +58,7 @@ mod evaluated;
 #[cfg(test)]
 mod execution_oracle;
 mod explicit_named;
+mod formal_values;
 use super::evaluated::EvaluatedValue;
 mod bound_writes;
 mod expressions;
@@ -1578,10 +1579,10 @@ impl Checker {
             return value;
         }
         if matches!(&ty, Ty::Result(..)) {
-            return self.formal_channel_result_graph(ty, index, span, seen);
+            return self.formal_result_graph(ty, index, span, seen);
         }
         if matches!(&ty, Ty::Optional(..)) {
-            return self.formal_channel_optional_graph(ty, index, span, seen);
+            return self.formal_optional_graph(ty, index, span, seen);
         }
         let cause = self.cause(
             CauseKind::Source,
