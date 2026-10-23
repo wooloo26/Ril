@@ -155,7 +155,7 @@ impl SourceTypeIndex {
         view: SourceView,
         work: &mut WorkLimit,
     ) -> Result<p::SourceTypeId, SourceTypesError> {
-        self.view_schema(view, work)?;
+        self.view_schema(view, None, work)?;
         retained_id(self.retained_types()?, view.ty, work)
     }
 
@@ -182,7 +182,8 @@ impl SourceTypeIndex {
         let nodes = types.indexed_nodes();
         work.charge(nodes.len())?;
         let mut retained = Vec::with_capacity(nodes.len());
-        for (_, source) in nodes {
+        for source in nodes {
+            let (_, source) = source?;
             retained.push(node(types, source, work)?);
         }
         Ok(RetainedSourceTypes {

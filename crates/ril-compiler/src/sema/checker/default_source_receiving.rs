@@ -196,7 +196,7 @@ impl Checker {
                         allocation_history: moves,
                         bindings,
                         constructors,
-                        source_types: crate::sema::numeric_selection::NumericSourceTypes::Live(
+                        source_types: crate::sema::source_types_ref::SourceTypesRef::Live(
                             source_types,
                         ),
                         witnesses,

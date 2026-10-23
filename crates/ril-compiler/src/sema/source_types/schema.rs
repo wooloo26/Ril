@@ -162,7 +162,7 @@ impl SourceSchema {
 
     /// An immutable snapshot can lend its existing arena without rebuilding
     /// that arena or changing the selected node's identity.
-    pub(super) fn frozen_view(
+    pub(crate) fn frozen_view(
         types: &SourceTypes,
         root: SourceTypeId,
         original: Option<TypeExprId>,
@@ -193,20 +193,6 @@ impl SourceSchema {
         work: &mut WorkLimit,
     ) -> Result<bool, SourceTypesError> {
         super::reception::equivalent(&self.types, self.root, &other.types, other.root, work)
-    }
-
-    pub(crate) fn copy_from(
-        graph: &impl SourceTypeQueries,
-        root: SourceTypeId,
-        original: Option<TypeExprId>,
-        work: &mut WorkLimit,
-    ) -> Result<Self, SourceTypesError> {
-        let copy = graph.substitute(root, &std::collections::BTreeMap::new(), work)?;
-        Ok(Self {
-            types: copy.types,
-            root: copy.root,
-            original,
-        })
     }
 
     pub(crate) fn equivalent_key(
@@ -583,9 +569,16 @@ mod tests {
             source.key(),
             Err(SourceTypesError::RecursiveLegacyKey)
         ));
-        let copy =
-            SourceSchema::copy_from(&source.types, source.root, source.original(), &mut work)
-                .unwrap();
+        let mut destination = SourceBuilder::new().unwrap();
+        let copied = source.copy_into(&mut destination, &mut work).unwrap();
+        let copy = SourceSchema::frozen_view(
+            &destination.freeze(&mut work).unwrap(),
+            copied,
+            source.original(),
+            &mut work,
+        )
+        .unwrap();
+        assert_ne!(source.root_id(), copy.root_id());
         assert_eq!(source.equivalent(&copy, &mut work), Ok(true));
         assert!(matches!(
             source.equivalent(&copy, &mut WorkLimit::new(0)),

@@ -215,7 +215,12 @@ impl Checker {
                 {
                     return Err(SourceTypesError::Unresolved);
                 }
-                input.input_source().cloned()
+                input
+                    .input_source(
+                        SourceTypesRef::Live(self.type_source.storage.live_types()),
+                        &mut admission,
+                    )
+                    .map(|source| source.into_known())
             })(),
             EntryOrigin::Generated { .. } => {
                 self.generated_input_source_schema(&call.entry.origin, slot)

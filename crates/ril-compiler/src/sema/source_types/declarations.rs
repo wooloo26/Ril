@@ -85,7 +85,7 @@ pub(crate) fn type_schema_with_lexical(
     };
     let root = resolver.ty(id, work, 0)?;
     let graph = resolver.freeze(root, work)?;
-    SourceSchema::copy_from(&graph.types, graph.root, Some(id), work)
+    SourceSchema::frozen_view(&graph.types, graph.root, Some(id), work)
 }
 
 struct DeclaredGraph {
@@ -103,7 +103,7 @@ pub(crate) fn schema(
     work: &mut WorkLimit,
 ) -> Result<SourceSchema, SourceTypesError> {
     let graph = resolve(key, hir, work)?;
-    SourceSchema::copy_from(&graph.types, graph.root, None, work)
+    SourceSchema::frozen_view(&graph.types, graph.root, None, work)
 }
 
 /// Resolve only original declaration edges in an already captured graph. The
@@ -118,7 +118,7 @@ pub(crate) fn resolve_schema(
     let mut resolver = Resolve::new(hir, work)?;
     let root = resolver.copy(types, root, work, 0)?;
     let graph = resolver.freeze(root, work)?;
-    SourceSchema::copy_from(&graph.types, graph.root, source.original(), work)
+    SourceSchema::frozen_view(&graph.types, graph.root, source.original(), work)
 }
 
 /// Expand only actual transparent module declarations. Recursive, captured or
@@ -204,7 +204,7 @@ pub(crate) fn construction_schema(
     };
     match graph.types.sensitivity(graph.root, work) {
         SourceSensitivity::Absent { .. } => {
-            SourceSchema::copy_from(&graph.types, graph.root, Some(original), work).map(Some)
+            SourceSchema::frozen_view(&graph.types, graph.root, Some(original), work).map(Some)
         }
         SourceSensitivity::Sensitive { .. } => Ok(None),
         SourceSensitivity::Unknown { reason } => Err(reason),

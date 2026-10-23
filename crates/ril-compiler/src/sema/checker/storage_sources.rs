@@ -50,6 +50,10 @@ impl State {
         &self.types
     }
 
+    pub(super) fn live_types_mut(&mut self) -> &mut crate::sema::source_types::LiveSourceTypes {
+        &mut self.types
+    }
+
     pub(super) fn into_parts(
         self,
     ) -> (
@@ -95,7 +99,7 @@ impl Checker {
         view: crate::sema::source_types::SourceView,
         work: &mut WorkLimit,
     ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
-        self.type_source.storage.types.view_schema(view, work)
+        self.type_source.storage.types.view_schema(view, None, work)
     }
 
     pub(super) fn parameter_source_schema_if_known(

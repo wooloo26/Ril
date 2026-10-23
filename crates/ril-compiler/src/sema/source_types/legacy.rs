@@ -180,11 +180,16 @@ impl SourceBuilder {
         key: &ArgumentKey,
         work: &mut WorkLimit,
     ) -> Result<SourceTypeId, SourceTypesError> {
-        let checkpoint = self.checkpoint();
-        let result = import_node(key, self, work, 0);
-        if result.is_err() {
-            self.rollback(checkpoint);
+        let checkpoint = self.begin_transaction(work)?;
+        match import_node(key, self, work, 0) {
+            Ok(root) => {
+                self.commit_transaction(checkpoint)?;
+                Ok(root)
+            }
+            Err(error) => {
+                self.rollback_transaction(checkpoint)?;
+                Err(error)
+            }
         }
-        result
     }
 }

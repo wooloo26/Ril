@@ -77,8 +77,16 @@ mod tests {
                 arguments: vec![ArgumentKey::Closed("const(int:1)".into())],
             }
         );
-        let copied =
-            SourceSchema::copy_from(&first.types, first.root, first.original, &mut work).unwrap();
+        let mut destination = SourceBuilder::new().unwrap();
+        let root = first.copy_into(&mut destination, &mut work).unwrap();
+        let copied = SourceSchema::frozen_view(
+            &destination.freeze(&mut work).unwrap(),
+            root,
+            first.original,
+            &mut work,
+        )
+        .unwrap();
+        assert_ne!(first.root_id(), copied.root_id());
         assert!(first.equivalent(&copied, &mut work).unwrap());
     }
 

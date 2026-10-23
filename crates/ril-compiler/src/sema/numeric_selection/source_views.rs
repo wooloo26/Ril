@@ -317,9 +317,10 @@ impl<'a, 'w> Replay<'a, 'w> {
                 return Err(SourceTypesError::Unresolved);
             }
             charge(self.work, 2)?;
-            let source = packet
-                .input_source()?
-                .as_ref()
+            let types = self.facts.source_types;
+            let source = self
+                .graph_work(|work| packet.input_source(types, work))?
+                .into_known()
                 .ok_or(SourceTypesError::Unresolved)?;
             if source.1.is_poisoned() {
                 return Err(SourceTypesError::Unresolved);
@@ -440,7 +441,7 @@ impl<'a, 'w> Replay<'a, 'w> {
                     let view = constructor.source.ok_or(SourceTypesError::Unresolved)?;
                     let types = self.facts.source_types;
                     let (owner, environment) =
-                        self.graph_work(|work| types.view_schema(view, work))?;
+                        self.graph_work(|work| types.view_schema(view, None, work))?;
                     if environment.is_poisoned()
                         || environment.id() != constructor.typing_environment.id()
                         || !self.graph_work(|work| owner.equivalent(&schema, work))?

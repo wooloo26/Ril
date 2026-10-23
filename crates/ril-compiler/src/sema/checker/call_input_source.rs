@@ -8,8 +8,10 @@ use crate::sema::{
     copy_contract::CopyCallEventId,
     default_uses::DefaultUseId,
     effect_identity::{ArgumentKey, InvocationContext},
+    evaluated::{CapturedSource, SourceRef},
     source_reception::{self, Construction},
     source_types::{SourceSchema, SourceTypesError, WorkLimit},
+    source_types_ref::SourceTypesRef,
 };
 #[path = "closure_parameter_sources.rs"]
 mod closure_parameters;
@@ -50,8 +52,8 @@ pub(super) struct State {
     defaults: BTreeMap<(CopyCallEventId, usize), Input>,
     operands: Vec<Operand>,
     carriers: BTreeMap<u32, (CopyCallEventId, InvocationContext)>,
-    carrier_sources: BTreeMap<u32, (SourceSchema, FrozenEnvironment)>,
-    closure_views: BTreeMap<usize, (u32, SourceSchema, FrozenEnvironment)>,
+    carrier_sources: BTreeMap<u32, SourceRef>,
+    closure_views: BTreeMap<usize, (u32, SourceRef)>,
 }
 
 type InputSource = crate::sema::evaluated::CheckedSource;
@@ -76,8 +78,11 @@ impl Checker {
             .get(&event)
             .and_then(|inputs| inputs.get(&slot))
             .ok_or(SourceTypesError::MissingNode)?
-            .input_source()
-            .cloned()
+            .input_source(
+                SourceTypesRef::Live(self.type_source.storage.live_types()),
+                work,
+            )
+            .map(|source| source.into_known())
     }
     pub(super) fn receive_application_source(
         &mut self,
@@ -96,7 +101,14 @@ impl Checker {
         let answer = input
             .as_ref()
             .ok_or(SourceTypesError::MissingNode)
-            .and_then(|input| input_compatible(expected, input, &mut WorkLimit::new(16384)));
+            .and_then(|input| {
+                input_compatible(
+                    expected,
+                    input,
+                    SourceTypesRef::Live(self.type_source.storage.live_types()),
+                    &mut WorkLimit::new(16384),
+                )
+            });
         match answer {
             Ok(true) => true,
             Ok(false) => {
@@ -133,7 +145,14 @@ impl Checker {
             .get(&event)?
             .get(&slot)?
             .clone();
-        let (actual, actual_environment) = match input.input_source() {
+        let mut work = WorkLimit::new(16384);
+        let (actual, actual_environment) = match input
+            .input_source(
+                SourceTypesRef::Live(self.type_source.storage.live_types()),
+                &mut work,
+            )
+            .map(|source| source.into_known())
+        {
             Ok(Some(source)) => source,
             Ok(None) => return None,
             Err(error) => {
@@ -166,7 +185,6 @@ impl Checker {
             return None;
         }
         let (syntax, environment) = self.formal_binding_declaration(binding, &info.name)?;
-        let mut work = WorkLimit::new(16384);
         let recorded = self.parameter_source_schema_if_known(binding, syntax.hir_id, &mut work);
         let (schema, original_environment) = match recorded {
             Ok(Some(source)) => source,
@@ -179,7 +197,7 @@ impl Checker {
                 return None;
             }
         };
-        let agrees = match schema.equivalent(actual, &mut work) {
+        let agrees = match schema.equivalent(&actual, &mut work) {
             Ok(answer) => answer,
             Err(error) => {
                 self.unsupported(
@@ -390,18 +408,22 @@ impl Checker {
         mut lease: crate::sema::application_effect::WorkLease,
     ) {
         enum Capture {
-            Ordinary(Option<(SourceSchema, FrozenEnvironment)>),
+            Ordinary(CapturedSource),
             Numeric {
                 hole: ril_compiler_core::ids::NumericHoleId,
                 birth: crate::sema::numeric_selection::NumericBirth,
-                environment: FrozenEnvironment,
+                environment: crate::sema::context::FrozenEnvId,
             },
         }
-        if packet.has_captured_source() {
+        if let Err(error) = packet.preflight_source_capture() {
             if let Err(error) = self.application_effect.return_work(lease) {
                 packet.fail_current_source(error);
             }
-            self.unsupported(syntax.span, "evaluation Source basis was already captured");
+            packet.fail_current_source(error);
+            self.unsupported(
+                syntax.span,
+                "evaluation Source basis is not eligible for capture",
+            );
             return;
         }
         let mut fresh = None;
@@ -457,6 +479,12 @@ impl Checker {
             fresh = Some(std::sync::Arc::new(
                 construction.ok_or(SourceTypesError::BudgetExceeded)?,
             ));
+            let birth_environment = self.capture_typing_environment();
+            let environment = self
+                .type_source
+                .storage
+                .live_types_mut()
+                .intern_environment(birth_environment, work)?;
             let source = self.original_source_receiving_schema_at(
                 &packet.value,
                 syntax,
@@ -468,17 +496,23 @@ impl Checker {
                 && let Ty::NumericHole(hole) = packet.value.ty
             {
                 let birth = self.pending_numeric_packet_birth(packet, hole, work)?;
-                let environment = self.capture_typing_environment();
-                if environment.is_poisoned() {
-                    return Err(SourceTypesError::Unresolved);
-                }
                 Ok(Capture::Numeric {
                     hole,
                     birth,
                     environment,
                 })
             } else {
-                Ok(Capture::Ordinary(source))
+                let captured = if let Some((schema, environment)) = source {
+                    CapturedSource::Known(SourceRef::intern(
+                        &schema,
+                        environment,
+                        self.type_source.storage.live_types_mut(),
+                        work,
+                    )?)
+                } else {
+                    CapturedSource::Unknown(environment)
+                };
+                Ok(Capture::Ordinary(captured))
             }
         })();
         // Do not publish an apparently successful basis until all nested
@@ -815,7 +849,14 @@ impl Checker {
                     Some(input.clone())
                 })
                 .ok_or(SourceTypesError::MissingNode)
-                .and_then(|input| input_compatible(&expected, &input, &mut WorkLimit::new(16384)))
+                .and_then(|input| {
+                    input_compatible(
+                        &expected,
+                        &input,
+                        SourceTypesRef::Live(self.type_source.storage.live_types()),
+                        &mut WorkLimit::new(16384),
+                    )
+                })
         };
         match answer {
             Ok(true) => true,
@@ -915,7 +956,14 @@ impl Checker {
             .chain(self.call_input_source.defaults.values())
             .filter(|input| input.observation == Some(observation.0 as usize));
         let first = captured.next();
-        let captured_source = first.map(|input| input.input_source().cloned());
+        let captured_source = first.map(|input| {
+            input
+                .input_source(
+                    SourceTypesRef::Live(self.type_source.storage.live_types()),
+                    &mut work,
+                )
+                .map(|source| source.into_known())
+        });
         if captured.any(|input| {
             !first.is_some_and(|first| std::sync::Arc::ptr_eq(&first.packet, &input.packet))
         }) {
@@ -1106,7 +1154,12 @@ impl Checker {
                     if input.context != context {
                         return Err(SourceTypesError::Unresolved);
                     }
-                    input_compatible(expected, input, &mut WorkLimit::new(16384))
+                    input_compatible(
+                        expected,
+                        input,
+                        SourceTypesRef::Live(self.type_source.storage.live_types()),
+                        &mut WorkLimit::new(16384),
+                    )
                 });
             match answer {
                 Ok(true) => {},
@@ -1261,11 +1314,15 @@ impl Checker {
 fn input_compatible(
     expected: &SourceSchema,
     input: &Input,
+    types: SourceTypesRef<'_>,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {
-    match input.input_source() {
+    match input
+        .input_source(types, work)
+        .map(|source| source.into_known())
+    {
         Ok(Some((actual, environment))) if !environment.is_poisoned() => {
-            expected.receive_schema(actual, Some(input.fresh()), work)
+            expected.receive_schema(&actual, Some(input.fresh()), work)
         }
         Ok(None) => expected
             .empty_context(input.fresh(), work)?

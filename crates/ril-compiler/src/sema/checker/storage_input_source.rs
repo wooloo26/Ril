@@ -41,8 +41,11 @@ impl Checker {
                 .storage_supplied_input(event, 0, &args[0].1, span, frame)
                 .ok_or(SourceTypesError::MissingNode)?;
             let (original, environment) = receiver
-                .input_source()?
-                .as_ref()
+                .input_source(
+                    SourceTypesRef::Live(self.type_source.storage.live_types()),
+                    &mut work,
+                )?
+                .into_known()
                 .ok_or(SourceTypesError::Unresolved)?;
             if environment.is_poisoned() {
                 return Err(SourceTypesError::Unresolved);
@@ -64,7 +67,12 @@ impl Checker {
                 let input = self
                     .storage_supplied_input(event, slot, &args[slot].1, span, frame)
                     .ok_or(SourceTypesError::MissingNode)?;
-                if !storage_compatible(&expected, &input, &mut work)? {
+                if !storage_compatible(
+                    &expected,
+                    &input,
+                    SourceTypesRef::Live(self.type_source.storage.live_types()),
+                    &mut work,
+                )? {
                     return Ok(false);
                 }
             }
@@ -154,9 +162,10 @@ impl Checker {
 fn storage_compatible(
     expected: &SourceSchema,
     input: &Input,
+    types: SourceTypesRef<'_>,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {
-    if let Some((actual, _)) = input.input_source()?
+    if let Some((actual, _)) = input.input_source(types, work)?.into_known()
         && let (Some(expected), Some(actual)) = (
             expected.callable_annotations(work)?,
             actual.callable_annotations(work)?,
@@ -165,22 +174,29 @@ fn storage_compatible(
     {
         return Err(SourceTypesError::Unresolved);
     }
-    input_compatible(expected, input, work)
+    input_compatible(expected, input, types, work)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn compatible(expected: &ArgumentKey, input: &Input) -> Option<bool> {
+    fn compatible(
+        expected: &ArgumentKey,
+        input: &(Input, crate::sema::source_types::LiveSourceTypes),
+    ) -> Option<bool> {
         storage_compatible(
             &SourceSchema::import(expected, None, &mut WorkLimit::new(16384)).unwrap(),
-            input,
+            &input.0,
+            SourceTypesRef::Live(&input.1),
             &mut WorkLimit::new(16384),
         )
         .ok()
     }
 
-    fn input(key: ArgumentKey, fresh: Construction) -> Input {
+    fn input(
+        key: ArgumentKey,
+        fresh: Construction,
+    ) -> (Input, crate::sema::source_types::LiveSourceTypes) {
         let context = InvocationContext {
             invocation: None,
             owner: None,
@@ -190,20 +206,29 @@ mod tests {
             default_use: None,
         };
         let mut packet = EvaluatedValue::new(Value::scalar(Ty::Unknown, None, CauseId(0)), 0);
+        let mut types = crate::sema::source_types::LiveSourceTypes::default();
+        let schema = SourceSchema::import(&key, None, &mut WorkLimit::new(16384)).unwrap();
+        let source = SourceRef::intern(
+            &schema,
+            FrozenEnvironment::default(),
+            &mut types,
+            &mut WorkLimit::new(16384),
+        )
+        .unwrap();
         packet
             .capture_birth_source(
-                Ok(Some((
-                    SourceSchema::import(&key, None, &mut WorkLimit::new(16384)).unwrap(),
-                    FrozenEnvironment::default(),
-                ))),
+                Ok(CapturedSource::Known(source)),
                 Some(std::sync::Arc::new(fresh)),
             )
             .unwrap();
-        Input {
-            context,
-            packet: std::sync::Arc::new(packet),
-            default: None,
-        }
+        (
+            Input {
+                context,
+                packet: std::sync::Arc::new(packet),
+                default: None,
+            },
+            types,
+        )
     }
 
     fn array(length: Option<u64>, element: ArgumentKey) -> ArgumentKey {

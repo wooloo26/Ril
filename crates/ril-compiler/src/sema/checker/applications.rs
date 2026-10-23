@@ -209,7 +209,16 @@ impl Checker {
                             let mut work = crate::sema::source_types::WorkLimit::new(*remaining);
                             let result = work
                                 .charge(3)
-                                .and_then(|()| packet.current_source().cloned())
+                                .and_then(|()| {
+                                    packet
+                                        .current_source(
+                                            crate::sema::source_types_ref::SourceTypesRef::Live(
+                                                self.type_source.storage.live_types(),
+                                            ),
+                                            &mut work,
+                                        )
+                                        .map(|source| source.into_known())
+                                })
                                 .and_then(|source| {
                                     source
                                         .map(|(schema, environment)| {

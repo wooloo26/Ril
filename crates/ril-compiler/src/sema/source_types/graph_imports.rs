@@ -15,17 +15,34 @@ impl SourceBuilder {
         work: &mut WorkLimit,
     ) -> Result<SourceTypeId, SourceTypesError> {
         work.charge(1 + lookup_cost(self.imports.len()))?;
-        source.get(root)?;
+        if self.transaction.is_some() {
+            return Err(SourceTypesError::TransactionOpen);
+        }
+        let original = source.get(root)?;
+        if root.arena == self.arena {
+            // Equal ordinals alone cannot authorize a view. Actual immutable
+            // node identity must belong to both snapshots of this one writer.
+            work.charge(1)?;
+            if !std::ptr::eq(original, self.get(root)?) {
+                return Err(SourceTypesError::ForeignIdentity);
+            }
+            return Ok(root);
+        }
         if let Some(target) = self.imports.get(&root).copied() {
             self.get(target)?;
             return Ok(target);
         }
-        let checkpoint = self.checkpoint();
-        let result = self.import_uncopied(source, root, work);
-        if result.is_err() {
-            self.rollback(checkpoint);
+        let checkpoint = self.begin_transaction(work)?;
+        match self.import_uncopied(source, root, work) {
+            Ok(root) => {
+                self.commit_transaction(checkpoint)?;
+                Ok(root)
+            }
+            Err(error) => {
+                self.rollback_transaction(checkpoint)?;
+                Err(error)
+            }
         }
-        result
     }
 
     fn import_uncopied(
@@ -74,6 +91,25 @@ impl SourceBuilder {
             // with reservations without asking an exhausted caller for work.
             work.charge(2 * lookup_cost(self.imports.len()) + lookup_cost(mapping.len()) + 1)?;
             let target = *mapping.get(&id).ok_or(SourceTypesError::MissingNode)?;
+            if self.import_order.len() == self.import_order.capacity() {
+                // Reserve and pay for the actual pointer-buffer growth before
+                // either half of the memo entry becomes visible.
+                let capacity = self
+                    .import_order
+                    .capacity()
+                    .max(2)
+                    .checked_mul(2)
+                    .ok_or(SourceTypesError::BudgetExceeded)?;
+                work.charge(
+                    self.import_order
+                        .len()
+                        .checked_add(capacity)
+                        .ok_or(SourceTypesError::BudgetExceeded)?,
+                )?;
+                self.import_order
+                    .try_reserve_exact(capacity - self.import_order.len())
+                    .map_err(|_| SourceTypesError::BudgetExceeded)?;
+            }
             self.imports.insert(id, target);
             self.import_order.push(id);
         }

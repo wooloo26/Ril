@@ -8,6 +8,11 @@ static NEXT_ARENA: AtomicU64 = AtomicU64::new(1);
 
 #[path = "graph_imports.rs"]
 mod imports;
+#[path = "radix.rs"]
+mod radix;
+#[cfg(test)]
+#[path = "radix_tests.rs"]
+mod radix_tests;
 
 /// An ID cannot be mistaken for the same ordinal in an unrelated snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -273,6 +278,8 @@ pub enum SourceTypesError {
     CyclicSubstitution,
     RecursiveLegacyKey,
     IdentityExhausted,
+    TransactionOpen,
+    InvalidTransaction,
 }
 
 impl std::fmt::Display for SourceTypesError {
@@ -304,6 +311,8 @@ impl std::fmt::Display for SourceTypesError {
                 "recursive source graph cannot be represented as a legacy key"
             }
             Self::IdentityExhausted => "source type identity space exhausted",
+            Self::TransactionOpen => "source type transaction is still open",
+            Self::InvalidTransaction => "source type transaction does not belong to this builder",
         })
     }
 }
@@ -333,16 +342,30 @@ impl WorkLimit {
     }
 }
 
-/// The only mutable construction phase. Reserved nodes permit finite recursive
-/// declarations; no query is available until every reservation is defined.
+/// One writer over persistent immutable nodes. Reservations admit finite
+/// recursive backedges; only a complete, transaction-free state may publish.
 pub(crate) struct SourceBuilder {
     arena: u64,
-    nodes: Vec<Option<Arc<SourceNode>>>,
+    nodes: radix::Nodes,
+    undefined: usize,
     retained: usize,
-    /// Only immutable source arenas may enter this address-based copy index.
-    /// It shares structure; it does not certify completeness or compatibility.
+    transaction: Option<u64>,
+    next_transaction: u64,
+    /// Only immutable source arenas enter this copy index. It shares structure
+    /// and never certifies completeness, compatibility or lexical authority.
     imports: std::collections::BTreeMap<SourceTypeId, SourceTypeId>,
     import_order: Vec<SourceTypeId>,
+}
+
+/// Opaque single-layer transaction. No snapshot may escape between begin and
+/// commit/rollback, so a discarded ordinal can never name a published node.
+pub(super) struct SourceTransaction {
+    arena: u64,
+    token: u64,
+    nodes: radix::Nodes,
+    undefined: usize,
+    retained: usize,
+    imports: usize,
 }
 
 impl SourceBuilder {
@@ -352,28 +375,29 @@ impl SourceBuilder {
             .map_err(|_| SourceTypesError::IdentityExhausted)?;
         Ok(Self {
             arena,
-            nodes: vec![],
+            nodes: radix::Nodes::default(),
+            undefined: 0,
             retained: 0,
+            transaction: None,
+            next_transaction: 0,
             imports: std::collections::BTreeMap::new(),
             import_order: vec![],
         })
     }
+
     pub(crate) fn reserve(
         &mut self,
         work: &mut WorkLimit,
     ) -> Result<SourceTypeId, SourceTypesError> {
         work.charge(1)?;
-        if self.nodes.len() >= 65536 {
-            return Err(SourceTypesError::BudgetExceeded);
-        }
-        let index =
-            u32::try_from(self.nodes.len()).map_err(|_| SourceTypesError::IdentityExhausted)?;
-        self.nodes.push(None);
+        let index = self.nodes.reserve()?;
+        self.undefined += 1;
         Ok(SourceTypeId {
             arena: self.arena,
-            index,
+            index: index as u32,
         })
     }
+
     pub(crate) fn define(
         &mut self,
         id: SourceTypeId,
@@ -386,10 +410,7 @@ impl SourceBuilder {
         node.charge(work)?;
         let mut admission = WorkLimit::new(usize::MAX);
         node.charge(&mut admission)?;
-        let cost = (usize::MAX - admission.remaining()).saturating_mul(256);
-        if self.retained.saturating_add(cost) > 16 * 1024 * 1024 {
-            return Err(SourceTypesError::BudgetExceeded);
-        }
+        let payload = (usize::MAX - admission.remaining()).saturating_mul(256);
         for child in node.children() {
             if child.arena != self.arena {
                 return Err(SourceTypesError::ForeignIdentity);
@@ -399,7 +420,24 @@ impl SourceBuilder {
             }
         }
         if let SourceNode::Record { fields, .. } = &mut node {
-            fields.sort_by(|left, right| left.label.cmp(&right.label));
+            let comparisons = fields.len().checked_ilog2().unwrap_or(0) as usize + 1;
+            work.charge(
+                fields
+                    .len()
+                    .checked_mul(comparisons)
+                    .ok_or(SourceTypesError::BudgetExceeded)?,
+            )?;
+            for field in fields.iter() {
+                work.charge(
+                    field
+                        .label
+                        .len()
+                        .div_ceil(32)
+                        .checked_mul(comparisons)
+                        .ok_or(SourceTypesError::BudgetExceeded)?,
+                )?;
+            }
+            fields.sort_unstable_by(|left, right| left.label.cmp(&right.label));
             if fields.windows(2).any(|pair| pair[0].label == pair[1].label) {
                 return Err(SourceTypesError::DuplicateField);
             }
@@ -414,65 +452,135 @@ impl SourceBuilder {
                 return Err(SourceTypesError::InvalidContainer);
             }
         }
-        let slot = self
-            .nodes
-            .get_mut(id.index as usize)
+        let plan = self.nodes.prepare_define(id.index as usize, work)?;
+        let retained = self
+            .retained
+            .checked_add(payload)
+            .and_then(|cost| cost.checked_add(plan.retained_bytes()))
+            .filter(|cost| *cost <= 16 * 1024 * 1024)
+            .ok_or(SourceTypesError::BudgetExceeded)?;
+        let undefined = self
+            .undefined
+            .checked_sub(1)
             .ok_or(SourceTypesError::MissingNode)?;
-        if slot.is_some() {
-            return Err(SourceTypesError::AlreadyDefined);
-        }
-        *slot = Some(Arc::new(node));
-        self.retained += cost;
+        self.nodes.define(id.index as usize, Arc::new(node), plan);
+        self.undefined = undefined;
+        self.retained = retained;
         Ok(())
     }
+
     pub(crate) fn insert(
         &mut self,
         node: SourceNode,
         work: &mut WorkLimit,
     ) -> Result<SourceTypeId, SourceTypesError> {
         let id = self.reserve(work)?;
-        self.define(id, node, work)?;
+        if let Err(error) = self.define(id, node, work) {
+            // define preflights every fallible step before editing the tree.
+            self.nodes.cancel_reservation(id.index as usize);
+            self.undefined -= 1;
+            return Err(error);
+        }
         Ok(id)
     }
-    pub(crate) fn freeze(self, work: &mut WorkLimit) -> Result<SourceTypes, SourceTypesError> {
-        work.charge(self.nodes.len())?;
-        let nodes = self
-            .nodes
-            .into_iter()
-            .map(|node| node.ok_or(SourceTypesError::MissingNode))
-            .collect::<Result<Vec<_>, _>>()?;
+
+    pub(crate) fn snapshot(&self, work: &mut WorkLimit) -> Result<SourceTypes, SourceTypesError> {
+        work.charge(2)?;
+        if self.transaction.is_some() {
+            return Err(SourceTypesError::TransactionOpen);
+        }
+        if self.undefined != 0 {
+            return Err(SourceTypesError::MissingNode);
+        }
         Ok(SourceTypes {
             arena: self.arena,
-            nodes: nodes.into(),
+            nodes: self.nodes.clone(),
         })
     }
-    pub(super) fn checkpoint(&self) -> (usize, usize, usize) {
-        (self.nodes.len(), self.retained, self.import_order.len())
+
+    pub(crate) fn freeze(self, work: &mut WorkLimit) -> Result<SourceTypes, SourceTypesError> {
+        self.snapshot(work)
     }
-    pub(super) fn rollback(&mut self, checkpoint: (usize, usize, usize)) {
-        while self.import_order.len() > checkpoint.2 {
+
+    pub(super) fn begin_transaction(
+        &mut self,
+        work: &mut WorkLimit,
+    ) -> Result<SourceTransaction, SourceTypesError> {
+        // Includes the eventual constant commit/rollback state transition.
+        work.charge(5)?;
+        if self.transaction.is_some() {
+            return Err(SourceTypesError::TransactionOpen);
+        }
+        let token = self
+            .next_transaction
+            .checked_add(1)
+            .ok_or(SourceTypesError::IdentityExhausted)?;
+        self.next_transaction = token;
+        let checkpoint = SourceTransaction {
+            arena: self.arena,
+            token,
+            nodes: self.nodes.clone(),
+            undefined: self.undefined,
+            retained: self.retained,
+            imports: self.import_order.len(),
+        };
+        self.transaction = Some(token);
+        Ok(checkpoint)
+    }
+
+    fn check_transaction(&self, checkpoint: &SourceTransaction) -> Result<(), SourceTypesError> {
+        if checkpoint.arena != self.arena {
+            return Err(SourceTypesError::ForeignIdentity);
+        }
+        if self.transaction != Some(checkpoint.token) {
+            return Err(SourceTypesError::InvalidTransaction);
+        }
+        Ok(())
+    }
+
+    pub(super) fn commit_transaction(
+        &mut self,
+        checkpoint: SourceTransaction,
+    ) -> Result<(), SourceTypesError> {
+        self.check_transaction(&checkpoint)?;
+        self.transaction = None;
+        Ok(())
+    }
+
+    pub(super) fn rollback_transaction(
+        &mut self,
+        checkpoint: SourceTransaction,
+    ) -> Result<(), SourceTypesError> {
+        self.check_transaction(&checkpoint)?;
+        // Memo insertion prepays removal; rollback never borrows fresh work.
+        while self.import_order.len() > checkpoint.imports {
             if let Some(source) = self.import_order.pop() {
                 self.imports.remove(&source);
             }
         }
-        self.nodes.truncate(checkpoint.0);
-        self.retained = checkpoint.1;
+        self.nodes = checkpoint.nodes;
+        self.undefined = checkpoint.undefined;
+        self.retained = checkpoint.retained;
+        self.transaction = None;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn checkpoint(&self) -> (usize, usize, usize, usize, bool) {
+        (
+            self.nodes.len(),
+            self.undefined,
+            self.retained,
+            self.import_order.len(),
+            self.transaction.is_some(),
+        )
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SourceTypes {
     arena: u64,
-    nodes: Arc<[Arc<SourceNode>]>,
-}
-
-impl Default for SourceTypes {
-    fn default() -> Self {
-        Self {
-            arena: 0,
-            nodes: Arc::from([]),
-        }
-    }
+    nodes: radix::Nodes,
 }
 
 pub(crate) trait SourceGraph {
@@ -486,7 +594,7 @@ impl SourceGraph for SourceBuilder {
         }
         self.nodes
             .get(id.index as usize)
-            .and_then(Option::as_deref)
+            .map(Arc::as_ref)
             .ok_or(SourceTypesError::MissingNode)
     }
 }
@@ -500,15 +608,13 @@ impl SourceGraph for SourceTypes {
 impl SourceTypes {
     pub(super) fn indexed_nodes(
         &self,
-    ) -> impl ExactSizeIterator<Item = (SourceTypeId, &SourceNode)> {
-        self.nodes.iter().enumerate().map(|(index, node)| {
-            (
-                SourceTypeId {
-                    arena: self.arena,
-                    index: index as u32,
-                },
-                node.as_ref(),
-            )
+    ) -> impl ExactSizeIterator<Item = Result<(SourceTypeId, &SourceNode), SourceTypesError>> {
+        (0..self.nodes.len()).map(|index| {
+            let id = SourceTypeId {
+                arena: self.arena,
+                index: index as u32,
+            };
+            self.get(id).map(|node| (id, node))
         })
     }
 

@@ -121,7 +121,15 @@ impl Checker {
                                         })
                                     });
                                 if original {
-                                    input.value.birth_source().cloned()
+                                    input
+                                        .value
+                                        .birth_source(
+                                            crate::sema::source_types_ref::SourceTypesRef::Live(
+                                                storage.live_types(),
+                                            ),
+                                            &mut work,
+                                        )
+                                        .map(|source| source.into_known())
                                 } else {
                                     Err(crate::sema::source_types::SourceTypesError::MissingNode)
                                 }

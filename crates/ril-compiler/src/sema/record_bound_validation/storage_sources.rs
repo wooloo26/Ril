@@ -2133,6 +2133,7 @@ impl Replay<'_> {
                         write
                             .expected
                             .ok_or("storage write lost its canonical target view")?,
+                        None,
                         &mut work,
                     )
                     .map_err(|error| format!("storage write target view: {error}"))?;

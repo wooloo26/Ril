@@ -3,6 +3,7 @@
 use super::*;
 use crate::sema::context::{FrozenEnvId, FrozenEnvironment};
 use crate::sema::{effect_identity::ArgumentKey, facts::Slot};
+use ril_compiler_core::ids::TypeExprId;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone)]
@@ -39,24 +40,35 @@ impl Default for SourceTypeIndex {
 }
 
 impl SourceTypeIndex {
+    pub(crate) fn environment(
+        &self,
+        id: FrozenEnvId,
+        work: &mut WorkLimit,
+    ) -> Result<FrozenEnvironment, SourceTypesError> {
+        work.charge(2 + self.0.environments.len().checked_ilog2().unwrap_or(0) as usize)?;
+        let environment = self
+            .0
+            .environments
+            .get(&id)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if environment.is_poisoned() || environment.id() != id {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok(environment.clone())
+    }
+
     pub(crate) fn view_schema(
         &self,
         view: SourceView,
+        original: Option<TypeExprId>,
         work: &mut WorkLimit,
     ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
         work.charge(1)?;
         let types = self.retained_types()?;
-        let environment = self
-            .0
-            .environments
-            .get(&view.environment)
-            .ok_or(SourceTypesError::MissingNode)?;
-        if environment.is_poisoned() || environment.id() != view.environment {
-            return Err(SourceTypesError::Unresolved);
-        }
+        let environment = self.environment(view.environment, work)?;
         Ok((
-            SourceSchema::frozen_view(types, view.ty, None, work)?,
-            environment.clone(),
+            SourceSchema::frozen_view(types, view.ty, original, work)?,
+            environment,
         ))
     }
 
@@ -227,23 +239,67 @@ pub(crate) struct LiveSourceTypes {
 }
 
 impl LiveSourceTypes {
+    fn admit_environment(
+        &self,
+        environment: &FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<FrozenEnvId, SourceTypesError> {
+        // Lookup, possible insertion and shared-handle storage are all paid
+        // before a schema import can publish nodes into this same domain.
+        work.charge(3 + 2 * (self.environments.len().checked_ilog2().unwrap_or(0) as usize + 1))?;
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let id = environment.id();
+        if self
+            .environments
+            .get(&id)
+            .is_some_and(|previous| previous.is_poisoned() || previous.id() != id)
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok(id)
+    }
+
+    pub(crate) fn intern_environment(
+        &mut self,
+        environment: FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<FrozenEnvId, SourceTypesError> {
+        let id = self.admit_environment(&environment, work)?;
+        self.environments.entry(id).or_insert(environment);
+        Ok(id)
+    }
+
+    pub(crate) fn environment(
+        &self,
+        id: FrozenEnvId,
+        work: &mut WorkLimit,
+    ) -> Result<FrozenEnvironment, SourceTypesError> {
+        work.charge(2 + self.environments.len().checked_ilog2().unwrap_or(0) as usize)?;
+        let environment = self
+            .environments
+            .get(&id)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if environment.is_poisoned() || environment.id() != id {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok(environment.clone())
+    }
+
     pub(crate) fn view_schema(
         &self,
         view: SourceView,
+        original: Option<TypeExprId>,
         work: &mut WorkLimit,
     ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
         work.charge(1)?;
-        let environment = self
-            .environments
-            .get(&view.environment)
-            .ok_or(SourceTypesError::MissingNode)?;
-        if environment.is_poisoned() || environment.id() != view.environment {
-            return Err(SourceTypesError::Unresolved);
-        }
+        let environment = self.environment(view.environment, work)?;
         let builder = self.builder.as_ref().ok_or(SourceTypesError::MissingNode)?;
+        let types = builder.snapshot(work)?;
         Ok((
-            SourceSchema::copy_from(builder, view.ty, None, work)?,
-            environment.clone(),
+            SourceSchema::frozen_view(&types, view.ty, original, work)?,
+            environment,
         ))
     }
 
@@ -256,14 +312,7 @@ impl LiveSourceTypes {
         work: &mut WorkLimit,
     ) -> Result<SourceView, SourceTypesError> {
         work.charge(2)?;
-        if environment.is_poisoned() {
-            return Err(SourceTypesError::Unresolved);
-        }
-        if let Some(previous) = self.environments.get(&environment.id())
-            && (previous.is_poisoned() || previous.id() != environment.id())
-        {
-            return Err(SourceTypesError::Unresolved);
-        }
+        let id = self.admit_environment(&environment, work)?;
         if self.builder.is_none() {
             self.builder = Some(SourceBuilder::new()?);
         }
@@ -271,7 +320,6 @@ impl LiveSourceTypes {
             self.builder.as_mut().ok_or(SourceTypesError::MissingNode)?,
             work,
         )?;
-        let id = environment.id();
         self.environments.entry(id).or_insert(environment);
         Ok(SourceView {
             ty,
@@ -297,8 +345,9 @@ impl LiveSourceTypes {
             return Ok(None);
         };
         let builder = self.builder.as_ref().ok_or(SourceTypesError::MissingNode)?;
+        let types = builder.snapshot(work)?;
         Ok(Some((
-            SourceSchema::copy_from(builder, root, original, work)?,
+            SourceSchema::frozen_view(&types, root, original, work)?,
             view.environment.clone(),
         )))
     }
@@ -312,11 +361,10 @@ impl LiveSourceTypes {
             return Err(SourceTypesError::AlreadyDefined);
         }
         let mut work = WorkLimit::new(16384);
-        work.charge(1)?;
+        work.charge(3 + 2 * (self.bindings.len().checked_ilog2().unwrap_or(0) as usize + 1))?;
+        let admitted = self.admit_environment(&environment, &mut work);
         let result = (|| {
-            if environment.is_poisoned() {
-                return Err(SourceTypesError::Unresolved);
-            }
+            admitted.as_ref().map_err(Clone::clone)?;
             let Some(schema) = schema else {
                 return Ok(None);
             };
@@ -330,9 +378,11 @@ impl LiveSourceTypes {
                 )
                 .map(Some)
         })();
-        self.environments
-            .entry(environment.id())
-            .or_insert_with(|| environment.clone());
+        if admitted.is_ok() {
+            self.environments
+                .entry(environment.id())
+                .or_insert_with(|| environment.clone());
+        }
         self.bindings.insert(
             binding,
             BindingView {
@@ -430,6 +480,134 @@ mod tests {
     }
 
     #[test]
+    fn live_views_keep_original_roots_and_reintern_without_read_copy_growth() {
+        let source = recursive_schema();
+        let environment = FrozenEnvironment::default();
+        let mut live = LiveSourceTypes::default();
+        let view = live
+            .intern_schema(&source, environment.clone(), &mut WorkLimit::new(4096))
+            .unwrap();
+        live.record_schema(1, Some(&source), environment.clone())
+            .unwrap();
+        let before = live.builder.as_ref().unwrap().checkpoint();
+        let original = Some(TypeExprId(91));
+        let (borrowed, captured) = live
+            .view_schema(view, original, &mut WorkLimit::new(16))
+            .unwrap();
+        assert_eq!(borrowed.root_id(), view.ty);
+        assert_eq!(borrowed.original(), original);
+        assert_eq!(captured.id(), environment.id());
+        for _ in 0..128 {
+            let (read, _) = live
+                .view_schema(view, original, &mut WorkLimit::new(16))
+                .unwrap();
+            let (binding, _) = live
+                .binding_schema_if_known(1, original, &mut WorkLimit::new(16))
+                .unwrap()
+                .unwrap();
+            assert_eq!(read.root_id(), view.ty);
+            assert_eq!(binding.root_id(), view.ty);
+            assert_eq!(binding.original(), original);
+            assert_eq!(
+                live.intern_schema(&read, environment.clone(), &mut WorkLimit::new(16))
+                    .unwrap(),
+                view
+            );
+        }
+        assert_eq!(live.builder.as_ref().unwrap().checkpoint(), before);
+        let extra =
+            SourceSchema::scalar(SourceScalar::Str, None, &mut WorkLimit::new(4096)).unwrap();
+        live.intern_schema(&extra, environment, &mut WorkLimit::new(4096))
+            .unwrap();
+        assert!(
+            borrowed
+                .equivalent(&source, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+        let frozen = live.freeze();
+        let (read, _) = frozen
+            .view_schema(view, original, &mut WorkLimit::new(16))
+            .unwrap();
+        assert_eq!(read.root_id(), borrowed.root_id());
+        assert_eq!(read.original(), original);
+    }
+
+    #[test]
+    fn environment_only_registration_is_checked_shared_and_does_not_invent_a_type() {
+        let mut live = LiveSourceTypes::default();
+        let environment = FrozenEnvironment::default();
+        assert_eq!(
+            live.intern_environment(environment.clone(), &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+        assert!(live.environments.is_empty());
+        let mut work = WorkLimit::new(4096);
+        let id = live
+            .intern_environment(environment.clone(), &mut work)
+            .unwrap();
+        let used = 4096 - work.remaining();
+        let mut exact = WorkLimit::new(used);
+        let mut another = LiveSourceTypes::default();
+        assert_eq!(
+            another.intern_environment(environment.clone(), &mut exact),
+            Ok(id)
+        );
+        assert_eq!(exact.remaining(), 0);
+        assert_eq!(
+            LiveSourceTypes::default()
+                .intern_environment(environment.clone(), &mut WorkLimit::new(used - 1)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+        assert!(
+            live.builder.is_none(),
+            "an unknown Source stores its environment without fabricating a node"
+        );
+        assert_eq!(
+            live.environment(id, &mut WorkLimit::new(16)).unwrap().id(),
+            id
+        );
+        assert_eq!(
+            live.environment(id, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+        let foreign = FrozenEnvironment::default().id();
+        assert_eq!(
+            live.environment(foreign, &mut WorkLimit::new(16)),
+            Err(SourceTypesError::MissingNode)
+        );
+        let count = live.environments.len();
+        assert_eq!(
+            live.intern_environment(FrozenEnvironment::poisoned(), &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::Unresolved)
+        );
+        assert_eq!(live.environments.len(), count);
+        let frozen = live.freeze();
+        assert_eq!(
+            frozen
+                .environment(id, &mut WorkLimit::new(16))
+                .unwrap()
+                .id(),
+            id
+        );
+        assert_eq!(
+            frozen.environment(foreign, &mut WorkLimit::new(16)),
+            Err(SourceTypesError::MissingNode)
+        );
+        assert_eq!(
+            frozen.environment(id, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+        assert!(
+            frozen
+                .retained(&mut WorkLimit::new(4096))
+                .unwrap()
+                .graph
+                .nodes
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn nonbinding_views_borrow_the_same_frozen_arena_and_retain_their_complete_core_roots() {
         let source = recursive_schema();
         let environment = FrozenEnvironment::default();
@@ -440,7 +618,9 @@ mod tests {
         let index = live.freeze();
         assert_eq!(view.environment, environment.id());
         assert!(!index.contains_binding(0));
-        let (schema, frozen) = index.view_schema(view, &mut WorkLimit::new(4096)).unwrap();
+        let (schema, frozen) = index
+            .view_schema(view, None, &mut WorkLimit::new(4096))
+            .unwrap();
         assert_eq!(frozen.id(), environment.id());
         assert_eq!(schema.key(), Err(SourceTypesError::RecursiveLegacyKey));
         assert!(
@@ -470,7 +650,11 @@ mod tests {
                 ..
             }
         )));
-        assert!(index.view_schema(view, &mut WorkLimit::new(0)).is_err());
+        assert!(
+            index
+                .view_schema(view, None, &mut WorkLimit::new(0))
+                .is_err()
+        );
     }
 
     #[test]
@@ -495,7 +679,9 @@ mod tests {
         assert_ne!(first.environment, second.environment);
         let frozen = live.freeze();
         for (view, environment) in [(first, first_environment), (second, second_environment)] {
-            let (schema, actual) = frozen.view_schema(view, &mut WorkLimit::new(16)).unwrap();
+            let (schema, actual) = frozen
+                .view_schema(view, None, &mut WorkLimit::new(16))
+                .unwrap();
             assert_eq!(schema.root_id(), view.ty);
             assert_eq!(actual.id(), environment.id());
         }
@@ -532,7 +718,7 @@ mod tests {
             .intern_schema(&source, environment, &mut WorkLimit::new(4096))
             .unwrap();
         assert!(matches!(
-            first.view_schema(foreign, &mut WorkLimit::new(4096)),
+            first.view_schema(foreign, None, &mut WorkLimit::new(4096)),
             Err(SourceTypesError::ForeignIdentity)
         ));
         let missing = SourceView {
@@ -540,10 +726,12 @@ mod tests {
             ..view
         };
         assert!(matches!(
-            first.view_schema(missing, &mut WorkLimit::new(4096)),
+            first.view_schema(missing, None, &mut WorkLimit::new(4096)),
             Err(SourceTypesError::MissingNode)
         ));
-        first.view_schema(view, &mut WorkLimit::new(4096)).unwrap();
+        first
+            .view_schema(view, None, &mut WorkLimit::new(4096))
+            .unwrap();
         let retained = first.retained(&mut WorkLimit::new(4096)).unwrap();
         assert_eq!(
             retained.view_root(foreign, &mut WorkLimit::new(128)),
@@ -581,7 +769,9 @@ mod tests {
 
     #[test]
     fn failed_schema_copies_keep_the_old_arena_and_the_exact_admission_failure() {
-        let mut work = WorkLimit::new(100_000);
+        // Construct the deliberately oversized input, including bounded label
+        // sorting. record_schema below still uses its unchanged ingress limit.
+        let mut work = WorkLimit::new(1_000_000);
         let mut builder = SourceBuilder::new().unwrap();
         let scalar = builder
             .insert(SourceNode::Scalar(SourceScalar::Int), &mut work)
@@ -783,7 +973,11 @@ mod tests {
             Err(SourceTypesError::ForeignIdentity)
         ));
         let (source, _) = first
-            .view_schema(first.binding_view(2).unwrap(), &mut WorkLimit::new(4096))
+            .view_schema(
+                first.binding_view(2).unwrap(),
+                None,
+                &mut WorkLimit::new(4096),
+            )
             .unwrap();
         let child = source
             .project_steps(&[SourcePath::Element], &mut WorkLimit::new(4096))

@@ -63,7 +63,7 @@ pub(super) fn lower(
             let expected = value
                 .expected
                 .map(|view| {
-                    let (_, environment) = facts.source_types.view_schema(view, &mut work)?;
+                    let (_, environment) = facts.source_types.view_schema(view, None, &mut work)?;
                     Ok::<_, crate::sema::source_types::SourceTypesError>(p::SourceView {
                         ty: retained.view_root(view, &mut work)?,
                         environment: contracts.environment(&mut graph.types, &environment),

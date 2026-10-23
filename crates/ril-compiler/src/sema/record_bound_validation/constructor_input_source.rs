@@ -215,7 +215,7 @@ impl Replay<'_> {
             "constructor result changed its original interpretation",
         )?;
         let (actual, admitted_environment) = super::graph_sources::schema_work(work, |budget| {
-            self.facts.source_types.view_schema(view, budget)
+            self.facts.source_types.view_schema(view, None, budget)
         })?;
         require(
             admitted_environment.id() == environment.id(),

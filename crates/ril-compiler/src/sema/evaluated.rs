@@ -4,18 +4,82 @@
 use crate::numeric_literals::NumberType;
 use crate::sema::{
     application_effect::OccurrenceIdentity,
-    context::FrozenEnvironment,
+    context::{FrozenEnvId, FrozenEnvironment},
     effect_identity::InvocationContext,
     facts::NodeId,
     model::{Callable, CallableReturnBound, Value},
     numeric_selection::{NumericBirth, NumericResolution},
     source_reception::Construction,
-    source_types::{SourceScalar, SourceSchema, SourceTypesError, WorkLimit},
+    source_types::{
+        LiveSourceTypes, SourceScalar, SourceSchema, SourceTypesError, SourceView, WorkLimit,
+    },
+    source_types_ref::SourceTypesRef,
 };
-use ril_compiler_core::ids::NumericHoleId;
+use ril_compiler_core::ids::{NumericHoleId, TypeExprId};
 use std::sync::Arc;
 
 pub(crate) type CheckedSource = Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SourceRef {
+    pub(crate) view: SourceView,
+    pub(crate) original: Option<TypeExprId>,
+}
+
+impl SourceRef {
+    pub(crate) fn intern(
+        schema: &SourceSchema,
+        environment: FrozenEnvironment,
+        types: &mut LiveSourceTypes,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        Ok(Self {
+            view: types.intern_schema(schema, environment, work)?,
+            original: schema.original(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CapturedSource {
+    Known(SourceRef),
+    Unknown(FrozenEnvId),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedSource {
+    pub(crate) schema: Option<SourceSchema>,
+    pub(crate) environment: FrozenEnvironment,
+}
+
+impl ResolvedSource {
+    pub(crate) fn into_known(self) -> Option<(SourceSchema, FrozenEnvironment)> {
+        self.schema.map(|schema| (schema, self.environment))
+    }
+}
+
+impl CapturedSource {
+    fn resolve(
+        self,
+        types: SourceTypesRef<'_>,
+        work: &mut WorkLimit,
+    ) -> Result<ResolvedSource, SourceTypesError> {
+        match self {
+            Self::Known(source) => {
+                let (schema, environment) =
+                    types.view_schema(source.view, source.original, work)?;
+                Ok(ResolvedSource {
+                    schema: Some(schema),
+                    environment,
+                })
+            }
+            Self::Unknown(id) => Ok(ResolvedSource {
+                schema: None,
+                environment: types.environment(id, work)?,
+            }),
+        }
+    }
+}
 
 pub(crate) fn numeric_source_scalar(number: NumberType) -> SourceScalar {
     match number {
@@ -59,7 +123,7 @@ enum SourceCapture {
 
 #[derive(Debug)]
 struct BirthSource {
-    result: CheckedSource,
+    result: Result<CapturedSource, SourceTypesError>,
     fresh: Option<Arc<Construction>>,
 }
 
@@ -67,7 +131,7 @@ struct BirthSource {
 struct NumericSourceBasis {
     hole: NumericHoleId,
     birth: NumericBirth,
-    environment: FrozenEnvironment,
+    environment: FrozenEnvId,
     fresh: Option<Arc<Construction>>,
 }
 
@@ -75,7 +139,7 @@ struct NumericSourceBasis {
 pub(crate) struct NumericSourceDerivation {
     basis: Arc<NumericSourceBasis>,
     resolution: Arc<NumericResolution>,
-    source: Option<(SourceSchema, FrozenEnvironment)>,
+    source: SourceRef,
 }
 
 #[derive(Clone, Debug)]
@@ -104,23 +168,28 @@ impl std::ops::Deref for EvaluatedValue {
 }
 
 impl EvaluatedValue {
-    /// Capture is single-assignment. Neither mutation nor a failed capture can
-    /// replace the original schema, environment, construction or birth identity.
-    pub(crate) fn capture_birth_source(
-        &mut self,
-        result: CheckedSource,
-        fresh: Option<Arc<Construction>>,
-    ) -> Result<(), SourceTypesError> {
+    pub(crate) fn preflight_source_capture(&self) -> Result<(), SourceTypesError> {
         if !matches!(self.birth.source, SourceCapture::Uncaptured) {
             return Err(SourceTypesError::AlreadyDefined);
         }
         if !matches!(self.current_source, CurrentSource::Birth) {
             return Err(SourceTypesError::SourceViewPending);
         }
+        Ok(())
+    }
+    /// Capture is single-assignment. Neither mutation nor a failed capture can
+    /// replace the original schema, environment, construction or birth identity.
+    pub(crate) fn capture_birth_source(
+        &mut self,
+        result: Result<CapturedSource, SourceTypesError>,
+        fresh: Option<Arc<Construction>>,
+    ) -> Result<(), SourceTypesError> {
+        self.preflight_source_capture()?;
         self.birth.source = SourceCapture::Captured(Arc::new(BirthSource { result, fresh }));
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn has_captured_source(&self) -> bool {
         !matches!(self.birth.source, SourceCapture::Uncaptured)
     }
@@ -129,19 +198,15 @@ impl EvaluatedValue {
         &mut self,
         hole: NumericHoleId,
         birth: NumericBirth,
-        environment: FrozenEnvironment,
+        environment: FrozenEnvId,
         fresh: Option<Arc<Construction>>,
     ) -> Result<(), SourceTypesError> {
-        if self.has_captured_source() {
-            return Err(SourceTypesError::AlreadyDefined);
-        }
-        if !matches!(self.current_source, CurrentSource::Birth)
-            || self.observation.is_none()
+        self.preflight_source_capture()?;
+        if self.observation.is_none()
             || self.identity.is_none()
             || self.birth_context.is_none()
             || self.value.ty != super::model::Ty::NumericHole(hole)
             || birth.allocation_epoch > self.allocation_epoch
-            || environment.is_poisoned()
         {
             return Err(SourceTypesError::Unresolved);
         }
@@ -158,6 +223,7 @@ impl EvaluatedValue {
         &mut self,
         hole: NumericHoleId,
         resolution: Arc<NumericResolution>,
+        types: &mut LiveSourceTypes,
         work: &mut usize,
     ) -> Result<(), SourceTypesError> {
         let basis = match &self.birth.source {
@@ -190,13 +256,17 @@ impl EvaluatedValue {
             return Err(SourceTypesError::Unresolved);
         }
         let mut graph_work = WorkLimit::new(*work);
-        let source = SourceSchema::scalar(
-            numeric_source_scalar(resolution.number_type),
-            None,
-            &mut graph_work,
-        );
+        let source = (|| {
+            let environment = types.environment(basis.environment, &mut graph_work)?;
+            let schema = SourceSchema::scalar(
+                numeric_source_scalar(resolution.number_type),
+                None,
+                &mut graph_work,
+            )?;
+            SourceRef::intern(&schema, environment, types, &mut graph_work)
+        })();
         *work = graph_work.remaining();
-        let source = Some((source?, basis.environment.clone()));
+        let source = source?;
         self.current_source = CurrentSource::Numeric(Arc::new(NumericSourceDerivation {
             basis: basis.clone(),
             resolution,
@@ -237,10 +307,14 @@ impl EvaluatedValue {
     /// An ordinary receiving change still consumes only its birth schema.
     pub(crate) fn input_source(
         &self,
-    ) -> Result<&Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError> {
+        types: SourceTypesRef<'_>,
+        work: &mut WorkLimit,
+    ) -> Result<ResolvedSource, SourceTypesError> {
         match self.current_source {
-            CurrentSource::Numeric(_) | CurrentSource::Failed(_) => self.current_source(),
-            _ => self.birth_source(),
+            CurrentSource::Numeric(_) | CurrentSource::Failed(_) => {
+                self.current_source(types, work)
+            }
+            _ => self.birth_source(types, work),
         }
     }
 
@@ -248,20 +322,30 @@ impl EvaluatedValue {
     /// current Value may have undergone a separately pending receiving change.
     pub(crate) fn birth_source(
         &self,
-    ) -> Result<&Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError> {
+        types: SourceTypesRef<'_>,
+        work: &mut WorkLimit,
+    ) -> Result<ResolvedSource, SourceTypesError> {
         match &self.birth.source {
             SourceCapture::Uncaptured => Err(SourceTypesError::SourceNotCaptured),
-            SourceCapture::Captured(basis) => basis.result.as_ref().map_err(Clone::clone),
+            SourceCapture::Captured(basis) => basis
+                .result
+                .as_ref()
+                .map_err(Clone::clone)?
+                .resolve(types, work),
             SourceCapture::NumericPending(_) => Err(SourceTypesError::SourceViewPending),
         }
     }
 
     pub(crate) fn current_source(
         &self,
-    ) -> Result<&Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError> {
+        types: SourceTypesRef<'_>,
+        work: &mut WorkLimit,
+    ) -> Result<ResolvedSource, SourceTypesError> {
         match &self.current_source {
-            CurrentSource::Birth => self.birth_source(),
-            CurrentSource::Numeric(derived) => Ok(&derived.source),
+            CurrentSource::Birth => self.birth_source(types, work),
+            CurrentSource::Numeric(derived) => {
+                CapturedSource::Known(derived.source).resolve(types, work)
+            }
             CurrentSource::Pending => Err(SourceTypesError::SourceViewPending),
             CurrentSource::Failed(error) => Err(error.clone()),
         }
@@ -723,7 +807,7 @@ mod packet_tests {
         effect_identity::ArgumentKey,
         facts::{LoanId, Participant, Permission, ScopeId},
         model::{SourceTypeWitness, Ty},
-        source_types::WorkLimit,
+        source_types::{LiveSourceTypes, WorkLimit},
     };
     use ril_compiler_core::ids::{
         ActivationEpochId, EvaluationOccurrenceId, ExprId, OptionalTagId,
@@ -734,7 +818,27 @@ mod packet_tests {
     };
     use std::collections::BTreeSet;
 
-    fn packet() -> EvaluatedValue {
+    fn unknown_source(types: &mut LiveSourceTypes) -> CapturedSource {
+        CapturedSource::Unknown(
+            types
+                .intern_environment(FrozenEnvironment::default(), &mut WorkLimit::new(4096))
+                .unwrap(),
+        )
+    }
+
+    fn resolve_birth(packet: &EvaluatedValue, types: &LiveSourceTypes) -> CheckedSource {
+        packet
+            .birth_source(SourceTypesRef::Live(types), &mut WorkLimit::new(4096))
+            .map(ResolvedSource::into_known)
+    }
+
+    fn resolve_current(packet: &EvaluatedValue, types: &LiveSourceTypes) -> CheckedSource {
+        packet
+            .current_source(SourceTypesRef::Live(types), &mut WorkLimit::new(4096))
+            .map(ResolvedSource::into_known)
+    }
+
+    fn packet(types: &mut LiveSourceTypes) -> EvaluatedValue {
         let mut value = Value::reference(
             Ty::Optional(Box::new(Ty::Int("int".into()))),
             NodeId(1),
@@ -771,21 +875,26 @@ mod packet_tests {
         let mut packet = EvaluatedValue::observed(value, 2, &record);
         packet
             .capture_birth_source(
-                Ok(Some((
-                    SourceSchema::import(
-                        &ArgumentKey::Name {
-                            name: "Option".into(),
-                            arguments: vec![ArgumentKey::Name {
-                                name: "int".into(),
-                                arguments: vec![],
-                            }],
-                        },
-                        None,
-                        &mut WorkLimit::new(256),
+                Ok(CapturedSource::Known(
+                    SourceRef::intern(
+                        &SourceSchema::import(
+                            &ArgumentKey::Name {
+                                name: "Option".into(),
+                                arguments: vec![ArgumentKey::Name {
+                                    name: "int".into(),
+                                    arguments: vec![],
+                                }],
+                            },
+                            None,
+                            &mut WorkLimit::new(256),
+                        )
+                        .unwrap(),
+                        FrozenEnvironment::default(),
+                        types,
+                        &mut WorkLimit::new(4096),
                     )
                     .unwrap(),
-                    FrozenEnvironment::default(),
-                ))),
+                )),
                 None,
             )
             .unwrap();
@@ -794,8 +903,9 @@ mod packet_tests {
 
     #[test]
     fn pure_epoch_transport_preserves_birth_source_permissions_and_duties() {
-        let mut packet = packet();
-        let (schema, environment) = packet.birth_source().unwrap().as_ref().unwrap();
+        let mut types = LiveSourceTypes::default();
+        let mut packet = packet(&mut types);
+        let (schema, environment) = resolve_birth(&packet, &types).unwrap().unwrap();
         let (root, environment) = (schema.root_id(), environment.id());
         let moves = [(NodeId(1), NodeId(6))];
         packet.transport_checked(&moves, &mut 4096).unwrap();
@@ -815,24 +925,25 @@ mod packet_tests {
         assert_eq!(value.option_identity, Some(OptionalTagId(9)));
         assert_eq!(packet.allocation_epoch, 0);
         assert_eq!(packet.observation, Some(2));
-        let (schema, frozen) = packet.birth_source().unwrap().as_ref().unwrap();
+        let (schema, frozen) = resolve_birth(&packet, &types).unwrap().unwrap();
         assert_eq!(schema.root_id(), root);
         assert_eq!(frozen.id(), environment);
     }
 
     #[test]
     fn mutable_current_view_cannot_reuse_the_immutable_input_schema() {
-        let original = Arc::new(packet());
+        let mut types = LiveSourceTypes::default();
+        let original = Arc::new(packet(&mut types));
         let mut current = original.try_clone(&mut 4096).unwrap();
         current.current_mut(&[]).ty = Ty::Str;
         assert!(matches!(
-            current.current_source(),
+            resolve_current(&current, &types),
             Err(SourceTypesError::SourceViewPending)
         ));
-        assert!(matches!(current.birth_source(), Ok(Some(_))));
-        assert!(matches!(original.current_source(), Ok(Some(_))));
-        let (birth, _) = current.birth_source().unwrap().as_ref().unwrap();
-        let (original_birth, _) = original.birth_source().unwrap().as_ref().unwrap();
+        assert!(matches!(resolve_birth(&current, &types), Ok(Some(_))));
+        assert!(matches!(resolve_current(&original, &types), Ok(Some(_))));
+        let (birth, _) = resolve_birth(&current, &types).unwrap().unwrap();
+        let (original_birth, _) = resolve_birth(&original, &types).unwrap().unwrap();
         assert_eq!(birth.root_id(), original_birth.root_id());
         assert_eq!(current.observation, original.observation);
         assert_eq!(current.allocation_epoch, original.allocation_epoch);
@@ -840,7 +951,8 @@ mod packet_tests {
 
     #[test]
     fn packet_clone_admits_owned_values_without_conflating_unknown_and_error() {
-        let mut packet = packet();
+        let mut types = LiveSourceTypes::default();
+        let mut packet = packet(&mut types);
         assert!(matches!(
             packet.current_read(&[], &mut 0),
             Err(SourceTypesError::BudgetExceeded)
@@ -855,9 +967,15 @@ mod packet_tests {
             Err(SourceTypesError::BudgetExceeded)
         ));
         let mut unknown = EvaluatedValue::new(packet.value.clone(), 0);
-        unknown.capture_birth_source(Ok(None), None).unwrap();
+        unknown
+            .capture_birth_source(Ok(unknown_source(&mut types)), None)
+            .unwrap();
         assert!(matches!(
-            unknown.try_clone(&mut 4096).unwrap().birth_source(),
+            unknown
+                .try_clone(&mut 4096)
+                .unwrap()
+                .birth_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096))
+                .map(ResolvedSource::into_known),
             Ok(None)
         ));
         let mut failed = EvaluatedValue::new(packet.value.clone(), 0);
@@ -865,28 +983,35 @@ mod packet_tests {
             .capture_birth_source(Err(SourceTypesError::MissingNode), None)
             .unwrap();
         assert!(matches!(
-            failed.try_clone(&mut 4096).unwrap().birth_source(),
+            failed
+                .try_clone(&mut 4096)
+                .unwrap()
+                .birth_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096))
+                .map(ResolvedSource::into_known),
             Err(SourceTypesError::MissingNode)
         ));
     }
 
     #[test]
     fn uncaptured_source_is_distinct_from_unknown_and_attempted_failure() {
+        let mut types = LiveSourceTypes::default();
         let mut uncaptured = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
         assert!(!uncaptured.has_captured_source());
         assert_eq!(
-            uncaptured.current_source().unwrap_err(),
+            resolve_current(&uncaptured, &types).unwrap_err(),
             SourceTypesError::SourceNotCaptured
         );
         let cloned = uncaptured.try_clone(&mut 100).unwrap();
         assert!(!cloned.has_captured_source());
         assert_eq!(
-            cloned.birth_source().unwrap_err(),
+            resolve_birth(&cloned, &types).unwrap_err(),
             SourceTypesError::SourceNotCaptured
         );
-        uncaptured.capture_birth_source(Ok(None), None).unwrap();
+        uncaptured
+            .capture_birth_source(Ok(unknown_source(&mut types)), None)
+            .unwrap();
         assert!(uncaptured.has_captured_source());
-        assert!(matches!(uncaptured.current_source(), Ok(None)));
+        assert!(matches!(resolve_current(&uncaptured, &types), Ok(None)));
 
         for error in [
             SourceTypesError::MissingNode,
@@ -898,57 +1023,59 @@ mod packet_tests {
                 .capture_birth_source(Err(error.clone()), None)
                 .unwrap();
             assert!(attempted.has_captured_source());
-            assert_eq!(attempted.birth_source().unwrap_err(), error);
+            assert_eq!(resolve_birth(&attempted, &types).unwrap_err(), error);
         }
     }
 
     #[test]
     fn birth_source_cannot_be_replaced_or_installed_after_a_current_view_change() {
-        let mut packet = packet();
-        let root = packet.birth_source().unwrap().as_ref().unwrap().0.root_id();
+        let mut types = LiveSourceTypes::default();
+        let mut packet = packet(&mut types);
+        let root = resolve_birth(&packet, &types).unwrap().unwrap().0.root_id();
         packet.invalidate_current_source();
         assert_eq!(
-            packet.capture_birth_source(Ok(None), None),
+            packet.capture_birth_source(Ok(unknown_source(&mut types)), None),
             Err(SourceTypesError::AlreadyDefined)
         );
         assert_eq!(
-            packet.birth_source().unwrap().as_ref().unwrap().0.root_id(),
+            resolve_birth(&packet, &types).unwrap().unwrap().0.root_id(),
             root
         );
         assert_eq!(
-            packet.current_source().unwrap_err(),
+            resolve_current(&packet, &types).unwrap_err(),
             SourceTypesError::SourceViewPending
         );
 
         let mut pending = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
         pending.current_mut(&[]).ty = Ty::Str;
         assert_eq!(
-            pending.capture_birth_source(Ok(None), None),
+            pending.capture_birth_source(Ok(unknown_source(&mut types)), None),
             Err(SourceTypesError::SourceViewPending)
         );
         assert!(!pending.has_captured_source());
         assert_eq!(
-            pending.birth_source().unwrap_err(),
+            resolve_birth(&pending, &types).unwrap_err(),
             SourceTypesError::SourceNotCaptured
         );
         assert_eq!(
-            pending.current_source().unwrap_err(),
+            resolve_current(&pending, &types).unwrap_err(),
             SourceTypesError::SourceViewPending
         );
     }
 
     #[test]
     fn failed_current_view_keeps_the_original_source_and_duties() {
-        let mut packet = packet();
-        let environment = packet.birth_source().unwrap().as_ref().unwrap().1.id();
+        let mut types = LiveSourceTypes::default();
+        let mut packet = packet(&mut types);
+        let environment = resolve_birth(&packet, &types).unwrap().unwrap().1.id();
         packet.fail_current_source(SourceTypesError::BudgetExceeded);
         packet.value.ty = Ty::Unknown;
         assert_eq!(
-            packet.current_source().unwrap_err(),
+            resolve_current(&packet, &types).unwrap_err(),
             SourceTypesError::BudgetExceeded
         );
         assert_eq!(
-            packet.birth_source().unwrap().as_ref().unwrap().1.id(),
+            resolve_birth(&packet, &types).unwrap().unwrap().1.id(),
             environment
         );
         assert_eq!(packet.value.results, BTreeSet::from([7]));
@@ -956,29 +1083,29 @@ mod packet_tests {
         packet.invalidate_current_source();
         packet.fail_current_source(SourceTypesError::Unresolved);
         assert_eq!(
-            packet.current_source().unwrap_err(),
+            resolve_current(&packet, &types).unwrap_err(),
             SourceTypesError::BudgetExceeded
         );
         assert_eq!(packet.value.results, BTreeSet::from([7]));
         assert_eq!(
-            packet.birth_source().unwrap().as_ref().unwrap().1.id(),
+            resolve_birth(&packet, &types).unwrap().unwrap().1.id(),
             environment
         );
         packet
             .transport_checked(&[(NodeId(1), NodeId(6))], &mut 4096)
             .unwrap();
         assert_eq!(
-            packet.current_source().unwrap_err(),
+            resolve_current(&packet, &types).unwrap_err(),
             SourceTypesError::BudgetExceeded
         );
         assert_eq!(
-            packet.birth_source().unwrap().as_ref().unwrap().1.id(),
+            resolve_birth(&packet, &types).unwrap().unwrap().1.id(),
             environment
         );
     }
 
-    fn pending_numeric_packet() -> EvaluatedValue {
-        let original = packet();
+    fn pending_numeric_packet(types: &mut LiveSourceTypes) -> EvaluatedValue {
+        let original = packet(types);
         let mut value = Value::scalar(Ty::NumericHole(NumericHoleId(3)), None, CauseId(0));
         value
             .numeric
@@ -1004,7 +1131,9 @@ mod packet_tests {
                     context: record.context,
                     allocation_epoch: 0,
                 },
-                FrozenEnvironment::default(),
+                types
+                    .intern_environment(FrozenEnvironment::default(), &mut WorkLimit::new(4096))
+                    .unwrap(),
                 Some(Arc::new(Construction::Opaque)),
             )
             .unwrap();
@@ -1036,14 +1165,15 @@ mod packet_tests {
 
     #[test]
     fn numeric_source_keeps_pending_birth_and_all_non_numeric_duties() {
-        let mut packet = pending_numeric_packet();
+        let mut types = LiveSourceTypes::default();
+        let mut packet = pending_numeric_packet(&mut types);
         let original = packet.try_clone(&mut 4096).unwrap();
         let resolution = numeric_resolution();
         resolution.apply(&mut packet.value, &mut 4096).unwrap();
         packet
-            .apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut 4096)
+            .apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut types, &mut 4096)
             .unwrap();
-        let (schema, environment) = packet.current_source().unwrap().as_ref().unwrap();
+        let (schema, environment) = resolve_current(&packet, &types).unwrap().unwrap();
         assert_eq!(
             schema.key().unwrap(),
             crate::sema::effect_identity::ArgumentKey::Name {
@@ -1054,7 +1184,7 @@ mod packet_tests {
         let environment = environment.id();
         assert!(packet.shares_birth(&original));
         assert_eq!(
-            packet.birth_source().unwrap_err(),
+            resolve_birth(&packet, &types).unwrap_err(),
             SourceTypesError::SourceViewPending
         );
         assert_eq!(packet.value.results, original.value.results);
@@ -1069,24 +1199,25 @@ mod packet_tests {
             .transport_checked(&[(NodeId(1), NodeId(6))], &mut 4096)
             .unwrap();
         assert_eq!(
-            packet.current_source().unwrap().as_ref().unwrap().1.id(),
+            resolve_current(&packet, &types).unwrap().unwrap().1.id(),
             environment
         );
         let cloned = packet.try_clone(&mut 4096).unwrap();
         assert_eq!(
-            cloned.current_source().unwrap().as_ref().unwrap().1.id(),
+            resolve_current(&cloned, &types).unwrap().unwrap().1.id(),
             environment
         );
         packet.invalidate_current_source();
         assert_eq!(
-            packet.current_source().unwrap_err(),
+            resolve_current(&packet, &types).unwrap_err(),
             SourceTypesError::SourceViewPending
         );
     }
 
     #[test]
     fn numeric_admission_cannot_hide_changes_to_held_permissions_or_duties() {
-        let birth = packet();
+        let mut types = LiveSourceTypes::default();
+        let birth = packet(&mut types);
         let moves = [(NodeId(1), NodeId(6))];
         let mut held = birth.try_clone(&mut 4096).unwrap();
         held.transport_checked(&moves, &mut 4096).unwrap();
@@ -1129,9 +1260,10 @@ mod packet_tests {
 
     #[test]
     fn numeric_source_cannot_replace_unknown_error_or_an_unrelated_pending_birth() {
+        let mut types = LiveSourceTypes::default();
         let resolution = numeric_resolution();
         for outcome in [
-            Ok(None),
+            Ok(unknown_source(&mut types)),
             Err(SourceTypesError::MissingNode),
             Err(SourceTypesError::BudgetExceeded),
         ] {
@@ -1140,27 +1272,194 @@ mod packet_tests {
             resolution.apply(&mut packet.value, &mut 4096).unwrap();
             assert!(
                 packet
-                    .apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut 4096)
+                    .apply_numeric_resolution(
+                        NumericHoleId(3),
+                        resolution.clone(),
+                        &mut types,
+                        &mut 4096
+                    )
                     .is_err()
             );
             assert!(packet.numeric_source_derivation().is_none());
         }
-        let mut pending = pending_numeric_packet();
+        let mut pending = pending_numeric_packet(&mut types);
         resolution.apply(&mut pending.value, &mut 4096).unwrap();
         assert_eq!(
-            pending.apply_numeric_resolution(NumericHoleId(4), resolution.clone(), &mut 4096),
+            pending.apply_numeric_resolution(
+                NumericHoleId(4),
+                resolution.clone(),
+                &mut types,
+                &mut 4096
+            ),
             Err(SourceTypesError::Unresolved)
         );
         assert_eq!(
-            pending.apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut 0),
+            pending.apply_numeric_resolution(
+                NumericHoleId(3),
+                resolution.clone(),
+                &mut types,
+                &mut 0
+            ),
             Err(SourceTypesError::BudgetExceeded)
         );
         assert!(pending.numeric_source_derivation().is_none());
         pending.value.numeric.selections.clear();
         assert_eq!(
-            pending.apply_numeric_resolution(NumericHoleId(3), resolution, &mut 4096),
+            pending.apply_numeric_resolution(NumericHoleId(3), resolution, &mut types, &mut 4096),
             Err(SourceTypesError::Unresolved)
         );
+    }
+
+    #[test]
+    fn source_coordinates_retain_original_identity_and_environment_when_frozen() {
+        let mut types = LiveSourceTypes::default();
+        let environment = FrozenEnvironment::default();
+        let environment_id = environment.id();
+        let original = Some(TypeExprId(73));
+        let schema =
+            SourceSchema::scalar(SourceScalar::I32, original, &mut WorkLimit::new(4096)).unwrap();
+        let source =
+            SourceRef::intern(&schema, environment, &mut types, &mut WorkLimit::new(4096)).unwrap();
+        let mut packet =
+            EvaluatedValue::new(Value::scalar(Ty::Int("i32".into()), None, CauseId(0)), 0);
+        packet
+            .capture_birth_source(Ok(CapturedSource::Known(source)), None)
+            .unwrap();
+        let live = packet
+            .birth_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_eq!(live.schema.as_ref().unwrap().root_id(), source.view.ty);
+        assert_eq!(live.schema.as_ref().unwrap().original(), original);
+        assert_eq!(live.environment.id(), environment_id);
+        let frozen = types.freeze();
+        let retained = packet
+            .birth_source(SourceTypesRef::Frozen(&frozen), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_eq!(retained.schema.as_ref().unwrap().root_id(), source.view.ty);
+        assert_eq!(retained.schema.as_ref().unwrap().original(), original);
+        assert_eq!(retained.environment.id(), environment_id);
+        assert!(matches!(
+            packet.birth_source(SourceTypesRef::Frozen(&frozen), &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        let foreign = LiveSourceTypes::default();
+        assert!(
+            packet
+                .birth_source(SourceTypesRef::Live(&foreign), &mut WorkLimit::new(4096))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unknown_source_keeps_its_actual_environment_and_rejects_missing_coordinates() {
+        let mut types = LiveSourceTypes::default();
+        let environment = FrozenEnvironment::default();
+        let environment_id = types
+            .intern_environment(environment, &mut WorkLimit::new(4096))
+            .unwrap();
+        let mut packet = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
+        packet
+            .capture_birth_source(Ok(CapturedSource::Unknown(environment_id)), None)
+            .unwrap();
+        let known_environment = packet
+            .input_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert!(known_environment.schema.is_none());
+        assert_eq!(known_environment.environment.id(), environment_id);
+        let mut foreign = LiveSourceTypes::default();
+        foreign
+            .intern_environment(FrozenEnvironment::default(), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert!(matches!(
+            packet.input_source(SourceTypesRef::Live(&foreign), &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::MissingNode)
+        ));
+        let missing_id = FrozenEnvironment::default().id();
+        let mut missing = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
+        missing
+            .capture_birth_source(Ok(CapturedSource::Unknown(missing_id)), None)
+            .unwrap();
+        assert!(matches!(
+            missing.input_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::MissingNode)
+        ));
+        assert!(matches!(
+            types.intern_environment(FrozenEnvironment::poisoned(), &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::Unresolved)
+        ));
+        let frozen = types.freeze();
+        let retained = packet
+            .input_source(SourceTypesRef::Frozen(&frozen), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert!(retained.schema.is_none());
+        assert_eq!(retained.environment.id(), environment_id);
+    }
+
+    #[test]
+    fn equal_source_views_do_not_identify_independent_birth_receipts() {
+        let mut types = LiveSourceTypes::default();
+        let first = packet(&mut types);
+        let SourceCapture::Captured(basis) = &first.birth.source else {
+            panic!("fixture must retain its real captured source");
+        };
+        let source = *basis.result.as_ref().unwrap();
+        let mut independent = EvaluatedValue::new(first.value.clone(), first.allocation_epoch);
+        // Even forged equal coordinates cannot turn another capture into the
+        // original immutable receipt merely because its view is shared.
+        independent.birth.observation = first.observation;
+        independent.birth.identity = first.identity;
+        independent.birth.birth_context = first.birth_context;
+        independent.capture_birth_source(Ok(source), None).unwrap();
+        assert!(!first.shares_birth(&independent));
+        assert!(first.shares_birth(&first.try_clone(&mut 4096).unwrap()));
+        let left = resolve_birth(&first, &types).unwrap().unwrap();
+        let right = resolve_birth(&independent, &types).unwrap().unwrap();
+        assert_eq!(left.0.root_id(), right.0.root_id());
+        assert_eq!(left.1.id(), right.1.id());
+    }
+
+    #[test]
+    fn numeric_source_resolution_requires_its_original_environment_registry() {
+        let mut types = LiveSourceTypes::default();
+        let mut packet = pending_numeric_packet(&mut types);
+        let SourceCapture::NumericPending(basis) = &packet.birth.source else {
+            panic!("fixture must retain its pending numeric basis");
+        };
+        let environment_id = basis.environment;
+        let original = packet.try_clone(&mut 4096).unwrap();
+        let resolution = numeric_resolution();
+        resolution.apply(&mut packet.value, &mut 4096).unwrap();
+        let mut foreign = LiveSourceTypes::default();
+        assert!(matches!(
+            packet.apply_numeric_resolution(
+                NumericHoleId(3),
+                resolution.clone(),
+                &mut foreign,
+                &mut 4096
+            ),
+            Err(SourceTypesError::MissingNode)
+        ));
+        assert!(packet.numeric_source_derivation().is_none());
+        assert!(packet.shares_birth(&original));
+        packet
+            .apply_numeric_resolution(NumericHoleId(3), resolution, &mut types, &mut 4096)
+            .unwrap();
+        let selected = packet
+            .current_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_eq!(selected.environment.id(), environment_id);
+        assert_eq!(
+            selected.schema.unwrap().key().unwrap(),
+            ArgumentKey::Name {
+                name: "f32".into(),
+                arguments: vec![]
+            }
+        );
+        assert!(packet.shares_birth(&original));
+        assert!(matches!(
+            packet.birth_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096)),
+            Err(SourceTypesError::SourceViewPending)
+        ));
     }
 
     #[test]
@@ -1267,7 +1566,8 @@ mod packet_tests {
 
     #[test]
     fn explicit_epoch_transport_preserves_birth_and_intermediate_snapshots() {
-        let original = packet();
+        let mut types = LiveSourceTypes::default();
+        let original = packet(&mut types);
         let moves = [(NodeId(1), NodeId(6)), (NodeId(6), NodeId(8))];
         let completion = transport_value_at(&original.value, &moves, 0, 1, &mut 4096).unwrap();
         let current = transport_value_at(&completion, &moves, 1, 2, &mut 4096).unwrap();
@@ -1291,7 +1591,8 @@ mod packet_tests {
 
     #[test]
     fn birth_equality_admits_nonshared_witness_keys_and_return_contracts() {
-        let packet = packet();
+        let mut types = LiveSourceTypes::default();
+        let packet = packet(&mut types);
         let mut left = packet.value.clone();
         let span = Span {
             file: FileId(0),

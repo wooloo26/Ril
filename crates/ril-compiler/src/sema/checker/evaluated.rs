@@ -140,9 +140,10 @@ impl Checker {
             return Err(SourceTypesError::BudgetExceeded);
         }
         let resolution = self.numeric.resolution(hole)?.clone();
+        let types = self.type_source.storage.live_types_mut();
         let result = self
             .application_effect
-            .with_work(|work| packet.apply_numeric_resolution(hole, resolution, work));
+            .with_work(|work| packet.apply_numeric_resolution(hole, resolution, types, work));
         if let Err(error) = &result {
             packet.fail_current_source(error.clone());
             self.unsupported(

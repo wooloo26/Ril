@@ -18,7 +18,8 @@ impl Checker {
         birth: NumericBirth,
         subject: Option<&EvaluatedValue>,
     ) -> Result<NumberType, crate::sema::source_types::SourceTypesError> {
-        use crate::sema::numeric_selection::{NumericReplayInputs, NumericSourceTypes};
+        use crate::sema::numeric_selection::NumericReplayInputs;
+        use crate::sema::source_types_ref::SourceTypesRef;
         let numeric = &self.numeric;
         let hir = &self.semantic_hir;
         let bindings = &self.bindings;
@@ -44,7 +45,7 @@ impl Checker {
                         allocation_history,
                         bindings,
                         constructors,
-                        source_types: NumericSourceTypes::Live(source_types),
+                        source_types: SourceTypesRef::Live(source_types),
                         witnesses,
                         explanations,
                         open,

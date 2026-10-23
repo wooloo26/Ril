@@ -147,7 +147,7 @@ impl Checker {
             return;
         }
         let declaration_environment = closure.contract.typing_environment.clone();
-        let composed = (|| -> InputSource {
+        let composed = (|| -> Result<Option<SourceRef>, SourceTypesError> {
             let Some((result, result_environment)) = self.raw_original_source_schema(
                 result,
                 &closure.body,
@@ -229,13 +229,18 @@ impl Checker {
             if environment.is_poisoned() {
                 return Err(SourceTypesError::Unresolved);
             }
-            Ok(Some((schema, environment)))
+            Ok(Some(SourceRef::intern(
+                &schema,
+                environment,
+                self.type_source.storage.live_types_mut(),
+                &mut work,
+            )?))
         })();
         match composed {
-            Ok(Some((schema, environment))) => {
+            Ok(Some(source)) => {
                 self.call_input_source
                     .closure_views
-                    .insert(index, (id.0, schema, environment));
+                    .insert(index, (id.0, source));
             }
             Ok(None) => {}
             Err(error) => self.unsupported(
@@ -252,9 +257,15 @@ impl Checker {
         let [Callable::Closure(index)] = value.callables.as_slice() else {
             return Ok(None);
         };
-        let Some((id, schema, environment)) =
-            self.call_input_source.closure_views.get(index).cloned()
-        else {
+        work.charge(
+            2 + self
+                .call_input_source
+                .closure_views
+                .len()
+                .checked_ilog2()
+                .unwrap_or(0) as usize,
+        )?;
+        let Some((id, source)) = self.call_input_source.closure_views.get(index).copied() else {
             return Ok(None);
         };
         let invocation = self
@@ -271,10 +282,14 @@ impl Checker {
             || invocation.status != crate::sema::copy_contract::CopyInvocationStatus::Completed
             || invocation.parent_named != closure.creation_invocation
             || invocation.parent_closure != closure.creation_closure
-            || environment.is_poisoned()
         {
             return Err(SourceTypesError::Unresolved);
         }
+        let (schema, environment) = self.type_source.storage.live_types().view_schema(
+            source.view,
+            source.original,
+            work,
+        )?;
         if self.closure_public_view_agrees(value, &schema, work)? {
             Ok(Some((schema, environment)))
         } else {
@@ -311,7 +326,7 @@ impl Checker {
                 let [Callable::Closure(closure)] = value.callables.as_slice() else {
                     return Err(SourceTypesError::Unresolved);
                 };
-                let (id, _, _) = self
+                let (id, _) = self
                     .call_input_source
                     .closure_views
                     .get(closure)

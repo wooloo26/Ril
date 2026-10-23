@@ -17,34 +17,7 @@ use std::ops::{Deref, DerefMut};
 #[path = "source_views.rs"]
 mod source_views;
 
-#[derive(Clone, Copy)]
-pub(crate) enum NumericSourceTypes<'a> {
-    Live(&'a crate::sema::source_types::LiveSourceTypes),
-    Frozen(&'a crate::sema::source_types::SourceTypeIndex),
-}
-
-impl NumericSourceTypes<'_> {
-    fn binding_schema(
-        self,
-        binding: usize,
-        work: &mut WorkLimit,
-    ) -> Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError> {
-        match self {
-            Self::Live(types) => types.binding_schema_if_known(binding, None, work),
-            Self::Frozen(types) => types.binding_schema_if_known(binding, None, work),
-        }
-    }
-    fn view_schema(
-        self,
-        view: crate::sema::source_types::SourceView,
-        work: &mut WorkLimit,
-    ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
-        match self {
-            Self::Live(types) => types.view_schema(view, work),
-            Self::Frozen(types) => types.view_schema(view, work),
-        }
-    }
-}
+use crate::sema::source_types_ref::SourceTypesRef;
 
 fn hir_error(error: hir::LowerError) -> SourceTypesError {
     match error {
@@ -95,7 +68,7 @@ pub(crate) struct NumericReplayInputs<'a> {
     pub(crate) allocation_history: &'a [(crate::sema::facts::NodeId, crate::sema::facts::NodeId)],
     pub(crate) bindings: &'a [crate::sema::model::BindingInfo],
     pub(crate) constructors: &'a BTreeMap<String, crate::sema::model::ConstructorInfo>,
-    pub(crate) source_types: NumericSourceTypes<'a>,
+    pub(crate) source_types: SourceTypesRef<'a>,
     pub(crate) witnesses: &'a [crate::sema::effect_identity::InvocationWitness],
     pub(crate) explanations: &'a crate::sema::facts::Explanations,
     pub(crate) open: Option<ril_compiler_core::ids::ActivationEpochId>,
@@ -119,7 +92,7 @@ impl<'a> NumericReplayInputs<'a> {
             allocation_history: &facts.allocation_history,
             bindings: &facts.bindings,
             constructors: &facts.constructors,
-            source_types: NumericSourceTypes::Frozen(&facts.source_types),
+            source_types: SourceTypesRef::Frozen(&facts.source_types),
             witnesses: &facts.invocation_witnesses,
             explanations: &facts.explanations,
             open: None,

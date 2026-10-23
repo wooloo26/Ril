@@ -105,6 +105,7 @@ impl Checker {
         if name.strip_prefix("Prelude::").unwrap_or(name) != if success { "Ok" } else { "Err" } {
             return;
         }
+        let event_id = event.id;
         let (Ty::Result(ok, error), Ty::Result(expected_ok, expected_error)) =
             (&value.ty, expected)
         else {
@@ -126,12 +127,12 @@ impl Checker {
         let Some(payload) = payload else { return };
         // The actual physical argument owns the active branch's source graph.
         // A receiving context may select only the branch which did not occur.
-        let result = (|| -> InputSource {
+        let result = (|| -> Result<Option<(SourceSchema, SourceRef)>, SourceTypesError> {
             let mut work = WorkLimit::new(16384);
             let input = self
                 .call_input_source
                 .supplied
-                .get(&event.id)
+                .get(&event_id)
                 .and_then(|inputs| inputs.get(&0))
                 .ok_or(SourceTypesError::MissingNode)?;
             let token = input.observation.ok_or(SourceTypesError::MissingNode)?;
@@ -151,12 +152,18 @@ impl Checker {
                     .is_some_and(|row| {
                         row.expression == token
                             && row.context == context
-                            && row.argument_of == Some((event.id, 0))
+                            && row.argument_of == Some((event_id, 0))
                     })
             {
                 return Err(SourceTypesError::Unresolved);
             }
-            let Some((active_schema, active_environment)) = input.input_source().cloned()? else {
+            let Some((active_schema, active_environment)) = input
+                .input_source(
+                    SourceTypesRef::Live(self.type_source.storage.live_types()),
+                    &mut work,
+                )?
+                .into_known()
+            else {
                 return Ok(None);
             };
             let inactive = if let Some(target) = source {
@@ -206,12 +213,17 @@ impl Checker {
             } else {
                 [inactive_schema, active_schema]
             };
-            Ok(Some((
-                SourceSchema::container(SourceContainer::Result, &arguments, None, &mut work)?,
+            let schema =
+                SourceSchema::container(SourceContainer::Result, &arguments, None, &mut work)?;
+            let source = SourceRef::intern(
+                &schema,
                 environment,
-            )))
+                self.type_source.storage.live_types_mut(),
+                &mut work,
+            )?;
+            Ok(Some((schema, source)))
         })();
-        let (schema, environment) = match result {
+        let (schema, source) = match result {
             Ok(Some(source)) => source,
             Ok(None) => return,
             Err(error) => {
@@ -229,7 +241,7 @@ impl Checker {
         };
         self.call_input_source
             .carrier_sources
-            .insert(value.cause.0, (schema.clone(), environment));
+            .insert(value.cause.0, source);
         self.attach_result_graph_witness(&schema, value, syntax.span);
     }
 
@@ -238,7 +250,8 @@ impl Checker {
         value: &Value,
         syntax: &Expr,
         frame: &Frame,
-    ) -> Option<(SourceSchema, FrozenEnvironment)> {
+        work: &mut WorkLimit,
+    ) -> Option<InputSource> {
         let application = AstApplication::from_ast(syntax)?;
         if application.operands.len() != 1 {
             return None;
@@ -267,10 +280,14 @@ impl Checker {
         {
             return None;
         }
-        self.call_input_source
-            .carrier_sources
-            .get(&value.cause.0)
-            .cloned()
+        let source = self.call_input_source.carrier_sources.get(&value.cause.0)?;
+        Some(
+            self.type_source
+                .storage
+                .live_types()
+                .view_schema(source.view, source.original, work)
+                .map(Some),
+        )
     }
 
     fn attach_result_graph_witness(
@@ -875,7 +892,13 @@ impl Checker {
             if input.context != call.entry.caller_context {
                 return Err(SourceTypesError::Unresolved);
             }
-            let Some((schema, environment)) = input.input_source()? else {
+            let Some((schema, environment)) = input
+                .input_source(
+                    SourceTypesRef::Live(self.type_source.storage.live_types()),
+                    work,
+                )?
+                .into_known()
+            else {
                 continue;
             };
             if environment.is_poisoned() {

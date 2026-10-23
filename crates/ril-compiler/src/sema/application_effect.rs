@@ -581,14 +581,18 @@ mod tests {
     #[test]
     fn capture_budget_failure_remains_distinct_from_unknown_and_uncaptured_source() {
         use crate::sema::{
-            evaluated::EvaluatedValue,
+            context::FrozenEnvironment,
+            evaluated::{CapturedSource, EvaluatedValue},
             model::{Ty, Value},
+            source_types::LiveSourceTypes,
+            source_types_ref::SourceTypesRef,
         };
         use ril_compiler_core::diagnostic::CauseId;
+        let mut types = LiveSourceTypes::default();
         let value = || Value::scalar(Ty::Unit, None, CauseId(0));
         let uncaptured = EvaluatedValue::new(value(), 0);
         assert!(matches!(
-            uncaptured.input_source(),
+            uncaptured.input_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096)),
             Err(SourceTypesError::SourceNotCaptured)
         ));
         let mut domain = ApplicationEffectDomain {
@@ -605,12 +609,22 @@ mod tests {
             "a rejected preflight allocated and consumed nothing"
         );
         assert!(matches!(
-            failed.input_source(),
+            failed.input_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096)),
             Err(SourceTypesError::BudgetExceeded)
         ));
         let mut unknown = EvaluatedValue::new(value(), 0);
-        unknown.capture_birth_source(Ok(None), None).unwrap();
-        assert!(matches!(unknown.input_source(), Ok(None)));
+        let environment = FrozenEnvironment::default();
+        let environment_id = types
+            .intern_environment(environment, &mut WorkLimit::new(4096))
+            .unwrap();
+        unknown
+            .capture_birth_source(Ok(CapturedSource::Unknown(environment_id)), None)
+            .unwrap();
+        let source = unknown
+            .input_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert!(source.schema.is_none());
+        assert_eq!(source.environment.id(), environment_id);
         let mut attempted = EvaluatedValue::new(value(), 0);
         let lease = domain.lease_work(16384);
         assert!(!domain.admit(1));
@@ -619,17 +633,21 @@ mod tests {
             .capture_birth_source(Err(error.clone()), None)
             .unwrap();
         attempted.fail_current_source(error);
+        let source = unknown
+            .birth_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096))
+            .unwrap();
         assert!(
-            matches!(unknown.birth_source(), Ok(None)),
+            source.schema.is_none(),
             "a genuinely unknown birth remains distinct from failed capture"
         );
+        assert_eq!(source.environment.id(), environment_id);
         assert!(matches!(
-            attempted.birth_source(),
+            attempted.birth_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096)),
             Err(SourceTypesError::BudgetExceeded)
         ));
         assert!(attempted.has_captured_source());
         assert!(matches!(
-            attempted.input_source(),
+            attempted.input_source(SourceTypesRef::Live(&types), &mut WorkLimit::new(4096)),
             Err(SourceTypesError::BudgetExceeded)
         ));
     }

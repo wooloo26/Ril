@@ -369,7 +369,7 @@ mod tests {
             )
             .unwrap();
         let types = builder.freeze(&mut work).unwrap();
-        let recursive = SourceSchema::copy_from(&types, root, None, &mut work).unwrap();
+        let recursive = SourceSchema::frozen_view(&types, root, None, &mut work).unwrap();
         assert!(matches!(
             recursive.syntax_projection(span(), &mut work, &mut |_, _, _| Err(
                 SourceTypesError::Unresolved

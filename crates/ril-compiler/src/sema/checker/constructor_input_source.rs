@@ -145,7 +145,7 @@ impl Checker {
                     return Err(SourceTypesError::Unresolved);
                 }
                 let (types, root) = payload.graph(&mut work)?;
-                let schema = SourceSchema::copy_from(&types, root, None, &mut work)?;
+                let schema = SourceSchema::frozen_view(&types, root, None, &mut work)?;
                 Ok((syntax, schema))
             })();
             match source {
@@ -313,6 +313,7 @@ impl Checker {
                     input_compatible(
                         target.schema.as_ref().ok_or(SourceTypesError::Unresolved)?,
                         input,
+                        SourceTypesRef::Live(self.type_source.storage.live_types()),
                         &mut WorkLimit::new(16384),
                     )
                 });

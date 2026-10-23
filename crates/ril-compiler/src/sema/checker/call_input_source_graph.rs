@@ -198,8 +198,8 @@ impl Checker {
                 work,
             );
         }
-        if let Some(source) = self.original_carrier_source_schema(value, syntax, frame) {
-            return Ok(Some(source));
+        if let Some(source) = self.original_carrier_source_schema(value, syntax, frame, work) {
+            return source;
         }
         if let Some(source) = self.original_called_result_schema(value, syntax, frame, work)? {
             return Ok(Some(source));

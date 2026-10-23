@@ -1388,9 +1388,10 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                     if view.environment != info.typing_environment.id() {
                         return Err(crate::sema::source_types::SourceTypesError::Unresolved);
                     }
-                    let (_, environment) = facts
-                        .source_types
-                        .view_schema(view, &mut constructor_work)?;
+                    let (_, environment) =
+                        facts
+                            .source_types
+                            .view_schema(view, None, &mut constructor_work)?;
                     Ok::<_, crate::sema::source_types::SourceTypesError>(p::SourceView {
                         ty: facts
                             .source_types
