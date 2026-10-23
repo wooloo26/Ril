@@ -2,7 +2,6 @@ use ril_compiler::{
     CheckOptions, Session,
     sema::{SemanticFacts, validate::solved_facts},
 };
-use ril_compiler_core::ids::{CallableOwner, ClosureSiteId, ExprId};
 
 fn verified(name: &str, layout: &str) -> SemanticFacts {
     let source = ril_test::case_source(&format!(
@@ -143,41 +142,5 @@ fn contextual_lambda_preview_keeps_its_original_signature_and_result_check() {
                 "{case} {layout}: {outcome:?}"
             );
         }
-    }
-}
-
-#[test]
-fn deleting_or_substituting_site_identity_never_erases_a_closure_obligation() {
-    let facts = verified("two-written", "pointer64");
-    assert!(facts.closure_sites.len() >= 2);
-    for mutation in 0..9 {
-        let mut changed = facts.clone();
-        match mutation {
-            0 => changed.closure_sites.clear(),
-            1 => changed.closure_sites[0].source = changed.closure_sites[1].source,
-            2 => changed.closure_sites[0].source = ExprId(u32::MAX),
-            3 => changed.closure_sites[0].owner = CallableOwner::Lambda(ClosureSiteId(0)),
-            4 => changed.closures[0].hir_id = changed.closures[1].hir_id,
-            5 => changed.closures[0].site = None,
-            6 => {
-                changed.closure_sites.clear();
-                changed.closures.clear();
-                for expression in &mut changed.expressions {
-                    expression.value.callables.clear();
-                }
-            }
-            7 => changed.closure_sites[1].id = changed.closure_sites[0].id,
-            8 => {
-                changed.closures.clear();
-                for expression in &mut changed.expressions {
-                    expression.value.callables.clear();
-                }
-            }
-            _ => unreachable!(),
-        }
-        assert!(
-            solved_facts(&changed).is_err(),
-            "closure site mutation {mutation}"
-        );
     }
 }

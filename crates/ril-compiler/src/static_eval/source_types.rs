@@ -111,7 +111,8 @@ impl Evaluator {
         mut value: StaticValue,
         resolved: &TypeExpr,
     ) -> Result<StaticValue> {
-        if (value.collection_id().is_some() || matches!(value, StaticValue::Variant(..)))
+        if (value.collection_id().is_some()
+            || matches!(value, StaticValue::Variant(..) | StaticValue::Result(_)))
             && let Some(syntax) = self.frozen_source_syntax(resolved)?
             && let Some(witness) = self.source_type_witness(syntax)?
         {
@@ -201,6 +202,7 @@ pub(super) fn view(value: &StaticValue) -> Option<&Arc<SourceTypeWitness>> {
         StaticValue::Record(value) => value.storage.source_type.as_ref(),
         StaticValue::Map(value) => value.source_type.as_ref(),
         StaticValue::Variant(_, _, metadata) => metadata.as_ref(),
+        StaticValue::Result(value) => value.source_type.as_ref(),
         _ => None,
     }
 }
@@ -210,6 +212,7 @@ fn set_view(value: &mut StaticValue, witness: Arc<SourceTypeWitness>) {
         StaticValue::Record(value) => value.storage.source_type = Some(witness),
         StaticValue::Map(value) => value.source_type = Some(witness),
         StaticValue::Variant(_, _, metadata) => *metadata = Some(witness),
+        StaticValue::Result(value) => value.source_type = Some(witness),
         _ => {}
     }
 }

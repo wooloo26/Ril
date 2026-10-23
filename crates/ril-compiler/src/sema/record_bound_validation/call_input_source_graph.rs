@@ -24,12 +24,17 @@ impl Replay<'_> {
         environment: FrozenEnvironment,
         work: &mut usize,
     ) -> Check<OriginalSource> {
-        for _ in 0..3 {
+        let valid = witness
+            .validate_closed_with_work(work)
+            .ok_or("closed Source witness exceeds its validation work bound")?;
+        // resolved_names and the final bounded key construction each walk
+        // this same original witness after its shared validation admission.
+        for _ in 0..2 {
             crate::static_eval::charge_type_syntax_clone(&witness.syntax, work)
                 .ok_or("closed Source witness exceeds its validation work bound")?;
         }
         require(
-            witness.validate_closed()
+            valid
                 && crate::sema::source_type_validation::resolved_names(
                     witness,
                     &self.facts.external_type_declarations,
@@ -221,6 +226,63 @@ impl Replay<'_> {
         Ok((schema, environment))
     }
 
+    pub(super) fn source_callable_row_identity(
+        &self,
+        origin: crate::sema::source_types::CallableRowOrigin,
+        annotations: &[ril_syntax::ast::Annotation],
+        scope: &BoundScope,
+        environment: &FrozenEnvironment,
+        work: &mut usize,
+    ) -> Check<Option<crate::sema::source_types::CallableRowIdentity<SourceSchema>>> {
+        use crate::sema::source_types::declarations::{HeaderContext, callable_row_identity};
+        require(
+            !environment.is_poisoned(),
+            "original callable row has a poisoned environment",
+        )?;
+        let mut binders = self.key_scope(scope)?;
+        source_scan_work(work, environment.generic_context.len())?;
+        for (name, identity) in &environment.generic_context {
+            source_scan_work(
+                work,
+                name.len().div_ceil(32) + identity.len().div_ceil(32) + 1,
+            )?;
+            binders
+                .entry(name.clone())
+                .or_insert_with(|| identity.clone());
+        }
+        schema_work(work, |budget| {
+            callable_row_identity(
+                origin,
+                annotations,
+                HeaderContext {
+                    declarations: &self.facts.external_type_declarations,
+                    program: self
+                        .facts
+                        .source_program
+                        .as_deref()
+                        .ok_or(crate::sema::source_types::SourceTypesError::MissingNode)?,
+                    hir: self
+                        .facts
+                        .semantic_hir
+                        .as_deref()
+                        .ok_or(crate::sema::source_types::SourceTypesError::MissingNode)?,
+                    lexical: self
+                        .lexical
+                        .as_ref()
+                        .ok_or(crate::sema::source_types::SourceTypesError::MissingNode)?,
+                    binders: &binders,
+                    functions: &self.facts.functions,
+                    generic_binders: &self.facts.generic_binders,
+                    layout: self
+                        .facts
+                        .target_layout
+                        .ok_or(crate::sema::source_types::SourceTypesError::MissingNode)?,
+                },
+                budget,
+            )
+        })
+    }
+
     fn original_source_header_schema(
         &self,
         expression: &Expr,
@@ -300,14 +362,29 @@ impl Replay<'_> {
         if let Some(name) = name {
             let name = name.as_ref();
             if let Some(original) = self.facts.constant_pool.source_views.get(name) {
+                let source = self.closed_witness_source_schema(original, environment, work)?;
+                if let Some(actual) = &value.source_type_witness {
+                    source_scan_work(work, actual.key.len())?;
+                }
                 require(
-                    original.validate_closed()
-                        && value.source_type_witness.as_ref() == Some(original),
+                    value.source_type_witness.as_ref() == Some(original),
                     "constant Source differs from its sealed original header",
                 )?;
-                return self
-                    .closed_witness_source_schema(original, environment, work)
-                    .map(Some);
+                return Ok(Some(source));
+            }
+            if let Some(reference) = self.facts.constant_pool.references.get(name).copied() {
+                require(
+                    value.source_type_witness.is_none(),
+                    "constant literal borrowed a publication Source view",
+                )?;
+                return schema_work(work, |budget| {
+                    crate::sema::source_types::constants::literal_schema(
+                        &self.facts.constant_pool,
+                        reference,
+                        budget,
+                    )
+                })
+                .map(|schema| schema.map(|schema| (schema, environment)));
             }
             if value.sources.len() == 1 {
                 let id = *value.sources.first().unwrap();
@@ -344,7 +421,7 @@ impl Replay<'_> {
                         .functions
                         .get(*index)
                         .ok_or("original function header is absent")?;
-                    require(function.hir_id.and_then(|id| self.facts.semantic_hir.as_deref()?.statement(id)).is_some_and(|statement| {
+                    require(binding.declaration.is_some() && binding.declaration == function.hir_id && function.hir_id.and_then(|id| self.facts.semantic_hir.as_deref()?.statement(id)).is_some_and(|statement| {
                         matches!(&statement.kind, crate::hir::nodes::StmtKind::Function(header) if header.name == binding.name)
                     }) && function.lexical.get(name) == Some(&id), "callable source is not its actual named declaration")?;
                     let scope = self.scope(function.definition)?;
@@ -393,8 +470,26 @@ impl Replay<'_> {
                         source_scan_work(work, annotation.text.len().div_ceil(32))?;
                         annotations.push(annotation.text.clone());
                     }
+                    let row = self.source_callable_row_identity(
+                        crate::sema::source_types::CallableRowOrigin::Declaration(
+                            function
+                                .hir_id
+                                .ok_or("named callable row has no original declaration")?,
+                        ),
+                        &function.syntax.annotations,
+                        &scope,
+                        &function.typing_environment,
+                        work,
+                    )?;
                     let schema = schema_work(work, |budget| {
-                        SourceSchema::callable(&parameters, &result, &annotations, None, budget)
+                        SourceSchema::callable_original(
+                            &parameters,
+                            &result,
+                            &annotations,
+                            row.as_ref(),
+                            None,
+                            budget,
+                        )
                     })?;
                     let required = schema_work(work, |budget| schema.binder_identities(budget))?;
                     source_scan_work(work, required.len())?;
@@ -474,6 +569,10 @@ impl Replay<'_> {
                             })
                             .collect();
                     if let [instance] = instances.as_slice() {
+                        require(
+                            instance.target == target,
+                            "returned Source entry changed its actual application target",
+                        )?;
                         self.validate_producing_result_transport(instance, value, work)?;
                         let token = event
                             .callee_expression
@@ -492,13 +591,13 @@ impl Replay<'_> {
                         let (_, result) =
                             schema_work(work, |budget| callee.callable_parts(budget))?
                                 .ok_or("returned Source callee graph is not callable")?;
-                        let receiver = InvocationContext {
-                            owner: Some(CallableOwner::Function(target)),
-                            invocation: Some(instance.id),
-                            ..context
-                        };
-                        let environment = self.source_graph_environment(receiver, None, work)?;
-                        let mut selected = self.source_selected_schemas(&environment, work)?;
+                        // Every selected graph keeps its own actual input
+                        // interpretation. The callee receiver's Γ is not the
+                        // declaration environment of a caller UID occurring in
+                        // a static argument or an open row.
+                        let mut selected = self
+                            .named_input_source_schemas(instance, sites, work)?
+                            .selected;
                         for argument in self.input_static_arguments(instance)? {
                             if selected.contains_key(&argument.binder)
                                 || !self.input_type_sort(&argument.binder)?
@@ -508,7 +607,13 @@ impl Replay<'_> {
                             if let Some(key) = &argument.key {
                                 selected.insert(
                                     argument.binder.clone(),
-                                    self.source_header_schema(key, environment.clone(), work)?,
+                                    self.original_input_selection_schema(
+                                        instance,
+                                        &argument.binder,
+                                        key,
+                                        sites,
+                                        work,
+                                    )?,
                                 );
                             }
                         }
@@ -878,6 +983,11 @@ impl Replay<'_> {
         let root =
             self.original_source_root(expression, value, context, visit.observation, work)?;
         if let Some(source) =
+            self.original_key_name_source_schema(expression, value, context, root, work)?
+        {
+            return Ok(Some(source));
+        }
+        if let Some(source) =
             self.numeric_static_callee_source(expression, value, root, context, work)?
         {
             return Ok(Some(source));
@@ -950,25 +1060,70 @@ impl Replay<'_> {
                 *work = work
                     .checked_sub(1 + annotation.text.len().div_ceil(32))
                     .ok_or("foreign callable annotations exceed their work bound")?;
-                annotations.push(annotation.text.replace(' ', ""));
+                annotations.push(annotation.text.clone());
             }
+            let row = self.source_callable_row_identity(
+                crate::sema::source_types::CallableRowOrigin::Declaration(
+                    function
+                        .hir_id
+                        .ok_or("foreign callable row has no generated declaration")?,
+                ),
+                &function.syntax.annotations,
+                &scope,
+                &environment,
+                work,
+            )?;
             let schema = schema_work(work, |budget| {
-                SourceSchema::callable(&parameters, &result, &annotations, None, budget)
+                SourceSchema::callable_original(
+                    &parameters,
+                    &result,
+                    &annotations,
+                    row.as_ref(),
+                    None,
+                    budget,
+                )
             })?;
             return Ok(Some((schema, environment)));
         }
-        if let ExprKind::Generic { base, .. } = &expression.kind
+        if let ExprKind::Generic { base, arguments } = &expression.kind
             && matches!(value.callables.as_slice(), [Callable::Named(_)])
         {
             let root =
                 self.original_source_root(expression, value, context, visit.observation, work)?;
+            source_scan_work(work, 1 + arguments.len())?;
+            let hir = self
+                .facts
+                .semantic_hir
+                .as_deref()
+                .ok_or("generic named prefix has no original HIR")?;
+            let original = expression
+                .hir_id
+                .and_then(|id| hir.expression(id))
+                .ok_or("generic named prefix lost its original HIR node")?;
+            let crate::hir::nodes::ExprKind::Generic {
+                base: original_base,
+                arguments: original_arguments,
+            } = &original.kind
+            else {
+                return Err("generic named prefix has another original syntax role".into());
+            };
+            require(
+                base.hir_id == Some(*original_base)
+                    && arguments.len() == original_arguments.len()
+                    && arguments
+                        .iter()
+                        .zip(original_arguments)
+                        .all(|(actual, original)| actual.hir_id == Some(*original)),
+                "generic named prefix changed its original base or Type arguments",
+            )?;
             let source = base
                 .hir_id
                 .ok_or("generic callee base has no original HIR identity")?;
             let observation = self.source_child_observation(root, source, context, work)?;
             let actual = &self.facts.expressions[observation];
             require(
-                actual.value == *value,
+                crate::sema::evaluated::same_birth_value(&actual.value, value, work)
+                    .map_err(|error| format!("generic named prefix value comparison: {error}"))?,
                 "generic named prefix changed its original callable value",
             )?;
             return self.original_source_schema_inner(
@@ -1056,6 +1211,70 @@ impl Replay<'_> {
 #[cfg(test)]
 mod closed_ingress_tests {
     use super::*;
+
+    #[test]
+    fn closed_witness_ingress_charges_before_validation_and_key_construction() {
+        let program = crate::Session::new(
+            ril_test::case_bytes(
+                "tests/regressions/source-transport.ril::fresh-tuple-construction",
+            )
+            .to_vec(),
+        )
+        .verify()
+        .unwrap();
+        let replay = Replay::new(program.facts()).unwrap();
+        let span = program.facts().expressions[0].span;
+        let scalar = TypeExpr {
+            hir_id: None,
+            text: String::new(),
+            span,
+            kind: TypeKind::Name {
+                path: vec!["int".into()],
+                arguments: vec![],
+            },
+        };
+        let syntax = TypeExpr {
+            hir_id: None,
+            text: String::new(),
+            span,
+            kind: TypeKind::Tuple(vec![scalar; 1024]),
+        };
+        let mut witness = crate::sema::model::SourceTypeWitness {
+            key: crate::static_eval::normalized_argument_key(&syntax),
+            syntax,
+        };
+        let environment = FrozenEnvironment::default();
+        let mut work = 4_000_000;
+        replay
+            .closed_witness_source_schema(&witness, environment.clone(), &mut work)
+            .unwrap();
+        let used = 4_000_000 - work;
+        let mut exact = used;
+        replay
+            .closed_witness_source_schema(&witness, environment.clone(), &mut exact)
+            .unwrap();
+        assert_eq!(exact, 0);
+        for mut short in [0, used - 1] {
+            assert!(
+                replay
+                    .closed_witness_source_schema(&witness, environment.clone(), &mut short)
+                    .is_err()
+            );
+        }
+        witness.key.push('x');
+        assert!(
+            replay
+                .closed_witness_source_schema(&witness, environment.clone(), &mut 0)
+                .unwrap_err()
+                .contains("work bound")
+        );
+        assert!(
+            replay
+                .closed_witness_source_schema(&witness, environment, &mut 4_000_000)
+                .unwrap_err()
+                .contains("inconsistent")
+        );
+    }
 
     #[test]
     fn normalized_closed_witness_does_not_impersonate_an_original_hir_header() {

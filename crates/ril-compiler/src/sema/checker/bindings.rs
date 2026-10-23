@@ -5,14 +5,27 @@ use crate::sema::storage_sources::{StorageDestination, StorageObservation};
 /// A diagnostic location alone never identifies a source binder.
 pub(super) struct BindingSite {
     span: Span,
+    declaration: Option<ril_compiler_core::ids::StmtId>,
     pattern: Option<ril_compiler_core::ids::PatternId>,
     birth: Option<crate::sema::application_effect::OccurrenceIdentity>,
 }
 
 impl BindingSite {
+    pub(super) fn declaration(
+        span: Span,
+        declaration: Option<ril_compiler_core::ids::StmtId>,
+    ) -> Self {
+        Self {
+            span,
+            declaration,
+            pattern: None,
+            birth: None,
+        }
+    }
     pub(super) fn original(span: Span, pattern: ril_compiler_core::ids::PatternId) -> Self {
         Self {
             span,
+            declaration: None,
             pattern: Some(pattern),
             birth: None,
         }
@@ -30,6 +43,7 @@ impl From<Span> for BindingSite {
     fn from(span: Span) -> Self {
         Self {
             span,
+            declaration: None,
             pattern: None,
             birth: None,
         }
@@ -40,6 +54,7 @@ impl From<&Pattern> for BindingSite {
     fn from(pattern: &Pattern) -> Self {
         Self {
             span: pattern.span,
+            declaration: None,
             pattern: pattern.hir_id,
             birth: None,
         }
@@ -47,6 +62,18 @@ impl From<&Pattern> for BindingSite {
 }
 
 impl Checker {
+    pub(super) fn bind_parameter_packet(
+        &mut self,
+        pattern: &Pattern,
+        mode: BindingMode,
+        mut packet: EvaluatedValue,
+        frame: &mut Frame,
+    ) -> Result<(), crate::sema::source_types::SourceTypesError> {
+        self.prepare_evaluation_packet(&mut packet, pattern.span)?;
+        let birth = packet.identity;
+        self.bind_pattern_from(pattern, mode, packet.value, frame, true, birth);
+        Ok(())
+    }
     /// Every local receiver, including a resumed answer, installs the same
     /// declaration view and records the original initializer occurrence.
     pub(super) fn receive_binding(
@@ -325,6 +352,7 @@ impl Checker {
     ) -> BindingId {
         let BindingSite {
             span,
+            declaration,
             pattern,
             birth,
         } = site.into();
@@ -485,6 +513,7 @@ impl Checker {
             self.capture_typing_environment_with_bindings(&frame.env)
         };
         self.bindings.push(BindingInfo {
+            declaration,
             pattern,
             birth,
             context: self.invocation_context(frame.callable_owner),
@@ -509,8 +538,22 @@ impl Checker {
         }
         self.update_named_lexical_binding(id);
         self.update_type_contract_environments(id);
-        if !parameter && !self.bindings[id].value.callables.iter().any(|callable|matches!(callable,Callable::Named(function) if span==self.functions[*function].syntax.span)){
-            let value = self.bindings[id].value.clone();self.publish_named_environments(&value);
+        if !parameter {
+            let mut lease = self.application_effect.lease_work(4_000_000);
+            let declaration = self.original_named_declaration(id, lease.work());
+            let returned = self.application_effect.return_work(lease);
+            let declaration = declaration.and_then(|declaration| returned.map(|()| declaration));
+            match declaration {
+                Ok(None) => {
+                    let value = self.bindings[id].value.clone();
+                    self.publish_named_environments(&value);
+                }
+                Ok(Some(_)) => {}
+                Err(error) => self.unsupported(
+                    span,
+                    format!("named declaration publication identity: {error}"),
+                ),
+            }
         }
         frame.env.insert(name.into(), id);
         frame.locals.push(id);

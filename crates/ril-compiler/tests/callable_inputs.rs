@@ -228,235 +228,6 @@ fn an_inferred_protected_answer_keeps_its_source_through_an_inline_recipe() {
 }
 
 #[test]
-fn generated_input_cannot_borrow_another_occurrence_copy_or_loan() {
-    let program = verified("derive-repeated-activation", "pointer64");
-    let facts = program.facts();
-    let candidates: Vec<_> = facts
-        .closure_invocations
-        .iter()
-        .enumerate()
-        .filter(|(_, call)| matches!(call.entry.origin, EntryOrigin::Generated { .. }))
-        .map(|(index, _)| index)
-        .collect();
-    assert!(candidates.len() >= 2);
-    let (first, other) = (candidates[0], candidates[1]);
-    for mutation in 0..14 {
-        let mut changed = facts.clone();
-        match mutation {
-            0 => changed.closure_invocations[first].entry.arguments = std::sync::Arc::new(vec![]),
-            1 => changed.closure_invocations[first].entry.origin = EntryOrigin::Unresolved,
-            2 => {
-                changed.closure_invocations[first].entry.parent =
-                    changed.closure_invocations[other].entry.parent
-            }
-            3 => changed.closure_invocations[first].entry.allocation_epoch = usize::MAX,
-            4 => {
-                changed.closure_invocations[first].entry.origin =
-                    changed.closure_invocations[other].entry.origin.clone()
-            }
-            5 => {
-                let replacement = changed.closure_invocations[other].entry.origin.clone();
-                let EntryOrigin::Generated {
-                    callee: replacement,
-                    ..
-                } = replacement
-                else {
-                    unreachable!()
-                };
-                let EntryOrigin::Generated { callee, .. } =
-                    &mut changed.closure_invocations[first].entry.origin
-                else {
-                    unreachable!()
-                };
-                *callee = replacement;
-            }
-            6 => {
-                let EntryOrigin::Generated { inputs, .. } =
-                    &mut changed.closure_invocations[first].entry.origin
-                else {
-                    unreachable!()
-                };
-                let InputOrigin::Copied { boundary, .. } = &mut inputs[0] else {
-                    unreachable!()
-                };
-                boundary.0 = u32::MAX;
-            }
-            7 => {
-                let InputOrigin::Copied { boundary, .. } =
-                    (match &changed.closure_invocations[first].entry.origin {
-                        EntryOrigin::Generated { inputs, .. } => &inputs[0],
-                        _ => unreachable!(),
-                    })
-                else {
-                    unreachable!()
-                };
-                changed.copy_boundaries[boundary.0 as usize].output_allocation_epoch = None;
-            }
-            8 => {
-                let id = changed.closure_invocations[first].id;
-                let loan = changed
-                    .invocation_loan_starts
-                    .iter_mut()
-                    .find(|loan| loan.closure == Some(id))
-                    .unwrap();
-                assert!(
-                    !loan.bindings.is_empty(),
-                    "the original loan must bind its formal parameter"
-                );
-                loan.bindings.clear();
-            }
-            9 => {
-                std::sync::Arc::make_mut(&mut changed.closure_invocations[first].entry.arguments)
-                    [0]
-                .1
-                .permission = ril_compiler::sema::facts::Permission::Read
-            }
-            10 => {
-                changed.closure_invocations[first].entry =
-                    changed.closure_invocations[other].entry.clone()
-            }
-            11 => {
-                let EntryOrigin::Generated { inputs, .. } =
-                    &mut changed.closure_invocations[first].entry.origin
-                else {
-                    unreachable!()
-                };
-                inputs.clear();
-            }
-            12 => {
-                std::sync::Arc::make_mut(&mut changed.closure_invocations[first].entry.arguments)
-                    [0]
-                .0 = ril_syntax::ast::ParameterMode::Read
-            }
-            13 => {
-                changed.closure_invocations[first]
-                    .entry
-                    .caller_context
-                    .owner = None
-            }
-            _ => unreachable!(),
-        }
-        assert!(
-            solved_facts(&changed).is_err(),
-            "generated input mutation {mutation}"
-        );
-    }
-}
-
-#[test]
-fn named_generated_input_retains_its_actual_target_body_and_copy() {
-    let program = verified("derive-named-repeated-activation", "pointer64");
-    let facts = program.facts();
-    let candidates: Vec<_> = facts
-        .copy_invocations
-        .iter()
-        .enumerate()
-        .filter(|(_, call)| matches!(call.entry.origin, EntryOrigin::Generated { .. }))
-        .map(|(index, _)| index)
-        .collect();
-    assert!(candidates.len() >= 2);
-    let (first, other) = (candidates[0], candidates[1]);
-    for mutation in 0..16 {
-        let mut changed = facts.clone();
-        let id = changed.copy_invocations[first].id;
-        match mutation {
-            0 => changed.copy_invocations[first].entry.arguments.clear(),
-            1 => changed.copy_invocations[first].entry.origin = EntryOrigin::Unresolved,
-            2 => {
-                changed.copy_invocations[first].entry.parent =
-                    changed.copy_invocations[other].entry.parent
-            }
-            3 => changed.copy_invocations[first].entry.allocation_epoch = usize::MAX,
-            4 => {
-                changed.copy_invocations[first].entry.origin =
-                    changed.copy_invocations[other].entry.origin.clone()
-            }
-            5 => {
-                let EntryOrigin::Generated {
-                    callee: replacement,
-                    ..
-                } = changed.copy_invocations[other].entry.origin
-                else {
-                    unreachable!()
-                };
-                let EntryOrigin::Generated { callee, .. } =
-                    &mut changed.copy_invocations[first].entry.origin
-                else {
-                    unreachable!()
-                };
-                *callee = replacement;
-            }
-            6 => {
-                let EntryOrigin::Generated { inputs, .. } =
-                    &mut changed.copy_invocations[first].entry.origin
-                else {
-                    unreachable!()
-                };
-                let InputOrigin::Copied { boundary, .. } = &mut inputs[0] else {
-                    unreachable!()
-                };
-                boundary.0 = u32::MAX;
-            }
-            7 => {
-                let EntryOrigin::Generated { inputs, .. } =
-                    &changed.copy_invocations[first].entry.origin
-                else {
-                    unreachable!()
-                };
-                let InputOrigin::Copied { boundary, .. } = inputs[0] else {
-                    unreachable!()
-                };
-                changed.copy_boundaries[boundary.0 as usize].output_allocation_epoch = None;
-            }
-            8 => changed.copy_invocations[first].entry.caller_context.owner = None,
-            9 => {
-                changed.copy_invocations[first].entry.arguments[0].0 =
-                    ril_compiler::sema::model::Mode::Read
-            }
-            10 => {
-                changed.copy_invocations[first].entry =
-                    changed.copy_invocations[other].entry.clone()
-            }
-            11 => {
-                changed
-                    .invocation_calls
-                    .iter_mut()
-                    .find(|row| row.invocation == id)
-                    .unwrap()
-                    .caller_owner = None
-            }
-            12 => changed.invocations.retain(|summary| {
-                summary
-                    .context
-                    .is_none_or(|context| context.invocation != Some(id))
-            }),
-            13 => changed.copy_invocations[first].entry.arguments[0]
-                .1
-                .value
-                .origins
-                .nodes
-                .clear(),
-            14 => {
-                changed.copy_invocations.remove(first);
-            }
-            15 => {
-                let EntryOrigin::Generated { inputs, .. } =
-                    &mut changed.copy_invocations[first].entry.origin
-                else {
-                    unreachable!()
-                };
-                inputs.clear();
-            }
-            _ => unreachable!(),
-        };
-        assert!(
-            solved_facts(&changed).is_err(),
-            "named generated input mutation {mutation}"
-        );
-    }
-}
-
-#[test]
 fn same_signature_generated_named_targets_remain_distinct() {
     let program = verified("derive-distinct-targets", "pointer64");
     let facts = program.facts();
@@ -543,189 +314,173 @@ fn same_signature_generated_named_targets_remain_distinct() {
     }
 }
 
-fn operation_entry(
-    facts: &ril_compiler::sema::SemanticFacts,
-    scope: ril_compiler::sema::facts::ScopeId,
-) -> &ril_compiler::sema::scopes::OperationEntry {
-    let ril_compiler::sema::scopes::ScopeOrigin::Operation(entry) =
-        &facts.scopes.get(&scope).unwrap().origin
-    else {
-        unreachable!()
-    };
-    entry
-}
-
 #[test]
-fn zero_argument_generated_exhaustion_authenticates_the_actual_budget_call() {
-    use ril_compiler::sema::{model::Callable, scopes::ScopeOrigin};
-    use ril_compiler_core::ids::EvaluationOccurrenceId;
-    let source = ril_test::case_source("tests/conformance/totality.ril::zero-one-budget");
-    for layout in ["pointer32", "pointer64"] {
-        let program = Session::with_options(
-            source.as_bytes().to_vec(),
-            CheckOptions {
-                target: layout.into(),
-                ..Default::default()
-            },
-        )
-        .verify()
-        .unwrap_or_else(|error| panic!("zero-one-budget {layout}: {error:?}"));
+fn shared_entry_packets_keep_the_actual_callee_input_and_heap_epoch() {
+    use std::sync::Arc;
+    for (name, named) in [
+        ("derive-repeated-activation", false),
+        ("derive-named-repeated-activation", true),
+    ] {
+        let program = verified(name, "pointer64");
         let facts = program.facts();
-        let operation = facts.operations["Div::exhausted"].identity;
-        assert!(facts.operations["Div::exhausted"].parameters.is_empty());
-        let scopes: Vec<_> = facts
-            .scopes
-            .records()
-            .filter_map(|record| match &record.origin {
-                ScopeOrigin::Operation(entry)
-                    if entry.operation == operation
-                        && matches!(entry.origin, EntryOrigin::Generated { .. }) =>
-                {
-                    Some(record.id)
-                }
-                _ => None,
-            })
-            .collect();
-        let first = scopes[0];
-        let entry = operation_entry(facts, first);
-        let EntryOrigin::Generated {
-            anchor,
-            callee,
-            ref inputs,
-        } = entry.origin
-        else {
-            unreachable!()
+        let entries: Vec<_> = if named {
+            facts
+                .copy_invocations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, call)| {
+                    matches!(call.entry.origin, EntryOrigin::Generated { .. })
+                        .then_some((index, &call.entry))
+                })
+                .collect()
+        } else {
+            facts
+                .closure_invocations
+                .iter()
+                .enumerate()
+                .filter_map(|(index, call)| {
+                    matches!(call.entry.origin, EntryOrigin::Generated { .. })
+                        .then_some((index, &call.entry))
+                })
+                .collect()
         };
-        assert!(inputs.is_empty());
-        let other = *scopes.iter().find(|&&scope| {
-            let other = operation_entry(facts, scope);
-            matches!(other.origin, EntryOrigin::Generated { callee: other_callee, .. } if other_callee != callee)
-                && other.parent != entry.parent
-        }).expect("repeated budgets must retain distinct physical entries");
-        let other_entry = operation_entry(facts, other).clone();
-        let EntryOrigin::Generated {
-            anchor: other_anchor,
-            callee: other_callee,
-            ..
-        } = other_entry.origin
-        else {
-            unreachable!()
-        };
-        assert_eq!(
-            facts.expressions[callee.0 as usize].source_id,
-            facts.expressions[other_callee.0 as usize].source_id,
-            "the negative control borrows another execution of the same written callee"
-        );
-        assert_eq!(
-            facts.expressions[callee.0 as usize].value.ty,
-            facts.expressions[other_callee.0 as usize].value.ty
-        );
         assert!(
-            matches!(facts.expressions[callee.0 as usize].value.callables.as_slice(), [Callable::Builtin(name)] if name == "Div::budget")
+            entries.len() >= 2,
+            "the original corpus must really enter both repeated recipes"
         );
-        let event = facts
-            .copy_call_events
+        let (first, other) = (entries[0], entries[1]);
+        assert!(first.1.callee.is_some() && other.1.callee.is_some());
+        assert!(!first.1.arguments.is_empty() && first.1.arguments[0].heap.is_some());
+        let first_callee = first.1.callee.as_ref().unwrap().birth_coordinates();
+        let other_environment = facts
+            .evaluations
             .iter()
-            .position(|event| {
-                event.callee_expression == Some(callee.0 as usize)
-                    && event.source_id == facts.activations[anchor.0 as usize].source
-            })
-            .unwrap();
-        let core = ril_compiler::lower::lower_core(&program).unwrap();
-        let retained = core
-            .provenance
-            .scopes
-            .iter()
-            .find(|record| record.id == first.0)
-            .unwrap();
-        let ril_ir::provenance::ScopeOrigin::Operation {
-            handler,
-            operation: retained_operation,
-            body,
-            parent,
-            caller_context,
-            context,
-            origin,
-            allocation_epoch,
-        } = &retained.origin
-        else {
-            unreachable!()
-        };
-        assert_eq!(*handler as usize, entry.handler);
-        assert_eq!(*retained_operation, entry.operation);
-        assert_eq!(*body, entry.body);
-        assert_eq!(*parent, entry.parent);
-        assert_eq!(*allocation_epoch, entry.allocation_epoch as u64);
-        assert_context_retained(entry.caller_context, *caller_context);
-        assert_context_retained(entry.context, *context);
-        assert_generated_origin_retained(&entry.origin, origin);
-
-        for mutation in 0..15 {
+            .filter_map(|record| record.environment)
+            .find(|environment| Some(*environment) != first_callee.environment)
+            .expect("the real repeated recipe must retain another evaluation environment");
+        for mutation in 0..8 {
             let mut changed = facts.clone();
-            let ScopeOrigin::Operation(entry) = &mut changed.scopes.get_mut(&first).unwrap().origin
-            else {
-                unreachable!()
+            let entry = if named {
+                &mut changed.copy_invocations[first.0].entry
+            } else {
+                &mut changed.closure_invocations[first.0].entry
             };
             match mutation {
-                0 => {
-                    let EntryOrigin::Generated { callee, .. } = &mut entry.origin else {
-                        unreachable!()
-                    };
-                    *callee = EvaluationOccurrenceId(u32::MAX);
+                0 => entry.callee = None,
+                1 => entry.callee = other.1.callee.clone(),
+                2 => {
+                    Arc::make_mut(&mut entry.arguments)[0].packet =
+                        other.1.arguments[0].packet.clone()
                 }
-                1 => {
-                    let EntryOrigin::Generated { callee, .. } = &mut entry.origin else {
-                        unreachable!()
-                    };
-                    *callee = other_callee;
-                }
-                2 => entry.origin = other_entry.origin.clone(),
                 3 => {
-                    let EntryOrigin::Generated { anchor, .. } = &mut entry.origin else {
-                        unreachable!()
-                    };
-                    *anchor = other_anchor;
+                    Arc::make_mut(&mut entry.arguments)[0].mode =
+                        ril_syntax::ast::ParameterMode::Read
                 }
-                4 => entry.parent = None,
-                5 => entry.caller_context = other_entry.caller_context,
+                4 => Arc::make_mut(&mut entry.arguments)[0].heap = None,
+                5 => {
+                    Arc::make_mut(
+                        Arc::make_mut(&mut entry.arguments)[0]
+                            .heap
+                            .as_mut()
+                            .unwrap(),
+                    )
+                    .allocation_epoch = usize::MAX
+                }
                 6 => entry.allocation_epoch = usize::MAX,
                 7 => {
-                    changed.expressions[callee.0 as usize].value.callables =
-                        vec![Callable::Builtin("Div::exhausted".into())]
+                    changed.evaluations[first_callee.observation.unwrap()].environment =
+                        Some(other_environment)
                 }
-                8 => {
-                    changed.copy_call_events[event].callee_expression =
-                        Some(other_callee.0 as usize)
-                }
-                9 => {
-                    let EntryOrigin::Generated { callee, .. } = &mut entry.origin else {
-                        unreachable!()
-                    };
-                    *callee = other_callee;
-                    changed.copy_call_events[event].callee_expression =
-                        Some(other_callee.0 as usize);
-                }
-                10 => entry.origin = EntryOrigin::Unresolved,
-                11 => {
-                    let EntryOrigin::Generated { inputs, .. } = &mut entry.origin else {
-                        unreachable!()
-                    };
-                    inputs.push(InputOrigin::Scalar(
-                        ril_compiler::sema::application_effect::ScalarInput::PositiveInt,
-                    ));
-                }
-                12 => entry.context = other_entry.context,
-                13 => *entry = other_entry.clone(),
-                14 => changed.expressions[callee.0 as usize]
-                    .value
-                    .callables
-                    .clear(),
                 _ => unreachable!(),
             }
             assert!(
                 solved_facts(&changed).is_err(),
-                "zero-argument generated operation mutation {mutation}, {layout}"
+                "{name}: shared packet mutation {mutation}"
             );
+        }
+    }
+}
+
+#[test]
+fn same_named_empty_headers_keep_their_original_declaration_introducers() {
+    // Static scope normalization gives these two written `same` declarations
+    // different canonical names. Calibrate the source names before that pass;
+    // select their empty integer headers by structure in the canonical HIR.
+    let source =
+        ril_test::case_source("tests/regressions/callable-inputs.ril::named-empty-header-scopes");
+    let parsed = ril_syntax::parse(source);
+    assert!(parsed.is_ok());
+    let written: Vec<_> = parsed
+        .program
+        .statements
+        .iter()
+        .filter_map(|statement| {
+            let ril_syntax::ast::StmtKind::Function(function) = &statement.kind else {
+                return None;
+            };
+            function.body.as_ref()
+        })
+        .flat_map(|body| &body.where_items)
+        .filter_map(|statement| {
+            let ril_syntax::ast::StmtKind::Function(function) = &statement.kind else {
+                return None;
+            };
+            (function.name == "same").then_some(function)
+        })
+        .collect();
+    assert_eq!(written.len(), 2);
+    assert!(written.iter().all(|header| header.name == "same"
+        && header.parameters.is_empty()
+        && header.generics.is_empty()));
+    for target in ["pointer32", "pointer64"] {
+        let program = verified("named-empty-header-scopes", target);
+        let facts = program.facts();
+        let hir = facts.semantic_hir.as_deref().unwrap();
+        let originals: Vec<_> = facts
+            .bindings
+            .iter()
+            .enumerate()
+            .filter_map(|(binding, info)| {
+                let declaration = info.declaration?;
+                let ril_compiler::hir::nodes::StmtKind::Function(header) =
+                    &hir.statement(declaration)?.kind
+                else {
+                    return None;
+                };
+                (header.parameters.is_empty() && header.generics.is_empty()
+                    && header.return_type.and_then(|ty| hir.type_expression(ty)).is_some_and(|ty| matches!(&ty.kind,
+                        ril_compiler::hir::nodes::TypeKind::Name { path, arguments } if path == &["int"] && arguments.is_empty()
+                    ))).then_some((
+                    binding,
+                    declaration,
+                    &header.name,
+                ))
+            })
+            .collect();
+        let declarations: std::collections::BTreeSet<_> = originals
+            .iter()
+            .map(|(_, declaration, _)| *declaration)
+            .collect();
+        assert_eq!(
+            declarations.len(),
+            2,
+            "both original declarations must survive normalization: {originals:?}"
+        );
+        assert!(originals.len() >= declarations.len());
+        for actual in &originals {
+            let sibling = *declarations
+                .iter()
+                .find(|declaration| **declaration != actual.1)
+                .unwrap();
+            for replacement in [None, Some(sibling)] {
+                let mut changed = facts.clone();
+                changed.bindings[actual.0].declaration = replacement;
+                assert!(
+                    solved_facts(&changed).is_err(),
+                    "a named binding borrowed another empty header's declaration: binding={} replacement={replacement:?}",
+                    actual.0
+                );
+            }
         }
     }
 }

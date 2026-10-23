@@ -240,7 +240,7 @@ impl Checker {
         if validation_only {
             self.budget_validation_depth += 1;
         }
-        let result = self.invoke(&action, Vec::new(), span, &mut protected);
+        let result = self.invoke_generated_values(&action, Vec::new(), span, &mut protected);
         if validation_only {
             self.budget_validation_depth -= 1;
         }

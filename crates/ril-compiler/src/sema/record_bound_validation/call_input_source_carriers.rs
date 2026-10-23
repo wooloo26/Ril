@@ -262,7 +262,7 @@ impl Replay<'_> {
             return Ok(Some(Some((schema, active.1))));
         }
         let Some((receiver, receiver_environment)) =
-            self.producing_receiver_schema(expression, root, context, sites, work)?
+            self.producing_receiver_schema(expression, root, context, sites, work, visit.depth)?
         else {
             return Ok(Some(None));
         };
@@ -302,6 +302,36 @@ impl Replay<'_> {
         require(depth < 64, "receiving Source path exceeds its depth bound")?;
         if root.hir_id.is_some() && root.hir_id == target.syntax.hir_id {
             return Ok(Some(schema.clone()));
+        }
+        for child in receiving_value_children(root, work)? {
+            if !source_contains(child, target.syntax, work, depth + 1)? {
+                continue;
+            }
+            let source = root
+                .hir_id
+                .ok_or("receiving value position has no original HIR")?;
+            let candidates = self.observations.range(
+                source,
+                target.context,
+                target.observation..usize::MAX,
+                work,
+            )?;
+            let mut enclosing = false;
+            for &observation in candidates {
+                *work = work
+                    .checked_sub(1)
+                    .ok_or("receiving value position work exhausted")?;
+                if self.source_occurrence_encloses(observation, target.observation, work)? {
+                    require(
+                        !enclosing,
+                        "receiving value position has multiple actual ancestors",
+                    )?;
+                    enclosing = true;
+                }
+            }
+            if enclosing {
+                return self.receiving_graph_path(child, target, schema, work, depth + 1);
+            }
         }
         let mut children = Vec::new();
         match &root.kind {
@@ -437,7 +467,15 @@ impl Replay<'_> {
         context: InvocationContext,
         sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
+        depth: usize,
     ) -> Check<Option<OriginalSource>> {
+        *work = work
+            .checked_sub(1)
+            .ok_or("receiving boundary ancestry work exhausted")?;
+        require(
+            depth < 64,
+            "receiving boundary ancestry exceeds its depth bound",
+        )?;
         let receiving = ReceivingOccurrence {
             syntax: expression,
             observation,
@@ -648,10 +686,22 @@ impl Replay<'_> {
             }
         }
         if let Some(CallableOwner::Function(owner)) = context.owner {
-            let function = self.function(owner)?;
-            if let (Some(syntax), Some(body)) =
-                (&function.syntax.return_type, &function.syntax.body)
-            {
+            *work = work
+                .checked_sub(sites.functions.len())
+                .ok_or("return Source declaration lookup work exhausted")?;
+            let mut declarations = sites
+                .functions
+                .iter()
+                .filter(|site| site.owner == CallableOwner::Function(owner));
+            let function = declarations
+                .next()
+                .ok_or("return Source has no original named declaration")?
+                .function;
+            require(
+                declarations.next().is_none(),
+                "return Source has multiple original named declarations",
+            )?;
+            if let (Some(syntax), Some(body)) = (&function.return_type, &function.body) {
                 *work = work
                     .checked_sub(body.statements.len())
                     .ok_or("return Source statements exceed their work bound")?;
@@ -686,6 +736,14 @@ impl Replay<'_> {
                 }
             }
         }
+        if let Some(CallableOwner::Lambda(site)) = context.owner
+            && let Some((body, schema, header_environment)) =
+                self.lambda_result_receiver(site, observation, context, sites, work, depth)?
+            && source_contains(body, expression, work, 0)?
+            && let Some(schema) = self.receiving_graph_path(body, receiving, &schema, work, 0)?
+        {
+            receivers.push((schema, header_environment));
+        }
         let Some(first) = receivers.first() else {
             return Ok(None);
         };
@@ -700,6 +758,267 @@ impl Replay<'_> {
         let _ = self.source_composite_environment(&receivers, work)?;
         Ok(Some(first.clone()))
     }
+
+    fn lambda_result_receiver<'a>(
+        &self,
+        site: ril_compiler_core::ids::ClosureSiteId,
+        observation: usize,
+        context: InvocationContext,
+        sites: &'a super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+        depth: usize,
+    ) -> Check<Option<(&'a Expr, SourceSchema, FrozenEnvironment)>> {
+        *work = work
+            .checked_sub(8)
+            .ok_or("lambda result boundary work exhausted")?;
+        let call_id = context
+            .closure_invocation
+            .ok_or("lambda result has no actual invocation")?;
+        let call = self
+            .facts
+            .closure_invocations
+            .get(call_id.0 as usize)
+            .filter(|call| call.id == call_id)
+            .ok_or("lambda result invocation is absent")?;
+        let entered = self
+            .facts
+            .evaluations
+            .get(observation)
+            .ok_or("lambda result observation is absent")?;
+        require(
+            call.activation == Some(entered.scope)
+                && context.closure == Some(call.closure)
+                && call.parent_named == context.invocation
+                && call.budget_validation == context.budget_validation,
+            "lambda result borrowed another actual body activation",
+        )?;
+        let closure = self
+            .facts
+            .closures
+            .get(call.closure)
+            .ok_or("lambda result object is absent")?;
+        let static_site = self
+            .facts
+            .closure_sites
+            .get(site.0 as usize)
+            .filter(|source| source.id == site)
+            .ok_or("lambda result site is absent")?;
+        require(
+            closure.site == Some(site) && closure.hir_id == Some(static_site.source),
+            "lambda result changed its original creation source",
+        )?;
+        *work = work
+            .checked_sub(1 + sites.expressions.len().checked_ilog2().unwrap_or(0) as usize)
+            .ok_or("lambda result header lookup work exhausted")?;
+        let original = sites
+            .expressions
+            .get(&static_site.source)
+            .copied()
+            .ok_or("lambda result has no original written header")?;
+        let ExprKind::Lambda {
+            body, return_type, ..
+        } = &original.kind
+        else {
+            return Err("lambda result source is not an original lambda".into());
+        };
+        require(
+            body.hir_id.is_some() && body.hir_id == closure.body.hir_id,
+            "lambda result changed its original body",
+        )?;
+        if let Some(header) = return_type {
+            let scope = self.lambda_input_scope(CallableOwner::Lambda(site), work)?;
+            let (schema, environment) = self.source_type_header(
+                header,
+                &scope,
+                closure.contract.typing_environment.clone(),
+                work,
+            )?;
+            return Ok(Some((body, schema, environment)));
+        }
+        // A contextual return belongs to the original boundary receiving the
+        // lambda value. Its body result does not supply its own expected type.
+        *work = work
+            .checked_sub(
+                1 + self
+                    .facts
+                    .scopes
+                    .records()
+                    .len()
+                    .checked_ilog2()
+                    .unwrap_or(0) as usize,
+            )
+            .ok_or("lambda creation scope lookup work exhausted")?;
+        let creation_scope = self
+            .facts
+            .scopes
+            .get(&closure.owner)
+            .ok_or("lambda result creation scope is absent")?;
+        let mut creation = match &creation_scope.origin {
+            crate::sema::scopes::ScopeOrigin::Named(id) => {
+                let parent = self
+                    .facts
+                    .copy_invocations
+                    .get(id.0 as usize)
+                    .filter(|call| call.id == *id)
+                    .ok_or("lambda creation invocation is absent")?;
+                InvocationContext {
+                    owner: Some(CallableOwner::Function(parent.target)),
+                    invocation: Some(*id),
+                    ..parent.entry.caller_context
+                }
+            }
+            crate::sema::scopes::ScopeOrigin::Closure(id) => {
+                let parent = self
+                    .facts
+                    .closure_invocations
+                    .get(id.0 as usize)
+                    .filter(|call| call.id == *id && call.activation == Some(closure.owner))
+                    .ok_or("lambda creation closure invocation is absent")?;
+                InvocationContext {
+                    owner: self
+                        .facts
+                        .closures
+                        .get(parent.closure)
+                        .and_then(|closure| closure.site)
+                        .map(CallableOwner::Lambda),
+                    invocation: parent.parent_named,
+                    closure: Some(parent.closure),
+                    closure_invocation: Some(*id),
+                    budget_validation: parent.budget_validation,
+                    ..parent.entry.caller_context
+                }
+            }
+            crate::sema::scopes::ScopeOrigin::Operation(entry) => entry.context,
+            crate::sema::scopes::ScopeOrigin::Module => InvocationContext {
+                owner: Some(CallableOwner::Global),
+                invocation: None,
+                closure: None,
+                closure_invocation: None,
+                default_use: None,
+                budget_validation: false,
+            },
+            crate::sema::scopes::ScopeOrigin::Unresolved => {
+                return Err("lambda creation boundary is unresolved".into());
+            }
+        };
+        creation.default_use = closure.creation_default;
+        require(
+            creation.owner == Some(static_site.owner)
+                && creation.invocation == closure.creation_invocation
+                && creation.closure_invocation == closure.creation_closure,
+            "lambda result borrowed another creation context",
+        )?;
+        let candidates =
+            self.observations
+                .range(static_site.source, creation, 0..usize::MAX, work)?;
+        let mut actual_creation = None;
+        for &token in candidates {
+            *work = work
+                .checked_sub(2)
+                .ok_or("lambda creation occurrence work exhausted")?;
+            let fact = self
+                .facts
+                .expressions
+                .get(token)
+                .ok_or("lambda creation observation is absent")?;
+            let record = self
+                .facts
+                .evaluations
+                .get(token)
+                .ok_or("lambda creation evaluation is absent")?;
+            if record.scope == closure.owner
+                && matches!(fact.value.callables.as_slice(), [Callable::Closure(id)] if *id == call.closure)
+            {
+                require(
+                    actual_creation.replace(token).is_none(),
+                    "lambda result has multiple original creations",
+                )?;
+            }
+        }
+        let token = actual_creation.ok_or("lambda result has no actual creation occurrence")?;
+        if call.probe {
+            let parent = self.facts.evaluations[token]
+                .identity
+                .ok_or("lambda creation lost its activation")?
+                .activation;
+            require(
+                call.entry.parent == Some(parent)
+                    && call.parent_named == closure.creation_invocation
+                    && call.parent_closure == closure.creation_closure
+                    && self.source_occurrence_encloses(token, observation, work)?,
+                "lambda result probe borrowed an unrelated creation boundary",
+            )?;
+        } else {
+            require(
+                token < observation,
+                "lambda result precedes its original creation",
+            )?;
+        }
+        let Some((schema, environment)) =
+            self.producing_receiver_schema(original, token, creation, sites, work, depth + 1)?
+        else {
+            return Ok(None);
+        };
+        let Some((_, result)) =
+            super::graph_sources::schema_work(work, |budget| schema.callable_parts(budget))?
+        else {
+            return Err("lambda receiving boundary has no original callable result".into());
+        };
+        Ok(Some((body, result, environment)))
+    }
+}
+
+/// Only expression positions which contribute this value receive its expected
+/// schema. Conditions, guards, initializers and nested callable bodies do not.
+fn receiving_value_children<'a>(root: &'a Expr, work: &mut usize) -> Check<Vec<&'a Expr>> {
+    match &root.kind {
+        ExprKind::Block(block) => {
+            *work = work
+                .checked_sub(block.statements.len())
+                .ok_or("receiving block work exhausted")?;
+            Ok(block
+                .statements
+                .iter()
+                .enumerate()
+                .filter_map(|(index, statement)| {
+                    let StmtKind::Expr {
+                        expression,
+                        terminated,
+                    } = &statement.kind
+                    else {
+                        return None;
+                    };
+                    (matches!(
+                        expression.kind,
+                        ExprKind::Control {
+                            operation: ril_syntax::ast::ControlOperation::Return,
+                            ..
+                        }
+                    ) || (!*terminated && index + 1 == block.statements.len()))
+                    .then_some(expression)
+                })
+                .collect())
+        }
+        ExprKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            *work = work
+                .checked_sub(2)
+                .ok_or("receiving conditional work exhausted")?;
+            Ok(std::iter::once(then_branch.as_ref())
+                .chain(else_branch.as_deref())
+                .collect())
+        }
+        ExprKind::Match { arms, .. } => {
+            *work = work
+                .checked_sub(arms.len())
+                .ok_or("receiving match work exhausted")?;
+            Ok(arms.iter().map(|arm| &arm.body).collect())
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 fn source_contains(root: &Expr, target: &Expr, work: &mut usize, depth: usize) -> Check<bool> {
@@ -713,7 +1032,10 @@ fn source_contains(root: &Expr, target: &Expr, work: &mut usize, depth: usize) -
     if root.hir_id.is_some() && root.hir_id == target.hir_id {
         return Ok(true);
     }
-    let children: Vec<&Expr> = if let Some(application) = AstApplication::from_ast(root) {
+    let control = receiving_value_children(root, work)?;
+    let children: Vec<&Expr> = if !control.is_empty() {
+        control
+    } else if let Some(application) = AstApplication::from_ast(root) {
         *work = work
             .checked_sub(application.operands.len())
             .ok_or("receiving Source arguments exceed their work bound")?;
@@ -766,4 +1088,148 @@ fn source_contains(root: &Expr, target: &Expr, work: &mut usize, depth: usize) -
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CheckOptions, Session};
+
+    fn fixture(case: &str, layout: &str) -> SemanticFacts {
+        let verified = Session::with_options(
+            ril_test::case_bytes(case).to_vec(),
+            CheckOptions {
+                target: layout.into(),
+                ..Default::default()
+            },
+        )
+        .verify()
+        .unwrap_or_else(|error| panic!("{case}/{layout}: {error:?}"));
+        crate::lower::lower_core(&verified).unwrap();
+        verified.facts().clone()
+    }
+
+    #[test]
+    fn carrier_receivers_follow_conditional_named_and_contextual_lambda_results() {
+        for layout in ["pointer32", "pointer64"] {
+            for case in [
+                "tests/stdlib/io.ril::io-all-alias-chunks",
+                "tests/stdlib/io.ril::io-all-alias-handler",
+                "tests/regressions/evaluation-identity.ril::retained-carrier-tag-sources",
+                "tests/regressions/evaluation-identity.ril::retained-carrier-caller-source",
+            ] {
+                fixture(case, layout);
+            }
+        }
+    }
+
+    fn source(facts: &SemanticFacts, observation: usize) -> Check<OriginalSource> {
+        let mut work = 4_000_000;
+        let sources = OriginalOperandSources::new_with_work(facts, &mut work)?;
+        sources
+            .observed_with_work(
+                facts.expressions[observation]
+                    .source_id
+                    .ok_or("carrier source is absent")?,
+                observation,
+                &mut work,
+            )?
+            .0
+            .ok_or_else(|| "carrier lost its independent receiving graph".into())
+    }
+
+    #[test]
+    fn carrier_receiver_cannot_borrow_another_creation_or_return_boundary() {
+        for layout in ["pointer32", "pointer64"] {
+            let facts = fixture(
+                "tests/regressions/evaluation-identity.ril::retained-carrier-tag-sources",
+                layout,
+            );
+            let (observation, invocation) = facts
+                .copy_call_events
+                .iter()
+                .filter_map(|event| {
+                    let token = event.result_expression?;
+                    let context = facts.evaluations[token].context;
+                    if !matches!(context.owner, Some(CallableOwner::Lambda(_)))
+                        || facts.expressions[token].value.result_tag != Some(true)
+                    {
+                        return None;
+                    }
+                    let id = context.closure_invocation?;
+                    let call = facts.closure_invocations.get(id.0 as usize)?;
+                    call.probe.then_some((token, id))
+                })
+                .next()
+                .expect("the actual contextual lambda probe must construct an Ok result");
+            let call = &facts.closure_invocations[invocation.0 as usize];
+            let closure = &facts.closures[call.closure];
+            let creation = facts.expressions.iter().enumerate().find(|(token, fact)| {
+                fact.source_id == closure.hir_id && facts.evaluations[*token].scope == closure.owner
+                    && matches!(fact.value.callables.as_slice(), [Callable::Closure(id)] if *id == call.closure)
+            }).map(|(token, _)| token).expect("the lambda must have a real physical creation");
+            let parent = closure
+                .creation_invocation
+                .expect("the lambda is received through its creating function's return");
+            let definition = facts.copy_invocations[parent.0 as usize].target;
+            let function = facts
+                .functions
+                .iter()
+                .position(|function| function.definition == definition)
+                .unwrap();
+            let original = source(&facts, observation).unwrap();
+            let inactive = graph_sources::schema_work(&mut 4096, |work| {
+                original.0.project_steps(&[SourcePath::ResultError], work)
+            })
+            .unwrap();
+            assert_eq!(
+                graph_sources::schema_work(&mut 4096, |work| inactive.runtime_type(work)).unwrap(),
+                Ty::Str
+            );
+            for mutation in 0..8 {
+                let mut changed = facts.clone();
+                match mutation {
+                    0 => changed.closures[call.closure].creation_invocation = None,
+                    1 => changed.closures[call.closure].creation_closure = Some(invocation),
+                    2 => {
+                        changed.closures[call.closure].creation_default =
+                            Some(crate::sema::default_uses::DefaultUseId(u32::MAX))
+                    }
+                    3 => {
+                        changed.closure_invocations[invocation.0 as usize].activation =
+                            Some(crate::sema::facts::ScopeId(0))
+                    }
+                    4 => {
+                        changed.closure_invocations[invocation.0 as usize]
+                            .entry
+                            .parent = None
+                    }
+                    5 => changed.expressions[creation]
+                        .value
+                        .corrupt_value(&mut 4_000_000)
+                        .unwrap()
+                        .callables
+                        .clear(),
+                    6 => changed.functions[function].syntax.return_type = None,
+                    7 => changed.closures[call.closure].hir_id = closure.body.hir_id,
+                    _ => unreachable!(),
+                }
+                assert!(
+                    source(&changed, observation).is_err(),
+                    "{layout}: carrier receiving mutation {mutation} was accepted"
+                );
+            }
+            let mut work = 4_000_000;
+            let sources = OriginalOperandSources::new_with_work(&facts, &mut work).unwrap();
+            assert!(
+                sources
+                    .observed_with_work(
+                        facts.expressions[observation].source_id.unwrap(),
+                        observation,
+                        &mut 0
+                    )
+                    .is_err()
+            );
+        }
+    }
 }

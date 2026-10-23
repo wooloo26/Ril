@@ -270,7 +270,9 @@ impl Replay<'_> {
                     !self.input_type_sort(identity)?,
                     "a real Key coordinate cannot become a Type leaf",
                 )?;
-                return Ok(false);
+                // The Source graph describes the runtime carrier. The Key
+                // binder is still excluded from ordinary Type selection.
+                return Ok(true);
             }
             require(
                 self.input_type_sort(identity)?,
@@ -463,7 +465,7 @@ impl Replay<'_> {
                     let Some(value) = self.facts.expressions.get(token.expression) else {
                         continue;
                     };
-                    if !std::ptr::eq(&value.value, actual) {
+                    if !std::ptr::eq(value.value.value(), actual) {
                         continue;
                     }
                     self.input_operand_interval(event, slot, token.expression, context, work)?;
@@ -803,7 +805,7 @@ impl Replay<'_> {
                                             .filter(|call| call.id == id))
                                         .ok_or("public lambda selection lost its original creation invocation")?;
                                     let source = self.original_input_selection_schema(
-                                        creation, &identity, key, work,
+                                        creation, &identity, key, sites, work,
                                     )?;
                                     selected.insert(identity, source);
                                 }

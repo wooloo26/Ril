@@ -279,7 +279,7 @@ impl Checker {
     }
 
     fn copy_template_root(
-        &self,
+        &mut self,
         proof: &CopyBoundary,
         frame: &Frame,
     ) -> Option<super::super::copy_templates::InstanceId> {
@@ -308,12 +308,26 @@ impl Checker {
             if !probe.declaration_probe {
                 continue;
             }
-            let origins: BTreeSet<_> = probe
-                .entry
-                .arguments
-                .iter()
-                .flat_map(|(_, argument)| argument.nodes.iter().map(|node| node.origin))
-                .collect();
+            let origins = self
+                .application_effect
+                .with_work(|work| {
+                    let mut budget = crate::sema::source_types::WorkLimit::new(*work);
+                    let result = (|| {
+                        budget.charge(probe.entry.arguments.len())?;
+                        let mut origins = BTreeSet::new();
+                        for argument in probe.entry.arguments.iter() {
+                            let view = argument.snapshot_view(&mut budget)?;
+                            budget.charge(view.nodes.len().saturating_mul(
+                                1 + origins.len().checked_ilog2().unwrap_or(0) as usize,
+                            ))?;
+                            origins.extend(view.nodes.iter().map(|node| node.origin));
+                        }
+                        Ok::<_, crate::sema::source_types::SourceTypesError>(origins)
+                    })();
+                    *work = budget.remaining();
+                    result
+                })
+                .ok()?;
             let anchored =
                 |nodes: &BTreeSet<NodeId>| !nodes.is_empty() && nodes.is_subset(&origins);
             if proof

@@ -75,6 +75,13 @@ enum Pending<'a> {
     Pattern(CallableOwner, &'a Pattern, usize),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceRoots {
+    Original,
+    Foreign,
+    All,
+}
+
 fn declaration_only(function: &ril_syntax::ast::Function) -> bool {
     function
         .parameters
@@ -91,7 +98,7 @@ fn declaration_only(function: &ril_syntax::ast::Function) -> bool {
 }
 
 pub(super) fn source_sites(facts: &SemanticFacts) -> Check<SourceSites<'_>> {
-    source_sites_inner(facts, true, &mut { LIMIT })
+    source_sites_inner(facts, SourceRoots::All, &mut { LIMIT })
 }
 
 pub(crate) fn source_sites_base(facts: &SemanticFacts) -> Check<SourceSites<'_>> {
@@ -102,16 +109,26 @@ pub(crate) fn source_sites_base_with_work<'a>(
     facts: &'a SemanticFacts,
     work: &mut usize,
 ) -> Check<SourceSites<'a>> {
-    source_sites_inner(facts, false, work)
+    source_sites_inner(facts, SourceRoots::Original, work)
+}
+
+/// Static specialization recipes authenticate their generated declarations
+/// against original-only sites. Include those defaults for ordinary physical
+/// Source replay without admitting runtime-generated callback roots here.
+pub(super) fn source_sites_foreign_with_work<'a>(
+    facts: &'a SemanticFacts,
+    work: &mut usize,
+) -> Check<SourceSites<'a>> {
+    source_sites_inner(facts, SourceRoots::Foreign, work)
 }
 
 fn source_sites_inner<'a>(
     facts: &'a SemanticFacts,
-    include_generated: bool,
+    roots: SourceRoots,
     work: &mut usize,
 ) -> Check<SourceSites<'a>> {
     *work = work.checked_sub(1).ok_or("source query budget exhausted")?;
-    let mut generated = if include_generated {
+    let mut generated = if roots == SourceRoots::All {
         super::super::checker::checked_generated_source_roots(facts)?
     } else {
         Vec::new()
@@ -119,6 +136,7 @@ fn source_sites_inner<'a>(
     .into_iter();
     let mut pending = Vec::new();
     if generated.len() == 0
+        && (roots == SourceRoots::Original || facts.external_instances.is_empty())
         && facts
             .functions
             .iter()
@@ -182,7 +200,7 @@ fn source_sites_inner<'a>(
     let mut functions = Vec::new();
     let mut expressions = BTreeMap::new();
     let mut effects = BTreeMap::new();
-    if include_generated {
+    if roots != SourceRoots::Original {
         // Original-only lookup above remains available to the independent
         // specialization replay; taking these roots must never certify them.
         super::super::external_instance_validation::validate(facts, work)?;

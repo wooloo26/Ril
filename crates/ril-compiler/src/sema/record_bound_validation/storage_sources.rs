@@ -6,6 +6,7 @@ use crate::sema::{
     facts::ScopeId,
     model::{BindingId, Callable, Constant, HandlerFact},
     source_reception::{self, Construction},
+    source_types::WorkLimit,
     source_types::projection_receipts::{
         self, ProjectionOccurrence, ProjectionReceipts, SourceRead,
     },
@@ -538,11 +539,11 @@ impl Replay<'_> {
         for call in &self.facts.copy_invocations {
             if call.caller_activation == Some(binding.owner)
                 && call.entry.caller_context == binding.context
-                && call.entry.arguments.first().is_some_and(|(mode, input)| {
-                    *mode == crate::sema::model::Mode::Write
-                        && input.value.sources == BTreeSet::from([id])
-                        && input.value.temporary
-                        && input.value.scoped.contains(&id)
+                && call.entry.arguments.first().is_some_and(|input| {
+                    input.mode == ril_syntax::ast::ParameterMode::Mut
+                        && input.value().sources == BTreeSet::from([id])
+                        && input.value().temporary
+                        && input.value().scoped.contains(&id)
                 })
                 && let Some(parent) = call.entry.parent
             {
@@ -552,16 +553,12 @@ impl Replay<'_> {
         for call in &self.facts.closure_invocations {
             if call.caller_activation == binding.owner
                 && call.entry.caller_context == binding.context
-                && call
-                    .entry
-                    .arguments
-                    .first()
-                    .is_some_and(|(mode, input, _)| {
-                        *mode == ril_syntax::ast::ParameterMode::Mut
-                            && input.sources == BTreeSet::from([id])
-                            && input.temporary
-                            && input.scoped.contains(&id)
-                    })
+                && call.entry.arguments.first().is_some_and(|input| {
+                    input.mode == ril_syntax::ast::ParameterMode::Mut
+                        && input.value().sources == BTreeSet::from([id])
+                        && input.value().temporary
+                        && input.value().scoped.contains(&id)
+                })
                 && let Some(parent) = call.entry.parent
             {
                 parents.insert(parent);
@@ -1006,10 +1003,33 @@ impl Replay<'_> {
                 else {
                     return Ok(None);
                 };
-                Ok(schema
-                    .project_steps_if_structural(&projection.steps, &mut work)
-                    .map_err(|error| error.to_string())?
-                    .map(|schema| (schema, environment)))
+                let mut source = (schema, environment);
+                for step in &projection.steps {
+                    if source
+                        .0
+                        .root_is_binder(&mut work)
+                        .map_err(|error| error.to_string())?
+                    {
+                        let ril_compiler_core::projection::TypeProjection::Field(label) = step
+                        else {
+                            return Err("formal Type UID cannot prove this projection".into());
+                        };
+                        source = self
+                            .storage_projection_source_schema_with_work(
+                                &source,
+                                &Slot::Field(label.clone()),
+                                context,
+                                &mut work,
+                            )?
+                            .ok_or("formal Type UID has no original guaranteed member Source")?;
+                    } else {
+                        source.0 = source
+                            .0
+                            .project_steps(std::slice::from_ref(step), &mut work)
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+                Ok(Some(source))
             })();
             return match projected {
                 Ok(None) => None,
@@ -1163,11 +1183,29 @@ impl Replay<'_> {
         )>,
     > {
         let mut work = crate::sema::source_types::WorkLimit::new(16384);
-        let steps = crate::sema::source_types::steps_in(std::slice::from_ref(slot), &mut work)
+        self.storage_projection_source_schema_with_work(source, slot, context, &mut work)
+    }
+
+    fn storage_projection_source_schema_with_work(
+        &self,
+        source: &(
+            crate::sema::source_types::SourceSchema,
+            crate::sema::context::FrozenEnvironment,
+        ),
+        slot: &Slot,
+        context: InvocationContext,
+        work: &mut WorkLimit,
+    ) -> Check<
+        Option<(
+            crate::sema::source_types::SourceSchema,
+            crate::sema::context::FrozenEnvironment,
+        )>,
+    > {
+        let steps = crate::sema::source_types::steps_in(std::slice::from_ref(slot), work)
             .map_err(|error| format!("storage target projection: {error}"))?;
         if let Some(schema) = source
             .0
-            .project_steps_if_structural(&steps, &mut work)
+            .project_steps_if_structural(&steps, work)
             .map_err(|error| format!("storage target Source graph: {error}"))?
         {
             return Ok(Some((schema, source.1.clone())));
@@ -1175,17 +1213,13 @@ impl Replay<'_> {
         let Slot::Field(label) = slot else {
             return Err("storage Type UID cannot prove this projection".into());
         };
-        let identities = source
+        let identity = source
             .0
-            .binder_identities(&mut work)
-            .map_err(|error| format!("storage Type UID: {error}"))?;
-        require(
-            identities.len() == 1,
-            "storage receiver has no unique genuine Type UID",
-        )?;
-        let identity = identities.first().unwrap();
-        self.type_binder(identity)?;
-        let binder = &self.facts.generic_binders[identity];
+            .bare_binder_identity(work)
+            .map_err(|error| format!("storage Type UID: {error}"))?
+            .ok_or("storage receiver has no genuine bare Type UID")?;
+        self.type_binder(&identity)?;
+        let binder = &self.facts.generic_binders[&identity];
         let declaration = self.function(binder.definition)?;
         let parameter = declaration
             .syntax
@@ -1199,29 +1233,36 @@ impl Replay<'_> {
         else {
             return Err("storage Type UID has no declared record constraint".into());
         };
-        let declared: Vec<_> = fields.iter().filter(|field| field.name == *label).collect();
-        let [declared] = declared.as_slice() else {
-            return Err(
-                "storage member is not uniquely guaranteed by its source constraint".into(),
-            );
-        };
+        work.charge(fields.len())
+            .map_err(|error| error.to_string())?;
+        work.text(label).map_err(|error| error.to_string())?;
+        for field in fields {
+            work.text(&field.name).map_err(|error| error.to_string())?;
+        }
+        let mut declared = fields.iter().filter(|field| field.name == *label);
+        let declared = declared
+            .next()
+            .filter(|_| declared.next().is_none())
+            .ok_or("storage member is not uniquely guaranteed by its source constraint")?;
         let bound = self
             .bounds
             .get(&(binder.definition, binder.index))
             .ok_or_else(|| "storage bound UID lost its registered declaration".to_owned())?;
         let scope = self.scope(binder.definition)?;
         require(
-            bound.binder == *identity && bound.scope == scope,
+            bound.binder == identity && bound.scope == scope,
             "storage member borrowed a different bound UID or declaration environment",
         )?;
-        let recorded: Vec<_> = bound
-            .fields
-            .iter()
-            .filter(|field| field.label == *label)
-            .collect();
-        let [recorded] = recorded.as_slice() else {
-            return Err("storage member lost its unique recorded declaration".into());
-        };
+        work.charge(bound.fields.len())
+            .map_err(|error| error.to_string())?;
+        for field in &bound.fields {
+            work.text(&field.label).map_err(|error| error.to_string())?;
+        }
+        let mut recorded = bound.fields.iter().filter(|field| field.label == *label);
+        let recorded = recorded
+            .next()
+            .filter(|_| recorded.next().is_none())
+            .ok_or("storage member lost its unique recorded declaration")?;
         let key = self.normalized_key(&declared.ty, &scope)?;
         require(
             recorded.mutable == declared.mutable
@@ -1280,16 +1321,15 @@ impl Replay<'_> {
             }
             _ => return Err("storage bound field has no callable declaration context".into()),
         };
-        self.source_type_header(
-            &declared.ty,
-            &scope,
-            source.1.clone(),
-            &mut work.remaining(),
-        )
-        .map(Some)
+        let mut remaining = work.remaining();
+        let result =
+            self.source_type_header(&declared.ty, &scope, source.1.clone(), &mut remaining);
+        work.charge(work.remaining() - remaining)
+            .map_err(|error| error.to_string())?;
+        result.map(Some)
     }
 
-    fn storage_activation(
+    pub(super) fn storage_activation(
         &self,
         context: InvocationContext,
         activation: ScopeId,
@@ -1301,6 +1341,21 @@ impl Replay<'_> {
         )?;
         if self.storage_handler(context, activation, work)?.is_some() {
             return Ok(());
+        }
+        origin_work(work, self.frames.preparations(activation).len())?;
+        for receipt in self.frames.preparations(activation) {
+            let declaration = InvocationContext {
+                owner: receipt.owner,
+                ..receipt.caller
+            };
+            let evaluation = InvocationContext {
+                default_use: Some(receipt.id),
+                ..declaration
+            };
+            if context == declaration || context == evaluation {
+                self.preparation_scope(receipt, activation, work)?;
+                return Ok(());
+            }
         }
         // A named call inside a closure keeps the outer closure's dynamic
         // ancestry. Its current frame is nevertheless the named activation.
@@ -2345,6 +2400,7 @@ mod tests {
     }
     fn binding(id: BindingId) -> BindingInfo {
         BindingInfo {
+            declaration: None,
             pattern: None,
             birth: None,
             context: context(CallableOwner::Global),
@@ -2396,7 +2452,8 @@ mod tests {
                 caller_context: context(CallableOwner::Global),
                 origin: crate::sema::application_effect::EntryOrigin::Unresolved,
                 allocation_epoch: 0,
-                arguments: vec![],
+                callee: None,
+                arguments: std::sync::Arc::new(vec![]),
             },
             parent: None,
             caller: None,
@@ -2418,7 +2475,7 @@ mod tests {
             allocation_epoch: 0,
             source_id: None,
             span: span(),
-            value: callee,
+            value: crate::sema::PhysicalValue::unobserved_fixture(callee, 0),
         });
         facts.invocation_expressions.push(InvocationExpression {
             context: context(CallableOwner::Global),
@@ -2523,6 +2580,7 @@ mod tests {
                 caller_context: current,
                 origin: crate::sema::application_effect::EntryOrigin::Unresolved,
                 allocation_epoch: 0,
+                callee: None,
                 arguments: std::sync::Arc::new(vec![]),
             },
             source_event: None,

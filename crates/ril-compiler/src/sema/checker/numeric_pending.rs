@@ -285,18 +285,30 @@ impl Checker {
         value.literal_number = true;
         if minus.is_some() {
             let evaluation_context = context;
+            let environment = self.physical_evaluation_environment(span);
+            let operand = match self.copy_value_for_emission(&value) {
+                Ok(operand) => operand,
+                Err(error) => {
+                    self.unsupported(
+                        span,
+                        format!("pending signed operand emission admission: {error}"),
+                    );
+                    return Some(value);
+                }
+            };
             let _ = self.application_effect.observe(
-                || super::super::ExpressionFact {
+                || super::super::application_effect::ObservationInput {
                     allocation_epoch: self.recency_moves.len(),
                     source_id: match &expression.kind {
                         ExprKind::Unary { operand, .. } => operand.hir_id,
                         _ => None,
                     },
                     span,
-                    value: value.clone(),
+                    value: operand,
                 },
                 evaluation_context,
                 frame.owner,
+                environment,
                 None,
             );
         }

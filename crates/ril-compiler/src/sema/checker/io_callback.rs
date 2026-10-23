@@ -1,8 +1,251 @@
 //! Stream helpers repeatedly invoke the operation supplied in the ordinary
 //! record. The record never substitutes a trusted empty callback footprint.
 use super::*;
+use crate::sema::{
+    application_effect::{EntryOrigin, InputOrigin, ScalarInput},
+    evaluated::{CurrentValueStep, catalog_callable_bound, read_handle},
+    source_types::{SourceTypesError, projection_receipts::ProjectionOccurrence},
+};
+use std::sync::Arc;
+
+struct CallbackPackets {
+    origin: EntryOrigin,
+    event: crate::sema::copy_contract::CopyCallEventId,
+    argument: u32,
+    field: &'static str,
+    operations: Arc<EvaluatedValue>,
+    callee: Arc<EvaluatedValue>,
+}
 
 impl Checker {
+    fn generated_callback_packets(
+        &mut self,
+        read: bool,
+        frame: &Frame,
+    ) -> Result<CallbackPackets, SourceTypesError> {
+        use crate::hir::nodes::{ExprKind, RecordMember};
+        use ril_compiler_core::ids::EvaluationOccurrenceId;
+
+        // This borrows the recorder's existing allowance. In particular the
+        // original child lookup never gets a fresh quota after another probe.
+        let mut lease = self.application_effect.lease_work(4_000_000);
+        let selected = (|| {
+            let work = lease.work();
+            work.charge(10 + self.call_arguments.len())?;
+            let anchor = self
+                .application_effect
+                .current_activation()
+                .ok_or(SourceTypesError::MissingNode)?;
+            let event = self
+                .application_effect
+                .current_call_event()
+                .ok_or(SourceTypesError::MissingNode)?;
+            let mut rows = self
+                .call_arguments
+                .iter()
+                .filter(|row| row.source_event == event);
+            let row = rows.next().ok_or(SourceTypesError::MissingNode)?;
+            if rows.next().is_some() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let operation = self
+                .copy_call_events
+                .get(event.0 as usize)
+                .and_then(|event| event.callee_expression)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let [Callable::Builtin(name)] = self
+                .application_effect
+                .expressions
+                .get(operation)
+                .ok_or(SourceTypesError::MissingNode)?
+                .value
+                .callables
+                .as_slice()
+            else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            work.text(name)?;
+            let contract = crate::sema::application_effect::record_callback(name)
+                .ok_or(SourceTypesError::Unresolved)?;
+            if (contract.field == "read") != read {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let supplied = |slot| {
+                row.supplied
+                    .get(&slot)
+                    .map(|input| input.expression)
+                    .ok_or(SourceTypesError::MissingNode)
+            };
+            work.charge(3 + row.supplied.len())?;
+            let receiver = supplied(contract.receiver)?;
+            let operations = supplied(contract.operations)?;
+            let fact = self
+                .application_effect
+                .expressions
+                .get(operations)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let record = self
+                .application_effect
+                .evaluations
+                .get(operations)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let source = fact.source_id.ok_or(SourceTypesError::MissingNode)?;
+            let identity = record.identity.ok_or(SourceTypesError::MissingNode)?;
+            if identity.source != source
+                || record.context != self.invocation_context(frame.callable_owner)
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let ExprKind::Record { members, .. } = &self
+                .semantic_hir
+                .expression(source)
+                .ok_or(SourceTypesError::MissingNode)?
+                .kind
+            else {
+                return Err(SourceTypesError::MissingProjection);
+            };
+            work.charge(members.len())?;
+            let mut field = None;
+            for member in members {
+                let RecordMember::Field { name, value, .. } = member else {
+                    return Err(SourceTypesError::MissingProjection);
+                };
+                work.text(name)?;
+                if name == contract.field && field.replace(*value).is_some() {
+                    return Err(SourceTypesError::DuplicateField);
+                }
+            }
+            let callee = self.source_projection_receipts().child_observation(
+                ProjectionOccurrence {
+                    identity,
+                    context: record.context,
+                    cause: fact.value.cause,
+                },
+                field.ok_or(SourceTypesError::MissingProjection)?,
+                work,
+            )?;
+            let occurrence = |index| {
+                u32::try_from(index)
+                    .map(EvaluationOccurrenceId)
+                    .map_err(|_| SourceTypesError::IdentityExhausted)
+            };
+            let scalar = match contract.scalar_source {
+                crate::sema::application_effect::ScalarSource::PositiveInt => {
+                    ScalarInput::PositiveInt
+                }
+                crate::sema::application_effect::ScalarSource::ByteSuffix(slot) => {
+                    ScalarInput::ByteSuffix(occurrence(supplied(slot)?)?)
+                }
+                crate::sema::application_effect::ScalarSource::BufferedBytes(slot) => {
+                    ScalarInput::BufferedBytes(occurrence(supplied(slot)?)?)
+                }
+            };
+            work.charge(3)?;
+            Ok((
+                EntryOrigin::Generated {
+                    anchor,
+                    callee,
+                    inputs: vec![
+                        InputOrigin::Widened(occurrence(receiver)?),
+                        InputOrigin::Scalar(scalar),
+                    ],
+                },
+                event,
+                contract.operations,
+                contract.field,
+                operations,
+                callee,
+            ))
+        })();
+        let returned = self.application_effect.return_work(lease);
+        let (origin, event, argument, field, operations, callee) = selected?;
+        returned?;
+        let operations = self.application_effect.packet_at(operations)?;
+        let callee = self.application_effect.packet_at(callee.0 as usize)?;
+        Ok(CallbackPackets {
+            origin,
+            event,
+            argument,
+            field,
+            operations,
+            callee,
+        })
+    }
+
+    fn read_callback_operations(
+        &mut self,
+        operations: &Arc<EvaluatedValue>,
+        span: Span,
+    ) -> Result<Arc<EvaluatedValue>, SourceTypesError> {
+        if !self.application_effect.admit(1) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        let operations = self
+            .freeze_entry_callee(Some(operations.clone()), span)?
+            .ok_or(SourceTypesError::MissingNode)?;
+        let mut value = self.read_evaluation_packet(&operations, span)?;
+        read_handle(&mut value);
+        self.derive_callback_current(operations, CurrentValueStep::ReadHandle, value)
+    }
+
+    fn derive_record_callback(
+        &mut self,
+        prepared: &CallbackPackets,
+        operations: Arc<EvaluatedValue>,
+        callback: Value,
+        span: Span,
+    ) -> Result<Arc<EvaluatedValue>, SourceTypesError> {
+        if !self.application_effect.admit(2 + prepared.field.len()) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        let input = self
+            .freeze_entry_callee(Some(prepared.callee.clone()), span)?
+            .ok_or(SourceTypesError::MissingNode)?;
+        let field = Slot::Field(prepared.field.into());
+        let cause = callback.cause;
+        let projected = self.derive_callback_current(
+            input,
+            CurrentValueStep::FieldProjection {
+                receiver: operations,
+                slot: field,
+                cause,
+            },
+            callback,
+        )?;
+        let mut value = self.read_evaluation_packet(&projected, span)?;
+        // The bound contributes one vector entry, its annotation and text,
+        // plus the shared catalog environment handle; it is never a probe.
+        if !self.application_effect.admit(9 + prepared.field.len()) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        value.callable_bounds.push(catalog_callable_bound(span));
+        self.derive_callback_current(
+            projected,
+            CurrentValueStep::CatalogCallableBound {
+                event: prepared.event,
+                argument: prepared.argument,
+                field: Slot::Field(prepared.field.into()),
+                span,
+            },
+            value,
+        )
+    }
+
+    fn derive_callback_current(
+        &mut self,
+        input: Arc<EvaluatedValue>,
+        step: CurrentValueStep,
+        value: Value,
+    ) -> Result<Arc<EvaluatedValue>, SourceTypesError> {
+        let types = self.type_source.storage.live_types_mut();
+        self.application_effect.with_work(|work| {
+            *work = work
+                .checked_sub(1)
+                .ok_or(SourceTypesError::BudgetExceeded)?;
+            EvaluatedValue::derive_current(input, step, value, types, work).map(Arc::new)
+        })
+    }
+
     pub(super) fn io_all(
         &mut self,
         name: &str,
@@ -74,12 +317,27 @@ impl Checker {
             },
             span,
         };
-        let mut operations = args[count - 1].1.clone();
-        operations.permission = Permission::Read;
+        let prepared = match self.generated_callback_packets(read, frame) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("stream callback lost its physical inputs: {error}"),
+                );
+                return self.unit(span);
+            }
+        };
+        let operations = match self.read_callback_operations(&prepared.operations, span) {
+            Ok(operations) => operations,
+            Err(error) => {
+                self.unsupported(span, format!("stream read-handle derivation: {error}"));
+                return self.unit(span);
+            }
+        };
         let expected = self.ty(&syntax);
-        self.require_type(&operations, &expected, args[count - 1].2);
-        let mut callback = self.project(
-            &operations,
+        self.require_type(operations.value(), &expected, args[count - 1].2);
+        let callback = self.project(
+            operations.value(),
             Slot::Field(if read { "read" } else { "write" }.into()),
             span,
             frame,
@@ -88,17 +346,14 @@ impl Checker {
         // This is the standard operation's constraint on its actual generated
         // invocation. The declaration is a catalog contract, not a hypothetical
         // call whose formals can be manufactured from the receiver's shape.
-        callback.callable_bounds.push(CallableBound {
-            annotations: vec![Annotation {
-                kind: AnnotationKind::Capability,
-                text: "&mut".into(),
-                span,
-            }],
-            source: None,
-            typing_environment: crate::sema::builtin_sources::catalog_environment().clone(),
-            span,
-        });
-        match callback.signature.as_ref() {
+        let callback = match self.derive_record_callback(&prepared, operations, callback, span) {
+            Ok(callback) => callback,
+            Err(error) => {
+                self.unsupported(span, format!("stream field/capability derivation: {error}"));
+                return self.unit(span);
+            }
+        };
+        match callback.value().signature.as_ref() {
             Some(parameters) if parameters.len() == 2 => {
                 if parameters[0].mode != ParameterMode::Mut
                     || parameters[1].mode != ParameterMode::Read
@@ -107,7 +362,7 @@ impl Checker {
                         "E0407",
                         args[count - 1].2,
                         "stream operation parameter modes must be temporary mut followed by read",
-                        [callback.cause],
+                        [callback.value().cause],
                     );
                 }
             }
@@ -142,8 +397,13 @@ impl Checker {
         ];
         let repeated = self.begin_repeated_callback(&mut invocation, frame);
         let family = self.begin_loop_results(frame.owner);
-        let origin = self.generated_callback_origin(read, frame);
-        let output = self.invoke_from(&callback, invocation, span, frame, origin);
+        let output = self.invoke_generated_arguments_from(
+            callback,
+            invocation,
+            span,
+            frame,
+            prepared.origin,
+        );
         if output.ty == Ty::Never {
             let mut iteration = self.unit(span);
             self.finish_loop_results(
@@ -294,98 +554,5 @@ impl Checker {
             [value.cause, failed.cause],
         );
         value.join(&failed, self.choice(), cause)
-    }
-
-    fn generated_callback_origin(
-        &mut self,
-        read: bool,
-        frame: &Frame,
-    ) -> crate::sema::application_effect::EntryOrigin {
-        use crate::sema::application_effect::{EntryOrigin, InputOrigin, ScalarInput};
-        use ril_compiler_core::ids::EvaluationOccurrenceId;
-        let source = (|| {
-            let anchor = self.application_effect.current_activation()?;
-            let event = self.application_effect.current_call_event()?;
-            let row = self
-                .call_arguments
-                .iter()
-                .find(|row| row.source_event == event)?;
-            let operation = self
-                .copy_call_events
-                .get(event.0 as usize)?
-                .callee_expression?;
-            let [Callable::Builtin(name)] = self
-                .application_effect
-                .expressions
-                .get(operation)?
-                .value
-                .callables
-                .as_slice()
-            else {
-                return None;
-            };
-            let contract = crate::sema::application_effect::record_callback(name)?;
-            if (contract.field == "read") != read {
-                return None;
-            }
-            let receiver = row.supplied.get(&contract.receiver)?.expression;
-            let ops = row.supplied.get(&contract.operations)?.expression;
-            let ops_fact = self.application_effect.expressions.get(ops)?;
-            let field = crate::sema::application_effect::record_field_source(
-                &self.semantic_hir,
-                ops_fact.source_id?,
-                contract.field,
-                &mut 4096,
-            )?;
-            let parent = self
-                .application_effect
-                .evaluations
-                .get(ops)?
-                .identity?
-                .activation;
-            let context = self.invocation_context(frame.callable_owner);
-            let count = self.application_effect.occurrences(field, context).len();
-            if !self.application_effect.admit(count + 3) {
-                return None;
-            }
-            let occurrences = self.application_effect.occurrences(field, context);
-            let mut matching = occurrences.iter().copied().filter(|index| {
-                self.application_effect.evaluations[*index]
-                    .identity
-                    .and_then(|id| {
-                        self.application_effect
-                            .activations
-                            .get(id.activation.0 as usize)
-                    })
-                    .is_some_and(|activation| activation.parent == Some(parent))
-            });
-            let callee = matching.next()?;
-            if matching.next().is_some() {
-                return None;
-            }
-            Some(EntryOrigin::Generated {
-                anchor,
-                callee: EvaluationOccurrenceId(callee as u32),
-                inputs: vec![
-                    InputOrigin::Widened(EvaluationOccurrenceId(receiver as u32)),
-                    InputOrigin::Scalar(match contract.scalar_source {
-                        crate::sema::application_effect::ScalarSource::PositiveInt => {
-                            ScalarInput::PositiveInt
-                        }
-                        crate::sema::application_effect::ScalarSource::ByteSuffix(slot) => {
-                            ScalarInput::ByteSuffix(EvaluationOccurrenceId(
-                                row.supplied.get(&slot)?.expression as u32,
-                            ))
-                        }
-                        crate::sema::application_effect::ScalarSource::BufferedBytes(slot) => {
-                            ScalarInput::BufferedBytes(EvaluationOccurrenceId(
-                                row.supplied.get(&slot)?.expression as u32,
-                            ))
-                        }
-                    }),
-                ],
-            })
-        })();
-        source.unwrap_or(EntryOrigin::Unresolved)
     }
 }

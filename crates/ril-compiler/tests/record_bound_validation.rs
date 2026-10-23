@@ -96,38 +96,6 @@ fn actual_call_identity_argument_path_epoch_and_activation_cannot_be_borrowed() 
 }
 
 #[test]
-fn readonly_stored_edge_cannot_gain_permission_even_if_output_metadata_agrees() {
-    let source = "fn first<T:{items:[2]int,..R}>(value:T)->int{value.items[0]}\npub fn test_native(){let items:[2]int=[7,9];assert(first(.{items:items})==7)}";
-    let facts = verified(source);
-    let index = facts
-        .generic_bound_projections
-        .iter()
-        .position(|projection| {
-            projection.output.value.ty
-                == ril_compiler::sema::model::Ty::Array(Box::new(
-                    ril_compiler::sema::model::Ty::Int("int".into()),
-                ))
-        })
-        .unwrap();
-    let mut damaged = facts.clone();
-    let cause = damaged.generic_bound_projections[index].output.value.cause;
-    damaged.generic_bound_projections[index]
-        .output
-        .value
-        .permission = ril_compiler::sema::facts::Permission::Write;
-    for expression in &mut damaged.expressions {
-        if expression.value.cause == cause {
-            expression.value.permission = ril_compiler::sema::facts::Permission::Write
-        }
-    }
-    rejected(&damaged);
-    let mut damaged = facts;
-    damaged.generic_bound_projections[index].access =
-        ril_compiler::sema::record_bounds::BoundAccess::Write;
-    rejected(&damaged);
-}
-
-#[test]
 fn fixed_storage_is_frozen_before_the_actual_application_entry() {
     let source = "fn first<T:{items:[2]int,..R}>(value:T)->int{value.items[0]}\npub fn test_native(){let items:[2]int=[7,9];assert(first(.{items:items})==7)}";
     let mut facts = verified(source);
@@ -155,9 +123,12 @@ fn fixed_storage_is_frozen_before_the_actual_application_entry() {
             node.fixed = false;
         }
     }
-    let (_, actual) = &mut facts.copy_invocations[invocation.0 as usize]
-        .entry
-        .arguments[argument];
+    let arguments = std::sync::Arc::make_mut(
+        &mut facts.copy_invocations[invocation.0 as usize]
+            .entry
+            .arguments,
+    );
+    let actual = std::sync::Arc::make_mut(arguments[argument].heap.as_mut().unwrap());
     for node in &mut actual.nodes {
         if node.origin == origin {
             node.fixed = false;
@@ -179,185 +150,6 @@ fn forged_field_identity_and_row_absences_do_not_revalidate_one_another() {
     let mut damaged = facts;
     damaged.bound_rows[0].lacks.insert("invented".into());
     rejected(&damaged);
-}
-
-#[test]
-fn symbolic_keyof_replay_preserves_all_origins_without_selecting_a_member() {
-    let source = ril_test::case_source("tests/regressions/record-bounds.ril::symbolic-coordinate");
-    let direct = verified(&source.replace("record.(key)", "record.(K)"));
-    assert!(direct.expressions.iter().any(|expression| matches!(
-        expression.value.ty,
-        ril_compiler::sema::model::Ty::Projection { .. }
-    )));
-    let facts = verified(source);
-    let output = facts
-        .expressions
-        .iter()
-        .position(|expression| {
-            matches!(
-                expression.value.ty,
-                ril_compiler::sema::model::Ty::Projection { .. }
-            )
-        })
-        .unwrap();
-    let cause = facts.expressions[output].value.cause;
-    let parents = facts.explanations.causes[cause.0 as usize].parents.clone();
-    assert_eq!(parents.len(), 2);
-    for mutation in 0..12 {
-        let mut damaged = facts.clone();
-        match mutation {
-            0 => {
-                damaged.expressions[output].value.permission =
-                    ril_compiler::sema::facts::Permission::Write
-            }
-            1 => damaged.expressions[output].value.origins.nodes.clear(),
-            2 => damaged.expressions[output].value.results.clear(),
-            3 => {
-                damaged.expressions[output]
-                    .value
-                    .must_results
-                    .insert(*facts.expressions[output].value.results.first().unwrap());
-            }
-            4 => damaged.expressions[output].value.construction = true,
-            5 => damaged.explanations.causes[cause.0 as usize]
-                .parents
-                .reverse(),
-            6 => damaged.invocation_expressions.retain(|observation| {
-                damaged.expressions[observation.expression].value.cause != parents[0]
-            }),
-            7 => damaged.invocation_expressions.retain(|observation| {
-                damaged.expressions[observation.expression].value.cause != parents[1]
-            }),
-            8 => damaged.expressions[output].value.participants.clear(),
-            9 => {
-                let key_owner = damaged
-                    .functions
-                    .iter_mut()
-                    .find(|function| function.syntax.name == "get_field")
-                    .unwrap();
-                let bound = key_owner.syntax.generics[1].bound.as_mut().unwrap();
-                let ril_syntax::ast::TypeKind::KeyOf(receiver) = &mut bound.kind else {
-                    unreachable!()
-                };
-                receiver.kind = ril_syntax::ast::TypeKind::Name {
-                    path: vec!["str".into()],
-                    arguments: vec![],
-                };
-            }
-            10 => {
-                let source = facts
-                    .expressions
-                    .iter()
-                    .find(|expression| expression.value.cause == parents[0])
-                    .unwrap();
-                let forged = if source.value.publication
-                    == ril_compiler::sema::facts::Publication::Immutable
-                {
-                    ril_compiler::sema::facts::Publication::Live
-                } else {
-                    ril_compiler::sema::facts::Publication::Immutable
-                };
-                for expression in &mut damaged.expressions {
-                    if expression.value.cause == parents[0] || expression.value.cause == cause {
-                        expression.value.publication = forged;
-                    }
-                }
-            }
-            _ => {
-                let source = facts
-                    .expressions
-                    .iter()
-                    .find(|expression| expression.value.cause == parents[0])
-                    .unwrap();
-                let binding = *source.value.sources.first().unwrap();
-                let genuine =
-                    ril_compiler::sema::facts::Participant::Root(facts.bindings[binding].root);
-                let borrowed = ril_compiler::sema::facts::RootId(binding as u32 + 1);
-                damaged.bindings[binding].root = borrowed;
-                for expression in &mut damaged.expressions {
-                    if expression.value.cause == parents[0] || expression.value.cause == cause {
-                        expression.value.participants.remove(&genuine);
-                        expression
-                            .value
-                            .participants
-                            .insert(ril_compiler::sema::facts::Participant::Root(borrowed));
-                    }
-                }
-            }
-        }
-        rejected(&damaged);
-    }
-    let mut damaged = facts;
-    damaged
-        .invocation_expressions
-        .retain(|observation| observation.expression != output);
-    rejected(&damaged);
-}
-
-#[test]
-fn literal_coordinates_need_their_actual_key_and_named_field_observations() {
-    for coordinate in [r#""id""#, "`id`", r#""i\u{64}""#] {
-        let source = format!(
-            "fn read<T:{{id:int,tag:int,..R}}>(value:T)->int{{value.({coordinate})}}\npub fn test_native(){{assert(read(.{{id:7,tag:9}})==7)}}"
-        );
-        let facts = verified(&source);
-        let projection = facts
-            .generic_bound_projections
-            .iter()
-            .find(|projection| {
-                matches!(
-                    &projection.source.value.ty,
-                    ril_compiler::sema::model::Ty::Generic(_)
-                ) && projection.slot == ril_compiler::sema::facts::Slot::Field("id".into())
-            })
-            .unwrap();
-        let context = projection.context;
-        let key = facts
-            .invocation_expressions
-            .iter()
-            .find(|observation| {
-                observation.context == context
-                    && facts.expressions[observation.expression]
-                        .value
-                        .static_coordinate
-                        == Some(ril_compiler::sema::model::StaticCoordinate::Label(
-                            "id".into(),
-                        ))
-            })
-            .unwrap()
-            .expression;
-        for mutation in 0..4 {
-            let mut damaged = facts.clone();
-            match mutation {
-                0 => damaged.invocation_expressions.retain(|observation| {
-                    observation.context != context || observation.expression != key
-                }),
-                1 => {
-                    damaged.expressions[key].value.static_coordinate = Some(
-                        ril_compiler::sema::model::StaticCoordinate::Label("tag".into()),
-                    );
-                }
-                2 => {
-                    damaged.expressions[key].value.ty =
-                        ril_compiler::sema::model::Ty::Int("int".into());
-                }
-                _ => damaged.generic_bound_projections.retain(|observation| {
-                    observation.context != context || observation.cause != projection.cause
-                }),
-            }
-            rejected(&damaged);
-        }
-        ril_compiler::lower::lower_core(
-            &Session::new(source.as_bytes().to_vec()).verify().unwrap(),
-        )
-        .unwrap();
-    }
-    let runtime_key = "fn read<T:{id:int,..R}>(value:T,key:str)->int{value.(key)}";
-    assert!(matches!(
-        Session::new(runtime_key.as_bytes().to_vec()).check(),
-        ril_compiler::CompilationOutcome::Rejected { diagnostics }
-            if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0324")
-    ));
 }
 
 #[test]

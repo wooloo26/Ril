@@ -69,6 +69,7 @@ impl Replay<'_> {
     pub(super) fn named_input_source_schemas(
         &self,
         call: &CopyInvocation,
+        sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
     ) -> Check<NamedInputSchemas> {
         let function = self.function(call.target)?;
@@ -151,7 +152,7 @@ impl Replay<'_> {
             }
             // An original static argument or independently registered scoped
             // row is still an ingress. No existing graph is exported here.
-            let source = self.original_input_selection_schema(call, &identity, key, work)?;
+            let source = self.original_input_selection_schema(call, &identity, key, sites, work)?;
             selected.insert(identity, source);
         }
         let expected = raw
@@ -182,6 +183,7 @@ impl Replay<'_> {
         call: &CopyInvocation,
         identity: &str,
         key: &ArgumentKey,
+        sites: &super::super::explicit_named::SourceSites<'_>,
         work: &mut usize,
     ) -> Check<OriginalSource> {
         source_reception::complete(key, work)
@@ -272,6 +274,49 @@ impl Replay<'_> {
                 "normalized static Source has neither a matching closed witness nor an original header",
             )?;
             return self.source_type_header(syntax, &scope, environment, work);
+        }
+        if let ArgumentKey::Binder {
+            identity,
+            sort: StaticBinderSort::Type,
+        } = key
+            && matches!(call.entry.origin, crate::sema::application_effect::EntryOrigin::Application(event) if call.source_event == Some(event))
+        {
+            // A caller UID may occur below a product's root. Its actual
+            // argument graph owns the interpretation, not the creation Γ of
+            // whichever declaration registered the UID spelling.
+            require(
+                self.input_type_sort(identity)?,
+                "actual input Source projection requires a genuine Type UID",
+            )?;
+            source_scan_work(work, call.entry.arguments.len())?;
+            let mut selected: Option<OriginalSource> = None;
+            for slot in 0..call.entry.arguments.len() {
+                let Some((schema, environment)) =
+                    self.named_entry_source_schema_if_known(call, slot, sites, work)?
+                else {
+                    continue;
+                };
+                let Some(schema) = super::graph_sources::schema_work(work, |budget| {
+                    schema.binder_view(identity, budget)
+                })?
+                else {
+                    continue;
+                };
+                if let Some((original, original_environment)) = &selected {
+                    require(
+                        original_environment.id() == environment.id()
+                            && super::graph_sources::schema_work(work, |budget| {
+                                original.equivalent(&schema, budget)
+                            })?,
+                        "actual inputs disagree about the original Source of a selected UID",
+                    )?;
+                } else {
+                    selected = Some((schema, environment));
+                }
+            }
+            if let Some(selected) = selected {
+                return Ok(selected);
+            }
         }
         let fallback = self.function(call.target)?.typing_environment.clone();
         let (schema, _) = self.source_header_schema(key, fallback.clone(), work)?;
@@ -844,6 +889,115 @@ mod tests {
     use crate::sema::source_types::SourceLength;
 
     #[test]
+    fn a_selected_caller_uid_keeps_the_real_input_graph_environment() {
+        let source = ril_test::case_source(
+            "tests/regressions/source-transport.ril::bounded-record-tuple-return",
+        );
+        for layout in ["pointer32", "pointer64"] {
+            let program = crate::Session::with_options(
+                source.as_bytes().to_vec(),
+                crate::CheckOptions {
+                    target: layout.into(),
+                    ..Default::default()
+                },
+            )
+            .verify()
+            .unwrap_or_else(|error| panic!("{layout}: {error:?}"));
+            let facts = program.facts();
+            let first = facts
+                .functions
+                .iter()
+                .find(|function| function.syntax.name == "first")
+                .unwrap()
+                .definition;
+            let forward = facts
+                .functions
+                .iter()
+                .find(|function| function.syntax.name == "forward")
+                .unwrap();
+            let call = facts
+                .copy_invocations
+                .iter()
+                .find(|call| {
+                    call.target == first
+                        && call.caller_owner == Some(CallableOwner::Function(forward.definition))
+                        && matches!(
+                            call.entry.origin,
+                            crate::sema::application_effect::EntryOrigin::Application(_)
+                        )
+                })
+                .unwrap();
+            let sites = super::super::super::explicit_named::source_sites_base(facts).unwrap();
+            let replay = Replay::new(facts).unwrap();
+            let mut work = 262_144;
+            let argument = &replay.input_static_arguments(call).unwrap()[0];
+            let key = argument.key.as_ref().unwrap();
+            let ArgumentKey::Binder {
+                identity,
+                sort: StaticBinderSort::Type,
+            } = key
+            else {
+                panic!("the real explicit argument must select the caller's rigid UID")
+            };
+            let (input, environment) = replay
+                .named_entry_source_schema(call, 0, &sites, &mut work)
+                .unwrap();
+            let projected = input
+                .binder_view(identity, &mut WorkLimit::new(16384))
+                .unwrap()
+                .unwrap();
+            assert_ne!(
+                environment.id(),
+                forward.typing_environment.id(),
+                "the fixture must distinguish input Γ from declaration Γ"
+            );
+            let selected = replay
+                .original_input_selection_schema(call, &argument.binder, key, &sites, &mut work)
+                .unwrap();
+            assert_eq!(selected.1.id(), environment.id());
+            assert!(
+                selected
+                    .0
+                    .equivalent_in(
+                        &projected,
+                        &selected.1,
+                        &environment,
+                        &mut WorkLimit::new(16384)
+                    )
+                    .unwrap()
+            );
+            assert!(
+                replay
+                    .original_input_selection_schema(call, &argument.binder, key, &sites, &mut 0)
+                    .is_err()
+            );
+
+            let mut changed = facts.clone();
+            let event = call.source_event.unwrap();
+            let preparation = changed
+                .call_arguments
+                .iter_mut()
+                .find(|row| row.source_event == event)
+                .unwrap();
+            assert!(preparation.supplied.remove(&0).is_some());
+            assert!(
+                Replay::new(&changed)
+                    .and_then(|replay| {
+                        replay.original_input_selection_schema(
+                            &changed.copy_invocations[call.id.0 as usize],
+                            &argument.binder,
+                            key,
+                            &sites,
+                            &mut 262_144,
+                        )
+                    })
+                    .is_err(),
+                "a missing actual input must not fall back to the declaration Γ"
+            );
+        }
+    }
+
+    #[test]
     fn recursive_input_sources_only_demand_real_static_receipts_for_graph_dependencies() {
         let source = ril_test::case_source(
             "tests/regressions/source-transport.ril::recursive-static-input-receipts",
@@ -880,9 +1034,11 @@ mod tests {
             .effect_invocations
             .retain(|row| row.invocation != Some(down_call));
         let replay = Replay::new(&no_static).unwrap();
+        let sites = super::super::super::explicit_named::source_sites_base(&no_static).unwrap();
         let schemas = replay
             .named_input_source_schemas(
                 &no_static.copy_invocations[down_call.0 as usize],
+                &sites,
                 &mut 262_144,
             )
             .unwrap();
@@ -912,9 +1068,11 @@ mod tests {
             sibling_row.arguments[0].binder
         );
         let replay = Replay::new(baseline).unwrap();
+        let sites = super::super::super::explicit_named::source_sites_base(baseline).unwrap();
         let original = replay
             .named_input_source_schemas(
                 &baseline.copy_invocations[recur_call.0 as usize],
+                &sites,
                 &mut 262_144,
             )
             .unwrap();
@@ -948,10 +1106,12 @@ mod tests {
                 _ => unreachable!(),
             }
             let replay = Replay::new(&changed).unwrap();
+            let sites = super::super::super::explicit_named::source_sites_base(&changed).unwrap();
             assert!(
                 replay
                     .named_input_source_schemas(
                         &changed.copy_invocations[recur_call.0 as usize],
+                        &sites,
                         &mut 262_144
                     )
                     .is_err(),
@@ -982,12 +1142,12 @@ mod tests {
             .iter()
             .find(|call| {
                 call.target == target
-            && call.source_event.is_some() && call.entry.arguments.first().is_some_and(|(_, value)|
-                matches!(&value.value.ty, Ty::Record(fields) if fields.contains_key("extra")))
+            && call.source_event.is_some() && call.entry.arguments.first().is_some_and(|value|
+                matches!(&value.value().ty, Ty::Record(fields) if fields.contains_key("extra")))
             })
             .expect("fixture must enter its real outer call with the complete record");
         let schemas = replay
-            .named_input_source_schemas(call, &mut 262_144)
+            .named_input_source_schemas(call, &sites, &mut 262_144)
             .unwrap();
         let raw = &schemas.raw[0].as_ref().unwrap().0;
         let actual = replay

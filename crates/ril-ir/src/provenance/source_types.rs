@@ -2,6 +2,23 @@
 //! Edges preserve sharing and recursive declarations instead of expanding them
 //! into trees. Inspecting or constructing this evidence grants no authority.
 use super::Access;
+use ril_compiler_core::ids::{ExprId, GenericParamId, StmtId, TypeExprId};
+
+/// A particular original callable header, not a diagnostic source range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableRowOrigin {
+    Declaration(StmtId),
+    Lambda(ExprId),
+    Type(TypeExprId),
+}
+
+/// Original row syntax retains its genuine generic dependencies as graph
+/// edges, including a parameter that appears only inside an annotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableRowIdentity<I = SourceTypeId> {
+    pub origin: CallableRowOrigin,
+    pub parameters: Vec<(GenericParamId, I)>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourceTypeId(pub u32);
@@ -89,12 +106,24 @@ pub struct SourceTypeField {
     pub value: SourceTypeId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyProjectionOrigin {
+    Type(TypeExprId),
+    Value(ExprId),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceTypeNode {
     GenericBuiltin(ril_compiler_core::builtin_calls::GenericBuiltin),
     Scalar(SourceScalar),
     Nominal(SourceNominal),
     Binder(String),
+    KeyProjection {
+        origin: KeyProjectionOrigin,
+        parameter: GenericParamId,
+        identity: String,
+        base: SourceTypeId,
+    },
     Array {
         length: SourceLength,
         element: SourceTypeId,
@@ -112,6 +141,7 @@ pub enum SourceTypeNode {
         parameters: Vec<(Access, SourceTypeId)>,
         result: SourceTypeId,
         annotations: Vec<String>,
+        row_identity: Option<CallableRowIdentity>,
     },
     Container {
         kind: SourceContainer,

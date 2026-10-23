@@ -168,22 +168,48 @@ impl Checker {
         };
         let continuation_epoch = self.recency_moves.len();
         let continuation_value = self.copy_value_snapshot(answer);
-        let mut held_answer = EvaluatedValue::new(answer.clone(), continuation_epoch);
+        let emitted_answer = match self.copy_value_for_emission(answer) {
+            Ok(value) => value,
+            Err(error) => {
+                self.unsupported(
+                    suffix.resume,
+                    format!("continuation physical emission: {error}"),
+                );
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
         self.block_boundaries.push(suffix.boundary);
         let evaluation_context = suffix.context;
+        let continuation_environment = self.physical_evaluation_environment(suffix.resume);
         let Some(continuation_expression) = self.application_effect.observe(
-            || super::super::ExpressionFact {
+            || super::super::application_effect::ObservationInput {
                 allocation_epoch: continuation_epoch,
                 source_id: Some(resume_source),
                 span: suffix.resume,
-                value: answer.clone(),
+                value: emitted_answer,
             },
             evaluation_context,
             frame.owner,
+            continuation_environment,
             None,
         ) else {
             self.block_boundaries.pop();
             return answer.clone();
+        };
+        let mut held_answer = match self
+            .application_effect
+            .packet_at(continuation_expression)
+            .and_then(|packet| self.clone_evaluation_packet(&packet, suffix.resume))
+        {
+            Ok(packet) => packet,
+            Err(error) => {
+                self.block_boundaries.pop();
+                self.unsupported(
+                    suffix.resume,
+                    format!("continuation physical packet: {error}"),
+                );
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
         };
         if let Some(binding) = &suffix.binding {
             self.set_contract_environment(&frame.env);
@@ -262,18 +288,32 @@ impl Checker {
             [answer.cause, result.cause],
         );
         let evaluation_context = suffix.context;
+        let arm_environment = self.physical_evaluation_environment(suffix.span);
+        let mut emitted = Some(result);
         let Some(arm_expression) = self.application_effect.observe(
-            || super::super::ExpressionFact {
+            || super::super::application_effect::ObservationInput {
                 allocation_epoch: self.recency_moves.len(),
                 source_id: Some(arm_source),
                 span: suffix.span,
-                value: result.clone(),
+                value: emitted.take().expect("arm answer moves once"),
             },
             evaluation_context,
             frame.owner,
+            arm_environment,
             None,
         ) else {
-            return result;
+            return emitted.unwrap_or_else(|| Value::scalar(Ty::Unknown, None, CauseId(0)));
+        };
+        let result = match self
+            .application_effect
+            .packet_at(arm_expression)
+            .and_then(|packet| self.read_evaluation_packet(&packet, suffix.span))
+        {
+            Ok(value) => value,
+            Err(error) => {
+                self.unsupported(suffix.span, format!("arm physical packet: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
         };
         self.resumption_steps.push(super::super::ResumptionStep {
             id: ril_compiler_core::ids::ProtectedAnswerId(continuation_expression as u32),

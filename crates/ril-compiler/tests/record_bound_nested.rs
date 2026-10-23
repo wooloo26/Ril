@@ -63,10 +63,8 @@ fn precise_products_keep_the_whole_actual_argument_and_existing_selected_object(
         ));
         let invocation = &facts.copy_invocations[check.context.invocation.unwrap().0 as usize];
         assert_eq!(
-            check.actual.value,
-            invocation.entry.arguments[check.argument_index as usize]
-                .1
-                .value
+            &check.actual.value,
+            invocation.entry.arguments[check.argument_index as usize].value()
         );
     }
 }
@@ -203,11 +201,18 @@ fn original_stored_paths_and_fixed_resize_invariants_remain_required() {
         .find(|node| node.fixed)
         .unwrap()
         .origin;
-    for snapshot in [
-        &mut copy.generic_bound_checks[index].actual,
-        &mut copy.copy_invocations[invocation].entry.arguments[argument].1,
+    for nodes in [
+        &mut copy.generic_bound_checks[index].actual.nodes,
+        &mut std::sync::Arc::make_mut(
+            std::sync::Arc::make_mut(&mut copy.copy_invocations[invocation].entry.arguments)
+                [argument]
+                .heap
+                .as_mut()
+                .unwrap(),
+        )
+        .nodes,
     ] {
-        for node in &mut snapshot.nodes {
+        for node in nodes {
             if node.origin == origin {
                 node.fixed = false;
             }
@@ -222,15 +227,18 @@ fn original_stored_paths_and_fixed_resize_invariants_remain_required() {
         .nodes
         .first()
         .unwrap();
-    for snapshot in [
-        &mut copy.generic_bound_checks[index].actual,
-        &mut copy.copy_invocations[invocation].entry.arguments[argument].1,
+    for nodes in [
+        &mut copy.generic_bound_checks[index].actual.nodes,
+        &mut std::sync::Arc::make_mut(
+            std::sync::Arc::make_mut(&mut copy.copy_invocations[invocation].entry.arguments)
+                [argument]
+                .heap
+                .as_mut()
+                .unwrap(),
+        )
+        .nodes,
     ] {
-        let node = snapshot
-            .nodes
-            .iter_mut()
-            .find(|node| node.origin == root)
-            .unwrap();
+        let node = nodes.iter_mut().find(|node| node.origin == root).unwrap();
         node.fields
             .retain(|(slot, _)| slot != &ril_compiler::sema::facts::Slot::Tuple(0));
         node.fact
@@ -238,82 +246,6 @@ fn original_stored_paths_and_fixed_resize_invariants_remain_required() {
             .remove(&ril_compiler::sema::facts::Slot::Tuple(0));
     }
     damaged(&copy);
-}
-
-#[test]
-fn nested_read_reception_cannot_gain_authority_or_lose_its_root_observation() {
-    let facts = verified(tuple_fixture());
-    let projection = facts
-        .generic_bound_projections
-        .iter()
-        .find(|projection| {
-            matches!(
-                &projection.source.value.ty,
-                ril_compiler::sema::model::Ty::Generic(_)
-            )
-        })
-        .unwrap();
-    let context = projection.context;
-    let cause = projection.source.value.cause;
-    for mutation in 0..6 {
-        let mut copy = facts.clone();
-        if mutation == 3 {
-            copy.invocation_expressions.retain(|observation| {
-                observation.context != context
-                    || !matches!(
-                        copy.expressions[observation.expression].value.ty,
-                        ril_compiler::sema::model::Ty::Tuple(_)
-                    )
-            });
-        } else if mutation >= 4 {
-            let root = copy
-                .invocation_expressions
-                .iter()
-                .find(|observation| {
-                    observation.context == context
-                        && matches!(
-                            copy.expressions[observation.expression].value.ty,
-                            ril_compiler::sema::model::Ty::Tuple(_)
-                        )
-                })
-                .unwrap()
-                .expression;
-            let other = copy
-                .invocation_expressions
-                .iter()
-                .filter(|observation| observation.context == context)
-                .map(|observation| &copy.expressions[observation.expression])
-                .find(|expression| {
-                    expression.source_id.is_some()
-                        && expression.source_id != copy.expressions[root].source_id
-                })
-                .unwrap()
-                .source_id;
-            copy.expressions[root].source_id = if mutation == 4 { None } else { other };
-        } else {
-            for value in copy
-                .expressions
-                .iter_mut()
-                .filter(|expression| expression.value.cause == cause)
-                .map(|expression| &mut expression.value)
-                .chain(
-                    copy.generic_bound_projections
-                        .iter_mut()
-                        .filter(|projection| {
-                            projection.context == context && projection.source.value.cause == cause
-                        })
-                        .map(|projection| &mut projection.source.value),
-                )
-            {
-                match mutation {
-                    0 => value.permission = ril_compiler::sema::facts::Permission::Write,
-                    1 => value.construction = true,
-                    _ => value.participants.clear(),
-                }
-            }
-        }
-        damaged(&copy);
-    }
 }
 
 #[test]

@@ -242,7 +242,7 @@ impl Checker {
         self.loan_parents.insert(loan, handle.participants.clone());
         handle.participants = [Participant::Loan(loan)].into();
         handle.temporary = true;
-        let mut output = self.invoke(&handle, arguments, span, &mut child);
+        let mut output = self.invoke_generated_values(&handle, arguments, span, &mut child);
         if let PermissionBoundary::Element(nodes) = &mut permission {
             loop_graph::transport_nodes(nodes, &self.recency_moves[recency..]);
         }

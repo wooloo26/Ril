@@ -109,6 +109,8 @@ duplicate source trees and historical verification reports.
   static sorts and captured/local aliases, and solve pending Source equations
   before certifying a producing context. Finish Source coverage for normalized
   and generic operation input headers and typed record members.
+  Complete default preparations for inferred earlier closure parameters and
+  checked callable ascription views, including nested `where` captures.
 - Complete shared value derivations for historical heap reads, callback results
   and generated inputs to parallel workers, scope/channel bodies, iterators,
   variant/recovery callbacks, resources and foreign calls. Their unmigrated

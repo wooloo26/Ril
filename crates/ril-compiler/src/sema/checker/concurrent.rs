@@ -435,11 +435,9 @@ impl Checker {
         if kind != Kind::Scope {
             value.publication = Publication::Immutable;
         }
-        let scope = self.heap.symbolic(
-            Pivot(self.heap.nodes.len() as u32),
-            ScopeId(u32::MAX),
-            value.cause,
-        );
+        let scope =
+            self.heap
+                .symbolic(Pivot(self.heap.nodes.len() as u32), ScopeId(0), value.cause);
         self.concurrency.resources.insert(
             node,
             Resource {
@@ -1314,7 +1312,12 @@ impl Checker {
         }
         self.begin_scope_cancellation(node, span);
         let scope_recency = self.recency_moves.len();
-        let mut result = self.invoke(body, vec![(ParameterMode::Mut, scope, span)], span, frame);
+        let mut result = self.invoke_generated_values(
+            body,
+            vec![(ParameterMode::Mut, scope, span)],
+            span,
+            frame,
+        );
         if self.recency_moves[scope_recency..]
             .iter()
             .any(|(recent, _)| *recent == node)
@@ -1541,7 +1544,7 @@ impl Checker {
         self.concurrency.clone_sources.push(borrows.clone());
         let mut child = self.frame(frame.env.clone(), true);
         self.scopes.set_parent(child.owner, frame.owner);
-        let mut output = self.invoke(action, vec![], span, &mut child);
+        let mut output = self.invoke_generated_values(action, vec![], span, &mut child);
         self.concurrency.clone_sources.pop();
         self.concurrency.task_context.pop();
         self.concurrency.scopes = self

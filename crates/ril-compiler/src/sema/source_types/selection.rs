@@ -179,7 +179,7 @@ mod tests {
                     && binding.context.invocation == Some(call.id)
                     && call.target == definition
                     && matches!(
-                        call.entry.arguments.first()?.1.value.ty,
+                        call.entry.arguments.first()?.value().ty,
                         Ty::OpenRecord { .. }
                     ))
                 .then_some((index, call.id))

@@ -93,10 +93,19 @@ pub enum EntryOrigin {
 }
 
 #[derive(Debug, Clone)]
-pub struct CallableEntry<A = Vec<(Access, Value)>> {
+pub struct EntryArgument {
+    pub mode: Access,
+    pub packet: std::sync::Arc<EvaluatedValue>,
+    pub span: Span,
+    pub heap: Option<std::sync::Arc<CopyHeapSnapshot>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallableEntry {
     pub parent: Option<ActivationEpochId>,
     pub caller_context: ResumptionContext,
     pub origin: EntryOrigin,
     pub allocation_epoch: u64,
-    pub arguments: A,
+    pub callee: Option<std::sync::Arc<EvaluatedValue>>,
+    pub arguments: std::sync::Arc<Vec<EntryArgument>>,
 }

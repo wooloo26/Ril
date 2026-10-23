@@ -584,7 +584,7 @@ impl Checker {
         let mut right = self.formal_value(element.clone(), 1, span, &mut BTreeSet::new());
         self.standard_read_handle(&mut left);
         self.standard_read_handle(&mut right);
-        let result = self.invoke(
+        let result = self.invoke_generated_values(
             callback,
             vec![
                 (ParameterMode::Read, left, span),

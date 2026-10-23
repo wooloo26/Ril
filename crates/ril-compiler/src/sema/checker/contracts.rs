@@ -33,12 +33,12 @@ impl SignatureSource<'_> {
 
 /// The comma makes `closure` a contextual group header. Without it the
 /// same spelling is an ordinary module binding, even before name resolution.
-pub(super) struct StateGroup<'a> {
+pub(crate) struct StateGroup<'a> {
     pub capture_owner: Option<&'a str>,
     parts: std::str::Split<'a, char>,
 }
 
-pub(super) struct StateItem<'a> {
+pub(crate) struct StateItem<'a> {
     pub mode: Mode,
     pub name: &'a str,
 }
@@ -61,7 +61,7 @@ impl<'a> StateGroup<'a> {
     }
 }
 
-pub(super) fn state_group(text: &str) -> Option<StateGroup<'_>> {
+pub(crate) fn state_group(text: &str) -> Option<StateGroup<'_>> {
     let inner = text.strip_prefix("&{")?.strip_suffix('}')?;
     let mut parts = inner.split(',');
     let first = parts.next()?.trim();
@@ -800,7 +800,7 @@ impl Checker {
             let captures = self.contract_captures(&callable);
             match callable {
                 Callable::Named(id) => {
-                    self.invoke_named_from(
+                    self.invoke_named_generated_from(
                         id,
                         arguments.clone(),
                         syntax.span,

@@ -4,7 +4,7 @@ use super::*;
 use crate::hir::application::AstApplication;
 use crate::sema::{
     copy_contract::{CopyInvocation, CopyInvocationStatus},
-    model::{Callable, ClosureInfo, Mode, Ty},
+    model::{Callable, ClosureInfo, Ty},
     result_conditions::ConditionKind,
 };
 use ril_compiler_core::ids::CallableOwner;
@@ -316,14 +316,23 @@ impl<'a> Analysis<'a> {
         let Some(parameter) = owners.header.parameters.get(root.parameter) else {
             return Ok(None);
         };
-        let Some((Mode::Read, snapshot)) = owners.invocation.entry.arguments.get(root.parameter)
-        else {
+        let Some(argument) = owners.invocation.entry.arguments.get(root.parameter) else {
             return Ok(None);
         };
+        if argument.mode != ril_syntax::ast::ParameterMode::Read {
+            return Ok(None);
+        }
+        let mut budget = crate::sema::source_types::WorkLimit::new(self.work);
+        let snapshot = argument.snapshot_view(&mut budget);
+        self.work = budget.remaining();
+        let snapshot = snapshot.map_err(|error| error.to_string())?;
+        if argument.packet.current_epoch() != owners.invocation.entry.allocation_epoch {
+            return Err("channel condition borrowed another entry heap epoch".into());
+        }
         if parameter.span != root.parameter_span || parameter.pattern.span != root.binder {
             return Ok(None);
         }
-        let mut value = &snapshot.value;
+        let mut value = snapshot.value;
         for step in steps {
             self.charge()?;
             match step {

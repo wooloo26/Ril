@@ -1,7 +1,110 @@
 //! Static product coordinates retain their source sort and the receiver's
 //! existing access path; a runtime string is not a static record label.
 use super::*;
+use crate::sema::source_types::{SourceSchema, SourceTypesError, WorkLimit};
 impl Checker {
+    pub(super) fn original_key_name_source_schema(
+        &self,
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+        observation: Option<usize>,
+        work: &mut WorkLimit,
+    ) -> Result<Option<(SourceSchema, crate::sema::context::FrozenEnvironment)>, SourceTypesError>
+    {
+        use crate::sema::source_types::declarations::{HeaderContext, key_carrier_source};
+        let ExprKind::Name(name) = &syntax.kind else {
+            return Ok(None);
+        };
+        if !value.sources.is_empty() || frame.env.contains_key(name) {
+            return Ok(None);
+        }
+        let source = syntax.hir_id.ok_or(SourceTypesError::MissingNode)?;
+        let mut remaining = work.remaining();
+        let parameter = self
+            .type_source
+            .with_header_index(&self.semantic_hir, |lexical| {
+                lexical
+                    .lookup_generic(source, &mut remaining)
+                    .map_err(|error| match error {
+                        crate::hir::nodes::LowerError::Budget(_) => {
+                            SourceTypesError::BudgetExceeded
+                        }
+                        _ => SourceTypesError::Unresolved,
+                    })
+            });
+        work.charge(work.remaining() - remaining)?;
+        let Some(parameter) = parameter? else {
+            return Ok(None);
+        };
+        let generic = self
+            .semantic_hir
+            .generic(parameter)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if !generic
+            .bound
+            .and_then(|id| self.semantic_hir.type_expression(id))
+            .is_some_and(|bound| matches!(bound.kind, crate::hir::nodes::TypeKind::KeyOf(_)))
+        {
+            if matches!(value.ty, Ty::StaticKey(_)) {
+                return Err(SourceTypesError::Unresolved);
+            }
+            return Ok(None);
+        }
+        work.charge(3)?;
+        let observation = observation.ok_or(SourceTypesError::MissingNode)?;
+        let record = self
+            .application_effect
+            .evaluations
+            .get(observation)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let context = self.invocation_context(frame.callable_owner);
+        if record.context != context || record.scope != frame.owner
+            || record.identity.is_none_or(|identity| identity.source != source)
+            || !self.semantic_hir.expression(source).is_some_and(|original| matches!(&original.kind, crate::hir::nodes::ExprKind::Name(actual) if actual == name)) {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let environment = self.type_source.storage.live_types().environment(
+            record.environment.ok_or(SourceTypesError::MissingNode)?,
+            work,
+        )?;
+        work.text(&generic.name)?;
+        let identity = environment
+            .generic_context
+            .get(&generic.name)
+            .ok_or(SourceTypesError::Unresolved)?;
+        work.text(identity)?;
+        if !matches!(&value.ty, Ty::StaticKey(actual) if actual == identity)
+            || value.static_coordinate.as_ref() != environment.static_key_arguments.get(identity)
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let binders = self.original_captured_header_binders(&environment, work)?;
+        let schema = self
+            .type_source
+            .with_header_index(&self.semantic_hir, |lexical| {
+                key_carrier_source(
+                    parameter,
+                    identity,
+                    HeaderContext {
+                        declarations: &self.types,
+                        program: self
+                            .checked_source
+                            .as_deref()
+                            .ok_or(SourceTypesError::MissingNode)?,
+                        hir: &self.semantic_hir,
+                        lexical,
+                        binders: &binders,
+                        functions: &self.functions,
+                        generic_binders: &self.generic_binders,
+                        layout: self.layout,
+                    },
+                    work,
+                )
+            })?;
+        Ok(Some((schema, environment)))
+    }
+
     /// A universal coordinate can carry an opaque borrowed row family as a
     /// possibility. It cannot select or inspect that family's Result producers.
     fn borrowed_opaque_coordinate_family(&self, base: &Value) -> bool {

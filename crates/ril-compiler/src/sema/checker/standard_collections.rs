@@ -282,7 +282,7 @@ impl Checker {
                     None
                 };
                 self.active_iterations.push(source.origins.clone());
-                let mut returned = self.invoke(&callback, invocation, span, frame);
+                let mut returned = self.invoke_generated_values(&callback, invocation, span, frame);
                 self.active_iterations.pop();
                 if let Some(repeated) = repeated {
                     self.finish_repeated_callback(repeated, span);

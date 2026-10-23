@@ -3,12 +3,16 @@
 //! These graphs retain type coordinates only. Importing, projecting, replacing
 //! a binder or proving absence of Array/Fn coordinates grants no storage,
 //! effect, borrowing, resource, constructor or publication authority.
+mod annotation_identity;
+pub(crate) mod block_exits;
 pub(crate) mod builtins;
+pub(crate) mod constants;
 pub(crate) mod declarations;
 mod graph;
 mod index;
 mod legacy;
 pub(crate) mod numeric;
+pub(crate) mod owned_header_binders;
 pub(crate) mod polymorphic;
 pub(crate) mod projection_receipts;
 mod queries;
@@ -22,8 +26,8 @@ mod substitution;
 mod syntax_projection;
 
 pub(crate) use graph::{
-    SourceBuilder, SourceContainer, SourceField, SourceLength, SourceNode, SourceScalar,
-    SourceTypes, WorkLimit,
+    CallableRowIdentity, CallableRowOrigin, KeyProjectionOrigin, SourceBuilder, SourceContainer,
+    SourceField, SourceLength, SourceNode, SourceScalar, SourceTypes, WorkLimit,
 };
 pub use graph::{SourceTypeId, SourceTypesError};
 pub(crate) use index::{LiveSourceTypes, steps_in};

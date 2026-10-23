@@ -3,20 +3,30 @@
 use super::*;
 
 impl Checker {
-    pub(super) fn invoke_foreign_targets(
+    pub(super) fn invoke_foreign_target_packets(
         &mut self,
-        callee: &Value,
-        args: Vec<(ParameterMode, Value, Span)>,
+        callee: &std::sync::Arc<EvaluatedValue>,
+        args: std::sync::Arc<Vec<crate::sema::application_effect::EntryArgument>>,
         span: Span,
         frame: &mut Frame,
+        origin: &crate::sema::application_effect::EntryOrigin,
     ) -> Value {
         let before = self.snapshot_flow();
         let mut alternative: Option<(Value, flow::FlowSnapshot)> = None;
-        for callable in &callee.callables {
+        for callable in &callee.value().callables {
             self.restore_definition_state(&before);
-            let mut target = callee.clone();
-            target.callables = vec![callable.clone()];
-            let value = self.invoke(&target, args.clone(), span, frame);
+            let Some(origin) = self.application_effect.snapshot_origin(origin) else {
+                self.unsupported(span, "foreign target origin exhausted its work bound");
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            };
+            let value = self.invoke_target_packets_from(
+                callee.clone(),
+                args.clone(),
+                span,
+                frame,
+                origin,
+                Some(callable),
+            );
             let value = if let Some((previous, state)) = alternative {
                 self.branch_flow(&before, &state, &previous, &value, span)
             } else {
@@ -286,7 +296,7 @@ impl Checker {
                 let repeated = self.begin_repeated_callback(&mut invocation, frame);
                 let exit_epoch = self.explanations.causes.len() as u32;
                 self.foreign_callback_depth += 1;
-                let output = self.invoke(&target, invocation, span, frame);
+                let output = self.invoke_generated_values(&target, invocation, span, frame);
                 self.foreign_callback_depth -= 1;
                 let exits = self.finish_foreign_callback_exits(exit_epoch, &before);
                 if output.ty == Ty::Never

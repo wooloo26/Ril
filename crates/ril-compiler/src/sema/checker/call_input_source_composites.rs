@@ -60,9 +60,13 @@ impl Checker {
             let [operand] = operands.as_slice() else {
                 return Err(SourceTypesError::Unresolved);
             };
-            let input = self.application_effect.expressions[*operand].value.clone();
+            work.charge(1)?;
+            let input = self.application_effect.expressions[*operand]
+                .value
+                .packet()
+                .clone();
             let source = self.raw_original_source_schema(
-                &input,
+                input.value(),
                 left,
                 frame,
                 work,
@@ -122,15 +126,17 @@ impl Checker {
             .get(&0)
             .ok_or(SourceTypesError::MissingNode)?
             .expression;
+        work.charge(1)?;
         let input = self
             .application_effect
             .expressions
             .get(operand)
             .ok_or(SourceTypesError::MissingNode)?
             .value
+            .packet()
             .clone();
         let source = self.raw_original_source_schema(
-            &input,
+            input.value(),
             application.operands[0].expression,
             frame,
             work,
@@ -232,9 +238,10 @@ impl Checker {
                     return Ok(None);
                 }
             }
-            let child_value = fact.value.clone();
+            work.charge(1)?;
+            let child_value = fact.value.packet().clone();
             let Some((schema, child_environment)) = self.raw_original_source_schema(
-                &child_value,
+                child_value.value(),
                 child,
                 frame,
                 work,

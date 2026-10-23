@@ -127,6 +127,7 @@ impl Checker {
         let Some(payload) = payload else { return };
         // The actual physical argument owns the active branch's source graph.
         // A receiving context may select only the branch which did not occur.
+        let mut source_stage = "supplied operand receipt";
         let result = (|| -> Result<Option<(SourceSchema, SourceRef)>, SourceTypesError> {
             let mut work = WorkLimit::new(16384);
             let input = self
@@ -157,6 +158,7 @@ impl Checker {
             {
                 return Err(SourceTypesError::Unresolved);
             }
+            source_stage = "active operand graph";
             let Some((active_schema, active_environment)) = input
                 .input_source(
                     SourceTypesRef::Live(self.type_source.storage.live_types()),
@@ -166,6 +168,7 @@ impl Checker {
             else {
                 return Ok(None);
             };
+            source_stage = "inactive receiving graph projection";
             let inactive = if let Some(target) = source {
                 let Some(schema) = &target.schema else {
                     return Ok(None);
@@ -200,6 +203,7 @@ impl Checker {
             let Some((inactive_schema, inactive_environment)) = inactive else {
                 return Ok(None);
             };
+            source_stage = "carrier interpretation";
             let environment = result_environment(
                 [
                     (&active_schema, &active_environment),
@@ -213,8 +217,18 @@ impl Checker {
             } else {
                 [inactive_schema, active_schema]
             };
+            source_stage = "carrier graph composition";
             let schema =
                 SourceSchema::container(SourceContainer::Result, &arguments, None, &mut work)?;
+            work.charge(
+                2 + self
+                    .call_input_source
+                    .carrier_sources
+                    .len()
+                    .checked_ilog2()
+                    .unwrap_or(0) as usize,
+            )?;
+            source_stage = "carrier graph admission";
             let source = SourceRef::intern(
                 &schema,
                 environment,
@@ -229,7 +243,9 @@ impl Checker {
             Err(error) => {
                 self.unsupported(
                     syntax.span,
-                    format!("Result creation lost its actual operand Source: {error}"),
+                    format!(
+                        "Result creation lost its actual operand Source at {source_stage}: {error}"
+                    ),
                 );
                 return;
             }
@@ -255,6 +271,22 @@ impl Checker {
         let application = AstApplication::from_ast(syntax)?;
         if application.operands.len() != 1 {
             return None;
+        }
+        if let Err(error) = work.charge(
+            2 + self
+                .call_input_source
+                .carriers
+                .len()
+                .checked_ilog2()
+                .unwrap_or(0) as usize
+                + self
+                    .call_input_source
+                    .carrier_sources
+                    .len()
+                    .checked_ilog2()
+                    .unwrap_or(0) as usize,
+        ) {
+            return Some(Err(error));
         }
         let (event, context) = self.call_input_source.carriers.get(&value.cause.0)?;
         if *context != self.invocation_context(frame.callable_owner) {
@@ -386,6 +418,150 @@ impl Checker {
         }
     }
 
+    fn authenticate_joined_result_calls(
+        &self,
+        calls: &[&crate::sema::copy_contract::CopyInvocation],
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+        work: &mut WorkLimit,
+    ) -> Result<(), SourceTypesError> {
+        use crate::sema::{
+            application_effect::EntryOrigin, copy_contract::CopyInvocationStatus,
+            source_types::projection_receipts::ProjectionOccurrence,
+        };
+
+        work.charge(16 + calls.len())?;
+        if calls.len() < 2 {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let application = AstApplication::from_ast(syntax).ok_or(SourceTypesError::Unresolved)?;
+        let context = self.invocation_context(frame.callable_owner);
+        let event_id = calls[0].source_event.ok_or(SourceTypesError::MissingNode)?;
+        let event = self
+            .copy_call_events
+            .get(event_id.0 as usize)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let root = event
+            .result_expression
+            .ok_or(SourceTypesError::MissingNode)?;
+        let root_fact = self
+            .application_effect
+            .expressions
+            .get(root)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let root_record = self
+            .application_effect
+            .evaluations
+            .get(root)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let identity = root_record.identity.ok_or(SourceTypesError::MissingNode)?;
+        let callee = event
+            .callee_expression
+            .ok_or(SourceTypesError::MissingNode)?;
+        let callee_fact = self
+            .application_effect
+            .expressions
+            .get(callee)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let callee_record = self
+            .application_effect
+            .evaluations
+            .get(callee)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if event.id != event_id
+            || !event.matches_source(syntax)
+            || event.owner != context.owner
+            || event.parent != context.invocation
+            || event.target.is_some()
+            || event.direct
+            || event.copy_operation.is_some()
+            || root_record.id.0 as usize != root
+            || root_fact.source_id != syntax.hir_id
+            || syntax.hir_id != Some(identity.source)
+            || root_record.context != context
+            || root_record.scope != frame.owner
+            || root_fact.value.cause != value.cause
+            || application.callee.hir_id.is_none()
+            || callee_fact.source_id != application.callee.hir_id
+            || callee_record.id.0 as usize != callee
+            || callee_record.context != context
+            || callee_record.scope != frame.owner
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let actual_child = self.source_projection_receipts().child_observation(
+            ProjectionOccurrence {
+                identity,
+                context,
+                cause: root_fact.value.cause,
+            },
+            application
+                .callee
+                .hir_id
+                .ok_or(SourceTypesError::MissingNode)?,
+            work,
+        )?;
+        if actual_child.0 as usize != callee {
+            return Err(SourceTypesError::Unresolved);
+        }
+
+        // Preserve multiplicity: two actual instances can have one original
+        // DefinitionId. A set would let a missing target borrow its sibling.
+        work.charge(callee_fact.value.callables.len())?;
+        let mut targets = BTreeMap::new();
+        for callable in &callee_fact.value.callables {
+            work.charge(2 + targets.len().checked_ilog2().unwrap_or(0) as usize)?;
+            let Callable::Named(index) = callable else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            let function = self
+                .functions
+                .get(*index)
+                .ok_or(SourceTypesError::MissingNode)?;
+            *targets.entry(function.definition).or_insert(0usize) += 1;
+        }
+        if callee_fact.value.callables.len() != calls.len() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        for call in calls {
+            work.charge(4 + targets.len().checked_ilog2().unwrap_or(0) as usize)?;
+            let packet = call
+                .entry
+                .callee
+                .as_ref()
+                .ok_or(SourceTypesError::MissingNode)?;
+            if self
+                .copy_invocations
+                .get(call.id.0 as usize)
+                .is_none_or(|stored| !std::ptr::eq(stored, *call))
+                || call.source_event != Some(event_id)
+                || call.parent != context.invocation
+                || call.caller_owner != context.owner
+                || call.caller_activation != Some(frame.owner)
+                || call.declaration_probe
+                || call.direct
+                || call.status != CopyInvocationStatus::Completed
+                || call.entry.origin != EntryOrigin::Application(event_id)
+                || call.entry.parent != Some(identity.activation)
+                || call.entry.caller_context != context
+                || packet.current_epoch() != call.entry.allocation_epoch
+                || !packet.shares_birth(callee_fact.value.packet())
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let count = targets
+                .get_mut(&call.target)
+                .ok_or(SourceTypesError::Unresolved)?;
+            *count = count.checked_sub(1).ok_or(SourceTypesError::Unresolved)?;
+        }
+        work.charge(targets.len())?;
+        if targets.values().any(|count| *count != 0) {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok(())
+    }
+
     pub(super) fn original_called_result_schema(
         &self,
         value: &Value,
@@ -416,11 +592,13 @@ impl Checker {
             })
             .collect();
         let [actual_call] = calls.as_slice() else {
-            return if calls.is_empty() {
-                Ok(None)
-            } else {
-                Err(SourceTypesError::Unresolved)
-            };
+            if !calls.is_empty() {
+                self.authenticate_joined_result_calls(&calls, value, syntax, frame, work)?;
+            }
+            // A joined callable has no single original declaration header.
+            // Its actual callee/public Source and the completed result still
+            // have to be reconstructed by the following graph queries.
+            return Ok(None);
         };
         work.charge(self.functions.len())?;
         let target = self

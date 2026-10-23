@@ -10,6 +10,7 @@ use ril_syntax::ast::{ParameterMode, PatternKind};
 mod call_arguments;
 mod callable_entries;
 use callable_entries::callable_entry;
+mod evaluated;
 mod numeric;
 mod record_bounds;
 mod storage_sources;
@@ -238,9 +239,9 @@ fn copy_invocation(
     record: &crate::sema::copy_contract::CopyInvocation,
     types: &mut Vec<p::Type>,
     contracts: &mut ReturnContracts,
-) -> p::CopyInvocation {
+) -> Result<p::CopyInvocation, NotImplemented> {
     use crate::sema::copy_contract::CopyInvocationStatus as S;
-    p::CopyInvocation {
+    Ok(p::CopyInvocation {
         id: p::CopyInstanceId(record.id.0),
         parent: record.parent.map(|id| p::CopyInstanceId(id.0)),
         caller: record.caller,
@@ -251,27 +252,7 @@ fn copy_invocation(
         declaration_probe: record.declaration_probe,
         direct: record.direct,
         source_event: record.source_event.map(|id| p::CopyCallEventId(id.0)),
-        entry: p::CallableEntry {
-            parent: record.entry.parent,
-            caller_context: resumption_context(record.entry.caller_context),
-            origin: callable_entries::entry_origin(&record.entry.origin, types, contracts),
-            allocation_epoch: record.entry.allocation_epoch as u64,
-            arguments: record
-                .entry
-                .arguments
-                .iter()
-                .map(|(mode, snapshot)| {
-                    (
-                        match mode {
-                            m::Mode::Read => p::Access::Read,
-                            m::Mode::Write => p::Access::Write,
-                            m::Mode::Retain => p::Access::Retain,
-                        },
-                        copy_snapshot(snapshot, record.span, types, contracts),
-                    )
-                })
-                .collect(),
-        },
+        entry: callable_entry(&record.entry, record.span, types, contracts)?,
         boundaries: record
             .boundaries
             .iter()
@@ -292,7 +273,7 @@ fn copy_invocation(
             S::Rejected => p::CopyInvocationStatus::Rejected,
             S::Unsupported => p::CopyInvocationStatus::Unsupported,
         },
-    }
+    })
 }
 fn resource_clone(
     event: &crate::sema::resource_copy::ResourceCloneEvent,
@@ -851,7 +832,10 @@ fn conditional_access(footprint: &m::AccessFact) -> p::ConditionalAccess {
 }
 
 pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
-    let mut contracts = ReturnContracts::default();
+    let mut contracts = ReturnContracts {
+        packet_sources: Some(evaluated::PacketSources::new(facts)),
+        ..Default::default()
+    };
     let mut graph = p::Graph {
         target_layout: facts.target_layout,
         causes: facts.explanations.causes.clone(),
@@ -883,18 +867,12 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
             result: activation.result,
         })
         .collect();
+    contracts.source_query(|_, work| work.charge(facts.evaluations.len()))?;
     graph.evaluations = facts
         .evaluations
         .iter()
-        .map(|record| p::EvaluationRecord {
-            id: record.id,
-            source: record.identity.map(|identity| identity.source),
-            activation: record.identity.map(|identity| identity.activation),
-            scope: record.scope.0,
-            context: resumption_context(record.context),
-            allocation_epoch: record.allocation_epoch as u64,
-        })
-        .collect();
+        .map(|record| contracts.evaluation_record(&mut graph.types, record))
+        .collect::<Result<_, _>>()?;
     record_bounds::project(facts, &mut graph, &mut contracts)?;
     graph.channel_repetitions = facts
         .channel_repetitions
@@ -946,35 +924,37 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
     graph.closure_invocations = facts
         .closure_invocations
         .iter()
-        .map(|call| p::ClosureInvocation {
-            id: call.id,
-            entry: callable_entry(&call.entry, &mut graph.types, &mut contracts),
-            source_event: call.source_event.map(|id| p::CopyCallEventId(id.0)),
-            caller_activation: call.caller_activation.0,
-            activation: call.activation.map(|scope| scope.0),
-            closure: ril_compiler_core::ids::ClosureObjectId(call.closure as u32),
-            parent_named: call.parent_named.map(|id| p::CopyInstanceId(id.0)),
-            parent_closure: call.parent_closure,
-            caller_owner: call.caller_owner,
-            site: call.site,
-            probe: call.probe,
-            budget_validation: call.budget_validation,
-            status: match call.status {
-                crate::sema::copy_contract::CopyInvocationStatus::Incomplete => {
-                    p::CopyInvocationStatus::Incomplete
-                }
-                crate::sema::copy_contract::CopyInvocationStatus::Completed => {
-                    p::CopyInvocationStatus::Completed
-                }
-                crate::sema::copy_contract::CopyInvocationStatus::Rejected => {
-                    p::CopyInvocationStatus::Rejected
-                }
-                crate::sema::copy_contract::CopyInvocationStatus::Unsupported => {
-                    p::CopyInvocationStatus::Unsupported
-                }
-            },
+        .map(|call| {
+            Ok(p::ClosureInvocation {
+                id: call.id,
+                entry: callable_entry(&call.entry, call.site, &mut graph.types, &mut contracts)?,
+                source_event: call.source_event.map(|id| p::CopyCallEventId(id.0)),
+                caller_activation: call.caller_activation.0,
+                activation: call.activation.map(|scope| scope.0),
+                closure: ril_compiler_core::ids::ClosureObjectId(call.closure as u32),
+                parent_named: call.parent_named.map(|id| p::CopyInstanceId(id.0)),
+                parent_closure: call.parent_closure,
+                caller_owner: call.caller_owner,
+                site: call.site,
+                probe: call.probe,
+                budget_validation: call.budget_validation,
+                status: match call.status {
+                    crate::sema::copy_contract::CopyInvocationStatus::Incomplete => {
+                        p::CopyInvocationStatus::Incomplete
+                    }
+                    crate::sema::copy_contract::CopyInvocationStatus::Completed => {
+                        p::CopyInvocationStatus::Completed
+                    }
+                    crate::sema::copy_contract::CopyInvocationStatus::Rejected => {
+                        p::CopyInvocationStatus::Rejected
+                    }
+                    crate::sema::copy_contract::CopyInvocationStatus::Unsupported => {
+                        p::CopyInvocationStatus::Unsupported
+                    }
+                },
+            })
         })
-        .collect();
+        .collect::<Result<_, NotImplemented>>()?;
     graph.closure_exclusivity_checks = facts
         .closure_exclusivity_checks
         .iter()
@@ -1484,14 +1464,9 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .expressions
         .iter()
         .map(|expression| {
-            value(
-                &mut graph.types,
-                &mut contracts,
-                &expression.value,
-                expression.span,
-            )
+            contracts.packet(&mut graph.types, expression.value.packet(), expression.span)
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     graph.fields = facts
         .fields
         .iter()
@@ -1529,6 +1504,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .enumerate()
         .map(|(index, binding)| p::Binding {
             id: index as u32,
+            declaration: binding.declaration,
             pattern: binding.pattern,
             birth: binding.birth.map(|birth| p::BindingBirth {
                 source: birth.source,
@@ -1998,7 +1974,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .copy_invocations
         .iter()
         .map(|record| copy_invocation(record, &mut graph.types, &mut contracts))
-        .collect();
+        .collect::<Result<_, _>>()?;
     graph.copy_template_closure =
         facts
             .copy_template_closure
@@ -2067,6 +2043,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
 }
 #[derive(Default)]
 struct ReturnContracts {
+    packet_sources: Option<evaluated::PacketSources>,
     type_witness_error: Option<NotImplemented>,
     source_types: std::collections::BTreeMap<String, std::sync::Arc<p::SourceTypeWitness>>,
     generic_source_copies: std::collections::BTreeMap<
@@ -3137,7 +3114,7 @@ mod contract_graph_tests {
                 allocation_epoch: 0,
                 source_id: None,
                 span: declaration.span,
-                value: input,
+                value: crate::sema::PhysicalValue::unobserved_fixture(input, 0),
             }],
             ..Default::default()
         };
@@ -3316,7 +3293,7 @@ mod contract_graph_tests {
                 allocation_epoch: 0,
                 source_id: None,
                 span,
-                value: input.clone(),
+                value: crate::sema::PhysicalValue::unobserved_fixture(input.clone(), 0),
             }],
             call_arguments: vec![d::CallArguments {
                 source_event: c::CopyCallEventId(8),

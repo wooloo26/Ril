@@ -249,7 +249,13 @@ impl Replay<'_> {
         work: &mut usize,
     ) -> Check<Option<OriginalSource>> {
         let Some(application) = AstApplication::from_ast(expression) else {
-            return Ok(None);
+            return self.original_nullary_constructor_source(
+                expression,
+                value,
+                context,
+                observation,
+                work,
+            );
         };
         let root = self.original_source_root(expression, value, context, observation, work)?;
         *work = work
@@ -297,6 +303,69 @@ impl Replay<'_> {
             "constructor result changed its actual tag",
         )?;
         self.registered_constructor_result_source(constructor, application.callee, work)
+    }
+
+    fn original_nullary_constructor_source(
+        &self,
+        expression: &Expr,
+        value: &Value,
+        context: InvocationContext,
+        observation: Option<usize>,
+        work: &mut usize,
+    ) -> Check<Option<OriginalSource>> {
+        source_scan_work(work, 1)?;
+        let Some(actual_tag) = value.variant_tag.as_deref() else {
+            return Ok(None);
+        };
+        if !value.sources.is_empty() || !value.callables.is_empty() {
+            return Ok(None);
+        }
+        let name = match &expression.kind {
+            ExprKind::Name(name) => {
+                source_scan_work(work, 1 + name.len().div_ceil(32))?;
+                let lexical = self
+                    .lexical
+                    .as_ref()
+                    .ok_or("nullary constructor has no lexical index")?;
+                let source = expression
+                    .hir_id
+                    .ok_or("nullary constructor has no original HIR")?;
+                require(
+                    lexical
+                        .lookup(source, work)
+                        .map_err(|error| error.to_string())?
+                        .is_none(),
+                    "nullary constructor Source borrowed an ordinary lexical binding",
+                )?;
+                Cow::Borrowed(name.as_str())
+            }
+            ExprKind::Path(path) => {
+                source_scan_work(work, path.len() + 1)?;
+                for part in path {
+                    source_scan_work(work, 1 + part.len().div_ceil(32))?;
+                }
+                Cow::Owned(path.join("::"))
+            }
+            _ => return Ok(None),
+        };
+        source_scan_work(
+            work,
+            (1 + name.len().div_ceil(32))
+                * (1 + self.facts.constructors.len().checked_ilog2().unwrap_or(0) as usize),
+        )?;
+        let Some(constructor) = self.facts.constructors.get(name.as_ref()) else {
+            return Ok(None);
+        };
+        source_scan_work(
+            work,
+            1 + actual_tag.len().div_ceil(32) + constructor.tag.len().div_ceil(32),
+        )?;
+        require(
+            actual_tag == constructor.tag && !constructor.has_payload,
+            "nullary constructor changed its original tag or payload role",
+        )?;
+        self.original_source_root(expression, value, context, observation, work)?;
+        self.registered_constructor_result_source(constructor, expression, work)
     }
 
     fn original_constructor_payload(

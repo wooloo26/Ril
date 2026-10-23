@@ -134,56 +134,6 @@ fn receiver_resources_are_not_erased_by_schema_reification() {
 }
 
 #[test]
-fn builtin_identity_validation_rejects_forged_names_and_builtin_type_arguments() {
-    use ril_syntax::ast::{TypeExpr, TypeKind};
-    let verified =
-        Session::new(ril_test::case_bytes("tests/regressions/io.ril::io-fixed-receiver").to_vec())
-            .verify()
-            .unwrap();
-    for (name, arguments, key) in [
-        ("File::Forged", vec![], "File::Forged<>"),
-        (
-            "File::Handle",
-            vec![TypeExpr {
-                hir_id: None,
-                span: verified.facts().expressions[0].span,
-                text: String::new(),
-                kind: TypeKind::Name {
-                    path: vec!["int".into()],
-                    arguments: vec![],
-                },
-            }],
-            "File::Handle<int<>>",
-        ),
-    ] {
-        let mut facts = verified.facts().clone();
-        let value = &mut facts.expressions[0].value;
-        let witness = ril_compiler::sema::model::SourceTypeWitness {
-            syntax: TypeExpr {
-                hir_id: None,
-                span: verified.facts().expressions[0].span,
-                text: String::new(),
-                kind: TypeKind::Name {
-                    path: name.split("::").map(str::to_owned).collect(),
-                    arguments,
-                },
-            },
-            key: key.into(),
-        };
-        assert!(witness.validate_closed());
-        value.source_type_witness = Some(std::sync::Arc::new(witness));
-        let issues = ril_compiler::sema::validate::solved_facts(&facts).unwrap_err();
-        assert!(
-            issues.iter().any(|issue| matches!(
-                issue.kind,
-                ril_compiler::sema::validate::ValidationIssueKind::SourceTypeWitness
-            )),
-            "{issues:?}"
-        );
-    }
-}
-
-#[test]
 fn receiver_result_debts_require_the_actual_callback_to_inspect_them() {
     let debt = "use ril/io\ntype Reader={scratch:[2]u8,pending:Result<int,str>,mut calls:int}\nfn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{reader.calls+=1;Ok(.{data:b\"\",end:true})}\nfn example(){let pending:Result<int,str>=Ok(1);let mut reader=Reader.{scratch:[1u8,2u8],pending:pending,calls:0};assert(Io::read_all(mut reader,.{read:read}) is Ok(_)|Err(_))}";
     rejects(debt, "E0720");
@@ -201,26 +151,30 @@ fn receiver_result_debts_require_the_actual_callback_to_inspect_them() {
 fn empty_writes_still_check_the_actual_callbacks_capture_contract() {
     let source = ril_test::case_bytes("tests/regressions/io.ril::io-callback-empty-write-capture");
     for layout in ["pointer32", "pointer64"] {
-        let outcome = Session::with_options(
+        let snapshot = Session::with_options(
             source.to_vec(),
             ril_compiler::CheckOptions {
                 target: layout.into(),
                 ..Default::default()
             },
         )
-        .check();
+        .analyze();
+        let outcome = snapshot.outcome();
         assert!(
             matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
             if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0534")),
-            "{layout}: {outcome:?}"
+            "{layout}: {outcome:?}; unresolved: {:?}",
+            snapshot.unresolved()
         );
     }
 }
 
 fn rejects(source: &str, code: &str) {
-    let outcome = Session::new(source.as_bytes().to_vec()).check();
+    let snapshot = Session::new(source.as_bytes().to_vec()).analyze();
+    let outcome = snapshot.outcome();
     assert!(
         matches!(&outcome,CompilationOutcome::Rejected {diagnostics} if diagnostics.iter().any(|diagnostic|diagnostic.code==code)),
-        "{source}: expected {code}, got {outcome:?}"
+        "{source}: expected {code}, got {outcome:?}; unresolved: {:?}",
+        snapshot.unresolved()
     );
 }

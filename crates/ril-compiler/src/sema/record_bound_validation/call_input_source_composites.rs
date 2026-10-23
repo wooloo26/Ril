@@ -279,17 +279,106 @@ impl Replay<'_> {
                 .ok_or_else(|| "block Source tail has no genuine HIR identity".to_owned())?;
             let index = self.source_child_observation(root, tail_source, context, work)?;
             let actual = &self.facts.expressions[index];
-            require(
-                actual.value.ty != Ty::Never
-                    && actual.value.cause == value.cause
-                    && actual.value.ty == value.ty
-                    && actual.value.source_type_witness == value.source_type_witness
-                    && actual.value.callables == value.callables
-                    && actual.value.callable_bounds == value.callable_bounds
-                    && actual.value.callable_returns == value.callable_returns
-                    && actual.value.signature == value.signature,
-                "block Source differs from its actual tail's complete public view",
-            )?;
+            let expected = crate::sema::evaluated::transport_value_at(
+                &actual.value,
+                &self.facts.allocation_history,
+                actual.allocation_epoch,
+                self.facts.expressions[root].allocation_epoch,
+                work,
+            )
+            .map_err(|error| format!("block tail Source transport: {error}"))?;
+            let has_handler = expression
+                .hir_id
+                .and_then(|id| self.facts.semantic_hir.as_deref()?.expression(id))
+                .is_some_and(|node| {
+                    let crate::hir::nodes::ExprKind::Block(block) = &node.kind else {
+                        return false;
+                    };
+                    block.statements.iter().any(|id| {
+                        self.facts
+                            .semantic_hir
+                            .as_deref()
+                            .and_then(|hir| hir.statement(*id))
+                            .is_some_and(|statement| {
+                                matches!(statement.kind, crate::hir::nodes::StmtKind::Handler(_))
+                            })
+                    })
+                });
+            if !crate::sema::evaluated::same_source_public_view(&expected, value, work)
+                .map_err(|error| error.to_string())?
+                || has_handler
+            {
+                let exits = crate::sema::source_types::block_exits::Inputs {
+                    hir: self
+                        .facts
+                        .semantic_hir
+                        .as_deref()
+                        .ok_or("block exit has no original HIR")?,
+                    expressions: &self.facts.expressions,
+                    evaluations: &self.facts.evaluations,
+                    activations: &self.facts.activations,
+                    scopes: &self.facts.scopes,
+                    explanations: &self.facts.explanations,
+                    history: &self.facts.allocation_history,
+                    open: None,
+                }
+                .joined(root, index, work)
+                .map_err(|error| format!("block exit Source proof: {error}"))?;
+                let mut common: Option<OriginalSource> = None;
+                for exit in exits {
+                    if let Some(scope) = exit.operation {
+                        require(
+                            self.frames.operation(scope, work)?.is_some(),
+                            "block answer lost its actual operation frame",
+                        )?;
+                    }
+                    source_scan_work(
+                        work,
+                        2 + sites.expressions.len().checked_ilog2().unwrap_or(0) as usize,
+                    )?;
+                    let fact = self
+                        .facts
+                        .expressions
+                        .get(exit.observation)
+                        .ok_or("block exit lost its physical value")?;
+                    let source = fact.source_id.ok_or("block exit lost its HIR expression")?;
+                    let syntax = sites
+                        .expressions
+                        .get(&source)
+                        .ok_or("block exit lost its original expression")?;
+                    let record = self
+                        .facts
+                        .evaluations
+                        .get(exit.observation)
+                        .ok_or("block exit lost its evaluation context")?;
+                    let known = self
+                        .original_source_schema_inner(
+                            syntax,
+                            &fact.value,
+                            record.context,
+                            sites,
+                            work,
+                            SourceVisit {
+                                depth: depth + 1,
+                                observation: Some(exit.observation),
+                            },
+                        )?
+                        .ok_or("block exit has no complete original Source")?;
+                    if let Some((schema, environment)) = &common {
+                        require(
+                            super::graph_sources::schema_work(work, |budget| {
+                                schema.equivalent_in(&known.0, environment, &known.1, budget)
+                            })?,
+                            "block exits have different Source coordinates",
+                        )?;
+                    } else {
+                        common = Some(known);
+                    }
+                }
+                return common
+                    .map(Some)
+                    .ok_or_else(|| "block has no returning Source exit".into());
+            }
             return self.original_source_schema_inner(
                 tail,
                 &actual.value,

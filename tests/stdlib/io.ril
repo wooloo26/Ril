@@ -749,3 +749,82 @@ pub fn test_write_retries_suffix() {
 }
 --@ end-file
 --@ end-case
+
+--@ case: io-all-alias-chunks
+--@ mode: run-pass
+--@ spec: STD#error-and-stream-contracts
+--@ spec: SPEC#effect-handlers
+--@ companion: io-all-alias-handler
+--@ entry: test_native
+--@ file: source.ril
+
+use ril/io
+use ril/bytes
+type Reader={mut calls:int}
+type Writer={mut calls:int,mut data:bytes}
+fn read(mut reader:Reader,maximum:int)->Result<Io::ReadChunk,Io::IoError> &mut{
+    assert(maximum>0)
+    reader.calls+=1
+    if reader.calls==1{Ok(.{data:b"ab",end:false})}else{Ok(.{data:b"c",end:true})}
+}
+fn write(mut writer:Writer,data:bytes)->Io::WriteProgress &mut{
+    writer.calls+=1
+    let count=if len(data)==0{0}else{1}
+    if count==1{
+        let prefix=Bytes::slice(data,0,1) ?? panic("prefix")
+        writer.data=Bytes::concat(writer.data,prefix)
+    }
+    .{written:count,error:None}
+}
+pub fn test_native(){
+    let mut reader=Reader.{calls:0}
+    let read_all=Io::read_all
+    assert(read_all(mut reader,.{read:read}) is Ok(b"abc"))
+    assert(reader.calls==2)
+    let mut writer=Writer.{calls:0,data:b""}
+    let write_all=Io::write_all
+    assert(write_all(mut writer,b"abc",.{write:write}) is Ok())
+    assert(writer.calls==3 && writer.data==b"abc")
+    assert(write_all(mut writer,b"",.{write:write}) is Ok())
+    assert(writer.calls==4 && writer.data==b"abc")
+}
+--@ end-file
+--@ end-case
+
+--@ case: io-all-alias-handler
+--@ mode: run-pass
+--@ spec: STD#error-and-stream-contracts
+--@ spec: SPEC#effect-handlers
+--@ companion: io-all-alias-chunks
+--@ entry: test_native
+--@ file: source.ril
+
+use ril/io
+use ril/bytes
+eff Transfer{tick()->()}
+type Stream={mut calls:int}
+fn read(mut stream:Stream,maximum:int)->Result<Io::ReadChunk,Io::IoError> @Transfer &mut{
+    Transfer::tick()
+    assert(maximum>0)
+    stream.calls+=1
+    if stream.calls==1{Ok(.{data:b"a",end:false})}else{Ok(.{data:b"b",end:true})}
+}
+fn write(mut stream:Stream,data:bytes)->Io::WriteProgress @Transfer &mut{
+    Transfer::tick()
+    stream.calls+=1
+    .{written:if len(data)==0{0}else{1},error:None}
+}
+pub fn test_native(){
+    let read_all=Io::read_all
+    let write_all=Io::write_all
+    var ticks=0
+    with Transfer::tick()->{ticks+=1;resume ()}
+    let mut reader=Stream.{calls:0}
+    assert(read_all(mut reader,.{read:read}) is Ok(b"ab"))
+    assert(ticks==2 && reader.calls==2)
+    let mut writer=Stream.{calls:0}
+    assert(write_all(mut writer,b"abc",.{write:write}) is Ok())
+    assert(ticks==5 && writer.calls==3)
+}
+--@ end-file
+--@ end-case

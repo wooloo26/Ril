@@ -641,10 +641,23 @@ impl Validator<'_> {
             }
             self.value(&binding.value, Some(binding.span));
         }
+        let mut expression_work = 4_000_000;
         for expression in &facts.expressions {
-            if let Some(value) =
-                expression.value_at(facts.allocation_history.len(), &facts.allocation_history)
-            {
+            if expression_work == 0 {
+                self.issue(
+                    ValidationIssueKind::EvaluationIdentity(
+                        "physical expression transport exceeds its shared work bound".into(),
+                    ),
+                    Some(expression.span),
+                    Some(expression.value.cause),
+                );
+                break;
+            }
+            if let Some(value) = expression.value_at(
+                facts.allocation_history.len(),
+                &facts.allocation_history,
+                &mut expression_work,
+            ) {
                 self.value(&value, Some(expression.span));
             } else {
                 self.issue(

@@ -16,7 +16,11 @@ use crate::sema::{
     source_types_ref::SourceTypesRef,
 };
 use ril_compiler_core::ids::{NumericHoleId, TypeExprId};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+#[path = "evaluated_current.rs"]
+mod current;
+pub(crate) use current::{CurrentValueStep, catalog_callable_bound, projected_value, read_handle};
 
 pub(crate) type CheckedSource = Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError>;
 
@@ -105,18 +109,18 @@ fn opaque_construction() -> &'static Construction {
 
 /// Read-only birth coordinates stay coupled to the captured Source basis.
 /// Deref exposes these coordinates without permitting callers to restamp them.
-#[derive(Clone, Debug)]
-pub(crate) struct EvaluationBirth {
+#[derive(Debug)]
+pub struct EvaluationBirth {
     pub(crate) observation: Option<usize>,
     pub(crate) allocation_epoch: usize,
     pub(crate) identity: Option<OccurrenceIdentity>,
     pub(crate) birth_context: Option<InvocationContext>,
-    source: SourceCapture,
+    pub(crate) environment: Option<FrozenEnvId>,
+    source: OnceLock<SourceCapture>,
 }
 
 #[derive(Clone, Debug)]
 enum SourceCapture {
-    Uncaptured,
     Captured(Arc<BirthSource>),
     NumericPending(Arc<NumericSourceBasis>),
 }
@@ -146,17 +150,143 @@ pub(crate) struct NumericSourceDerivation {
 enum CurrentSource {
     Birth,
     Numeric(Arc<NumericSourceDerivation>),
+    Derived(Arc<CurrentValueDerivation>),
     Pending,
     Failed(SourceTypesError),
 }
 
+#[derive(Debug)]
+struct CurrentValueDerivation {
+    input: Arc<EvaluatedValue>,
+    step: CurrentValueStep,
+    source: SourceRef,
+}
+
+/// Public observations never grant a mutable interface to the birth receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvaluationBirthCoordinates {
+    pub observation: Option<usize>,
+    pub allocation_epoch: usize,
+    pub identity: Option<OccurrenceIdentity>,
+    pub context: Option<InvocationContext>,
+    pub environment: Option<FrozenEnvId>,
+}
+
+/// Borrow the complete capture state for independent checking and Core export.
+/// Unknown retains its actual environment; a failed capture is never unknown.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SourceCaptureView<'a> {
+    Uncaptured,
+    Captured {
+        result: Result<CapturedSource, &'a SourceTypesError>,
+        fresh: Option<&'a Construction>,
+    },
+    NumericPending {
+        hole: NumericHoleId,
+        birth: &'a NumericBirth,
+        environment: FrozenEnvId,
+        fresh: Option<&'a Construction>,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CurrentSourceView<'a> {
+    Birth,
+    Derived {
+        input: &'a Arc<EvaluatedValue>,
+        step: &'a CurrentValueStep,
+        source: SourceRef,
+    },
+    Numeric {
+        hole: NumericHoleId,
+        birth: &'a NumericBirth,
+        environment: FrozenEnvId,
+        resolution: &'a Arc<NumericResolution>,
+        source: SourceRef,
+    },
+    Pending,
+    Failed(&'a SourceTypesError),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PacketEvidenceView<'a> {
+    pub(crate) birth: EvaluationBirthCoordinates,
+    pub(crate) current_epoch: usize,
+    pub(crate) capture: SourceCaptureView<'a>,
+    pub(crate) current: CurrentSourceView<'a>,
+    pub(crate) source_valid: bool,
+}
+
 #[derive(Clone, Debug)]
-pub(crate) struct EvaluatedValue {
+pub struct EvaluatedValue {
     pub(crate) value: Value,
     recency: usize,
     pub(crate) source_valid: bool,
-    birth: EvaluationBirth,
+    birth: Arc<EvaluationBirth>,
     current_source: CurrentSource,
+}
+
+/// The physical arena owns one immutable packet. Cloning an observation only
+/// shares that packet; later views must explicitly pay for a derived value.
+#[derive(Debug, Clone)]
+pub struct PhysicalValue {
+    packet: Arc<EvaluatedValue>,
+}
+
+impl PhysicalValue {
+    pub fn packet(&self) -> &Arc<EvaluatedValue> {
+        &self.packet
+    }
+
+    pub fn value(&self) -> &Value {
+        self.packet.value()
+    }
+
+    pub(crate) fn from_packet(packet: Arc<EvaluatedValue>) -> Self {
+        Self { packet }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unobserved_fixture(value: Value, epoch: usize) -> Self {
+        Self::from_packet(Arc::new(EvaluatedValue::unobserved(value, epoch, false)))
+    }
+
+    /// Fault injection keeps the old claim deliberately intact so independent
+    /// validation must detect the changed payload, rather than a poison flag.
+    #[cfg(test)]
+    pub(crate) fn corrupt_value(
+        &mut self,
+        work: &mut usize,
+    ) -> Result<&mut Value, SourceTypesError> {
+        let copy = self.packet.try_clone(work)?;
+        *work = work
+            .checked_sub(1)
+            .ok_or(SourceTypesError::BudgetExceeded)?;
+        self.packet = Arc::new(copy);
+        Ok(&mut Arc::get_mut(&mut self.packet)
+            .expect("new model packet")
+            .value)
+    }
+}
+
+impl std::ops::Deref for PhysicalValue {
+    type Target = Value;
+
+    fn deref(&self) -> &Self::Target {
+        self.value()
+    }
+}
+
+impl PartialEq for PhysicalValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.value() == other.value()
+    }
+}
+
+impl PartialEq<Value> for PhysicalValue {
+    fn eq(&self, other: &Value) -> bool {
+        self.value() == other
+    }
 }
 
 impl std::ops::Deref for EvaluatedValue {
@@ -168,8 +298,62 @@ impl std::ops::Deref for EvaluatedValue {
 }
 
 impl EvaluatedValue {
+    pub fn current_epoch(&self) -> usize {
+        self.recency
+    }
+
+    pub fn birth_coordinates(&self) -> EvaluationBirthCoordinates {
+        EvaluationBirthCoordinates {
+            observation: self.observation,
+            allocation_epoch: self.allocation_epoch,
+            identity: self.identity,
+            context: self.birth_context,
+            environment: self.environment,
+        }
+    }
+
+    pub(crate) fn evidence_view(&self) -> PacketEvidenceView<'_> {
+        let capture = match self.birth.source.get() {
+            None => SourceCaptureView::Uncaptured,
+            Some(SourceCapture::Captured(basis)) => SourceCaptureView::Captured {
+                result: basis.result.as_ref().copied(),
+                fresh: basis.fresh.as_deref(),
+            },
+            Some(SourceCapture::NumericPending(basis)) => SourceCaptureView::NumericPending {
+                hole: basis.hole,
+                birth: &basis.birth,
+                environment: basis.environment,
+                fresh: basis.fresh.as_deref(),
+            },
+        };
+        let current = match &self.current_source {
+            CurrentSource::Birth => CurrentSourceView::Birth,
+            CurrentSource::Numeric(derived) => CurrentSourceView::Numeric {
+                hole: derived.basis.hole,
+                birth: &derived.basis.birth,
+                environment: derived.basis.environment,
+                resolution: &derived.resolution,
+                source: derived.source,
+            },
+            CurrentSource::Derived(derived) => CurrentSourceView::Derived {
+                input: &derived.input,
+                step: &derived.step,
+                source: derived.source,
+            },
+            CurrentSource::Pending => CurrentSourceView::Pending,
+            CurrentSource::Failed(error) => CurrentSourceView::Failed(error),
+        };
+        PacketEvidenceView {
+            birth: self.birth_coordinates(),
+            current_epoch: self.current_epoch(),
+            capture,
+            current,
+            source_valid: self.source_valid,
+        }
+    }
+
     pub(crate) fn preflight_source_capture(&self) -> Result<(), SourceTypesError> {
-        if !matches!(self.birth.source, SourceCapture::Uncaptured) {
+        if self.birth.source.get().is_some() {
             return Err(SourceTypesError::AlreadyDefined);
         }
         if !matches!(self.current_source, CurrentSource::Birth) {
@@ -185,13 +369,30 @@ impl EvaluatedValue {
         fresh: Option<Arc<Construction>>,
     ) -> Result<(), SourceTypesError> {
         self.preflight_source_capture()?;
-        self.birth.source = SourceCapture::Captured(Arc::new(BirthSource { result, fresh }));
-        Ok(())
+        let invalid_environment = matches!(result, Ok(CapturedSource::Unknown(environment))
+            if self.observation.is_some() && self.environment != Some(environment));
+        let result = if invalid_environment {
+            Err(SourceTypesError::Unresolved)
+        } else {
+            result
+        };
+        self.birth
+            .source
+            .set(SourceCapture::Captured(Arc::new(BirthSource {
+                result,
+                fresh,
+            })))
+            .map_err(|_| SourceTypesError::AlreadyDefined)?;
+        if invalid_environment {
+            Err(SourceTypesError::Unresolved)
+        } else {
+            Ok(())
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn has_captured_source(&self) -> bool {
-        !matches!(self.birth.source, SourceCapture::Uncaptured)
+        self.birth.source.get().is_some()
     }
 
     pub(crate) fn capture_numeric_birth_source(
@@ -205,18 +406,30 @@ impl EvaluatedValue {
         if self.observation.is_none()
             || self.identity.is_none()
             || self.birth_context.is_none()
+            || self.environment != Some(environment)
             || self.value.ty != super::model::Ty::NumericHole(hole)
             || birth.allocation_epoch > self.allocation_epoch
         {
+            self.birth
+                .source
+                .set(SourceCapture::Captured(Arc::new(BirthSource {
+                    result: Err(SourceTypesError::Unresolved),
+                    fresh,
+                })))
+                .map_err(|_| SourceTypesError::AlreadyDefined)?;
             return Err(SourceTypesError::Unresolved);
         }
-        self.birth.source = SourceCapture::NumericPending(Arc::new(NumericSourceBasis {
-            hole,
-            birth,
-            environment,
-            fresh,
-        }));
-        Ok(())
+        self.birth
+            .source
+            .set(SourceCapture::NumericPending(Arc::new(
+                NumericSourceBasis {
+                    hole,
+                    birth,
+                    environment,
+                    fresh,
+                },
+            )))
+            .map_err(|_| SourceTypesError::AlreadyDefined)
     }
 
     pub(crate) fn apply_numeric_resolution(
@@ -226,15 +439,15 @@ impl EvaluatedValue {
         types: &mut LiveSourceTypes,
         work: &mut usize,
     ) -> Result<(), SourceTypesError> {
-        let basis = match &self.birth.source {
-            SourceCapture::NumericPending(basis) if basis.hole == hole => basis,
-            SourceCapture::Captured(basis) => {
+        let basis = match self.birth.source.get() {
+            Some(SourceCapture::NumericPending(basis)) if basis.hole == hole => basis,
+            Some(SourceCapture::Captured(basis)) => {
                 return Err(match &basis.result {
                     Err(error) => error.clone(),
                     _ => SourceTypesError::Unresolved,
                 });
             }
-            SourceCapture::Uncaptured => return Err(SourceTypesError::SourceNotCaptured),
+            None => return Err(SourceTypesError::SourceNotCaptured),
             _ => return Err(SourceTypesError::Unresolved),
         };
         match &self.current_source {
@@ -246,6 +459,7 @@ impl EvaluatedValue {
                     return Err(SourceTypesError::Unresolved);
                 }
             }
+            CurrentSource::Derived(_) => return Err(SourceTypesError::SourceViewPending),
             CurrentSource::Pending => return Err(SourceTypesError::SourceViewPending),
             CurrentSource::Failed(error) => return Err(error.clone()),
         }
@@ -292,15 +506,9 @@ impl EvaluatedValue {
         self.observation == other.observation
             && self.identity == other.identity
             && self.birth_context == other.birth_context
+            && self.environment == other.environment
             && self.allocation_epoch == other.allocation_epoch
-            && match (&self.birth.source, &other.birth.source) {
-                (SourceCapture::Uncaptured, SourceCapture::Uncaptured) => true,
-                (SourceCapture::Captured(a), SourceCapture::Captured(b)) => Arc::ptr_eq(a, b),
-                (SourceCapture::NumericPending(a), SourceCapture::NumericPending(b)) => {
-                    Arc::ptr_eq(a, b)
-                }
-                _ => false,
-            }
+            && Arc::ptr_eq(&self.birth, &other.birth)
     }
 
     /// A numeric selection is the original input's explicit pending choice.
@@ -311,7 +519,7 @@ impl EvaluatedValue {
         work: &mut WorkLimit,
     ) -> Result<ResolvedSource, SourceTypesError> {
         match self.current_source {
-            CurrentSource::Numeric(_) | CurrentSource::Failed(_) => {
+            CurrentSource::Numeric(_) | CurrentSource::Derived(_) | CurrentSource::Failed(_) => {
                 self.current_source(types, work)
             }
             _ => self.birth_source(types, work),
@@ -325,14 +533,14 @@ impl EvaluatedValue {
         types: SourceTypesRef<'_>,
         work: &mut WorkLimit,
     ) -> Result<ResolvedSource, SourceTypesError> {
-        match &self.birth.source {
-            SourceCapture::Uncaptured => Err(SourceTypesError::SourceNotCaptured),
-            SourceCapture::Captured(basis) => basis
+        match self.birth.source.get() {
+            None => Err(SourceTypesError::SourceNotCaptured),
+            Some(SourceCapture::Captured(basis)) => basis
                 .result
                 .as_ref()
                 .map_err(Clone::clone)?
                 .resolve(types, work),
-            SourceCapture::NumericPending(_) => Err(SourceTypesError::SourceViewPending),
+            Some(SourceCapture::NumericPending(_)) => Err(SourceTypesError::SourceViewPending),
         }
     }
 
@@ -346,26 +554,29 @@ impl EvaluatedValue {
             CurrentSource::Numeric(derived) => {
                 CapturedSource::Known(derived.source).resolve(types, work)
             }
+            CurrentSource::Derived(derived) => {
+                CapturedSource::Known(derived.source).resolve(types, work)
+            }
             CurrentSource::Pending => Err(SourceTypesError::SourceViewPending),
             CurrentSource::Failed(error) => Err(error.clone()),
         }
     }
 
     pub(crate) fn fresh(&self) -> &Construction {
-        match &self.birth.source {
-            SourceCapture::Captured(basis) => match basis.fresh.as_deref() {
+        match self.birth.source.get() {
+            Some(SourceCapture::Captured(basis)) => match basis.fresh.as_deref() {
                 Some(fresh) => fresh,
                 None => opaque_construction(),
             },
-            SourceCapture::NumericPending(basis) => match basis.fresh.as_deref() {
+            Some(SourceCapture::NumericPending(basis)) => match basis.fresh.as_deref() {
                 Some(fresh) => fresh,
                 None => opaque_construction(),
             },
-            SourceCapture::Uncaptured => opaque_construction(),
+            None => opaque_construction(),
         }
     }
 
-    pub(crate) fn value(&self) -> &Value {
+    pub fn value(&self) -> &Value {
         &self.value
     }
 
@@ -395,13 +606,14 @@ impl EvaluatedValue {
             value,
             recency,
             source_valid: true,
-            birth: EvaluationBirth {
+            birth: Arc::new(EvaluationBirth {
                 observation: None,
                 allocation_epoch: recency,
                 identity: None,
                 birth_context: None,
-                source: SourceCapture::Uncaptured,
-            },
+                environment: None,
+                source: OnceLock::new(),
+            }),
             current_source: CurrentSource::Birth,
         }
     }
@@ -417,11 +629,20 @@ impl EvaluatedValue {
         observation: usize,
         record: &crate::sema::application_effect::EvaluationRecord,
     ) -> Self {
-        let mut packet = Self::new(value, record.allocation_epoch);
-        packet.birth.observation = Some(observation);
-        packet.birth.identity = record.identity;
-        packet.birth.birth_context = Some(record.context);
-        packet
+        Self {
+            value,
+            recency: record.allocation_epoch,
+            source_valid: true,
+            birth: Arc::new(EvaluationBirth {
+                observation: Some(observation),
+                allocation_epoch: record.allocation_epoch,
+                identity: record.identity,
+                birth_context: Some(record.context),
+                environment: record.environment,
+                source: OnceLock::new(),
+            }),
+            current_source: CurrentSource::Birth,
+        }
     }
 
     pub(crate) fn transport(&mut self, moves: &[(NodeId, NodeId)]) {
@@ -472,6 +693,12 @@ impl EvaluatedValue {
         self.transport(moves);
         self.value
     }
+}
+
+/// Export uses the same admission as an owned value clone, without allocating
+/// an intermediate clone or turning equality into an allocation allowance.
+pub(crate) fn charge_value_export(value: &Value, work: &mut usize) -> Result<(), SourceTypesError> {
+    charge_value_clone(value, work, 0).ok_or(SourceTypesError::BudgetExceeded)
 }
 
 fn charge_value_clone(value: &Value, work: &mut usize, depth: usize) -> Option<()> {
@@ -585,6 +812,91 @@ pub(crate) fn same_birth_value(
         return Ok(false);
     }
     Ok(left == right)
+}
+
+/// Source forwarding checks the complete public callable/type interface.
+/// Storage authority and duties remain inputs of their own transfer checks.
+pub(crate) fn same_source_public_view(
+    left: &Value,
+    right: &Value,
+    work: &mut usize,
+) -> Result<bool, SourceTypesError> {
+    charge_value_export(left, work)?;
+    charge_value_export(right, work)?;
+    Ok(left.cause == right.cause
+        && left.ty == right.ty
+        && left.source_type_witness == right.source_type_witness
+        && left.callables == right.callables
+        && left.callable_bounds == right.callable_bounds
+        && left.callable_returns == right.callable_returns
+        && left.signature == right.signature)
+}
+
+/// A bounded diagnostic after full equality rejects a receipt. Field labels
+/// reveal the missing transfer without dumping program values or large graphs.
+pub(crate) fn value_difference(
+    expected: &Value,
+    actual: &Value,
+    work: &mut usize,
+) -> Result<&'static str, SourceTypesError> {
+    charge_value_export(expected, work)?;
+    charge_value_export(actual, work)?;
+    macro_rules! fields {
+        ($($field:ident),* $(,)?) => {$(
+            if expected.$field != actual.$field { return Ok(stringify!($field)); }
+        )*};
+    }
+    fields!(
+        numeric,
+        pending_copies,
+        ty,
+        source_type_witness,
+        origins,
+        permission,
+        publication,
+        constant,
+        static_coordinate,
+        unsuffixed_numeric,
+        literal_number,
+        callables,
+        callable_bounds,
+        callable_returns,
+        signature,
+        participants,
+        sources,
+        callback_parameters,
+        scoped,
+        stable,
+        marker,
+        retention_result,
+        through_return,
+        readonly_spread,
+        temporary,
+        requires_inference,
+        pending_inference,
+        construction,
+        internal_aliases,
+        mutable_environment,
+        observer_environment,
+        cause,
+        results,
+        outer_results,
+        must_outer_results,
+        must_results,
+        condition_inspections,
+        result_payload,
+        result_success,
+        result_error,
+        result_tag,
+        option_payload,
+        option_tag,
+        option_identity,
+        abnormal,
+        variant_tag,
+        variant_payload,
+        variant_witnesses
+    );
+    Ok("shared Source syntax or frozen callable environment")
 }
 
 fn shared_value_equality(
@@ -862,6 +1174,10 @@ mod packet_tests {
             budget_validation: false,
             default_use: None,
         };
+        let environment = FrozenEnvironment::default();
+        let environment_id = types
+            .intern_environment(environment.clone(), &mut WorkLimit::new(4096))
+            .unwrap();
         let record = EvaluationRecord {
             id: EvaluationOccurrenceId(2),
             identity: Some(OccurrenceIdentity {
@@ -871,6 +1187,7 @@ mod packet_tests {
             scope: ScopeId(0),
             context,
             allocation_epoch: 0,
+            environment: Some(environment_id),
         };
         let mut packet = EvaluatedValue::observed(value, 2, &record);
         packet
@@ -889,7 +1206,7 @@ mod packet_tests {
                             &mut WorkLimit::new(256),
                         )
                         .unwrap(),
-                        FrozenEnvironment::default(),
+                        environment,
                         types,
                         &mut WorkLimit::new(4096),
                     )
@@ -899,6 +1216,551 @@ mod packet_tests {
             )
             .unwrap();
         packet
+    }
+
+    #[test]
+    fn entry_heap_views_use_current_epochs_and_keep_one_shared_root() {
+        use crate::sema::{application_effect::EntryArgument, copy_contract::CopyHeapSnapshot};
+        let mut types = LiveSourceTypes::default();
+        let original = Arc::new(packet(&mut types));
+        let span = Span {
+            file: FileId(0),
+            start: 0,
+            end: 0,
+        };
+        let mut argument = EntryArgument {
+            mode: ril_syntax::ast::ParameterMode::Read,
+            packet: original.clone(),
+            span,
+            heap: Some(Arc::new(CopyHeapSnapshot {
+                allocation_epoch: 0,
+                nodes: vec![],
+                relations: vec![],
+            })),
+        };
+        assert!(Arc::ptr_eq(&argument.packet, &original));
+        assert!(matches!(
+            argument.snapshot_view(&mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        let mut work = WorkLimit::new(1);
+        let view = argument.snapshot_view(&mut work).unwrap();
+        assert_eq!(work.remaining(), 0);
+        assert!(std::ptr::eq(view.value, original.value()));
+
+        let moves = [(NodeId(1), NodeId(6)), (NodeId(6), NodeId(8))];
+        for (epoch, expected_origin) in [(1, NodeId(6)), (2, NodeId(8))] {
+            let previous = argument.packet.clone();
+            let mut transported = previous.try_clone(&mut 4096).unwrap();
+            transported
+                .transport_checked(&moves[..epoch], &mut 4096)
+                .unwrap();
+            argument.packet = Arc::new(transported);
+            assert!(argument.packet.shares_birth(&original));
+            assert!(matches!(
+                argument.snapshot_view(&mut WorkLimit::new(1)),
+                Err(SourceTypesError::Unresolved)
+            ));
+            argument.heap = Some(Arc::new(CopyHeapSnapshot {
+                allocation_epoch: epoch,
+                nodes: vec![],
+                relations: vec![],
+            }));
+            let view = argument.snapshot_view(&mut WorkLimit::new(1)).unwrap();
+            assert!(std::ptr::eq(view.value, argument.packet.value()));
+            assert_eq!(view.value.origins.nodes, BTreeSet::from([expected_origin]));
+            assert_eq!(
+                view.value.option_payload.as_ref().unwrap().origins.nodes,
+                BTreeSet::from([expected_origin])
+            );
+            assert_eq!(
+                argument.packet.birth_coordinates(),
+                original.birth_coordinates()
+            );
+            assert_eq!(argument.packet.current_epoch(), epoch);
+            assert_eq!(argument.packet.value.results, original.value.results);
+            assert_eq!(
+                argument.packet.value.participants,
+                original.value.participants
+            );
+            assert_eq!(previous.current_epoch(), epoch - 1);
+        }
+        argument.heap = None;
+        assert!(matches!(
+            argument.snapshot_view(&mut WorkLimit::new(1)),
+            Err(SourceTypesError::MissingNode)
+        ));
+        assert_eq!(original.current_epoch(), 0);
+        assert_eq!(original.value.origins.nodes, BTreeSet::from([NodeId(1)]));
+    }
+
+    #[test]
+    fn packet_evidence_keeps_capture_failure_unknown_and_current_failure_distinct() {
+        let mut types = LiveSourceTypes::default();
+        let known = packet(&mut types);
+        let evidence = known.evidence_view();
+        assert_eq!(evidence.birth, known.birth_coordinates());
+        assert_eq!(evidence.current_epoch, 0);
+        assert!(matches!(
+            evidence.capture,
+            SourceCaptureView::Captured {
+                result: Ok(CapturedSource::Known(_)),
+                fresh: None,
+            }
+        ));
+        assert!(matches!(evidence.current, CurrentSourceView::Birth));
+
+        let mut unknown = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
+        assert!(matches!(
+            unknown.evidence_view().capture,
+            SourceCaptureView::Uncaptured
+        ));
+        let captured = unknown_source(&mut types);
+        unknown.capture_birth_source(Ok(captured), None).unwrap();
+        assert!(
+            matches!(unknown.evidence_view().capture, SourceCaptureView::Captured {
+            result: Ok(actual), fresh: None,
+        } if actual == captured)
+        );
+        unknown.invalidate_current_source();
+        assert!(matches!(
+            unknown.evidence_view().current,
+            CurrentSourceView::Pending
+        ));
+        unknown.fail_current_source(SourceTypesError::BudgetExceeded);
+        let evidence = unknown.evidence_view();
+        assert!(matches!(
+            evidence.current,
+            CurrentSourceView::Failed(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(!evidence.source_valid);
+        assert!(matches!(evidence.capture, SourceCaptureView::Captured {
+            result: Ok(actual), ..
+        } if actual == captured));
+
+        let mut failed = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
+        failed
+            .capture_birth_source(Err(SourceTypesError::ForeignIdentity), None)
+            .unwrap();
+        assert!(matches!(
+            failed.evidence_view().capture,
+            SourceCaptureView::Captured {
+                result: Err(SourceTypesError::ForeignIdentity),
+                fresh: None,
+            }
+        ));
+        assert!(matches!(
+            failed.evidence_view().current,
+            CurrentSourceView::Birth
+        ));
+    }
+
+    #[test]
+    fn packet_evidence_retains_numeric_birth_and_the_complete_resolution() {
+        let mut types = LiveSourceTypes::default();
+        let mut packet = pending_numeric_packet(&mut types);
+        let birth = packet.birth_coordinates();
+        let environment = match packet.evidence_view().capture {
+            SourceCaptureView::NumericPending {
+                hole,
+                birth: numeric_birth,
+                environment,
+                fresh: Some(Construction::Opaque),
+            } => {
+                assert_eq!(hole, NumericHoleId(3));
+                assert_eq!(Some(numeric_birth.occurrence), birth.identity);
+                environment
+            }
+            other => panic!("missing numeric basis: {other:?}"),
+        };
+        let resolution = numeric_resolution();
+        resolution.apply(&mut packet.value, &mut 4096).unwrap();
+        packet
+            .apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut types, &mut 4096)
+            .unwrap();
+        let evidence = packet.evidence_view();
+        assert_eq!(evidence.birth, birth);
+        assert!(
+            matches!(evidence.capture, SourceCaptureView::NumericPending {
+            environment: actual, ..
+        } if actual == environment)
+        );
+        match evidence.current {
+            CurrentSourceView::Numeric {
+                hole,
+                birth: numeric_birth,
+                environment: actual,
+                resolution: actual_resolution,
+                source,
+            } => {
+                assert_eq!(hole, NumericHoleId(3));
+                assert_eq!(actual, environment);
+                assert_eq!(Some(numeric_birth.occurrence), birth.identity);
+                assert!(Arc::ptr_eq(actual_resolution, &resolution));
+                assert_eq!(source.view.environment, environment);
+            }
+            other => panic!("missing complete numeric derivation: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn physical_birth_environment_is_independent_of_source_and_rejects_relabelling() {
+        let mut types = LiveSourceTypes::default();
+        let original = packet(&mut types);
+        let physical = original.environment.unwrap();
+        let declaration = FrozenEnvironment::default();
+        let declared = types
+            .intern_environment(declaration.clone(), &mut WorkLimit::new(4096))
+            .unwrap();
+        assert_ne!(physical, declared);
+        let record = EvaluationRecord {
+            id: EvaluationOccurrenceId(2),
+            identity: original.identity,
+            scope: ScopeId(0),
+            context: original.birth_context.unwrap(),
+            allocation_epoch: 0,
+            environment: Some(physical),
+        };
+        let schema =
+            SourceSchema::scalar(SourceScalar::Int, None, &mut WorkLimit::new(4096)).unwrap();
+        let source =
+            SourceRef::intern(&schema, declaration, &mut types, &mut WorkLimit::new(4096)).unwrap();
+        let mut known = EvaluatedValue::observed(
+            Value::scalar(Ty::Int("int".into()), None, CauseId(0)),
+            2,
+            &record,
+        );
+        known
+            .capture_birth_source(Ok(CapturedSource::Known(source)), None)
+            .unwrap();
+        assert_eq!(known.birth_coordinates().environment, Some(physical));
+        assert_eq!(
+            resolve_birth(&known, &types).unwrap().unwrap().1.id(),
+            declared
+        );
+        let mut changed = known.try_clone(&mut 4096).unwrap();
+        assert!(changed.shares_birth(&known));
+        assert!(Arc::get_mut(&mut changed.birth).is_none());
+        let changed_record = EvaluationRecord {
+            environment: Some(declared),
+            ..record.clone()
+        };
+        changed = EvaluatedValue::observed(known.value.clone(), 2, &changed_record);
+        changed
+            .capture_birth_source(Ok(CapturedSource::Known(source)), None)
+            .unwrap();
+        assert!(!changed.shares_birth(&known));
+
+        let mut unknown =
+            EvaluatedValue::observed(Value::scalar(Ty::Unknown, None, CauseId(0)), 2, &record);
+        assert_eq!(
+            unknown.capture_birth_source(Ok(CapturedSource::Unknown(declared)), None),
+            Err(SourceTypesError::Unresolved)
+        );
+        assert!(unknown.has_captured_source());
+        assert_eq!(
+            resolve_birth(&unknown, &types).unwrap_err(),
+            SourceTypesError::Unresolved
+        );
+        assert_eq!(
+            unknown.capture_birth_source(Ok(CapturedSource::Unknown(physical)), None),
+            Err(SourceTypesError::AlreadyDefined)
+        );
+        assert_eq!(unknown.birth_coordinates().environment, Some(physical));
+    }
+
+    #[test]
+    fn an_early_packet_clone_observes_the_same_single_capture_completion() {
+        let mut types = LiveSourceTypes::default();
+        let completed = packet(&mut types);
+        let Some(SourceCapture::Captured(source)) = completed.birth.source.get() else {
+            panic!("known fixture")
+        };
+        let source = *source.result.as_ref().unwrap();
+        let record = EvaluationRecord {
+            id: EvaluationOccurrenceId(2),
+            identity: completed.identity,
+            scope: ScopeId(0),
+            context: completed.birth_context.unwrap(),
+            allocation_epoch: 0,
+            environment: completed.environment,
+        };
+        let mut original = EvaluatedValue::observed(completed.value.clone(), 2, &record);
+        let mut early = original.try_clone(&mut 4096).unwrap();
+        assert!(original.shares_birth(&early));
+        for _ in 0..8 {
+            assert_eq!(
+                resolve_birth(&early, &types).unwrap_err(),
+                SourceTypesError::SourceNotCaptured
+            );
+        }
+        original.capture_birth_source(Ok(source), None).unwrap();
+        assert!(early.has_captured_source());
+        assert_eq!(
+            resolve_birth(&early, &types).unwrap().unwrap().0.root_id(),
+            resolve_birth(&original, &types)
+                .unwrap()
+                .unwrap()
+                .0
+                .root_id()
+        );
+        assert_eq!(
+            early.capture_birth_source(Ok(source), None),
+            Err(SourceTypesError::AlreadyDefined)
+        );
+        early
+            .transport_checked(&[(NodeId(1), NodeId(6))], &mut 4096)
+            .unwrap();
+        assert!(early.shares_birth(&original));
+        assert_eq!(original.current_epoch(), 0);
+        assert_eq!(original.value.origins.nodes, BTreeSet::from([NodeId(1)]));
+    }
+
+    #[test]
+    fn a_derived_read_keeps_its_original_birth_and_source() {
+        let mut types = LiveSourceTypes::default();
+        let mut original = packet(&mut types);
+        original.value.permission = Permission::Write;
+        let original = Arc::new(original);
+        let mut value = transport_value_at(original.value(), &[], 0, 0, &mut 4096).unwrap();
+        read_handle(&mut value);
+        let derived = EvaluatedValue::derive_current(
+            original.clone(),
+            CurrentValueStep::ReadHandle,
+            value,
+            &mut types,
+            &mut 4096,
+        )
+        .unwrap();
+        assert!(derived.shares_birth(&original));
+        assert_eq!(original.value.permission, Permission::Write);
+        assert_eq!(derived.value.permission, Permission::Read);
+        assert_eq!(derived.value.participants, original.value.participants);
+        assert_eq!(
+            derived.value.option_identity,
+            original.value.option_identity
+        );
+        assert_eq!(derived.value.results, original.value.results);
+        let CurrentSourceView::Derived { input, step, .. } = derived.evidence_view().current else {
+            panic!("a read must retain its derivation")
+        };
+        assert!(Arc::ptr_eq(input, &original));
+        assert!(matches!(step, CurrentValueStep::ReadHandle));
+        let birth = resolve_birth(&original, &types).unwrap().unwrap();
+        let current = resolve_current(&derived, &types).unwrap().unwrap();
+        assert_eq!(birth.1.id(), current.1.id());
+        assert!(
+            birth
+                .0
+                .equivalent(&current.0, &mut WorkLimit::new(4096))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn an_unknown_capture_cannot_replace_an_independently_known_input() {
+        let source = ril_test::case_source(
+            "tests/regressions/evaluation-identity.ril::entry-packets-after-allocating-default",
+        );
+        let program = crate::Session::new(source.as_bytes().to_vec())
+            .verify()
+            .unwrap();
+        let facts = program.facts();
+        crate::sema::application_effect::validate(facts).unwrap();
+        let (call, slot) =
+            facts
+                .copy_invocations
+                .iter()
+                .enumerate()
+                .find_map(|(call, invocation)| {
+                    matches!(
+                        invocation.entry.origin,
+                        crate::sema::application_effect::EntryOrigin::Application(_)
+                    )
+                    .then(|| {
+                        invocation.entry.arguments.iter().enumerate().find_map(
+                            |(slot, argument)| {
+                                (matches!(
+                                    argument.packet.evidence_view().current,
+                                    CurrentSourceView::Birth
+                                ) && matches!(
+                                    argument.packet.evidence_view().capture,
+                                    SourceCaptureView::Captured {
+                                        result: Ok(CapturedSource::Known(_)),
+                                        ..
+                                    }
+                                ))
+                                .then_some((call, slot))
+                            },
+                        )
+                    })
+                    .flatten()
+                })
+                .expect("an actual argument has a known Source");
+        let original = &facts.copy_invocations[call].entry.arguments[slot].packet;
+        let observation = original.observation.unwrap();
+        let physical = facts.expressions[observation].value.packet();
+        let record = &facts.evaluations[observation];
+        let Some(SourceCapture::Captured(basis)) = physical.birth.source.get() else {
+            unreachable!()
+        };
+        let mut downgraded = EvaluatedValue::observed(
+            transport_value_at(physical.value(), &[], 0, 0, &mut 1_000_000).unwrap(),
+            observation,
+            record,
+        );
+        downgraded
+            .capture_birth_source(
+                Ok(CapturedSource::Unknown(record.environment.unwrap())),
+                basis.fresh.clone(),
+            )
+            .unwrap();
+        let downgraded = Arc::new(downgraded);
+        let mut entry_view = original.try_clone(&mut 1_000_000).unwrap();
+        entry_view.birth = downgraded.birth.clone();
+        assert!(entry_view.shares_birth(&downgraded));
+        assert!(same_birth_value(entry_view.value(), original.value(), &mut 1_000_000).unwrap());
+        let mut changed = facts.clone();
+        changed.expressions[observation].value = PhysicalValue::from_packet(downgraded);
+        Arc::make_mut(&mut changed.copy_invocations[call].entry.arguments)[slot].packet =
+            Arc::new(entry_view);
+        let (_, message) = crate::sema::application_effect::validate(&changed).unwrap_err();
+        assert!(
+            message.contains("unknown packet contradicts an independently known Source"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_derived_view_cannot_restart_a_failed_or_unfilled_capture() {
+        let mut types = LiveSourceTypes::default();
+        let mut original = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
+        let early = Arc::new(original.try_clone(&mut 4096).unwrap());
+        let result = EvaluatedValue::derive_current(
+            early.clone(),
+            CurrentValueStep::ReadHandle,
+            original.value.clone(),
+            &mut types,
+            &mut 4096,
+        );
+        assert_eq!(result.unwrap_err(), SourceTypesError::SourceNotCaptured);
+        assert!(!early.has_captured_source());
+        original
+            .capture_birth_source(Err(SourceTypesError::BudgetExceeded), None)
+            .unwrap();
+        let result = EvaluatedValue::derive_current(
+            early.clone(),
+            CurrentValueStep::ReadHandle,
+            original.value.clone(),
+            &mut types,
+            &mut 4096,
+        );
+        assert_eq!(result.unwrap_err(), SourceTypesError::BudgetExceeded);
+        assert!(early.shares_birth(&original));
+        assert_eq!(
+            resolve_birth(&early, &types).unwrap_err(),
+            SourceTypesError::BudgetExceeded
+        );
+    }
+
+    #[test]
+    fn capture_failure_completes_every_birth_handle_and_cannot_be_retried() {
+        let mut types = LiveSourceTypes::default();
+        let mut original = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
+        let mut early = original.try_clone(&mut 4096).unwrap();
+        original
+            .capture_birth_source(Err(SourceTypesError::BudgetExceeded), None)
+            .unwrap();
+        assert_eq!(
+            resolve_birth(&early, &types).unwrap_err(),
+            SourceTypesError::BudgetExceeded
+        );
+        assert_eq!(
+            early.capture_birth_source(Ok(unknown_source(&mut types)), None),
+            Err(SourceTypesError::AlreadyDefined)
+        );
+        assert_eq!(
+            resolve_birth(&original, &types).unwrap_err(),
+            SourceTypesError::BudgetExceeded
+        );
+        assert!(early.shares_birth(&original));
+    }
+
+    #[test]
+    fn numeric_capture_completion_and_current_resolution_share_the_original_basis() {
+        let mut types = LiveSourceTypes::default();
+        let template = pending_numeric_packet(&mut types);
+        let Some(SourceCapture::NumericPending(basis)) = template.birth.source.get() else {
+            panic!("numeric fixture")
+        };
+        let record = EvaluationRecord {
+            id: EvaluationOccurrenceId(2),
+            identity: template.identity,
+            scope: ScopeId(0),
+            context: template.birth_context.unwrap(),
+            allocation_epoch: 0,
+            environment: template.environment,
+        };
+        let mut original = EvaluatedValue::observed(template.value.clone(), 2, &record);
+        let mut early = original.try_clone(&mut 4096).unwrap();
+        original
+            .capture_numeric_birth_source(
+                basis.hole,
+                basis.birth,
+                basis.environment,
+                basis.fresh.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_birth(&early, &types).unwrap_err(),
+            SourceTypesError::SourceViewPending
+        );
+        let resolution = numeric_resolution();
+        resolution.apply(&mut early.value, &mut 4096).unwrap();
+        early
+            .apply_numeric_resolution(basis.hole, resolution.clone(), &mut types, &mut 4096)
+            .unwrap();
+        assert!(early.shares_birth(&original));
+        assert_eq!(original.value.ty, Ty::NumericHole(basis.hole));
+        assert_eq!(
+            resolve_birth(&original, &types).unwrap_err(),
+            SourceTypesError::SourceViewPending
+        );
+        let Some(SourceCapture::NumericPending(actual_basis)) = original.birth.source.get() else {
+            panic!("shared pending basis")
+        };
+        let CurrentSource::Numeric(derived) = &early.current_source else {
+            panic!("derived numeric source")
+        };
+        assert!(Arc::ptr_eq(actual_basis, &derived.basis));
+        assert!(Arc::ptr_eq(&resolution, &derived.resolution));
+    }
+
+    #[test]
+    fn value_export_admission_is_prepaid_and_leaves_the_original_packet_unchanged() {
+        let mut types = LiveSourceTypes::default();
+        let packet = packet(&mut types);
+        let original = packet.try_clone(&mut 4096).unwrap();
+        let mut allowance = 4096;
+        charge_value_export(packet.value(), &mut allowance).unwrap();
+        let cost = 4096 - allowance;
+        assert!(cost > 1);
+        for units in 0..=cost {
+            let mut work = units;
+            let result = charge_value_export(packet.value(), &mut work);
+            if units < cost {
+                assert_eq!(result, Err(SourceTypesError::BudgetExceeded));
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(work, 0);
+            }
+            assert_eq!(
+                same_birth_value(packet.value(), original.value(), &mut 4096),
+                Ok(true)
+            );
+            assert_eq!(packet.birth_coordinates(), original.birth_coordinates());
+            assert!(packet.shares_birth(&original));
+        }
     }
 
     #[test]
@@ -1114,12 +1976,16 @@ mod packet_tests {
         value.results.insert(7);
         value.outer_results.insert(7);
         value.participants.insert(Participant::Loan(LoanId(3)));
+        let environment = types
+            .intern_environment(FrozenEnvironment::default(), &mut WorkLimit::new(4096))
+            .unwrap();
         let record = EvaluationRecord {
             id: EvaluationOccurrenceId(2),
             identity: original.identity,
             scope: ScopeId(0),
             context: original.birth_context.unwrap(),
             allocation_epoch: 0,
+            environment: Some(environment),
         };
         let mut packet = EvaluatedValue::observed(value, 2, &record);
         packet
@@ -1131,9 +1997,7 @@ mod packet_tests {
                     context: record.context,
                     allocation_epoch: 0,
                 },
-                types
-                    .intern_environment(FrozenEnvironment::default(), &mut WorkLimit::new(4096))
-                    .unwrap(),
+                environment,
                 Some(Arc::new(Construction::Opaque)),
             )
             .unwrap();
@@ -1399,16 +2263,24 @@ mod packet_tests {
     fn equal_source_views_do_not_identify_independent_birth_receipts() {
         let mut types = LiveSourceTypes::default();
         let first = packet(&mut types);
-        let SourceCapture::Captured(basis) = &first.birth.source else {
+        let Some(SourceCapture::Captured(basis)) = first.birth.source.get() else {
             panic!("fixture must retain its real captured source");
         };
         let source = *basis.result.as_ref().unwrap();
-        let mut independent = EvaluatedValue::new(first.value.clone(), first.allocation_epoch);
+        let record = EvaluationRecord {
+            id: EvaluationOccurrenceId(first.observation.unwrap() as u32),
+            identity: first.identity,
+            scope: ScopeId(0),
+            context: first.birth_context.unwrap(),
+            allocation_epoch: first.allocation_epoch,
+            environment: first.environment,
+        };
+        let mut independent =
+            EvaluatedValue::observed(first.value.clone(), first.observation.unwrap(), &record);
         // Even forged equal coordinates cannot turn another capture into the
         // original immutable receipt merely because its view is shared.
-        independent.birth.observation = first.observation;
-        independent.birth.identity = first.identity;
-        independent.birth.birth_context = first.birth_context;
+        assert_eq!(independent.birth_coordinates(), first.birth_coordinates());
+        assert!(!first.shares_birth(&independent));
         independent.capture_birth_source(Ok(source), None).unwrap();
         assert!(!first.shares_birth(&independent));
         assert!(first.shares_birth(&first.try_clone(&mut 4096).unwrap()));
@@ -1422,7 +2294,7 @@ mod packet_tests {
     fn numeric_source_resolution_requires_its_original_environment_registry() {
         let mut types = LiveSourceTypes::default();
         let mut packet = pending_numeric_packet(&mut types);
-        let SourceCapture::NumericPending(basis) = &packet.birth.source else {
+        let Some(SourceCapture::NumericPending(basis)) = packet.birth.source.get() else {
             panic!("fixture must retain its pending numeric basis");
         };
         let environment_id = basis.environment;

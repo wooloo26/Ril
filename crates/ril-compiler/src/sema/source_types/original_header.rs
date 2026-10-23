@@ -1,5 +1,6 @@
 //! One original-header ingress. Structural types remain a finite graph;
 //! declaration sorts alone admit normalized Const coordinates.
+use super::super::{CallableRowIdentity, CallableRowOrigin};
 use super::super::{
     SourceBuilder, SourceContainer, SourceField, SourceLength, SourceNode, SourceScalar,
     SourceSchema, SourceTypeId, SourceTypesError, WorkLimit,
@@ -11,7 +12,7 @@ use ril_compiler_core::{
     target::TargetLayout,
 };
 use ril_syntax::ast::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[path = "constructor_instance.rs"]
 mod constructor_instance;
 #[path = "original_header/declaration_syntax.rs"]
@@ -146,6 +147,86 @@ pub(crate) fn original_header(
     work: &mut WorkLimit,
 ) -> Result<SourceSchema, SourceTypesError> {
     build(syntax, context, work, true)
+}
+
+/// Runtime values of an original Key parameter use the declared product's
+/// scalar carrier. This supplies neither membership nor a Type-binder view.
+pub(crate) fn key_carrier_source(
+    parameter: GenericParamId,
+    identity: &str,
+    context: HeaderContext<'_>,
+    work: &mut WorkLimit,
+) -> Result<SourceSchema, SourceTypesError> {
+    work.text(identity)?;
+    let actual = generic_parameter(
+        parameter,
+        context.functions,
+        context.generic_binders,
+        context.binders,
+        context.hir,
+        work,
+    )?;
+    if actual != identity {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let generic = context
+        .hir
+        .generic(parameter)
+        .ok_or(SourceTypesError::MissingNode)?;
+    let binder = context
+        .generic_binders
+        .get(identity)
+        .ok_or(SourceTypesError::MissingNode)?;
+    work.charge(context.functions.len())?;
+    let declaration = context
+        .functions
+        .iter()
+        .find(|function| function.definition == binder.definition)
+        .ok_or(SourceTypesError::MissingNode)?;
+    let original_bound = declaration
+        .syntax
+        .generics
+        .get(binder.index as usize)
+        .and_then(|parameter| parameter.bound.as_ref())
+        .ok_or(SourceTypesError::MissingNode)?;
+    if original_bound.hir_id != generic.bound {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let header = Header::new(context)?;
+    header.validate_syntax(original_bound, work)?;
+    let bound = generic
+        .bound
+        .and_then(|id| context.hir.type_expression(id))
+        .ok_or(SourceTypesError::MissingNode)?;
+    let hir::TypeKind::KeyOf(base) = &bound.kind else {
+        return Err(SourceTypesError::Unresolved);
+    };
+    let carrier = header.key_carrier(*base, work, 0)?;
+    SourceSchema::scalar(carrier, None, work)
+}
+
+/// An original row is identified by its canonical header and all visible
+/// function binders, including a binder occurring only inside the row.
+pub(crate) fn callable_row_identity(
+    origin: CallableRowOrigin,
+    annotations: &[Annotation],
+    context: HeaderContext<'_>,
+    work: &mut WorkLimit,
+) -> Result<Option<CallableRowIdentity<SourceSchema>>, SourceTypesError> {
+    let mut header = Header::new(context)?;
+    let Some(row) = header.callable_row(origin, annotations, work)? else {
+        return Ok(None);
+    };
+    let types = header.builder.freeze(work)?;
+    work.charge(row.parameters.len() + 1)?;
+    Ok(Some(CallableRowIdentity {
+        origin: row.origin,
+        parameters: row
+            .parameters
+            .into_iter()
+            .map(|(id, root)| Ok((id, SourceSchema::frozen_view(&types, root, None, work)?)))
+            .collect::<Result<_, SourceTypesError>>()?,
+    }))
 }
 
 #[derive(Clone)]
@@ -321,6 +402,199 @@ impl<'a> Header<'a> {
             declarations: None,
             generic_parameters: BTreeMap::new(),
         })
+    }
+
+    fn callable_row(
+        &mut self,
+        origin: CallableRowOrigin,
+        annotations: &[Annotation],
+        work: &mut WorkLimit,
+    ) -> Result<Option<CallableRowIdentity>, SourceTypesError> {
+        work.charge(1 + annotations.len())?;
+        let (canonical, mut owner) = match origin {
+            CallableRowOrigin::Declaration(id) => {
+                let statement = self
+                    .context
+                    .hir
+                    .statement(id)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let hir::StmtKind::Function(function) = &statement.kind else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                (&function.annotations, hir::LexicalOwner::Declaration(id))
+            }
+            CallableRowOrigin::Type(id) => {
+                let syntax = self
+                    .context
+                    .hir
+                    .type_expression(id)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let hir::TypeKind::Callable { annotations, .. } = &syntax.kind else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                (annotations, syntax.info.owner)
+            }
+            CallableRowOrigin::Lambda(id) => {
+                let expression = self
+                    .context
+                    .hir
+                    .expression(id)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let hir::ExprKind::Lambda { annotations, .. } = &expression.kind else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                (annotations, expression.info.owner)
+            }
+        };
+        if canonical.len() != annotations.len() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        work.charge(canonical.len())?;
+        let mut needs_original = false;
+        for (actual, original) in annotations.iter().zip(canonical) {
+            work.text(&actual.text)?;
+            work.text(&original.text)?;
+            work.charge(actual.text.len() + 1)?;
+            if actual.kind != original.kind || actual.text != original.text {
+                return Err(SourceTypesError::Unresolved);
+            }
+            needs_original |=
+                super::super::annotation_identity::text_requires_original(&actual.text);
+        }
+        if !needs_original {
+            return Ok(None);
+        }
+        let mut seen = BTreeSet::new();
+        let mut parameters = BTreeMap::new();
+        loop {
+            work.charge(2 + seen.len().checked_ilog2().unwrap_or(0) as usize)?;
+            if !seen.insert(owner) {
+                return Err(SourceTypesError::AliasCycle);
+            }
+            match owner {
+                hir::LexicalOwner::Module => break,
+                hir::LexicalOwner::Declaration(id) => {
+                    let statement = self
+                        .context
+                        .hir
+                        .statement(id)
+                        .ok_or(SourceTypesError::MissingNode)?;
+                    if let hir::StmtKind::Function(function) = &statement.kind {
+                        work.charge(self.context.functions.len() + function.generics.len())?;
+                        let mut definitions = BTreeSet::new();
+                        for function in self
+                            .context
+                            .functions
+                            .iter()
+                            .filter(|function| function.hir_id == Some(id))
+                        {
+                            work.charge(
+                                2 + definitions.len().checked_ilog2().unwrap_or(0) as usize,
+                            )?;
+                            definitions.insert(function.definition);
+                        }
+                        let mut admitted = BTreeMap::new();
+                        for definition in definitions {
+                            let map = super::super::owned_header_binders::function(
+                                definition,
+                                id,
+                                self.context.functions,
+                                self.context.generic_binders,
+                                self.context.hir,
+                                work,
+                            )?;
+                            for (parameter, identity) in map {
+                                work.charge(self.context.binders.len())?;
+                                if self
+                                    .context
+                                    .binders
+                                    .values()
+                                    .any(|available| available == &identity)
+                                {
+                                    work.text(&identity)?;
+                                    if admitted
+                                        .insert(parameter, identity.clone())
+                                        .is_some_and(|previous| previous != identity)
+                                    {
+                                        return Err(SourceTypesError::Unresolved);
+                                    }
+                                }
+                            }
+                        }
+                        for parameter in &function.generics {
+                            let canonical = self
+                                .context
+                                .hir
+                                .generic(*parameter)
+                                .ok_or(SourceTypesError::MissingNode)?;
+                            work.text(&canonical.name)?;
+                            let type_sort = canonical
+                                .name
+                                .chars()
+                                .next()
+                                .is_some_and(char::is_uppercase)
+                                && match canonical.bound {
+                                    None => true,
+                                    Some(bound) => match &self
+                                        .context
+                                        .hir
+                                        .type_expression(bound)
+                                        .ok_or(SourceTypesError::MissingNode)?
+                                        .kind
+                                    {
+                                        hir::TypeKind::Name { path, arguments } => {
+                                            work.charge(path.len() + arguments.len())?;
+                                            for part in path {
+                                                work.text(part)?;
+                                            }
+                                            path == &["Type"] && arguments.is_empty()
+                                        }
+                                        hir::TypeKind::Record { .. } => true,
+                                        _ => false,
+                                    },
+                                };
+                            if !type_sort {
+                                return Err(SourceTypesError::Unresolved);
+                            }
+                            let identity = admitted
+                                .remove(parameter)
+                                .ok_or(SourceTypesError::Unresolved)?;
+                            work.charge(
+                                2 + parameters.len().checked_ilog2().unwrap_or(0) as usize,
+                            )?;
+                            let root = self.builder.insert(SourceNode::Binder(identity), work)?;
+                            if parameters.insert(*parameter, root).is_some() {
+                                return Err(SourceTypesError::Unresolved);
+                            }
+                        }
+                    }
+                    owner = statement.info.owner;
+                }
+                hir::LexicalOwner::Lambda(id) => {
+                    owner = self
+                        .context
+                        .hir
+                        .expression(id)
+                        .ok_or(SourceTypesError::MissingNode)?
+                        .info
+                        .owner
+                }
+                hir::LexicalOwner::CallableType(id) => {
+                    owner = self
+                        .context
+                        .hir
+                        .type_expression(id)
+                        .ok_or(SourceTypesError::MissingNode)?
+                        .info
+                        .owner
+                }
+                _ => return Err(SourceTypesError::Unresolved),
+            }
+        }
+        Ok(Some(CallableRowIdentity {
+            origin,
+            parameters: parameters.into_iter().collect(),
+        }))
     }
 
     fn type_binding(
@@ -839,12 +1113,86 @@ impl<'a> Header<'a> {
                         .transpose()?,
                 }
             }
+            TypeKind::ComputedProjection { base, key } if original => {
+                let ExprKind::Name(_) = &key.kind else {
+                    return Err(SourceTypesError::NeedsStaticElaboration);
+                };
+                let mut remaining = work.remaining();
+                let parameter = self.context.lexical.lookup_generic(
+                    key.hir_id.ok_or(SourceTypesError::MissingNode)?,
+                    &mut remaining,
+                );
+                work.charge(work.remaining() - remaining)?;
+                let parameter = parameter
+                    .map_err(super::lexical_error)?
+                    .ok_or(SourceTypesError::Unresolved)?;
+                let identity = generic_parameter(
+                    parameter,
+                    self.context.functions,
+                    self.context.generic_binders,
+                    self.context.binders,
+                    self.context.hir,
+                    work,
+                )?;
+                let binder = self
+                    .context
+                    .generic_binders
+                    .get(&identity)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                work.charge(self.context.functions.len())?;
+                let function = self
+                    .context
+                    .functions
+                    .iter()
+                    .find(|function| function.definition == binder.definition)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let bound = function
+                    .syntax
+                    .generics
+                    .get(binder.index as usize)
+                    .and_then(|parameter| parameter.bound.as_ref())
+                    .ok_or(SourceTypesError::MissingNode)?;
+                self.validate_syntax(bound, work)?;
+                let TypeKind::KeyOf(bound_base) = &bound.kind else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                let base = self.ty(base, caller, true, work, depth + 1)?;
+                let original_base = self.ty(bound_base, caller, true, work, depth + 1)?;
+                if !super::super::reception::equivalent(
+                    &self.builder,
+                    base,
+                    &self.builder,
+                    original_base,
+                    work,
+                )? {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                SourceNode::KeyProjection {
+                    origin: super::super::KeyProjectionOrigin::Type(
+                        syntax.hir_id.ok_or(SourceTypesError::MissingNode)?,
+                    ),
+                    parameter,
+                    identity,
+                    base,
+                }
+            }
             TypeKind::Callable {
                 parameters,
                 result,
                 annotations,
             } => {
                 work.charge(parameters.len() + annotations.len() + 1)?;
+                let row_identity = if original {
+                    self.callable_row(
+                        CallableRowOrigin::Type(
+                            syntax.hir_id.ok_or(SourceTypesError::MissingNode)?,
+                        ),
+                        annotations,
+                        work,
+                    )?
+                } else {
+                    None
+                };
                 let parameters = parameters
                     .iter()
                     .map(|parameter| {
@@ -873,13 +1221,14 @@ impl<'a> Header<'a> {
                     .iter()
                     .map(|annotation| {
                         work.text(&annotation.text)?;
-                        Ok(annotation.text.replace(' ', ""))
+                        Ok(annotation.text.clone())
                     })
                     .collect::<Result<_, SourceTypesError>>()?;
                 SourceNode::Callable {
                     parameters,
                     result,
                     annotations,
+                    row_identity,
                 }
             }
             _ => return Err(SourceTypesError::NeedsStaticElaboration),
@@ -1086,6 +1435,117 @@ mod tests {
                 Err(SourceTypesError::BudgetExceeded)
             ));
         }
+    }
+
+    #[test]
+    fn original_key_projection_schemes_keep_key_sort_coordinates_and_reach_core() {
+        let mut parsed = ril_syntax::parse(ril_test::case_source(
+            "tests/conformance/static.ril::accept-key-membership",
+        ));
+        assert!(parsed.is_ok());
+        let hir = hir::HirProgram::lower_identified(&mut parsed.program, hir::InputOrigin::Source)
+            .unwrap();
+        let lexical = LexicalBindings::new(&hir, &mut 4_000_000).unwrap();
+        let GenericModel {
+            functions,
+            registry,
+            available,
+        } = generic_model(&parsed.program);
+        let function = functions
+            .iter()
+            .find(|function| function.syntax.generics.len() == 2)
+            .unwrap();
+        let header = function.syntax.return_type.as_ref().unwrap();
+        let declarations = BTreeMap::new();
+        let context = HeaderContext {
+            functions: &functions,
+            generic_binders: &registry,
+            ..context(&parsed.program, &hir, &lexical, &declarations, &available)
+        };
+        let mut work = WorkLimit::new(16384);
+        let schema = original_header(header, context, &mut work).unwrap();
+        let (types, root) = schema.graph();
+        let SourceNode::KeyProjection {
+            origin,
+            parameter,
+            identity,
+            base,
+        } = types.get(root).unwrap()
+        else {
+            panic!("the original dependent result must remain a Key projection")
+        };
+        assert_eq!(
+            *origin,
+            super::super::KeyProjectionOrigin::Type(header.hir_id.unwrap())
+        );
+        assert_eq!(Some(*parameter), function.syntax.generics[1].hir_id);
+        assert_eq!(registry[identity].index, 1);
+        let SourceNode::Binder(type_identity) = types.get(*base).unwrap() else {
+            panic!("the base retains its genuine Type UID")
+        };
+        assert_ne!(identity, type_identity);
+        assert_eq!(
+            schema.binder_identities(&mut work).unwrap(),
+            [type_identity.clone()].into()
+        );
+        assert!(schema.equivalent(&schema, &mut work).unwrap());
+        assert!(schema.scalar_representation(&mut work).is_err());
+        assert!(schema.runtime_type(&mut work).is_err());
+        assert!(schema.key().is_err());
+        let mut live = crate::sema::source_types::LiveSourceTypes::default();
+        live.record_schema(
+            0,
+            Some(&schema),
+            crate::sema::context::FrozenEnvironment::default(),
+        )
+        .unwrap();
+        let frozen = live.freeze();
+        let retained = frozen.retained(&mut WorkLimit::new(16384)).unwrap();
+        assert!(retained.graph.nodes.iter().any(|node| matches!(node,
+            ril_ir::provenance::SourceTypeNode::KeyProjection { origin: actual_origin, parameter: actual_parameter, identity: actual_identity, .. }
+                if actual_origin == origin && actual_parameter == parameter && actual_identity == identity)));
+        for mutation in 0..3 {
+            let mut builder = SourceBuilder::new().unwrap();
+            let mut budget = WorkLimit::new(4096);
+            let base = types.copy_into([*base], &mut builder, &mut budget).unwrap()[base];
+            let changed = builder
+                .insert(
+                    SourceNode::KeyProjection {
+                        origin: if mutation == 0 {
+                            super::super::KeyProjectionOrigin::Type(TypeExprId(
+                                header.hir_id.unwrap().0 + 1,
+                            ))
+                        } else {
+                            *origin
+                        },
+                        parameter: if mutation == 1 {
+                            GenericParamId(parameter.0 + 1)
+                        } else {
+                            *parameter
+                        },
+                        identity: if mutation == 2 {
+                            type_identity.clone()
+                        } else {
+                            identity.clone()
+                        },
+                        base,
+                    },
+                    &mut budget,
+                )
+                .unwrap();
+            let changed = SourceSchema::frozen_view(
+                &builder.freeze(&mut budget).unwrap(),
+                changed,
+                header.hir_id,
+                &mut budget,
+            )
+            .unwrap();
+            assert!(
+                !schema.equivalent(&changed, &mut budget).unwrap_or(false),
+                "projection coordinate mutation {mutation} was accepted"
+            );
+        }
+        assert!(original_header(header, context, &mut WorkLimit::new(0)).is_err());
     }
 
     #[test]
@@ -1314,6 +1774,285 @@ mod tests {
             registry,
             available,
         }
+    }
+
+    fn row_fixture() -> (Program, hir::HirProgram, GenericModel) {
+        let parsed = ril_syntax::parse(ril_test::case_source(
+            "tests/regressions/defaults.ril::local-budget",
+        ));
+        assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
+        let mut program = parsed.program;
+        let hir =
+            hir::HirProgram::lower_identified(&mut program, hir::InputOrigin::Source).unwrap();
+        let model = generic_model(&program);
+        (program, hir, model)
+    }
+
+    fn row_context<'a>(
+        program: &'a Program,
+        hir: &'a hir::HirProgram,
+        lexical: &'a LexicalBindings,
+        model: &'a GenericModel,
+        declarations: &'a BTreeMap<String, TypeDeclaration>,
+    ) -> HeaderContext<'a> {
+        HeaderContext {
+            program,
+            hir,
+            lexical,
+            declarations,
+            binders: &model.available,
+            functions: &model.functions,
+            generic_binders: &model.registry,
+            layout: TargetLayout::POINTER64,
+        }
+    }
+
+    #[test]
+    fn original_applied_rows_require_their_header_environment_and_all_type_arguments() {
+        let (program, hir, model) = row_fixture();
+        let lexical = LexicalBindings::new(&hir, &mut 4_000_000).unwrap();
+        let declarations = BTreeMap::new();
+        let function = model
+            .functions
+            .iter()
+            .find(|function| function.syntax.name == "measured")
+            .unwrap();
+        let context = row_context(&program, &hir, &lexical, &model, &declarations);
+        let origin = CallableRowOrigin::Declaration(function.hir_id.unwrap());
+        let mut work = WorkLimit::new(65536);
+        let row = callable_row_identity(origin, &function.syntax.annotations, context, &mut work)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.parameters.len(), 1);
+        assert_eq!(
+            row.parameters[0].0,
+            function.syntax.generics[0].hir_id.unwrap()
+        );
+        let int = SourceSchema::scalar(SourceScalar::Int, None, &mut work).unwrap();
+        let annotations: Vec<_> = function
+            .syntax
+            .annotations
+            .iter()
+            .map(|annotation| annotation.text.clone())
+            .collect();
+        let source =
+            SourceSchema::callable_original(&[], &int, &annotations, Some(&row), None, &mut work)
+                .unwrap();
+        let environment = crate::sema::context::FrozenEnvironment::default();
+        assert_eq!(
+            source.equivalent_in(&source, &environment, &environment, &mut work),
+            Ok(true)
+        );
+        assert!(source.equivalent(&source, &mut work).is_err());
+        assert!(source.key_with_work(&mut work).is_err());
+        let other_environment = environment.thaw().freeze();
+        assert!(
+            source
+                .equivalent_in(&source, &environment, &other_environment, &mut work)
+                .is_err()
+        );
+        for mutation in 0..6 {
+            let mut changed = row.clone();
+            let mut text = annotations.clone();
+            match mutation {
+                0 => {
+                    changed.origin = CallableRowOrigin::Declaration(
+                        model
+                            .functions
+                            .iter()
+                            .find(|candidate| candidate.syntax.name == "answer")
+                            .unwrap()
+                            .hir_id
+                            .unwrap(),
+                    )
+                }
+                1 => changed.parameters[0].0 = GenericParamId(u32::MAX),
+                2 => changed.parameters[0].1 = int.clone(),
+                3 => changed.parameters.clear(),
+                4 => text[0].push(' '),
+                _ => {}
+            }
+            let candidate = SourceSchema::callable_original(
+                &[],
+                &int,
+                &text,
+                (mutation != 5).then_some(&changed),
+                None,
+                &mut work,
+            )
+            .unwrap();
+            assert_ne!(
+                source.equivalent_in(&candidate, &environment, &environment, &mut work),
+                Ok(true),
+                "mutation {mutation}"
+            );
+        }
+        let mut changed = function.syntax.annotations.clone();
+        changed[0].text.push(' ');
+        assert!(callable_row_identity(origin, &changed, context, &mut work).is_err());
+        assert!(
+            callable_row_identity(
+                CallableRowOrigin::Declaration(
+                    model
+                        .functions
+                        .iter()
+                        .find(|candidate| candidate.syntax.name == "answer")
+                        .unwrap()
+                        .hir_id
+                        .unwrap()
+                ),
+                &function.syntax.annotations,
+                context,
+                &mut work
+            )
+            .is_err()
+        );
+        let mut missing = model.available.clone();
+        missing.clear();
+        assert!(
+            callable_row_identity(
+                origin,
+                &function.syntax.annotations,
+                HeaderContext {
+                    binders: &missing,
+                    ..context
+                },
+                &mut work
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn original_row_dependencies_survive_substitution_and_core_retention() {
+        let (program, hir, model) = row_fixture();
+        let lexical = LexicalBindings::new(&hir, &mut 4_000_000).unwrap();
+        let declarations = BTreeMap::new();
+        let function = model
+            .functions
+            .iter()
+            .find(|function| function.syntax.name == "measured")
+            .unwrap();
+        let mut work = WorkLimit::new(65536);
+        let row = callable_row_identity(
+            CallableRowOrigin::Declaration(function.hir_id.unwrap()),
+            &function.syntax.annotations,
+            row_context(&program, &hir, &lexical, &model, &declarations),
+            &mut work,
+        )
+        .unwrap()
+        .unwrap();
+        let int = SourceSchema::scalar(SourceScalar::Int, None, &mut work).unwrap();
+        let text = function
+            .syntax
+            .annotations
+            .iter()
+            .map(|annotation| annotation.text.clone())
+            .collect::<Vec<_>>();
+        let source =
+            SourceSchema::callable_original(&[], &int, &text, Some(&row), None, &mut work).unwrap();
+        let identities = source.binder_identities(&mut work).unwrap();
+        assert_eq!(identities.len(), 1);
+        let selected = source
+            .substitute(
+                &BTreeMap::from([(identities.into_iter().next().unwrap(), int)]),
+                &mut work,
+            )
+            .unwrap();
+        assert!(selected.binder_identities(&mut work).unwrap().is_empty());
+        let environment = crate::sema::context::FrozenEnvironment::default();
+        let mut live = super::super::super::LiveSourceTypes::default();
+        live.record_schema(0, Some(&selected), environment.clone())
+            .unwrap();
+        let frozen = live.freeze();
+        let retained = frozen.retained(&mut work).unwrap();
+        let root = retained.binding_root(0, &mut work).unwrap().unwrap();
+        let ril_ir::provenance::SourceTypeNode::Callable {
+            row_identity: Some(retained_row),
+            ..
+        } = retained.graph.get(root).unwrap()
+        else {
+            panic!("row identity was erased")
+        };
+        assert_eq!(retained_row.origin, row.origin);
+        assert_eq!(retained_row.parameters[0].0, row.parameters[0].0);
+        let mut dependency = retained_row.parameters[0].1;
+        let mut aliases = BTreeSet::new();
+        while let Some(ril_ir::provenance::SourceTypeNode::Alias { target, .. }) =
+            retained.graph.get(dependency)
+        {
+            assert!(
+                aliases.insert(dependency),
+                "row substitution introduced an alias cycle"
+            );
+            dependency = *target;
+        }
+        assert!(matches!(
+            retained.graph.get(dependency),
+            Some(ril_ir::provenance::SourceTypeNode::Scalar(
+                SourceScalar::Int
+            ))
+        ));
+        let str_source = SourceSchema::scalar(SourceScalar::Str, None, &mut work).unwrap();
+        let identities = source.binder_identities(&mut work).unwrap();
+        let other = source
+            .substitute(
+                &BTreeMap::from([(identities.into_iter().next().unwrap(), str_source)]),
+                &mut work,
+            )
+            .unwrap();
+        assert_eq!(
+            selected.equivalent_in(&other, &environment, &environment, &mut work),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn original_row_admission_and_comparison_precharge_the_shared_budget() {
+        let (program, hir, model) = row_fixture();
+        let lexical = LexicalBindings::new(&hir, &mut 4_000_000).unwrap();
+        let declarations = BTreeMap::new();
+        let function = model
+            .functions
+            .iter()
+            .find(|function| function.syntax.name == "measured")
+            .unwrap();
+        let context = row_context(&program, &hir, &lexical, &model, &declarations);
+        let origin = CallableRowOrigin::Declaration(function.hir_id.unwrap());
+        let mut work = WorkLimit::new(65536);
+        callable_row_identity(origin, &function.syntax.annotations, context, &mut work).unwrap();
+        let cost = 65536 - work.remaining();
+        for limit in [0, cost - 1] {
+            assert!(
+                callable_row_identity(
+                    origin,
+                    &function.syntax.annotations,
+                    context,
+                    &mut WorkLimit::new(limit)
+                )
+                .is_err()
+            );
+        }
+        let mut exact = WorkLimit::new(cost);
+        let row = callable_row_identity(origin, &function.syntax.annotations, context, &mut exact)
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.remaining(), 0);
+        let int = SourceSchema::scalar(SourceScalar::Int, None, &mut work).unwrap();
+        let text = function
+            .syntax
+            .annotations
+            .iter()
+            .map(|annotation| annotation.text.clone())
+            .collect::<Vec<_>>();
+        let schema =
+            SourceSchema::callable_original(&[], &int, &text, Some(&row), None, &mut work).unwrap();
+        let environment = crate::sema::context::FrozenEnvironment::default();
+        assert!(
+            schema
+                .equivalent_in(&schema, &environment, &environment, &mut WorkLimit::new(0))
+                .is_err()
+        );
     }
 
     #[test]

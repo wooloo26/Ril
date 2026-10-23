@@ -38,7 +38,7 @@ impl Checker {
                 .current_call_event()
                 .ok_or(SourceTypesError::MissingNode)?;
             let receiver = self
-                .storage_supplied_input(event, 0, &args[0].1, span, frame)
+                .storage_supplied_input(event, 0, &args[0].1, span, frame, &mut work)?
                 .ok_or(SourceTypesError::MissingNode)?;
             let (original, environment) = receiver
                 .input_source(
@@ -65,7 +65,7 @@ impl Checker {
                     crate::sema::source_types::SourceSensitivity::Sensitive { .. } => {}
                 }
                 let input = self
-                    .storage_supplied_input(event, slot, &args[slot].1, span, frame)
+                    .storage_supplied_input(event, slot, &args[slot].1, span, frame, &mut work)?
                     .ok_or(SourceTypesError::MissingNode)?;
                 if !storage_compatible(
                     &expected,
@@ -106,56 +106,67 @@ impl Checker {
         value: &Value,
         span: Span,
         frame: &Frame,
-    ) -> Option<Input> {
-        let actual_context = self.invocation_context(frame.callable_owner);
-        let call = self.copy_call_events.get(event.0 as usize)?;
-        if call.id != event
-            || call.span != span
-            || call.owner != actual_context.owner
-            || call.parent != actual_context.invocation
-        {
-            return None;
+        work: &mut WorkLimit,
+    ) -> Result<Option<Input>, SourceTypesError> {
+        let candidate = (|| {
+            let actual_context = self.invocation_context(frame.callable_owner);
+            let call = self.copy_call_events.get(event.0 as usize)?;
+            if call.id != event
+                || call.span != span
+                || call.owner != actual_context.owner
+                || call.parent != actual_context.invocation
+            {
+                return None;
+            }
+            let input = self.call_input_source.supplied.get(&event)?.get(&slot)?;
+            let expression = input.observation?;
+            if input.context != actual_context
+                || input.default.is_some()
+                || input.allocation_epoch > self.recency_moves.len()
+            {
+                return None;
+            }
+            let mut preparations = self
+                .call_arguments
+                .iter()
+                .filter(|preparation| preparation.source_event == event);
+            let preparation = preparations.next()?;
+            if preparations.next().is_some()
+                || !preparation.slots_bound
+                || !preparation.evaluation_complete
+                || preparation.slots.get(slot)
+                    != Some(&crate::sema::default_uses::ArgumentSource::Supplied)
+                || preparation.supplied.get(&(slot as u32))
+                    != Some(&crate::sema::default_uses::SuppliedArgument {
+                        expression,
+                        allocation_epoch: input.allocation_epoch,
+                    })
+            {
+                return None;
+            }
+            let row = self.application_effect.contexts.get(expression)?;
+            let original = self.application_effect.expressions.get(expression)?;
+            if row.expression != expression
+                || row.context != actual_context
+                || row.argument_of != Some((event, slot as u32))
+            {
+                return None;
+            }
+            Some((input, original))
+        })();
+        let Some((input, original)) = candidate else {
+            return Ok(None);
+        };
+        let transported = self.physical_value_at(original, self.recency_moves.len(), work)?;
+        let mut remaining = work.remaining();
+        let before = remaining;
+        let same = crate::sema::evaluated::same_birth_value(&transported, value, &mut remaining);
+        work.charge(before - remaining)?;
+        if !same? {
+            return Ok(None);
         }
-        let input = self.call_input_source.supplied.get(&event)?.get(&slot)?;
-        let expression = input.observation?;
-        if input.context != actual_context
-            || input.default.is_some()
-            || input.allocation_epoch > self.recency_moves.len()
-        {
-            return None;
-        }
-        let mut preparations = self
-            .call_arguments
-            .iter()
-            .filter(|preparation| preparation.source_event == event);
-        let preparation = preparations.next()?;
-        if preparations.next().is_some()
-            || !preparation.slots_bound
-            || !preparation.evaluation_complete
-            || preparation.slots.get(slot)
-                != Some(&crate::sema::default_uses::ArgumentSource::Supplied)
-            || preparation.supplied.get(&(slot as u32))
-                != Some(&crate::sema::default_uses::SuppliedArgument {
-                    expression,
-                    allocation_epoch: input.allocation_epoch,
-                })
-        {
-            return None;
-        }
-        let row = self.application_effect.contexts.get(expression)?;
-        let original = self.application_effect.expressions.get(expression)?;
-        if row.expression != expression
-            || row.context != actual_context
-            || row.argument_of != Some((event, slot as u32))
-        {
-            return None;
-        }
-        let mut transported = original.value.clone();
-        self.transport_value_since(&mut transported, input.allocation_epoch);
-        if transported != *value {
-            return None;
-        }
-        Some(input.clone())
+        work.charge(1)?;
+        Ok(Some(input.clone()))
     }
 }
 

@@ -204,7 +204,11 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
             names.direct_identity(row.context.owner, id, work)
         })
         .map_err(|message| (fact.span, fact.value.cause, message))?;
-        if identity.is_some() && !seen.contains(&row.expression) {
+        if identity
+            .as_deref()
+            .is_some_and(builtin_source_types::has_declaration)
+            && !seen.contains(&row.expression)
+        {
             return Err((
                 fact.span,
                 fact.value.cause,

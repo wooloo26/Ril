@@ -114,6 +114,29 @@ impl Checker {
             .binding_schema_if_known(binding, original, work)
     }
     pub(super) fn record_parameter_source(&mut self, binding: BindingId, name: &str, span: Span) {
+        match self.preparation_formal_source(binding) {
+            Ok(Some((schema, environment))) => {
+                if let Err(error) = self.type_source.storage.types.record_schema(
+                    binding,
+                    Some(&schema),
+                    environment,
+                ) {
+                    self.unsupported(
+                        span,
+                        format!("preparation formal Source admission failed: {error}"),
+                    );
+                }
+                return;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("preparation formal declaration Source failed: {error}"),
+                );
+                return;
+            }
+        }
         if let Some(source) = self.inferred_closure_parameter_source(binding, name) {
             let (schema, environment) = match source {
                 Ok(Some((schema, environment))) => (Some(schema), environment),
@@ -146,13 +169,27 @@ impl Checker {
             .is_some_and(|scope| {
                 matches!(scope.origin, crate::sema::scopes::ScopeOrigin::Named(_))
             });
-        if named {
-            let schema = match self.named_parameter_declaration_schema(binding, name) {
+        let universal = matches!(
+            self.bindings[binding].context.owner,
+            Some(CallableOwner::Function(_))
+        ) && self.bindings[binding].context.invocation.is_none()
+            && self
+                .scopes
+                .get(&self.bindings[binding].owner)
+                .is_some_and(|scope| {
+                    matches!(scope.origin, crate::sema::scopes::ScopeOrigin::Unresolved)
+                });
+        if named || universal {
+            let mut stage = "original parameter declaration";
+            let schema = match self
+                .parameter_declaration_source_schema(binding, name, named, &mut stage)
+            {
                 Ok(schema) => schema,
                 Err(error) => {
+                    let original = &self.bindings[binding];
                     self.unsupported(
                         span,
-                        format!("named parameter lost its original declaration graph: {error}"),
+                        format!("named parameter lost its original declaration graph: {error}; stage={stage}, binding={binding}, context={:?}, scope={:?}, declaration_environment={:?}, active_invocation={:?}, active_default={:?}", original.context, original.owner, original.typing_environment.id(), self.copy_invocation_stack.last(), self.default_use_stack.last()),
                     );
                     return;
                 }
@@ -188,15 +225,18 @@ impl Checker {
         }
     }
 
-    fn named_parameter_declaration_schema(
+    fn parameter_declaration_source_schema(
         &mut self,
         binding: BindingId,
         name: &str,
+        actual_named_entry: bool,
+        stage: &mut &'static str,
     ) -> Result<Option<SourceSchema>, SourceTypesError> {
         use crate::sema::effect_identity::ArgumentKey;
         let Some((syntax, environment)) = self.formal_binding_declaration(binding, name) else {
             return Ok(None);
         };
+        *stage = "original parameter environment";
         if environment.is_poisoned()
             || environment.id() != self.bindings[binding].typing_environment.id()
         {
@@ -209,11 +249,13 @@ impl Checker {
                     + checker.type_source.environment.bound_row_context.len(),
             )?;
             let scope = checker.record_bound_scope();
+            *stage = "original parameter key";
             let key = checker
                 .record_bound_key(&syntax, &scope)
                 .ok_or(SourceTypesError::BudgetExceeded)?;
             let mut pending = vec![&key];
             let mut has_binder = false;
+            *stage = "original parameter binder identity";
             while let Some(part) = pending.pop() {
                 work.charge(1)?;
                 match part {
@@ -233,8 +275,12 @@ impl Checker {
                                 parameter,
                                 &checker.record_bounds,
                             ) {
-                                // A genuine Key coordinate is not an ordinary
-                                // Type Source, even though it has a binder UID.
+                                // A Key remains a static coordinate sort. Its
+                                // run-time argument nevertheless has the scalar
+                                // carrier certified by this original header.
+                                if matches!(parameter.bound.as_ref().map(|bound| &bound.kind), Some(TypeKind::KeyOf(_))) {
+                                    continue;
+                                }
                                 return Ok(None);
                             }
                         } else {
@@ -275,7 +321,8 @@ impl Checker {
                     ArgumentKey::Closed(_) | ArgumentKey::GenericBuiltin(_) => {}
                 }
             }
-            let schema = if has_binder {
+            let schema = if has_binder && actual_named_entry {
+                *stage = "actual named receiver identity";
                 let owner = checker.bindings[binding]
                     .context
                     .owner
@@ -304,14 +351,26 @@ impl Checker {
                 // The actual selection can come from a nested product's
                 // independently recorded scoped identity. An erased ordinary
                 // substitution never reconstructs its missing Source.
+                *stage = "actual named selected Source graphs";
                 let actual = checker.actual_input_source_schemas(definition,event,span,&mut work)?;
-                checker.original_header_source_schema(&syntax,&mut work)?.substitute(&actual,&mut work)?
+                *stage = "actual named original HIR header";
+                let header = checker.original_owned_header_source_schema(&syntax,definition,&environment,&mut work)?;
+                *stage = "actual named Source substitution";
+                header.substitute(&actual,&mut work)?
             } else {
-                let Some(schema) = checker.freeze_source_receiving_target(&syntax).schema else {
-                    return Ok(None);
+                *stage = "universal original HIR header";
+                // A universal header has genuine rigid Type UIDs, but no
+                // application whose selected arguments could replace them.
+                // Both cases enter through the original HIR header and its
+                // frozen interpretation; an erased parameter Ty is not input.
+                let Some(CallableOwner::Function(definition)) = checker.bindings[binding].context.owner else {
+                    return Err(SourceTypesError::Unresolved);
                 };
-                schema
+                checker.original_owned_header_source_schema(
+                    &syntax,definition,&environment,&mut work,
+                )?
             };
+            *stage = "original parameter declaration resolution";
             crate::sema::source_types::declarations::resolve_schema(
                 &schema,
                 &checker.semantic_hir,
@@ -332,12 +391,22 @@ impl Checker {
         let mut environment = target
             .map(|target| target.environment.clone())
             .unwrap_or_else(|| self.capture_typing_environment_with_bindings(&frame.env));
+        let mut work = crate::sema::source_types::WorkLimit::new(16384);
         let original = self
             .application_effect
             .expressions
             .get(initializer.expression)
-            .cloned();
-        let mut work = crate::sema::source_types::WorkLimit::new(16384);
+            .map(|fact| fact.value.packet());
+        let original = match work.charge(1) {
+            Ok(()) => original.cloned(),
+            Err(error) => {
+                self.unsupported(
+                    binding.value.span,
+                    format!("binding physical packet borrow: {error}"),
+                );
+                None
+            }
+        };
         let root = if let Some(target) = target {
             match target
                 .schema
@@ -362,7 +431,7 @@ impl Checker {
             }
         } else if let Some(source) = original.as_ref().and_then(|original| {
             self.storage_binding_source_schema_view(
-                &original.value,
+                original.value(),
                 &binding.value,
                 frame,
                 SourceRead::Received,
@@ -385,7 +454,7 @@ impl Checker {
         } else {
             original.as_ref().and_then(|original| {
                 match self.original_source_receiving_schema_at(
-                    &original.value,
+                    original.value(),
                     &binding.value,
                     frame,
                     &mut work,
@@ -820,11 +889,6 @@ impl Checker {
             expected: retained,
             completed: true,
         });
-        let observation = self
-            .application_effect
-            .expressions
-            .get(rhs.expression)
-            .cloned();
         let answer = (|| {
             let (expected, environment) = expected.as_ref().ok_or(SourceTypesError::Unresolved)?;
             if environment.is_poisoned() {
@@ -843,9 +907,17 @@ impl Checker {
             if expected.has_callable(&mut work)? {
                 return Err(SourceTypesError::Unresolved);
             }
-            let original = observation.as_ref().ok_or(SourceTypesError::MissingNode)?;
+            work.charge(1)?;
+            let original = self
+                .application_effect
+                .expressions
+                .get(rhs.expression)
+                .ok_or(SourceTypesError::MissingNode)?
+                .value
+                .packet()
+                .clone();
             let actual = self.original_source_receiving_schema(
-                &original.value,
+                original.value(),
                 rhs_syntax,
                 frame,
                 &mut work,

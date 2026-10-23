@@ -331,8 +331,12 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
     walk.pending.extend(facts.fields.values());
     walk.pending
         .extend(facts.bindings.iter().map(|binding| &binding.value));
-    walk.pending
-        .extend(facts.expressions.iter().map(|expression| &expression.value));
+    walk.pending.extend(
+        facts
+            .expressions
+            .iter()
+            .map(|expression| expression.value.value()),
+    );
     walk.pending
         .extend(facts.constant_values.iter().map(|constant| &constant.value));
     walk.pending
@@ -433,12 +437,32 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         walk.nodes(&boundary.nodes);
         walk.nodes(&boundary.output_nodes);
     }
+    let mut packet_work = crate::sema::source_types::WorkLimit::new(1_000_000);
     for invocation in &facts.copy_invocations {
-        for (_, argument) in &invocation.entry.arguments {
-            walk.snapshot(argument);
+        for argument in invocation.entry.arguments.iter() {
+            let snapshot = argument
+                .snapshot_view(&mut packet_work)
+                .map_err(|_| (argument.span, argument.value().cause))?;
+            if argument.packet.current_epoch() != invocation.entry.allocation_epoch {
+                return Err((argument.span, argument.value().cause));
+            }
+            walk.pending.push(snapshot.value);
+            walk.nodes(snapshot.nodes);
         }
         if let Some(result) = &invocation.result {
             walk.snapshot(result);
+        }
+    }
+    for invocation in &facts.closure_invocations {
+        for argument in invocation.entry.arguments.iter() {
+            let snapshot = argument
+                .snapshot_view(&mut packet_work)
+                .map_err(|_| (argument.span, argument.value().cause))?;
+            if argument.packet.current_epoch() != invocation.entry.allocation_epoch {
+                return Err((argument.span, argument.value().cause));
+            }
+            walk.pending.push(snapshot.value);
+            walk.nodes(snapshot.nodes);
         }
     }
     for event in &facts.resource_clones {
@@ -492,10 +516,8 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
             walk.nodes(&exit.nodes);
         }
     }
-    let mut visits = 0usize;
     while let Some(value) = walk.pending.pop() {
-        visits += 1;
-        if visits > 1_000_000
+        if packet_work.charge(1).is_err()
             || value
                 .source_type_witness
                 .as_ref()

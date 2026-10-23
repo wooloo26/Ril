@@ -195,6 +195,34 @@ impl SourceSchema {
         super::reception::equivalent(&self.types, self.root, &other.types, other.root, work)
     }
 
+    /// Relational type equality under two already authenticated captures.
+    /// This neither registers those environments nor proves a callable row.
+    pub(crate) fn equivalent_in(
+        &self,
+        other: &Self,
+        self_environment: &crate::sema::context::FrozenEnvironment,
+        other_environment: &crate::sema::context::FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        super::reception::equivalent_with_environments(
+            &self.types,
+            self.root,
+            &other.types,
+            other.root,
+            (self_environment, other_environment),
+            work,
+        )
+    }
+
+    /// Runtime classification is a read-only, lossy projection. Dimensions,
+    /// modes, contracts and original environments remain in this Source graph.
+    pub(crate) fn runtime_type(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<crate::sema::model::Ty, SourceTypesError> {
+        super::builtins::erased_type(&self.types, self.root, work)
+    }
+
     pub(crate) fn equivalent_key(
         &self,
         key: &crate::sema::effect_identity::ArgumentKey,

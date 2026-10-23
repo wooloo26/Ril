@@ -201,7 +201,7 @@ fn equal_span_tokens_cannot_be_swapped_between_dynamic_parent_instances() {
         .filter(|call| {
             call.target == target
                 && !call.declaration_probe
-                && matches!(call.entry.arguments[0].1.value.ty, Ty::Int(_) | Ty::Str)
+                && matches!(call.entry.arguments[0].value().ty, Ty::Int(_) | Ty::Str)
         })
         .collect();
     assert_eq!(calls.len(), 2);

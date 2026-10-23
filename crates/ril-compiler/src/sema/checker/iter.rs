@@ -545,7 +545,7 @@ impl Checker {
         let completed = self.completed_invocation.clone();
         let budgets = std::mem::take(&mut self.budget_coverage);
         let mut preview = self.frame(caller.env.clone(), true);
-        let result = self.invoke(callback, args, span, &mut preview);
+        let result = self.invoke_generated_values(callback, args, span, &mut preview);
         self.restore_preview(&before);
         self.completed_invocation = completed;
         self.budget_coverage = budgets;
@@ -718,7 +718,7 @@ impl Checker {
             let repeated = summary.then(|| self.begin_repeated_callback(&mut invocation, frame));
             state = invocation[0].1.clone();
             accumulator = invocation[1].1.clone();
-            let response = self.invoke(
+            let response = self.invoke_generated_values(
                 &step,
                 vec![(ParameterMode::Read, state.clone(), span)],
                 span,
@@ -759,7 +759,7 @@ impl Checker {
             self.standard_read_handle(&mut item);
             let previous_accumulator = accumulator.clone();
             if let Some(callback) = &callback {
-                accumulator = self.invoke(
+                accumulator = self.invoke_generated_values(
                     callback,
                     vec![
                         (ParameterMode::Read, accumulator, span),
@@ -819,7 +819,8 @@ impl Checker {
                     (ParameterMode::Read, accumulator.clone(), span),
                 ];
                 let repeated = self.begin_repeated_callback(&mut tail, frame);
-                let response = self.invoke(&step, vec![tail[0].clone()], span, frame);
+                let response =
+                    self.invoke_generated_values(&step, vec![tail[0].clone()], span, frame);
                 let mut tail_aborts = response.ty == Ty::Never;
                 if response.ty != Ty::Never
                     && response.variant_tag.as_deref() != Some("Iter::Step::Done")
@@ -840,7 +841,7 @@ impl Checker {
                     }
                     self.standard_read_handle(&mut item);
                     if let Some(callback) = &callback {
-                        let returned = self.invoke(
+                        let returned = self.invoke_generated_values(
                             callback,
                             vec![tail[1].clone(), (ParameterMode::Read, item, span)],
                             span,
@@ -1225,7 +1226,7 @@ impl Checker {
                 };
                 let item = self.project(&payload, Slot::Tuple(0), span, frame, true);
                 let successor = self.project(&payload, Slot::Tuple(1), span, frame, true);
-                let transformed = self.invoke(
+                let transformed = self.invoke_generated_values(
                     &args[2].1,
                     vec![(ParameterMode::Read, item, span)],
                     span,
@@ -1393,7 +1394,7 @@ impl Checker {
                     "filter requires inspection coverage for every rejected Result item",
                 );
             }
-            let predicate = self.invoke(
+            let predicate = self.invoke_generated_values(
                 &args[2].1,
                 vec![(ParameterMode::Read, item.clone(), span)],
                 span,
@@ -1466,7 +1467,7 @@ impl Checker {
                 [step.cause],
             );
         }
-        self.invoke(&step, vec![(ParameterMode::Read, state, span)], span, frame)
+        self.invoke_generated_values(&step, vec![(ParameterMode::Read, state, span)], span, frame)
     }
     fn iter_tuple(&mut self, items: Vec<Value>, span: Span, owner: ScopeId) -> Value {
         let node = self.allocate_owned(span, 0x1000_0000, owner);
@@ -1570,7 +1571,7 @@ impl Checker {
             return self.none_value(span);
         }
         let before = self.snapshot_flow();
-        let response = self.invoke(
+        let response = self.invoke_generated_values(
             &step,
             vec![(ParameterMode::Read, state, span)],
             span,

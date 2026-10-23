@@ -102,6 +102,38 @@ pub struct CopyValueSnapshot {
     pub nodes: Vec<CopyNode>,
     pub relations: Vec<(NodeId, NodeId, Relation)>,
 }
+
+/// Heap evidence accompanies the shared packet and cannot supply another root.
+#[derive(Debug, Clone)]
+pub struct CopyHeapSnapshot {
+    pub allocation_epoch: usize,
+    pub nodes: Vec<CopyNode>,
+    pub relations: Vec<(NodeId, NodeId, Relation)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CopyValueView<'a> {
+    pub(crate) value: &'a Value,
+    pub(crate) nodes: &'a [CopyNode],
+    pub(crate) relations: &'a [(NodeId, NodeId, Relation)],
+}
+
+impl CopyValueSnapshot {
+    pub(crate) fn as_view(&self) -> CopyValueView<'_> {
+        CopyValueView {
+            value: &self.value,
+            nodes: &self.nodes,
+            relations: &self.relations,
+        }
+    }
+}
+
+impl<'a> From<&'a CopyValueSnapshot> for CopyValueView<'a> {
+    fn from(snapshot: &'a CopyValueSnapshot) -> Self {
+        snapshot.as_view()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyInvocationStatus {
     Incomplete,
@@ -151,8 +183,7 @@ impl CopyCallEvent {
 #[derive(Debug, Clone)]
 pub struct CopyInvocation {
     pub id: super::copy_templates::InstanceId,
-    pub entry:
-        super::application_effect::CallableEntry<Vec<(super::model::Mode, CopyValueSnapshot)>>,
+    pub entry: super::application_effect::CallableEntry,
     pub parent: Option<super::copy_templates::InstanceId>,
     pub caller: Option<DefinitionId>,
     pub caller_owner: Option<CallableOwner>,

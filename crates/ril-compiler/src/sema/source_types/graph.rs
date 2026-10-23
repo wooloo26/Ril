@@ -1,3 +1,4 @@
+use ril_compiler_core::ids::GenericParamId;
 use ril_syntax::ast::ParameterMode;
 use std::sync::{
     Arc,
@@ -21,7 +22,10 @@ pub struct SourceTypeId {
     pub(super) index: u32,
 }
 
+pub(crate) use ril_ir::provenance::CallableRowOrigin;
+pub(crate) use ril_ir::provenance::KeyProjectionOrigin;
 pub(crate) use ril_ir::provenance::{SourceContainer, SourceLength, SourceScalar};
+pub(crate) type CallableRowIdentity<I = SourceTypeId> = ril_ir::provenance::CallableRowIdentity<I>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceField {
@@ -41,6 +45,14 @@ pub(crate) enum SourceNode {
     /// A genuine Type UID is complete as an identity, but its structure is
     /// unknown until an independently justified substitution selects it.
     Binder(String),
+    /// A dependent member selected by a genuine Key parameter. The Key UID is
+    /// not a Type binder, and the base remains a complete original graph.
+    KeyProjection {
+        origin: KeyProjectionOrigin,
+        parameter: GenericParamId,
+        identity: String,
+        base: SourceTypeId,
+    },
     Array {
         length: SourceLength,
         element: SourceTypeId,
@@ -58,6 +70,7 @@ pub(crate) enum SourceNode {
         parameters: Vec<(ParameterMode, SourceTypeId)>,
         result: SourceTypeId,
         annotations: Vec<String>,
+        row_identity: Option<CallableRowIdentity>,
     },
     Container {
         kind: SourceContainer,
@@ -99,6 +112,7 @@ impl SourceNode {
                 vec![]
             }
             Self::Array { element, .. } => vec![*element],
+            Self::KeyProjection { base, .. } => vec![*base],
             Self::Map { key, value } => vec![*key, *value],
             Self::Tuple(items)
             | Self::Container {
@@ -116,11 +130,19 @@ impl SourceNode {
                 .chain(row.iter().copied())
                 .collect(),
             Self::Callable {
-                parameters, result, ..
+                parameters,
+                result,
+                row_identity,
+                ..
             } => parameters
                 .iter()
                 .map(|(_, ty)| *ty)
                 .chain([*result])
+                .chain(
+                    row_identity
+                        .iter()
+                        .flat_map(|row| row.parameters.iter().map(|(_, root)| *root)),
+                )
                 .collect(),
             Self::Alias { target, .. } => vec![*target],
         }
@@ -135,6 +157,17 @@ impl SourceNode {
             Self::Scalar(kind) => Self::Scalar(*kind),
             Self::Nominal(id) => Self::Nominal(*id),
             Self::Binder(identity) => Self::Binder(identity.clone()),
+            Self::KeyProjection {
+                origin,
+                parameter,
+                identity,
+                base,
+            } => Self::KeyProjection {
+                origin: *origin,
+                parameter: *parameter,
+                identity: identity.clone(),
+                base: map(*base)?,
+            },
             Self::StaticValue(value) => Self::StaticValue(value.clone()),
             Self::OpaqueComputation(key) => Self::OpaqueComputation(key.clone()),
             Self::Array { length, element } => Self::Array {
@@ -165,6 +198,7 @@ impl SourceNode {
                 parameters,
                 result,
                 annotations,
+                row_identity,
             } => Self::Callable {
                 parameters: parameters
                     .iter()
@@ -172,6 +206,19 @@ impl SourceNode {
                     .collect::<Result<_, SourceTypesError>>()?,
                 result: map(*result)?,
                 annotations: annotations.clone(),
+                row_identity: row_identity
+                    .as_ref()
+                    .map(|row| {
+                        Ok::<_, SourceTypesError>(CallableRowIdentity {
+                            origin: row.origin,
+                            parameters: row
+                                .parameters
+                                .iter()
+                                .map(|(id, root)| Ok((*id, map(*root)?)))
+                                .collect::<Result<_, SourceTypesError>>()?,
+                        })
+                    })
+                    .transpose()?,
             },
             Self::Container { kind, arguments } => Self::Container {
                 kind: *kind,
@@ -211,6 +258,7 @@ impl SourceNode {
         work.charge(1)?;
         match self {
             Self::Binder(identity)
+            | Self::KeyProjection { identity, .. }
             | Self::StaticValue(identity)
             | Self::OpaqueComputation(identity) => work.text(identity),
             Self::Record { fields, .. } => {
@@ -223,9 +271,15 @@ impl SourceNode {
             Self::Callable {
                 parameters,
                 annotations,
+                row_identity,
                 ..
             } => {
                 work.charge(parameters.len())?;
+                work.charge(
+                    row_identity
+                        .as_ref()
+                        .map_or(0, |row| row.parameters.len() + 1),
+                )?;
                 for annotation in annotations {
                     work.charge(1)?;
                     work.text(annotation)?;

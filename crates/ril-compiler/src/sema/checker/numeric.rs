@@ -304,11 +304,18 @@ impl Checker {
         if minus.is_some() {
             // The atomic signed-literal rule still covers the operand syntax
             // site, without materializing an out-of-range positive temporary.
-            let mut operand = value.clone();
+            let mut operand = match self.copy_value_for_emission(&value) {
+                Ok(operand) => operand,
+                Err(error) => {
+                    self.unsupported(span, format!("signed operand emission admission: {error}"));
+                    return Some(value);
+                }
+            };
             operand.constant = None;
             let evaluation_context = context;
+            let environment = self.physical_evaluation_environment(span);
             let _ = self.application_effect.observe(
-                || super::super::ExpressionFact {
+                || super::super::application_effect::ObservationInput {
                     allocation_epoch: self.recency_moves.len(),
                     source_id: match &expression.kind {
                         ExprKind::Unary { operand, .. } => operand.hir_id,
@@ -319,6 +326,7 @@ impl Checker {
                 },
                 evaluation_context,
                 frame.owner,
+                environment,
                 None,
             );
         }

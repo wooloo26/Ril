@@ -39,6 +39,29 @@ pub(super) struct Contract {
 }
 
 impl Identity {
+    fn lookup(name: &str) -> Option<Self> {
+        use crate::sema::source_types::builtins;
+        if let Some(id) = ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(name) {
+            return Some(Self::Numeric(id));
+        }
+        if let Some(id) = GenericBuiltin::lookup(name) {
+            return Some(Self::Generic(id));
+        }
+        if let Some(id) = builtins::BuiltinId::lookup(name) {
+            return Some(Self::Closed(id));
+        }
+        if let Some(id) = builtins::ConstantId::lookup(name) {
+            return Some(Self::Constant(id));
+        }
+        Some(match name {
+            "File::read_chunk" => Self::FileReadChunk,
+            "File::write" => Self::FileWrite,
+            "Process::wait" => Self::ProcessWait,
+            "Process::terminate" => Self::ProcessTerminate,
+            _ => return None,
+        })
+    }
+
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::FileReadChunk => "File::read_chunk",
@@ -53,12 +76,19 @@ impl Identity {
     }
 }
 
+/// Lexical primitive identity and complete Source coverage are distinct.
+/// This shares the contract registry without allocating a speculative header.
+pub(super) fn has_declaration(name: &str) -> bool {
+    Identity::lookup(name).is_some()
+}
+
 /// Only call at the real unique Builtin mint/observation, after ordinary name
 /// resolution. A spelling in an expected type or a later mutated signature is
 /// not this operation's source. Unsupported builtin schemas remain absent.
 pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
-    use crate::sema::source_types::{WorkLimit, builtins};
-    if let Some(id) = ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(canonical_name) {
+    use crate::sema::source_types::WorkLimit;
+    let identity = Identity::lookup(canonical_name)?;
+    if let Identity::Numeric(id) = identity {
         return Some(Contract {
             identity: Identity::Numeric(id),
             source: BuiltinDeclaration::Numeric(id),
@@ -67,7 +97,7 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
             captures: BTreeSet::new(),
         });
     }
-    if let Some(id) = GenericBuiltin::lookup(canonical_name) {
+    if let Identity::Generic(id) = identity {
         return Some(Contract {
             identity: Identity::Generic(id),
             source: BuiltinDeclaration::Generic(id),
@@ -76,7 +106,7 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
             captures: BTreeSet::new(),
         });
     }
-    if let Some(id) = builtins::BuiltinId::lookup(canonical_name) {
+    if let Identity::Closed(id) = identity {
         return Some(Contract {
             identity: Identity::Closed(id),
             source: BuiltinDeclaration::Syntax(
@@ -89,7 +119,7 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
             captures: BTreeSet::new(),
         });
     }
-    if let Some(id) = builtins::ConstantId::lookup(canonical_name) {
+    if let Identity::Constant(id) = identity {
         return Some(Contract {
             identity: Identity::Constant(id),
             source: BuiltinDeclaration::Syntax(
@@ -103,13 +133,6 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
             captures: BTreeSet::new(),
         });
     }
-    let identity = match canonical_name {
-        "File::read_chunk" => Identity::FileReadChunk,
-        "File::write" => Identity::FileWrite,
-        "Process::wait" => Identity::ProcessWait,
-        "Process::terminate" => Identity::ProcessTerminate,
-        _ => return None,
-    };
     // The result Ty is deliberately ignored. In particular, a semantic
     // Callable/Array Ty is never reified into a complete source schema.
     let (_, parameters) = standard::builtin_callable_signature(canonical_name, span)?;
@@ -289,6 +312,35 @@ mod tests {
     #[test]
     fn arbitrary_names_and_unimplemented_schemas_never_borrow_a_known_header() {
         for name in ["write", "My::write", "File::other", "Array::map"] {
+            assert!(contract(name, span()).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn source_coverage_uses_the_contract_registry_without_inventing_headers() {
+        for name in [
+            "File::read_chunk",
+            "File::write",
+            "Process::wait",
+            "Process::terminate",
+            "Array::push",
+            "Array::insert",
+            "Array::truncate",
+            "Map::set",
+        ] {
+            assert!(has_declaration(name), "{name}");
+            assert!(contract(name, span()).is_some(), "{name}");
+        }
+        for name in [
+            "Io::read_all",
+            "Io::write_all",
+            "Io::read_buffered",
+            "Io::write_buffered",
+            "Io::flush",
+            "Io::close_write_buffer",
+            "My::read_all",
+        ] {
+            assert!(!has_declaration(name), "{name}");
             assert!(contract(name, span()).is_none(), "{name}");
         }
     }

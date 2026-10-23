@@ -173,10 +173,12 @@ fn identity_does_not_discharge_a_projected_symbolic_copy_dependency() {
 
 #[test]
 fn both_result_tags_and_caller_owned_producers_keep_the_same_duty() {
-    accepted(&format!(
-        "{PRELUDE}type Reader=fn(bool)->Result<[]int,str> &closure\nfn make_reader()->Reader &capture{{with Read::get()->{{let answer=resume 7;answer}};\\success:bool->{{let number=Read::get();if success{{Ok([number])}}else{{Err(\"no\")}}}}}}\nfn example(){{let reader=make_reader();assert(reader(true) is Ok(_));assert(reader(false) is Err(\"no\"))}}"
-    ));
-    accepted(&format!(
-        "{PRELUDE}type Reader=fn(Immut<Result<[]int,str>>)->Result<[]int,str> &closure\nfn make_reader()->Reader &capture{{with Read::get()->{{let answer=resume 7;answer}};\\value:Immut<Result<[]int,str>>->{{Read::get();value}}}}\nfn example(){{let reader=make_reader();let original:Result<[]int,str>=Ok([1]);let returned=reader(original);assert(returned is Ok(_))}}"
-    ));
+    for case in [
+        "retained-carrier-tag-sources",
+        "retained-carrier-caller-source",
+    ] {
+        accepted(ril_test::case_source(&format!(
+            "tests/regressions/evaluation-identity.ril::{case}"
+        )));
+    }
 }

@@ -4,6 +4,7 @@ use super::*;
 use crate::hir::application::{ApplicationKind, AstApplication, EvaluationRole};
 use crate::sema::source_types::SourceTypesError;
 use crate::sema::{
+    application_effect::EntryArgument,
     copy_contract::CopyCallEventId,
     default_uses::{ApplicationEvaluation, ArgumentSource, CallArguments, SuppliedArgument},
 };
@@ -416,17 +417,14 @@ impl Checker {
             }
         }
         self.immediate_scope_arguments = original_scope_arguments;
-        let Some(callee) = callee
-            .as_ref()
-            .map(|callee| self.read_evaluation_packet(callee, application.span))
-            .transpose()?
-        else {
+        let Some(callee_packet) = callee else {
             self.unsupported(
                 application.span,
                 "application has no actual callee evaluation",
             );
             return Ok((self.unit(application.span), event));
         };
+        let callee = self.read_evaluation_packet(&callee_packet, application.span)?;
         if let Some(id) = generic {
             contexts = self.primitive_numeric_contexts(
                 id,
@@ -525,16 +523,19 @@ impl Checker {
             let mut args: Vec<_> = slots
                 .into_iter()
                 .flatten()
-                .map(|(mode, held, span)| {
-                    Ok((mode, self.read_evaluation_packet(&held, span)?, span))
+                .map(|(mode, packet, span)| EntryArgument {
+                    mode,
+                    packet,
+                    span,
+                    heap: None,
                 })
-                .collect::<Result<_, SourceTypesError>>()?;
+                .collect();
             self.call_arguments[site.preparation].evaluation_complete =
                 self.call_arguments[site.preparation].slots_bound
                     && self.call_arguments[site.preparation].supplied.len()
                         == application.operands.len();
             self.check_public_call_input_sources(&callee, application.callee, event, frame);
-            self.finish_numeric_arguments(event, &mut args)?;
+            self.finish_numeric_entry_arguments(event, &mut args)?;
             args
         };
         self.window_future_expressions(&[], frame);
@@ -551,13 +552,7 @@ impl Checker {
             matches!(target, Callable::Builtin(name) if matches!(name.as_str(), "assert" | "Prelude::assert")));
         let condition = if asserted {
             args.first()
-                .map(|(_, value, _)| {
-                    let epoch = self.recency_moves.len();
-                    let moves = &self.recency_moves;
-                    self.application_effect.with_work(|work| {
-                        crate::sema::evaluated::transport_value_at(value, moves, epoch, epoch, work)
-                    })
-                })
+                .map(|argument| self.read_evaluation_packet(&argument.packet, argument.span))
                 .transpose()?
         } else {
             None
@@ -570,7 +565,13 @@ impl Checker {
             return Ok((self.unit(application.span), event));
         }
         let previous_call = frame.copy_call_event.replace(event);
-        let output = self.invoke(&callee, args, application.span, frame);
+        let output = self.invoke_application_packet(
+            callee_packet,
+            std::sync::Arc::new(args),
+            event,
+            application.span,
+            frame,
+        );
         frame.copy_call_event = previous_call;
         if output.ty != Ty::Never
             && let Some(condition) = condition
@@ -696,7 +697,7 @@ impl Checker {
         site: ApplicationSite,
         mut slots: Vec<Option<FrozenArgument>>,
         frame: &mut Frame,
-    ) -> Result<Vec<(ParameterMode, Value, Span)>, SourceTypesError> {
+    ) -> Result<Vec<EntryArgument>, SourceTypesError> {
         let ApplicationSite {
             event: source_event,
             preparation,
@@ -880,7 +881,7 @@ impl Checker {
                     let source_valid = self.check_named_input_source(
                         &info,
                         index,
-                        &received.value,
+                        &received,
                         Some(source_event),
                         value.2,
                     );
@@ -899,14 +900,12 @@ impl Checker {
                         }
                     }
                 }
-                let received = self.consume_evaluation_packet(received, value.2)?;
-                self.bind_pattern(
+                self.bind_parameter_packet(
                     &parameter.pattern,
                     BindingMode::Let,
                     received,
                     defaults,
-                    true,
-                );
+                )?;
                 result.push(value);
             }
             // Producers created by actual defaults belong to the application.
@@ -951,9 +950,14 @@ impl Checker {
         self.check_public_call_input_sources(callee, callee_syntax, source_event, frame);
         let mut result = result
             .into_iter()
-            .map(|(mode, value, span)| Ok((mode, self.read_evaluation_packet(&value, span)?, span)))
-            .collect::<Result<Vec<_>, SourceTypesError>>()?;
-        self.finish_numeric_arguments(source_event, &mut result)?;
+            .map(|(mode, packet, span)| EntryArgument {
+                mode,
+                packet,
+                span,
+                heap: None,
+            })
+            .collect::<Vec<_>>();
+        self.finish_numeric_entry_arguments(source_event, &mut result)?;
         Ok(result)
     }
 }

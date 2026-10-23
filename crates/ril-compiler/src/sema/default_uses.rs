@@ -46,6 +46,37 @@ pub struct DefaultUse {
     pub result_allocation_epoch: Option<usize>,
 }
 
+/// Link a prepared default to the existing callable-entry packet which used
+/// it. This checks identity only; completion and body evidence are checked by
+/// their owning analyses. An equal value or equal span is not the same input.
+pub(crate) fn closure_entry_uses(
+    default: &DefaultUse,
+    call: &super::effect_identity::ClosureInvocation,
+    closure: &super::model::ClosureInfo,
+) -> bool {
+    let DefaultOrigin::Call(event) = default.origin else {
+        return false;
+    };
+    let Some(argument) = call.entry.arguments.get(default.parameter as usize) else {
+        return false;
+    };
+    let birth = argument.packet.birth_coordinates();
+    default.target.is_none()
+        && default.evaluation_complete
+        && default.owner.is_some()
+        && default.owner == closure.site.map(CallableOwner::Lambda)
+        && matches!(&call.entry.origin, super::application_effect::EntryOrigin::Application(actual) if *actual == event)
+        && call.entry.caller_context == default.caller
+        && default.result_expression.is_some()
+        && birth.observation == default.result_expression
+        && birth.context
+            == Some(InvocationContext {
+                owner: default.owner,
+                default_use: Some(default.id),
+                ..default.caller
+            })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgumentSource {
     Supplied,

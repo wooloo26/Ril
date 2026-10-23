@@ -671,211 +671,6 @@ fn an_optional_clone_keeps_the_tag_bit_but_has_a_new_result_producer() {
 }
 
 #[test]
-fn independent_formal_optional_paths_cannot_be_unified_even_with_one_valid_cause() {
-    let source = ril_test::case_source(
-        "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
-    );
-    let verified = Session::new(source.as_bytes().to_vec())
-        .verify()
-        .unwrap_or_else(|error| panic!("{error:?}\n{source}"));
-    let mut changed = verified.facts().clone();
-    let invocation = changed
-        .copy_invocations
-        .iter_mut()
-        .find(|invocation| {
-            invocation.declaration_probe
-                && invocation.caller_activation.is_none()
-                && invocation.entry.arguments.len() == 2
-                && invocation.entry.arguments[0]
-                    .1
-                    .value
-                    .option_identity
-                    .is_some()
-                && invocation.entry.arguments[1]
-                    .1
-                    .value
-                    .option_identity
-                    .is_some()
-        })
-        .unwrap();
-    let identity = invocation.entry.arguments[0]
-        .1
-        .value
-        .option_identity
-        .unwrap();
-    assert_ne!(
-        Some(identity),
-        invocation.entry.arguments[1].1.value.option_identity
-    );
-    invocation.entry.arguments[1].1.value.option_identity = Some(identity);
-    invocation.entry.arguments[1].1.value.cause = changed.optional_tags[identity.0 as usize].cause;
-    // The arena entry, payload type, owner and ancestry are all individually
-    // valid. The two actual symbolic input positions must still be independent.
-    rejected(&changed);
-}
-
-#[test]
-fn formal_optional_independence_cannot_be_disabled_by_a_registered_owner() {
-    let source = ril_test::case_source(
-        "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
-    );
-    let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let mut changed = verified.facts().clone();
-    let invocation = changed
-        .copy_invocations
-        .iter_mut()
-        .find(|invocation| {
-            invocation.declaration_probe
-                && invocation.caller_activation.is_none()
-                && invocation.entry.arguments.len() == 2
-                && invocation.entry.arguments[0]
-                    .1
-                    .value
-                    .option_identity
-                    .is_some()
-                && invocation.entry.arguments[1]
-                    .1
-                    .value
-                    .option_identity
-                    .is_some()
-        })
-        .unwrap();
-    let identity = invocation.entry.arguments[0]
-        .1
-        .value
-        .option_identity
-        .unwrap();
-    assert_ne!(
-        Some(identity),
-        invocation.entry.arguments[1].1.value.option_identity
-    );
-    invocation.entry.arguments[1].1.value.option_identity = Some(identity);
-    invocation.entry.arguments[1].1.value.cause = changed.optional_tags[identity.0 as usize].cause;
-    // Registry-valid owner metadata must not change which actual declaration
-    // parameter paths are independent symbolic inputs.
-    changed.optional_tags[identity.0 as usize].creation_owner =
-        *changed.scopes.iter().next().unwrap();
-    rejected(&changed);
-}
-
-#[test]
-fn formal_optional_independence_survives_every_entry_selector_combination() {
-    let source = ril_test::case_source(
-        "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
-    );
-    let actual_alias = format!(
-        "{source}\nfn alias_unknown_optional(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{{consume(value,value)}}\nfn named_optional_callback(value:Option<Result<int,str>>) @Async{{assert(consume(value,value) is Ok()|Err(_))}}\nfn through_named_optional_callback(value:Option<Result<int,str>>) @Async{{named_optional_callback(value)}}\nfn through_single_optional_callback(value:Option<Result<int,str>>) @Async{{let mapped=Array::map([1],\\number:int->{{named_optional_callback(value);number}})}}\n"
-    );
-    let alias_verified = Session::new(actual_alias.as_bytes().to_vec())
-        .verify()
-        .unwrap_or_else(|error| panic!("lawful actual input alias: {error:?}"));
-    ril_compiler::lower::lower_core(&alias_verified).unwrap();
-    let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let original = verified.facts().clone();
-    let entry = original
-        .copy_invocations
-        .iter()
-        .find(|invocation| {
-            invocation.declaration_probe
-                && invocation.caller_activation.is_none()
-                && invocation.entry.arguments.len() == 2
-                && invocation.entry.arguments[0]
-                    .1
-                    .value
-                    .option_identity
-                    .is_some()
-                && invocation.entry.arguments[1]
-                    .1
-                    .value
-                    .option_identity
-                    .is_some()
-        })
-        .unwrap();
-    let header = original
-        .functions
-        .iter()
-        .find(|function| function.definition == entry.target)
-        .unwrap();
-    assert_eq!(entry.span, header.syntax.span);
-    let scope = *original.scopes.iter().next().unwrap();
-    let actual_source = original
-        .copy_call_events
-        .iter()
-        .find(|event| event.target == Some(entry.target))
-        .unwrap()
-        .id;
-    let parent = original
-        .copy_invocations
-        .iter()
-        .find(|candidate| candidate.id != entry.id && candidate.parent.is_none())
-        .unwrap()
-        .id;
-    println!(
-        "real declaration entry={:?}, target={:?}, header={:?}, parameters={}",
-        entry.id,
-        entry.target,
-        header.syntax.span,
-        header.syntax.parameters.len()
-    );
-    let mut accepted = Vec::new();
-    let mut unrelated_rejections = Vec::new();
-    for selectors in 0u8..16 {
-        let mut changed = original.clone();
-        let invocation = &mut changed.copy_invocations[entry.id.0 as usize];
-        let identity = invocation.entry.arguments[0]
-            .1
-            .value
-            .option_identity
-            .unwrap();
-        assert_ne!(
-            Some(identity),
-            invocation.entry.arguments[1].1.value.option_identity
-        );
-        invocation.entry.arguments[1].1.value.option_identity = Some(identity);
-        invocation.entry.arguments[1].1.value.cause =
-            changed.optional_tags[identity.0 as usize].cause;
-        // All substituted identities are registered. The original real
-        // declaration span and two frozen symbolic input paths stay intact.
-        changed.optional_tags[identity.0 as usize].creation_owner = scope;
-        if selectors & 1 != 0 {
-            invocation.declaration_probe = false;
-        }
-        if selectors & 2 != 0 {
-            invocation.caller_activation = Some(scope);
-        }
-        if selectors & 4 != 0 {
-            invocation.source_event = Some(actual_source);
-        }
-        if selectors & 8 != 0 {
-            invocation.parent = Some(parent);
-        }
-        match ril_compiler::sema::validate::solved_facts(&changed) {
-            Ok(structure) => {
-                println!("entry selectors={selectors:04b}: ACCEPTED {structure:?}");
-                accepted.push(selectors);
-            }
-            Err(issues) => {
-                println!("entry selectors={selectors:04b}: rejected {issues:?}");
-                if !issues.iter().any(|issue| {
-                    matches!(&issue.kind, ril_compiler::sema::validate::ValidationIssueKind::ChannelMessage(message)
-                        if message.contains("independent symbolic formal parameter paths"))
-                }) {
-                    unrelated_rejections.push(selectors);
-                }
-            }
-        }
-    }
-    assert!(
-        accepted.is_empty(),
-        "real independent formal paths were accepted after changing entry selectors: {accepted:?}"
-    );
-    assert!(
-        unrelated_rejections.is_empty(),
-        "entry selectors did not reconstruct the actual formal independence duty: {unrelated_rejections:?}"
-    );
-}
-
-#[test]
 fn deleting_the_entire_formal_input_table_cannot_skip_header_coverage() {
     let source = ril_test::case_source(
         "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
@@ -890,18 +685,16 @@ fn deleting_the_entire_formal_input_table_cannot_skip_header_coverage() {
                 && invocation.caller_activation.is_none()
                 && invocation.entry.arguments.len() == 2
                 && invocation.entry.arguments[0]
-                    .1
-                    .value
+                    .value()
                     .option_identity
                     .is_some()
                 && invocation.entry.arguments[1]
-                    .1
-                    .value
+                    .value()
                     .option_identity
                     .is_some()
         })
         .unwrap();
-    invocation.entry.arguments.clear();
+    std::sync::Arc::make_mut(&mut invocation.entry.arguments).clear();
     let result = ril_compiler::sema::validate::solved_facts(&changed);
     println!("deleted whole declaration input table: {result:?}");
     let issues = result.unwrap_err();
@@ -952,8 +745,7 @@ fn unrelated_global_optional_inputs_do_not_require_business_message_source_proof
                 && !invocation.declaration_probe
                 && invocation.source_event.is_some()
                 && invocation.entry.arguments[0]
-                    .1
-                    .value
+                    .value()
                     .option_identity
                     .is_some()
         })

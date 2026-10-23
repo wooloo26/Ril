@@ -72,6 +72,18 @@ impl PartialEq for SourceTypeWitness {
 }
 impl Eq for SourceTypeWitness {}
 impl SourceTypeWitness {
+    /// Admit the closed compatibility validator before it scans syntax or
+    /// allocates normalized keys. This does not authorize the witness's origin.
+    pub(crate) fn validate_closed_with_work(&self, work: &mut usize) -> Option<bool> {
+        *work = work.checked_sub(1 + self.key.len())?;
+        // The validator walks the syntax, builds its argument key and then
+        // builds its normalized comparison key. Each walk spends shared work.
+        for _ in 0..3 {
+            crate::static_eval::charge_type_syntax_clone(&self.syntax, work)?;
+        }
+        Some(self.validate_closed())
+    }
+
     /// Pure consistency check for current values and frozen historical snapshots.
     /// Named state/effect bounds require a separately frozen lexical identity;
     /// the initial witness producer therefore leaves those schemas unresolved.
@@ -955,6 +967,8 @@ impl Value {
 
 #[derive(Debug, Clone)]
 pub struct BindingInfo {
+    /// Canonical function statement that created a hoisted declaration binding.
+    pub declaration: Option<ril_compiler_core::ids::StmtId>,
     /// Actual HIR pattern introducing this binding, independent of its span.
     pub pattern: Option<ril_compiler_core::ids::PatternId>,
     /// Actual initializer or pattern-receiver activation selecting this birth.

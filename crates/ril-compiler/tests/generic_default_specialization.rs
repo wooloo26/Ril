@@ -63,12 +63,7 @@ fn supplied_only_slot_prunes_only_its_private_instances_fallback() {
 
 #[test]
 fn an_early_default_exit_cannot_borrow_an_entered_instances_body_certificate() {
-    let source = r#"
-eff Mark<T>{touch()}
-fn selected<T>(witness:T,stop:bool,value:int=if stop{panic("default")}else{7})->int @Mark<T>{Mark<T>::touch();value}
-fn call(stop:bool)->int @Mark<int>{selected(0,stop)}
-fn main(){with Mark<int>::touch()->resume();assert(call(false)==7);call(true)}
-"#;
+    let source = ril_test::case_source("tests/regressions/defaults.ril::abrupt-source-block");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     assert!(verified.facts().default_uses.iter().any(|usage| matches!(
         usage.origin,

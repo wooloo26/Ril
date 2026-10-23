@@ -4,9 +4,9 @@ use super::{EntryOrigin, InvocationContext};
 use crate::hir::nodes::{self as h, HirProgram};
 use crate::sema::{
     context::FrozenEnvironment,
-    copy_contract::{CopyInvocation, CopyValueSnapshot},
+    copy_contract::{CopyInvocation, CopyValueView},
     facts::{OriginKind, Permission, ScopeId},
-    model::{BindingInfo, Callable, Constant, Mode, Value},
+    model::{BindingInfo, Callable, Constant, Value},
     source_types::{SourcePath, SourceSchema, SourceTypesError as Error, WorkLimit},
 };
 use ril_compiler_core::ids::TypeExprId;
@@ -222,17 +222,12 @@ pub(crate) fn signature_assumption<'a>(
             && call.entry.allocation_epoch <= epoch_limit
             && call.entry.arguments.len() == source.formals.len(),
     )?;
-    let (mode, input) = call.entry.arguments.get(slot).ok_or(Error::MissingNode)?;
-    let mode = match mode {
-        Mode::Read => ParameterMode::Read,
-        Mode::Write => ParameterMode::Mut,
-        Mode::Retain => ParameterMode::SharedMut,
-    };
+    let input = call.entry.arguments.get(slot).ok_or(Error::MissingNode)?;
     let authenticated = source.authenticate(
         slot,
         SignatureInput {
-            value: &input.value,
-            mode,
+            value: input.value(),
+            mode: input.mode,
             scope: call.caller_activation,
             context: call.entry.caller_context,
         },
@@ -240,7 +235,7 @@ pub(crate) fn signature_assumption<'a>(
         bindings,
         work,
     )?;
-    universal_graph(input, work)?;
+    universal_graph(input.snapshot_view(work)?, work)?;
     Ok(authenticated)
 }
 
@@ -263,12 +258,12 @@ pub(crate) fn closure_signature_assumption<'a>(
             && call.entry.allocation_epoch <= epoch_limit
             && call.entry.arguments.len() == source.formals.len(),
     )?;
-    let (mode, input, _) = call.entry.arguments.get(slot).ok_or(Error::MissingNode)?;
+    let input = call.entry.arguments.get(slot).ok_or(Error::MissingNode)?;
     source.authenticate(
         slot,
         SignatureInput {
-            value: input,
-            mode: *mode,
+            value: input.value(),
+            mode: input.mode,
             scope: Some(call.caller_activation),
             context: call.entry.caller_context,
         },
@@ -303,7 +298,7 @@ pub(super) fn requires_signature_origin(
     Ok(false)
 }
 
-fn universal_graph(input: &CopyValueSnapshot, work: &mut WorkLimit) -> Result<(), Error> {
+fn universal_graph(input: CopyValueView<'_>, work: &mut WorkLimit) -> Result<(), Error> {
     work.charge(1 + input.nodes.len() + input.relations.len())?;
     require(!input.relations.iter().any(|(left, right, relation)| {
         left != right
@@ -312,8 +307,8 @@ fn universal_graph(input: &CopyValueSnapshot, work: &mut WorkLimit) -> Result<()
     }))?;
     let nodes: BTreeSet<_> = input.nodes.iter().map(|node| node.origin).collect();
     require(nodes.len() == input.nodes.len())?;
-    let mut values = vec![&input.value];
-    for node in &input.nodes {
+    let mut values = vec![input.value];
+    for node in input.nodes {
         require(matches!(node.fact.kind, OriginKind::Formal(_)))?;
         work.charge(node.fields.len())?;
         let mut slots = BTreeSet::new();

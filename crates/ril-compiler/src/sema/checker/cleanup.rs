@@ -79,7 +79,7 @@ impl Checker {
         invocation.locals.clear();
         invocation.returned.clear();
         invocation.foreign_return_states.clear();
-        let result = self.invoke(&callback, Vec::new(), span, &mut invocation);
+        let result = self.invoke_generated_values(&callback, Vec::new(), span, &mut invocation);
         self.require_type(&result, &Ty::Unit, span);
         let (mut judgment, handlers) =
             self.selected_handler_termination(&invocation.obligations.selected_handlers, span);

@@ -300,6 +300,7 @@ impl Definition {
                     .collect(),
                 result,
                 annotations: vec![],
+                row_identity: None,
             },
             work,
         )?;
@@ -532,7 +533,21 @@ pub(crate) fn erased_type(
     id: SourceTypeId,
     work: &mut WorkLimit,
 ) -> std::result::Result<Ty, SourceTypesError> {
+    erased_type_at(types, id, work, 0)
+}
+
+fn erased_type_at(
+    types: &SourceTypes,
+    id: SourceTypeId,
+    work: &mut WorkLimit,
+    depth: usize,
+) -> std::result::Result<Ty, SourceTypesError> {
     work.charge(1)?;
+    if depth >= 128 {
+        return Err(SourceTypesError::BudgetExceeded);
+    }
+    let id = types.unalias(id, work)?;
+    let child = |id, work: &mut WorkLimit| erased_type_at(types, id, work, depth + 1);
     Ok(match types.get(id)? {
         SourceNode::Scalar(SourceScalar::Unit) => Ty::Unit,
         SourceNode::Scalar(SourceScalar::Bool) => Ty::Bool,
@@ -545,15 +560,16 @@ pub(crate) fn erased_type(
             Ty::Float(super::substitution::scalar_name(*kind).into())
         }
         SourceNode::Scalar(kind) => Ty::Int(super::substitution::scalar_name(*kind).into()),
-        SourceNode::Array { element, .. } => {
-            Ty::Array(Box::new(erased_type(types, *element, work)?))
+        SourceNode::Array { element, .. } => Ty::Array(Box::new(child(*element, work)?)),
+        SourceNode::Map { key, value } => {
+            Ty::Map(Box::new(child(*key, work)?), Box::new(child(*value, work)?))
         }
         SourceNode::Tuple(items) => {
             work.charge(items.len())?;
             Ty::Tuple(
                 items
                     .iter()
-                    .map(|id| erased_type(types, *id, work))
+                    .map(|id| child(*id, work))
                     .collect::<std::result::Result<_, _>>()?,
             )
         }
@@ -566,7 +582,7 @@ pub(crate) fn erased_type(
                         work.text(&field.label)?;
                         Ok((
                             field.label.clone(),
-                            (field.mutable, erased_type(types, field.value, work)?),
+                            (field.mutable, child(field.value, work)?),
                         ))
                     })
                     .collect::<std::result::Result<_, SourceTypesError>>()?,
@@ -575,15 +591,22 @@ pub(crate) fn erased_type(
         SourceNode::Container {
             kind: SourceContainer::Option,
             arguments,
-        } if arguments.len() == 1 => {
-            Ty::Optional(Box::new(erased_type(types, arguments[0], work)?))
+        } if arguments.len() == 1 => Ty::Optional(Box::new(child(arguments[0], work)?)),
+        SourceNode::Container { kind, arguments } if arguments.len() == 1 => {
+            let inner = Box::new(child(arguments[0], work)?);
+            match kind {
+                SourceContainer::Immutable => Ty::Immutable(inner),
+                SourceContainer::Set => Ty::Set(inner),
+                SourceContainer::Range => Ty::Range(inner),
+                _ => return Err(SourceTypesError::Unresolved),
+            }
         }
         SourceNode::Container {
             kind: SourceContainer::Result,
             arguments,
         } if arguments.len() == 2 => Ty::Result(
-            Box::new(erased_type(types, arguments[0], work)?),
-            Box::new(erased_type(types, arguments[1], work)?),
+            Box::new(child(arguments[0], work)?),
+            Box::new(child(arguments[1], work)?),
         ),
         SourceNode::Callable {
             parameters, result, ..
@@ -592,11 +615,184 @@ pub(crate) fn erased_type(
             Ty::Callable(
                 parameters
                     .iter()
-                    .map(|(_, id)| erased_type(types, *id, work))
+                    .map(|(_, id)| child(*id, work))
                     .collect::<std::result::Result<_, _>>()?,
-                Box::new(erased_type(types, *result, work)?),
+                Box::new(child(*result, work)?),
             )
         }
         _ => return Err(SourceTypesError::Unresolved),
     })
+}
+
+#[cfg(test)]
+mod runtime_projection_tests {
+    use super::*;
+
+    fn alias_callable() -> (SourceTypes, SourceTypeId) {
+        let mut work = WorkLimit::new(4096);
+        let mut builder = SourceBuilder::new().unwrap();
+        let int = builder
+            .insert(SourceNode::Scalar(SourceScalar::Int), &mut work)
+            .unwrap();
+        let array = builder
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(3),
+                    element: int,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let record = builder
+            .insert(
+                SourceNode::Record {
+                    fields: vec![SourceField {
+                        label: "items".into(),
+                        mutable: false,
+                        value: array,
+                    }],
+                    row: None,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let alias = builder
+            .insert(
+                SourceNode::Alias {
+                    declaration: "original-reader-declaration".into(),
+                    target: record,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let root = builder
+            .insert(
+                SourceNode::Callable {
+                    parameters: vec![(ParameterMode::Mut, alias)],
+                    result: array,
+                    annotations: vec!["&mut".into()],
+                    row_identity: None,
+                },
+                &mut work,
+            )
+            .unwrap();
+        (builder.freeze(&mut work).unwrap(), root)
+    }
+
+    #[test]
+    fn runtime_views_expand_actual_alias_edges_without_changing_source_coordinates() {
+        let (types, root) = alias_callable();
+        let expected_array = Ty::Array(Box::new(Ty::Int("int".into())));
+        let expected_record = Ty::Record(std::collections::BTreeMap::from([(
+            "items".into(),
+            (false, expected_array.clone()),
+        )]));
+        assert_eq!(
+            erased_type(&types, root, &mut WorkLimit::new(4096)).unwrap(),
+            Ty::Callable(vec![expected_record], Box::new(expected_array))
+        );
+        let SourceNode::Callable {
+            parameters,
+            annotations,
+            ..
+        } = types.get(root).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(parameters[0].0, ParameterMode::Mut);
+        assert_eq!(annotations, &["&mut"]);
+        let SourceNode::Alias { target, .. } = types.get(parameters[0].1).unwrap() else {
+            unreachable!()
+        };
+        let SourceNode::Record { fields, .. } = types.get(*target).unwrap() else {
+            unreachable!()
+        };
+        assert!(matches!(
+            types.get(fields[0].value).unwrap(),
+            SourceNode::Array {
+                length: SourceLength::Fixed(3),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn runtime_projection_spends_only_its_supplied_work() {
+        let (types, root) = alias_callable();
+        let mut work = WorkLimit::new(4096);
+        erased_type(&types, root, &mut work).unwrap();
+        let exact = 4096 - work.remaining();
+        for units in [0, exact - 1, exact] {
+            assert_eq!(
+                erased_type(&types, root, &mut WorkLimit::new(units)).is_ok(),
+                units == exact
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_projection_cannot_invent_a_type_for_a_binder_or_alias_cycle() {
+        let mut work = WorkLimit::new(4096);
+        let mut builder = SourceBuilder::new().unwrap();
+        let binder = builder
+            .insert(SourceNode::Binder("genuine-type-uid".into()), &mut work)
+            .unwrap();
+        let first = builder.reserve(&mut work).unwrap();
+        let second = builder.reserve(&mut work).unwrap();
+        builder
+            .define(
+                first,
+                SourceNode::Alias {
+                    declaration: "first".into(),
+                    target: second,
+                },
+                &mut work,
+            )
+            .unwrap();
+        builder
+            .define(
+                second,
+                SourceNode::Alias {
+                    declaration: "second".into(),
+                    target: first,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let types = builder.freeze(&mut work).unwrap();
+        assert_eq!(
+            erased_type(&types, binder, &mut work).unwrap_err(),
+            SourceTypesError::Unresolved
+        );
+        assert_eq!(
+            erased_type(&types, first, &mut work).unwrap_err(),
+            SourceTypesError::AliasCycle
+        );
+    }
+
+    #[test]
+    fn recursive_runtime_expansion_stops_with_an_explicit_failure() {
+        let mut work = WorkLimit::new(4096);
+        let mut builder = SourceBuilder::new().unwrap();
+        let root = builder.reserve(&mut work).unwrap();
+        builder
+            .define(
+                root,
+                SourceNode::Record {
+                    fields: vec![SourceField {
+                        label: "next".into(),
+                        mutable: false,
+                        value: root,
+                    }],
+                    row: None,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let types = builder.freeze(&mut work).unwrap();
+        assert_eq!(
+            erased_type(&types, root, &mut work).unwrap_err(),
+            SourceTypesError::BudgetExceeded
+        );
+    }
 }

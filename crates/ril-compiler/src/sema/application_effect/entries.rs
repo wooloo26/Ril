@@ -1,8 +1,10 @@
 //! Immutable callable inputs. Generated calls retain their actual value
 //! derivations instead of borrowing an enclosing written application's slots.
 use crate::sema::{
-    copy_contract::{CopyBoundaryId, CopyCallEventId},
+    copy_contract::{CopyBoundaryId, CopyCallEventId, CopyHeapSnapshot, CopyValueView},
+    evaluated::EvaluatedValue,
     model::Value,
+    source_types::{SourceTypesError, WorkLimit},
 };
 use ril_compiler_core::{
     ids::{ActivationEpochId, EvaluationOccurrenceId},
@@ -10,8 +12,38 @@ use ril_compiler_core::{
 };
 use ril_syntax::ast::ParameterMode;
 use std::sync::Arc;
+#[path = "entry_packets.rs"]
+mod packets;
 
-pub type EntryArgument = (ParameterMode, Value, Span);
+#[derive(Debug, Clone)]
+pub struct EntryArgument {
+    pub mode: ParameterMode,
+    pub packet: Arc<EvaluatedValue>,
+    pub span: Span,
+    pub heap: Option<Arc<CopyHeapSnapshot>>,
+}
+
+impl EntryArgument {
+    pub fn value(&self) -> &Value {
+        self.packet.value()
+    }
+
+    pub(crate) fn snapshot_view(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<CopyValueView<'_>, SourceTypesError> {
+        work.charge(1)?;
+        let heap = self.heap.as_deref().ok_or(SourceTypesError::MissingNode)?;
+        if self.packet.current_epoch() != heap.allocation_epoch {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok(CopyValueView {
+            value: self.packet.value(),
+            nodes: &heap.nodes,
+            relations: &heap.relations,
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputOrigin {
@@ -113,14 +145,15 @@ pub enum EntryOrigin {
 }
 
 #[derive(Debug, Clone)]
-pub struct CallableEntry<A = Arc<Vec<EntryArgument>>> {
+pub struct CallableEntry {
     pub parent: Option<ActivationEpochId>,
     pub caller_context: super::InvocationContext,
     pub origin: EntryOrigin,
     pub allocation_epoch: usize,
+    pub callee: Option<Arc<EvaluatedValue>>,
     /// The original argument vector is moved into shared immutable storage;
     /// entry recording never recursively clones the values or their syntax.
-    pub arguments: A,
+    pub arguments: Arc<Vec<EntryArgument>>,
 }
 
 impl super::ApplicationEffectDomain {
@@ -145,6 +178,8 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
     let mut covered_named = BTreeSet::new();
     let mut generated_named = BTreeSet::new();
     let mut work = 4_000_000usize;
+    let mut packets = packets::Replay::new(facts, &mut work)?;
+    packets.physical_sources(&mut work)?;
     work = work
         .checked_sub(facts.activations.len())
         .ok_or("callable body coverage exceeds its work bound")?;
@@ -202,6 +237,11 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
     }
     for (ordinal, call) in facts.closure_invocations.iter().enumerate() {
         let entry = &call.entry;
+        packets.entry(
+            entry,
+            super::generated_entries::GeneratedEntryKey::Closure(call.id),
+            &mut work,
+        )?;
         work = work
             .checked_sub(1 + entry.arguments.len())
             .ok_or("callable input coverage exceeds its work bound")?;
@@ -234,7 +274,7 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                         .arguments
                         .iter()
                         .zip(&closure.parameters)
-                        .any(|((mode, _, _), parameter)| *mode != parameter.mode)))
+                        .any(|(argument, parameter)| argument.mode != parameter.mode)))
         {
             return Err(
                 "callable entry changed its original inputs, modes or caller context".into(),
@@ -258,14 +298,16 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                 )
                 .map_err(|error| format!("signature closure header failed: {error}"))?;
         }
-        for (slot, (mode, argument, _)) in entry.arguments.iter().enumerate() {
+        for (slot, entry_argument) in entry.arguments.iter().enumerate() {
+            let argument = entry_argument.value();
+            let mode = entry_argument.mode;
             if let EntryOrigin::SignatureProbe(source) = &entry.origin {
                 source
                     .authenticate(
                         slot,
                         super::signature_inputs::SignatureInput {
                             value: argument,
-                            mode: *mode,
+                            mode,
                             scope: Some(call.caller_activation),
                             context: entry.caller_context,
                         },
@@ -371,6 +413,11 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
     }
     for (ordinal, call) in facts.copy_invocations.iter().enumerate() {
         let entry = &call.entry;
+        packets.entry(
+            entry,
+            super::generated_entries::GeneratedEntryKey::Named(call.id),
+            &mut work,
+        )?;
         work = work
             .checked_sub(1 + entry.arguments.len())
             .ok_or("named callable inputs exceed their work bound")?;
@@ -396,16 +443,11 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                 && entry.arguments.len() != function.syntax.parameters.len())
             || (call.status == CopyInvocationStatus::Completed
                 && entry.arguments.len() == function.syntax.parameters.len()
-                && entry.arguments.iter().zip(&function.syntax.parameters).any(
-                    |((mode, _), parameter)| {
-                        *mode
-                            != match parameter.mode {
-                                ParameterMode::Read => crate::sema::model::Mode::Read,
-                                ParameterMode::Mut => crate::sema::model::Mode::Write,
-                                ParameterMode::SharedMut => crate::sema::model::Mode::Retain,
-                            }
-                    },
-                ))
+                && entry
+                    .arguments
+                    .iter()
+                    .zip(&function.syntax.parameters)
+                    .any(|(argument, parameter)| argument.mode != parameter.mode))
         {
             return Err(
                 "named callable entry changed its original input modes or caller context".into(),
@@ -430,7 +472,7 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                 )
                 .map_err(|error| format!("signature named header failed: {error}"))?;
         }
-        for (slot, (_, argument)) in entry.arguments.iter().enumerate() {
+        for (slot, argument) in entry.arguments.iter().enumerate() {
             if matches!(entry.origin, EntryOrigin::SignatureProbe(_)) {
                 super::signature_assumption(
                     call,
@@ -447,7 +489,7 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                     format!("signature named input lost its original header: {error}")
                 })?;
             } else if super::signature_inputs::requires_signature_origin(
-                &argument.value,
+                argument.value(),
                 call.caller_activation,
                 entry.caller_context,
                 &facts.bindings,

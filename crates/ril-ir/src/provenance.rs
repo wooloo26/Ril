@@ -14,6 +14,8 @@ mod call_arguments;
 pub use call_arguments::*;
 mod callable_entries;
 pub use callable_entries::*;
+mod evaluated;
+pub use evaluated::*;
 mod generated_sources;
 pub use generated_sources::*;
 mod numeric;
@@ -96,7 +98,8 @@ pub struct Graph {
     pub variant_projections: Vec<VariantProjection>,
     pub constructors: Vec<Constructor>,
     pub origins: Vec<Origin>,
-    pub values: Vec<Value>,
+    /// Physical observations and callable entries share the same packet.
+    pub values: Vec<std::sync::Arc<EvaluatedValue>>,
     pub fields: Vec<Field>,
     pub uncertain_slots: Vec<(OriginId, Projection)>,
     pub array_lengths: Vec<(OriginId, Option<u64>)>,
@@ -138,6 +141,8 @@ pub struct EvaluationRecord {
     pub scope: u32,
     pub context: ResumptionContext,
     pub allocation_epoch: u64,
+    /// Interpretation at the physical emission, distinct from Source declaration capture.
+    pub environment: Option<FrozenEnvironmentId>,
 }
 #[derive(Debug, Clone)]
 pub struct InvocationLoanStart {
@@ -1046,6 +1051,7 @@ pub struct Field {
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub id: u32,
+    pub declaration: Option<ril_compiler_core::ids::StmtId>,
     pub pattern: Option<ril_compiler_core::ids::PatternId>,
     pub birth: Option<BindingBirth>,
     pub context: ResumptionContext,
@@ -1220,6 +1226,13 @@ pub struct CopyValueSnapshot {
     pub nodes: Vec<CopyNode>,
     pub relations: Vec<Relation>,
 }
+/// Heap evidence for an entry's sole root value, held by its packet.
+#[derive(Debug, Clone)]
+pub struct CopyHeapSnapshot {
+    pub allocation_epoch: u64,
+    pub nodes: Vec<CopyNode>,
+    pub relations: Vec<Relation>,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyInvocationStatus {
     Incomplete,
@@ -1258,7 +1271,7 @@ pub struct CopyCallEvent {
 #[derive(Debug, Clone)]
 pub struct CopyInvocation {
     pub id: CopyInstanceId,
-    pub entry: CallableEntry<Vec<(Access, CopyValueSnapshot)>>,
+    pub entry: CallableEntry,
     pub parent: Option<CopyInstanceId>,
     pub caller: Option<DefinitionId>,
     pub caller_owner: Option<CallableOwner>,

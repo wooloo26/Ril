@@ -175,7 +175,11 @@ fn actual_source_name_cannot_be_retargeted_by_consistent_callee_metadata() {
         .callee_expression
         .unwrap();
     changed.copy_call_events[event.0 as usize].target = Some(scalar);
-    changed.expressions[callee].value.callables = vec![Callable::Named(scalar_index)];
+    changed.expressions[callee]
+        .value
+        .corrupt_value(&mut 4_000_000)
+        .unwrap()
+        .callables = vec![Callable::Named(scalar_index)];
     // Leave the actual Program's Name("take"), its span and its genuine binding
     // untouched. Agreement among the following metadata is not source proof.
     for call in &mut changed.copy_invocations {

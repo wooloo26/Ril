@@ -271,7 +271,6 @@ impl Checker {
                 span,
             });
         }
-        self.constant_references = pool.references.clone();
-        self.constant_source_views = pool.source_views.clone();
+        self.constant_pool = std::sync::Arc::new(pool.clone());
     }
 }

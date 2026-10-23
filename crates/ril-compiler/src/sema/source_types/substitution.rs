@@ -109,6 +109,15 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
             }
             let node = types.get(id)?;
             node.charge(work)?;
+            if let SourceNode::Callable {
+                annotations,
+                row_identity: Some(_),
+                ..
+            } = node
+                && super::annotation_identity::requires_original(annotations, work)?
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
             if !active.insert(id) {
                 return Err(SourceTypesError::RecursiveLegacyKey);
             }
@@ -138,6 +147,7 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
                     identity: identity.clone(),
                     sort: StaticBinderSort::Type,
                 },
+                SourceNode::KeyProjection { .. } => return Err(SourceTypesError::Unresolved),
                 SourceNode::StaticValue(key) | SourceNode::OpaqueComputation(key) => {
                     ArgumentKey::Closed(key.clone())
                 }
@@ -188,6 +198,7 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
                     parameters,
                     result,
                     annotations,
+                    ..
                 } => ArgumentKey::Callable {
                     parameters: parameters
                         .iter()

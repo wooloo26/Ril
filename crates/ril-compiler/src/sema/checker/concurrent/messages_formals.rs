@@ -17,7 +17,10 @@ impl Checker {
         if !ok.scalar() || !error.scalar() {
             let node = self.heap.symbolic(
                 Pivot(self.heap.nodes.len() as u32),
-                ScopeId(u32::MAX),
+                // Outside-producer duties use a sentinel until reception.
+                // The object itself still belongs to a registered lexical
+                // scope, just like every other symbolic formal heap node.
+                ScopeId(0),
                 value.cause,
             );
             value.origins = Origins::one(node);

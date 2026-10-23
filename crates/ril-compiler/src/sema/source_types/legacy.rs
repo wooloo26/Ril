@@ -156,6 +156,7 @@ pub(super) fn import_node(
                 parameters,
                 result,
                 annotations: annotations.clone(),
+                row_identity: None,
             }
         }
     };

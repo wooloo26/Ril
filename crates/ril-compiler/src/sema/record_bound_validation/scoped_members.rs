@@ -16,13 +16,13 @@ pub(super) struct DeclaredBoundProbe<'a> {
     scope: BoundScope,
     call: &'a CopyInvocation,
     /// Every real material T position was checked before issuing this stage.
-    whole_entries: Vec<&'a CopyValueSnapshot>,
+    whole_entries: Vec<CopyValueView<'a>>,
 }
 
 struct ScopedHeaderOccurrence<'a> {
-    original: &'a CopyValueSnapshot,
+    original: CopyValueView<'a>,
     original_receiver: &'a Value,
-    actual: &'a CopyValueSnapshot,
+    actual: CopyValueView<'a>,
     actual_receiver: &'a Value,
     header: &'a TypeExpr,
     scope: BoundScope,
@@ -130,7 +130,7 @@ pub(super) struct MemberIdentity<'a> {
     header: &'a TypeExpr,
     key: ArgumentKey,
     scope: BoundScope,
-    snapshot: &'a CopyValueSnapshot,
+    snapshot: CopyValueView<'a>,
     member: &'a Value,
     entry_epoch: usize,
 }
@@ -353,7 +353,7 @@ impl Replay<'_> {
                 .ty
                 .as_ref()
                 .ok_or_else(|| "graph formal parameter has no original header".to_owned())?;
-            let (mode, entry) = original
+            let entry = original
                 .entry
                 .arguments
                 .get(parameter_index)
@@ -361,8 +361,8 @@ impl Replay<'_> {
             require(
                 binding.parameter
                     && parameter.mode == ril_syntax::ast::ParameterMode::Read
-                    && *mode == super::super::model::Mode::Read
-                    && entry.value.sources == binding.forwarded
+                    && entry.mode == ril_syntax::ast::ParameterMode::Read
+                    && entry.value().sources == binding.forwarded
                     && self.facts.source_types.binding_environment(binding_id)
                         == Some(binding.typing_environment.id()),
                 "graph forwarding lost its original readonly parameter reception",
@@ -452,14 +452,15 @@ impl Replay<'_> {
         })
     }
 
-    pub(super) fn verify_symbolic_field(
+    pub(super) fn verify_symbolic_field<'s>(
         &self,
         tokens: &[MemberIdentity<'_>],
-        snapshot: &CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'s>>,
         stored: &Value,
         field: &RecordBoundField,
         scope: &BoundScope,
     ) -> Check {
+        let snapshot = snapshot.into();
         let matching: Vec<_> = tokens
             .iter()
             .filter(|identity| identity.label == field.label)
@@ -471,7 +472,12 @@ impl Replay<'_> {
         self.require_member_identity(matching[0], snapshot, stored, field, scope)
     }
 
-    fn symbolic_member_sources(&self, snapshot: &CopyValueSnapshot, member: &Value) -> Check {
+    fn symbolic_member_sources<'s>(
+        &self,
+        snapshot: impl Into<CopyValueView<'s>>,
+        member: &Value,
+    ) -> Check {
+        let snapshot = snapshot.into();
         let mut pending = vec![(member, 0usize)];
         let mut visited = BTreeSet::new();
         let mut work = LIMIT;
@@ -675,14 +681,14 @@ impl Replay<'_> {
         )?;
         let mut whole_entries = Vec::new();
         for (argument, path) in &paths {
-            let (mode, entry) = call.entry.arguments.get(*argument).ok_or_else(|| {
+            let argument = call.entry.arguments.get(*argument).ok_or_else(|| {
                 "symbolic declaration T path has no whole actual entry".to_owned()
             })?;
             require(
-                *mode == super::super::model::Mode::Read,
+                argument.mode == ril_syntax::ast::ParameterMode::Read,
                 "symbolic declaration type identity cannot replace a mutable reception",
             )?;
-            self.snapshot(entry)?;
+            let entry = self.entry_snapshot(argument, call.entry.allocation_epoch)?;
             let selected = self.selected_value(entry, path)?;
             require(
                 selected.ty == Ty::Generic(bound.binder.clone()),
@@ -748,7 +754,7 @@ impl Replay<'_> {
             header: &field.ty,
             key,
             scope: reception.scope.clone(),
-            snapshot,
+            snapshot: snapshot.into(),
             member,
             entry_epoch: reception.call.entry.allocation_epoch,
         };
@@ -885,15 +891,15 @@ impl Replay<'_> {
                     && same_material_path(path, &occurrence.selection_path),
                 "symbolic source stage borrowed another actual T path",
             )?;
-            let (mode, actual) =
+            let argument =
                 call.entry.arguments.get(*argument).ok_or_else(|| {
                     "symbolic source T path lacks a whole actual entry".to_owned()
                 })?;
             require(
-                *mode == super::super::model::Mode::Read,
+                argument.mode == ril_syntax::ast::ParameterMode::Read,
                 "symbolic source type identity cannot replace mutable reception",
             )?;
-            self.snapshot(actual)?;
+            let actual = self.entry_snapshot(argument, call.entry.allocation_epoch)?;
             let actual_receiver = self.selected_value(actual, path)?;
             if ordinal == 0 {
                 require(
@@ -1094,7 +1100,7 @@ impl Replay<'_> {
             header: &field.ty,
             key,
             scope: occurrence.scope.clone(),
-            snapshot: &check.actual,
+            snapshot: (&check.actual).into(),
             member,
             entry_epoch: reception.entry_epoch,
         };
@@ -1106,14 +1112,15 @@ impl Replay<'_> {
     /// caller must retain all existing field/row equations and physical checks.
     /// Scope/key/mode are rechecked, so a U-bearing field cannot authorize a
     /// sibling [0][3]U, a different binder, or another callable qualification.
-    pub(super) fn require_member_identity(
+    pub(super) fn require_member_identity<'s>(
         &self,
         identity: &MemberIdentity<'_>,
-        snapshot: &CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'s>>,
         stored: &Value,
         field: &RecordBoundField,
         scope: &BoundScope,
     ) -> Check {
+        let snapshot = snapshot.into();
         require(
             identity.label == field.label
                 && identity.mutable == field.mutable
@@ -1127,10 +1134,11 @@ impl Replay<'_> {
 
     fn existing_member<'a>(
         &self,
-        snapshot: &'a CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'a>>,
         receiver: &Value,
         label: &str,
     ) -> Check<&'a Value> {
+        let snapshot = snapshot.into();
         require(
             receiver.origins.nodes.len() == 1,
             "symbolic member source needs its existing exact received object",
@@ -1156,14 +1164,18 @@ impl Replay<'_> {
     /// Checks type identity against existing storage only. In particular an
     /// empty array does not create a U value, a Result inspection, or a copy
     /// proof. Existing fixed-storage and opaque-row checks remain mandatory.
-    pub(super) fn stored_symbolic_member(
+    pub(super) fn stored_symbolic_member<'s>(
         &self,
-        snapshot: &CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'s>>,
         member: &Value,
         identity: &MemberIdentity<'_>,
     ) -> Check {
+        let snapshot = snapshot.into();
         require(
-            std::ptr::eq(snapshot, identity.snapshot) && std::ptr::eq(member, identity.member),
+            (std::ptr::eq(snapshot.value, identity.snapshot.value)
+                && std::ptr::eq(snapshot.nodes, identity.snapshot.nodes)
+                && std::ptr::eq(snapshot.relations, identity.snapshot.relations))
+                && std::ptr::eq(member, identity.member),
             "symbolic member borrowed another object's header proof or frozen value occurrence",
         )?;
         require(

@@ -36,6 +36,7 @@ mod constants;
 mod context;
 mod contract_types;
 mod contracts;
+pub(crate) use contracts::state_group;
 mod generated_sources;
 mod symbolic_rows;
 pub(crate) use generated_sources::checked_roots as checked_generated_source_roots;
@@ -49,6 +50,7 @@ mod default_uses;
 mod effect_instances;
 mod effect_invocations;
 mod effects;
+mod entry_arguments;
 mod environments;
 mod evaluated;
 #[cfg(test)]
@@ -261,7 +263,7 @@ fn analyze_inner(
         numeric_uses: checker.numeric.uses,
         numeric_holes: checker.numeric.holes,
         numeric_selections: checker.numeric.selections,
-        constant_pool: constants.clone(),
+        constant_pool: checker.constant_pool,
         constant_values: checker.constant_values,
         external_instances: checker.external_instances,
         external_type_witnesses,
@@ -403,8 +405,7 @@ struct Checker {
     closure_exposures: Vec<super::closure_exclusivity::ClosureExposure>,
     closure_discards: Vec<super::closure_exclusivity::ClosureDiscard>,
     numeric: super::numeric_selection::State,
-    constant_references: BTreeMap<String, ril_compiler_core::ids::ConstRef>,
-    constant_source_views: BTreeMap<String, std::sync::Arc<SourceTypeWitness>>,
+    constant_pool: std::sync::Arc<crate::static_eval::constants::ConstantPool>,
     constant_values: Vec<super::ConstantValue>,
     foreign_callback_depth: usize,
     foreign_return_states: Vec<external_exits::ReturnExit>,
@@ -594,8 +595,7 @@ impl Checker {
             explicit_named: Default::default(),
             call_input_source: Default::default(),
             numeric: Default::default(),
-            constant_references: BTreeMap::new(),
-            constant_source_views: BTreeMap::new(),
+            constant_pool: std::sync::Arc::default(),
             constant_values: vec![],
             foreign_callback_depth: 0,
             foreign_return_states: Vec::new(),
@@ -1131,7 +1131,7 @@ impl Checker {
                 }
             }
             let preview = self.snapshot_flow();
-            let _ = self.invoke_named(id, arguments, function.span, None, true);
+            let _ = self.invoke_named_declaration_probe(id, arguments, function.span);
             self.restore_definition_state(&preview);
             self.restore_typing_environment(previous_typing);
         }
@@ -1323,7 +1323,7 @@ impl Checker {
                         &function.name,
                         BindingMode::Let,
                         value,
-                        function.span,
+                        bindings::BindingSite::declaration(function.span, stmt.hir_id),
                         frame,
                         false,
                     );
@@ -1711,17 +1711,36 @@ impl Checker {
                         self.ascribe_source_type(&mut value, syntax);
                         let evaluation_context = self.invocation_context(frame.callable_owner);
                         self.record_copy_references(&value, binding.value.span, frame);
+                        let environment = self.physical_evaluation_environment(binding.value.span);
+                        let mut emitted = Some(value);
                         let observation = self.application_effect.observe(
-                            || super::ExpressionFact {
+                            || super::application_effect::ObservationInput {
                                 allocation_epoch: self.recency_moves.len(),
                                 source_id: binding.value.hir_id,
                                 span: binding.value.span,
-                                value: value.clone(),
+                                value: emitted.take().expect("ambient output moves once"),
                             },
                             evaluation_context,
                             frame.owner,
+                            environment,
                             None,
                         );
+                        let value = if let Some(observation) = observation {
+                            match self.application_effect.packet_at(observation).and_then(
+                                |packet| self.read_evaluation_packet(&packet, binding.value.span),
+                            ) {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    self.unsupported(
+                                        binding.value.span,
+                                        format!("ambient physical packet admission: {error}"),
+                                    );
+                                    Value::scalar(Ty::Unknown, None, CauseId(0))
+                                }
+                            }
+                        } else {
+                            emitted.unwrap_or_else(|| Value::scalar(Ty::Unknown, None, CauseId(0)))
+                        };
                         (value, observation.is_some(), observation)
                     } else {
                         self.set_contract_environment(&frame.env);

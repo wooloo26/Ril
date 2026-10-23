@@ -13,6 +13,31 @@ pub fn test_native() {
 --@ end-file
 --@ end-case
 
+--@ case: named-empty-header-scopes
+--@ mode: run-pass
+--@ spec: SPEC#dual-tier-where-invariants
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_native
+--@ file: source.ril
+fn first() -> fn() -> int {
+    same
+where
+    fn same() -> int { 7 }
+    fn spare() -> bool { true }
+}
+fn second() -> fn() -> int {
+    same
+where
+    fn same() -> int { 9 }
+}
+pub fn test_native() {
+    let left = first()
+    let right = second()
+    assert(left() == 7 && right() == 9)
+}
+--@ end-file
+--@ end-case
+
 --@ case: derive-named-construction
 --@ mode: run-pass
 --@ spec: SPEC#functional-updates-via-derive

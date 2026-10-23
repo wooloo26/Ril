@@ -214,10 +214,26 @@ impl Checker {
             let mut annotations = Vec::new();
             for annotation in &contract.annotations {
                 work.text(&annotation.text)?;
-                annotations.push(annotation.text.replace(' ', ""));
+                annotations.push(annotation.text.clone());
             }
-            let schema =
-                SourceSchema::callable(&parameters, &result, &annotations, None, &mut work)?;
+            let binders =
+                self.original_captured_header_binders(&contract.typing_environment, &mut work)?;
+            let row = self.original_callable_row_identity(
+                crate::sema::source_types::CallableRowOrigin::Lambda(
+                    closure.hir_id.ok_or(SourceTypesError::MissingNode)?,
+                ),
+                &contract.annotations,
+                &binders,
+                &mut work,
+            )?;
+            let schema = SourceSchema::callable_original(
+                &parameters,
+                &result,
+                &annotations,
+                row.as_ref(),
+                None,
+                &mut work,
+            )?;
             if schema.callable_contract_requires_environment(&mut work)?
                 && environment
                     .as_ref()
@@ -229,6 +245,14 @@ impl Checker {
             if environment.is_poisoned() {
                 return Err(SourceTypesError::Unresolved);
             }
+            work.charge(
+                2 + self
+                    .call_input_source
+                    .closure_views
+                    .len()
+                    .checked_ilog2()
+                    .unwrap_or(0) as usize,
+            )?;
             Ok(Some(SourceRef::intern(
                 &schema,
                 environment,
@@ -312,7 +336,7 @@ impl Checker {
             let mut actual = Vec::new();
             for annotation in &bound.annotations {
                 work.text(&annotation.text)?;
-                actual.push(annotation.text.replace(' ', ""));
+                actual.push(annotation.text.clone());
             }
             if actual != annotations {
                 return Ok(false);
@@ -364,14 +388,15 @@ impl Checker {
                 }
                 continue;
             }
-            let parameters = schema.callable_parameters(work)?;
             let result = self.with_typing_environment(&bound.typing_environment, |checker| {
                 checker.original_header_source_schema(&bound.syntax, work)
             })?;
             let (result, _) =
                 self.selected_input_schema(result, bound.typing_environment.clone(), work)?;
-            let original = SourceSchema::callable(&parameters, &result, &annotations, None, work)?;
-            if !original.equivalent(schema, work)? {
+            let (_, actual) = schema
+                .callable_parts(work)?
+                .ok_or(SourceTypesError::MissingProjection)?;
+            if !actual.equivalent(&result, work)? {
                 return Ok(false);
             }
         }

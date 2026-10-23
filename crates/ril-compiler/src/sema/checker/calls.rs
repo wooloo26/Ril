@@ -1,20 +1,23 @@
 use super::*;
+use crate::sema::application_effect::{EntryArgument, EntryOrigin};
+use crate::sema::source_reception;
+use crate::sema::source_types::SourceTypesError;
+use std::sync::Arc;
 impl Checker {
-    pub(super) fn invoke(
+    pub(super) fn invoke_generated_values(
         &mut self,
         callee: &Value,
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        let origin = frame
-            .copy_call_event
-            .map(crate::sema::application_effect::EntryOrigin::Application)
-            .unwrap_or(crate::sema::application_effect::EntryOrigin::Unresolved);
-        self.invoke_from(callee, args, span, frame, origin)
+        // A generated callback is not the enclosing written application's
+        // parameter list. Only the packet-native application entry may claim it.
+        let origin = crate::sema::application_effect::EntryOrigin::Unresolved;
+        self.invoke_generated_values_from(callee, args, span, frame, origin)
     }
 
-    pub(super) fn invoke_from(
+    pub(super) fn invoke_generated_values_from(
         &mut self,
         callee: &Value,
         args: Vec<(ParameterMode, Value, Span)>,
@@ -22,28 +25,123 @@ impl Checker {
         frame: &mut Frame,
         origin: crate::sema::application_effect::EntryOrigin,
     ) -> Value {
-        self.require_recorded_public_call_inputs(callee, span, frame);
+        let epoch = self.recency_moves.len();
+        if !self.application_effect.admit(2) {
+            self.unsupported(span, "generated callee wrapper admission exhausted");
+            return Value::scalar(Ty::Unknown, None, CauseId(0));
+        }
+        let callee = match self
+            .application_effect
+            .with_work(|work| crate::sema::evaluated::transport_value_at(callee, &[], 0, 0, work))
+        {
+            Ok(value) => Arc::new(EvaluatedValue::new(value, epoch)),
+            Err(error) => {
+                self.unsupported(span, format!("generated callee admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
+        self.invoke_generated_arguments_from(callee, args, span, frame, origin)
+    }
+
+    pub(super) fn invoke_generated_arguments_from(
+        &mut self,
+        callee: Arc<EvaluatedValue>,
+        args: Vec<(ParameterMode, Value, Span)>,
+        span: Span,
+        frame: &mut Frame,
+        origin: EntryOrigin,
+    ) -> Value {
+        let args = match self.uncaptured_entry_arguments(args) {
+            Ok(args) => args,
+            Err(error) => {
+                self.unsupported(span, format!("generated input admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
+        self.invoke_packets_from(callee, args, span, frame, origin)
+    }
+
+    pub(super) fn invoke_application_packet(
+        &mut self,
+        callee: Arc<EvaluatedValue>,
+        args: Arc<Vec<EntryArgument>>,
+        event: crate::sema::copy_contract::CopyCallEventId,
+        span: Span,
+        frame: &mut Frame,
+    ) -> Value {
+        self.invoke_packets_from(callee, args, span, frame, EntryOrigin::Application(event))
+    }
+
+    pub(super) fn invoke_packets_from(
+        &mut self,
+        callee: Arc<EvaluatedValue>,
+        args: Arc<Vec<EntryArgument>>,
+        span: Span,
+        frame: &mut Frame,
+        origin: EntryOrigin,
+    ) -> Value {
+        self.invoke_target_packets_from(callee, args, span, frame, origin, None)
+    }
+
+    pub(super) fn invoke_target_packets_from(
+        &mut self,
+        callee: Arc<EvaluatedValue>,
+        args: Arc<Vec<EntryArgument>>,
+        span: Span,
+        frame: &mut Frame,
+        origin: EntryOrigin,
+        target: Option<&Callable>,
+    ) -> Value {
+        let current = match self.read_evaluation_packet(&callee, span) {
+            Ok(value) => value,
+            Err(error) => {
+                self.unsupported(span, format!("callee packet admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
+        self.require_recorded_public_call_inputs(&current, span, frame);
         let Some(origin) = self.application_effect.enter_call(origin) else {
             self.unsupported(span, "call entry budget exhausted before invocation");
             return Value::scalar(Ty::Unknown, None, CauseId(0));
         };
-        let result = self.invoke_unrecorded(callee, args, span, frame, &origin);
+        let result = self.invoke_packets_unrecorded(callee, args, span, frame, &origin, target);
         self.application_effect.leave_call(&origin);
         result
     }
-    fn invoke_unrecorded(
+    fn invoke_packets_unrecorded(
         &mut self,
-        callee: &Value,
-        args: Vec<(ParameterMode, Value, Span)>,
+        callee_packet: Arc<EvaluatedValue>,
+        argument_packets: Arc<Vec<EntryArgument>>,
         span: Span,
         frame: &mut Frame,
         origin: &crate::sema::application_effect::EntryOrigin,
+        target: Option<&Callable>,
     ) -> Value {
         // The syntax token belongs to this invocation only. Builtin/closure
         // callbacks and signature probes must not inherit a caller's token.
         let copy_call_event = frame.copy_call_event.take();
-        let resolved_callee = self.named_environment_value(callee.clone(), false);
+        let saved_callee = match self.resolve_named_callee_packet(&callee_packet, span) {
+            Ok(packet) => packet,
+            Err(error) => {
+                self.unsupported(span, format!("named callee packet admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
+        let resolved_callee = match self.read_evaluation_packet(&saved_callee, span) {
+            Ok(value) => value,
+            Err(error) => {
+                self.unsupported(span, format!("callee packet read: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
         let callee = &resolved_callee;
+        let args = match self.entry_values(&argument_packets) {
+            Ok(args) => args,
+            Err(error) => {
+                self.unsupported(span, format!("input packet read: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
         if !callee.callback_parameters.is_empty() {
             self.effect_callback_uses
                 .push(super::super::effect_identity::CallbackInvocation {
@@ -98,8 +196,14 @@ impl Checker {
         if let Some((_, value, _)) = args.iter().find(|(_, value, _)| value.ty == Ty::Never) {
             return value.clone();
         }
-        if self.foreign_callback_depth > 0 && callee.callables.len() > 1 {
-            return self.invoke_foreign_targets(callee, args, span, frame);
+        if target.is_none() && self.foreign_callback_depth > 0 && callee.callables.len() > 1 {
+            return self.invoke_foreign_target_packets(
+                &saved_callee,
+                argument_packets,
+                span,
+                frame,
+                origin,
+            );
         }
         let previous_callback = frame.callback_call;
         frame.callback_call = callee
@@ -133,25 +237,26 @@ impl Checker {
         if callee.mutable_environment {
             self.access(callee, None, Mode::Write, span, frame);
         }
-        let mut saved_callee = EvaluatedValue::new(callee.clone(), self.recency_moves.len());
-        let mut saved_args: Vec<_> = args
-            .into_iter()
-            .map(|(mode, value, span)| {
-                (
-                    mode,
-                    EvaluatedValue::new(value, self.recency_moves.len()),
-                    span,
-                )
-            })
-            .collect();
         let mut results = Vec::new();
         for callable in &callee.callables {
-            let current_callee = saved_callee.current(&self.recency_moves);
+            if target.is_some_and(|target| target != callable) {
+                continue;
+            }
+            let current_callee = match self.read_evaluation_packet(&saved_callee, span) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.unsupported(span, format!("target callee transport: {error}"));
+                    break;
+                }
+            };
             let callee = &current_callee;
-            let args: Vec<_> = saved_args
-                .iter_mut()
-                .map(|(mode, value, span)| (*mode, value.current(&self.recency_moves), *span))
-                .collect();
+            let args = match self.entry_values(&argument_packets) {
+                Ok(args) => args,
+                Err(error) => {
+                    self.unsupported(span, format!("target input transport: {error}"));
+                    break;
+                }
+            };
             let foreign_exit_epoch = self.explanations.causes.len() as u32;
             self.budget_invoke(callable, span);
             let overlay = self.captured_loan_overlay(callable, callee);
@@ -163,7 +268,14 @@ impl Checker {
                 Callable::Named(id) => {
                     frame.copy_call_event = copy_call_event;
                     if let Some(origin) = self.application_effect.snapshot_origin(origin) {
-                        self.invoke_named_from(*id, args.clone(), span, Some(frame), origin)
+                        self.invoke_named_packets_from(
+                            *id,
+                            argument_packets.clone(),
+                            Some(saved_callee.clone()),
+                            span,
+                            Some(frame),
+                            origin,
+                        )
                     } else {
                         self.unsupported(span, "callable origin cloning exhausted its work bound");
                         Value::scalar(Ty::Unknown, None, CauseId(0))
@@ -209,7 +321,14 @@ impl Checker {
                 }
                 Callable::Closure(id) => {
                     if let Some(origin) = self.application_effect.snapshot_origin(origin) {
-                        self.invoke_closure_from(*id, args.clone(), span, frame, origin)
+                        self.invoke_closure_packets_from(
+                            *id,
+                            argument_packets.clone(),
+                            Some(saved_callee.clone()),
+                            span,
+                            frame,
+                            origin,
+                        )
                     } else {
                         self.unsupported(span, "callable origin cloning exhausted its work bound");
                         Value::scalar(Ty::Unknown, None, CauseId(0))
@@ -279,7 +398,13 @@ impl Checker {
                     );
                 }
             }
-            let current_callee = saved_callee.current(&self.recency_moves);
+            let current_callee = match self.read_evaluation_packet(&saved_callee, span) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.unsupported(span, format!("callee return transport: {error}"));
+                    break;
+                }
+            };
             let value = self.apply_callable_returns(&current_callee, callable, value, span, frame);
             results.push(EvaluatedValue::new(value, self.recency_moves.len()));
         }
@@ -299,10 +424,13 @@ impl Checker {
             );
             value = value.join(&other, self.choice(), cause);
         }
-        let args: Vec<_> = saved_args
-            .into_iter()
-            .map(|(mode, value, span)| (mode, value.into_current(&self.recency_moves), span))
-            .collect();
+        let args = match self.entry_values(&argument_packets) {
+            Ok(args) => args,
+            Err(error) => {
+                self.unsupported(span, format!("final input transport: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
         let input_pending = args
             .iter()
             .flat_map(|(_, value, _)| self.pending_result_binders(value))
@@ -396,11 +524,18 @@ impl Checker {
     pub(super) fn invoke_named_unrecorded(
         &mut self,
         id: usize,
-        mut args: Vec<(ParameterMode, Value, Span)>,
+        input_packets: Arc<Vec<EntryArgument>>,
         span: Span,
         mut caller: Option<&mut Frame>,
         verifying: bool,
     ) -> Value {
+        let mut args = match self.entry_values(&input_packets) {
+            Ok(args) => args,
+            Err(error) => {
+                self.unsupported(span, format!("named formal packet admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
         let arguments_recency = self.recency_moves.len();
         let effect_callback_epoch = self.effect_callback_uses.len();
         if let Some(invocation) = self.copy_invocation_stack.last().copied() {
@@ -518,14 +653,14 @@ impl Checker {
             }
             // Structural input dependencies must be fully selected before a
             // prepared numeric instance can be compared and frozen.
-            for (index, (_, value, argument_span)) in args.iter().enumerate() {
+            for (index, argument) in input_packets.iter().enumerate() {
                 if let Some(valid) = input_sources_valid.get_mut(index) {
                     *valid = self.check_named_input_source(
                         &info,
                         index,
-                        value,
+                        &argument.packet,
                         source_event,
-                        *argument_span,
+                        argument.span,
                     );
                 }
             }
@@ -629,6 +764,34 @@ impl Checker {
         let mut local_loans = BTreeMap::new();
         let mut received_arguments = Vec::new();
         let mut exchange_arguments = Vec::new();
+        macro_rules! admit_formal_packet {
+            ($result:expr, $at:expr) => {
+                match $result {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        let at = $at;
+                        self.unsupported(
+                            at,
+                            format!("formal evaluation packet admission: {error}"),
+                        );
+                        let mut failed = Value::scalar(Ty::Unknown, None, CauseId(0));
+                        self.flush_handler_obligations(&mut frame);
+                        self.end_invocation_loans(&mut failed, &frame, &local_loans, at);
+                        if let Some(caller) = caller.as_mut() {
+                            caller.obligations.include(&frame.obligations, true);
+                        }
+                        for binding in &frame.locals {
+                            self.bindings[*binding].alive = false;
+                        }
+                        self.call_stack.pop();
+                        self.loop_depth = previous_loop_depth;
+                        self.restore_typing_environment(previous_typing);
+                        self.universal = previous_universal;
+                        return failed;
+                    }
+                }
+            };
+        }
         for (index, param) in function.parameters.iter().enumerate() {
             if matches!(
                 param.pattern.kind,
@@ -644,10 +807,16 @@ impl Checker {
                     [],
                 );
             }
-            let (mode, mut value, arg_span) = if let Some(arg) = args.get(index) {
-                let (mode, mut value, span) = arg.clone();
-                self.transport_value_since(&mut value, arguments_recency);
-                (mode, value, span)
+            let (mode, mut held, arg_span) = if let Some(arg) = input_packets.get(index) {
+                let mut packet = admit_formal_packet!(
+                    self.clone_evaluation_packet(&arg.packet, arg.span),
+                    arg.span
+                );
+                admit_formal_packet!(
+                    self.prepare_evaluation_packet(&mut packet, arg.span),
+                    arg.span
+                );
+                (arg.mode, packet, arg.span)
             } else if let Some(default) = &param.default {
                 let invocation = *self
                     .copy_invocation_stack
@@ -676,10 +845,10 @@ impl Checker {
                             std::sync::Arc::new(original),
                         );
                     }
-                    self.consume_evaluation_packet(packet, default.span)
+                    Ok::<_, SourceTypesError>(packet)
                 })();
-                let value = match default_result {
-                    Ok(value) => value,
+                let packet = match default_result {
+                    Ok(packet) => packet,
                     Err(error) => {
                         if let Some(id) = default_receipt {
                             self.default_uses[id.0 as usize].status =
@@ -711,21 +880,25 @@ impl Checker {
                     input_sources_valid[index] = self.check_named_input_source(
                         &info,
                         index,
-                        &value,
+                        &packet,
                         source_event,
                         default.span,
                     );
                 }
-                (ParameterMode::Read, value, default.span)
+                (ParameterMode::Read, packet, default.span)
             } else {
                 let ty = param.ty.as_ref().map(|t| self.ty(t)).unwrap_or(Ty::Unknown);
                 (
                     param.mode,
-                    self.formal_value(ty, index as u32, param.span, &mut BTreeSet::new()),
+                    {
+                        let value =
+                            self.formal_value(ty, index as u32, param.span, &mut BTreeSet::new());
+                        EvaluatedValue::new(value, self.recency_moves.len())
+                    },
                     param.span,
                 )
             };
-            if value.ty == Ty::Never {
+            if held.value.ty == Ty::Never {
                 // No body entry certificate exists when an implicit application
                 // stops in a default. Keep this path explicit until its caller
                 // supplies an application event for native fallback lowering.
@@ -734,7 +907,7 @@ impl Checker {
                     "implicit application exits during a default before body entry",
                 );
                 self.flush_handler_obligations(&mut frame);
-                self.finish_results(frame.owner, &value);
+                self.finish_results(frame.owner, &held.value);
                 if let Some(caller) = caller.as_mut() {
                     caller.obligations.include(&frame.obligations, true);
                 }
@@ -745,7 +918,7 @@ impl Checker {
                 self.loop_depth = previous_loop_depth;
                 self.restore_typing_environment(previous_typing);
                 self.universal = previous_universal;
-                return value;
+                return held.value;
             }
             if mode != param.mode {
                 self.error(
@@ -756,47 +929,68 @@ impl Checker {
                     },
                     arg_span,
                     "argument mode must match the parameter mode",
-                    [value.cause],
+                    [held.value.cause],
                 );
             }
             if input_sources_valid[index]
                 && let Some(syntax) = &param.ty
             {
                 if let Ty::StaticKey(identity) = self.ty(syntax) {
-                    value.ty = Ty::StaticKey(identity);
+                    held.invalidate_current_source();
+                    held.value.ty = Ty::StaticKey(identity);
                 }
-                let mut held = EvaluatedValue::new(value, self.recency_moves.len());
                 self.set_contract_environment(&frame.env);
-                self.ascribe_signature(held.current_mut(&self.recency_moves), syntax);
-                self.check_storage_shape(&held.current(&self.recency_moves), syntax, &mut frame);
+                admit_formal_packet!(
+                    self.prepare_evaluation_packet(&mut held, arg_span),
+                    arg_span
+                );
+                held.invalidate_current_source();
+                self.ascribe_signature(&mut held.value, syntax);
+                admit_formal_packet!(
+                    self.prepare_evaluation_packet(&mut held, arg_span),
+                    arg_span
+                );
+                self.check_storage_shape(&held.value, syntax, &mut frame);
                 let ty = self.ty(syntax);
-                self.constrain_collection_type(&held.current(&self.recency_moves), &ty, arg_span);
-                self.require_type(&held.current(&self.recency_moves), &ty, arg_span);
-                value = held.into_current(&self.recency_moves);
+                admit_formal_packet!(
+                    self.prepare_evaluation_packet(&mut held, arg_span),
+                    arg_span
+                );
+                self.constrain_collection_type(&held.value, &ty, arg_span);
+                self.require_type(&held.value, &ty, arg_span);
                 let mut generics = BTreeSet::new();
                 generic_names(&ty, &mut generics);
                 if generics.is_empty() {
-                    value.ty = ty;
+                    held.value.ty = ty;
                 }
             }
-            let forwarded = value.sources.clone();
+            admit_formal_packet!(
+                self.prepare_evaluation_packet(&mut held, arg_span),
+                arg_span
+            );
+            let forwarded = held.value.sources.clone();
             // Defaults are evaluated before read reception just like explicit
             // arguments. Preserve their original construction witness for the
             // immutable external exchange judgment.
-            exchange_arguments.push(EvaluatedValue::new(value.clone(), self.recency_moves.len()));
+            exchange_arguments.push(admit_formal_packet!(
+                self.clone_evaluation_packet(&held, arg_span),
+                arg_span
+            ));
             let binding_mode = if param.mode == ParameterMode::Read {
                 BindingMode::Let
             } else {
                 BindingMode::LetMut
             };
-            if param.mode != ParameterMode::Read && value.permission != Permission::Write {
+            if param.mode != ParameterMode::Read && held.value.permission != Permission::Write {
                 self.error(
                     "E0520",
                     arg_span,
                     "mutable argument has no writable authority",
-                    [value.cause],
+                    [held.value.cause],
                 );
             }
+            held.invalidate_current_source();
+            let value = &mut held.value;
             if param.mode == ParameterMode::Read {
                 value.permission = Permission::Read;
                 value.construction = false;
@@ -814,7 +1008,7 @@ impl Checker {
                 local_loans.insert(loan, value.participants.clone());
                 self.start_invocation_loan(
                     loan,
-                    &value,
+                    value,
                     &frame,
                     index,
                     param.mode == ParameterMode::SharedMut,
@@ -824,8 +1018,15 @@ impl Checker {
                 loan_origins.push(value.origins.clone());
             }
             let start = frame.locals.len();
-            let mut received = value.clone();
-            self.bind_pattern(&param.pattern, binding_mode, value, &mut frame, true);
+            let mut received_packet =
+                admit_formal_packet!(self.clone_evaluation_packet(&held, arg_span), arg_span);
+            let mut received =
+                admit_formal_packet!(self.read_evaluation_packet(&held, arg_span), arg_span);
+            let mut received_epoch = received_packet.current_epoch();
+            admit_formal_packet!(
+                self.bind_parameter_packet(&param.pattern, binding_mode, held, &mut frame),
+                arg_span
+            );
             for &binding in &frame.locals[start..] {
                 self.bindings[binding].forwarded = forwarded.clone();
                 received
@@ -834,9 +1035,29 @@ impl Checker {
             }
             if let [binding] = &frame.locals[start..] {
                 received = self.bindings[*binding].value.clone();
+                received_epoch = self.recency_moves.len();
             }
             self.record_received_closures(&received, &mut frame);
-            received_arguments.push(EvaluatedValue::new(received, self.recency_moves.len()));
+            let moves = &self.recency_moves;
+            received = admit_formal_packet!(
+                self.application_effect.with_work(|work| {
+                    crate::sema::evaluated::transport_value_at(
+                        &received,
+                        moves,
+                        received_epoch,
+                        moves.len(),
+                        work,
+                    )
+                }),
+                arg_span
+            );
+            admit_formal_packet!(
+                self.prepare_evaluation_packet(&mut received_packet, arg_span),
+                arg_span
+            );
+            received_packet.value = received;
+            received_packet.invalidate_current_source();
+            received_arguments.push(received_packet);
             if verifying {
                 self.record_static_key_parameter(param, function.span, index, &frame);
             }
@@ -845,14 +1066,16 @@ impl Checker {
             self.begin_retained_handlers(&Callable::Named(id), &info.handler_context, &frame);
         let foreign_body_before = (self.foreign_callback_depth > 0).then(|| self.snapshot_flow());
         let declared_body_boundary = function.body.as_ref().map(|_| self.next_boundary);
-        let exchange_arguments: Vec<_> = exchange_arguments
+        let exchange_arguments = exchange_arguments
             .into_iter()
-            .map(|value| value.into_current(&self.recency_moves))
-            .collect();
-        let received_arguments: Vec<_> = received_arguments
+            .map(|value| self.consume_evaluation_packet(value, span))
+            .collect::<Result<Vec<_>, _>>();
+        let exchange_arguments = admit_formal_packet!(exchange_arguments, span);
+        let received_arguments = received_arguments
             .into_iter()
-            .map(|value| value.into_current(&self.recency_moves))
-            .collect();
+            .map(|value| self.consume_evaluation_packet(value, span))
+            .collect::<Result<Vec<_>, _>>();
+        let received_arguments = admit_formal_packet!(received_arguments, span);
         let expected_return = frame.expected_return.clone();
         self.set_contract_environment(&frame.env);
         let frozen_return_source = function
@@ -1534,10 +1757,18 @@ impl Checker {
     pub(super) fn invoke_closure_unrecorded(
         &mut self,
         id: usize,
-        args: &[(ParameterMode, Value, Span)],
+        input_packets: &[EntryArgument],
         span: Span,
         caller: &mut Frame,
+        contextual_return_source: Option<source_reception::Target>,
     ) -> Value {
+        let args = match self.entry_values(input_packets) {
+            Ok(args) => args,
+            Err(error) => {
+                self.unsupported(span, format!("closure formal packet admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
         let arguments_recency = self.recency_moves.len();
         let foreign_exit_epoch = self.explanations.causes.len() as u32;
         if self.analysis_depth >= 64 {
@@ -1599,32 +1830,74 @@ impl Checker {
             self.error("E0404", span, "wrong number of closure arguments", []);
         }
         let mut local_loans = BTreeMap::new();
+        macro_rules! admit_closure_packet {
+            ($result:expr, $at:expr) => {
+                match $result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let at = $at;
+                        self.unsupported(at, format!("closure formal packet admission: {error}"));
+                        let mut failed = Value::scalar(Ty::Unknown, None, CauseId(0));
+                        self.flush_handler_obligations(&mut frame);
+                        self.end_invocation_loans(&mut failed, &frame, &local_loans, at);
+                        caller.obligations.include(&frame.obligations, true);
+                        for binding in &frame.locals {
+                            self.bindings[*binding].alive = false;
+                        }
+                        self.loop_depth = previous_loop_depth;
+                        self.restore_typing_environment(previous_typing);
+                        return failed;
+                    }
+                }
+            };
+        }
         for (index, param) in closure.parameters.iter().enumerate() {
-            if let Some((mode, mut value, arg_span)) = args.get(index).cloned() {
-                self.transport_value_since(&mut value, arguments_recency);
+            if let Some(argument) = input_packets.get(index) {
+                let (mode, arg_span) = (argument.mode, argument.span);
+                let mut held = admit_closure_packet!(
+                    self.clone_evaluation_packet(&argument.packet, arg_span),
+                    arg_span
+                );
+                admit_closure_packet!(
+                    self.prepare_evaluation_packet(&mut held, arg_span),
+                    arg_span
+                );
                 if mode != param.mode {
                     self.error(
                         "E0405",
                         arg_span,
                         "closure argument mode mismatch",
-                        [value.cause],
+                        [held.value.cause],
                     );
                 }
                 if let Some(ty) = &param.ty {
-                    let mut held = EvaluatedValue::new(value, self.recency_moves.len());
-                    self.ascribe_signature(held.current_mut(&self.recency_moves), ty);
-                    self.check_storage_shape(&held.current(&self.recency_moves), ty, &mut frame);
+                    held.invalidate_current_source();
+                    self.ascribe_signature(&mut held.value, ty);
+                    admit_closure_packet!(
+                        self.prepare_evaluation_packet(&mut held, arg_span),
+                        arg_span
+                    );
+                    self.check_storage_shape(&held.value, ty, &mut frame);
                     let ty = self.ty(ty);
-                    self.require_type(&held.current(&self.recency_moves), &ty, arg_span);
-                    value = held.into_current(&self.recency_moves);
+                    admit_closure_packet!(
+                        self.prepare_evaluation_packet(&mut held, arg_span),
+                        arg_span
+                    );
+                    self.require_type(&held.value, &ty, arg_span);
                     let mut generics = BTreeSet::new();
                     generic_names(&ty, &mut generics);
                     if generics.is_empty() {
-                        value.ty = ty;
+                        held.value.ty = ty;
                     }
                 }
-                let forwarded = value.sources.clone();
-                self.record_received_closures(&value, &mut frame);
+                admit_closure_packet!(
+                    self.prepare_evaluation_packet(&mut held, arg_span),
+                    arg_span
+                );
+                let forwarded = held.value.sources.clone();
+                self.record_received_closures(&held.value, &mut frame);
+                held.invalidate_current_source();
+                let value = &mut held.value;
                 if mode == ParameterMode::Read {
                     value.permission = Permission::Read;
                     value.construction = false;
@@ -1650,7 +1923,7 @@ impl Checker {
                     local_loans.insert(loan, value.participants.clone());
                     self.start_invocation_loan(
                         loan,
-                        &value,
+                        value,
                         &frame,
                         index,
                         mode == ParameterMode::SharedMut,
@@ -1659,16 +1932,18 @@ impl Checker {
                     value.participants = [Participant::Loan(loan)].into();
                 }
                 let start = frame.locals.len();
-                self.bind_pattern(
-                    &param.pattern,
-                    if mode == ParameterMode::Read {
-                        BindingMode::Let
-                    } else {
-                        BindingMode::LetMut
-                    },
-                    value,
-                    &mut frame,
-                    true,
+                admit_closure_packet!(
+                    self.bind_parameter_packet(
+                        &param.pattern,
+                        if mode == ParameterMode::Read {
+                            BindingMode::Let
+                        } else {
+                            BindingMode::LetMut
+                        },
+                        held,
+                        &mut frame,
+                    ),
+                    arg_span
                 );
                 for &binding in &frame.locals[start..] {
                     self.bindings[binding].forwarded = forwarded.clone();
@@ -1709,6 +1984,9 @@ impl Checker {
                     format!("closure result context lost its original Source: {error}"),
                 ),
             }
+        }
+        if frozen_return_source.is_none() {
+            frozen_return_source = contextual_return_source;
         }
         if frame.expected_return.is_none()
             && let Some(target) = &frozen_return_source
@@ -2068,7 +2346,7 @@ impl Checker {
                     }
                 }
             }
-            let _ = self.invoke_named(id, arguments, function.span, None, true);
+            let _ = self.invoke_named_declaration_probe(id, arguments, function.span);
             self.restore_definition_state(&preview);
             self.active_handlers = active;
             self.restore_typing_environment(previous_typing);
@@ -2123,6 +2401,8 @@ impl Checker {
         let reachable = self.heap.reachable(result.origins.nodes.iter().copied());
         let mut exposed: BTreeMap<NodeId, usize> = BTreeMap::new();
         let mut exposed_bindings: BTreeMap<BindingId, usize> = BTreeMap::new();
+        let mut declaration_work = self.application_effect.lease_work(4_000_000);
+        let mut declaration_error = None;
         for (id, closure) in self.closures.iter().enumerate() {
             if reachable.contains(&closure.node)
                 && (!closure.captures.is_empty()
@@ -2139,8 +2419,37 @@ impl Checker {
                     } else {
                         Mode::Read
                     };
-                    if !frame.received_closures.contains_key(&id)&&!self.scope_is_within(binding.owner,frame.owner)&&!binding.value.callables.iter().any(|callable|matches!(callable,Callable::Named(id)if binding.span==self.functions[*id].syntax.span)){
-                        frame.obligations.named.entry(binding_id).and_modify(|old|*old=(*old).max(mode)).or_insert(mode);frame.obligations.concrete.entry(binding_id).and_modify(|old|*old=(*old).max(mode)).or_insert(mode);frame.obligations.direct.entry(binding_id).and_modify(|old|*old=(*old).max(mode)).or_insert(mode);
+                    let declaration = match self
+                        .original_named_declaration(binding_id, declaration_work.work())
+                    {
+                        Ok(declaration) => declaration.is_some(),
+                        Err(error) => {
+                            declaration_error = Some(error);
+                            false
+                        }
+                    };
+                    if !frame.received_closures.contains_key(&id)
+                        && !self.scope_is_within(binding.owner, frame.owner)
+                        && !declaration
+                    {
+                        frame
+                            .obligations
+                            .named
+                            .entry(binding_id)
+                            .and_modify(|old| *old = (*old).max(mode))
+                            .or_insert(mode);
+                        frame
+                            .obligations
+                            .concrete
+                            .entry(binding_id)
+                            .and_modify(|old| *old = (*old).max(mode))
+                            .or_insert(mode);
+                        frame
+                            .obligations
+                            .direct
+                            .entry(binding_id)
+                            .and_modify(|old| *old = (*old).max(mode))
+                            .or_insert(mode);
                     }
                     if closure.writes.contains(&binding_id)
                         && self.scope_is_within(binding.owner, frame.owner)
@@ -2154,6 +2463,13 @@ impl Checker {
                     }
                 }
             }
+        }
+        let returned = self.application_effect.return_work(declaration_work);
+        if let Some(error) = declaration_error.or_else(|| returned.err()) {
+            self.unsupported(
+                span,
+                format!("escaping capture declaration identity: {error}"),
+            );
         }
         for callable in self.graph_callables(result) {
             let Callable::Named(id) = callable else {
@@ -2387,12 +2703,9 @@ impl Checker {
                 _ => {
                     let name = text.trim_start_matches('&');
                     if let Some(&binding) = frame.env.get(name) {
-                        let value = &self.bindings[binding].value;
-                        if let Some(Callable::Named(provider)) = value.callables.first() {
-                            if self.bindings[binding].span == self.functions[*provider].syntax.span
-                            {
-                                providers.push(*provider);
-                            } else {
+                        match self.original_named_declaration_with_work(binding) {
+                            Ok(Some(provider)) => providers.push(provider),
+                            Ok(None) => {
                                 self.error(
                                     "E0539",
                                     annotation.span,
@@ -2400,13 +2713,10 @@ impl Checker {
                                     [],
                                 );
                             }
-                        } else {
-                            self.error(
-                                "E0539",
+                            Err(error) => self.unsupported(
                                 annotation.span,
-                                "state contract provider must be an ordinary named function",
-                                [],
-                            );
+                                format!("contract provider declaration identity: {error}"),
+                            ),
                         }
                     } else {
                         self.error(
@@ -3108,7 +3418,8 @@ impl Checker {
         let draft = self.clone_value(&source, span, frame, false);
         self.transport_frame_prefix(frame, recency, accesses, returned);
         let mut draft = EvaluatedValue::new(draft, self.recency_moves.len());
-        let (recipe, callee_observation) = self.expression_observed(recipe, frame);
+        let recipe = Arc::new(self.expression_source_packet(recipe, frame, None, None));
+        let callee_observation = recipe.observation;
         let previous = self.active_drafts.clone();
         self.active_drafts.extend(
             self.heap.reachable(
@@ -3145,8 +3456,8 @@ impl Checker {
                 EntryOrigin::Unresolved
             }
         };
-        let answer = self.invoke_from(
-            &recipe,
+        let answer = self.invoke_generated_arguments_from(
+            recipe,
             vec![(ParameterMode::Mut, draft.current(&self.recency_moves), span)],
             span,
             frame,

@@ -804,3 +804,120 @@ pub fn test_native(){
 }
 --@ end-file
 --@ end-case
+
+--@ case: entry-packets-across-allocating-targets
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: entry-packets-after-allocating-default
+--@ entry: test_native
+--@ file: source.ril
+fn fresh()->[]int{[3]}
+fn first(input:[]int)->int{let scratch=fresh();input[0]+scratch[0]}
+fn second(input:[]int)->int{let scratch=fresh();input[0]+scratch[0]}
+fn choose(flag:bool)->int{
+    var index=0
+    var total=0
+    while index<2{
+        let primed=fresh()
+        let input=fresh()
+        let selected=if flag{first}else{second}
+        assert(primed[0]==3)
+        total+=selected(input)
+        index+=1
+    }
+    total
+}
+pub fn test_native(){assert(choose(true)==12 && choose(false)==12)}
+--@ end-file
+--@ end-case
+
+--@ case: entry-packets-after-allocating-default
+--@ mode: run-pass
+--@ spec: SPEC#abstract-machine-and-memory-semantics
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: entry-packets-across-allocating-targets
+--@ entry: test_native
+--@ file: source.ril
+fn fresh()->[]int{[3]}
+fn selected(input:[]int,later:[]int=fresh())->int{input[0]+later[0]}
+pub fn test_native(){
+    var index=0
+    while index<2{
+        let primed=fresh()
+        let input=fresh()
+        assert(primed[0]==3 && selected(input)==6)
+        index+=1
+    }
+}
+--@ end-file
+--@ end-case
+
+--@ case: named-declaration-binding-identities
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: entry-packets-across-allocating-targets
+--@ entry: test_native
+--@ file: source.ril
+type Reader=fn()->int &closure
+fn make(value:int)->Reader &capture{
+    read
+where
+    fn read()->int &{closure,value}{value}
+}
+fn other(value:int)->Reader &capture{
+    read
+where
+    fn read()->int &{closure,value}{value}
+}
+fn apply(read:Reader)->int{read()}
+pub fn test_native(){
+    let first=make(1)
+    let second=make(2)
+    let third=other(3)
+    let alias=first
+    assert(alias()==1 && second()==2 && third()==3 && apply(first)==1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: retained-carrier-tag-sources
+--@ mode: check-pass
+--@ spec: SPEC#effect-handlers
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: retained-carrier-caller-source
+--@ file: source.ril
+eff Read{get()->int}
+type Reader=fn(bool)->Result<[]int,str> &closure
+fn make_reader()->Reader &capture{
+    with Read::get()->{let answer=resume 7;answer};
+    \success:bool->{let number=Read::get();if success{Ok([number])}else{Err("no")}}
+}
+fn example(){let reader=make_reader();assert(reader(true) is Ok(_));assert(reader(false) is Err("no"))}
+--@ end-file
+--@ end-case
+
+--@ case: retained-carrier-caller-source
+--@ mode: check-pass
+--@ spec: SPEC#effect-handlers
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: retained-carrier-tag-sources
+--@ file: source.ril
+eff Read{get()->int}
+type Reader=fn(Immut<Result<[]int,str>>)->Result<[]int,str> &closure
+fn make_reader()->Reader &capture{
+    with Read::get()->{let answer=resume 7;answer};
+    \value:Immut<Result<[]int,str>>->{Read::get();value}
+}
+fn example(){let reader=make_reader();let original:Result<[]int,str>=Ok([1]);let returned=reader(original);assert(returned is Ok(_))}
+--@ end-file
+--@ end-case
+
+--@ case: pattern-operand-observation
+--@ mode: check-pass
+--@ spec: SPEC#pattern-matching
+--@ file: source.ril
+fn example(){let result:Result<int,str>=Ok(7);assert(result is Ok(7))}
+--@ end-file
+--@ end-case

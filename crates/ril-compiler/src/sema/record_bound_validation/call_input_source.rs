@@ -19,10 +19,14 @@ mod inferred_parameters;
 mod numeric_sources;
 #[path = "pattern_value_sources.rs"]
 mod pattern_values;
+#[path = "primitive_aliases.rs"]
+mod primitive_aliases;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
 #[path = "call_input_source_reception.rs"]
 mod reception;
+#[path = "static_key_sources.rs"]
+mod static_keys;
 #[path = "storage_input_source.rs"]
 mod storage_inputs;
 #[path = "storage_read_sources.rs"]
@@ -69,12 +73,31 @@ pub(crate) struct OriginalOperandSources<'a> {
     sites: super::explicit_named::SourceSites<'a>,
 }
 
+/// The caller still checks the direct declaration against its catalog. The
+/// replayed read preserves every field through the authenticated alias chain.
+pub(crate) struct PrimitiveRead<'a> {
+    pub(crate) declaration: &'a Value,
+    pub(crate) value: Value,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct SourceVisit {
     pub(super) depth: usize,
     pub(super) observation: Option<usize>,
 }
 impl<'a> OriginalOperandSources<'a> {
+    /// A primitive's identity can select its fixed catalog requirements before
+    /// a concrete instance of its quantified signature has been selected.
+    /// Immutable aliases retain the identity of their actual initializer.
+    pub(crate) fn primitive_read(
+        &self,
+        observation: usize,
+        identity: &str,
+        work: &mut usize,
+    ) -> Check<PrimitiveRead<'a>> {
+        primitive_aliases::authenticate(self, observation, identity, work)
+    }
+
     pub(crate) fn new(facts: &'a SemanticFacts) -> Check<Self> {
         Self::new_with_work(facts, &mut { 16_000_000 })
     }
@@ -90,7 +113,7 @@ impl<'a> OriginalOperandSources<'a> {
         replay.source_query = query;
         Ok(Self {
             replay,
-            sites: super::explicit_named::source_sites_base_with_work(facts, work)?,
+            sites: super::explicit_named::source_sites_foreign_with_work(facts, work)?,
         })
     }
     pub(crate) fn input(
@@ -1357,7 +1380,7 @@ impl Replay<'_> {
                     })?,
                     &scope,
                 )?;
-                if let Some(default) = self.parameter_preparation(binding, context)? {
+                if let Some(default) = self.parameter_preparation(binding, context, work)? {
                     require(
                         default.owner == declaration.owner
                             && default.target == Some(owner)
@@ -1428,7 +1451,7 @@ impl Replay<'_> {
                         binding.owner,
                         instance.entry.allocation_epoch,
                     )?;
-                    let original = &instance.entry.arguments[parameter_index].1.value;
+                    let original = instance.entry.arguments[parameter_index].value();
                     let original = if self.source_optional_projection(
                         expression,
                         value,
@@ -1475,14 +1498,14 @@ impl Replay<'_> {
                     require(
                         loan.retained
                             == (parameter.mode == ril_syntax::ast::ParameterMode::SharedMut)
-                            && loan.origins == entry.1.value.origins
+                            && loan.origins == entry.value().origins
                             && loan.allocation_epoch == instance.entry.allocation_epoch
                             && value.origins == loan.origins
                             && value.participants
                                 == BTreeSet::from([super::super::facts::Participant::Loan(
                                     loan.loan,
                                 )])
-                            && binding.forwarded == entry.1.value.sources,
+                            && binding.forwarded == entry.value().sources,
                         "call input mutable formal changed its source or actual loan participant",
                     )?;
                 }
@@ -1910,7 +1933,7 @@ impl Replay<'_> {
                 {
                     return Ok(());
                 }
-                let schemas = self.named_input_source_schemas(call, &mut input_work)?;
+                let schemas = self.named_input_source_schemas(call, &sites, &mut input_work)?;
                 let expected = &schemas.expected;
                 input_work = input_work
                     .checked_sub(expected.len())
@@ -2137,7 +2160,7 @@ impl Replay<'_> {
                             )?;
                             (
                                 *syntax,
-                                &expression.value,
+                                expression.value.value(),
                                 token.allocation_epoch,
                                 context,
                                 token.expression,
@@ -2205,7 +2228,7 @@ impl Replay<'_> {
                     };
                     self.input_value_transport(
                         original,
-                        &entry.1.value,
+                        entry.value(),
                         epoch,
                         call.entry.allocation_epoch,
                     )?;
@@ -2335,7 +2358,12 @@ impl Replay<'_> {
                         "public callable input token borrowed another actual event or slot",
                     )?;
                     self.input_operand_interval(event, slot, token.expression, context, work)?;
-                    (*actual_syntax, &value.value, context, token.expression)
+                    (
+                        *actual_syntax,
+                        value.value.value(),
+                        context,
+                        token.expression,
+                    )
                 }
                 Some(ArgumentSource::Default(id)) => {
                     let default = self
@@ -2359,6 +2387,34 @@ impl Replay<'_> {
                             && !preparation.supplied.contains_key(&(slot as u32)),
                         "public callable input default belongs to another occurrence or incomplete evaluation",
                     )?;
+                    if matches!(default.owner, Some(CallableOwner::Lambda(_))) {
+                        source_scan_work(
+                            work,
+                            self.facts
+                                .closure_invocations
+                                .len()
+                                .checked_mul(16)
+                                .ok_or("default closure entry lookup exceeds its work bound")?,
+                        )?;
+                        let mut entries = self.facts.closure_invocations.iter().filter(|call| {
+                            self.facts
+                                .closures
+                                .get(call.closure)
+                                .is_some_and(|closure| {
+                                    crate::sema::default_uses::closure_entry_uses(
+                                        default, call, closure,
+                                    )
+                                })
+                        });
+                        require(
+                            entries
+                                .next()
+                                .is_some_and(|call| call.status == CopyInvocationStatus::Completed)
+                                && entries
+                                    .all(|call| call.status == CopyInvocationStatus::Completed),
+                            "public callable default lacks its actual completed closure entry",
+                        )?;
+                    }
                     let actual_syntax = callee
                         .signature
                         .as_ref()
@@ -2550,6 +2606,8 @@ mod tests {
         witness.key.push_str("invalid");
         changed.expressions[row.initializer.expression]
             .value
+            .corrupt_value(&mut 1_000_000)
+            .unwrap()
             .source_type_witness = Some(std::sync::Arc::new(witness));
         assert!(
             Replay::new(&changed)

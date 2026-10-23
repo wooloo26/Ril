@@ -427,6 +427,7 @@ impl Checker {
             return;
         }
         let mut fresh = None;
+        let mut stage = "physical observation";
         let work = lease.work();
         let mut capture = (|| {
             work.charge(4)?;
@@ -442,19 +443,53 @@ impl Checker {
                 .get(observation)
                 .ok_or(SourceTypesError::MissingNode)?;
             let identity = record.identity.ok_or(SourceTypesError::MissingNode)?;
+            let environment = record.environment.ok_or(SourceTypesError::MissingNode)?;
+            let birth_environment = self
+                .type_source
+                .storage
+                .live_types()
+                .environment(environment, work)?;
             let activation = self
                 .application_effect
                 .activations
                 .get(identity.activation.0 as usize)
                 .ok_or(SourceTypesError::MissingNode)?;
+            let written_resume = matches!(
+                syntax.kind,
+                ExprKind::Control {
+                    operation: ControlOperation::Resume,
+                    ..
+                }
+            );
+            let original_resume =
+                self.semantic_hir
+                    .expression(identity.source)
+                    .is_some_and(|node| {
+                        matches!(
+                            node.kind,
+                            crate::hir::nodes::ExprKind::Control {
+                                operation: ControlOperation::Resume,
+                                ..
+                            }
+                        )
+                    });
+            if written_resume != original_resume {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let expected_kind = if written_resume {
+                crate::sema::application_effect::ActivationKind::ControlTransfer
+            } else {
+                crate::sema::application_effect::ActivationKind::Expression
+            };
             if syntax.hir_id != Some(identity.source)
                 || fact.source_id != syntax.hir_id
                 || record.id.0 as usize != observation
                 || packet.identity != Some(identity)
                 || packet.birth_context != Some(record.context)
+                || packet.environment != Some(environment)
                 || record.context != self.invocation_context(frame.callable_owner)
                 || activation.result != Some(record.id)
-                || activation.kind != crate::sema::application_effect::ActivationKind::Expression
+                || activation.kind != expected_kind
                 || activation.scope != record.scope
                 || record.allocation_epoch != packet.allocation_epoch
                 || fact.allocation_epoch != packet.allocation_epoch
@@ -472,6 +507,7 @@ impl Checker {
             if !same? {
                 return Err(SourceTypesError::Unresolved);
             }
+            stage = "construction";
             let mut remaining = work.remaining();
             let before = remaining;
             let construction = source_reception::construction(syntax, &mut remaining);
@@ -479,22 +515,20 @@ impl Checker {
             fresh = Some(std::sync::Arc::new(
                 construction.ok_or(SourceTypesError::BudgetExceeded)?,
             ));
-            let birth_environment = self.capture_typing_environment();
-            let environment = self
-                .type_source
-                .storage
-                .live_types_mut()
-                .intern_environment(birth_environment, work)?;
-            let source = self.original_source_receiving_schema_at(
-                &packet.value,
-                syntax,
-                frame,
-                work,
-                Some(observation),
-            )?;
+            stage = "original Source query";
+            let source = self.with_typing_environment(&birth_environment, |checker| {
+                checker.original_source_receiving_schema_at(
+                    &packet.value,
+                    syntax,
+                    frame,
+                    work,
+                    Some(observation),
+                )
+            })?;
             if source.is_none()
                 && let Ty::NumericHole(hole) = packet.value.ty
             {
+                stage = "numeric birth";
                 let birth = self.pending_numeric_packet_birth(packet, hole, work)?;
                 Ok(Capture::Numeric {
                     hole,
@@ -502,6 +536,7 @@ impl Checker {
                     environment,
                 })
             } else {
+                stage = "Source interning";
                 let captured = if let Some((schema, environment)) = source {
                     CapturedSource::Known(SourceRef::intern(
                         &schema,
@@ -524,7 +559,10 @@ impl Checker {
         if let Err(error) = &capture {
             self.unsupported(
                 syntax.span,
-                format!("evaluation Source capture failed: {error}"),
+                format!(
+                    "evaluation Source capture failed at {stage}: {error}; observation={:?} HIR={:?}",
+                    packet.observation, packet.identity
+                ),
             );
         }
         let captured = match capture {
@@ -742,10 +780,11 @@ impl Checker {
         &mut self,
         info: &FunctionInfo,
         slot: usize,
-        value: &Value,
+        packet: &EvaluatedValue,
         source_event: Option<CopyCallEventId>,
         span: Span,
     ) -> bool {
+        let value = packet.value();
         let Some(syntax) = info
             .syntax
             .parameters
@@ -846,13 +885,13 @@ impl Checker {
                     {
                         return None;
                     }
-                    Some(input.clone())
+                    input.packet.shares_birth(packet).then(|| input.clone())
                 })
                 .ok_or(SourceTypesError::MissingNode)
-                .and_then(|input| {
+                .and_then(|_input| {
                     input_compatible(
                         &expected,
-                        &input,
+                        packet,
                         SourceTypesRef::Live(self.type_source.storage.live_types()),
                         &mut WorkLimit::new(16384),
                     )
@@ -1313,7 +1352,7 @@ impl Checker {
 
 fn input_compatible(
     expected: &SourceSchema,
-    input: &Input,
+    input: &EvaluatedValue,
     types: SourceTypesRef<'_>,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {

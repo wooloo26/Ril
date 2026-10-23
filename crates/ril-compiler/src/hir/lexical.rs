@@ -6,11 +6,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Bindings = BTreeMap<String, Option<PatternId>>;
 
+#[derive(Debug, Clone, Copy)]
+enum NameBinding {
+    Pattern(PatternId),
+    Generic(GenericParamId),
+    Other,
+}
+
 #[derive(Debug, Default)]
 pub struct LexicalBindings {
-    names: BTreeMap<ExprId, Option<PatternId>>,
+    names: BTreeMap<ExprId, NameBinding>,
     types: BTreeMap<TypeExprId, TypeNameBinding>,
-    pattern_names: BTreeMap<PatternId, Option<PatternId>>,
+    pattern_names: BTreeMap<PatternId, NameBinding>,
     generated_roots: usize,
     scopes: Vec<Scope>,
 }
@@ -26,7 +33,7 @@ pub enum TypeNameBinding {
 #[derive(Debug)]
 struct Scope {
     parent: Option<usize>,
-    names: Bindings,
+    names: BTreeMap<String, NameBinding>,
     types: BTreeMap<String, StmtId>,
     generics: BTreeMap<String, GenericParamId>,
     longest_name: usize,
@@ -163,7 +170,7 @@ impl LexicalBindings {
     fn record_name(
         &mut self,
         id: ExprId,
-        target: Option<PatternId>,
+        target: NameBinding,
         work: &mut usize,
     ) -> Result<(), LowerError> {
         charge(work, lookup_cost(self.names.len()))?;
@@ -187,6 +194,27 @@ impl LexicalBindings {
         self.names
             .get(&source)
             .copied()
+            .map(|binding| match binding {
+                NameBinding::Pattern(id) => Some(id),
+                _ => None,
+            })
+            .ok_or(LowerError::Correspondence)
+    }
+
+    /// The original value Name may read a bound static parameter. A value,
+    /// type declaration or unknown import with the same spelling blocks it.
+    pub fn lookup_generic(
+        &self,
+        source: ExprId,
+        work: &mut usize,
+    ) -> Result<Option<GenericParamId>, LowerError> {
+        charge(work, lookup_cost(self.names.len()))?;
+        self.names
+            .get(&source)
+            .map(|binding| match binding {
+                NameBinding::Generic(id) => Some(*id),
+                _ => None,
+            })
             .ok_or(LowerError::Correspondence)
     }
 
@@ -229,7 +257,7 @@ impl Builder<'_, '_> {
         Ok(id)
     }
 
-    fn name(&mut self, mut scope: usize, name: &str) -> Result<Option<PatternId>, LowerError> {
+    fn name(&mut self, mut scope: usize, name: &str) -> Result<NameBinding, LowerError> {
         loop {
             let frame = &self.index.scopes[scope];
             charge(
@@ -241,10 +269,10 @@ impl Builder<'_, '_> {
                 return Ok(*target);
             }
             if frame.unknown_imports {
-                return Ok(None);
+                return Ok(NameBinding::Other);
             }
             let Some(parent) = frame.parent else {
-                return Ok(None);
+                return Ok(NameBinding::Other);
             };
             scope = parent;
         }
@@ -258,17 +286,19 @@ impl Builder<'_, '_> {
                 3 * lookup_cost(frame.names.len())
                     * (1 + name.len().max(frame.longest_name).div_ceil(32)),
             )?;
-            if frame.names.contains_key(name) {
+            if let Some(binding) = frame.names.get(name) {
                 charge(
                     self.work,
                     lookup_cost(frame.types.len()) + lookup_cost(frame.generics.len()),
                 )?;
-                return Ok(if let Some(id) = frame.types.get(name) {
-                    TypeNameBinding::Declaration(*id)
-                } else if let Some(id) = frame.generics.get(name) {
-                    TypeNameBinding::Generic(*id)
-                } else {
-                    TypeNameBinding::Other
+                return Ok(match binding {
+                    NameBinding::Generic(id) => TypeNameBinding::Generic(*id),
+                    NameBinding::Pattern(_) => TypeNameBinding::Other,
+                    NameBinding::Other => frame
+                        .types
+                        .get(name)
+                        .copied()
+                        .map_or(TypeNameBinding::Other, TypeNameBinding::Declaration),
                 });
             }
             if frame.unknown_imports {
@@ -304,6 +334,15 @@ impl Builder<'_, '_> {
             {
                 return Err(LowerError::Correspondence);
             }
+            charge(
+                self.work,
+                lookup_cost(self.index.scopes[scope].names.len())
+                    + 1
+                    + parameter.name.len().div_ceil(32),
+            )?;
+            self.index.scopes[scope]
+                .names
+                .insert(parameter.name.clone(), NameBinding::Generic(*id));
         }
         for id in parameters {
             self.enter(NodeId::Generic(*id), depth)?;
@@ -330,18 +369,22 @@ impl Builder<'_, '_> {
             lookup_cost(frame.names.len()) * (1 + name.len().max(frame.longest_name).div_ceil(32)),
         )?;
         if let Some(previous) = frame.names.get(&name) {
-            return if previous.is_none() && target.is_none() {
-                Ok(())
-            } else {
-                Err(LowerError::Correspondence)
-            };
+            if matches!(previous, NameBinding::Generic(_) | NameBinding::Other) && target.is_none()
+            {
+                frame.names.insert(name, NameBinding::Other);
+                return Ok(());
+            }
+            return Err(LowerError::Correspondence);
         }
         frame.longest_name = frame.longest_name.max(name.len());
-        frame.names.insert(name, target);
+        frame.names.insert(
+            name,
+            target.map_or(NameBinding::Other, NameBinding::Pattern),
+        );
         Ok(())
     }
 
-    fn record_name(&mut self, id: ExprId, target: Option<PatternId>) -> Result<(), LowerError> {
+    fn record_name(&mut self, id: ExprId, target: NameBinding) -> Result<(), LowerError> {
         self.index.record_name(id, target, self.work)
     }
 
@@ -1232,5 +1275,53 @@ mod tests {
             Err(LowerError::Budget(_))
         ));
         assert!(index.lookup(ExprId(u32::MAX), &mut 4096).is_err());
+    }
+
+    #[test]
+    fn value_names_keep_their_actual_generic_parameter_id_without_changing_pattern_lookup() {
+        let source = ril_test::case_source("tests/conformance/static.ril::accept-key-membership")
+            .replace("record.(key)", "record.(K)");
+        let mut parsed = ril_syntax::parse(&source);
+        assert!(parsed.is_ok());
+        let mut sibling = parsed.program.statements[0].clone();
+        let ril_syntax::ast::StmtKind::Function(function) = &mut sibling.kind else {
+            unreachable!()
+        };
+        function.name = "other_get_field".into();
+        parsed.program.statements.push(sibling);
+        let hir =
+            HirProgram::lower_identified(&mut parsed.program, h::InputOrigin::Source).unwrap();
+        let index = LexicalBindings::new(&hir, &mut 4_000_000).unwrap();
+        let mut selected = BTreeSet::new();
+        for statement in hir.roots() {
+            let h::StmtKind::Function(function) = &hir.statement(*statement).unwrap().kind else {
+                continue;
+            };
+            if function.generics.len() != 2 {
+                continue;
+            }
+            let h::StmtKind::Expr { expression, .. } = hir
+                .statement(function.body.as_ref().unwrap().statements[0])
+                .unwrap()
+                .kind
+            else {
+                unreachable!()
+            };
+            let h::ExprKind::ComputedField { key, .. } = hir.expression(expression).unwrap().kind
+            else {
+                unreachable!()
+            };
+            let generic = index.lookup_generic(key, &mut 4096).unwrap().unwrap();
+            assert_eq!(generic, function.generics[1]);
+            assert_eq!(index.lookup(key, &mut 4096).unwrap(), None);
+            assert!(index.lookup_generic(key, &mut 0).is_err());
+            selected.insert(generic);
+        }
+        assert_eq!(
+            selected.len(),
+            2,
+            "same-spelled K parameters retain distinct HIR identities"
+        );
+        assert!(index.lookup_generic(ExprId(u32::MAX), &mut 4096).is_err());
     }
 }

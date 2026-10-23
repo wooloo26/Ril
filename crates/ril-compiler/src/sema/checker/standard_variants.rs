@@ -410,7 +410,7 @@ impl Checker {
             }
             self.access(&callback, None, Mode::Write, *callback_span, frame);
         }
-        self.invoke(
+        self.invoke_generated_values(
             &callback,
             arguments
                 .into_iter()

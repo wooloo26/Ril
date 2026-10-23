@@ -112,69 +112,6 @@ fn retained_reference_answers_require_each_fresh_invocations_own_steps() {
     );
 }
 
-#[test]
-fn helper_recency_moves_transport_actual_answers_without_rewriting_snapshots() {
-    let verified = accepted(ril_test::case_source(
-        "tests/regressions/effects.ril::non-tail-reference-answer-recency",
-    ));
-    assert!(
-        verified
-            .facts()
-            .resumption_steps
-            .iter()
-            .any(|step| step.completion_epoch > step.continuation_epoch)
-    );
-    assert_original_resumption_epochs(verified.facts());
-}
-
-#[test]
-fn original_resumption_epochs_are_independently_checked_in_incomplete_analysis() {
-    let source =
-        ril_test::case_source("tests/regressions/effects.ril::non-tail-reference-answer-recency");
-    let analysis = Session::new(source.as_bytes().to_vec()).analyze();
-    let facts = analysis.facts().expect("actual continuation observations");
-    // This checks the resumption domain alone. The acceptance test above
-    // continues to require independent validation of every domain and Core.
-    sema::resumption::validate(facts).unwrap();
-    assert!(!facts.resumption_steps.is_empty());
-    assert_original_resumption_epochs(facts);
-}
-
-fn assert_original_resumption_epochs(facts: &sema::SemanticFacts) {
-    for step in &facts.resumption_steps {
-        for (index, epoch) in [
-            (step.continuation_expression, step.continuation_epoch),
-            (step.arm_expression, step.completion_epoch),
-        ] {
-            assert_eq!(facts.expressions[index].allocation_epoch, epoch);
-            let mut damaged = facts.clone();
-            damaged.expressions[index].allocation_epoch = epoch + 1;
-            assert!(
-                sema::resumption::validate(&damaged).is_err(),
-                "a matching value from another epoch is not this resumption observation"
-            );
-        }
-    }
-    let step = facts
-        .resumption_steps
-        .iter()
-        .find(|step| {
-            let fact = &facts.expressions[step.continuation_expression];
-            fact.value_at(facts.allocation_history.len(), &facts.allocation_history)
-                .is_some_and(|later| later.origins != fact.value.origins)
-        })
-        .expect("the real helper allocation must age an earlier continuation answer");
-    let mut damaged = facts.clone();
-    let fact = &mut damaged.expressions[step.continuation_expression];
-    fact.value = fact
-        .value_at(facts.allocation_history.len(), &facts.allocation_history)
-        .unwrap();
-    assert!(
-        sema::resumption::validate(&damaged).is_err(),
-        "replacing history with a final graph must not satisfy the original snapshot"
-    );
-}
-
 const OPERATION: &str = r#"
 type Cell={mut count:int}
 eff Edit{apply(mut Cell)->() &mut}

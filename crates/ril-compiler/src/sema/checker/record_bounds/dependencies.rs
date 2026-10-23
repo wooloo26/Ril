@@ -322,7 +322,7 @@ impl Checker {
     }
 
     pub(in crate::sema::checker) fn proved_bound_numeric_input(
-        &self,
+        &mut self,
         info: &FunctionInfo,
         invocation: crate::sema::copy_templates::InstanceId,
         binder: &str,
@@ -372,12 +372,21 @@ impl Checker {
             else {
                 continue;
             };
-            let Some((_, entry)) = call.entry.arguments.get(check.argument_index as usize) else {
+            let Some(argument) = call.entry.arguments.get(check.argument_index as usize) else {
                 continue;
             };
-            if entry.value != check.actual.value
+            let entry = self.application_effect.with_work(|work| {
+                let mut admission = crate::sema::source_types::WorkLimit::new(*work);
+                let result = argument.snapshot_view(&mut admission);
+                *work = admission.remaining();
+                result
+            });
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if *entry.value != check.actual.value
                 || entry.nodes.len() != check.actual.nodes.len()
-                || entry.relations != check.actual.relations
+                || entry.relations != check.actual.relations.as_slice()
                 || !entry.nodes.iter().all(|node| {
                     check.actual.nodes.iter().any(|other| {
                         node.origin == other.origin

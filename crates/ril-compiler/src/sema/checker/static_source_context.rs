@@ -273,7 +273,15 @@ impl Checker {
         observed: Option<usize>,
         frame: &Frame,
     ) -> Option<bool> {
-        let original = self.static_source_observation(actual, value, observed, frame)?;
+        if !self.application_effect.admit(1) {
+            self.unsupported(
+                actual.span,
+                "static receiving packet borrow exhausted its work",
+            );
+            return None;
+        }
+        let original_packet = self.static_source_observation(actual, value, observed, frame)?;
+        let original = original_packet.value();
         if let Some(TypeExpr {
             kind: TypeKind::ComputedProjection { base, key },
             ..
@@ -283,14 +291,14 @@ impl Checker {
                 target,
                 (base, key),
                 actual,
-                &original,
+                original,
                 observed?,
                 frame,
             );
         }
         let expected_syntax = target.syntax.as_deref()?;
         let (expected, expected_const) = self.static_coordinate_key(expected_syntax)?;
-        if let Some(candidates) = self.constructor_callable_source_syntaxes(&original) {
+        if let Some(candidates) = self.constructor_callable_source_syntaxes(original) {
             let fresh = source_reception::construction(actual, &mut 4096)?;
             let mut unknown = false;
             for syntax in candidates {
@@ -326,7 +334,7 @@ impl Checker {
         value: &Value,
         observed: Option<usize>,
         frame: &Frame,
-    ) -> Option<Value> {
+    ) -> Option<Arc<EvaluatedValue>> {
         let index = observed?;
         let row = self.application_effect.contexts.get(index)?;
         let fact = self.application_effect.expressions.get(index)?;
@@ -339,7 +347,7 @@ impl Checker {
         {
             return None;
         }
-        Some(fact.value.clone())
+        Some(fact.value.packet().clone())
     }
 
     fn static_projection_reception(
@@ -377,7 +385,8 @@ impl Checker {
             return None;
         }
         let context = self.invocation_context(frame.callable_owner);
-        let key_value = self.static_projection_child(observed, actual, key, context, &mut work)?;
+        let key_packet = self.static_projection_child(observed, actual, key, context, &mut work)?;
+        let key_value = key_packet.value();
         if !parents.contains(&key_value.cause) || key_value.ty != Ty::StaticKey(identity.clone()) {
             return None;
         }
@@ -405,14 +414,15 @@ impl Checker {
         } else if self.genuine_source_key(key_name)? != identity || !key_value.sources.is_empty() {
             return None;
         }
-        let base_value =
+        let base_packet =
             self.static_projection_child(observed, actual, base, context, &mut work)?;
+        let base_value = base_packet.value();
         if !parents.contains(&base_value.cause) {
             return None;
         }
         let expected = &frozen.base;
         let original =
-            match self.original_source_receiving_schema(&base_value, base, frame, &mut work) {
+            match self.original_source_receiving_schema(base_value, base, frame, &mut work) {
                 Ok(Some((schema, environment))) if !environment.is_poisoned() => schema,
                 Ok(_) => return None,
                 Err(error) => {
@@ -457,13 +467,20 @@ impl Checker {
     /// activation. Repeated evaluations of the same source coordinates cannot
     /// supply either operand to this occurrence.
     fn static_projection_child(
-        &self,
+        &mut self,
         observed: usize,
         root: &Expr,
         child: &Expr,
         context: crate::sema::effect_identity::InvocationContext,
         work: &mut WorkLimit,
-    ) -> Option<Value> {
+    ) -> Option<Arc<EvaluatedValue>> {
+        if let Err(error) = work.charge(1) {
+            self.unsupported(
+                child.span,
+                format!("static projection packet borrow: {error}"),
+            );
+            return None;
+        }
         work.charge(self.application_effect.activations.len())
             .ok()?;
         let record = self.application_effect.evaluations.get(observed)?;
@@ -500,7 +517,7 @@ impl Checker {
         {
             return None;
         }
-        Some(fact.value.clone())
+        Some(fact.value.packet().clone())
     }
 
     pub(super) fn nominal_owner_source_syntax(&self, owner: &Ty) -> Option<TypeExpr> {

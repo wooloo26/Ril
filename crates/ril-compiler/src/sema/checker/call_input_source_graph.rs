@@ -1,8 +1,70 @@
 //! Source transport keeps the admitted graph and its declaration environment.
 //! Keys enter only at original written headers, never between graph queries.
 use super::*;
+use crate::sema::source_types::projection_receipts::ProjectionOccurrence;
 
 impl Checker {
+    /// A completed application is selected by its actual evaluation record.
+    /// Repeated reads and probes can share a cause and lexical context; neither
+    /// identifies which execution produced this result.
+    pub(super) fn observed_application_result(
+        &self,
+        syntax: &Expr,
+        value: &Value,
+        frame: &Frame,
+        observation: usize,
+        work: &mut WorkLimit,
+    ) -> Result<Option<(CopyCallEventId, ProjectionOccurrence)>, SourceTypesError> {
+        work.charge(4 + self.copy_call_events.len())?;
+        let context = self.invocation_context(frame.callable_owner);
+        let physical = self
+            .application_effect
+            .expressions
+            .get(observation)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let evaluation = self
+            .application_effect
+            .evaluations
+            .get(observation)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let identity = evaluation.identity.ok_or(SourceTypesError::MissingNode)?;
+        if syntax.hir_id.is_none()
+            || physical.source_id != syntax.hir_id
+            || evaluation.id.0 as usize != observation
+            || Some(identity.source) != syntax.hir_id
+            || evaluation.context != context
+            || evaluation.scope != frame.owner
+            || physical.value.cause != value.cause
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let mut selected = None;
+        for (index, event) in self.copy_call_events.iter().enumerate() {
+            if event.result_expression != Some(observation) {
+                continue;
+            }
+            if selected.is_some()
+                || event.id.0 as usize != index
+                || !event.matches_source(syntax)
+                || event.owner != context.owner
+                || event.parent != context.invocation
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            selected = Some(event.id);
+        }
+        Ok(selected.map(|event| {
+            (
+                event,
+                ProjectionOccurrence {
+                    identity,
+                    context,
+                    cause: physical.value.cause,
+                },
+            )
+        }))
+    }
+
     // The remaining finite closed-witness adapter has its own admission rule.
     // A witness is not an original HIR header, and must not bypass that
     // header's identity checks by presenting a missing or normalized ID.
@@ -12,9 +74,18 @@ impl Checker {
         environment: FrozenEnvironment,
         work: &mut WorkLimit,
     ) -> InputSource {
-        if !witness.validate_closed() {
+        let mut remaining = work.remaining();
+        let before = remaining;
+        let valid = witness.validate_closed_with_work(&mut remaining);
+        work.charge(before - remaining)?;
+        if !valid.ok_or(SourceTypesError::BudgetExceeded)? {
             return Err(SourceTypesError::Unresolved);
         }
+        let before = remaining;
+        let admitted =
+            crate::static_eval::charge_type_syntax_clone(&witness.syntax, &mut remaining);
+        work.charge(before - remaining)?;
+        admitted.ok_or(SourceTypesError::BudgetExceeded)?;
         let key =
             crate::static_eval::effects::bounded_argument_key(&witness.syntax, &BTreeMap::new())
                 .ok_or(SourceTypesError::BudgetExceeded)?;
@@ -27,6 +98,16 @@ impl Checker {
         environment: FrozenEnvironment,
         work: &mut WorkLimit,
     ) -> InputSource {
+        let binders = self.original_captured_header_binders(&environment, work)?;
+        let schema = self.original_header_source_schema_in(syntax, &binders, work)?;
+        Ok(Some((schema, environment)))
+    }
+
+    pub(in crate::sema::checker) fn original_captured_header_binders(
+        &self,
+        environment: &FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<BTreeMap<String, String>, SourceTypesError> {
         if environment.is_poisoned() {
             return Err(SourceTypesError::Unresolved);
         }
@@ -54,8 +135,7 @@ impl Checker {
                 return Err(SourceTypesError::Unresolved);
             }
         }
-        let schema = self.original_header_source_schema_in(syntax, &binders, work)?;
-        Ok(Some((schema, environment)))
+        Ok(binders)
     }
 
     pub(in crate::sema::checker) fn original_source_receiving_schema(
@@ -152,11 +232,116 @@ impl Checker {
         if depth >= 64 {
             return Err(SourceTypesError::BudgetExceeded);
         }
+        if matches!(
+            &syntax.kind,
+            ExprKind::Control {
+                operation: ControlOperation::Resume,
+                ..
+            }
+        ) {
+            // The transfer occurrence is distinct from the computation's
+            // completed answer; only the latter can supply an answer Source.
+            return Ok(None);
+        }
+        if matches!(syntax.kind, ExprKind::Block(_))
+            && let Some(source) =
+                self.original_block_source_schema(value, syntax, frame, work, observation)?
+        {
+            return Ok(Some(source));
+        }
         if let Some(source) = self.external_static_callee_source(value, syntax, frame, work)? {
             return Ok(Some(source));
         }
         if let Some(source) = self.numeric_static_callee_source(value, syntax, frame, work)? {
             return Ok(Some(source));
+        }
+        if let Some(source) =
+            self.original_key_name_source_schema(value, syntax, frame, observation, work)?
+        {
+            return Ok(Some(source));
+        }
+        if let ExprKind::Generic { base, arguments } = &syntax.kind
+            && matches!(value.callables.as_slice(), [Callable::Named(_)])
+        {
+            // An ordinary explicit prefix prepares the application's static
+            // arguments; it does not replace the callable's public value or
+            // its original header. Keep that Source at the real base read.
+            // The application separately authenticates its selected arguments.
+            let root = observation.ok_or(SourceTypesError::MissingNode)?;
+            work.charge(3 + arguments.len())?;
+            let fact = self
+                .application_effect
+                .expressions
+                .get(root)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let record = self
+                .application_effect
+                .evaluations
+                .get(root)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let identity = record.identity.ok_or(SourceTypesError::MissingNode)?;
+            let context = self.invocation_context(frame.callable_owner);
+            let original = self
+                .semantic_hir
+                .expression(identity.source)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let crate::hir::nodes::ExprKind::Generic {
+                base: original_base,
+                arguments: original_arguments,
+            } = &original.kind
+            else {
+                return Err(SourceTypesError::Unresolved);
+            };
+            if Some(identity.source) != syntax.hir_id
+                || fact.source_id != syntax.hir_id
+                || record.context != context
+                || Some(*original_base) != base.hir_id
+                || original_arguments.len() != arguments.len()
+                || arguments
+                    .iter()
+                    .zip(original_arguments)
+                    .any(|(actual, original)| actual.hir_id != Some(*original))
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            let parent = ProjectionOccurrence {
+                identity,
+                context,
+                cause: fact.value.cause,
+            };
+            let child = self
+                .source_projection_receipts()
+                .child_observation(parent, *original_base, work)?
+                .0 as usize;
+            let actual = &self.application_effect.expressions[child];
+            let mut remaining = work.remaining();
+            let agrees =
+                crate::sema::evaluated::same_birth_value(&fact.value, value, &mut remaining)
+                    .and_then(|agrees| {
+                        if agrees {
+                            crate::sema::evaluated::same_birth_value(
+                                &actual.value,
+                                value,
+                                &mut remaining,
+                            )
+                        } else {
+                            Ok(false)
+                        }
+                    });
+            work.charge(work.remaining() - remaining)?;
+            if !agrees? {
+                return Err(SourceTypesError::Unresolved);
+            }
+            work.charge(1)?;
+            let input = actual.value.packet().clone();
+            return self.raw_original_source_schema(
+                input.value(),
+                base,
+                frame,
+                work,
+                depth + 1,
+                Some(child),
+            );
         }
         if let Some(source) = self.storage_binding_source_schema(value, syntax, frame) {
             return source;
@@ -183,20 +368,31 @@ impl Checker {
             return Ok(source);
         }
         if let ExprKind::Name(name) = &syntax.kind
-            && self.constant_references.contains_key(name)
+            && let Some(reference) = self.constant_pool.references.get(name).copied()
         {
-            let original = self
-                .constant_source_views
-                .get(name)
-                .ok_or(SourceTypesError::MissingNode)?;
-            if !original.validate_closed() || value.source_type_witness.as_ref() != Some(original) {
+            if let Some(original) = self.constant_pool.source_views.get(name) {
+                let source = self.closed_witness_input_schema(
+                    original,
+                    self.capture_typing_environment(),
+                    work,
+                )?;
+                if let Some(actual) = &value.source_type_witness {
+                    work.text(&actual.key)?;
+                }
+                if value.source_type_witness.as_ref() != Some(original) {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                return Ok(source);
+            }
+            if value.source_type_witness.is_some() {
                 return Err(SourceTypesError::Unresolved);
             }
-            return self.closed_witness_input_schema(
-                original,
-                self.capture_typing_environment(),
+            return crate::sema::source_types::constants::literal_schema(
+                &self.constant_pool,
+                reference,
                 work,
-            );
+            )
+            .map(|source| source.map(|schema| (schema, self.capture_typing_environment())));
         }
         if let Some(source) = self.original_carrier_source_schema(value, syntax, frame, work) {
             return source;
@@ -204,11 +400,13 @@ impl Checker {
         if let Some(source) = self.original_called_result_schema(value, syntax, frame, work)? {
             return Ok(Some(source));
         }
-        if let Some(source) = self.original_constructor_result_schema(value, syntax, frame, work)? {
+        if let Some(source) =
+            self.original_constructor_result_schema(value, syntax, frame, work, observation)?
+        {
             return Ok(Some(source));
         }
         if let Some(source) =
-            self.original_public_result_schema(value, syntax, frame, work, depth)?
+            self.original_public_result_schema(value, syntax, frame, work, depth, observation)?
         {
             return Ok(Some(source));
         }
@@ -235,9 +433,6 @@ impl Checker {
             return Ok(Some(source));
         }
         if let Some(witness) = &value.source_type_witness {
-            if !witness.validate_closed() {
-                return Err(SourceTypesError::Unresolved);
-            }
             return self.closed_witness_input_schema(
                 witness,
                 self.capture_typing_environment(),
@@ -269,6 +464,182 @@ impl Checker {
             return Ok(Some(source));
         }
         Ok(None)
+    }
+
+    fn original_block_source_schema(
+        &mut self,
+        value: &Value,
+        syntax: &Expr,
+        frame: &Frame,
+        work: &mut WorkLimit,
+        observation: Option<usize>,
+    ) -> InputSource {
+        let ExprKind::Block(block) = &syntax.kind else {
+            return Ok(None);
+        };
+        let root = observation.ok_or(SourceTypesError::MissingNode)?;
+        work.charge(2 + block.statements.len() + block.where_items.len())?;
+        let record = self
+            .application_effect
+            .evaluations
+            .get(root)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let identity = record.identity.ok_or(SourceTypesError::MissingNode)?;
+        let context = self.invocation_context(frame.callable_owner);
+        let original = self
+            .semantic_hir
+            .expression(identity.source)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let crate::hir::nodes::ExprKind::Block(canonical) = &original.kind else {
+            return Err(SourceTypesError::Unresolved);
+        };
+        let has_handler = canonical.statements.iter().any(|statement| {
+            self.semantic_hir
+                .statement(*statement)
+                .is_some_and(|statement| {
+                    matches!(statement.kind, crate::hir::nodes::StmtKind::Handler(_))
+                })
+        });
+        if syntax.hir_id != Some(identity.source)
+            || record.context != context
+            || block.statements.len() != canonical.statements.len()
+            || block.where_items.len() != canonical.where_items.len()
+            || block
+                .statements
+                .iter()
+                .zip(&canonical.statements)
+                .any(|(actual, original)| actual.hir_id != Some(*original))
+            || block
+                .where_items
+                .iter()
+                .zip(&canonical.where_items)
+                .any(|(actual, original)| actual.hir_id != Some(*original))
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let mut remaining = work.remaining();
+        let tail = crate::hir::blocks::BlockIndex::tail_from_hir(
+            &self.semantic_hir,
+            ril_compiler_core::ids::BlockAnchor::ExpressionBody(identity.source),
+            &mut remaining,
+        );
+        work.charge(work.remaining() - remaining)?;
+        let Some((statement, tail_id)) = tail.map_err(|error| match error {
+            crate::hir::blocks::BlockIndexError::Budget => SourceTypesError::BudgetExceeded,
+            _ => SourceTypesError::Unresolved,
+        })?
+        else {
+            return Ok(None);
+        };
+        let tail = block
+            .statements
+            .iter()
+            .find_map(|node| {
+                if node.hir_id != Some(statement) {
+                    return None;
+                }
+                match &node.kind {
+                    StmtKind::Expr {
+                        expression,
+                        terminated: false,
+                    } => Some(expression),
+                    _ => None,
+                }
+            })
+            .ok_or(SourceTypesError::MissingNode)?;
+        if tail.hir_id != Some(tail_id) {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let child = self
+            .source_projection_receipts()
+            .child_observation(
+                ProjectionOccurrence {
+                    identity,
+                    context,
+                    cause: value.cause,
+                },
+                tail_id,
+                work,
+            )?
+            .0 as usize;
+        work.charge(1)?;
+        let packet = self
+            .application_effect
+            .expressions
+            .get(child)
+            .ok_or(SourceTypesError::MissingNode)?
+            .value
+            .packet()
+            .clone();
+        let mut remaining = work.remaining();
+        let expected = crate::sema::evaluated::transport_value_at(
+            packet.value(),
+            &self.recency_moves,
+            packet.current_epoch(),
+            record.allocation_epoch,
+            &mut remaining,
+        );
+        work.charge(work.remaining() - remaining)?;
+        let expected = expected?;
+        let mut remaining = work.remaining();
+        let agrees =
+            crate::sema::evaluated::same_source_public_view(&expected, value, &mut remaining);
+        work.charge(work.remaining() - remaining)?;
+        if !agrees? || has_handler {
+            let mut remaining = work.remaining();
+            let exits = crate::sema::source_types::block_exits::Inputs {
+                hir: &self.semantic_hir,
+                expressions: &self.application_effect.expressions,
+                evaluations: &self.application_effect.evaluations,
+                activations: &self.application_effect.activations,
+                scopes: &self.scopes,
+                explanations: &self.explanations,
+                history: &self.recency_moves,
+                open: self.application_effect.current_activation(),
+            }
+            .joined(root, child, &mut remaining);
+            work.charge(work.remaining() - remaining)?;
+            let exits = exits?;
+            let mut common: Option<(SourceSchema, FrozenEnvironment)> = None;
+            for exit in exits {
+                work.charge(1)?;
+                let packet = self
+                    .application_effect
+                    .expressions
+                    .get(exit.observation)
+                    .ok_or(SourceTypesError::MissingNode)?
+                    .value
+                    .packet();
+                let known = packet
+                    .input_source(
+                        crate::sema::source_types_ref::SourceTypesRef::Live(
+                            self.type_source.storage.live_types(),
+                        ),
+                        work,
+                    )?
+                    .into_known()
+                    .ok_or(SourceTypesError::Unresolved)?;
+                if let Some((schema, environment)) = &common {
+                    if !schema.equivalent_in(&known.0, environment, &known.1, work)? {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                } else {
+                    common = Some(known);
+                }
+            }
+            return common.map(Some).ok_or(SourceTypesError::Unresolved);
+        }
+        // The lexical frame has already left this block. Its tail packet owns
+        // the original Source and interpretation; looking up the tail syntax
+        // again would lose block-local bindings and their captured context.
+        packet
+            .input_source(
+                crate::sema::source_types_ref::SourceTypesRef::Live(
+                    self.type_source.storage.live_types(),
+                ),
+                work,
+            )
+            .map(|source| source.into_known())
     }
 
     /// Qualified module references keep their canonical Path node after name
@@ -311,10 +682,11 @@ impl Checker {
             .functions
             .get(*index)
             .ok_or(SourceTypesError::MissingNode)?;
-        if !function.syntax.generics.is_empty() {
-            return Ok(None);
-        }
-        work.charge(1 + function.syntax.parameters.len() + function.syntax.annotations.len())?;
+        work.charge(
+            1 + function.syntax.parameters.len()
+                + function.syntax.annotations.len()
+                + function.syntax.generics.len(),
+        )?;
         work.text(&function.syntax.name)?;
         let declaration = function
             .hir_id
@@ -326,6 +698,8 @@ impl Checker {
         work.text(&original.name)?;
         if original.name != function.syntax.name
             || original.name != binding.name
+            || binding.declaration.is_none()
+            || binding.declaration != function.hir_id
             || function.lexical.get(name.as_ref()) != Some(id)
             || original.parameters.len() != function.syntax.parameters.len()
             || original.return_type
@@ -335,11 +709,104 @@ impl Checker {
                     .as_ref()
                     .and_then(|ty| ty.hir_id)
             || original.annotations.len() != function.syntax.annotations.len()
+            || original.generics.len() != function.syntax.generics.len()
             || !matches!(binding.value.callables.as_slice(), [Callable::Named(actual)] if actual == index)
         {
             return Err(SourceTypesError::Unresolved);
         }
         let environment = &function.typing_environment;
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        work.charge(
+            environment.generic_context.len()
+                + self.generic_binders.len()
+                + environment.bound_row_context.len()
+                + self.bound_rows.len(),
+        )?;
+        let mut binders = BTreeMap::new();
+        for (name, identity) in &environment.generic_context {
+            work.text(name)?;
+            work.text(identity)?;
+            work.charge(4 + 2 * binders.len().checked_ilog2().unwrap_or(0) as usize)?;
+            binders.insert(name.clone(), identity.clone());
+            // Keep an enclosing UID available when an inner parameter shadows
+            // its spelling. The canonical GenericParamId still chooses it.
+            binders.insert(identity.clone(), identity.clone());
+        }
+        let mut owned = BTreeMap::new();
+        for (identity, binder) in &self.generic_binders {
+            if binder.definition == function.definition {
+                work.text(identity)?;
+                work.text(&binder.identity)?;
+                work.charge(2 + owned.len().checked_ilog2().unwrap_or(0) as usize)?;
+                if identity != &binder.identity || owned.insert(binder.index, binder).is_some() {
+                    return Err(SourceTypesError::Unresolved);
+                }
+            }
+        }
+        if owned.len() != function.syntax.generics.len() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        for (ordinal, (parameter, original_id)) in function
+            .syntax
+            .generics
+            .iter()
+            .zip(&original.generics)
+            .enumerate()
+        {
+            work.charge(3 + owned.len().checked_ilog2().unwrap_or(0) as usize)?;
+            let canonical = self
+                .semantic_hir
+                .generic(*original_id)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let binder = owned
+                .get(&(ordinal as u32))
+                .ok_or(SourceTypesError::MissingNode)?;
+            work.text(&parameter.name)?;
+            work.text(&canonical.name)?;
+            work.text(&binder.name)?;
+            work.text(&binder.identity)?;
+            if parameter.hir_id != Some(*original_id)
+                || canonical.info.owner
+                    != crate::hir::nodes::LexicalOwner::Declaration(
+                        function.hir_id.ok_or(SourceTypesError::MissingNode)?,
+                    )
+                || parameter.name != canonical.name
+                || binder.name != parameter.name
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+            work.charge(2 + binders.len().checked_ilog2().unwrap_or(0) as usize)?;
+            binders.insert(parameter.name.clone(), binder.identity.clone());
+        }
+        for row in &self.bound_rows {
+            work.text(&row.name)?;
+            work.charge(
+                (1 + row.name.len().div_ceil(32))
+                    * (1 + environment
+                        .bound_row_context
+                        .len()
+                        .checked_ilog2()
+                        .unwrap_or(0) as usize),
+            )?;
+            if row.definition == function.definition
+                || environment.bound_row_context.get(&row.name) == Some(&row.id)
+            {
+                let crate::sema::model::rows::RowIdentity::Binder(identity) = &row.identity else {
+                    return Err(SourceTypesError::Unresolved);
+                };
+                work.text(&row.name)?;
+                work.text(identity)?;
+                work.charge(2 + binders.len().checked_ilog2().unwrap_or(0) as usize)?;
+                if binders
+                    .insert(row.name.clone(), identity.clone())
+                    .is_some_and(|previous| previous != *identity)
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+            }
+        }
         let mut parameters = Vec::with_capacity(function.syntax.parameters.len());
         for (parameter, original) in function.syntax.parameters.iter().zip(&original.parameters) {
             let Some(header) = parameter.ty.as_ref() else {
@@ -351,20 +818,11 @@ impl Checker {
             {
                 return Err(SourceTypesError::Unresolved);
             }
-            let Some((schema, _)) =
-                self.input_original_header_schema(header, environment.clone(), work)?
-            else {
-                return Ok(None);
-            };
+            let schema = self.original_header_source_schema_in(header, &binders, work)?;
             parameters.push((parameter.mode, schema));
         }
         let result = if let Some(header) = &function.syntax.return_type {
-            let Some((schema, _)) =
-                self.input_original_header_schema(header, environment.clone(), work)?
-            else {
-                return Ok(None);
-            };
-            schema
+            self.original_header_source_schema_in(header, &binders, work)?
         } else {
             SourceSchema::tuple(&[], None, work)?
         };
@@ -380,9 +838,24 @@ impl Checker {
             if annotation.kind != original.kind || annotation.text != original.text {
                 return Err(SourceTypesError::Unresolved);
             }
-            annotations.push(annotation.text.replace(' ', ""));
+            annotations.push(annotation.text.clone());
         }
-        let schema = SourceSchema::callable(&parameters, &result, &annotations, None, work)?;
+        let row = self.original_callable_row_identity(
+            crate::sema::source_types::CallableRowOrigin::Declaration(
+                function.hir_id.ok_or(SourceTypesError::MissingNode)?,
+            ),
+            &function.syntax.annotations,
+            &binders,
+            work,
+        )?;
+        let schema = SourceSchema::callable_original(
+            &parameters,
+            &result,
+            &annotations,
+            row.as_ref(),
+            None,
+            work,
+        )?;
         // A nested declaration captures actual generic Source selections at
         // creation. Its original header still names the declaration's UID;
         // applying those selections after composition keeps both every graph
@@ -400,6 +873,30 @@ impl Checker {
                     .checked_ilog2()
                     .unwrap_or(0) as usize,
             )?;
+            if let Some(binder) = self.generic_binders.get(identity) {
+                work.charge(self.functions.len() + self.record_bounds.len())?;
+                let parameter = self
+                    .functions
+                    .iter()
+                    .find(|function| function.definition == binder.definition)
+                    .and_then(|function| function.syntax.generics.get(binder.index as usize))
+                    .ok_or(SourceTypesError::Unresolved)?;
+                work.text(&binder.name)?;
+                work.text(&parameter.name)?;
+                if !crate::sema::record_bounds::certifies_type_sort(
+                    identity,
+                    binder,
+                    parameter,
+                    &self.record_bounds,
+                ) {
+                    return Err(SourceTypesError::Unresolved);
+                }
+            } else {
+                work.charge(self.bound_rows.len())?;
+                if !self.bound_rows.iter().any(|row| matches!(&row.identity, crate::sema::model::rows::RowIdentity::Binder(actual) if actual == identity)) {
+                    return Err(SourceTypesError::Unresolved);
+                }
+            }
             let Some(source) = environment.generic_sources.get(identity) else {
                 continue;
             };
@@ -435,28 +932,37 @@ impl Checker {
         frame: &Frame,
         work: &mut WorkLimit,
         depth: usize,
+        observation: Option<usize>,
     ) -> InputSource {
         let Some(application) = crate::hir::application::AstApplication::from_ast(syntax) else {
             return Ok(None);
         };
         let context = self.invocation_context(frame.callable_owner);
-        work.charge(self.copy_call_events.len())?;
-        let mut events = self.copy_call_events.iter().filter(|event| {
-            event.matches_source(syntax)
-                && event.owner == context.owner
-                && event.parent == context.invocation
-                && event
-                    .result_expression
-                    .and_then(|index| self.application_effect.expressions.get(index))
-                    .is_some_and(|fact| {
-                        fact.source_id == syntax.hir_id && fact.value.cause == value.cause
-                    })
-        });
-        let Some(event) = events.next() else {
+        let root = observation.ok_or(SourceTypesError::MissingNode)?;
+        let Some((event, parent)) =
+            self.observed_application_result(syntax, value, frame, root, work)?
+        else {
             return Ok(None);
         };
-        if events.next().is_some() {
+        let event = self
+            .copy_call_events
+            .get(event.0 as usize)
+            .ok_or(SourceTypesError::MissingNode)?;
+        work.charge(self.call_arguments.len())?;
+        let mut preparations = self
+            .call_arguments
+            .iter()
+            .filter(|row| row.source_event == event.id);
+        let preparation = preparations.next().ok_or(SourceTypesError::MissingNode)?;
+        if preparations.next().is_some() {
             return Err(SourceTypesError::Unresolved);
+        }
+        // A public return contract describes a normally completed application.
+        // The evaluation ledger independently checks this completion against
+        // every actual prefix/default root. A default which exits before body
+        // entry cannot manufacture the callee's normal result Source.
+        if !preparation.evaluation_complete {
+            return Ok(None);
         }
         let token = event
             .callee_expression
@@ -478,12 +984,6 @@ impl Checker {
         {
             return Err(SourceTypesError::Unresolved);
         }
-        let parent = self.source_projection_occurrence(
-            syntax.hir_id.ok_or(SourceTypesError::MissingNode)?,
-            value,
-            context,
-            work,
-        )?;
         if self
             .source_projection_receipts()
             .child_observation(
@@ -522,9 +1022,10 @@ impl Checker {
             }
             return Ok(Some((result, environment)));
         }
-        let callee = callee.value.clone();
+        work.charge(1)?;
+        let callee = callee.value.packet().clone();
         let Some((schema, environment)) = self.raw_original_source_schema(
-            &callee,
+            callee.value(),
             application.callee,
             frame,
             work,
@@ -540,5 +1041,142 @@ impl Checker {
         Ok(schema
             .callable_parts(work)?
             .map(|(_, result)| (result, environment)))
+    }
+}
+
+#[cfg(test)]
+mod application_result_tests {
+    use super::*;
+    use crate::sema::{
+        default_uses::ArgumentSource,
+        evaluated::{CapturedSource, SourceCaptureView},
+    };
+
+    #[test]
+    fn closed_witness_ingress_charges_before_validation_and_key_construction() {
+        let span = Span {
+            file: FileId(0),
+            start: 0,
+            end: 0,
+        };
+        let scalar = TypeExpr {
+            hir_id: None,
+            text: String::new(),
+            span,
+            kind: TypeKind::Name {
+                path: vec!["int".into()],
+                arguments: vec![],
+            },
+        };
+        let syntax = TypeExpr {
+            hir_id: None,
+            text: String::new(),
+            span,
+            kind: TypeKind::Tuple(vec![scalar; 1024]),
+        };
+        let mut witness = SourceTypeWitness {
+            key: crate::static_eval::normalized_argument_key(&syntax),
+            syntax,
+        };
+        let checker = Checker::new(FileId(0));
+        let environment = FrozenEnvironment::default();
+        let mut work = WorkLimit::new(4_000_000);
+        checker
+            .closed_witness_input_schema(&witness, environment.clone(), &mut work)
+            .unwrap()
+            .unwrap();
+        let used = 4_000_000 - work.remaining();
+        let mut exact = WorkLimit::new(used);
+        checker
+            .closed_witness_input_schema(&witness, environment.clone(), &mut exact)
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.remaining(), 0);
+        for budget in [0, used - 1] {
+            assert!(matches!(
+                checker.closed_witness_input_schema(
+                    &witness,
+                    environment.clone(),
+                    &mut WorkLimit::new(budget)
+                ),
+                Err(SourceTypesError::BudgetExceeded)
+            ));
+        }
+        witness.key.push('x');
+        assert!(matches!(
+            checker.closed_witness_input_schema(
+                &witness,
+                environment.clone(),
+                &mut WorkLimit::new(0)
+            ),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+        assert!(matches!(
+            checker.closed_witness_input_schema(
+                &witness,
+                environment,
+                &mut WorkLimit::new(4_000_000)
+            ),
+            Err(SourceTypesError::Unresolved)
+        ));
+    }
+
+    #[test]
+    fn public_result_views_require_completed_input_and_default_preparation() {
+        for target in ["pointer32", "pointer64"] {
+            let verified = crate::Session::with_options(
+                ril_test::case_bytes("tests/regressions/defaults.ril::abrupt-source-block")
+                    .to_vec(),
+                crate::CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
+                },
+            )
+            .verify()
+            .unwrap_or_else(|error| panic!("{target}: {error:?}"));
+            let facts = verified.facts();
+            let mut count = 0;
+            for (index, preparation) in facts.call_arguments.iter().enumerate() {
+                if preparation.evaluation_complete {
+                    continue;
+                }
+                for slot in &preparation.slots {
+                    let ArgumentSource::Default(id) = slot else {
+                        continue;
+                    };
+                    let usage = &facts.default_uses[id.0 as usize];
+                    if usage.evaluation_complete {
+                        continue;
+                    }
+                    let event = &facts.copy_call_events[preparation.source_event.0 as usize];
+                    let root = event.result_expression.unwrap();
+                    let packet = facts.expressions[root].value.packet();
+                    assert!(usage.entered.is_empty());
+                    assert!(
+                        matches!(packet.evidence_view().capture,
+                        SourceCaptureView::Captured { result: Ok(CapturedSource::Unknown(environment)), .. }
+                            if Some(environment) == facts.evaluations[root].environment),
+                        "an interrupted call cannot claim its declaration's normal result"
+                    );
+                    for mutation in 0..2 {
+                        let mut changed = facts.clone();
+                        match mutation {
+                            0 => changed.call_arguments[index].evaluation_complete = true,
+                            1 => changed.default_uses[id.0 as usize].result_expression = None,
+                            _ => unreachable!(),
+                        }
+                        assert!(
+                            crate::sema::validate::solved_facts(&changed).is_err(),
+                            "completion must be supported by the actual default's exit: {mutation}"
+                        );
+                    }
+                    count += 1;
+                }
+            }
+            assert!(
+                count > 0,
+                "the fixture must really exit in a default before body entry"
+            );
+        }
     }
 }

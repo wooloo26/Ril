@@ -1,3 +1,28 @@
+--@ case: static-result-publication-views
+--@ mode: run-pass
+--@ spec: SPEC#mandatory-inspection-of-fallible-results
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_native
+--@ file: source.ril
+meta let FIRST: Result<int, str> = {
+    let result = Ok(7)
+    assert(result is Ok(7))
+    result
+}
+meta let SECOND: Result<f64, str> = {
+    let result = Err("unavailable")
+    assert(result is Err("unavailable"))
+    result
+}
+pub fn test_native() &{FIRST, SECOND} {
+    let first = clone(FIRST)
+    let second = clone(SECOND)
+    assert(first is Ok(7))
+    assert(second is Err("unavailable"))
+}
+--@ end-file
+--@ end-case
+
 --@ source: source-repeated-host-results
 --@ file: source.ril
 

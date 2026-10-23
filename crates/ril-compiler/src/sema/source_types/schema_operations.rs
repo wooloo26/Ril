@@ -29,34 +29,38 @@ fn import_parts<'a>(
     builder: &mut SourceBuilder,
     work: &mut WorkLimit,
 ) -> Result<Vec<SourceTypeId>, SourceTypesError> {
+    let parts = parts.into_iter();
+    let initial = parts.size_hint().0;
+    work.charge(
+        initial
+            .checked_add(1)
+            .ok_or(SourceTypesError::BudgetExceeded)?,
+    )?;
     let mut roots = Vec::new();
-    let mut graphs = BTreeMap::<_, (&SourceTypes, BTreeSet<SourceTypeId>)>::new();
-    for part in parts {
-        work.charge(2)?;
-        part.types.get(part.root)?;
-        roots.push(part.root);
-        graphs
-            .entry(part.root.arena)
-            .or_insert_with(|| (&part.types, BTreeSet::new()))
-            .1
-            .insert(part.root);
-    }
-    let mut copied = BTreeMap::new();
-    for (_, (types, roots)) in graphs {
-        let mapping = types.copy_into(roots, builder, work)?;
-        work.charge(mapping.len())?;
-        copied.extend(mapping);
-    }
-    work.charge(roots.len())?;
     roots
-        .into_iter()
-        .map(|root| {
-            copied
-                .get(&root)
-                .copied()
-                .ok_or(SourceTypesError::MissingNode)
-        })
-        .collect()
+        .try_reserve_exact(initial)
+        .map_err(|_| SourceTypesError::BudgetExceeded)?;
+    for part in parts {
+        // One writer can publish several immutable prefixes. Equal arena IDs
+        // do not make a later root visible in the first part's snapshot.
+        // The builder's full-ID import memo already preserves shared edges.
+        work.charge(2)?;
+        let root = part.copy_into(builder, work)?;
+        if roots.len() == roots.capacity() {
+            let additional = roots.capacity().max(4);
+            work.charge(
+                roots
+                    .len()
+                    .checked_add(additional)
+                    .ok_or(SourceTypesError::BudgetExceeded)?,
+            )?;
+            roots
+                .try_reserve_exact(additional)
+                .map_err(|_| SourceTypesError::BudgetExceeded)?;
+        }
+        roots.push(root);
+    }
+    Ok(roots)
 }
 
 fn freeze(
@@ -84,6 +88,7 @@ impl SourceSchema {
         Ok(match self.types.get(root)? {
             SourceNode::Scalar(scalar) => Some(*scalar),
             SourceNode::Binder(_)
+            | SourceNode::KeyProjection { .. }
             | SourceNode::OpaqueName { .. }
             | SourceNode::StaticValue(_)
             | SourceNode::OpaqueComputation(_)
@@ -164,7 +169,9 @@ impl SourceSchema {
                 SourceNode::OpaqueComputation(_) | SourceNode::Unresolved { .. } => {
                     return Err(SourceTypesError::Unresolved);
                 }
-                SourceNode::Array { .. } | SourceNode::Alias { .. } => 1,
+                SourceNode::Array { .. }
+                | SourceNode::Alias { .. }
+                | SourceNode::KeyProjection { .. } => 1,
                 SourceNode::Map { .. } => 2,
                 SourceNode::Tuple(items)
                 | SourceNode::Container {
@@ -174,7 +181,15 @@ impl SourceSchema {
                     arguments: items, ..
                 } => items.len(),
                 SourceNode::Record { fields, row } => fields.len() + usize::from(row.is_some()),
-                SourceNode::Callable { parameters, .. } => parameters.len() + 1,
+                SourceNode::Callable {
+                    parameters,
+                    row_identity,
+                    ..
+                } => {
+                    parameters.len()
+                        + 1
+                        + row_identity.as_ref().map_or(0, |row| row.parameters.len())
+                }
             };
             work.charge(1 + children)?;
             active.insert(id);
@@ -246,7 +261,12 @@ impl SourceSchema {
                 SourceLength::Dynamic | SourceLength::Fixed(0)
             )),
             (SourceNode::Map { .. }, Construction::Map(_)) => Some(true),
-            (SourceNode::Binder(_) | SourceNode::OpaqueName { .. }, _) => {
+            (
+                SourceNode::Binder(_)
+                | SourceNode::OpaqueName { .. }
+                | SourceNode::KeyProjection { .. },
+                _,
+            ) => {
                 return Err(SourceTypesError::Unresolved);
             }
             _ => None,
@@ -286,6 +306,7 @@ impl SourceSchema {
             match self.types.get(id)? {
                 SourceNode::Binder(_) => required |= binders,
                 SourceNode::OpaqueName { .. } => required = true,
+                SourceNode::KeyProjection { .. } => required = true,
                 SourceNode::OpaqueComputation(_) | SourceNode::Unresolved { .. } => {
                     return Err(SourceTypesError::Unresolved);
                 }
@@ -309,6 +330,7 @@ impl SourceSchema {
             SourceNode::Callable { annotations, .. } => annotation_environment(annotations, work),
             SourceNode::GenericBuiltin(_) => Ok(false),
             SourceNode::Binder(_)
+            | SourceNode::KeyProjection { .. }
             | SourceNode::OpaqueName { .. }
             | SourceNode::OpaqueComputation(_)
             | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
@@ -486,13 +508,38 @@ impl SourceSchema {
         original: Option<TypeExprId>,
         work: &mut WorkLimit,
     ) -> Result<Self, SourceTypesError> {
-        work.charge(1 + parameters.len() + annotations.len())?;
+        Self::callable_original(parameters, result, annotations, None, original, work)
+    }
+
+    /// The row reference must come from the authenticated original-header
+    /// builder. Its dependency edges are ordinary graph substitution inputs.
+    pub(crate) fn callable_original(
+        parameters: &[(ParameterMode, Self)],
+        result: &Self,
+        annotations: &[String],
+        row_identity: Option<&CallableRowIdentity<Self>>,
+        original: Option<TypeExprId>,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(
+            1 + parameters.len()
+                + annotations.len()
+                + row_identity.map_or(0, |row| row.parameters.len() + 1),
+        )?;
         for annotation in annotations {
             work.text(annotation)?;
         }
         let mut builder = SourceBuilder::new()?;
         let parts = import_parts(
-            parameters.iter().map(|(_, schema)| schema).chain([result]),
+            parameters
+                .iter()
+                .map(|(_, schema)| schema)
+                .chain([result])
+                .chain(
+                    row_identity
+                        .into_iter()
+                        .flat_map(|row| row.parameters.iter().map(|(_, schema)| schema)),
+                ),
             &mut builder,
             work,
         )?;
@@ -505,6 +552,15 @@ impl SourceSchema {
                     .collect(),
                 result: parts[parameters.len()],
                 annotations: annotations.to_vec(),
+                row_identity: row_identity.map(|row| CallableRowIdentity {
+                    origin: row.origin,
+                    parameters: row
+                        .parameters
+                        .iter()
+                        .zip(&parts[parameters.len() + 1..])
+                        .map(|((id, _), root)| (*id, *root))
+                        .collect(),
+                }),
             },
             work,
         )?;
@@ -621,6 +677,7 @@ impl SourceSchema {
                     break Some(Self::frozen_view(&self.types, cursor, self.original, work)?);
                 }
                 SourceNode::Binder(_)
+                | SourceNode::KeyProjection { .. }
                 | SourceNode::OpaqueName { .. }
                 | SourceNode::StaticValue(_)
                 | SourceNode::OpaqueComputation(_)
@@ -667,6 +724,7 @@ impl SourceSchema {
                 )))
             }
             SourceNode::Binder(_)
+            | SourceNode::KeyProjection { .. }
             | SourceNode::OpaqueName { .. }
             | SourceNode::OpaqueComputation(_)
             | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
@@ -690,6 +748,7 @@ impl SourceSchema {
                     .map(Some)
             }
             SourceNode::Binder(_)
+            | SourceNode::KeyProjection { .. }
             | SourceNode::OpaqueName { .. }
             | SourceNode::OpaqueComputation(_)
             | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
@@ -708,6 +767,7 @@ impl SourceSchema {
                 Self::frozen_view(&self.types, *element, self.original, work)?,
             ))),
             SourceNode::Binder(_)
+            | SourceNode::KeyProjection { .. }
             | SourceNode::OpaqueName { .. }
             | SourceNode::OpaqueComputation(_)
             | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
@@ -732,6 +792,7 @@ impl SourceSchema {
         match self.types.get(root)? {
             SourceNode::Callable { annotations, .. } => Ok(Some(annotations.clone())),
             SourceNode::Binder(_)
+            | SourceNode::KeyProjection { .. }
             | SourceNode::OpaqueName { .. }
             | SourceNode::OpaqueComputation(_)
             | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
@@ -762,6 +823,7 @@ impl SourceSchema {
                     .map(Some)
             }
             SourceNode::Binder(_)
+            | SourceNode::KeyProjection { .. }
             | SourceNode::OpaqueComputation(_)
             | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
             _ => Ok(None),
@@ -791,9 +853,9 @@ impl SourceSchema {
                     SourceNode::Binder(_) | SourceNode::OpaqueName { .. } => {
                         selected.ok_or(SourceTypesError::Unresolved).map(Some)
                     }
-                    SourceNode::OpaqueComputation(_) | SourceNode::Unresolved { .. } => {
-                        Err(SourceTypesError::Unresolved)
-                    }
+                    SourceNode::KeyProjection { .. }
+                    | SourceNode::OpaqueComputation(_)
+                    | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
                     _ if seen.len() == 1 => Ok(None),
                     _ => Err(SourceTypesError::Unresolved),
                 };
@@ -826,6 +888,202 @@ mod tests {
         let mut builder = SourceBuilder::new().unwrap();
         let root = builder.insert(SourceNode::Scalar(kind), &mut work).unwrap();
         freeze(builder, root, Some(TypeExprId(17)), &mut work).unwrap()
+    }
+
+    fn prefix_parts() -> (SourceSchema, SourceSchema) {
+        let mut writer = SourceBuilder::new().unwrap();
+        let mut work = WorkLimit::new(4096);
+        let recursive = writer.reserve(&mut work).unwrap();
+        let scalar = writer
+            .insert(SourceNode::Scalar(SourceScalar::I32), &mut work)
+            .unwrap();
+        let inner = writer
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(3),
+                    element: scalar,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let empty = writer
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(0),
+                    element: inner,
+                },
+                &mut work,
+            )
+            .unwrap();
+        writer
+            .define(
+                recursive,
+                SourceNode::Tuple(vec![recursive, empty]),
+                &mut work,
+            )
+            .unwrap();
+        let older = SourceSchema {
+            types: writer.snapshot(&mut work).unwrap(),
+            root: recursive,
+            original: Some(TypeExprId(17)),
+        };
+        let text = writer
+            .insert(SourceNode::Scalar(SourceScalar::Str), &mut work)
+            .unwrap();
+        let later = writer
+            .insert(
+                SourceNode::Tuple(vec![recursive, recursive, text]),
+                &mut work,
+            )
+            .unwrap();
+        let newer = SourceSchema {
+            types: writer.snapshot(&mut work).unwrap(),
+            root: later,
+            original: Some(TypeExprId(18)),
+        };
+        (older, newer)
+    }
+
+    #[test]
+    fn graph_composition_keeps_each_actual_prefix_snapshot_and_shared_cycles() {
+        let (older, newer) = prefix_parts();
+        assert_eq!(older.root.arena, newer.root.arena);
+        assert_eq!(
+            older.types.get(newer.root),
+            Err(SourceTypesError::MissingNode)
+        );
+        for reversed in [false, true] {
+            let parts = if reversed {
+                [newer.clone(), older.clone()]
+            } else {
+                [older.clone(), newer.clone()]
+            };
+            let combined = SourceSchema::container(
+                SourceContainer::Result,
+                &parts,
+                None,
+                &mut WorkLimit::new(4096),
+            )
+            .unwrap();
+            let SourceNode::Container { arguments, .. } =
+                combined.types.get(combined.root).unwrap()
+            else {
+                panic!()
+            };
+            let (old, new) = if reversed {
+                (arguments[1], arguments[0])
+            } else {
+                (arguments[0], arguments[1])
+            };
+            let SourceNode::Tuple(old_children) = combined.types.get(old).unwrap() else {
+                panic!()
+            };
+            assert_eq!(old_children[0], old);
+            let SourceNode::Tuple(new_children) = combined.types.get(new).unwrap() else {
+                panic!()
+            };
+            assert_eq!(&new_children[..2], &[old, old]);
+            assert_eq!(
+                combined.types.get(new_children[2]),
+                Ok(&SourceNode::Scalar(SourceScalar::Str))
+            );
+            let SourceNode::Array {
+                length: SourceLength::Fixed(0),
+                element,
+            } = combined.types.get(old_children[1]).unwrap()
+            else {
+                panic!()
+            };
+            let SourceNode::Array {
+                length: SourceLength::Fixed(3),
+                element,
+            } = combined.types.get(*element).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(
+                combined.types.get(*element),
+                Ok(&SourceNode::Scalar(SourceScalar::I32))
+            );
+            let old_view = SourceSchema::frozen_view(
+                &combined.types,
+                old,
+                older.original,
+                &mut WorkLimit::new(4096),
+            )
+            .unwrap();
+            assert_eq!(
+                old_view.equivalent(&older, &mut WorkLimit::new(4096)),
+                Ok(true)
+            );
+        }
+        let duplicated = SourceSchema::container(
+            SourceContainer::Result,
+            &[older.clone(), older],
+            None,
+            &mut WorkLimit::new(4096),
+        )
+        .unwrap();
+        let SourceNode::Container { arguments, .. } =
+            duplicated.types.get(duplicated.root).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(arguments[0], arguments[1]);
+    }
+
+    #[test]
+    fn graph_composition_preflights_foreign_roots_and_exact_snapshot_work() {
+        let (older, newer) = prefix_parts();
+        let invalid_old = SourceSchema {
+            types: older.types.clone(),
+            root: newer.root,
+            original: None,
+        };
+        // The later root is already imported by the first part: a memo hit
+        // must still reject its absence from the second part's own snapshot.
+        assert!(matches!(
+            SourceSchema::container(
+                SourceContainer::Result,
+                &[newer.clone(), invalid_old],
+                None,
+                &mut WorkLimit::new(4096)
+            ),
+            Err(SourceTypesError::MissingNode)
+        ));
+        let foreign = scalar(SourceScalar::Bool);
+        let invalid_foreign = SourceSchema {
+            types: older.types.clone(),
+            root: foreign.root,
+            original: None,
+        };
+        assert!(matches!(
+            SourceSchema::container(
+                SourceContainer::Result,
+                &[foreign, invalid_foreign],
+                None,
+                &mut WorkLimit::new(4096)
+            ),
+            Err(SourceTypesError::ForeignIdentity)
+        ));
+        let parts = [older, newer];
+        let mut work = WorkLimit::new(4096);
+        SourceSchema::container(SourceContainer::Result, &parts, None, &mut work).unwrap();
+        let used = 4096 - work.remaining();
+        let mut exact = WorkLimit::new(used);
+        SourceSchema::container(SourceContainer::Result, &parts, None, &mut exact).unwrap();
+        assert_eq!(exact.remaining(), 0);
+        for short in [0, used - 1] {
+            assert!(matches!(
+                SourceSchema::container(
+                    SourceContainer::Result,
+                    &parts,
+                    None,
+                    &mut WorkLimit::new(short)
+                ),
+                Err(SourceTypesError::BudgetExceeded)
+            ));
+        }
     }
 
     #[test]

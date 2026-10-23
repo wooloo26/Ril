@@ -194,7 +194,7 @@ impl Checker {
         let open_error = self.standard_value(error.clone(), span, helper.owner, 0xF11F);
         let skipped = self.file_result_branch(false, open_error, &prototype, span);
         let before = self.snapshot_flow();
-        let mut response = self.invoke(
+        let mut response = self.invoke_generated_values(
             &action,
             vec![(ParameterMode::Mut, borrowed, span)],
             span,

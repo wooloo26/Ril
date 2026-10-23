@@ -939,16 +939,24 @@ mod tests {
     #[test]
     fn an_empty_array_can_use_a_selected_storage_type_without_admitting_unknown_formals() {
         let mut checker = Checker::new(FileId(0));
-        let mut frame = checker.frame(Env::new(), false);
-        let parsed = ril_syntax::parse_expression("[]", FileId(0));
-        let empty = checker.expression(&parsed.expression, &mut frame);
+        let parsed = ril_syntax::parse(ril_test::case_source(
+            "tests/regressions/closed-standard-data.ril::empty-array-original-receiving",
+        ));
+        assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
+        checker.run(&parsed.program);
+        let original = checker.application_effect.expressions.iter().find(|fact| {
+            fact.source_id.and_then(|id| checker.semantic_hir.expression(id))
+                .is_some_and(|node| matches!(&node.kind, crate::hir::nodes::ExprKind::Array(items) if items.is_empty()))
+        }).expect("the real empty-array occurrence must be exercised");
+        let span = original.span;
+        let empty = original.value.value().clone();
         let expected = Ty::Array(Box::new(Ty::Named("Os::NativeString".into())));
         checker.standard_arguments(
             "checked operation",
-            &[(ParameterMode::Read, empty, parsed.expression.span)],
+            &[(ParameterMode::Read, empty, span)],
             std::slice::from_ref(&expected),
             1,
-            parsed.expression.span,
+            span,
         );
         assert!(
             checker.diagnostics.is_empty() && checker.unsupported.is_empty(),
@@ -959,15 +967,15 @@ mod tests {
         let unknown = checker.formal_value(
             Ty::Array(Box::new(Ty::Unknown)),
             0,
-            parsed.expression.span,
+            span,
             &mut BTreeSet::new(),
         );
         checker.standard_arguments(
             "checked operation",
-            &[(ParameterMode::Read, unknown, parsed.expression.span)],
+            &[(ParameterMode::Read, unknown, span)],
             &[expected],
             1,
-            parsed.expression.span,
+            span,
         );
         assert!(!checker.unsupported.is_empty());
     }

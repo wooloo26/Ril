@@ -169,7 +169,7 @@ impl Checker {
                 self.unsupported(span, "recursive callback argument-port instantiation");
                 return None;
             }
-            let _ = self.invoke(&callback_value, vec![], span, &mut frame);
+            let _ = self.invoke_generated_values(&callback_value, vec![], span, &mut frame);
         }
         let mut result = self.recursive_return(&summary.return_value, &inputs, span, &mut frame)?;
         let returned = self.heap.reachable(result.origins.nodes.iter().copied());

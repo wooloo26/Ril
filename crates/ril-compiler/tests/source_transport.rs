@@ -151,7 +151,7 @@ fn nested_type_receipts_cannot_substitute_an_intermediate_frames_own_binder() {
                         .entry
                         .arguments
                         .first()
-                        .is_some_and(|(_, value)| matches!(&value.value.ty, Ty::Generic(_)))
+                        .is_some_and(|argument| matches!(&argument.value().ty, Ty::Generic(_)))
                 {
                     return false;
                 }

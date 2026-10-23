@@ -3,12 +3,12 @@
 use super::{ActivationKind, CallableEntry, EntryArgument, EntryOrigin, InputOrigin, ScalarInput};
 use crate::sema::{
     ExpressionFact, SemanticFacts,
-    copy_contract::{CopyBoundary, CopyCallEvent, CopyCallEventId, CopyValueSnapshot},
+    copy_contract::{CopyBoundary, CopyCallEvent, CopyCallEventId},
     copy_templates::InstanceId,
     default_uses::CallArguments,
     effect_identity::{ClosureInvocationId, InvocationContext},
     facts::ScopeId,
-    model::{Callable, Mode, Value},
+    model::{Callable, Value},
 };
 use ril_compiler_core::ids::{ActivationEpochId, DefinitionId, EvaluationOccurrenceId, ExprId};
 use ril_syntax::ast::ParameterMode;
@@ -40,26 +40,7 @@ impl EntryArguments for Arc<Vec<EntryArgument>> {
     fn argument(&self, slot: usize) -> Option<(ParameterMode, &Value)> {
         self.as_ref()
             .get(slot)
-            .map(|(mode, value, _)| (*mode, value))
-    }
-}
-
-impl EntryArguments for Vec<(Mode, CopyValueSnapshot)> {
-    fn len(&self) -> usize {
-        self.as_slice().len()
-    }
-
-    fn argument(&self, slot: usize) -> Option<(ParameterMode, &Value)> {
-        self.as_slice().get(slot).map(|(mode, value)| {
-            (
-                match mode {
-                    Mode::Read => ParameterMode::Read,
-                    Mode::Write => ParameterMode::Mut,
-                    Mode::Retain => ParameterMode::SharedMut,
-                },
-                &value.value,
-            )
-        })
+            .map(|argument| (argument.mode, argument.value()))
     }
 }
 
@@ -83,10 +64,7 @@ pub(crate) struct EntryView<'a> {
 }
 
 impl<'a> EntryView<'a> {
-    pub(crate) fn callable<A: EntryArguments>(
-        entry: &'a CallableEntry<A>,
-        caller_activation: Option<ScopeId>,
-    ) -> Self {
+    pub(crate) fn callable(entry: &'a CallableEntry, caller_activation: Option<ScopeId>) -> Self {
         Self {
             origin: &entry.origin,
             parent: entry.parent,

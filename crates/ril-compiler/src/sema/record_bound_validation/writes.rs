@@ -36,13 +36,15 @@ impl Replay<'_> {
     }
 
     pub(super) fn bound_writes(&self) -> Result<(), Failure> {
-        let sites = projection_sites(self.facts).map_err(|message| {
-            (
-                self.function_scope_span(&BoundScope::default()),
-                None,
-                message,
-            )
-        })?;
+        let mut source_work = LIMIT;
+        let sites =
+            projection_sites_with_work(self.facts, &mut source_work).map_err(|message| {
+                (
+                    self.function_scope_span(&BoundScope::default()),
+                    None,
+                    message,
+                )
+            })?;
         let fallback = self.function_scope_span(&BoundScope::default());
         if self.facts.bound_field_writes.len() > LIMIT || self.facts.observed_accesses.len() > LIMIT
         {
@@ -201,7 +203,7 @@ impl Replay<'_> {
                     .parameters
                     .get(loan.parameter as usize)
                     .ok_or_else(|| "bounded assignment loan has no real formal index".to_owned())?;
-                let (mode, entry) = call
+                let entry = call
                     .entry
                     .arguments
                     .get(loan.parameter as usize)
@@ -211,15 +213,15 @@ impl Replay<'_> {
                 // Mut reception marks a path temporary before loan creation.
                 // Reconstruct that declared restriction; do not grant write
                 // permission or replace the entry's origins/participants.
-                let mut expected_loan_source = entry.value.clone();
+                let mut expected_loan_source = entry.value().clone();
                 expected_loan_source.temporary = true;
                 require(
                     !loan.retained
                         && parameter.mode == ril_syntax::ast::ParameterMode::Mut
-                        && *mode == Mode::Write
+                        && entry.mode == ril_syntax::ast::ParameterMode::Mut
                         && matches!(&parameter.pattern.kind, ril_syntax::ast::PatternKind::Name(actual) if actual == name)
                         && loan.bindings.contains(&binding_id)
-                        && binding.forwarded == entry.value.sources
+                        && binding.forwarded == entry.value().sources
                         && loan.source == expected_loan_source
                         && loan.origins == source.origins
                         && loan.source.permission == Permission::Write

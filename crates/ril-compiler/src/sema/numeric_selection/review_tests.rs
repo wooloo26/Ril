@@ -82,7 +82,8 @@ fn equal_sibling_literals_cannot_exchange_physical_numeric_receipts() {
         changed.numeric_holes.clear();
         changed.numeric_selections.clear();
         for fact in &mut changed.expressions {
-            fact.value.numeric = NumericDependencies::default();
+            fact.value.corrupt_value(&mut 4_000_000).unwrap().numeric =
+                NumericDependencies::default();
         }
         rejects(
             &changed,
@@ -122,7 +123,7 @@ fn equal_sibling_literals_cannot_exchange_physical_numeric_receipts() {
         changed.numeric_holes.clear();
         changed.numeric_selections.clear();
         for fact in &mut changed.expressions {
-            erase(&mut fact.value);
+            erase(fact.value.corrupt_value(&mut 4_000_000).unwrap());
         }
         rejects(
             &changed,
@@ -355,7 +356,9 @@ fn an_alias_pattern_cannot_reselect_its_type_by_calibrating_all_numeric_projecti
             resolution.encoded = Some(selection.encoded.clone());
             for (fact, record) in changed.expressions.iter_mut().zip(&changed.evaluations) {
                 if record.identity == Some(usage.birth.occurrence) {
-                    resolution.apply(&mut fact.value, &mut 4096).unwrap();
+                    resolution
+                        .apply(fact.value.corrupt_value(&mut 4_000_000).unwrap(), &mut 4096)
+                        .unwrap();
                 }
             }
             rejects(
@@ -475,7 +478,7 @@ fn committed_runtime_floats_require_occurrence_receipts_and_original_width_bits(
             }
         }
         for fact in &mut changed.expressions {
-            erase(&mut fact.value);
+            erase(fact.value.corrupt_value(&mut 4_000_000).unwrap());
         }
         for usage in &committed {
             let result = baseline.activations[usage.birth.occurrence.activation.0 as usize]
@@ -578,7 +581,9 @@ fn computed_numeric_patterns_use_the_real_application_source() {
                 resolution.encoded = Some(selection.encoded.clone());
                 for (fact, record) in changed.expressions.iter_mut().zip(&changed.evaluations) {
                     if record.identity == Some(usage.birth.occurrence) {
-                        resolution.apply(&mut fact.value, &mut 4096).unwrap();
+                        resolution
+                            .apply(fact.value.corrupt_value(&mut 4_000_000).unwrap(), &mut 4096)
+                            .unwrap();
                     }
                 }
                 rejects(
@@ -656,7 +661,10 @@ fn computed_numeric_patterns_use_the_real_application_source() {
                     .expect("a real parse_int reference");
                 for mutation in 0..4 {
                     let mut changed = baseline.clone();
-                    let value = &mut changed.expressions[declaration.expression].value;
+                    let value = changed.expressions[declaration.expression]
+                        .value
+                        .corrupt_value(&mut 4_000_000)
+                        .unwrap();
                     if mutation == 0 || mutation == 3 {
                         value.callables = vec![crate::sema::model::Callable::Builtin(
                             "Num::parse_f32".into(),

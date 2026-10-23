@@ -2,7 +2,7 @@
 //! No successful row equation creates a value, permission or resource proof.
 use super::{
     SemanticFacts,
-    copy_contract::{CopyInvocationStatus, CopyValueSnapshot},
+    copy_contract::{CopyInvocationStatus, CopyValueView},
     effect_identity::{ArgumentKey, StaticBinderSort},
     facts::{Publication, Slot},
     model::{
@@ -933,14 +933,15 @@ impl Replay<'_> {
 
     fn selected_value<'a>(
         &self,
-        snapshot: &'a CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'a>>,
         path: &[BoundTypeSelectionStep],
     ) -> Check<&'a Value> {
+        let snapshot = snapshot.into();
         require(
             path.len() < 64,
             "nested structural selection exceeds replay depth",
         )?;
-        let mut selected = &snapshot.value;
+        let mut selected = snapshot.value;
         for step in path {
             let slot = match step {
                 BoundTypeSelectionStep::Tuple(index) => {
@@ -1282,48 +1283,70 @@ impl Replay<'_> {
 }
 
 impl Replay<'_> {
-    fn snapshot(&self, snapshot: &CopyValueSnapshot) -> Check {
+    fn snapshot<'s>(&self, snapshot: impl Into<CopyValueView<'s>>) -> Check {
+        self.snapshot_inner(snapshot.into(), LIMIT)
+    }
+
+    fn entry_snapshot<'a>(
+        &self,
+        argument: &'a super::application_effect::EntryArgument,
+        epoch: usize,
+    ) -> Check<CopyValueView<'a>> {
         require(
-            snapshot.nodes.len() <= LIMIT && snapshot.relations.len() <= LIMIT,
-            "record-bound frozen graph exceeds replay budget",
+            argument.packet.current_epoch() == epoch,
+            "entry heap borrowed another receiving epoch",
         )?;
-        let nodes: BTreeMap<_, _> = snapshot
-            .nodes
-            .iter()
-            .map(|node| (node.origin, node))
-            .collect();
-        require(
-            nodes.len() == snapshot.nodes.len(),
-            "record-bound frozen graph repeats an origin",
-        )?;
-        let mut values = vec![(&snapshot.value, 0usize)];
-        let mut visited = BTreeSet::new();
-        let mut work = LIMIT;
+        let mut work = super::source_types::WorkLimit::new(LIMIT);
+        let view = argument
+            .snapshot_view(&mut work)
+            .map_err(|error| error.to_string())?;
+        self.snapshot_inner(view, work.remaining())?;
+        Ok(view)
+    }
+
+    fn snapshot_inner(&self, snapshot: CopyValueView<'_>, mut work: usize) -> Check {
+        super::heap_snapshot_validation::validate(self.facts, snapshot, &mut work)?;
+        // Legacy structural Source consumers still check their compatibility
+        // witnesses. These witnesses are not authority for the common heap check.
+        let charge = |work: &mut usize, count| -> Check {
+            let Some(remaining) = work.checked_sub(count) else {
+                *work = 0;
+                return Err("record-bound frozen witness exceeds replay budget".into());
+            };
+            *work = remaining;
+            Ok(())
+        };
+        charge(&mut work, snapshot.nodes.len() + 1)?;
+        let mut values = vec![(snapshot.value, 0usize)];
+        for node in snapshot.nodes {
+            charge(&mut work, node.fields.len())?;
+            values.extend(node.fields.iter().map(|(_, value)| (value, 0)));
+        }
         while let Some((value, depth)) = values.pop() {
+            charge(&mut work, 1)?;
             require(
-                work > 0 && depth < 64,
+                depth < 64,
                 "record-bound frozen value exceeds replay budget",
             )?;
-            work -= 1;
-            require(
-                (value.cause.0 as usize) < self.facts.explanations.causes.len(),
-                "record-bound frozen value has no cause registry entry",
-            )?;
-            require(
-                value
-                    .origins
-                    .nodes
-                    .iter()
-                    .all(|origin| nodes.contains_key(origin))
-                    && value.origins.choices.values().all(|branches| {
-                        branches
-                            .iter()
-                            .flatten()
-                            .all(|origin| value.origins.nodes.contains(origin))
-                    }),
-                "record-bound frozen value has missing graph or choice membership",
-            )?;
             if let Some(witness) = &value.source_type_witness {
+                charge(
+                    &mut work,
+                    (1 + witness.key.len().div_ceil(32)).saturating_mul(
+                        2 + self
+                            .facts
+                            .external_type_declarations
+                            .len()
+                            .checked_ilog2()
+                            .unwrap_or(0) as usize,
+                    ),
+                )?;
+                for _ in 0..4 {
+                    if crate::static_eval::charge_type_syntax_clone(&witness.syntax, &mut work)
+                        .is_none()
+                    {
+                        return Err("record-bound frozen witness exceeds replay budget".into());
+                    }
+                }
                 require(
                     witness.validate_closed()
                         && super::source_type_validation::resolved_names(
@@ -1333,12 +1356,7 @@ impl Replay<'_> {
                     "record-bound frozen type identity is inconsistent or unresolved",
                 )?;
             }
-            for origin in &value.origins.nodes {
-                if visited.insert(*origin) {
-                    let node = nodes[origin];
-                    values.extend(node.fields.iter().map(|(_, value)| (value, depth + 1)));
-                }
-            }
+            charge(&mut work, value.variant_witnesses.len() + 5)?;
             for payload in [
                 &value.option_payload,
                 &value.result_payload,
@@ -1350,64 +1368,20 @@ impl Replay<'_> {
             .flatten()
             .chain(value.variant_witnesses.values())
             {
+                charge(&mut work, 1)?;
                 values.push((payload, depth + 1));
             }
         }
-        require(
-            visited.len() == nodes.len(),
-            "record-bound frozen graph contains unobserved extra origins",
-        )?;
-        for node in &snapshot.nodes {
-            require(
-                (node.origin.0 as usize) < self.facts.heap.nodes.len()
-                    && self.facts.scopes.contains(&node.fact.owner),
-                "record-bound frozen origin has no registered identity or scope",
-            )?;
-            let fields: BTreeMap<_, _> = node
-                .fields
-                .iter()
-                .map(|(slot, value)| (slot.clone(), value.origins.nodes.clone()))
-                .collect();
-            require(
-                fields.len() == node.fields.len()
-                    && fields == node.fact.fields
-                    && fields
-                        .values()
-                        .flatten()
-                        .all(|origin| nodes.contains_key(origin)),
-                "record-bound frozen stored edges disagree with their constituent values",
-            )?;
-            for (_, value) in &node.fields {
-                require(
-                    value
-                        .origins
-                        .nodes
-                        .iter()
-                        .all(|origin| nodes.contains_key(origin)),
-                    "record-bound frozen field points outside its graph",
-                )?;
-            }
-        }
-        let mut relations = BTreeSet::new();
-        require(
-            snapshot.relations.iter().all(|(a, b, relation)| {
-                nodes.contains_key(a)
-                    && nodes.contains_key(b)
-                    && a <= b
-                    && relations.insert((*a, *b))
-                    && !(relation.equal == super::relations::Condition::TRUE
-                        && relation.disjoint == super::relations::Condition::TRUE)
-            }) && nodes.keys().enumerate().all(|(index, a)| {
-                nodes
-                    .keys()
-                    .skip(index)
-                    .all(|b| relations.contains(&(*a, *b)))
-            }),
-            "record-bound frozen relations are missing, repeated or contradictory",
-        )
+        Ok(())
     }
 
-    fn same_snapshot(&self, left: &CopyValueSnapshot, right: &CopyValueSnapshot) -> bool {
+    fn same_snapshot<'l, 'r>(
+        &self,
+        left: impl Into<CopyValueView<'l>>,
+        right: impl Into<CopyValueView<'r>>,
+    ) -> bool {
+        let left = left.into();
+        let right = right.into();
         left.value == right.value
             && left.nodes.len() == right.nodes.len()
             && left.relations == right.relations
@@ -1422,12 +1396,13 @@ impl Replay<'_> {
             })
     }
 
-    fn value_key(
+    fn value_key<'s>(
         &self,
-        snapshot: &CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'s>>,
         value: &Value,
         depth: usize,
     ) -> Check<ArgumentKey> {
+        let snapshot = snapshot.into();
         require(
             depth < 64,
             "complete actual record identity exceeds replay depth",
@@ -1699,26 +1674,27 @@ impl Replay<'_> {
         })
     }
 
-    fn stored_schema(
+    fn stored_schema<'s>(
         &self,
-        snapshot: &CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'s>>,
         actual: &Value,
         fields: &[RecordBoundField],
         scope: &BoundScope,
         tail: &RowTail,
     ) -> Check {
-        self.stored_schema_with_members(snapshot, actual, fields, scope, tail, &[])
+        self.stored_schema_with_members(snapshot.into(), actual, fields, scope, tail, &[])
     }
 
-    fn stored_schema_with_members(
+    fn stored_schema_with_members<'s>(
         &self,
-        snapshot: &CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'s>>,
         actual: &Value,
         fields: &[RecordBoundField],
         scope: &BoundScope,
         tail: &RowTail,
         members: &[scoped_members::MemberIdentity<'_>],
     ) -> Check {
+        let snapshot = snapshot.into();
         require(
             !actual.origins.nodes.is_empty(),
             "structural schema has no actual stored receiver",
@@ -1873,9 +1849,6 @@ fn literal_field(key: &Expr) -> Option<String> {
     }
 }
 
-fn projection_sites(facts: &SemanticFacts) -> Check<Vec<ProjectionSite<'_>>> {
-    projection_sites_with_work(facts, &mut { LIMIT })
-}
 fn projection_sites_with_work<'a>(
     facts: &'a SemanticFacts,
     work: &mut usize,
@@ -2193,6 +2166,7 @@ impl Replay<'_> {
         site: &ProjectionSite<'_>,
         base: &super::effect_identity::InvocationExpression,
         result: &super::effect_identity::InvocationExpression,
+        work: &mut usize,
     ) -> Check {
         let ExprKind::ComputedField { key, .. } = &site.expression.kind else {
             return Err(
@@ -2336,9 +2310,14 @@ impl Replay<'_> {
                 && cause.parents == [source.cause, key_value.cause],
             "symbolic coordinate borrowed another receiver or key evaluation",
         )?;
-        let mut expected = source.clone();
+        let mut expected = super::evaluated::transport_value_at(source.value(), &[], 0, 0, work)
+            .map_err(|error| error.to_string())?;
+        *work = work
+            .checked_sub(1 + identity.len().div_ceil(32))
+            .ok_or("symbolic coordinate source copy exceeds its shared work bound")?;
+        let base_type = std::mem::replace(&mut expected.ty, Ty::Unknown);
         expected.ty = Ty::Projection {
-            base: Box::new(source.ty.clone()),
+            base: Box::new(base_type),
             key: identity.clone(),
         };
         expected.permission = super::facts::Permission::Read;
@@ -2373,7 +2352,8 @@ impl Replay<'_> {
     }
 
     fn projections(&self) -> Result<(), Failure> {
-        let sites = projection_sites(self.facts).map_err(|message| {
+        let mut work = LIMIT;
+        let sites = projection_sites_with_work(self.facts, &mut work).map_err(|message| {
             (
                 self.function_scope_span(&BoundScope::default()),
                 None,
@@ -2749,7 +2729,7 @@ impl Replay<'_> {
                                     projection.required == bound.id
                                         && projection.context == base.context
                                         && projection.span == site.expression.span
-                                        && projection.source.value == *source
+                                        && projection.source.value.eq(source.value())
                                 })
                                 && self
                                     .observations
@@ -2787,7 +2767,7 @@ impl Replay<'_> {
                 for result in results {
                     let output = &self.facts.expressions[result.expression].value;
                     if !site.supported {
-                        self.symbolic_coordinate_projection(site, base, result)
+                        self.symbolic_coordinate_projection(site, base, result, &mut work)
                             .map_err(|message| {
                                 (site.expression.span, Some(output.cause), message)
                             })?;
@@ -2808,8 +2788,8 @@ impl Replay<'_> {
                             projection.required == bound.id
                                 && projection.context == base.context
                                 && projection.slot == Slot::Field(site.field.to_string())
-                                && projection.source.value == *source
-                                && projection.output.value == *output
+                                && projection.source.value.eq(source.value())
+                                && projection.output.value.eq(output.value())
                         })
                         .count();
                     if covered != 1 {
@@ -2855,13 +2835,14 @@ impl Replay<'_> {
 }
 
 impl Replay<'_> {
-    fn storage_shape(
+    fn storage_shape<'s>(
         &self,
-        snapshot: &CopyValueSnapshot,
+        snapshot: impl Into<CopyValueView<'s>>,
         value: &Value,
         key: &ArgumentKey,
         depth: usize,
     ) -> Check {
+        let snapshot = snapshot.into();
         require(depth < 64, "structural physical-shape replay is too deep")?;
         match key {
             ArgumentKey::Array { length, element } => {
@@ -3084,9 +3065,11 @@ impl Replay<'_> {
             u32::try_from(binding_id).ok() == Some(binding.root.0),
             "record read reception borrowed another binding's root identity",
         )?;
-        let (mode, actual) = call.entry.arguments.get(index).ok_or_else(|| {
+        let argument = call.entry.arguments.get(index).ok_or_else(|| {
             "record read receiver has no whole argument at its real parameter index".to_owned()
         })?;
+        let mode = argument.mode;
+        let actual = self.entry_snapshot(argument, call.entry.allocation_epoch)?;
         let (root_expression, path) = product_expression_path(expression, &binding.name)?;
         let root = if path.is_empty() {
             source
@@ -3099,7 +3082,7 @@ impl Replay<'_> {
         }
         require(
             parameter.mode == ril_syntax::ast::ParameterMode::Read
-                && *mode == super::model::Mode::Read
+                && mode == ril_syntax::ast::ParameterMode::Read
                 && root.permission == super::facts::Permission::Read
                 && root.publication == actual.value.publication
                 && !root.construction
@@ -3717,14 +3700,14 @@ impl Replay<'_> {
             }),
             "structural check selected another source argument or invented a T object",
         )?;
-        let (_, actual) = call
+        let argument = call
             .entry
             .arguments
             .get(check.argument_index as usize)
             .ok_or_else(|| {
                 "structural application has no whole actual argument snapshot".to_owned()
             })?;
-        self.snapshot(actual)?;
+        let actual = self.entry_snapshot(argument, call.entry.allocation_epoch)?;
         self.snapshot(&check.actual)?;
         require(
             self.same_snapshot(actual, &check.actual),
@@ -3754,10 +3737,10 @@ impl Replay<'_> {
         let scope = self.schema_scope(check)?;
         let reception = self.scoped_reception_for_check(check)?;
         for (ordinal, (index, path)) in paths.iter().enumerate().skip(1) {
-            let (_, whole) = call.entry.arguments.get(*index).ok_or_else(|| {
+            let argument = call.entry.arguments.get(*index).ok_or_else(|| {
                 "another structural occurrence has no whole actual argument".to_owned()
             })?;
-            self.snapshot(whole)?;
+            let whole = self.entry_snapshot(argument, call.entry.allocation_epoch)?;
             let selected = self.selected_value(whole, path)?;
             let key = match &selected.ty {
                 Ty::Generic(identity)
@@ -4279,7 +4262,7 @@ mod builtin_name_preparation_tests {
             source_id: None,
             allocation_epoch: 0,
             span,
-            value,
+            value: super::super::PhysicalValue::unobserved_fixture(value, 0),
         });
         let cache =
             std::cell::RefCell::new(PreparedBuiltinNames::prepare(&facts, &mut 4096).unwrap());

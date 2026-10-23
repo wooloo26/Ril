@@ -2,7 +2,7 @@
 //! a closed witness; closed product identities select their actual stored T.
 use super::*;
 use crate::sema::{
-    copy_contract::CopyValueSnapshot,
+    copy_contract::CopyValueView,
     effect_identity::{ArgumentKey, StaticBinderSort},
     scoped_source_identity::{FormalSourceAnchor, ScopedSourceIdentity, ScopedSourceOccurrence},
 };
@@ -10,10 +10,10 @@ use ril_compiler_core::ids::ScopedSourceIdentityId;
 use std::sync::Arc;
 
 fn selected_entry<'a>(
-    snapshot: &'a CopyValueSnapshot,
+    snapshot: &CopyValueView<'a>,
     path: &[BoundTypeSelectionStep],
 ) -> Option<&'a Value> {
-    let mut value = &snapshot.value;
+    let mut value = snapshot.value;
     for step in path {
         let slot = match step {
             BoundTypeSelectionStep::Tuple(index) => Slot::Tuple(*index),
@@ -203,14 +203,17 @@ impl Checker {
         }
         let mut common: Option<Arc<SourceTypeWitness>> = None;
         for (argument, path) in paths {
-            let (mode, entry) = self.copy_invocations[invocation.0 as usize]
+            let argument = self.copy_invocations[invocation.0 as usize]
                 .entry
                 .arguments
                 .get(argument)?;
-            if *mode != Mode::Read {
+            if argument.mode != ParameterMode::Read {
                 return None;
             }
-            let selected = selected_entry(entry, &path)?.clone();
+            let mut admission = crate::sema::source_types::WorkLimit::new(work);
+            let entry = argument.snapshot_view(&mut admission).ok()?;
+            work = admission.remaining();
+            let selected = selected_entry(&entry, &path)?.clone();
             if !matches!(selected.ty, Ty::Record(_)) {
                 return None;
             }
@@ -370,10 +373,14 @@ impl Checker {
         if source.entry.arguments.len() != info.syntax.parameters.len() {
             return None;
         }
-        let (mode, entry) = source.entry.arguments.get(*parameter_index as usize)?;
-        if *mode != Mode::Read || source.entry.allocation_epoch != self.recency_moves.len() {
+        let argument = source.entry.arguments.get(*parameter_index as usize)?;
+        if argument.mode != ParameterMode::Read
+            || source.entry.allocation_epoch != self.recency_moves.len()
+        {
             return None;
         }
+        let mut admission = crate::sema::source_types::WorkLimit::new(4096);
+        let entry = argument.snapshot_view(&mut admission).ok()?;
         let mut bindings = self.bindings.iter().enumerate().filter(|(_, binding)| {
             binding.parameter
                 && binding.owner == activation
@@ -413,9 +420,9 @@ impl Checker {
 
         // Pair source syntax with the immutable original argument graph. The
         // current value's metadata is not used to choose a header type.
-        let mut pending = vec![(header, &entry.value, Vec::new(), 0usize)];
+        let mut pending = vec![(header, entry.value, Vec::new(), 0usize)];
         let mut found = Vec::new();
-        let mut work = 4096usize;
+        let mut work = admission.remaining();
         while let Some((header, value, path, depth)) = pending.pop() {
             if work == 0 || depth >= 64 {
                 return None;
@@ -450,7 +457,7 @@ impl Checker {
             for (step, header) in children {
                 let mut next = path.clone();
                 next.push(step);
-                if let Some(value) = selected_entry(entry, &next) {
+                if let Some(value) = selected_entry(&entry, &next) {
                     pending.push((header, value, next, depth + 1));
                 }
             }
@@ -514,14 +521,17 @@ impl Checker {
         let mut occurrences = Vec::new();
         let mut cause = None;
         for (argument_index, selection_path) in paths {
-            let (mode, entry) = self.copy_invocations[invocation.0 as usize]
+            let argument = self.copy_invocations[invocation.0 as usize]
                 .entry
                 .arguments
                 .get(argument_index)?;
-            if *mode != Mode::Read {
+            if argument.mode != ParameterMode::Read {
                 return None;
             }
-            let selected = selected_entry(entry, &selection_path)?.clone();
+            let mut admission = crate::sema::source_types::WorkLimit::new(work);
+            let entry = argument.snapshot_view(&mut admission).ok()?;
+            work = admission.remaining();
+            let selected = selected_entry(&entry, &selection_path)?.clone();
             let (schema, formal, key) = self.scoped_rigid_source(invocation, &selected)?;
             if common.as_ref().is_some_and(|previous| previous != &key) {
                 if common

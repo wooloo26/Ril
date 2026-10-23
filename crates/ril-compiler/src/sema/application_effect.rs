@@ -1,5 +1,6 @@
 //! Owned application observations. Source identity, evaluation identity and
 //! allocation recency are recorded together, without rewriting past values.
+use super::context::FrozenEnvId;
 use super::source_types::{SourceTypesError, WorkLimit};
 use super::{
     ExpressionFact, SemanticFacts,
@@ -16,6 +17,8 @@ use std::sync::Arc;
 mod activations;
 mod entries;
 pub(crate) mod generated_entries;
+#[path = "named_declarations.rs"]
+mod named_declarations;
 mod signature_inputs;
 pub use activations::{ActivationKind, EvaluationActivation};
 mod parameters;
@@ -41,6 +44,18 @@ pub struct EvaluationRecord {
     pub scope: ScopeId,
     pub context: InvocationContext,
     pub allocation_epoch: usize,
+    /// Actual evaluation context, distinct from a declaration's Source view.
+    /// None is an explicit missing environment obligation, never a default.
+    pub environment: Option<FrozenEnvId>,
+}
+
+/// Owned emitter output before a physical occurrence and its sole packet exist.
+/// This is not retained evidence and cannot supply a Source or birth receipt.
+pub(crate) struct ObservationInput {
+    pub(crate) source_id: Option<ExprId>,
+    pub(crate) allocation_epoch: usize,
+    pub(crate) span: Span,
+    pub(crate) value: super::model::Value,
 }
 
 pub(crate) struct ApplicationEffectDomain {
@@ -232,9 +247,10 @@ impl ApplicationEffectDomain {
 
     pub(crate) fn observe(
         &mut self,
-        create: impl FnOnce() -> ExpressionFact,
+        create: impl FnOnce() -> ObservationInput,
         context: InvocationContext,
         scope: ScopeId,
+        environment: Option<FrozenEnvId>,
         argument_of: Option<(CopyCallEventId, u32)>,
     ) -> Option<usize> {
         if !self.admit(3) {
@@ -243,15 +259,16 @@ impl ApplicationEffectDomain {
         let fact = create();
         let activation =
             self.allocate_activation(fact.source_id, scope, context, ActivationKind::Emission)?;
-        self.record_observation(activation, fact, context, scope, argument_of)
+        self.record_observation(activation, fact, context, scope, environment, argument_of)
     }
 
     pub(crate) fn observe_in(
         &mut self,
         activation: ActivationEpochId,
-        create: impl FnOnce() -> ExpressionFact,
+        create: impl FnOnce() -> ObservationInput,
         context: InvocationContext,
         scope: ScopeId,
+        environment: Option<FrozenEnvId>,
         argument_of: Option<(CopyCallEventId, u32)>,
     ) -> Option<usize> {
         // Charge before copying the value or growing any recorder arena.
@@ -261,17 +278,23 @@ impl ApplicationEffectDomain {
         };
         self.remaining = remaining;
         let fact = create();
-        self.record_observation(activation, fact, context, scope, argument_of)
+        self.record_observation(activation, fact, context, scope, environment, argument_of)
     }
 
     fn record_observation(
         &mut self,
         activation: ActivationEpochId,
-        fact: ExpressionFact,
+        fact: ObservationInput,
         context: InvocationContext,
         scope: ScopeId,
+        environment: Option<FrozenEnvId>,
         argument_of: Option<(CopyCallEventId, u32)>,
     ) -> Option<usize> {
+        // The immutable birth and physical packet each allocate one Arc. Keep
+        // their admission in this recorder's original total allowance.
+        if !self.admit(3) {
+            return None;
+        }
         let ordinal = self.expressions.len() as u32;
         let frame = self.activations.get_mut(activation.0 as usize)?;
         if frame.id != activation
@@ -293,7 +316,7 @@ impl ApplicationEffectDomain {
                 .or_default()
                 .push(ordinal as usize);
         }
-        self.evaluations.push(EvaluationRecord {
+        let record = EvaluationRecord {
             id: EvaluationOccurrenceId(ordinal),
             identity: fact
                 .source_id
@@ -301,14 +324,58 @@ impl ApplicationEffectDomain {
             scope,
             context,
             allocation_epoch: fact.allocation_epoch,
-        });
+            environment,
+        };
+        let packet = Arc::new(super::evaluated::EvaluatedValue::observed(
+            fact.value,
+            ordinal as usize,
+            &record,
+        ));
+        self.evaluations.push(record);
         self.contexts.push(InvocationExpression {
             context,
             expression: ordinal as usize,
             argument_of,
         });
-        self.expressions.push(fact);
+        self.expressions.push(ExpressionFact {
+            source_id: fact.source_id,
+            allocation_epoch: fact.allocation_epoch,
+            span: fact.span,
+            value: super::evaluated::PhysicalValue::from_packet(packet),
+        });
         Some(ordinal as usize)
+    }
+
+    pub(crate) fn packet_at(
+        &mut self,
+        observation: usize,
+    ) -> Result<Arc<super::evaluated::EvaluatedValue>, SourceTypesError> {
+        if !self.admit(2) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        let record = self
+            .evaluations
+            .get(observation)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let fact = self
+            .expressions
+            .get(observation)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let packet = fact.value.packet();
+        let birth = packet.birth_coordinates();
+        if record.id.0 as usize != observation
+            || birth.observation != Some(observation)
+            || birth.identity != record.identity
+            || birth.context != Some(record.context)
+            || birth.environment != record.environment
+            || birth.allocation_epoch != record.allocation_epoch
+            || packet.current_epoch() != record.allocation_epoch
+            || fact.allocation_epoch != record.allocation_epoch
+            || fact.source_id != record.identity.map(|identity| identity.source)
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok(packet.clone())
     }
 
     pub(crate) fn occurrences(&self, source: ExprId, context: InvocationContext) -> &[usize] {
@@ -359,6 +426,7 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, String)> {
             ));
         }
     }
+    let mut binding_work = 1_000_000usize;
     for (index, (record, value)) in facts.evaluations.iter().zip(&facts.expressions).enumerate() {
         let Some(identity) = record.identity else {
             return Err((value.span, "evaluation has no original HIR node".into()));
@@ -379,6 +447,23 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, String)> {
                 "evaluation changed its node, activation, scope or birth epoch".into(),
             ));
         }
+        let environment = record.environment.ok_or_else(|| {
+            (
+                value.span,
+                "evaluation has no original frozen environment".into(),
+            )
+        })?;
+        let mut environment_work = WorkLimit::new(binding_work);
+        let resolved = facts
+            .source_types
+            .environment(environment, &mut environment_work);
+        binding_work = environment_work.remaining();
+        resolved.map_err(|error| {
+            (
+                value.span,
+                format!("evaluation environment cannot be verified: {error}"),
+            )
+        })?;
     }
     if facts.bindings.len() > 1_000_000 {
         return Err((
@@ -392,7 +477,6 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, String)> {
         .map(|record| record.scope)
         .collect();
     let mut observed_bindings = BTreeSet::<usize>::new();
-    let mut binding_work = 1_000_000usize;
     for expression in &facts.expressions {
         binding_work = binding_work
             .checked_sub(expression.value.sources.len())
@@ -427,6 +511,8 @@ pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, String)> {
         })
         .collect();
     let mut parameter_bindings = BTreeSet::new();
+    named_declarations::validate(facts, &mut binding_work)
+        .map_err(|message| (fallback, message))?;
     for (id, binding) in facts
         .bindings
         .iter()
@@ -697,6 +783,7 @@ mod tests {
                 || panic!("copy ran before budget admission"),
                 context,
                 ScopeId(0),
+                None,
                 None
             ),
             None

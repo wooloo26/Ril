@@ -350,6 +350,12 @@ fn builtin_bit(name: &str) -> u128 {
         "Array::insert" => 1 << 113,
         "Array::truncate" => 1 << 114,
         "Map::set" => 1 << 115,
+        "Io::read_all" => 1 << 116,
+        "Io::write_all" => 1 << 117,
+        "Io::read_buffered" => 1 << 118,
+        "Io::write_buffered" => 1 << 119,
+        "Io::flush" => 1 << 120,
+        "Io::close_write_buffer" => 1 << 121,
         other => ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(other)
             .map(|id| id.lexical_bit())
             .or_else(|| {
@@ -377,6 +383,7 @@ fn bit(name: &str) -> u128 {
         // A genuinely unresolved local Prelude namespace cannot certify a
         // qualified standard export. A short Some binding does not hide it.
         "Prelude" => (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12) | (1 << 13),
+        "Io" => ((1 << 6) - 1) << 116,
         _ => builtin_bit(name),
     }
 }
@@ -925,7 +932,7 @@ mod prelude_tests {
                         start: 0,
                         end: 0,
                     },
-                    value,
+                    value: crate::sema::PhysicalValue::unobserved_fixture(value, 0),
                 });
                 assert!(NameIndex::needs_preparation(&facts, &mut 4096).unwrap());
                 assert!(NameIndex::needs_preparation(&facts, &mut 0).is_err());

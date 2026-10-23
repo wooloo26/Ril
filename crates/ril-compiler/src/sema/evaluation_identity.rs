@@ -1172,14 +1172,17 @@ mod tests {
                     allocation_epoch: 0,
                     source_id: root.hir_id,
                     span: span(),
-                    value: Value::scalar(
-                        if role == EvaluationRole::Callee {
-                            Ty::Unknown
-                        } else {
-                            Ty::Int("int".into())
-                        },
-                        None,
-                        CauseId(0),
+                    value: crate::sema::PhysicalValue::unobserved_fixture(
+                        Value::scalar(
+                            if role == EvaluationRole::Callee {
+                                Ty::Unknown
+                            } else {
+                                Ty::Int("int".into())
+                            },
+                            None,
+                            CauseId(0),
+                        ),
+                        0,
                     ),
                 });
                 facts.invocation_expressions.push(InvocationExpression {
@@ -1193,7 +1196,10 @@ mod tests {
                 allocation_epoch: 0,
                 source_id: expression.hir_id,
                 span: span(),
-                value: Value::scalar(Ty::Int("int".into()), None, CauseId(0)),
+                value: crate::sema::PhysicalValue::unobserved_fixture(
+                    Value::scalar(Ty::Int("int".into()), None, CauseId(0)),
+                    0,
+                ),
             });
             facts.invocation_expressions.push(InvocationExpression {
                 context: context(),
@@ -1279,7 +1285,10 @@ mod tests {
             allocation_epoch: 0,
             source_id: Some(id),
             span: span(),
-            value: Value::scalar(Ty::Bool, None, CauseId(0)),
+            value: crate::sema::PhysicalValue::unobserved_fixture(
+                Value::scalar(Ty::Bool, None, CauseId(0)),
+                0,
+            ),
         });
         facts.invocation_expressions.push(InvocationExpression {
             context: context(),
@@ -1485,8 +1494,16 @@ mod tests {
         let result = early.expressions.pop().unwrap();
         early.expressions.truncate(1);
         early.expressions.push(result);
-        early.expressions[0].value.ty = Ty::Never;
-        early.expressions[1].value.ty = Ty::Never;
+        early.expressions[0]
+            .value
+            .corrupt_value(&mut 4_000_000)
+            .unwrap()
+            .ty = Ty::Never;
+        early.expressions[1]
+            .value
+            .corrupt_value(&mut 4_000_000)
+            .unwrap()
+            .ty = Ty::Never;
         early.invocation_expressions.truncate(1);
         early.invocation_expressions[0].argument_of = None;
         early.invocation_expressions.push(InvocationExpression {
@@ -1574,8 +1591,16 @@ mod tests {
     #[test]
     fn never_operands_keep_partial_evaluation_without_inventing_later_arguments() {
         let mut facts = model(2, 1, false);
-        facts.expressions[1].value.ty = Ty::Never;
-        facts.expressions[3].value.ty = Ty::Never;
+        facts.expressions[1]
+            .value
+            .corrupt_value(&mut 4_000_000)
+            .unwrap()
+            .ty = Ty::Never;
+        facts.expressions[3]
+            .value
+            .corrupt_value(&mut 4_000_000)
+            .unwrap()
+            .ty = Ty::Never;
         facts.call_arguments[0].evaluation_complete = false;
         facts.call_arguments[0].slots[1] = ArgumentSource::Missing;
         facts.call_arguments[0].supplied.remove(&1);
@@ -1600,7 +1625,11 @@ mod tests {
         facts.call_arguments[0].slots_bound = false;
         facts.call_arguments[0].slots.clear();
         facts.call_arguments[0].supplied.clear();
-        facts.expressions[0].value.ty = Ty::Never;
+        facts.expressions[0]
+            .value
+            .corrupt_value(&mut 4_000_000)
+            .unwrap()
+            .ty = Ty::Never;
         assert!(
             validate(&facts).is_ok(),
             "a Never callee retains only its reserved evaluation prefix"
@@ -1615,8 +1644,16 @@ mod tests {
         use crate::sema::effect_identity::{ClosureInvocation, ClosureInvocationId};
         use crate::sema::facts::ScopeId;
         let mut facts = model(1, 1, false);
-        facts.expressions[1].value.ty = Ty::Never;
-        facts.expressions[2].value.ty = Ty::Never;
+        facts.expressions[1]
+            .value
+            .corrupt_value(&mut 4_000_000)
+            .unwrap()
+            .ty = Ty::Never;
+        facts.expressions[2]
+            .value
+            .corrupt_value(&mut 4_000_000)
+            .unwrap()
+            .ty = Ty::Never;
         facts.call_arguments[0].evaluation_complete = false;
         assert!(validate(&facts).is_ok());
         let event = CopyCallEventId(0);
@@ -1653,7 +1690,8 @@ mod tests {
                 caller_context: context(),
                 origin: crate::sema::application_effect::EntryOrigin::Unresolved,
                 allocation_epoch: 0,
-                arguments: vec![],
+                callee: None,
+                arguments: std::sync::Arc::new(vec![]),
             },
             parent: None,
             caller: None,
@@ -1683,6 +1721,7 @@ mod tests {
                 caller_context: context(),
                 origin: crate::sema::application_effect::EntryOrigin::Unresolved,
                 allocation_epoch: 0,
+                callee: None,
                 arguments: std::sync::Arc::new(vec![]),
             },
             source_event: Some(event),

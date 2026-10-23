@@ -8,6 +8,69 @@ use crate::sema::{
 use ril_compiler_core::ids::NumericHoleId;
 
 impl Checker {
+    pub(super) fn physical_value_at(
+        &self,
+        fact: &crate::sema::ExpressionFact,
+        epoch: usize,
+        work: &mut WorkLimit,
+    ) -> Result<Value, SourceTypesError> {
+        if fact.allocation_epoch > epoch || epoch > self.recency_moves.len() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let mut remaining = work.remaining();
+        let before = remaining;
+        let value = fact.value_at(epoch, &self.recency_moves, &mut remaining);
+        work.charge(before - remaining)?;
+        value.ok_or(SourceTypesError::BudgetExceeded)
+    }
+    pub(super) fn copy_value_for_emission(
+        &mut self,
+        value: &Value,
+    ) -> Result<Value, SourceTypesError> {
+        self.application_effect
+            .with_work(|work| crate::sema::evaluated::transport_value_at(value, &[], 0, 0, work))
+    }
+    pub(super) fn physical_evaluation_environment(
+        &mut self,
+        span: Span,
+    ) -> Option<crate::sema::context::FrozenEnvId> {
+        let mut lease = self.application_effect.lease_work(4_000_000);
+        let environment = self.freeze_evaluation_environment(lease.work());
+        let returned = self.application_effect.return_work(lease);
+        match environment.and_then(|environment| returned.map(|()| environment)) {
+            Ok(environment) => Some(environment),
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("physical evaluation environment admission: {error}"),
+                );
+                None
+            }
+        }
+    }
+    pub(super) fn freeze_evaluation_environment(
+        &mut self,
+        work: &mut WorkLimit,
+    ) -> Result<crate::sema::context::FrozenEnvId, SourceTypesError> {
+        let mut remaining = work.remaining();
+        let before = remaining;
+        let admitted =
+            crate::sema::clone_work::environment(&self.type_source.environment, &mut remaining);
+        work.charge(before - remaining)?;
+        admitted.ok_or(SourceTypesError::BudgetExceeded)?;
+        let environment = self.capture_typing_environment();
+        if environment.is_poisoned() {
+            return Err(if self.type_source.exhausted.get() {
+                SourceTypesError::BudgetExceeded
+            } else {
+                SourceTypesError::Unresolved
+            });
+        }
+        self.type_source
+            .storage
+            .live_types_mut()
+            .intern_environment(environment, work)
+    }
     pub(super) fn pending_numeric_packet_birth(
         &self,
         packet: &EvaluatedValue,

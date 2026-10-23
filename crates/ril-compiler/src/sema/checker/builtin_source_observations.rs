@@ -506,11 +506,27 @@ mod tests {
                 1 => {
                     changed.builtin_source_observations.clear();
                     for fact in &mut changed.expressions {
-                        fact.value.callables.clear();
+                        fact.value
+                            .corrupt_value(&mut 4_000_000)
+                            .unwrap()
+                            .callables
+                            .clear();
                     }
                 }
-                2 => changed.expressions[result].value.source_type_witness = None,
-                3 => changed.expressions[result].value.source_type_witness = Some(foreign.clone()),
+                2 => {
+                    changed.expressions[result]
+                        .value
+                        .corrupt_value(&mut 4_000_000)
+                        .unwrap()
+                        .source_type_witness = None
+                }
+                3 => {
+                    changed.expressions[result]
+                        .value
+                        .corrupt_value(&mut 4_000_000)
+                        .unwrap()
+                        .source_type_witness = Some(foreign.clone())
+                }
                 4 => {
                     changed.copy_call_events[repeated.0.id.0 as usize].result_expression =
                         repeated.1.result_expression

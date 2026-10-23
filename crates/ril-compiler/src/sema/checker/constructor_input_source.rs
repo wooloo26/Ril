@@ -11,33 +11,21 @@ impl Checker {
         syntax: &Expr,
         frame: &Frame,
         work: &mut WorkLimit,
+        observation: Option<usize>,
     ) -> InputSource {
         let Some(application) = crate::hir::application::AstApplication::from_ast(syntax) else {
-            return Ok(None);
+            return self.original_nullary_constructor_source_schema(value, syntax, work);
         };
         let context = self.invocation_context(frame.callable_owner);
-        work.charge(self.copy_call_events.len())?;
-        let mut events = self.copy_call_events.iter().filter(|event| {
-            event.matches_source(syntax)
-                && event.owner == context.owner
-                && event.parent == context.invocation
-                && event.result_expression.is_some_and(|root| {
-                    self.application_effect
-                        .expressions
-                        .get(root)
-                        .is_some_and(|fact| {
-                            fact.source_id == syntax.hir_id && fact.value.cause == value.cause
-                        })
-                })
-        });
-        let Some(event) = events.next() else {
+        let root = observation.ok_or(SourceTypesError::MissingNode)?;
+        let Some((event, parent)) =
+            self.observed_application_result(syntax, value, frame, root, work)?
+        else {
             return Ok(None);
         };
-        if events.next().is_some() {
-            return Err(SourceTypesError::Unresolved);
-        }
-        let root = event
-            .result_expression
+        let event = self
+            .copy_call_events
+            .get(event.0 as usize)
             .ok_or(SourceTypesError::MissingNode)?;
         let callee = event
             .callee_expression
@@ -62,6 +50,21 @@ impl Checker {
         {
             return Err(SourceTypesError::Unresolved);
         }
+        if self
+            .source_projection_receipts()
+            .child_observation(
+                parent,
+                application
+                    .callee
+                    .hir_id
+                    .ok_or(SourceTypesError::MissingNode)?,
+                work,
+            )?
+            .0 as usize
+            != callee
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
         let [Callable::Constructor(name)] = fact.value.callables.as_slice() else {
             return Ok(None);
         };
@@ -82,6 +85,57 @@ impl Checker {
         }
         let source = self.source_schema_view(view, work)?;
         Ok(Some(source))
+    }
+
+    fn original_nullary_constructor_source_schema(
+        &self,
+        value: &Value,
+        syntax: &Expr,
+        work: &mut WorkLimit,
+    ) -> InputSource {
+        work.charge(1)?;
+        let Some(actual_tag) = value.variant_tag.as_deref() else {
+            return Ok(None);
+        };
+        if !value.sources.is_empty() || !value.callables.is_empty() {
+            return Ok(None);
+        }
+        let name = match &syntax.kind {
+            ExprKind::Name(name) => {
+                work.text(name)?;
+                std::borrow::Cow::Borrowed(name.as_str())
+            }
+            ExprKind::Path(path) => {
+                work.charge(path.len() + 1)?;
+                for part in path {
+                    work.text(part)?;
+                }
+                std::borrow::Cow::Owned(path.join("::"))
+            }
+            _ => return Ok(None),
+        };
+        work.charge(
+            (1 + name.len().div_ceil(32))
+                * (1 + self.constructors.len().checked_ilog2().unwrap_or(0) as usize),
+        )?;
+        let Some(constructor) = self.constructors.get(name.as_ref()) else {
+            return Ok(None);
+        };
+        work.text(actual_tag)?;
+        work.text(&constructor.tag)?;
+        if actual_tag != constructor.tag
+            || constructor.has_payload
+            || constructor.typing_environment.is_poisoned()
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let Some(view) = constructor.source else {
+            return Ok(None);
+        };
+        if view.environment != constructor.typing_environment.id() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        self.source_schema_view(view, work).map(Some)
     }
 
     pub(in crate::sema::checker) fn check_constructor_input_sources(
@@ -299,22 +353,34 @@ impl Checker {
                 {
                     return None;
                 }
-                let mut transported = observation.value.clone();
-                self.transport_value_since(&mut transported, input.allocation_epoch);
-                if transported != *value {
-                    return None;
-                }
-                Some(input.clone())
+                Some((input, observation))
             })();
+            let mut input_work = WorkLimit::new(16384);
             let answer = input
                 .as_ref()
                 .ok_or(SourceTypesError::MissingNode)
-                .and_then(|input| {
+                .and_then(|(input, observation)| {
+                    let transported = self.physical_value_at(
+                        observation,
+                        self.recency_moves.len(),
+                        &mut input_work,
+                    )?;
+                    let mut remaining = input_work.remaining();
+                    let before = remaining;
+                    let same = crate::sema::evaluated::same_birth_value(
+                        &transported,
+                        value,
+                        &mut remaining,
+                    );
+                    input_work.charge(before - remaining)?;
+                    if !same? {
+                        return Err(SourceTypesError::Unresolved);
+                    }
                     input_compatible(
                         target.schema.as_ref().ok_or(SourceTypesError::Unresolved)?,
                         input,
                         SourceTypesRef::Live(self.type_source.storage.live_types()),
-                        &mut WorkLimit::new(16384),
+                        &mut input_work,
                     )
                 });
             match answer {

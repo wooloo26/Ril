@@ -97,24 +97,39 @@ fn rejects(facts: &SemanticFacts, change: &str) {
 fn historical_operands_keep_their_allocation_epoch_and_require_explicit_transport() {
     let facts = verified("application-loop-computed-callee-fixed-empty", "pointer64");
     let mut saw_later_transport = false;
+    let mut work = 4_000_000;
     for invocation in &facts.copy_invocations {
         let Some(event) = invocation.source_event else {
             continue;
         };
         let row = preparation(&facts, event);
         for (&slot, token) in &row.supplied {
-            let Some((_, argument)) = invocation.entry.arguments.get(slot as usize) else {
+            let Some(argument) = invocation.entry.arguments.get(slot as usize) else {
                 continue;
             };
             let observation = &facts.expressions[token.expression];
             assert_eq!(observation.allocation_epoch, token.allocation_epoch);
-            let original = observation.value.clone();
-            let entry = observation
-                .value_at(invocation.entry.allocation_epoch, &facts.allocation_history)
+            let original = observation
+                .value_at(
+                    observation.allocation_epoch,
+                    &facts.allocation_history,
+                    &mut work,
+                )
                 .unwrap();
-            assert_eq!(entry.origins, argument.value.origins);
+            let entry = observation
+                .value_at(
+                    invocation.entry.allocation_epoch,
+                    &facts.allocation_history,
+                    &mut work,
+                )
+                .unwrap();
+            assert_eq!(entry.origins, argument.value().origins);
             let current = observation
-                .value_at(facts.allocation_history.len(), &facts.allocation_history)
+                .value_at(
+                    facts.allocation_history.len(),
+                    &facts.allocation_history,
+                    &mut work,
+                )
                 .unwrap();
             saw_later_transport |= current.origins != original.origins;
             assert_eq!(

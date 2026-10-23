@@ -141,3 +141,61 @@ fn example() {
 }
 --@ end-file
 --@ end-case
+
+--@ case: primitive-alias-read-chain
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ spec: SPEC#type-identity-and-subtyping
+--@ companion: repeated-reader
+--@ entry: test_native
+--@ file: source.ril
+use ril/io
+type Reader={mut calls:int}
+fn read(mut reader:Reader,maximum:int)->Result<Io::ReadChunk,Io::IoError> &mut{
+    assert(maximum>0)
+    reader.calls+=1
+    Ok(.{data:b"",end:true})
+}
+fn apply(){
+    let original=Io::read_all
+    let alias=original
+    let mut reader=Reader.{calls:0}
+    assert(alias(mut reader,.{read:read}) is Ok(b""))
+    assert(reader.calls==1)
+}
+pub fn test_native(){apply();apply()}
+--@ end-file
+--@ end-case
+
+--@ case: applied-effect-reader
+--@ mode: run-pass
+--@ spec: SPEC#named-function-declarations-and-contrast-matrix
+--@ spec: SPEC#type-identity-and-subtyping
+--@ entry: test_native
+--@ file: source.ril
+use ril/io
+eff Visit<T>{touch()}
+type Reader={mut calls:int}
+fn read(mut reader:Reader,maximum:int)->Result<Io::ReadChunk,Io::IoError> @Visit<int> &mut{
+    assert(maximum>0)
+    Visit<int>::touch()
+    reader.calls+=1
+    Ok(.{data:b"",end:true})
+}
+fn apply(){
+    with Visit<int>::touch()->resume()
+    let mut reader=Reader.{calls:0}
+    assert(Io::read_all(mut reader,.{read:read}) is Ok(b""))
+    assert(reader.calls==1)
+}
+pub fn test_native(){apply();apply()}
+--@ end-file
+--@ end-case
+
+--@ case: empty-array-original-receiving
+--@ mode: check-pass
+--@ spec: SPEC#array-map-and-tuple-types
+--@ file: source.ril
+fn example(){let values=[]}
+--@ end-file
+--@ end-case

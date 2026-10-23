@@ -321,24 +321,29 @@ impl Checker {
             );
             return false;
         };
-        let mut work = 4096;
+        let mut work = 4096usize;
         let original = observed.and_then(|index| {
             // These are the two actual append-only recorder arenas. Require
             // their exact common index, not the last expression or a span
             // search. An unpaired recorder entry supplies no observation.
             let context = self.application_effect.contexts.get(index)?;
             let expression = self.application_effect.expressions.get(index)?;
-            (context.expression == index
+            let matches = context.expression == index
                 && context.context == self.invocation_context(frame.callable_owner)
                 && expression.source_id.is_some()
-                && expression.source_id == actual.hir_id)
-                .then(|| expression.value.clone())
+                && expression.source_id == actual.hir_id;
+            if !matches {
+                return None;
+            }
+            work = work.checked_sub(1)?;
+            Some(expression.value.packet().clone())
         });
         let answer = (|| -> Result<bool, String> {
             use crate::sema::source_types::{SourceTypesError, WorkLimit};
             let original = original
                 .as_ref()
-                .ok_or("original receiving observation is absent")?;
+                .ok_or("original receiving observation is absent")?
+                .value();
             let fresh = source_reception::construction(actual, &mut work)
                 .ok_or_else(|| SourceTypesError::BudgetExceeded.to_string())?;
             let mut graph_work = WorkLimit::new(16384);

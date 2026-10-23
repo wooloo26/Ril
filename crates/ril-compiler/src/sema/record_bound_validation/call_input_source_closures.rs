@@ -1,6 +1,7 @@
 //! Rebuild lambda types from real lexical headers and completed body entries.
 //! Neither a private cache nor Ty::Callable supplies a missing source schema.
 use super::*;
+use crate::sema::facts::ScopeId;
 use crate::sema::model::Callable;
 
 impl Replay<'_> {
@@ -12,6 +13,7 @@ impl Replay<'_> {
         &self,
         binding: &crate::sema::model::BindingInfo,
         reading: InvocationContext,
+        work: &mut usize,
     ) -> Check<Option<&crate::sema::default_uses::DefaultUse>> {
         let current = reading
             .default_use
@@ -38,6 +40,21 @@ impl Replay<'_> {
         let Some(receipt) = receipt else {
             return Ok(None);
         };
+        let declaration = self.preparation_scope(receipt, binding.owner, work)?;
+        require(
+            binding.context == declaration,
+            "formal Source preparation changed its declaration context",
+        )?;
+        Ok(Some(receipt))
+    }
+
+    pub(in crate::sema::record_bound_validation) fn preparation_scope(
+        &self,
+        receipt: &crate::sema::default_uses::DefaultUse,
+        scope: ScopeId,
+        work: &mut usize,
+    ) -> Check<InvocationContext> {
+        source_scan_work(work, 8)?;
         let id = receipt.id;
         let token = receipt
             .result_expression
@@ -47,9 +64,6 @@ impl Replay<'_> {
             .evaluations
             .get(token)
             .ok_or_else(|| "formal Source preparation root has no actual scope".to_owned())?;
-        if root.scope != binding.owner {
-            return Ok(None);
-        }
         let declaration = InvocationContext {
             owner: receipt.owner,
             ..receipt.caller
@@ -59,13 +73,13 @@ impl Replay<'_> {
             ..declaration
         };
         require(
-            binding.context == declaration
+            root.scope == scope
+                && root.id.0 as usize == token
                 && root.context == context
                 && self
                     .observations
-                    .row(token, &mut 4096)
+                    .row(token, work)
                     .is_ok_and(|row| row.expression == token && row.context == context)
-                && receipt.evaluation_complete
                 && !matches!(
                     receipt.status,
                     CopyInvocationStatus::Rejected | CopyInvocationStatus::Unsupported
@@ -86,6 +100,10 @@ impl Replay<'_> {
                     .and_then(|default| default.hir_id)
             }
             Some(CallableOwner::Lambda(site)) => {
+                require(
+                    receipt.target.is_none(),
+                    "lambda preparation borrowed a named target",
+                )?;
                 let hir = self
                     .facts
                     .semantic_hir
@@ -117,7 +135,7 @@ impl Replay<'_> {
                     .is_some_and(|fact| fact.source_id == source),
             "formal preparation root differs from its original default HIR",
         )?;
-        Ok(Some(receipt))
+        Ok(declaration)
     }
 
     /// A read uses its binding's declaration activation. Captures must be
@@ -167,7 +185,11 @@ impl Replay<'_> {
                 "operation formal Source borrowed another parameter receiver",
             )?;
         }
-        if operation.is_none() && self.parameter_preparation(binding, context)?.is_none() {
+        if operation.is_none()
+            && self
+                .parameter_preparation(binding, context, work)?
+                .is_none()
+        {
             match declaration.owner {
                 Some(CallableOwner::Function(owner)) => require(
                     self.facts
@@ -343,6 +365,53 @@ impl Replay<'_> {
             .ok_or_else(|| "lambda formal Source binding is absent".to_owned())?;
         let reading = context;
         let context = binding.context;
+        if let Some(default) = self.parameter_preparation(binding, reading, work)? {
+            let Some(CallableOwner::Lambda(site)) = context.owner else {
+                return Err("lambda preparation has no original callable site".into());
+            };
+            let site = self
+                .facts
+                .closure_sites
+                .get(site.0 as usize)
+                .filter(|actual| actual.id == site)
+                .ok_or("lambda preparation lost its original site")?;
+            source_scan_work(work, sites.lambdas.len())?;
+            let mut headers = sites.lambdas.iter().filter(|header| {
+                header.owner == site.owner && header.expression.hir_id == Some(site.source)
+            });
+            let header = headers
+                .next()
+                .ok_or("lambda preparation has no original header")?;
+            require(
+                headers.next().is_none(),
+                "lambda preparation header is ambiguous",
+            )?;
+            let ExprKind::Lambda { parameters, .. } = &header.expression.kind else {
+                return Err("lambda preparation header is not callable".into());
+            };
+            source_scan_work(work, parameters.len())?;
+            let mut formals = parameters.iter().enumerate().filter(|(_, parameter)| {
+                parameter.pattern.hir_id == binding.pattern && binding.pattern.is_some()
+            });
+            let (slot, parameter) = formals.next().ok_or("lambda preparation lost its formal")?;
+            require(
+                formals.next().is_none()
+                    && slot < default.parameter as usize
+                    && binding.parameter
+                    && binding.name == *name,
+                "lambda preparation borrowed a later or unrelated formal",
+            )?;
+            let annotation = parameter
+                .ty
+                .as_ref()
+                .ok_or("lambda preparation needs its actual inferred argument Source")?;
+            return self.source_type_header(
+                annotation,
+                &self.lambda_input_scope(site.owner, work)?,
+                binding.typing_environment.clone(),
+                work,
+            );
+        }
         let id = context
             .closure_invocation
             .ok_or_else(|| "lambda formal Source has no actual body entry".to_owned())?;
@@ -649,9 +718,18 @@ impl Replay<'_> {
                     .checked_sub(annotation.text.len().div_ceil(32))
                     .ok_or("lambda Source annotation text exceeds its work bound")?;
             }
+            let row = self.source_callable_row_identity(
+                crate::sema::source_types::CallableRowOrigin::Lambda(
+                    closure.hir_id.ok_or("lambda row has no original HIR")?,
+                ),
+                annotations,
+                &scope,
+                &closure.contract.typing_environment,
+                work,
+            )?;
             let annotations: Vec<_> = annotations
                 .iter()
-                .map(|annotation| annotation.text.replace(' ', ""))
+                .map(|annotation| annotation.text.clone())
                 .collect();
             *work = work
                 .checked_sub(parameters.len() * 2 + 1)
@@ -667,7 +745,14 @@ impl Replay<'_> {
             parts.push(result.clone());
             let mut environment = self.source_composite_environment(&parts, work)?;
             let key = super::graph_sources::schema_work(work, |budget| {
-                SourceSchema::callable(&parameter_graphs, &result.0, &annotations, None, budget)
+                SourceSchema::callable_original(
+                    &parameter_graphs,
+                    &result.0,
+                    &annotations,
+                    row.as_ref(),
+                    None,
+                    budget,
+                )
             })?;
             let depends_on_parts = parts
                 .iter()

@@ -25,15 +25,21 @@ pub mod copy_templates;
 pub mod default_uses;
 pub mod effect_identity;
 pub(crate) mod evaluated;
+pub use evaluated::{EvaluatedValue, EvaluationBirth, EvaluationBirthCoordinates, PhysicalValue};
+#[cfg(test)]
+mod entry_packet_review_tests;
 mod evaluation_identity;
 mod external_instance_validation;
 pub(crate) mod external_instances;
 pub mod facts;
 pub mod generated_sources;
+pub(crate) mod heap_snapshot_validation;
 pub mod invocation_loans;
 pub mod model;
 pub mod numeric_selection;
 pub mod optional_tags;
+#[cfg(test)]
+mod physical_packet_review_tests;
 pub(crate) mod record_bound_shapes;
 mod record_bound_validation;
 pub mod record_bounds;
@@ -109,7 +115,7 @@ pub struct SemanticFacts {
     pub closure_invocations: Vec<effect_identity::ClosureInvocation>,
     pub default_uses: Vec<default_uses::DefaultUse>,
     pub call_arguments: Vec<default_uses::CallArguments>,
-    pub(crate) constant_pool: crate::static_eval::constants::ConstantPool,
+    pub(crate) constant_pool: std::sync::Arc<crate::static_eval::constants::ConstantPool>,
     pub constant_values: Vec<ConstantValue>,
     pub external_instances: Vec<ExternalInstance>,
     pub external_type_witnesses: Vec<ExternalTypeWitness>,
@@ -377,7 +383,7 @@ pub struct ExpressionFact {
     /// The node identities in `value` belong to this immutable observation epoch.
     pub allocation_epoch: usize,
     pub span: Span,
-    pub value: model::Value,
+    pub value: PhysicalValue,
 }
 impl ExpressionFact {
     /// Obtain a later view without rewriting this historical observation.
@@ -385,15 +391,16 @@ impl ExpressionFact {
         &self,
         epoch: usize,
         history: &[(facts::NodeId, facts::NodeId)],
+        work: &mut usize,
     ) -> Option<model::Value> {
-        if self.allocation_epoch > epoch || epoch > history.len() {
-            return None;
-        }
-        let mut value = self.value.clone();
-        for &(recent, older) in &history[self.allocation_epoch..epoch] {
-            value.remap_origins(recent, older);
-        }
-        Some(value)
+        evaluated::transport_value_at(
+            self.value.value(),
+            history,
+            self.allocation_epoch,
+            epoch,
+            work,
+        )
+        .ok()
     }
 }
 impl SemanticFacts {

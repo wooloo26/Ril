@@ -119,6 +119,54 @@ impl Checker {
         self.original_header_source_schema_in(syntax, &binders, work)
     }
 
+    /// A function binds its own generic parameters in its original header.
+    /// Their typed identities are independent of the spelling visible in the
+    /// declaration's captured environment; no selection or new Γ is created.
+    pub(in crate::sema::checker) fn original_owned_header_source_schema(
+        &self,
+        syntax: &TypeExpr,
+        definition: DefinitionId,
+        environment: &crate::sema::context::FrozenEnvironment,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<crate::sema::source_types::SourceSchema, SourceTypesError> {
+        use crate::hir::nodes::LexicalOwner;
+        work.charge(self.functions.len() + 2)?;
+        let function = self
+            .functions
+            .iter()
+            .find(|function| function.definition == definition)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let declaration = function.hir_id.ok_or(SourceTypesError::MissingNode)?;
+        let header = syntax
+            .hir_id
+            .and_then(|id| self.semantic_hir.type_expression(id))
+            .ok_or(SourceTypesError::MissingNode)?;
+        if header.info.owner != LexicalOwner::Declaration(declaration) {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let owned = crate::sema::source_types::owned_header_binders::function(
+            definition,
+            declaration,
+            &self.functions,
+            &self.generic_binders,
+            &self.semantic_hir,
+            work,
+        )?;
+        let mut binders = self.original_captured_header_binders(environment, work)?;
+        work.charge(owned.len())?;
+        for identity in owned.into_values() {
+            work.text(&identity)?;
+            work.charge(2 + binders.len().checked_ilog2().unwrap_or(0) as usize)?;
+            if binders
+                .insert(identity.clone(), identity.clone())
+                .is_some_and(|previous| previous != identity)
+            {
+                return Err(SourceTypesError::Unresolved);
+            }
+        }
+        self.original_header_source_schema_in(syntax, &binders, work)
+    }
+
     pub(super) fn original_header_source_schema_in(
         &self,
         syntax: &TypeExpr,
@@ -150,6 +198,42 @@ impl Checker {
                     }
                     result => result,
                 }
+            })
+    }
+
+    pub(super) fn original_callable_row_identity(
+        &self,
+        origin: crate::sema::source_types::CallableRowOrigin,
+        annotations: &[Annotation],
+        binders: &BTreeMap<String, String>,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<
+        Option<
+            crate::sema::source_types::CallableRowIdentity<crate::sema::source_types::SourceSchema>,
+        >,
+        SourceTypesError,
+    > {
+        use crate::sema::source_types::declarations::{HeaderContext, callable_row_identity};
+        self.type_source
+            .with_header_index(&self.semantic_hir, |lexical| {
+                callable_row_identity(
+                    origin,
+                    annotations,
+                    HeaderContext {
+                        declarations: &self.types,
+                        program: self
+                            .checked_source
+                            .as_deref()
+                            .ok_or(SourceTypesError::MissingNode)?,
+                        hir: &self.semantic_hir,
+                        lexical,
+                        binders,
+                        functions: &self.functions,
+                        generic_binders: &self.generic_binders,
+                        layout: self.layout,
+                    },
+                    work,
+                )
             })
     }
 
@@ -951,6 +1035,26 @@ impl Checker {
     }
 
     pub(super) fn infer_expression_source_type(&mut self, value: &mut Value, expression: &Expr) {
+        if matches!(
+            &expression.kind,
+            ExprKind::Control {
+                operation: ControlOperation::Resume,
+                ..
+            }
+        ) {
+            // This emission records control transfer, before the protected
+            // computation's completion. A placeholder runtime type is not
+            // a Source for that eventual answer.
+            return;
+        }
+        if let ExprKind::Name(name) = &expression.kind
+            && self.constant_pool.references.contains_key(name)
+        {
+            // A sealed publication already owns its view. Runtime type
+            // projection cannot invent one for an unannotated publication;
+            // scalar encodings enter Source through the constant pool itself.
+            return;
+        }
         self.complete_carrier_source_type(value, expression.span);
         if value.source_type_witness.is_some() || value.ty == Ty::Never {
             return;

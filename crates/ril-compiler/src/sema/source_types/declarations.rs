@@ -13,8 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod original_header;
 pub(crate) use original_header::{DeclaredConstructorInstance, constructor_instance};
 pub(crate) use original_header::{
-    EffectSource, EffectSourceError, HeaderContext, effect_source, elaborate_original_header,
-    original_header,
+    EffectSource, EffectSourceError, HeaderContext, callable_row_identity, effect_source,
+    elaborate_original_header, key_carrier_source, original_header,
 };
 
 #[derive(Clone, Copy)]
@@ -662,6 +662,7 @@ impl Resolve<'_> {
                     parameters: inputs,
                     result,
                     annotations: rows,
+                    row_identity: None,
                 }
             }
             _ => return Err(SourceTypesError::NeedsStaticElaboration),

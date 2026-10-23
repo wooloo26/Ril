@@ -191,13 +191,11 @@ fn original_and_current_entry_tables_require_full_arity_before_selection() {
     let source = identity.occurrences[0].formal.invocation.0 as usize;
     for invocation in [current, source] {
         let mut copy = facts.clone();
-        copy.copy_invocations[invocation].entry.arguments.clear();
+        std::sync::Arc::make_mut(&mut copy.copy_invocations[invocation].entry.arguments).clear();
         damaged(&copy);
         let mut copy = facts.clone();
         let extra = copy.copy_invocations[invocation].entry.arguments[0].clone();
-        copy.copy_invocations[invocation]
-            .entry
-            .arguments
+        std::sync::Arc::make_mut(&mut copy.copy_invocations[invocation].entry.arguments)
             .push(extra);
         damaged(&copy);
     }

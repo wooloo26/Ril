@@ -15,6 +15,16 @@ fn snapshot_values(
     )
 }
 
+fn argument_values(
+    argument: &crate::sema::application_effect::EntryArgument,
+) -> impl Iterator<Item = &Value> {
+    std::iter::once(argument.value()).chain(argument.heap.iter().flat_map(|heap| {
+        heap.nodes
+            .iter()
+            .flat_map(|node| node.fields.iter().map(|(_, value)| value))
+    }))
+}
+
 fn instance(id: GenericBuiltin, key: &ArgumentKey) -> Result<(), String> {
     if let ArgumentKey::GenericBuiltin(actual) = key {
         return (id == *actual)
@@ -128,10 +138,41 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
             )
         })?;
     }
+    for entry in facts
+        .copy_invocations
+        .iter()
+        .map(|call| &call.entry)
+        .chain(facts.closure_invocations.iter().map(|call| &call.entry))
+    {
+        work = work.checked_sub(1 + entry.arguments.len()).ok_or((
+            fallback,
+            CauseId(0),
+            "primitive entry heap coverage exceeds its work bound".to_owned(),
+        ))?;
+        for argument in entry.arguments.iter() {
+            let mut budget = crate::sema::source_types::WorkLimit::new(work);
+            let view = argument.snapshot_view(&mut budget);
+            work = budget.remaining();
+            view.map_err(|error| {
+                (
+                    argument.span,
+                    argument.value().cause,
+                    format!("primitive entry heap is incomplete: {error}"),
+                )
+            })?;
+            if argument.packet.current_epoch() != entry.allocation_epoch {
+                return Err((
+                    argument.span,
+                    argument.value().cause,
+                    "primitive entry borrowed another allocation epoch".into(),
+                ));
+            }
+        }
+    }
     let roots = facts
         .expressions
         .iter()
-        .map(|fact| (&fact.value, fact.span))
+        .map(|fact| (fact.value.value(), fact.span))
         .chain(
             facts
                 .bindings
@@ -143,7 +184,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
             call.entry
                 .arguments
                 .iter()
-                .flat_map(|(_, arg)| snapshot_values(arg).map(|value| (value, call.span)))
+                .flat_map(|arg| argument_values(arg).map(|value| (value, call.span)))
                 .chain(
                     call.result
                         .iter()
@@ -154,7 +195,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId, Stri
             call.entry
                 .arguments
                 .iter()
-                .map(|(_, value, _)| (value, call.site))
+                .flat_map(|arg| argument_values(arg).map(|value| (value, call.site)))
         }));
     let mut pending = Vec::new();
     for (value, span) in roots {

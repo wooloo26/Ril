@@ -248,31 +248,39 @@ impl Checker {
         }
     }
 
-    pub(super) fn invoke_named(
+    pub(super) fn invoke_named_declaration_probe(
+        &mut self,
+        id: usize,
+        args: Vec<(ParameterMode, Value, Span)>,
+        span: Span,
+    ) -> Value {
+        use crate::sema::application_effect::EntryOrigin;
+        self.invoke_named_generated_from(id, args, span, None, EntryOrigin::DeclarationProbe)
+    }
+
+    pub(super) fn invoke_named_generated_from(
         &mut self,
         id: usize,
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
         caller: Option<&mut Frame>,
-        verifying: bool,
+        origin: crate::sema::application_effect::EntryOrigin,
     ) -> Value {
-        use crate::sema::application_effect::EntryOrigin;
-        let origin = if verifying {
-            EntryOrigin::DeclarationProbe
-        } else {
-            caller
-                .as_ref()
-                .and_then(|frame| frame.copy_call_event)
-                .map(EntryOrigin::Application)
-                .unwrap_or(EntryOrigin::Unresolved)
+        let args = match self.uncaptured_entry_arguments(args) {
+            Ok(args) => args,
+            Err(error) => {
+                self.unsupported(span, format!("named generated input admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
         };
-        self.invoke_named_from(id, args, span, caller, origin)
+        self.invoke_named_packets_from(id, args, None, span, caller, origin)
     }
 
-    pub(super) fn invoke_named_from(
+    pub(super) fn invoke_named_packets_from(
         &mut self,
         id: usize,
-        args: Vec<(ParameterMode, Value, Span)>,
+        args: std::sync::Arc<Vec<crate::sema::application_effect::EntryArgument>>,
+        callee: Option<std::sync::Arc<EvaluatedValue>>,
         span: Span,
         mut caller: Option<&mut Frame>,
         origin: crate::sema::application_effect::EntryOrigin,
@@ -306,26 +314,32 @@ impl Checker {
             });
         let instance = InstanceId(self.copy_invocations.len() as u32);
         let mut boundaries = BTreeSet::new();
-        let arguments = args
-            .iter()
-            .map(|(mode, value, _)| {
-                boundaries.extend(self.pending_copy_dependencies(value));
-                let mode = match mode {
-                    ParameterMode::Read => Mode::Read,
-                    ParameterMode::Mut => Mode::Write,
-                    ParameterMode::SharedMut => Mode::Retain,
-                };
-                (mode, self.copy_value_snapshot(value))
-            })
-            .collect();
+        let arguments = match self.freeze_entry_arguments(&args) {
+            Ok(arguments) => arguments,
+            Err(error) => {
+                self.unsupported(span, format!("named entry graph admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
+        let callee = match self.freeze_entry_callee(callee, span) {
+            Ok(callee) => callee,
+            Err(error) => {
+                self.unsupported(span, format!("named entry callee admission: {error}"));
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
+        for argument in arguments.iter() {
+            boundaries.extend(self.pending_copy_dependencies(argument.value()));
+        }
         self.copy_invocations.push(CopyInvocation {
             id: instance,
             entry: CallableEntry {
+                callee,
                 parent: self.application_effect.current_activation(),
                 caller_context: self.invocation_context(caller_owner),
                 origin,
                 allocation_epoch: self.recency_moves.len(),
-                arguments,
+                arguments: arguments.clone(),
             },
             parent: self.copy_invocation_stack.last().copied(),
             caller: caller.as_ref().and_then(|frame| frame.definition),
@@ -345,7 +359,7 @@ impl Checker {
         let diagnostics = self.diagnostics.len();
         let unsupported = self.unsupported.len();
         let boundary_start = self.copy_boundaries.len();
-        let result = self.invoke_named_unrecorded(id, args, span, caller, verifying);
+        let result = self.invoke_named_unrecorded(id, arguments, span, caller, verifying);
         assert_eq!(self.copy_invocation_stack.pop(), Some(instance));
         let returned = self.copy_value_snapshot(&result);
         let dependencies = self.pending_copy_dependencies(&result);
@@ -435,11 +449,11 @@ mod tests {
             .collect();
         let good: Vec<_> = calls
             .iter()
-            .filter(|call| matches!(call.entry.arguments[0].1.value.ty, Ty::Int(_)))
+            .filter(|call| matches!(call.entry.arguments[0].value().ty, Ty::Int(_)))
             .collect();
         let bad: Vec<_> = calls
             .iter()
-            .filter(|call| call.entry.arguments[0].1.value.ty == Ty::Named("File::Handle".into()))
+            .filter(|call| call.entry.arguments[0].value().ty == Ty::Named("File::Handle".into()))
             .collect();
         assert_eq!((good.len(), bad.len()), (2, 2));
         assert!(

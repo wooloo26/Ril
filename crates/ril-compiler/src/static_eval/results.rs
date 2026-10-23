@@ -20,6 +20,7 @@ pub(super) struct Produced {
     pub success: bool,
     pub payload: StaticValue,
     pub ty: Option<Box<TypeExpr>>,
+    pub source_type: Option<std::sync::Arc<crate::sema::model::SourceTypeWitness>>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +76,7 @@ impl Evaluator {
             success,
             payload,
             ty: None,
+            source_type: None,
         })))
     }
     pub(super) fn inspect_static_result(&mut self, id: ProducerId, span: Span) -> Result<()> {

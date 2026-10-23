@@ -79,6 +79,7 @@ pub(crate) trait SourceTypeQueries: SourceGraph {
                         }
                     }
                     SourceNode::Binder(_)
+                    | SourceNode::KeyProjection { .. }
                     | SourceNode::OpaqueName { .. }
                     | SourceNode::StaticValue(_)
                     | SourceNode::OpaqueComputation(_)

@@ -205,7 +205,10 @@ mod tests {
                 allocation_epoch: 0,
                 source_id: Some(source),
                 span,
-                value: Value::scalar(Ty::Tuple(vec![]), None, CauseId(0)),
+                value: crate::sema::PhysicalValue::unobserved_fixture(
+                    Value::scalar(Ty::Tuple(vec![]), None, CauseId(0)),
+                    0,
+                ),
             });
             facts.invocation_expressions.push(InvocationExpression {
                 expression: index,
@@ -254,6 +257,7 @@ mod tests {
                 .find(|activation| activation.result == Some(EvaluationOccurrenceId(index as u32)))
                 .unwrap();
             facts.evaluations.push(EvaluationRecord {
+                environment: None,
                 id: EvaluationOccurrenceId(index as u32),
                 identity: Some(OccurrenceIdentity {
                     source: fact.source_id.unwrap(),

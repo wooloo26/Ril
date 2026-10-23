@@ -59,12 +59,7 @@ pub(super) fn retain(graph: &mut p::Graph, facts: &SemanticFacts) -> Result<(), 
                 n::NumericHoleState::Committed { cause, resolution } => {
                     p::NumericHoleState::Committed {
                         cause: *cause,
-                        resolution: p::NumericResolution {
-                            number_type: number_type(resolution.number_type),
-                            constant: resolution.constant.as_ref().map(constant),
-                            encoded: resolution.encoded.as_ref().map(encoding),
-                            dependencies: dependencies(&resolution.dependencies),
-                        },
+                        resolution: self::resolution(resolution),
                     }
                 }
             },
@@ -102,13 +97,22 @@ fn site(site: n::NumericSite) -> p::NumericSite {
     }
 }
 
-fn birth(birth: n::NumericBirth) -> p::NumericBirth {
+pub(super) fn birth(birth: n::NumericBirth) -> p::NumericBirth {
     p::NumericBirth {
         source: birth.occurrence.source,
         activation: birth.occurrence.activation,
         scope: birth.scope.0,
         context: resumption_context(birth.context),
         allocation_epoch: birth.allocation_epoch as u64,
+    }
+}
+
+pub(super) fn resolution(resolution: &n::NumericResolution) -> p::NumericResolution {
+    p::NumericResolution {
+        number_type: number_type(resolution.number_type),
+        constant: resolution.constant.as_ref().map(constant),
+        encoded: resolution.encoded.as_ref().map(encoding),
+        dependencies: dependencies(&resolution.dependencies),
     }
 }
 

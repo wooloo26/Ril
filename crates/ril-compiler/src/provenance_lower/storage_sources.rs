@@ -14,19 +14,8 @@ pub(super) fn lower(
     graph: &mut p::Graph,
     contracts: &mut ReturnContracts,
 ) -> Result<(), NotImplemented> {
-    let mut work = crate::sema::source_types::WorkLimit::new(4_000_000);
-    let retained = facts.source_types.retained(&mut work).map_err(|error| {
-        NotImplemented::new(
-            ril_compiler_core::phase::Stage::Lowering,
-            format!("binding Source graph could not be retained: {error}"),
-        )
-    })?;
-    work.charge(facts.binding_sources.len()).map_err(|error| {
-        NotImplemented::new(
-            ril_compiler_core::phase::Stage::Lowering,
-            format!("binding Source receipts could not be retained: {error}"),
-        )
-    })?;
+    let retained = contracts.source_query(|index, work| index.retained(work))?;
+    contracts.source_query(|_, work| work.charge(facts.binding_sources.len()))?;
     graph.binding_sources = facts
         .binding_sources
         .iter()
@@ -39,23 +28,12 @@ pub(super) fn lower(
                 declared: value.declared,
                 initializer: observation(value.initializer),
                 path: value.path.clone(),
-                root: retained
-                    .binding_root(value.binding, &mut work)
-                    .map_err(|error| {
-                        NotImplemented::new(
-                            ril_compiler_core::phase::Stage::Lowering,
-                            format!("binding Source root could not be retained: {error}"),
-                        )
-                    })?,
+                root: contracts
+                    .source_query(|_, work| retained.binding_root(value.binding, work))?,
             })
         })
         .collect::<Result<_, NotImplemented>>()?;
-    work.charge(facts.storage_writes.len()).map_err(|error| {
-        NotImplemented::new(
-            ril_compiler_core::phase::Stage::Lowering,
-            format!("storage Source receipts could not be retained: {error}"),
-        )
-    })?;
+    contracts.source_query(|_, work| work.charge(facts.storage_writes.len()))?;
     graph.storage_writes = facts
         .storage_writes
         .iter()
@@ -63,19 +41,16 @@ pub(super) fn lower(
             let expected = value
                 .expected
                 .map(|view| {
-                    let (_, environment) = facts.source_types.view_schema(view, None, &mut work)?;
-                    Ok::<_, crate::sema::source_types::SourceTypesError>(p::SourceView {
-                        ty: retained.view_root(view, &mut work)?,
+                    let (root, environment) = contracts.source_query(|index, work| {
+                        let (_, environment) = index.view_schema(view, None, work)?;
+                        Ok((retained.view_root(view, work)?, environment))
+                    })?;
+                    Ok::<_, NotImplemented>(p::SourceView {
+                        ty: root,
                         environment: contracts.environment(&mut graph.types, &environment),
                     })
                 })
-                .transpose()
-                .map_err(|error| {
-                    NotImplemented::new(
-                        ril_compiler_core::phase::Stage::Lowering,
-                        format!("storage Source view could not be retained: {error}"),
-                    )
-                })?;
+                .transpose()?;
             Ok(p::StorageWrite {
                 target: value.target,
                 context: resumption_context(value.context),

@@ -27,11 +27,9 @@ impl Checker {
             let mut value = if ty.scalar() {
                 Value::scalar(ty, None, cause)
             } else {
-                let node = self.heap.symbolic(
-                    Pivot(self.heap.nodes.len() as u32),
-                    ScopeId(u32::MAX),
-                    cause,
-                );
+                let node =
+                    self.heap
+                        .symbolic(Pivot(self.heap.nodes.len() as u32), ScopeId(0), cause);
                 let mut value = Value::reference(ty, node, cause);
                 value.permission = Permission::Read;
                 value.publication = Publication::Live;

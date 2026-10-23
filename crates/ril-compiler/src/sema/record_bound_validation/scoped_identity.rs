@@ -158,10 +158,10 @@ impl Replay<'_> {
                     // needs an open scoped descriptor. Missing stored children
                     // must not make coverage vacuously empty.
                     for (argument, path) in &paths {
-                        let (_, entry) = call.entry.arguments.get(*argument).ok_or_else(|| {
+                        let entry = call.entry.arguments.get(*argument).ok_or_else(|| {
                             "required T path has no original whole argument".to_owned()
                         })?;
-                        self.snapshot(entry)?;
+                        let entry = self.entry_snapshot(entry, call.entry.allocation_epoch)?;
                         let selected = self.selected_value(entry, path)?;
                         needed |= self.needs_scoped_identity(selected)?;
                     }
@@ -263,7 +263,7 @@ impl Replay<'_> {
         &'a self,
         call: &super::super::copy_contract::CopyInvocation,
         anchor: &FormalSourceAnchor,
-    ) -> Check<(&'a CopyValueSnapshot, &'a Value, &'a TypeExpr, BoundScope)> {
+    ) -> Check<(CopyValueView<'a>, &'a Value, &'a TypeExpr, BoundScope)> {
         let source = self
             .facts
             .copy_invocations
@@ -325,11 +325,13 @@ impl Replay<'_> {
         let ril_syntax::ast::PatternKind::Name(name) = &parameter.pattern.kind else {
             return Err("scoped original formal is not a genuine named parameter root".into());
         };
-        let (mode, entry) = source
+        let argument = source
             .entry
             .arguments
             .get(anchor.parameter_index as usize)
             .ok_or_else(|| "scoped original formal has no whole entry snapshot".to_owned())?;
+        let mode = argument.mode;
+        let entry = self.entry_snapshot(argument, source.entry.allocation_epoch)?;
         let binding = self
             .facts
             .bindings
@@ -341,7 +343,7 @@ impl Replay<'_> {
         }
         require(
             parameter.mode == ril_syntax::ast::ParameterMode::Read
-                && *mode == super::super::model::Mode::Read
+                && mode == ril_syntax::ast::ParameterMode::Read
                 && binding.parameter
                 && binding.mode == ril_syntax::ast::BindingMode::Let
                 && binding.owner == anchor.activation
@@ -407,7 +409,6 @@ impl Replay<'_> {
             contexts.len() == 1 && contexts[0].activation == Some(anchor.activation),
             "scoped original source has no unique actual activation summary",
         )?;
-        self.snapshot(entry)?;
         let selected = self.selected_value(entry, &anchor.type_path)?;
         let syntax = header_subterm(
             parameter

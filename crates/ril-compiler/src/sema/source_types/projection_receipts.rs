@@ -539,10 +539,17 @@ mod tests {
                 if mutation == 0 {
                     changed.activations[key_read.identity.activation.0 as usize].parent = None;
                 } else if name == "computed" {
-                    changed.expressions[key_index].value.static_coordinate =
-                        Some(StaticCoordinate::Label("other".into()));
+                    changed.expressions[key_index]
+                        .value
+                        .corrupt_value(&mut 4_000_000)
+                        .unwrap()
+                        .static_coordinate = Some(StaticCoordinate::Label("other".into()));
                 } else {
-                    changed.expressions[key_index].value.constant = Some(Constant::Integer(1));
+                    changed.expressions[key_index]
+                        .value
+                        .corrupt_value(&mut 4_000_000)
+                        .unwrap()
+                        .constant = Some(Constant::Integer(1));
                 }
                 assert!(
                     ProjectionReceipts::from_facts(&changed)

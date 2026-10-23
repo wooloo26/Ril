@@ -49,6 +49,38 @@ fn lookup_cost(entries: usize) -> usize {
 }
 
 impl BlockIndex {
+    /// Query a directly owned block in the current HIR without rebuilding an
+    /// index for one producer occurrence. The same structural-tail rule backs
+    /// the cached independent index below.
+    pub(crate) fn tail_from_hir(
+        hir: &HirProgram,
+        anchor: BlockAnchor,
+        work: &mut usize,
+    ) -> Result<Option<(StmtId, ExprId)>, BlockIndexError> {
+        charge(work, 1)?;
+        let block = match anchor {
+            BlockAnchor::FunctionBody(id) => match &hir
+                .statement(id)
+                .ok_or(BlockIndexError::MissingNode(NodeId::Stmt(id)))?
+                .kind
+            {
+                hir::StmtKind::Function(function) => function.body.as_ref(),
+                _ => None,
+            },
+            BlockAnchor::ExpressionBody(id) => match &hir
+                .expression(id)
+                .ok_or(BlockIndexError::MissingNode(NodeId::Expr(id)))?
+                .kind
+            {
+                hir::ExprKind::Block(block) | hir::ExprKind::Loop(block) => Some(block),
+                hir::ExprKind::While { body, .. } | hir::ExprKind::For { body, .. } => Some(body),
+                _ => None,
+            },
+        }
+        .ok_or(BlockIndexError::UnknownAnchor(anchor))?;
+        Self::structural_tail(hir, block, work)
+    }
+
     pub fn new(hir: &HirProgram) -> Result<Self, BlockIndexError> {
         let mut work = BUILD_WORK;
         Self::new_with_budget(hir, &mut work)

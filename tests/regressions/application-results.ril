@@ -1,0 +1,54 @@
+--@ case: repeated-closure-results
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ entry: test_native
+--@ file: source.ril
+pub fn test_native() {
+    let saved = 7
+    let read = \-> saved
+    let alias = read
+    let wrapped = \-> alias()
+    for [1, 2, 3] as number {
+        assert(number > 0)
+        assert(wrapped() == 7)
+    }
+    assert(wrapped() == 7)
+}
+--@ end-file
+--@ end-case
+
+--@ case: early-formal-before-abrupt-default
+--@ mode: run-panic
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: early-formal-default
+--@ entry: test_native
+-- Panics: the actual default stops before the closure body is entered.
+--@ file: source.ril
+pub fn test_native() {
+    let stop = \seed: int, answer: int = {
+        let seen = seed
+        assert(seen == 1)
+        panic("default stops before body entry")
+    } -> answer
+    stop(1)
+}
+--@ end-file
+--@ end-case
+
+--@ case: early-formal-default
+--@ mode: run-pass
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ entry: test_native
+--@ file: source.ril
+pub fn test_native() {
+    let take = \seed: int, answer: int = {
+        let seen = seed
+        seen
+    } -> answer
+    assert(take(7) == 7)
+    assert(take(7, 8) == 8)
+    assert(take(9) == 9)
+}
+--@ end-file
+--@ end-case

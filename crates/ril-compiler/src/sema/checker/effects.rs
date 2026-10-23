@@ -1486,8 +1486,9 @@ impl Checker {
             );
             target.callables.push(Callable::Builtin(name.clone()));
             let evaluation_context = self.invocation_context(frame.callable_owner);
+            let environment = self.physical_evaluation_environment(arm.operation.span);
             let _ = self.application_effect.observe(
-                || super::super::ExpressionFact {
+                || super::super::application_effect::ObservationInput {
                     allocation_epoch: self.recency_moves.len(),
                     source_id: arm.operation.hir_id,
                     span: arm.operation.span,
@@ -1495,6 +1496,7 @@ impl Checker {
                 },
                 evaluation_context,
                 frame.owner,
+                environment,
                 None,
             );
             if resolved.insert(name.clone(), arm.clone()).is_some() {

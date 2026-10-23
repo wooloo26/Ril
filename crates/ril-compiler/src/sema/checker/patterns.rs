@@ -1092,6 +1092,7 @@ impl Checker {
             value.participants.insert(Participant::Root(root));
         }
         self.bindings.push(BindingInfo {
+            declaration: None,
             pattern: Some(pattern),
             birth: Some(birth),
             context: self.invocation_context(frame.callable_owner),

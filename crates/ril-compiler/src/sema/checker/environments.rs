@@ -3,6 +3,182 @@
 use super::*;
 
 impl Checker {
+    fn named_declaration_owner_matches(
+        &self,
+        mut lexical: crate::hir::nodes::LexicalOwner,
+        actual: Option<CallableOwner>,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<bool, crate::sema::source_types::SourceTypesError> {
+        use crate::{hir::nodes::LexicalOwner, sema::source_types::SourceTypesError};
+        for _ in 0..128 {
+            work.charge(2)?;
+            return match (lexical, actual) {
+                (LexicalOwner::Module, Some(CallableOwner::Global)) => Ok(true),
+                (
+                    LexicalOwner::Declaration(statement),
+                    Some(CallableOwner::Function(definition)),
+                ) => {
+                    work.charge(self.functions.len())?;
+                    let mut found = false;
+                    for function in &self.functions {
+                        if function.definition != definition {
+                            continue;
+                        }
+                        if function.hir_id != Some(statement) {
+                            return Err(SourceTypesError::Unresolved);
+                        }
+                        found = true;
+                    }
+                    let parent = self
+                        .semantic_hir
+                        .statement(statement)
+                        .ok_or(SourceTypesError::MissingNode)?;
+                    Ok(found && matches!(parent.kind, crate::hir::nodes::StmtKind::Function(_)))
+                }
+                (LexicalOwner::Lambda(expression), Some(CallableOwner::Lambda(site))) => {
+                    let original = self
+                        .application_effect
+                        .closure_sites
+                        .get(site.0 as usize)
+                        .ok_or(SourceTypesError::MissingNode)?;
+                    Ok(original.id == site && original.source == expression)
+                }
+                (LexicalOwner::HandlerArm { statement, .. }, _) => {
+                    lexical = self
+                        .semantic_hir
+                        .statement(statement)
+                        .ok_or(SourceTypesError::MissingNode)?
+                        .info
+                        .owner;
+                    continue;
+                }
+                _ => Ok(false),
+            };
+        }
+        Err(SourceTypesError::BudgetExceeded)
+    }
+    pub(super) fn original_named_declaration_with_work(
+        &mut self,
+        binding: BindingId,
+    ) -> Result<Option<usize>, crate::sema::source_types::SourceTypesError> {
+        let mut lease = self.application_effect.lease_work(4_000_000);
+        let declaration = self.original_named_declaration(binding, lease.work());
+        let returned = self.application_effect.return_work(lease);
+        declaration.and_then(|declaration| returned.map(|()| declaration))
+    }
+    /// The function's own lexical binding is a dynamic reverse edge to its
+    /// original declaration. A value alias, parameter or equal span is not it.
+    pub(super) fn original_named_declaration(
+        &self,
+        binding: BindingId,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<Option<usize>, crate::sema::source_types::SourceTypesError> {
+        use crate::sema::source_types::SourceTypesError;
+        work.charge(4)?;
+        let source = self
+            .bindings
+            .get(binding)
+            .ok_or(SourceTypesError::MissingNode)?;
+        if source.parameter || source.pattern.is_some() || source.birth.is_some() {
+            if source.declaration.is_some() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            return Ok(None);
+        }
+        let [Callable::Named(index)] = source.value.callables.as_slice() else {
+            return Ok(None);
+        };
+        let function = self
+            .functions
+            .get(*index)
+            .ok_or(SourceTypesError::MissingNode)?;
+        work.text(&function.syntax.name)?;
+        work.charge(1 + function.lexical.len().checked_ilog2().unwrap_or(0) as usize)?;
+        if function.lexical.get(&function.syntax.name) != Some(&binding) {
+            if source.declaration.is_some() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            return Ok(None);
+        }
+        let statement = source.declaration.ok_or(SourceTypesError::MissingNode)?;
+        if function.hir_id != Some(statement) {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let original = self
+            .semantic_hir
+            .statement(statement)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let crate::hir::nodes::StmtKind::Function(declaration) = &original.kind else {
+            return Err(SourceTypesError::Unresolved);
+        };
+        work.text(&declaration.name)?;
+        work.text(&source.name)?;
+        if declaration.name != function.syntax.name
+            || source.name != declaration.name
+            || source.owner != function.owner.unwrap_or(ScopeId(0))
+            || source.lexical_scope != function.lexical_scope
+            || source.context.owner != function.lexical_owner
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        if !self.named_declaration_owner_matches(
+            original.info.owner,
+            function.lexical_owner,
+            work,
+        )? {
+            return Err(SourceTypesError::Unresolved);
+        }
+        work.charge(declaration.parameters.len() + function.syntax.parameters.len())?;
+        if declaration.parameters.len() != function.syntax.parameters.len()
+            || declaration
+                .parameters
+                .iter()
+                .zip(&function.syntax.parameters)
+                .any(|(original, syntax)| {
+                    Some(original.pattern) != syntax.pattern.hir_id
+                        || original.ty != syntax.ty.as_ref().and_then(|ty| ty.hir_id)
+                        || original.default
+                            != syntax.default.as_ref().and_then(|value| value.hir_id)
+                        || original.mode != syntax.mode
+                })
+            || declaration.return_type
+                != function
+                    .syntax
+                    .return_type
+                    .as_ref()
+                    .and_then(|ty| ty.hir_id)
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
+        match (&declaration.body, &function.syntax.body) {
+            (Some(original), Some(syntax)) => {
+                work.charge(
+                    original.statements.len()
+                        + original.where_items.len()
+                        + syntax.statements.len()
+                        + syntax.where_items.len(),
+                )?;
+                if original.statements.len() != syntax.statements.len()
+                    || original.where_items.len() != syntax.where_items.len()
+                    || original
+                        .statements
+                        .iter()
+                        .zip(&syntax.statements)
+                        .any(|(id, statement)| Some(*id) != statement.hir_id)
+                    || original
+                        .where_items
+                        .iter()
+                        .zip(&syntax.where_items)
+                        .any(|(id, statement)| Some(*id) != statement.hir_id)
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+            }
+            (None, None) => {}
+            _ => return Err(SourceTypesError::Unresolved),
+        }
+        Ok(Some(*index))
+    }
     /// Latent handler/helper analysis can discover captures absent from the
     /// syntactic free-name list. Publish their restored complete graph only
     /// after preview rollback; otherwise new Capture edges would be discarded.
@@ -187,14 +363,29 @@ impl Checker {
         seen: &mut BTreeSet<usize>,
         captures: &mut BTreeSet<BindingId>,
         writes: &mut BTreeSet<BindingId>,
-    ) {
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<(), crate::sema::source_types::SourceTypesError> {
+        use crate::sema::source_types::SourceTypesError;
+        work.charge(2 + seen.len().checked_ilog2().unwrap_or(0) as usize)?;
         if !seen.insert(id) {
-            return;
+            return Ok(());
         }
         let function = &self.functions[id];
         let Some(body) = &function.syntax.body else {
-            return;
+            return Ok(());
         };
+        let mut syntax_work = work.remaining();
+        let before = syntax_work;
+        let admitted =
+            crate::static_eval::charge_function_syntax_clone(&function.syntax, &mut syntax_work)
+                .and_then(|()| {
+                    crate::static_eval::charge_function_syntax_clone(
+                        &function.syntax,
+                        &mut syntax_work,
+                    )
+                });
+        work.charge(before - syntax_work)?;
+        admitted.ok_or(SourceTypesError::BudgetExceeded)?;
         let mut names = BTreeSet::new();
         expressions::collect_block_names(body, &mut names);
         for parameter in &function.syntax.parameters {
@@ -210,19 +401,10 @@ impl Checker {
             let source = &self.bindings[binding];
             // Calling another declaration retains its actual source environment,
             // rather than a scalar alias to a declaration being a data capture.
-            let declaration = source
-                .value
-                .callables
-                .iter()
-                .find_map(|callable| match callable {
-                    Callable::Named(other) if source.span == self.functions[*other].syntax.span => {
-                        Some(*other)
-                    }
-                    _ => None,
-                });
+            let declaration = self.original_named_declaration(binding, work)?;
             if let Some(other) = declaration {
                 if self.functions[other].owner.is_some() {
-                    self.named_free_bindings(other, seen, captures, writes);
+                    self.named_free_bindings(other, seen, captures, writes, work)?;
                 }
             } else if source.owner != ScopeId(0) && !self.static_value_bindings.contains(&binding) {
                 captures.insert(binding);
@@ -231,6 +413,7 @@ impl Checker {
                 }
             }
         }
+        Ok(())
     }
     pub(super) fn ensure_named_environment(&mut self, id: usize) {
         if self.functions[id].owner.is_none() {
@@ -239,7 +422,22 @@ impl Checker {
         self.check_named_initialization(id);
         let mut captures = BTreeSet::new();
         let mut writes = BTreeSet::new();
-        self.named_free_bindings(id, &mut BTreeSet::new(), &mut captures, &mut writes);
+        let mut lease = self.application_effect.lease_work(4_000_000);
+        let result = self.named_free_bindings(
+            id,
+            &mut BTreeSet::new(),
+            &mut captures,
+            &mut writes,
+            lease.work(),
+        );
+        let result = result.and(self.application_effect.return_work(lease));
+        if let Err(error) = result {
+            self.unsupported(
+                self.functions[id].syntax.span,
+                format!("named environment declaration identity: {error}"),
+            );
+            return;
+        }
         self.functions[id].captures.extend(captures);
         self.functions[id].writes.extend(writes);
         for binding in self.functions[id].captures.clone() {
@@ -386,6 +584,136 @@ pub(super) fn pattern_names(pattern: &Pattern) -> Vec<String> {
 #[cfg(test)]
 mod declaration_identity_tests {
     use super::*;
+
+    #[test]
+    fn original_named_bindings_require_their_statement_and_actual_creation_scope() {
+        // This test enters Checker directly rather than analyze_constants.
+        // Match the production analysis worker's existing finite stack.
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("ril-declaration-identities".into())
+                .stack_size(16 * 1024 * 1024)
+                .spawn_scoped(scope, check_original_named_binding_identities)
+                .unwrap()
+                .join()
+                .unwrap();
+        });
+    }
+
+    fn check_original_named_binding_identities() {
+        use crate::sema::source_types::{SourceTypesError, WorkLimit};
+        let source = ril_test::case_source(
+            "tests/regressions/evaluation-identity.ril::named-declaration-binding-identities",
+        );
+        let parsed = ril_syntax::parse(source);
+        assert!(parsed.diagnostics.is_empty());
+        let mut checker = Checker::new(FileId(0));
+        checker.run(&parsed.program);
+        assert!(
+            checker
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Severity::Error),
+            "{:?}",
+            checker.diagnostics
+        );
+        let declarations: Vec<_> = checker
+            .functions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, function)| {
+                if function.syntax.name != "read" {
+                    return None;
+                }
+                let binding = *function.lexical.get("read")?;
+                Some((
+                    index,
+                    binding,
+                    function.hir_id.unwrap(),
+                    function.owner.unwrap(),
+                ))
+            })
+            .collect();
+        assert!(
+            declarations.len() >= 3,
+            "the real factories must instantiate local declarations"
+        );
+        for &(index, binding, _, _) in &declarations {
+            assert_eq!(
+                checker.original_named_declaration(binding, &mut WorkLimit::new(65536)),
+                Ok(Some(index))
+            );
+        }
+        let (index, binding, statement, _) = declarations[0];
+        let alias = checker
+            .bindings
+            .iter()
+            .position(|binding| binding.name == "alias" && binding.pattern.is_some())
+            .expect("real callable alias");
+        let parameter = checker
+            .bindings
+            .iter()
+            .position(|binding| binding.name == "read" && binding.parameter)
+            .expect("real same-name callable parameter");
+        for candidate in [alias, parameter] {
+            let span = checker.bindings[candidate].span;
+            checker.bindings[candidate].span = checker.functions[index].syntax.span;
+            assert_eq!(
+                checker.original_named_declaration(candidate, &mut WorkLimit::new(65536)),
+                Ok(None)
+            );
+            checker.bindings[candidate].span = span;
+        }
+        let span = checker.bindings[binding].span;
+        checker.bindings[binding].span = Span {
+            file: FileId(0),
+            start: 0,
+            end: 0,
+        };
+        assert_eq!(
+            checker.original_named_declaration(binding, &mut WorkLimit::new(65536)),
+            Ok(Some(index))
+        );
+        checker.bindings[binding].span = span;
+        checker.bindings[binding].declaration = None;
+        assert_eq!(
+            checker.original_named_declaration(binding, &mut WorkLimit::new(65536)),
+            Err(SourceTypesError::MissingNode)
+        );
+        checker.bindings[binding].declaration = Some(statement);
+        let other_statement = declarations
+            .iter()
+            .find(|(_, _, other, _)| *other != statement)
+            .expect("same-name declaration with a different canonical statement")
+            .2;
+        checker.functions[index].hir_id = Some(other_statement);
+        assert!(
+            checker
+                .original_named_declaration(binding, &mut WorkLimit::new(65536))
+                .is_err()
+        );
+        checker.functions[index].hir_id = Some(statement);
+        let (_, other_binding, _, _) = declarations
+            .iter()
+            .find(|(_, _, other, owner)| *other == statement && *owner != declarations[0].3)
+            .copied()
+            .expect("the same declaration in another actual factory activation");
+        checker.functions[index]
+            .lexical
+            .insert("read".into(), other_binding);
+        assert!(
+            checker
+                .original_named_declaration(binding, &mut WorkLimit::new(65536))
+                .is_err()
+        );
+        checker.functions[index]
+            .lexical
+            .insert("read".into(), binding);
+        assert_eq!(
+            checker.original_named_declaration(binding, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+    }
 
     #[test]
     fn captured_initialization_uses_pattern_identity_instead_of_diagnostic_spans() {

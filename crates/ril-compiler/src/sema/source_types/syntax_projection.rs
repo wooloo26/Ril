@@ -50,6 +50,7 @@ pub(super) fn project(
                     self.active.remove(&root);
                     return Ok(result);
                 }
+                SourceNode::KeyProjection { .. } => return Err(SourceTypesError::Unresolved),
                 SourceNode::Scalar(super::SourceScalar::Unit) => TypeKind::Tuple(vec![]),
                 SourceNode::Scalar(kind) => {
                     let name = super::scalar_name(*kind);
@@ -132,6 +133,7 @@ pub(super) fn project(
                     parameters,
                     result,
                     annotations,
+                    ..
                 } => {
                     work.charge(parameters.len() + annotations.len() + 1)?;
                     let parameters = parameters

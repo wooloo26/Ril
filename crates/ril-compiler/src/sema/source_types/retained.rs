@@ -72,6 +72,17 @@ fn node(
         SourceNode::Scalar(kind) => p::SourceTypeNode::Scalar(*kind),
         SourceNode::Nominal(id) => p::SourceTypeNode::Nominal(nominal(*id)),
         SourceNode::Binder(identity) => p::SourceTypeNode::Binder(identity.clone()),
+        SourceNode::KeyProjection {
+            origin,
+            parameter,
+            identity,
+            base,
+        } => p::SourceTypeNode::KeyProjection {
+            origin: *origin,
+            parameter: *parameter,
+            identity: identity.clone(),
+            base: edge(*base)?,
+        },
         SourceNode::StaticValue(value) => p::SourceTypeNode::StaticValue(value.clone()),
         SourceNode::Array { length, element } => p::SourceTypeNode::Array {
             length: *length,
@@ -101,6 +112,7 @@ fn node(
             parameters,
             result,
             annotations,
+            row_identity,
         } => p::SourceTypeNode::Callable {
             parameters: parameters
                 .iter()
@@ -117,6 +129,19 @@ fn node(
                 .collect::<Result<_, SourceTypesError>>()?,
             result: edge(*result)?,
             annotations: annotations.clone(),
+            row_identity: row_identity
+                .as_ref()
+                .map(|row| {
+                    Ok::<_, SourceTypesError>(p::CallableRowIdentity {
+                        origin: row.origin,
+                        parameters: row
+                            .parameters
+                            .iter()
+                            .map(|(id, root)| Ok((*id, edge(*root)?)))
+                            .collect::<Result<_, SourceTypesError>>()?,
+                    })
+                })
+                .transpose()?,
         },
         SourceNode::Container { kind, arguments } => p::SourceTypeNode::Container {
             kind: *kind,
@@ -416,6 +441,7 @@ mod tests {
                     ],
                     result: record,
                     annotations: vec!["@Read<type:7:T>".into(), "&capture".into()],
+                    row_identity: None,
                 },
                 &mut work,
             )

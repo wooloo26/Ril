@@ -1,4 +1,5 @@
 use super::*;
+use crate::sema::source_reception;
 
 pub(super) type SourceExpression = EvaluatedValue;
 
@@ -45,7 +46,7 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> SourceExpression {
-        self.expression_packet_mode(expr, frame, expected, source, false, None)
+        self.expression_packet_mode(expr, frame, expected, source, None)
     }
 
     pub(super) fn expression_source_packet(
@@ -55,7 +56,7 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> SourceExpression {
-        self.expression_packet_mode(expr, frame, expected, source, true, None)
+        self.expression_packet_mode(expr, frame, expected, source, None)
     }
 
     pub(super) fn expression_pattern_value(
@@ -65,7 +66,7 @@ impl Checker {
         expected: Option<&Ty>,
         subject: Option<&EvaluatedValue>,
     ) -> Value {
-        self.expression_packet_mode(expr, frame, expected, None, false, subject)
+        self.expression_packet_mode(expr, frame, expected, None, subject)
             .value
     }
 
@@ -75,7 +76,6 @@ impl Checker {
         frame: &mut Frame,
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
-        capture_source: bool,
         pattern_subject: Option<&EvaluatedValue>,
     ) -> SourceExpression {
         self.cancellation_checkpoint(expr.span, frame);
@@ -159,28 +159,59 @@ impl Checker {
             self.read_epochs
                 .insert((source, frame.owner), self.write_events.len());
         }
+        // Freeze the interpretation before a Source probe can enter another
+        // callable or advance storage. The physical emission owns this Γ once.
+        let mut capture_lease = self.application_effect.lease_work(16384);
+        let birth_environment = self.freeze_evaluation_environment(capture_lease.work());
+        let mut capture_lease = Some(capture_lease);
         self.infer_expression_source_type(&mut value, expr);
         self.channel_boolean_evaluation(&mut value, expr.span, frame);
         let argument_of = self.source_argument_of(expr, frame);
         let evaluation_context = self.invocation_context(frame.callable_owner);
         self.record_copy_references(&value, expr.span, frame);
+        let mut emitted = Some(value);
         let Some(observation) = self.application_effect.observe_in(
             activation,
-            || super::super::ExpressionFact {
+            || super::super::application_effect::ObservationInput {
                 allocation_epoch: self.recency_moves.len(),
                 source_id: expr.hir_id,
                 span: expr.span,
-                value: value.clone(),
+                value: emitted.take().expect("emitter output moves once"),
             },
             evaluation_context,
             frame.owner,
+            birth_environment.as_ref().ok().copied(),
             argument_of,
         ) else {
+            if let Some(lease) = capture_lease.take() {
+                let _ = self.application_effect.return_work(lease);
+            }
+            self.unsupported(expr.span, "physical expression emission admission failed");
             self.application_effect.leave(activation);
             self.expression_owners.pop();
-            return SourceExpression::unobserved(value, self.recency_moves.len(), false);
+            return SourceExpression::unobserved(
+                emitted.unwrap_or_else(|| Value::scalar(Ty::Unknown, None, CauseId(0))),
+                self.recency_moves.len(),
+                false,
+            );
         };
-        self.record_builtin_source_observation(expr, &value, observation, frame);
+        let physical = match self.application_effect.packet_at(observation) {
+            Ok(packet) => packet,
+            Err(error) => {
+                if let Some(lease) = capture_lease.take() {
+                    let _ = self.application_effect.return_work(lease);
+                }
+                self.unsupported(expr.span, format!("physical packet lookup: {error}"));
+                self.application_effect.leave(activation);
+                self.expression_owners.pop();
+                return SourceExpression::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
+            }
+        };
+        self.record_builtin_source_observation(expr, physical.value(), observation, frame);
         if let Some(event) = source_call_event {
             let context = self.invocation_context(frame.callable_owner);
             let call = &mut self.copy_call_events[event.0 as usize];
@@ -199,13 +230,38 @@ impl Checker {
                 );
             }
         }
-        let mut packet = SourceExpression::observed(
-            value,
-            observation,
-            &self.application_effect.evaluations[observation],
-        );
-        if capture_source {
-            let lease = self.application_effect.lease_work(16384);
+        let mut packet = match self.clone_evaluation_packet(&physical, expr.span) {
+            Ok(packet) => packet,
+            Err(error) => {
+                if let Some(lease) = capture_lease.take() {
+                    let _ = self.application_effect.return_work(lease);
+                }
+                self.unsupported(
+                    expr.span,
+                    format!("physical packet view admission: {error}"),
+                );
+                self.application_effect.leave(activation);
+                self.expression_owners.pop();
+                return SourceExpression::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
+            }
+        };
+        if let Err(error) = birth_environment {
+            self.unsupported(
+                expr.span,
+                format!("evaluation birth environment admission: {error}"),
+            );
+            if let Some(lease) = capture_lease.take()
+                && let Err(error) = self.application_effect.return_work(lease)
+            {
+                packet.fail_current_source(error);
+            }
+            let _ = packet.capture_birth_source(Err(error.clone()), None);
+            packet.fail_current_source(error);
+        } else if let Some(lease) = capture_lease.take() {
             self.capture_evaluation_source(&mut packet, expr, frame, lease);
         }
         self.transport_evaluation_packet(&mut packet, expr.span);
@@ -261,12 +317,12 @@ impl Checker {
         source_call_event: &mut Option<super::super::copy_contract::CopyCallEventId>,
     ) -> Value {
         if let ExprKind::Name(name) = &expr.kind
-            && let Some(reference) = self.constant_references.get(name)
+            && let Some(reference) = self.constant_pool.references.get(name)
         {
             let mut value = self.constant_values[reference.node.0 as usize]
                 .value
                 .clone();
-            value.source_type_witness = self.constant_source_views.get(name).cloned();
+            value.source_type_witness = self.constant_pool.source_views.get(name).cloned();
             return value;
         }
         if let Some(operation) = self.explicit_effect_operation(expr) {
@@ -1380,7 +1436,7 @@ impl Checker {
                             return self.unit(expr.span);
                         }
                         let error = self.result_payload(&a, false, expr.span, frame);
-                        let recovered = self.invoke(
+                        let recovered = self.invoke_generated_values(
                             &fallback,
                             vec![(ParameterMode::Read, error, expr.span)],
                             expr.span,
@@ -2113,20 +2169,8 @@ impl Checker {
                 frame.env = old;
                 self.unit(expr.span)
             }
-            ExprKind::Lambda {
-                parameters,
-                return_type,
-                annotations,
-                body,
-            } => {
-                let mut value = self.lambda(
-                    parameters,
-                    return_type.as_ref(),
-                    annotations,
-                    body,
-                    expr,
-                    frame,
-                );
+            ExprKind::Lambda { .. } => {
+                let mut value = self.lambda(expr, frame, source);
                 if let Some(target) = source
                     && let (Some(syntax), Some(origin)) =
                         (target.syntax.as_deref(), target.source.as_ref())
@@ -2421,7 +2465,17 @@ impl Checker {
         if let Some(&id) = frame.env.get(name) {
             self.use_binding(id, Mode::Read, frame);
             let mut value = self.bindings[id].value.clone();
-            let declaration=value.callables.iter().any(|callable|matches!(callable,Callable::Named(function) if self.bindings[id].span==self.functions[*function].syntax.span));
+            let mut lease = self.application_effect.lease_work(4_000_000);
+            let declaration = self.original_named_declaration(id, lease.work());
+            let returned = self.application_effect.return_work(lease);
+            let declaration = declaration.and_then(|declaration| returned.map(|()| declaration));
+            let declaration = match declaration {
+                Ok(declaration) => declaration.is_some(),
+                Err(error) => {
+                    self.unsupported(span, format!("named declaration read identity: {error}"));
+                    false
+                }
+            };
             value = self.named_environment_value(value, declaration);
             if self.bindings[id].cell.is_some_and(|cell| {
                 self.uncertain_slots
@@ -2818,13 +2872,21 @@ impl Checker {
     }
     fn lambda(
         &mut self,
-        parameters: &[Parameter],
-        return_type: Option<&TypeExpr>,
-        annotations: &[Annotation],
-        body: &Expr,
         syntax: &Expr,
         frame: &mut Frame,
+        receiving: Option<&source_reception::Target>,
     ) -> Value {
+        let ExprKind::Lambda {
+            parameters,
+            return_type,
+            annotations,
+            body,
+        } = &syntax.kind
+        else {
+            unreachable!()
+        };
+        let return_type = return_type.as_ref();
+        let body = body.as_ref();
         let span = syntax.span;
         for annotation in annotations {
             if annotation.kind == AnnotationKind::Effect {
@@ -2838,12 +2900,25 @@ impl Checker {
                 names.remove(name);
             }
         }
-        let captures: BTreeSet<_> = names
-            .iter()
-            .filter_map(|name| frame.env.get(name).copied())
-            .filter(|binding| !self.static_value_bindings.contains(binding))
-            .filter(|binding|!self.bindings[*binding].value.callables.iter().any(|callable|matches!(callable,Callable::Named(id)if self.functions[*id].owner.is_none()&&self.bindings[*binding].span==self.functions[*id].syntax.span)))
-            .collect();
+        let mut captures = BTreeSet::new();
+        for binding in names.iter().filter_map(|name| frame.env.get(name).copied()) {
+            if self.static_value_bindings.contains(&binding) {
+                continue;
+            }
+            match self.original_named_declaration_with_work(binding) {
+                Ok(Some(function)) if self.functions[function].owner.is_none() => {}
+                Ok(_) => {
+                    captures.insert(binding);
+                }
+                Err(error) => {
+                    self.unsupported(
+                        span,
+                        format!("closure declaration capture identity: {error}"),
+                    );
+                    return Value::scalar(Ty::Unknown, None, CauseId(0));
+                }
+            }
+        }
         let mutable = mutated_names(body);
         let mutable_environment = captures
             .iter()
@@ -2929,6 +3004,23 @@ impl Checker {
         // Verify latent operations now, but preserve the current invocation's
         // heap and rows. Creating a callable does not execute its body.
         if parameters.iter().all(|p| p.ty.is_some()) {
+            let result_source = if return_type.is_none() {
+                match receiving
+                    .map(|target| self.callable_result_target(target, span))
+                    .transpose()
+                {
+                    Ok(target) => target,
+                    Err(error) => {
+                        self.unsupported(
+                            span,
+                            format!("lambda declaration result Source: {error}"),
+                        );
+                        return value;
+                    }
+                }
+            } else {
+                None
+            };
             let budget = std::mem::take(&mut self.budget_coverage);
             let original_fields = self.fields.clone();
             let preview = self.snapshot_flow();
@@ -2952,7 +3044,7 @@ impl Checker {
                 })
                 .collect();
             self.widen_callable_environment(&Callable::Closure(id));
-            let returned = self.invoke_closure_probe(id, args, span, &mut latent);
+            let returned = self.invoke_closure_probe(id, args, span, &mut latent, result_source);
             let dependent: BTreeSet<_> = latent
                 .obligations
                 .named
@@ -3474,96 +3566,80 @@ mod observation_tests {
 
     #[test]
     fn pattern_expected_expression_cannot_replace_the_receipts_operand_token() {
+        use crate::hir::nodes::{ExprKind as HirExpr, NodeOrigin};
         use crate::sema::channel_messages::ChannelAction;
 
-        let mut checker = Checker::new(FileId(0));
-        let mut frame = checker.frame(BTreeMap::new(), false);
-        let binding_span = integer(0, "7").span;
-        let cause = checker.cause(CauseKind::Source, binding_span, "test Result payload", []);
-        let payload = Value::scalar(Ty::Int("int".into()), Some(Constant::Integer(7)), cause);
-        let result = checker.make_result(true, payload, binding_span, frame.owner);
-        checker.bind_name(
-            "result",
-            BindingMode::Let,
-            result,
-            binding_span,
-            &mut frame,
-            false,
-        );
-        let subject_span = Span {
-            file: FileId(0),
-            start: 2,
-            end: 8,
-        };
-        let expected = integer(15, "7");
-        let expression = Expr {
-            hir_id: None,
-            span: Span {
-                file: FileId(0),
-                start: 2,
-                end: 18,
-            },
-            kind: ExprKind::Is {
-                value: Box::new(Expr {
-                    hir_id: None,
-                    kind: ExprKind::Name("result".into()),
-                    span: subject_span,
-                }),
-                pattern: Pattern {
-                    hir_id: None,
-                    span: Span {
-                        file: FileId(0),
-                        start: 12,
-                        end: 18,
-                    },
-                    kind: PatternKind::Constructor {
-                        path: vec!["Ok".into()],
-                        arguments: vec![Pattern {
-                            hir_id: None,
-                            span: expected.span,
-                            kind: PatternKind::Value(Box::new(expected)),
-                        }],
-                        parenthesized: true,
-                    },
+        for target in ["pointer32", "pointer64"] {
+            let verified = crate::Session::with_options(
+                ril_test::case_bytes(
+                    "tests/regressions/evaluation-identity.ril::pattern-operand-observation",
+                )
+                .to_vec(),
+                crate::CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
                 },
-            },
-        };
-        let (_, whole) = checker.expression_observed(&expression, &mut frame);
-        assert!(checker.diagnostics.is_empty(), "{:?}", checker.diagnostics);
-        assert!(checker.unsupported.is_empty(), "{:?}", checker.unsupported);
-        assert_eq!(checker.application_effect.expressions.len(), 3);
-        assert_eq!(whole, Some(2));
-        assert_eq!(
-            checker.application_effect.expressions[1].span,
-            integer(15, "7").span
-        );
-        let receipts: Vec<_> = checker
-            .channel_message_facts
-            .iter()
-            .filter_map(|fact| {
-                if let ChannelAction::ConditionEvaluated {
+            )
+            .verify()
+            .unwrap_or_else(|error| panic!("{target}: {error:?}"));
+            let facts = verified.facts();
+            let hir = facts.semantic_hir.as_deref().unwrap();
+            let mut receipts = 0;
+            for fact in &facts.channel_messages {
+                let ChannelAction::ConditionEvaluated {
                     subject_expression,
                     subject,
                     ..
                 } = &fact.action
-                {
-                    Some((*subject_expression, subject))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0].0, 0);
-        assert_eq!(
-            checker.application_effect.expressions[receipts[0].0].span,
-            subject_span
-        );
-        assert_eq!(
-            checker.application_effect.expressions[0].value,
-            receipts[0].1.value
-        );
-        // This exercises real recorder ordering, not independent Source
-        // authorization. A refutable payload is outside that theorem.
+                else {
+                    continue;
+                };
+                let record = &facts.evaluations[*subject_expression];
+                let identity = record.identity.unwrap();
+                let activation = &facts.activations[identity.activation.0 as usize];
+                let Some(parent) = activation.parent else {
+                    continue;
+                };
+                let parent = &facts.activations[parent.0 as usize];
+                let Some(original) = parent.source.and_then(|source| hir.expression(source)) else {
+                    continue;
+                };
+                let HirExpr::Is { value, .. } = &original.kind else {
+                    continue;
+                };
+                receipts += 1;
+                assert_eq!(identity.source, *value);
+                let root = parent.result.unwrap().0 as usize;
+                let children: Vec<_> = facts.evaluations[..root]
+                    .iter()
+                    .filter(|record| {
+                        record.identity.is_some_and(|identity| {
+                            let activation = &facts.activations[identity.activation.0 as usize];
+                            activation.parent == Some(parent.id)
+                                && activation.kind
+                                    == crate::sema::application_effect::ActivationKind::Expression
+                        })
+                    })
+                    .collect();
+                assert_eq!(children.len(), 2, "subject and written pattern value");
+                assert_eq!(children[0].id.0 as usize, *subject_expression);
+                let expected = children[1].identity.unwrap();
+                assert!(matches!(
+                    hir.expression(expected.source).unwrap().info.origin,
+                    NodeOrigin::Generated {
+                        kind: crate::hir::nodes::GeneratedKind::PatternValue,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    hir.expression(expected.source).unwrap().kind,
+                    HirExpr::Literal(Literal::Integer(ref text)) if text == "7"
+                ));
+                assert!(*subject_expression < children[1].id.0 as usize);
+                assert!((children[1].id.0 as usize) < root);
+                assert_eq!(facts.expressions[*subject_expression].value, subject.value);
+            }
+            assert_eq!(receipts, 1, "the actual Is receipt must be exercised");
+        }
     }
 }

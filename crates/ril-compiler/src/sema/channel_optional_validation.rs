@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn validate(facts: &SemanticFacts) -> Check {
     fn visit(
         value: &Value,
-        snapshot: &CopyValueSnapshot,
+        snapshot: crate::sema::copy_contract::CopyValueView<'_>,
         path: &mut Vec<String>,
         output: &mut Vec<(ril_compiler_core::ids::OptionalTagId, Vec<String>)>,
         active: &mut BTreeSet<NodeId>,
@@ -80,10 +80,17 @@ pub(super) fn validate(facts: &SemanticFacts) -> Check {
         work: &mut usize,
     ) -> Check<Vec<(usize, ril_compiler_core::ids::OptionalTagId, Vec<String>)>> {
         let mut arguments = Vec::new();
-        for (index, (_, snapshot)) in invocation.entry.arguments.iter().enumerate() {
+        for (index, argument) in invocation.entry.arguments.iter().enumerate() {
+            let mut budget = crate::sema::source_types::WorkLimit::new(*work);
+            let snapshot = argument.snapshot_view(&mut budget);
+            *work = budget.remaining();
+            let snapshot = snapshot.map_err(|error| error.to_string())?;
+            if argument.packet.current_epoch() != invocation.entry.allocation_epoch {
+                return Err("optional formal borrowed another entry heap epoch".into());
+            }
             let mut tags = Vec::new();
             visit(
-                &snapshot.value,
+                snapshot.value,
                 snapshot,
                 &mut Vec::new(),
                 &mut tags,
@@ -123,7 +130,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Check {
         let mut tags = Vec::new();
         visit(
             &snapshot.value,
-            snapshot,
+            snapshot.as_view(),
             &mut Vec::new(),
             &mut tags,
             &mut BTreeSet::new(),

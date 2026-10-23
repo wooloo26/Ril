@@ -872,4 +872,73 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn foreign_default_sources_require_authenticated_generated_declarations() {
+        use super::super::{
+            record_bound_validation::OriginalOperandSources,
+            source_types::{SourceScalar, WorkLimit},
+        };
+        let baseline = checked();
+        let instance = &baseline.external_instances[0];
+        let default = instance.syntax.parameters[0].default.as_ref().unwrap();
+        let source = default.hir_id.unwrap();
+        let record = baseline
+            .evaluations
+            .iter()
+            .find(|record| {
+                record
+                    .identity
+                    .is_some_and(|identity| identity.source == source)
+                    && record.context.default_use.is_some()
+            })
+            .expect("the generated default has an actual default-use observation");
+        let observation = record.id.0 as usize;
+        let mut work = 16_000_000;
+        let originals = OriginalOperandSources::new_with_work(&baseline, &mut work).unwrap();
+        let (schema, _) = originals
+            .observed_with_work(source, observation, &mut work)
+            .unwrap();
+        let (schema, _) =
+            schema.expect("the foreign default retains its complete original scalar Source");
+        assert!(matches!(
+            schema.scalar_representation(&mut WorkLimit::new(work)),
+            Ok(Some(SourceScalar::F32 | SourceScalar::F64))
+        ));
+
+        for mutation in 0..5 {
+            let mut changed = baseline.clone();
+            match mutation {
+                0 => changed.external_instances.clear(),
+                1 => {
+                    changed.external_instances[0].generated =
+                        baseline.external_instances[1].generated
+                }
+                2 => {
+                    changed.external_instances[0].applications[0].base =
+                        baseline.external_instances[1].applications[0].base
+                }
+                3 => changed.external_instances[0].syntax.parameters[0].default = None,
+                4 => {
+                    changed.external_instances[0].syntax.parameters[0]
+                        .default
+                        .as_mut()
+                        .unwrap()
+                        .hir_id = baseline.external_instances[1].syntax.parameters[0]
+                        .default
+                        .as_ref()
+                        .unwrap()
+                        .hir_id
+                }
+                _ => unreachable!(),
+            }
+            let mut work = 16_000_000;
+            let result = OriginalOperandSources::new_with_work(&changed, &mut work)
+                .and_then(|originals| originals.observed_with_work(source, observation, &mut work));
+            assert!(
+                result.is_err(),
+                "foreign default Source mutation {mutation} was accepted"
+            );
+        }
+    }
 }

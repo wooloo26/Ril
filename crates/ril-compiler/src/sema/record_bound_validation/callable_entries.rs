@@ -21,8 +21,8 @@ enum Input {
     Scalar(crate::sema::application_effect::ScalarInput),
 }
 
-struct EntrySource<'a, 'p, A> {
-    entry: &'a CallableEntry<A>,
+struct EntrySource<'a, 'p> {
+    entry: &'a CallableEntry,
     key: GeneratedEntryKey,
     slot: usize,
     sites: &'a super::super::explicit_named::SourceSites<'p>,
@@ -30,11 +30,7 @@ struct EntrySource<'a, 'p, A> {
 }
 
 impl Replay<'_> {
-    fn signature_entry_graph<A: Arguments>(
-        &self,
-        entry: &CallableEntry<A>,
-        work: &mut usize,
-    ) -> Check {
+    fn signature_entry_graph(&self, entry: &CallableEntry, work: &mut usize) -> Check {
         let EntryOrigin::SignatureProbe(source) = &entry.origin else {
             return Ok(());
         };
@@ -80,11 +76,13 @@ impl Replay<'_> {
             .bindings
             .get(binding_id)
             .ok_or("inferred formal binding is absent")?;
-        let (mode, original, _) = call
+        let argument = call
             .entry
             .arguments
             .get(slot)
             .ok_or("inferred formal has no actual input")?;
+        let mode = argument.mode;
+        let original = argument.value();
         let epoch = self.facts.expressions[observation].allocation_epoch;
         let origins = transported_origins(
             self.facts,
@@ -99,14 +97,14 @@ impl Replay<'_> {
                 && value.origins == origins
                 && value.callables == original.callables
                 && value.publication
-                    == if *mode == ParameterMode::Read {
+                    == if mode == ParameterMode::Read {
                         original.publication
                     } else {
                         Publication::Live
                     },
             "inferred formal changed its actual input or receiving scope",
         )?;
-        if *mode == ParameterMode::Read {
+        if mode == ParameterMode::Read {
             *work = work
                 .checked_sub(original.participants.len() + 1)
                 .ok_or("inferred read reception exceeds its work bound")?;
@@ -136,7 +134,7 @@ impl Replay<'_> {
                 .ok_or("inferred formal has no original invocation loan")?;
             require(
                 loans.next().is_none()
-                    && loan.retained == (*mode == ParameterMode::SharedMut)
+                    && loan.retained == (mode == ParameterMode::SharedMut)
                     && value.permission == Permission::Write
                     && value.participants == BTreeSet::from([Participant::Loan(loan.loan)]),
                 "inferred formal changed its actual loan or parameter mode",
@@ -151,9 +149,9 @@ impl Replay<'_> {
         Ok(())
     }
 
-    fn entry_input<A: Arguments>(
+    fn entry_input(
         &self,
-        entry: &CallableEntry<A>,
+        entry: &CallableEntry,
         key: GeneratedEntryKey,
         slot: usize,
         work: &mut usize,
@@ -464,9 +462,29 @@ impl Replay<'_> {
         )
     }
 
-    fn entry_source_schema<A: Arguments>(
+    pub(super) fn named_entry_source_schema_if_known(
         &self,
-        entry: &CallableEntry<A>,
+        call: &CopyInvocation,
+        slot: usize,
+        sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+    ) -> Check<Option<OriginalSource>> {
+        self.function(call.target)?;
+        self.entry_source_schema_if_known(
+            EntrySource {
+                entry: &call.entry,
+                key: GeneratedEntryKey::Named(call.id),
+                slot,
+                sites,
+                depth: 0,
+            },
+            work,
+        )
+    }
+
+    fn entry_source_schema(
+        &self,
+        entry: &CallableEntry,
         key: GeneratedEntryKey,
         slot: usize,
         sites: &super::super::explicit_named::SourceSites<'_>,
@@ -486,9 +504,9 @@ impl Replay<'_> {
         .ok_or_else(|| "callable input has no complete original graph".into())
     }
 
-    fn entry_source_schema_if_known<A: Arguments>(
+    fn entry_source_schema_if_known(
         &self,
-        source: EntrySource<'_, '_, A>,
+        source: EntrySource<'_, '_>,
         work: &mut usize,
     ) -> Check<Option<OriginalSource>> {
         let EntrySource {
