@@ -97,6 +97,15 @@ duplicate source trees and historical verification reports.
 
 ## Current work
 
+- Refactor the compiler/library/runtime boundary following AXIOMS: ordinary
+  library definitions use the common declaration, checking and compilation
+  pipeline; retain a small explicit primitive/host contract boundary. Start with
+  optional-value and Array combinators, then remove their duplicated checker,
+  static evaluator, HOF lowering and runtime implementations.
+- Close the partially connected pattern-window allocation records and current
+  binding/Source regressions before establishing the migration baseline. Keep
+  tests within SPEC syntax; ordinary function and lambda parameters are names,
+  while handler parameters admit the specified binding patterns.
 - Complete the canonical abstract value, frozen environments, ten receiving
   boundaries and five domains. Replace remaining Span tables, erased-type
   reconstruction and legacy witnesses as their consumers migrate.

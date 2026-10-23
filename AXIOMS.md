@@ -256,26 +256,152 @@ A ledger's mere presence, or an empty table, is not coverage.
   missing-proof diagnostic or explicit implementation limit; do not mislabel
   an implementation resource limit as a proved language violation.
 
-## 6. Execution order and completion criteria
+## 6. Compiler, standard library and runtime boundaries
+
+Ordinary library behavior belongs to checked library definitions. The compiler
+knows language operations and a small, explicit set of necessary intrinsic
+contracts. The runtime supplies storage, execution and host capabilities. Moving
+all existing name switches into a larger builtin table does not establish this
+boundary.
+
+| Owner | Responsibility |
+| --- | --- |
+| Compiler | Resolution, complete types, inference, receiving, capabilities, effects, duties, termination, primitive contracts and lowering |
+| Standard library | Ordinary data declarations, collection and iterator combinators, ordering algorithms, formatting and resource/I/O composition |
+| Runtime | Allocation/GC, object storage, low-level operations, continuations, cleanup, scheduling, host calls and opaque handles |
+
+### One declaration and call path
+
+Load versioned standard-library sources through the same module, declaration,
+visibility and checking infrastructure as user sources. Prelude bindings are
+imports of real declarations. A standard module's spelling does not supply a
+type, implementation, effect, permission or termination proof.
+
+Distinguish source definitions, trusted primitive declarations and anchored
+generated declarations in the common declaration store. All have stable
+declaration, parameter and binder identities. A primitive's public wrapper may
+be an ordinary library function. Primitive bindings and language-item roles are
+sealed identities checked against their declared shape; arbitrary user names,
+attributes or lookalike module paths cannot manufacture them.
+
+Resolve calls to declaration/instance identities or actual callable values.
+Ordinary calls, aliases, first-class functions, defaults, captures and library
+calls use the same argument plan, receiving transitions and callable summaries.
+Do not create temporary parameter ASTs with caller spans to stand in for a
+missing declaration. A missing callee in lowering is an error, never an implicit
+request for runtime builtin-name dispatch.
+
+### Keep the intrinsic boundary small and explicit
+
+An intrinsic is justified by a language operation, an unforgeable identity or
+capability, an opaque representation, or access to an external execution
+mechanism. An ordinary algorithm's current implementation difficulty is not by
+itself a reason to make its public name intrinsic.
+
+Each admitted primitive has one authoritative declaration/contract containing
+its identity, complete type scheme and parameter modes, phase availability,
+effects, capability and duty transitions, termination/budget behavior, and its
+backend/runtime binding where applicable. The contract may compose shared
+domain operations; a signature alone does not prove aliasing, cleanup or callback
+behavior. Abstract checking, static execution and native execution remain
+different consumers of that contract.
+
+Typical primitive families include numeric and structural operations, storage
+admission and resizing, graph copy/publication, windows and access reservations,
+effect/continuation operations, scheduling and host resource access. Algorithms
+such as map/filter/fold, iterator adapters, sorting, read-all/write-all and
+resource wrappers should be ordinary checked bodies whenever their contracts
+can be expressed through those families.
+
+Preserve existing Source graph catalogs and trusted identities where they
+describe genuine primitives. Move ordinary record/sum definitions into the
+library as their consumers migrate, retaining any required language-item role.
+Do not replace one set of hand-maintained signatures with another parallel set.
+
+An efficient native implementation may remain behind an explicit library
+binding. This does not give the compiler knowledge of its public algorithm or
+permission to assume a bodyless foreign function terminates. Optimized ordinary
+definitions must first be checked, and their replacements must preserve the
+declared data, control, authority and budget behavior. A checked ordinary
+implementation remains the reference path.
+
+### Share semantic elaboration across execution phases
+
+Static execution consumes the eligible subset of the same elaborated
+declarations, type graphs, operations and control-flow representation used by
+ordinary compilation. It should not maintain a second language checker or a
+second implementation of every ordinary library algorithm.
+
+Type elaboration can request constant/type computation, and that computation
+can require elaboration of another declaration. Represent those dependencies
+explicitly, with staged queries, original environments and cycle handling;
+do not assume the entire program can be fully typed before any static query.
+Concrete static execution is not a replacement for checking symbolic inputs
+or unreachable branches.
+
+Phase availability remains a declaration property under SPEC/STD. Migrating a
+dual-phase standard function into a source file does not make arbitrary pure
+runtime functions callable statically. The interpreter uses target layout and
+an isolated value store; it cannot acquire host I/O by calling the general
+runtime dispatcher. Pure scalar/encoding implementations may be shared where
+their semantics agree, without sharing host handles or mutable runtime state.
+
+Keep abstract language events explicit through elaboration, specialization,
+inlining and CPS. Moving a library loop or callback into an ordinary body must
+not silently add or remove specified budget charges, change callback order,
+hide suspension or alter cleanup/failure behavior. Necessary phase, mode or
+event contracts that current public syntax cannot express remain explicit,
+bounded trusted declarations; exposing new language syntax is a separate
+specification decision.
+
+### Normalize the remaining temporary paths
+
+| Temporary path | Required replacement |
+| --- | --- |
+| Runtime Ty, static Ty and textual witnesses competing as complete types | One authoritative scoped Source graph and constraint store; execution/layout shapes are derived views |
+| Late AST reconstruction for accessors, adapters, defaults and static values | Origin-preserving HIR lowering, real argument plans and constant/type-value references |
+| Same birth packet mutated into a receiving view without a retained transition | A shared receiving derivation linking actual input, receiver, declaration interpretation, capability/duty changes and output |
+| Declaration assumptions, default preparation, untaken paths and actual execution mixed together | Explicit roles and control outcomes; check syntax without inventing executable events |
+| Ordinary library algorithms generated after semantic certification | Check their real bodies before lowering; backend transforms existing typed operations |
+| Public-name or Span-based specialization and callback classification | Declaration/instance IDs, typed primitive metadata and checked effect summaries |
+| Per-feature history tables and verifier searches | Shared allocation, storage, call and control histories with indexed references and local derivations |
+| Repeated AST execution or larger quotas used as a recursion/loop solution | Domain fixed points, explicit approximation orders and reusable checked summaries |
+
+Domain-specific adapters remain legitimate, but they compose the shared
+operations. Adding a library function or a new value representation must not
+require a new parallel type system, execution model or authority checker.
+
+## 7. Execution order and completion criteria
 
 Migrate through end-to-end slices, not by enabling a new universal validator
 before its producers and protocols exist.
 
-1. **Define the contracts first.** Settle identity/context roles, finite recursive
-   graphs, pending knowledge, normal/control outcomes and birth/current views.
-   State the shared operations and evidence each requires.
-2. **Close common ingress and view transitions.** Cover declaration/catalog
-   types, actual operands, inference and callable/product ascription. Preserve
-   nested contexts and recursive graphs without witness-key round trips.
-3. **Migrate one coherent path at a time.** Connect producer, canonical value,
-   shared operation, independent verification and Core/runtime consumers.
-   Supply genuine generated inputs and control/epoch transitions in that slice.
-   Remove the superseded path when its consumers have moved.
-4. **Extend all receiving families.** Reuse the established operations across
-   storage, captures, defaults, channels, handlers, resumptions and publication.
-   Reconcile domain ownership as paths move; do not postpone it until every
-   legacy checker field has acquired a second representation.
-5. **Validate the complete compiler.** Preserve positive and negative cases,
+1. **Restore a reviewable baseline.** Finish or remove partially connected
+   implementation changes and resolve newly introduced regressions. Retain
+   honest acceptance/failure identities; an unbuildable intermediate state is
+   not the starting acceptance baseline for the architecture migration.
+2. **Define the boundary and common ingress.** Classify library operations by
+   ownership, settle the small primitive contracts and load real library
+   declarations. Unify declaration/parameter identity, scoped types, explicit
+   assumptions, argument plans and receiving derivations. Keep existing domain
+   graphs and verification that already satisfy these contracts.
+3. **Prove one complete library slice.** Start with an optional-value combinator,
+   then Array::map to exercise generic callbacks, traversal, allocation and
+   duties. Compile the same checked body through ordinary calls, first-class
+   uses, eligible static execution and native execution. Fix missing generic
+   language mechanisms instead of adding another public-name exception.
+4. **Delete each replaced path in the same migration.** Remove that family's
+   checker simulation, static algorithm copy, late HOF body generator, runtime
+   algorithm dispatch and duplicate classification lists. Preserve genuine
+   low-level primitives. Extend to other collection/iterator/order algorithms,
+   then resource and buffered-I/O composition as their common protocols close.
+5. **Complete shared phases and receiving coverage.** Replace remaining static
+   checker/AST bridges and lossy type adapters as their consumers move. Reuse
+   common operations across storage, captures, defaults, channels, handlers,
+   resumptions and publication. Implement recursion/loop summaries and actual
+   control outcomes; do not defer domain ownership until every legacy field has
+   acquired a second representation.
+6. **Validate the complete compiler.** Preserve positive and negative cases,
    original case identities and execution coverage. Check both pointer layouts,
    Windows MSVC, Linux GNU and applicable native execution. Run bounded model
    audits with their documented scope.
@@ -285,6 +411,19 @@ rejections remain correct. Conservative rejection is necessary when proof is
 absent, but adding false rejections is not successful language implementation.
 Track changed failure sets, not only totals. Unknown, unimplemented, timeout,
 crash and empty selection are never passes.
+
+For an ordinary library slice, additionally require:
+
+- Adding or changing its algorithm requires library source/tests, not new
+  compiler dispatch branches or runtime algorithm state machines.
+- Renaming, aliasing, re-exporting and first-class use retain the same checked
+  declaration behavior; a user's lookalike name receives no builtin privileges.
+- Static/native executions agree on admissible data and order. Test callback
+  effects, suspension, failure, duties, empty inputs, fixed/dynamic views,
+  nested closures and exact language-event accounting where applicable.
+- The replaced implementation and its private compatibility routes are gone.
+  CI checks dependency boundaries, primitive bindings and the absence of new
+  public-library-name dispatch outside explicitly retained migration adapters.
 
 This roadmap supports completing the compiler under SPEC/STD. Completing a
 representation refactor, passing a focused suite, or renaming stores does not
