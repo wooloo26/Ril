@@ -1,205 +1,291 @@
-# Ril Semantic Kernel Axioms (`ril-compiler`)
+# Ril semantic kernel axioms
 
-This document defines the architectural axioms for refactoring and completing `crates/ril-compiler/src/sema/`. It is written for developers working on the Ril compiler.
+This document defines the architecture of `ril-compiler`, especially `sema/`.
+`doc/SPEC.md` and `doc/STD.md` remain the language authority.
+`DEVELOPMENT.md` records workflows, implementation gaps and unresolved
+specification questions. Implementation techniques in this document do not
+change language semantics.
 
-`doc/SPEC.md` and `doc/STD.md` define the normative language rules. `DEVELOPMENT.md` defines repository workflows and current implementation gaps. **This document defines the internal mathematical and structural invariants of the semantic kernel** so that implementation complexity scales as $O(N)$ (additive by domain) rather than $O(N^2)$ (multiplicative across feature combinations).
+The direction is to replace duplicated semantic truth and feature-pair patches
+with explicit identities, complete type information, shared value operations,
+owned analysis domains and independently checked derivations. Domain separation
+does not prove a total O(N) algorithm. Graph relations, alias analysis, BDDs,
+specialization and constraint solving have their own state spaces and costs.
 
----
+## 1. Identity, history and control outcomes
 
-## 1. Root Cause Diagnosis: Why Ad-Hoc Patching Fails
+### Distinguish kinds of identity
 
-Ril's language specification (`doc/SPEC.md`) is axiomatic and zero-slack: every capability, `Source` provenance, fixed dimension, loan, effect, resource duty, `Result` obligation, and termination contract is sound by construction.
+- Declarations, binders, patterns and types have canonical static identities.
+  A declaration identity does not require a runtime occurrence.
+- A value evaluation has its original HIR identity and an analysis occurrence
+  in an explicit activation/context. Repeated evaluations without an allocation
+  must still be distinguishable.
+- Solver revisions and worklist visits are not new program executions.
+  Allocation-recency cursors and resumption epochs are not occurrence IDs.
+- Loops and recursion use finite abstract contexts and justified summaries.
+  Do not enumerate an unbounded runtime trace or create new semantic identities
+  indefinitely merely because a solver revisits a node.
+- IDs are interpreted within their owning program/revision. Equal ordinals,
+  names, graph contents or source coordinates do not authenticate an identity.
 
-However, the legacy implementation in `crates/ril-compiler/src/sema/` grew by patching feature-pair interactions one by one, producing three structural bottlenecks:
+`Span` locates text for diagnostics and source-location queries. It must not be
+the primary key of semantic state, obligations or validation joins. Use the
+appropriate HIR/declaration ID and, where needed, its actual context/occurrence.
 
-1. **God-Object State & Combinatorial Side-Tables**
-   - `Checker` (`crates/ril-compiler/src/sema/checker.rs`) holds ~195 mutable fields across 80+ submodules.
-   - `SemanticFacts` (`crates/ril-compiler/src/sema.rs`) exports ~100 separate fact collections.
-   - Whenever feature $A$ (e.g., `Source` provenance or record bounds) interacts with construct $B$ (e.g., default arguments, channel sends, `with`/`resume` handlers, or closure captures), a bespoke side-ledger (`call_input_source_composites.rs`, `storage_input_source.rs`, `channel_repetition_validation.rs`, etc.) was added instead of routing both through a single algebraic boundary operator.
-2. **Span-Keyed Identity Collisions**
-   - Many working tables in `Checker` still index facts by raw source coordinates `(u32, u32, u32)` or `Span` (`sites`, `contextual_types`, `variant_projections`, `implicit_unwraps`, `type_contract_environments`, `result_sites`, `read_epochs`).
-   - A single syntax span can be evaluated multiple times across:
-     - Default parameter synthesis at distinct call sites,
-     - Generic and static specialization (`meta` / `type<T>`),
-     - Higher-order callback replay and loop fixed-point passes,
-     - Multi-shot or post-`resume` algebraic effect handler activations.
-   - Keying semantic state by `Span` overwrites earlier occurrences or forces fragile retroactive epoch rewriting (`allocation_epoch` history patching).
-3. **Split Type & Provenance Truth**
-   - Type and provenance representation is split across three layers:
-     1. Erased runtime shape `sema::model::Ty` (which drops `Source`, fixed array extents, and contextual row environments),
-     2. Legacy AST/string-keyed `SourceTypeWitness { syntax: TypeExpr, key: String }`,
-     3. The canonical graph arena `sema::source_types::SourceTypeIndex` (`SourceTypeId`).
-   - Reconstructing complete `Source` schemas from erased `Ty` or string keys at each validation site loses lexical binder identity (`ScopedSourceIdentityId`) and causes false positives/negatives across nested containers, tuples, closures, and `Result`/optional payloads.
+Generated syntax carries a typed origin and a real anchor. Catalog declarations
+have stable catalog identities. Neither gets authority from fabricated AST
+nodes with borrowed spans. Use `HirApplication` for actual call/pipeline roles
+and `BlockIndex` for block membership and tails.
 
----
+### Preserve history without freezing inference prematurely
 
-## 2. The Three Kernel Axioms
+An emitted observation's birth, context and recorded value remain immutable.
+Later reads, receiving views and epoch changes derive new views with explicit
+inputs and transitions; they do not rewrite historical observations.
 
-Every change to `crates/ril-compiler/src/sema/` must converge toward the following three axioms.
+A pending inference variable may acquire a checked solution in the constraint
+store. Preserve its original identity, context and dependencies. This is
+different from overwriting a previously observed value or replacing its Source
+with information guessed from a final erased type.
 
-```text
-                  +-----------------------------------------+
-                  |  Canonical HIR (HirProgram, BlockIndex) |
-                  |  + Immutable SourceTypeIndex            |
-                  +--------------------+--------------------+
-                                       |
-         Axiom I: (HirNodeId, ActivationEpochId) Occurrence Identity
-                                       v
-                  +-----------------------------------------+
-                  |   Monotone Abstract Machine (Domains)   |
-                  |  All 10 boundaries -> receive_boundary  |
-                  |  All control merges -> join_branches    |
-                  |  All epoch steps    -> transport_epoch  |
-                  +--------------------+--------------------+
-                                       |
-         Axiom II & III: Proof-Carrying Derivation Ledger
-                                       v
-                  +-----------------------------------------+
-                  |  Independent Certificate Validator      |
-                  |  validate::solved_facts -> VerifiedProgram
-                  +-----------------------------------------+
-```
+### Record actual outcomes
 
----
+An evaluation summary distinguishes its normal value from possible abrupt exits,
+suspensions and control transfers. These alternatives may coexist under different
+path conditions. Only the normal component can enter a normal value receiver.
 
-### Axiom I: Occurrence Identity Over Source Spans
+An interrupted argument/default prefix retains the operands actually evaluated
+and their effects and duties. It does not manufacture a constructor result,
+callee body entry or completed default. A resume request and a completed protected
+answer are distinct events. Do not substitute unit for an unavailable answer.
+`Ty::Never` alone is not an execution-outcome certificate.
 
-> **Rule 1.1 (Spans Are Diagnostic Only):** `Span` and `(u32, u32, u32)` locate source text for diagnostic rendering and source-location queries. They must **never** be used as primary keys in semantic state tables, obligation ledgers, or validation joins.
+## 2. One semantic value, with complete scoped types
 
-> **Rule 1.2 (Two-Level Identity):** Every semantic entity is uniquely identified by the product of its **Static Syntax Identity** and its **Dynamic Evaluation Occurrence**:
-> $$\text{OccurrenceId} = (\text{HirNodeId}, \text{ActivationEpochId})$$
+A canonical value descriptor links the following components:
 
-1. **Static Syntax Identity (`HirNodeId`):**
-   - Owned by `hir::nodes::HirProgram` (`ExprId`, `StmtId`, `PatternId`, `TypeExprId`, `GenericParamId`, `BlockAnchor` in `ril-compiler-core::ids`).
-   - Lowered/desugared constructs must carry explicit `hir::NodeOrigin::Generated { generation, anchor, kind }` or `NodeOrigin::Transformed`, never synthetic colliding spans.
-   - Structural block tails and statement memberships are queried from `hir::blocks::BlockIndex`, never by comparing byte offsets or inspecting raw AST slice suffixes.
-   - Unified calls and pipelines (`|>` / `!>`) are queried through `hir::application::HirApplication` (`EvaluationRole::Callee`, `EvaluationRole::Piped`, `EvaluationRole::Written(i)`), never by fabricating fake `ast::ExprKind::Call` nodes.
+| Component | Required information |
+| --- | --- |
+| Source/type view | Structural type, fixed dimensions, nominal identities, generic sorts, rows and public callable contracts |
+| Interpretation | Authenticated declarations, substitutions and frozen contexts needed by that view |
+| Heap/provenance | Origins, paths, correlations and formal loan participants |
+| Capability view | Access permissions, publication, construction eligibility and active borrow restrictions |
+| Recency/control | Birth and current epochs, protected answers and relevant continuation history |
+| Duties | Result inspection obligations, optional refinements, resources and channel state |
 
-2. **Dynamic Evaluation & Epoch Identity (`ActivationEpochId` / `EvaluationOccurrenceId`):**
-   - A single `ExprId` or `StmtId` evaluated in distinct activations (e.g., default parameter evaluation per call site, closure invocation per call context, handler arm pre-`resume` vs. post-`resume` epoch, loop iteration pass) receives a distinct, monotonically allocated occurrence record in the evaluation ledger (`sema::evaluation_identity`).
-   - **Historical Immutability:** An `ExpressionFact` or `AccessFact` is recorded at its birth `allocation_epoch`. When a value is read or retained in a later epoch (such as across a heap allocation, suspension, or `resume`), the checker must apply an explicit, pure `transport(value, from_epoch, to_epoch)` transition rather than mutating historical records in place.
+These components may be immutable handles into domain stores. They do not need
+to be copied into one giant struct. Each fact has one authoritative owner;
+indexes and caches derive from that owner and cannot become competing truth.
+Historical packets must retain the versions they actually observed.
 
----
+### Source is a graph, not an erased shape
 
-### Axiom II: Unified Abstract Value & Single Boundary Reception
+Complete Source information lives in a canonical finite graph. Recursive types
+and contracts may use justified backedges; algorithms must handle cycles with
+visited pairs, SCCs or other appropriate relations. An alias-only cycle is not
+evidence of a productive recursive type.
 
-> **Rule 2.1 (Single Value Representation):** Every evaluated expression at an occurrence yields a single algebraic value descriptor $\mathcal{V}$. Do not track a value's runtime type in one table, its `Source` coordinates in a second table, its record-bound environment in a third, and its `Result`/optional tags in a fourth.
+Type, Const, Key, row, effect and provider parameters keep their actual sorts and
+declaration identities. In particular, a Key coordinate is not a Type UID.
+Standard declarations use authenticated catalog identities rather than
+uninterpreted names borrowed from an arbitrary caller context.
 
-#### The Canonical Abstract Value Tuple
+Once a complete type view is available, runtime `Ty` is its consistent lossy
+projection. During inference, partial shapes and constraint variables are valid
+working information. They never authorize missing dimensions, Source
+coordinates, permissions or contracts. Do not reconstruct these from erased
+`Ty`, backing collection lengths, final heap contents or parsed witness keys.
+Original literals, declarations and certified static values are genuine ingress
+points; formatting a retained graph back into syntax is not a new origin.
 
-Every abstract value / storage slot in the semantic kernel is defined by:
+### Preserve each dependency's interpretation
 
-$$\mathcal{V} = \bigl(\tau_{\text{source}},\; \mathcal{E}_{\text{frozen}},\; \Pi_{\text{origins}},\; \mathcal{P}_{\text{perm}},\; \mathcal{R}_{\text{recency}},\; \mathcal{O}_{\text{duties}}\bigr)$$
+The physical evaluation context and a Source declaration/contract context are
+different coordinates. A record may contain closures from different legitimate
+declaration environments. Each scoped component must retain its own declaration
+references and interpretation; one convenient `FrozenEnvId` must not overwrite
+the interpretations of all children.
 
-| Component | Canonical Type / Store | Role |
-| :--- | :--- | :--- |
-| $\tau_{\text{source}}$ | `SourceTypeId` in `SourceTypeIndex` | Complete structural & provenance schema: retains `Source` coordinates, fixed array dimensions `[N]T`, parameter modes, generic binders, and callable signatures. `model::Ty` is strictly a derived projection of `SourceTypeId`. |
-| $\mathcal{E}_{\text{frozen}}$ | `FrozenEnvId` | Lexical contract environment captured at declaration/creation: binds generic parameters, qualified row bounds, static `meta` values, and `ScopedSourceIdentityId` roots. |
-| $\Pi_{\text{origins}}$ | `BTreeSet<OriginId>` + projection path | Abstract heap roots, formal loan anchors, and composite member/element coordinates reachable through this value. |
-| $\mathcal{P}_{\text{perm}}$ | `AccessMode` (`Own`, `Mut`, `Read`, `Immut`, `View`) | Current capability ceiling. Monotone under projection and assignment: `Read`, `View`, and `Immut` restrictions can **never** recover write authority. |
-| $\mathcal{R}_{\text{recency}}$ | `EpochId` + `ProtectedAnswerId` | Birth allocation epoch and handler/resumption epoch provenance for non-tail reference and temporary escape checking. |
-| $\mathcal{O}_{\text{duties}}$ | `DutyState` (`OptionalTagId`, `ResultSite`, `ResourceHandle`) | Uninspected `Result` obligations, optional tag refinements, linear resource cleanup duties, and channel state tokens. |
+Composition, instantiation and rebasing require explicit checked relationships.
+Equal environment contents or identical names do not establish those
+relationships. Later lexical initialization must not silently redefine an
+earlier declaration's captured interpretation.
 
-#### The Single Reception Morphism (`receive_boundary`)
+Keep separate judgments for:
 
-> **Rule 2.2 (Universal Boundary Transfer):** Ril has **10 value-receiving boundaries**. Every single boundary must execute the **same canonical transfer function** (`receive_boundary`) over $(\mathcal{V}_{\text{actual}}, \tau_{\text{formal\_view}}, \mathcal{E}_{\text{target}}, \text{BoundaryKind})$.
+1. Authenticating a particular declaration, occurrence, snapshot or recipe.
+2. Comparing semantic types/contracts under their authenticated interpretations.
+3. Checking receiving compatibility and capability/duty transitions.
 
-The 10 value-receiving boundaries are:
+Exact occurrence, context or node identity may be required by the first
+judgment without being the definition of semantic type equality. Conversely,
+semantic equality cannot authenticate an origin. A fully resolved closed graph
+can be equivalent across different environment IDs; an empty binder list alone
+does not make opaque names or textual contracts environment-independent.
 
-1. **Local Binding:** `let`, `var`, and destructuring `PatternId` bindings.
-2. **Explicit Application Input:** Call and pipeline operands (`HirApplication` roles `Piped` and `Written(i)`).
-3. **Default Parameter Instantiation:** Default argument expressions evaluated in the callee's frozen declaration environment at the caller's activation epoch.
-4. **Composite Construction:** Record fields, tuple slots, enum variant payloads, fixed-size array elements `[N]T`, and dynamic container admissions (`Vec`, `Map`, `Set`).
-5. **Storage Write / Mutation:** Reassignment (`x = v`) and interior/indexed mutation (`a[i] = v`, `r.f = v`). Writes check all possible target origins and install **only** the destination's declared view—a current mutable value never redefines its declaration's fixed view.
-6. **Environment Capture:** Function, closure (`ClosureSiteId`), iterator generator, and `with` handler environment captures.
-7. **Channel Transport:** Channel `send`, `recv`, `try_recv`, and `for msg in rx` iteration yields.
-8. **Effect & Resumption Transport:** Effect operation arguments, `resume(answer)` inputs, and protected computation receipts (`ProtectedAnswerId`).
-9. **Control-Flow Join & Block Tail:** `if`/`else`, `match` arms, `with` handler arms, and lexical block completions (`BlockIndex` tail vs. non-tail statement drops).
-10. **Callable Return & Publication:** `return expr`, function/lambda body tails, and module/static constant publications (`ConstRef`).
+### Represent incomplete knowledge honestly
 
-#### Invariants of `receive_boundary`
+Distinguish pending constraints, available information, unavailable evidence,
+invalid evidence, resource exhaustion and unreachable normal flow.
+A genuine symbolic binder is not an erroneous unknown type.
 
-When `receive_boundary` admits $\mathcal{V}_{\text{actual}}$ into target schema $(\tau_{\text{target}}, \mathcal{E}_{\text{target}})$:
+Solve relevant pending constraints before the use that requires them, or before
+final certification. An unrelated unresolved fact must not poison every value.
+If a required proposition remains unproved, reject that use or report the
+implementation limit. Never convert an error to absence, unknown to safety,
+exhausted work to success, or a missing capture to an exemption.
 
-1. **Recursive Structural Walk (Bounded by `work`):** It traverses $\tau_{\text{actual}}$ and $\tau_{\text{target}}$ in `SourceTypeIndex` simultaneously across records, tuples, arrays, optionals, `Result`, closures, and generic bounds—charging explicit `work` budget before every node expansion.
-2. **Provenance & Dimension Preservation:**
-   - Declared fixed dimensions (`[N]T`, including inner dimensions of empty outer arrays `[0][3]int`) are checked against $\tau_{\text{actual}}$ in `SourceTypeIndex`, never inferred from runtime backing slice length.
-   - Required `Source` coordinates and qualified record-bound member sources are verified or propagated uniformly whether the value arrives directly, inside a tuple/record/array/Result, via a default argument, or across a channel/`resume`.
-3. **Capability & Loan Transition:**
-   - Installs the target's frozen view without amplifying permissions.
-   - Records formal loans, suspension of parent borrows on reborrow, and recent-to-older epoch transport in one atomic step.
-4. **Duty Transfer:**
-   - Transfers or discharges `Result` inspection duties, `OptionalTagId` refinements, and linear resource handles.
+## 3. Shared operations and receiving coverage
 
-> **Corollary:** Never write a specialized `validate_channel_closure_result_source` or `check_default_arg_record_bound_composite`. If a `Source` or bound check fails across a channel or default argument, fix the missing `receive_boundary` call or projection rule in `SourceTypeIndex` so **all 10 boundaries** gain the capability simultaneously.
+Use a small shared algebra with explicit preconditions and conclusions:
 
----
+| Operation | Responsibility |
+| --- | --- |
+| Evaluate / construct | Produce actual value components and control outcomes |
+| Receive | Check a completed value against a receiver and install its lawful view |
+| Project | Select a constituent through an authenticated path and access view |
+| Instantiate / ascribe | Derive a selected or constrained view without restoring erased authority |
+| Copy / move / capture | Apply their distinct identity, aliasing and lifetime rules |
+| Join | Combine reachable alternatives while preserving correlations and pending obligations |
+| Transport | Derive an epoch/control view from actual history |
 
-### Axiom III: Monotone Fixed-Point Domains & Proof-Carrying Validation
+Receiving, joining and transporting are different operations. They share domain
+judgments and evidence formats; they do not replace one another.
+A default expression is evaluated before its result is received. A branch join
+does not itself prove a value was received.
 
-> **Rule 3.1 (Domain Decomposition):** Decompose `Checker` and `SemanticFacts` into five orthogonal domains with owned state and explicit finite-lattice interfaces.
+The following ten families form a coverage checklist, not ten identical
+instances of a unary operation:
 
-| Domain | Owned Responsibility | Lattice / Fixed-Point Mechanism |
-| :--- | :--- | :--- |
-| **1. `TypeSourceDomain`** | `SourceTypeIndex`, `FrozenEnvId`, generic substitutions, structural projections, `receive_boundary` compatibility, `NumericSelectionId` resolution. | Immutable DAG arena (`SourceTypeId`) + unification/constraint work queue with explicit `Unknown` poison lattice. |
-| **2. `HeapCapabilityDomain`** | `OriginId`, `AccessMode`, `LoanId`, closure exclusivity (`ClosureSiteId`), `EpochId` recency, deep-clone isolation vs. view aliasing. | Finite abstract heap graph $(\text{Origins} \times \text{Fields})$ with monotone permission meet and epoch-transport edges. |
-| **3. `ApplicationEffectDomain`** | `HirApplication` evaluation order, `EvaluationOccurrenceId` ledger, algebraic effect row propagation, `HandlerSiteId` and `ResumptionEpoch` transitions. | Call-graph SCC worklist (`sema::summary::close_invocation_dependencies`) + handler activation state lattice. |
-| **4. `ObligationDutyDomain`** | `Result` handling lattice, `OptionalTagId` boolean guard receipts, linear resource lifecycles, channel state/guard BDD observer. | Branch-sensitive path lattice: joins (`join_branches`) take the conservative intersection of proven facts and union of pending duties. |
-| **5. `TerminationBudgetDomain`** | Structural recursion proofs, lexicographic decrease measures, loop bounds, and compile-time `work` / static event budgets. | Call-graph Tarjan SCC analysis + measure matrix solver; strict pre-charge budget accounting. |
+1. Local bindings and destructuring.
+2. Supplied call and pipeline operands.
+3. Default parameter evaluation and formal binding.
+4. Records, tuples, variants, arrays and dynamic collection admissions.
+5. Slot replacement and interior storage mutation.
+6. Named/anonymous callable, iterator and handler captures.
+7. Channel sends, receives and yielded payloads.
+8. Effect arguments, resumption inputs and protected answers.
+9. Control-flow alternatives and lexical block completion/drop.
+10. Callable returns and module/static publication.
 
-> **Rule 3.2 (Producer vs. Independent Certificate Checker):**
-> `validate::solved_facts` (which gates construction of the private `VerifiedProgram` token required by Core lowering) must act as an **independent certificate verifier**, not a second copy of the type checker.
+Each family supplies its genuine source/receiver roles, context and outcome,
+then composes the common operations it needs. Necessary domain-specific
+receipts are allowed. Duplicated type, provenance or permission truth is not.
+Fixing a shared primitive benefits all consumers, but each adapter still needs
+its own coverage and validation.
 
-1. **No Self-Certifying Producer Flags:** A boolean flag set by `Checker` (e.g., `checked_record_bounds = true`) is **not** a proof.
-2. **Unified Certificate Checking:** Instead of 25 separate `validate_*` passes each re-walking ASTs and guessing how calls or bindings happened, the checker emits a compact **Boundary & Occurrence Ledger** indexed by `(HirNodeId, ActivationEpochId)`.
-3. **Total Occurrence Coverage:** The validator walks `HirProgram` (`BlockIndex`, `HirApplication`) and the `EvaluationOccurrenceId` ledger once, verifying that:
-   - Every static HIR node is covered by at least one well-formed static typing record,
-   - Every reachable dynamic evaluation occurrence (including defaults, generated pattern values, synthetic callbacks, and post-`resume` steps) has a valid `receive_boundary` certificate against its original `HirNodeId` and `ActivationEpochId`,
-   - Deleting or skipping any producer table causes validation to reject with an explicit missing-evidence error (`E9999` / internal verification failure) rather than silently passing.
+Receiving must preserve structural coordinates and install only the destination's
+declared view. Product and callable ascription must check actual constituents
+and body/probe evidence; copying an expected whole graph over unknown children
+is not a proof. Deferred callable inference must preserve the original birth
+and authenticate any later constrained current view.
 
----
+Permissions cannot be amplified through an existing restricted handle. A legal
+slot replacement, fresh copy or return of an existing parent loan has its own
+transition; the entire machine is not a single ever-decreasing permission field.
+An ended child/operation loan cannot be revived by resumption or by an unrelated
+alias. Duties transfer with values and control flow; only actual inspection,
+cleanup or another specified discharge rule can remove them.
 
-## 3. Strict Engineering Rules for Developers
+## 4. Solving domains and checking certificates
 
-When implementing features or fixing regressions in `crates/ril-compiler/`:
+Use owned domains with explicit interfaces and a shared identity vocabulary:
 
-### DO NOT (Forbidden Patterns)
-1. **Do not add new `Span`-keyed or `(u32, u32, u32)`-keyed maps** to `Checker` or `SemanticFacts`. Use `ExprId`, `StmtId`, `PatternId`, `TypeExprId`, `BlockAnchor`, or `(HirNodeId, EvaluationOccurrenceId)`.
-2. **Do not add feature-specific side ledgers** when a test fails at the intersection of two features. Ask:
-   - *Which of the 10 boundaries transmitted this value?*
-   - *Which component of $\mathcal{V} = (\tau_{\text{source}}, \mathcal{E}_{\text{frozen}}, \Pi_{\text{origins}}, \mathcal{P}_{\text{perm}}, \mathcal{R}_{\text{recency}}, \mathcal{O}_{\text{duties}})$ was dropped or reconstructed from erased `Ty`?*
-   Fix the representation in $\mathcal{V}$ or `receive_boundary` directly.
-3. **Do not parse or string-match `SourceTypeWitness.key`** to inspect types, dimensions, or `Source` sets. All structural queries must go through `SourceTypeIndex` (`crates/ril-compiler/src/sema/source_types/`).
-4. **Do not fabricate synthetic `ast::Expr` nodes with cloned spans** during semantic checking. Use `HirApplication` for call/pipeline views and `hir::NodeOrigin::Generated` for compiler-synthesized roots.
-5. **Do not silently default to "safe" when a proof is missing or a budget is exhausted.** In Ril, unknown overlap, unresolved generic/source identity, or exhausted `work` budget is always a conservative rejection or obligation failure, never a pass.
+| Domain | Responsibility |
+| --- | --- |
+| Type/Source | Type graphs, inference, substitutions, scoped contracts and numeric selection |
+| Heap/capability | Origins, access, loans, sharing, copies and recency |
+| Application/effect | Evaluation roles, callable entries, effects, handlers and resumptions |
+| Obligation/duty | Results, optionals, resources, channels and path-sensitive obligations |
+| Termination/budget | Descent, loop/call summaries and finite-evaluation coverage |
 
-### DO (Required Patterns)
-1. **Charge `work` budgets before allocation or traversal.** Every recursive walk over `HirProgram`, `SourceTypeIndex`, or abstract heap graphs must decrement a bounded `work: &mut usize` counter before enqueueing or cloning nodes.
-2. **Keep `BTreeMap` / `BTreeSet` deterministic ordering.** Compiler state, diagnostics, and IR lowering must be 100% deterministic across runs and platforms (`pointer32` and `pointer64`). Never use host `usize` for target layout calculations.
-3. **Preserve `AnalysisSnapshot` resilience for semantic introspection.** Failed or incomplete programs must still produce an uncertified `AnalysisSnapshot` with partial symbol/type/capability facts and `CauseId` chains, while only zero-error + validated programs can mint `VerifiedProgram`.
-4. **Delete superseded legacy code immediately after migrating a consumer.** Once a validation pass or checker routine moves to `HirProgram` / `SourceTypeIndex` / `receive_boundary`, delete the old span-based fallback in the same slice so dead state cannot drift.
+These domains interact. Their ownership boundaries do not imply mathematical
+independence. Exchange explicit constraints and reductions; do not make each
+domain reconstruct another domain's state.
 
----
+Each fixed-point computation defines its approximation order and convergence
+mechanism: finite height, bounded contexts, widening, restricted refinement or
+another justified method. Runtime transitions may start/end loans and change
+knowledge; monotonicity concerns the analysis order, not every state field.
+An implementation work limit is a resource guard, not a convergence proof or a
+proof of program termination.
 
-## 4. Kernel Completion Roadmap
+### Independent validation
 
-Follow this sequence to complete the kernel while shrinking `sema/`. The active tests and corpus define the remaining failures; historical checkpoint counts do not define acceptance.
+Only complete, validated analysis can produce `VerifiedProgram`. Failed or
+incomplete analysis still exposes an uncertified `AnalysisSnapshot`.
 
-### Phase 1: Complete `receive_boundary` Coverage Across All 10 Boundaries
-- Route all remaining ad-hoc source/bound checks (`record_bound_validation/call_input_source*.rs`, `storage_sources.rs`, `explicit_named.rs`, `channel_source_index.rs`) through the unified `(HirNodeId, EvaluationOccurrenceId)` observation index and `SourceTypeIndex`.
-- Ensure generated I/O callbacks, iterator state closures, channel `send`/`recv` payloads, and `with`/`resume` answer bindings (`ProtectedAnswerId`) emit standard boundary reception records in their actual activation epoch.
+The producer emits typed derivations with original inputs, roles, contexts,
+solutions and conclusions. The verifier checks their local premises and
+conclusions against original HIR, trusted catalog/static inputs and referenced
+history. Document those trusted inputs. Sharing pure graph relations,
+normalizers and derived indexes is appropriate; trusting producer success flags,
+rerunning inference, executing lambda bodies again or searching for missing
+evidence is not certificate checking.
 
-### Phase 2: Unify Non-Tail Reference & Resumption Epoch Transport
-- Use `hir::blocks::BlockIndex` and `ProtectedAnswerId` to separate:
-  1. Block tail expressions (which transfer to the enclosing block's receiver),
-  2. Non-tail statement expressions (which drop at the statement boundary while retaining any escaped loan/recency observations),
-  3. Protected `with` computation answers vs. handler arm continuations (`resume`).
-- Apply explicit `transport(value, from_epoch, to_epoch)` across suspension and resumption boundaries so post-`resume` reads/writes validate against the actual resumption epoch.
+Coverage follows original syntax, control flow and actual analysis contexts.
+Require evidence appropriate to each HIR/derivation role, including construction,
+projection, completion, transfer and summary use. Do not require every expression
+to have a receiving certificate. Check static/unreachable syntax according to
+SPEC; do not invent execution records for untaken paths. Loop and call summaries
+quantify over executions that are not individually enumerated.
 
-### Phase 3: Retire `SourceTypeWitness` String Keys & Span Working Tables
-- Replace remaining uses of `SourceTypeWitness { syntax, key }` in `Checker` and `SemanticFacts` with `(SourceTypeId, FrozenEnvId)`.
-- Migrate `Checker::sites`, `contextual_types`, `variant_projections`, `implicit_unwraps`, `result_sites`, and `read_epochs` from `(u32, u32, u32)` keys to `ExprId` / `(ExprId, EvaluationOccurrenceId)`.
+Deleting or corrupting required evidence must reject certification. Deleting
+an unused cache or irrelevant optional table need not reject a correct program.
+A ledger's mere presence, or an empty table, is not coverage.
 
-### Phase 4: Collapse `Checker` into the Five Domain Stores
-- Extract owned domain structs (`TypeSourceDomain`, `HeapCapabilityDomain`, `ApplicationEffectDomain`, `ObligationDutyDomain`, `TerminationBudgetDomain`) from `Checker`.
-- Reduce `Checker` to a thin coordinator that walks `HirProgram` and dispatches to the five domains and `validate::solved_facts`.
+## 5. Bounded and deterministic implementation
+
+- Charge shared implementation work before traversal, allocation and owned
+  copying. Failed speculative work still consumes its allowance. Cache hits
+  require the same original identities and versions as their inputs.
+- Account for visited nodes/edges, relevant graph pairs, contexts and certificate
+  size. Reuse indexes and shared immutable graphs instead of repeatedly scanning
+  whole fact collections. Do not hide repeated work by increasing quotas.
+- A shared arena identity does not prove that every immutable prefix snapshot
+  contains a later root. Authenticate inputs in their own snapshots before a
+  relational traversal or import.
+- Keep language `Div`/static evaluation event accounting separate from compiler
+  implementation work and memory limits.
+- Deterministic inputs and a fixed target must produce deterministic diagnostics
+  and IR. Use deterministic traversal and serialization. Pointer32 and pointer64
+  may legitimately produce different layout-dependent results; host `usize`
+  must not choose target layout.
+- Preserve original evidence when work is exhausted. Report the appropriate
+  missing-proof diagnostic or explicit implementation limit; do not mislabel
+  an implementation resource limit as a proved language violation.
+
+## 6. Execution order and completion criteria
+
+Migrate through end-to-end slices, not by enabling a new universal validator
+before its producers and protocols exist.
+
+1. **Define the contracts first.** Settle identity/context roles, finite recursive
+   graphs, pending knowledge, normal/control outcomes and birth/current views.
+   State the shared operations and evidence each requires.
+2. **Close common ingress and view transitions.** Cover declaration/catalog
+   types, actual operands, inference and callable/product ascription. Preserve
+   nested contexts and recursive graphs without witness-key round trips.
+3. **Migrate one coherent path at a time.** Connect producer, canonical value,
+   shared operation, independent verification and Core/runtime consumers.
+   Supply genuine generated inputs and control/epoch transitions in that slice.
+   Remove the superseded path when its consumers have moved.
+4. **Extend all receiving families.** Reuse the established operations across
+   storage, captures, defaults, channels, handlers, resumptions and publication.
+   Reconcile domain ownership as paths move; do not postpone it until every
+   legacy checker field has acquired a second representation.
+5. **Validate the complete compiler.** Preserve positive and negative cases,
+   original case identities and execution coverage. Check both pointer layouts,
+   Windows MSVC, Linux GNU and applicable native execution. Run bounded model
+   audits with their documented scope.
+
+A slice is complete only when its lawful programs work and its required
+rejections remain correct. Conservative rejection is necessary when proof is
+absent, but adding false rejections is not successful language implementation.
+Track changed failure sets, not only totals. Unknown, unimplemented, timeout,
+crash and empty selection are never passes.
+
+This roadmap supports completing the compiler under SPEC/STD. Completing a
+representation refactor, passing a focused suite, or renaming stores does not
+by itself complete either the kernel or the compiler.
