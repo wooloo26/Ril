@@ -52,6 +52,10 @@ fn nominal(declaration: super::standard_data::Nominal) -> p::SourceNominal {
         N::ProcessError => p::SourceNominal::ProcessError,
         N::IoErrorKind => p::SourceNominal::IoErrorKind,
         N::NumError => p::SourceNominal::NumError,
+        N::FileHandle => p::SourceNominal::FileHandle,
+        N::ProcessChild => p::SourceNominal::ProcessChild,
+        N::IoReadBuffer => p::SourceNominal::IoReadBuffer,
+        N::IoWriteBuffer => p::SourceNominal::IoWriteBuffer,
     }
 }
 

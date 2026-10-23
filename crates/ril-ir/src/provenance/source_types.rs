@@ -76,6 +76,10 @@ pub enum SourceNominal {
     ProcessError,
     IoErrorKind,
     NumError,
+    FileHandle,
+    ProcessChild,
+    IoReadBuffer,
+    IoWriteBuffer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

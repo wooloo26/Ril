@@ -48,7 +48,7 @@ impl Checker {
             Nominal::ProcessError,
         ] {
             let owner = declaration.name();
-            let typing_environment = self.capture_typing_environment();
+            let typing_environment = crate::sema::builtin_sources::catalog_environment().clone();
             for (variant, payload) in declaration.variants() {
                 let tag = format!("{owner}::{variant}");
                 self.constructors.insert(

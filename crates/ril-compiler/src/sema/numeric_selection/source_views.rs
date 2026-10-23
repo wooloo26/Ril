@@ -438,6 +438,21 @@ impl<'a, 'w> Replay<'a, 'w> {
                         .constructors
                         .get(name)
                         .ok_or(SourceTypesError::MissingNode)?;
+                    if constructor.tag != *name {
+                        return Err(SourceTypesError::Unresolved);
+                    }
+                    if let Some((owner, payload)) = self.graph_work(|work| {
+                        crate::sema::source_types::standard_data::constructor_sources(
+                            constructor,
+                            work,
+                        )
+                    })? {
+                        if !self.graph_work(|work| owner.equivalent(&schema, work))? {
+                            return Err(SourceTypesError::Unresolved);
+                        }
+                        schema = payload;
+                        continue;
+                    }
                     let view = constructor.source.ok_or(SourceTypesError::Unresolved)?;
                     let types = self.facts.source_types;
                     let (owner, environment) =

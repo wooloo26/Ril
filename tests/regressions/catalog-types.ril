@@ -1,0 +1,32 @@
+--@ case: nested-constructor-patterns
+--@ mode: run-pass
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ file: source.ril
+use ril/process
+fn nested(value: (Process::ExitStatus, { status: Process::ExitStatus })) -> bool {
+    value is (Process::ExitStatus::Signaled(-1), .{status: Process::ExitStatus::Exited(4294967295)})
+}
+pub fn test_native() {
+    let value = (Process::ExitStatus::Signaled(-1), .{status: Process::ExitStatus::Exited(4294967295u32)})
+    assert(nested(value))
+    assert(nested(value))
+    assert(!nested((Process::ExitStatus::Signaled(0), .{status: Process::ExitStatus::Exited(4294967295u32)})))
+}
+--@ end-file
+--@ end-case
+
+--@ case: constructor-pattern-overflow
+--@ mode: check-fail
+--@ spec: SPEC#numeric-literals
+--@ spec: SPEC#pattern-matching
+--@ companion: nested-constructor-patterns
+-- Error [E0326]: the catalog's u32 payload cannot adopt an int or u64 range.
+--@ file: source.ril
+use ril/process
+fn matches(value: Process::ExitStatus) -> bool {
+    value is Process::ExitStatus::Exited(4294967296)
+}
+--@ end-file
+--@ end-case

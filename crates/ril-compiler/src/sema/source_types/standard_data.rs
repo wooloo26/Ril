@@ -11,6 +11,10 @@ pub(crate) enum Nominal {
     ProcessError,
     IoErrorKind,
     NumError,
+    FileHandle,
+    ProcessChild,
+    IoReadBuffer,
+    IoWriteBuffer,
 }
 
 const UNIT: Schema = Scalar(SourceScalar::Unit);
@@ -60,6 +64,10 @@ impl Nominal {
             "Process::ProcessError" => Self::ProcessError,
             "Io::ErrorKind" => Self::IoErrorKind,
             "Num::NumError" => Self::NumError,
+            "File::Handle" => Self::FileHandle,
+            "Process::Child" => Self::ProcessChild,
+            "Io::ReadBuffer" => Self::IoReadBuffer,
+            "Io::WriteBuffer" => Self::IoWriteBuffer,
             _ => return None,
         })
     }
@@ -72,11 +80,18 @@ impl Nominal {
             Self::ProcessError => "Process::ProcessError",
             Self::IoErrorKind => "Io::ErrorKind",
             Self::NumError => "Num::NumError",
+            Self::FileHandle => "File::Handle",
+            Self::ProcessChild => "Process::Child",
+            Self::IoReadBuffer => "Io::ReadBuffer",
+            Self::IoWriteBuffer => "Io::WriteBuffer",
         }
     }
 
     pub(crate) fn variants(self) -> &'static [(&'static str, Option<Schema>)] {
         match self {
+            // Opaque handles have no public constructor or payload. This is
+            // declaration identity only; capabilities remain in their domain.
+            Self::FileHandle | Self::ProcessChild | Self::IoReadBuffer | Self::IoWriteBuffer => &[],
             Self::NumError => &[
                 ("InvalidSyntax", None),
                 ("OutOfRange", None),
@@ -144,11 +159,130 @@ pub(crate) fn constructor_payload(tag: &str) -> Option<(Nominal, Schema)> {
     Some((declaration, (*payload)?))
 }
 
+/// Authenticate a closed catalog declaration before exposing its owner/payload
+/// graphs. These constructors have no user HIR header; their authority comes
+/// from the catalog, not from their erased runtime shape or a caller's scope.
+pub(crate) fn constructor_sources(
+    constructor: &crate::sema::model::ConstructorInfo,
+    work: &mut WorkLimit,
+) -> Result<Option<(super::SourceSchema, super::SourceSchema)>, SourceTypesError> {
+    work.charge(1)?;
+    work.text(&constructor.tag)?;
+    let Some((declaration, payload)) = constructor_payload(&constructor.tag) else {
+        return Ok(None);
+    };
+    if !crate::sema::builtin_sources::is_catalog_environment(&constructor.typing_environment)
+        || constructor.nominal
+        || !constructor.has_payload
+        || !matches!(&constructor.owner, crate::sema::model::Ty::Named(name) if name == declaration.name())
+    {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let actual = constructor
+        .payload_syntax
+        .as_ref()
+        .ok_or(SourceTypesError::MissingNode)?;
+    let mut remaining = work.remaining();
+    let before = remaining;
+    let admitted = crate::static_eval::charge_type_syntax_clone(actual, &mut remaining)
+        .and_then(|()| crate::sema::clone_work::ty(&mut remaining, &constructor.payload, 0));
+    work.charge(before - remaining)?;
+    admitted.ok_or(SourceTypesError::BudgetExceeded)?;
+    if *actual != payload.syntax(constructor.span, work)? {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let (types, root) = payload.graph(work)?;
+    if constructor.payload != super::builtins::erased_type(&types, root, work)? {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let payload = super::SourceSchema::frozen_view(&types, root, None, work)?;
+    let (types, root) = Schema::Nominal(declaration).graph(work)?;
+    let owner = super::SourceSchema::frozen_view(&types, root, None, work)?;
+    Ok(Some((owner, payload)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sema::effect_identity::ArgumentKey;
     use crate::sema::source_types::{SourceBuilder, SourceSensitivity, SourceTypeQueries};
+
+    #[test]
+    fn catalog_constructor_projection_obeys_its_callers_work_limit() {
+        let program = crate::Session::new(
+            ril_test::case_bytes("tests/regressions/closed-standard-data.ril::closed-constructors")
+                .to_vec(),
+        )
+        .verify()
+        .unwrap();
+        let constructor = &program.facts().constructors["Process::ExitStatus::Exited"];
+        let mut work = WorkLimit::new(4096);
+        assert!(
+            constructor_sources(constructor, &mut work)
+                .unwrap()
+                .is_some()
+        );
+        let required = 4096 - work.remaining();
+        let mut exact = WorkLimit::new(required);
+        assert!(
+            constructor_sources(constructor, &mut exact)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(exact.remaining(), 0);
+        for short in [0, required - 1] {
+            assert!(matches!(
+                constructor_sources(constructor, &mut WorkLimit::new(short)),
+                Err(SourceTypesError::BudgetExceeded)
+            ));
+        }
+    }
+
+    #[test]
+    fn opaque_catalog_handles_are_distinct_closed_declarations() {
+        use super::super::SourceSchema;
+        let handles = [
+            Nominal::FileHandle,
+            Nominal::ProcessChild,
+            Nominal::IoReadBuffer,
+            Nominal::IoWriteBuffer,
+        ];
+        for handle in handles {
+            let mut work = WorkLimit::new(4096);
+            let key = ArgumentKey::Name {
+                name: handle.name().into(),
+                arguments: vec![],
+            };
+            let schema = SourceSchema::import(&key, None, &mut work).unwrap();
+            assert!(!schema.requires_environment(&mut work).unwrap());
+            for other in handles {
+                let (types, root) = Schema::Nominal(other).graph(&mut work).unwrap();
+                let other_schema =
+                    SourceSchema::frozen_view(&types, root, None, &mut work).unwrap();
+                assert_eq!(
+                    schema.equivalent(&other_schema, &mut work),
+                    Ok(handle == other)
+                );
+            }
+            let ArgumentKey::Name { name, .. } = key else {
+                unreachable!();
+            };
+            assert!(
+                SourceSchema::import(
+                    &ArgumentKey::Name {
+                        name,
+                        arguments: vec![ArgumentKey::Name {
+                            name: "int".into(),
+                            arguments: vec![],
+                        }],
+                    },
+                    None,
+                    &mut work,
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn closed_numeric_error_witness_retains_the_catalog_nominal_declaration() {
