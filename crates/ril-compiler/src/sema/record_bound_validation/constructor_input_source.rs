@@ -693,33 +693,22 @@ impl Replay<'_> {
                     context,
                     &mut input_work,
                 )?;
-                let actual = self.original_observed_source_schema_with_work(
+                let construction = self.contextual_construction_input(
                     actual_syntax,
                     token.expression,
                     context,
                     sites,
-                    &mut 16384,
+                    &mut input_work,
+                    0,
                 )?;
-                let fresh =
-                    source_reception::construction(actual_syntax, &mut 4096).ok_or_else(|| {
-                        "constructor source construction exceeds its replay budget".to_owned()
-                    })?;
-                let answer = if let Some(answer) = expected
-                    .empty_context(&fresh, &mut WorkLimit::new(4096))
-                    .map_err(|error| error.to_string())?
-                {
-                    answer
-                } else {
-                    let (actual, environment) =
-                        actual.ok_or("constructor operand has no original Source graph")?;
-                    require(
-                        !environment.is_poisoned(),
-                        "constructor operand Source environment is poisoned",
-                    )?;
-                    expected
-                        .receive_schema(&actual, Some(&fresh), &mut WorkLimit::new(16384))
-                        .map_err(|error| error.to_string())?
-                };
+                let answer = super::graph_sources::schema_work(&mut input_work, |budget| {
+                    crate::sema::source_construction::receives(
+                        expected,
+                        &constructor.typing_environment,
+                        &construction,
+                        budget,
+                    )
+                })?;
                 require(
                     answer,
                     "constructor original whole input source does not prove its declared payload coordinates",

@@ -53,6 +53,7 @@ pub mod result_conditions;
 pub mod resumption;
 pub mod scoped_source_identity;
 pub mod scopes;
+pub(crate) mod source_construction;
 pub(crate) mod source_query;
 pub(crate) mod source_reception;
 #[cfg(test)]

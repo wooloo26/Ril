@@ -107,8 +107,8 @@ duplicate source trees and historical verification reports.
   conditional/rest-pattern corpus.
   Stored uninstantiated constructor templates still need shared inference
   equations; lost receiving evidence must not become a type-mismatch claim.
-  Propagate original receiving Source into nested constructor operands,
-  including contextual empty arrays in `Ok`/`Some` payloads.
+  Complete constructor instance transport through primitive aliases and
+  automatically packed primitive payloads.
 - Complete the canonical abstract value, frozen environments, ten receiving
   boundaries and five domains. Replace remaining Span tables, erased-type
   reconstruction and legacy witnesses as their consumers migrate.

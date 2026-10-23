@@ -1,5 +1,31 @@
 //! Closed identities of polymorphic primitive declarations. Their Source
 //! schemes live in the semantic kernel; no user spelling introduces an ID.
+/// Payload positions of the sealed Option/Result language-item constructors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadConstructor {
+    Some,
+    Ok,
+    Err,
+}
+
+impl PayloadConstructor {
+    pub fn lookup(name: &str) -> Option<Self> {
+        Some(match name.strip_prefix("Prelude::").unwrap_or(name) {
+            "Some" => Self::Some,
+            "Ok" => Self::Ok,
+            "Err" => Self::Err,
+            _ => return None,
+        })
+    }
+    pub const fn projection(self) -> crate::projection::TypeProjection {
+        match self {
+            Self::Some => crate::projection::TypeProjection::OptionalPayload,
+            Self::Ok => crate::projection::TypeProjection::ResultSuccess,
+            Self::Err => crate::projection::TypeProjection::ResultError,
+        }
+    }
+}
+
 /// Sealed nullary language-item constructors. A template is instantiated at a
 /// receiving boundary; it is not a callable or an unknown payload value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

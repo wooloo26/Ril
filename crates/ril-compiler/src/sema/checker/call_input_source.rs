@@ -21,6 +21,8 @@ mod closure_sources;
 mod composites;
 #[path = "constructor_input_source.rs"]
 mod constructor_inputs;
+#[path = "contextual_construction.rs"]
+mod contextual_construction;
 #[path = "call_input_source_graph.rs"]
 mod graph_sources;
 #[path = "call_input_source_headers.rs"]
@@ -236,7 +238,7 @@ impl Checker {
             }
         }
     }
-    pub(super) fn remember_result_carrier(
+    pub(super) fn remember_constructor_carrier(
         &mut self,
         callee: &Value,
         value: &Value,
@@ -244,7 +246,7 @@ impl Checker {
         frame: &Frame,
     ) {
         if let Some(event) = event
-            && matches!(callee.callables.as_slice(),[Callable::Builtin(name)] if matches!(name.as_str(),"Ok"|"Err"|"Prelude::Ok"|"Prelude::Err"))
+            && matches!(callee.callables.as_slice(),[Callable::Builtin(name)] if ril_compiler_core::builtin_calls::PayloadConstructor::lookup(name).is_some())
         {
             self.call_input_source.carriers.insert(
                 value.cause.0,

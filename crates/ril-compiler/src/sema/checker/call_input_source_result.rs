@@ -2,9 +2,7 @@
 use super::*;
 use crate::hir::application::AstApplication;
 use crate::sema::{
-    effect_identity::StaticBinderSort,
-    record_bounds::BoundScope,
-    source_types::{SourceContainer, SourcePath},
+    effect_identity::StaticBinderSort, record_bounds::BoundScope, source_types::SourceContainer,
 };
 impl Checker {
     /// Resolve only the actual producing result's flexible leaves before the
@@ -17,8 +15,12 @@ impl Checker {
         source: Option<&source_reception::Target>,
         frame: &Frame,
     ) {
+        if let Some(target) = source {
+            self.prepare_contextual_constructor(syntax, value, expected, target, frame);
+        } else if let Some(expected) = expected {
+            self.prepare_scalar_result_context(syntax, value, expected, frame);
+        }
         let Some(expected) = expected else { return };
-        self.prepare_original_carrier_context(syntax, value, expected, source, frame);
         if AstApplication::from_ast(syntax).is_none()
             || self.pending_result_binders(value).is_empty()
         {
@@ -62,12 +64,11 @@ impl Checker {
         }
     }
 
-    fn prepare_original_carrier_context(
+    fn prepare_scalar_result_context(
         &mut self,
         syntax: &Expr,
         value: &mut Value,
         expected: &Ty,
-        source: Option<&source_reception::Target>,
         frame: &Frame,
     ) {
         let Some(application) = AstApplication::from_ast(syntax) else {
@@ -168,37 +169,22 @@ impl Checker {
             else {
                 return Ok(None);
             };
-            source_stage = "inactive receiving graph projection";
-            let inactive = if let Some(target) = source {
-                let Some(schema) = &target.schema else {
-                    return Ok(None);
-                };
-                let projection = if success {
-                    SourcePath::ResultError
-                } else {
-                    SourcePath::ResultSuccess
-                };
-                Some((
-                    schema.project_steps(&[projection], &mut work)?,
-                    target.environment.clone(),
-                ))
-            } else {
-                match expected_inactive.as_ref() {
-                    Ty::Unit | Ty::Bool | Ty::Str | Ty::Bytes | Ty::Int(_) | Ty::Float(_) => {
-                        let syntax = io_types::data_type(expected_inactive, syntax.span)
-                            .ok_or(SourceTypesError::Unresolved)?;
-                        let key = crate::static_eval::effects::bounded_argument_key(
-                            &syntax,
-                            &BTreeMap::new(),
-                        )
-                        .ok_or(SourceTypesError::BudgetExceeded)?;
-                        Some((
-                            SourceSchema::import(&key, None, &mut work)?,
-                            self.capture_typing_environment(),
-                        ))
-                    }
-                    _ => None,
+            source_stage = "inactive scalar declaration";
+            let inactive = match expected_inactive.as_ref() {
+                Ty::Unit | Ty::Bool | Ty::Str | Ty::Bytes | Ty::Int(_) | Ty::Float(_) => {
+                    let syntax = io_types::data_type(expected_inactive, syntax.span)
+                        .ok_or(SourceTypesError::Unresolved)?;
+                    let key = crate::static_eval::effects::bounded_argument_key(
+                        &syntax,
+                        &BTreeMap::new(),
+                    )
+                    .ok_or(SourceTypesError::BudgetExceeded)?;
+                    Some((
+                        SourceSchema::import(&key, None, &mut work)?,
+                        self.capture_typing_environment(),
+                    ))
                 }
+                _ => None,
             };
             let Some((inactive_schema, inactive_environment)) = inactive else {
                 return Ok(None);
@@ -322,7 +308,7 @@ impl Checker {
         )
     }
 
-    fn attach_result_graph_witness(
+    pub(super) fn attach_result_graph_witness(
         &mut self,
         schema: &SourceSchema,
         value: &mut Value,

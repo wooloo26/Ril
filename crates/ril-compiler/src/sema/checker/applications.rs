@@ -56,6 +56,7 @@ impl Checker {
         &mut self,
         application: &AstApplication<'_>,
         expected: Option<&Ty>,
+        source: Option<&crate::sema::source_reception::Target>,
         frame: &mut Frame,
     ) -> (Value, CopyCallEventId) {
         let event = self.reserve_copy_call_event(application.root, frame);
@@ -71,7 +72,7 @@ impl Checker {
         }
         let original_scope_arguments = self.immediate_scope_arguments.clone();
         let preparation = self.call_arguments.len();
-        let result = self.evaluate_application_packet(application, expected, frame, event);
+        let result = self.evaluate_application_packet(application, expected, source, frame, event);
         self.immediate_scope_arguments = original_scope_arguments;
         match result {
             Ok(result) => result,
@@ -97,6 +98,7 @@ impl Checker {
         &mut self,
         application: &AstApplication<'_>,
         expected: Option<&Ty>,
+        source: Option<&crate::sema::source_reception::Target>,
         frame: &mut Frame,
         event: CopyCallEventId,
     ) -> Result<(Value, CopyCallEventId), SourceTypesError> {
@@ -258,6 +260,18 @@ impl Checker {
                     );
                     if application.kind == ApplicationKind::Call {
                         source_contexts = self.call_argument_source_contexts(value, event);
+                        if application.operands.len() == 1
+                            && let [Callable::Builtin(name)] = value.callables.as_slice()
+                            && let Some(constructor) =
+                                ril_compiler_core::builtin_calls::PayloadConstructor::lookup(name)
+                            && let Some(target) = source
+                        {
+                            match super::source_receiving::constructor_payload_target(target, constructor.projection(), application.operands[0].span) {
+                                Ok(Some(target)) => source_contexts = vec![Some(target)],
+                                Ok(None) => {},
+                                Err(error) => self.unsupported(application.span, format!("constructor operand context could not be projected: {error}")),
+                            }
+                        }
                         contexts = self.numeric_argument_contexts(
                             value,
                             &application.operands,

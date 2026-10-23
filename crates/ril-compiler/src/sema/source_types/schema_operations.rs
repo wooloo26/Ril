@@ -1,6 +1,7 @@
 //! Graph-only construction and observation. New roots are frozen atomically;
 //! repeated children from one source arena retain one shared copy mapping.
 use super::*;
+use crate::sema::context::FrozenEnvironment;
 use crate::sema::{copy_contract::CopyMode, source_reception::Construction};
 use ril_syntax::ast::ParameterMode;
 use std::collections::{BTreeMap, BTreeSet};
@@ -351,6 +352,26 @@ impl SourceSchema {
             &actual.types,
             actual.root,
             fresh,
+            work,
+        )
+    }
+
+    /// Receiving under each operand's original lexical interpretation.
+    pub(crate) fn receive_schema_in(
+        &self,
+        actual: &Self,
+        expected_environment: &FrozenEnvironment,
+        actual_environment: &FrozenEnvironment,
+        fresh: Option<&Construction>,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        super::super::reception::receive_from_in(
+            &self.types,
+            self.root,
+            &actual.types,
+            actual.root,
+            fresh,
+            Some((expected_environment, actual_environment)),
             work,
         )
     }

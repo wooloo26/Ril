@@ -607,6 +607,63 @@ fn failed_projection_target(target: &Target, span: Span) -> Target {
     }
 }
 
+/// Project the receiving language-item payload without reinterpreting its
+/// declaration in the callee's or a later operand's environment.
+pub(super) fn constructor_payload_target(
+    target: &Target,
+    step: crate::sema::source_types::SourcePath,
+    span: Span,
+) -> Result<Option<Target>, crate::sema::source_types::SourceTypesError> {
+    use crate::sema::source_types::{SourcePath, SourceTypesError, WorkLimit};
+    if target.environment.is_poisoned() {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let Some(schema) = &target.schema else {
+        return Err(SourceTypesError::Unresolved);
+    };
+    let mut work = WorkLimit::new(16384);
+    let schema = match schema.project_steps(std::slice::from_ref(&step), &mut work) {
+        Ok(schema) => schema,
+        Err(SourceTypesError::MissingProjection) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let source = target
+        .source
+        .as_ref()
+        .map(|source| source.projected(step.clone(), &mut work))
+        .transpose()?;
+    let syntax = target
+        .syntax
+        .as_ref()
+        .and_then(|syntax| match (&syntax.kind, &step) {
+            (TypeKind::Optional(inner), SourcePath::OptionalPayload) => {
+                Some(Arc::new((**inner).clone()))
+            }
+            (TypeKind::Name { path, arguments }, projection) => {
+                let name = path.join("::");
+                let name = name.strip_prefix("Prelude::").unwrap_or(&name);
+                let index = match (name, projection) {
+                    ("Option", SourcePath::OptionalPayload) if arguments.len() == 1 => 0,
+                    ("Result", SourcePath::ResultSuccess) if arguments.len() == 2 => 0,
+                    ("Result", SourcePath::ResultError) if arguments.len() == 2 => 1,
+                    _ => return None,
+                };
+                Some(Arc::new(arguments[index].clone()))
+            }
+            _ => None,
+        });
+    Ok(Some(Target {
+        source,
+        static_projection: None,
+        environment: target.environment.clone(),
+        span,
+        sensitivity: graph_sensitivity(&schema),
+        schema: Some(schema),
+        syntax,
+        empty_array_context: None,
+    }))
+}
+
 pub(super) fn graph_sensitivity(
     schema: &crate::sema::source_types::SourceSchema,
 ) -> SchemaSensitivity {

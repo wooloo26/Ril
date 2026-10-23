@@ -203,10 +203,11 @@ impl Checker {
         if arguments.len() == 1
             && let [Callable::Builtin(name)] = callee.callables.as_slice()
         {
-            let payload = match (name.as_str(), expected_result) {
-                ("Some" | "Prelude::Some", Some(Ty::Optional(payload))) => Some(&**payload),
-                ("Ok" | "Prelude::Ok", Some(Ty::Result(ok, _))) => Some(&**ok),
-                ("Err" | "Prelude::Err", Some(Ty::Result(_, error))) => Some(&**error),
+            use ril_compiler_core::builtin_calls::PayloadConstructor;
+            let payload = match (PayloadConstructor::lookup(name), expected_result) {
+                (Some(PayloadConstructor::Some), Some(Ty::Optional(payload))) => Some(&**payload),
+                (Some(PayloadConstructor::Ok), Some(Ty::Result(ok, _))) => Some(&**ok),
+                (Some(PayloadConstructor::Err), Some(Ty::Result(_, error))) => Some(&**error),
                 _ => None,
             };
             if let Some(payload) = payload {

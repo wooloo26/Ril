@@ -1340,7 +1340,13 @@ impl Checker {
                         }
                         return self.derive_value(value, observation, recipe, expr.span, frame);
                     }
-                    return self.application_expression(expr, expected, frame, source_call_event);
+                    return self.application_expression(
+                        expr,
+                        expected,
+                        source,
+                        frame,
+                        source_call_event,
+                    );
                 }
                 let tag_test = matches!(operator.as_str(), "==" | "!=")
                     && (narrowing::is_none(left, frame) || narrowing::is_none(right, frame));
@@ -1793,7 +1799,7 @@ impl Checker {
                 value
             }
             ExprKind::Call { .. } => {
-                self.application_expression(expr, expected, frame, source_call_event)
+                self.application_expression(expr, expected, source, frame, source_call_event)
             }
             ExprKind::IfLet {
                 pattern,
@@ -2746,6 +2752,7 @@ impl Checker {
         &mut self,
         syntax: &Expr,
         expected: Option<&Ty>,
+        source: Option<&crate::sema::source_reception::Target>,
         frame: &mut Frame,
         source_call_event: &mut Option<super::super::copy_contract::CopyCallEventId>,
     ) -> Value {
@@ -2753,7 +2760,7 @@ impl Checker {
             self.unsupported(syntax.span, "application has no bounded source structure");
             return self.unit(syntax.span);
         };
-        let (value, event) = self.evaluate_application(&application, expected, frame);
+        let (value, event) = self.evaluate_application(&application, expected, source, frame);
         *source_call_event = Some(event);
         value
     }

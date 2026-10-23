@@ -1,6 +1,8 @@
-//! Reconstruct carrier graphs from the physical active operand. Only the
-//! branch which did not execute may come from an original receiving header.
+//! Reconstruct carrier graphs from actual operand observations. A receiver
+//! may instantiate an active fresh construction only after shared receiving;
+//! it supplies the inactive branch without inventing a payload observation.
 use super::*;
+use crate::sema::source_construction::{self, Input, Literal};
 use crate::sema::source_types::{SourceContainer, SourcePath};
 use ril_syntax::ast::RecordMember;
 
@@ -18,6 +20,69 @@ struct ReceivingOccurrence<'a> {
 }
 
 impl Replay<'_> {
+    pub(in crate::sema::record_bound_validation) fn contextual_construction_input(
+        &self,
+        syntax: &Expr,
+        observation: usize,
+        context: InvocationContext,
+        sites: &super::super::explicit_named::SourceSites<'_>,
+        work: &mut usize,
+        depth: usize,
+    ) -> Check<Input> {
+        source_scan_work(work, 3)?;
+        require(
+            depth < 64,
+            "contextual construction exceeds its nesting bound",
+        )?;
+        let fact = self
+            .facts
+            .expressions
+            .get(observation)
+            .ok_or("contextual construction lost its physical input")?;
+        let root =
+            self.original_source_root(syntax, &fact.value, context, Some(observation), work)?;
+        let source = self.original_source_schema_inner(
+            syntax,
+            &fact.value,
+            context,
+            sites,
+            work,
+            SourceVisit {
+                depth,
+                observation: Some(observation),
+            },
+        )?;
+        let fresh = source_reception::construction(syntax, work)
+            .ok_or("contextual construction exceeded its syntax work bound")?;
+        let literal = if source.is_some() {
+            Literal::Opaque
+        } else {
+            super::graph_sources::schema_work(work, |budget| {
+                source_construction::literal_plan(syntax, budget)
+            })?
+            .try_map(|child| {
+                let child_source = child
+                    .hir_id
+                    .ok_or("contextual construction child has no original HIR")?;
+                let child_observation =
+                    self.source_child_observation(root, child_source, context, work)?;
+                self.contextual_construction_input(
+                    child,
+                    child_observation,
+                    context,
+                    sites,
+                    work,
+                    depth + 1,
+                )
+            })?
+        };
+        Ok(Input {
+            source,
+            fresh,
+            literal,
+        })
+    }
+
     fn source_occurrence_encloses(
         &self,
         outer: usize,
@@ -161,6 +226,34 @@ impl Replay<'_> {
         )?;
         self.input_operand_interval(event, 0, token.expression, context, work)?;
         let result = &self.facts.expressions[root].value;
+        require(
+            result.callables.is_empty()
+                && result.signature.is_none()
+                && result.callable_bounds.is_empty()
+                && result.callable_returns.is_empty()
+                && result.variant_tag.is_none()
+                && result.variant_payload.is_none()
+                && result.variant_witnesses.is_empty(),
+            "constructor Source retained an unrelated payload interface on its carrier",
+        )?;
+        if identity == "Some" {
+            require(
+                result.result_tag.is_none()
+                    && result.result_payload.is_none()
+                    && result.result_success.is_none()
+                    && result.result_error.is_none()
+                    && result.outer_results.is_empty()
+                    && result.must_outer_results.is_empty(),
+                "Some Source retained unrelated Result carrier metadata",
+            )?;
+        } else {
+            require(
+                result.option_tag.is_none()
+                    && result.option_identity.is_none()
+                    && result.option_payload.is_none(),
+                "Result Source retained unrelated optional carrier metadata",
+            )?;
+        }
         let payload = match identity {
             "Some" => {
                 require(
@@ -235,20 +328,33 @@ impl Replay<'_> {
             return Ok(None);
         };
         let application = AstApplication::from_ast(expression).unwrap();
-        let actual = &self.facts.expressions[carrier.operand];
-        let Some(active) = self.original_source_schema_inner(
+        let input = self.contextual_construction_input(
             application.operands[0].expression,
-            &actual.value,
+            carrier.operand,
             context,
             sites,
             work,
-            SourceVisit {
-                depth: visit.depth + 1,
-                observation: Some(carrier.operand),
-            },
-        )?
-        else {
-            return Ok(Some(None));
+            visit.depth + 1,
+        )?;
+        let receiver =
+            self.producing_receiver_schema(expression, root, context, sites, work, visit.depth)?;
+        let active = if let Some((receiver, environment)) = &receiver {
+            let expected = super::graph_sources::schema_work(work, |budget| {
+                receiver.project_steps(std::slice::from_ref(&carrier.projection), budget)
+            })?;
+            let fits = super::graph_sources::schema_work(work, |budget| {
+                source_construction::receives(&expected, environment, &input, budget)
+            })?;
+            require(
+                fits,
+                "constructor Source changed its received active payload",
+            )?;
+            (expected, environment.clone())
+        } else {
+            let Some(active) = input.source else {
+                return Ok(Some(None));
+            };
+            active
         };
         if carrier.projection == SourcePath::OptionalPayload {
             let schema = super::graph_sources::schema_work(work, |budget| {
@@ -261,9 +367,7 @@ impl Replay<'_> {
             })?;
             return Ok(Some(Some((schema, active.1))));
         }
-        let Some((receiver, receiver_environment)) =
-            self.producing_receiver_schema(expression, root, context, sites, work, visit.depth)?
-        else {
+        let Some((receiver, receiver_environment)) = receiver else {
             return Ok(Some(None));
         };
         let success = carrier.projection == SourcePath::ResultSuccess;

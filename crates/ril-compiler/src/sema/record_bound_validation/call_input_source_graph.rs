@@ -795,17 +795,13 @@ impl Replay<'_> {
                 "typed record Source changed its actual member order",
             )?;
             previous = Some(observation);
-            let actual = &self.facts.expressions[observation];
-            let source = self.original_source_schema_inner(
+            let input = self.contextual_construction_input(
                 child,
-                &actual.value,
+                observation,
                 context,
                 sites,
                 work,
-                SourceVisit {
-                    depth: visit.depth + 1,
-                    observation: Some(observation),
-                },
+                visit.depth + 1,
             )?;
             if let Some(label) = label {
                 *work = work
@@ -815,15 +811,14 @@ impl Replay<'_> {
                     expected_labels.contains(label),
                     "typed record member is absent from its original declaration",
                 )?;
-                let fresh = source_reception::construction(child, work)
-                    .ok_or("typed record construction exceeded its work bound")?;
                 require(
-                    supplied.insert(label.clone(), (source, fresh)).is_none(),
+                    supplied.insert(label.clone(), input).is_none(),
                     "typed record Source repeats an explicit member",
                 )?;
             } else {
-                let (spread, spread_environment) =
-                    source.ok_or("typed record spread has no original Source graph")?;
+                let (spread, spread_environment) = input
+                    .source
+                    .ok_or("typed record spread has no original Source graph")?;
                 let labels = schema_work(work, |budget| spread.closed_record_labels(budget))?;
                 for label in labels {
                     *work = work
@@ -844,10 +839,11 @@ impl Replay<'_> {
                         supplied
                             .insert(
                                 label,
-                                (
-                                    Some((field, spread_environment.clone())),
-                                    source_reception::Construction::Opaque,
-                                ),
+                                crate::sema::source_construction::Input {
+                                    source: Some((field, spread_environment.clone())),
+                                    fresh: source_reception::Construction::Opaque,
+                                    literal: crate::sema::source_construction::Literal::Opaque,
+                                },
                             )
                             .is_none(),
                         "typed record Source repeats a spread member",
@@ -859,7 +855,7 @@ impl Replay<'_> {
             supplied.len() == expected_labels.len(),
             "typed record Source lost an original declared member",
         )?;
-        for (label, (actual, fresh)) in supplied {
+        for (label, input) in supplied {
             let expected = schema_work(work, |budget| {
                 schema.project_steps(
                     &[crate::sema::source_types::SourcePath::Field(label)],
@@ -873,24 +869,14 @@ impl Replay<'_> {
                 }
                 crate::sema::source_types::SourceSensitivity::Sensitive { .. } => {}
             }
-            if let Some(answer) =
-                schema_work(work, |budget| expected.empty_context(&fresh, budget))?
-            {
-                require(
-                    answer,
-                    "typed record empty member differs from its original declaration",
-                )?;
-                continue;
-            }
-            let (actual, actual_environment) =
-                actual.ok_or("typed record member has no original Source graph")?;
-            require(
-                !actual_environment.is_poisoned(),
-                "typed record member lost its frozen interpretation",
-            )?;
             require(
                 schema_work(work, |budget| {
-                    expected.receive_schema(&actual, Some(&fresh), budget)
+                    crate::sema::source_construction::receives(
+                        &expected,
+                        &environment,
+                        &input,
+                        budget,
+                    )
                 })?,
                 "typed record member differs from its original Source declaration",
             )?;

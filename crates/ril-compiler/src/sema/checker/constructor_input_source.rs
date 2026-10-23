@@ -376,10 +376,23 @@ impl Checker {
                     if !same? {
                         return Err(SourceTypesError::Unresolved);
                     }
-                    input_compatible(
+                    let source = input
+                        .packet
+                        .birth_coordinates()
+                        .identity
+                        .ok_or(SourceTypesError::MissingNode)?
+                        .source;
+                    let construction = self.contextual_construction_input(
+                        source,
+                        &input.packet,
+                        frame,
+                        &mut input_work,
+                        0,
+                    )?;
+                    crate::sema::source_construction::receives(
                         target.schema.as_ref().ok_or(SourceTypesError::Unresolved)?,
-                        input,
-                        SourceTypesRef::Live(self.type_source.storage.live_types()),
+                        &target.environment,
+                        &construction,
                         &mut input_work,
                     )
                 });

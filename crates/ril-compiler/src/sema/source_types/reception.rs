@@ -251,7 +251,9 @@ fn compare(
         },
     ) = (left, right)
     {
-        if let Some(contexts) = annotations {
+        if let Some(contexts) = annotations
+            && !(position == Position::Receiving && left.is_empty())
+        {
             match super::annotation_identity::equivalent(
                 left,
                 contexts.left,
@@ -259,7 +261,15 @@ fn compare(
                 contexts.right,
                 work,
             )? {
-                super::annotation_identity::RowEquality::Known(false) => return Ok(false),
+                super::annotation_identity::RowEquality::Known(false) => {
+                    return if position == Position::Receiving {
+                        // A receiving row is an upper bound. Its satisfaction needs
+                        // the callable contract derivation, not row equality.
+                        Err(SourceTypesError::Unresolved)
+                    } else {
+                        Ok(false)
+                    };
+                }
                 super::annotation_identity::RowEquality::Known(true) => {}
                 super::annotation_identity::RowEquality::Original => {
                     let (Some(left_row), Some(right_row)) = (left_row, right_row) else {
@@ -273,7 +283,11 @@ fn compare(
                         || left_row.origin != right_row.origin
                         || left_row.parameters.len() != right_row.parameters.len()
                     {
-                        return Ok(false);
+                        return if position == Position::Receiving {
+                            Err(SourceTypesError::Unresolved)
+                        } else {
+                            Ok(false)
+                        };
                     }
                     for ((left_id, left), (right_id, right)) in
                         left_row.parameters.iter().zip(&right_row.parameters)
@@ -614,6 +628,27 @@ pub(crate) fn receive_from(
     fresh: Option<&Construction>,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {
+    receive_from_in(
+        expected_graph,
+        expected,
+        actual_graph,
+        actual,
+        fresh,
+        None,
+        work,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn receive_from_in(
+    expected_graph: &impl SourceTypeQueries,
+    expected: SourceTypeId,
+    actual_graph: &impl SourceTypeQueries,
+    actual: SourceTypeId,
+    fresh: Option<&Construction>,
+    environments: Option<(&FrozenEnvironment, &FrozenEnvironment)>,
+    work: &mut WorkLimit,
+) -> Result<bool, SourceTypesError> {
     // Each root and all its edges belong to its own immutable prefix. Only
     // after that check may the relational walk see the union of two prefixes.
     complete(expected_graph, expected, work)?;
@@ -630,7 +665,7 @@ pub(crate) fn receive_from(
         ReceptionState {
             work,
             seen: &mut BTreeSet::new(),
-            annotations: None,
+            annotations: environments.map(|(left, right)| AnnotationContexts { left, right }),
         },
         0,
     )

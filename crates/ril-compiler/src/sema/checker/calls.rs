@@ -475,7 +475,7 @@ impl Checker {
                 self.unsupported(span,"empty-map key inference through this callable result requires an explicit type context");
             }
         }
-        self.remember_result_carrier(callee, &value, copy_call_event, frame);
+        self.remember_constructor_carrier(callee, &value, copy_call_event, frame);
         value
     }
     pub(super) fn named_invocation_summary(
