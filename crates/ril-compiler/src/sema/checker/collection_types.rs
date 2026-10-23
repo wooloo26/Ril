@@ -200,7 +200,12 @@ impl Checker {
             Ty::Immutable(inner) => *inner,
             ty => ty,
         };
-        let mut selected = fallback;
+        self.refine_storage_type(value, fallback)
+    }
+
+    /// Storage constraints may fill holes in a view, but cannot replace an
+    /// already selected child identity with its inference representation.
+    pub(super) fn refine_storage_type(&self, value: &Value, mut selected: Ty) -> Ty {
         for node in &value.origins.nodes {
             if let Some(ty) = self.storage_types.get(node) {
                 selected = join_type_holes(&selected, ty);
@@ -273,5 +278,33 @@ impl Checker {
             _ => return,
         };
         self.constrain_collection_type(source, &inferred, span);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_refinement_fills_holes_without_expanding_known_child_views() {
+        let mut checker = Checker::new(FileId(0));
+        let node = NodeId(0);
+        let packet = Ty::Named("Packet".into());
+        let known = Ty::Array(Box::new(Ty::Optional(Box::new(packet.clone()))));
+        let value = Value::reference(known.clone(), node, CauseId(0));
+        checker.storage_types.insert(
+            node,
+            Ty::Array(Box::new(Ty::Optional(Box::new(Ty::Record(
+                [("id".into(), (false, Ty::Int("int".into())))].into(),
+            ))))),
+        );
+        assert_eq!(checker.refine_storage_type(&value, known.clone()), known);
+        let hole = Ty::Array(Box::new(Ty::Unknown));
+        checker.storage_types.insert(node, known.clone());
+        assert_eq!(checker.refine_storage_type(&value, hole), known);
+        assert_eq!(
+            checker.refine_storage_type(&value, Ty::Array(Box::new(packet.clone()))),
+            Ty::Array(Box::new(packet))
+        );
     }
 }

@@ -49,4 +49,85 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn projected_optional_views_cannot_replace_their_original_tag_payload_identity() {
+        use crate::hir::nodes::ExprKind;
+        use crate::sema::validate::{ValidationIssueKind, solved_facts};
+        for target in ["pointer32", "pointer64"] {
+            let source = ril_test::case_source(
+                "tests/regressions/projection-views.ril::optional-child-views-pointer64",
+            );
+            let program = crate::Session::with_options(
+                source.as_bytes().to_vec(),
+                crate::CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
+                },
+            )
+            .verify()
+            .unwrap_or_else(|error| panic!("{target}: {error:?}"));
+            let facts = program.facts();
+            let hir = facts.semantic_hir.as_deref().unwrap();
+            let (projection, identity) = facts
+                .expressions
+                .iter()
+                .enumerate()
+                .find_map(|(index, expression)| {
+                    let source = expression.source_id?;
+                    if !matches!(
+                        hir.expression(source)?.kind,
+                        ExprKind::Field { .. } | ExprKind::Index { .. }
+                    ) {
+                        return None;
+                    }
+                    let Ty::Optional(inner) = &expression.value.ty else {
+                        return None;
+                    };
+                    matches!(&**inner, Ty::Named(_))
+                        .then_some((index, expression.value.option_identity?))
+                })
+                .expect("a real projection must retain its declared optional child");
+            let expanded = Ty::Record([("id".into(), (false, Ty::Int("int".into())))].into());
+            for mutation in 0..5 {
+                let mut changed = facts.clone();
+                match mutation {
+                    0 => {
+                        changed.expressions[projection]
+                            .value
+                            .corrupt_value(&mut 4_000_000)
+                            .unwrap()
+                            .ty = Ty::Optional(Box::new(expanded.clone()));
+                    }
+                    1 => {
+                        changed.expressions[projection]
+                            .value
+                            .corrupt_value(&mut 4_000_000)
+                            .unwrap()
+                            .option_payload
+                            .as_mut()
+                            .unwrap()
+                            .ty = expanded.clone();
+                    }
+                    2 => changed.optional_tags[identity.0 as usize].payload_type = expanded.clone(),
+                    3 => {
+                        changed.expressions[projection]
+                            .value
+                            .corrupt_value(&mut 4_000_000)
+                            .unwrap()
+                            .option_identity = Some(OptionalTagId(u32::MAX));
+                    }
+                    _ => changed.optional_tags[identity.0 as usize].id = OptionalTagId(u32::MAX),
+                }
+                let issues = solved_facts(&changed).expect_err("a changed tag must be rejected");
+                assert!(
+                    issues.iter().any(|issue| matches!(
+                        issue.kind,
+                        ValidationIssueKind::InvalidOptionalTag(..)
+                    )),
+                    "{target} mutation {mutation}: {issues:?}"
+                );
+            }
+        }
+    }
 }

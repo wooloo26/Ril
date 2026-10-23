@@ -1188,8 +1188,9 @@ mod tests {
             })
             .unwrap();
             assert_eq!(
-                graph_sources::schema_work(&mut 4096, |work| inactive.runtime_type(work)).unwrap(),
-                Ty::Str
+                graph_sources::schema_work(&mut 4096, |work| inactive.scalar_representation(work))
+                    .unwrap(),
+                Some(crate::sema::source_types::SourceScalar::Str)
             );
             for mutation in 0..8 {
                 let mut changed = facts.clone();

@@ -103,8 +103,8 @@ duplicate source trees and historical verification reports.
   optional-value and Array combinators, then remove their duplicated checker,
   static evaluator, HOF lowering and runtime implementations.
 - Complete shared receiving for callable upper bounds and absent constructors,
-  preserve original child type views during projection, and finish window graph
-  copying. These gaps remain exposed by the conditional/rest-pattern corpus.
+  and finish window graph copying. These gaps remain exposed by the
+  conditional/rest-pattern corpus.
 - Complete the canonical abstract value, frozen environments, ten receiving
   boundaries and five domains. Replace remaining Span tables, erased-type
   reconstruction and legacy witnesses as their consumers migrate.

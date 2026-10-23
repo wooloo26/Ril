@@ -1490,7 +1490,6 @@ mod tests {
         );
         assert!(schema.equivalent(&schema, &mut work).unwrap());
         assert!(schema.scalar_representation(&mut work).is_err());
-        assert!(schema.runtime_type(&mut work).is_err());
         assert!(schema.key().is_err());
         let mut live = crate::sema::source_types::LiveSourceTypes::default();
         live.record_schema(

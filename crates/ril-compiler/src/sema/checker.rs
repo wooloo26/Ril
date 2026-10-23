@@ -1551,13 +1551,15 @@ impl Checker {
         span: Span,
         seen: &mut BTreeSet<String>,
     ) -> Value {
-        if let Some(representation) = self.top_representation_type(&ty) {
+        if let Some(representation) = self.top_representation_type(&ty)
+            && seen.insert(format!("representation:{ty:?}"))
+        {
             let mut value = self.formal_value(representation, index, span, seen);
             value.ty = ty;
             return value;
         }
-        if let Ty::Immutable(inner) = self.call_inference_type(&ty) {
-            let mut value = self.formal_value(*inner, index, span, seen);
+        if let Ty::Immutable(inner) = &ty {
+            let mut value = self.formal_value(*inner.clone(), index, span, seen);
             let reachable = self.heap.reachable(value.origins.nodes.iter().copied());
             for ((node, _), child) in &mut self.fields {
                 if reachable.contains(node) {
@@ -2271,9 +2273,18 @@ impl Checker {
         if read {
             self.access(base, Some(slot.clone()), Mode::Read, span, frame);
         }
-        let receiver = self
-            .record_bound_receiver_view(&base.ty)
-            .unwrap_or_else(|| self.collection_type(base));
+        let receiver = if let Some(receiver) = self.record_bound_receiver_view(&base.ty) {
+            receiver
+        } else {
+            let Some(shape) = self.projection_shape_at(&base.ty, span.file) else {
+                self.unsupported(
+                    span,
+                    "projection receiver alias expansion work bound exceeded",
+                );
+                return Value::scalar(Ty::Unknown, None, base.cause);
+            };
+            self.refine_storage_type(base, shape)
+        };
         let valid = match &receiver {
             Ty::Record(_) | Ty::OpenRecord { .. } => matches!(slot, Slot::Field(_)),
             Ty::Tuple(_) => matches!(slot, Slot::Tuple(_)),
@@ -2295,8 +2306,7 @@ impl Checker {
             );
             return Value::scalar(Ty::Unknown, None, base.cause);
         }
-        if let (Ty::Tuple(items), Slot::Tuple(index)) =
-            (self.expanded_at(&base.ty, span.file), &slot)
+        if let (Ty::Tuple(items), Slot::Tuple(index)) = (&receiver, &slot)
             && *index as usize >= items.len()
         {
             self.error(
@@ -2374,8 +2384,11 @@ impl Checker {
         {
             value.ty = ty;
         }
-        let immutable = matches!(value.ty, Ty::Immutable(_));
-        let selected = self.collection_type(&value);
+        let (immutable, selected) = match &value.ty {
+            Ty::Immutable(inner) => (true, *inner.clone()),
+            ty => (false, ty.clone()),
+        };
+        let selected = self.refine_storage_type(&value, selected);
         value.ty = if immutable {
             Ty::Immutable(Box::new(selected))
         } else {

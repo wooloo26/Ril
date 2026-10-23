@@ -443,10 +443,9 @@ impl Replay<'_> {
                         "current projection reinterpreted its child in another environment",
                     )?;
                 }
-                // Projection normalizes transparent aliases in callable
-                // parameters and results. Rebuild only the runtime view from
-                // the independently selected Source, never Source from Ty.
-                expected.ty = graph(work, |budget| projected.runtime_type(budget))?;
+                // projected_value retains the receiver's declared child view.
+                // Source equivalence does not authorize replacing that view
+                // with a recursively expanded runtime representation.
                 expected_source.schema = Some(projected);
                 expected_source.environment = receiver_source.environment;
             }

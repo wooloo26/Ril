@@ -214,15 +214,6 @@ impl SourceSchema {
         )
     }
 
-    /// Runtime classification is a read-only, lossy projection. Dimensions,
-    /// modes, contracts and original environments remain in this Source graph.
-    pub(crate) fn runtime_type(
-        &self,
-        work: &mut WorkLimit,
-    ) -> Result<crate::sema::model::Ty, SourceTypesError> {
-        super::builtins::erased_type(&self.types, self.root, work)
-    }
-
     pub(crate) fn equivalent_key(
         &self,
         key: &crate::sema::effect_identity::ArgumentKey,
