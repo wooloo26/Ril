@@ -2592,15 +2592,17 @@ impl Checker {
             );
             return Value::scalar(ty, None, cause);
         }
-        if builtin_name == "None" {
-            let cause = self.cause(CauseKind::Source, span, "None constructor", []);
-            let mut value = Value::scalar(
-                Ty::Optional(Box::new(Ty::Unknown)),
-                Some(Constant::Unit),
-                cause,
+        if let Some(declaration) =
+            ril_compiler_core::builtin_calls::NullaryConstructor::lookup(name)
+        {
+            let cause = self.cause(
+                CauseKind::Source,
+                span,
+                format!("{} constructor", declaration.name()),
+                [],
             );
-            value.option_tag = Some(false);
-            value.constant = None;
+            let mut value = super::builtin_source_types::nullary_value(declaration, cause);
+            self.mark_canonical_builtin_source(name, &mut value, span, frame);
             return value;
         }
         let builtin = matches!(

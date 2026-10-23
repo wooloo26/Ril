@@ -210,7 +210,7 @@ impl Checker {
         }
         // Normalize only against the canonical builtin data schemas, not a
         // caller's local aliases. Keep all original annotations in the key.
-        builtin_source_types::source_schema(&observation.full_header, work)
+        builtin_source_types::source_schema(&observation.full_header, actual.hir_id, work)
             .map(|schema| schema.map(|schema| (schema, observation.environment.clone())))
     }
 
@@ -230,6 +230,7 @@ impl Checker {
         if matches!(
             contract.identity,
             builtin_source_types::Identity::Constant(_)
+                | builtin_source_types::Identity::Nullary(_)
         ) {
             if !value.callables.is_empty() {
                 return;
@@ -323,6 +324,9 @@ impl Checker {
             _ => return,
         };
         let original_declaration = match &pending.contract.source {
+            BuiltinDeclaration::Nullary(id) => {
+                builtin_source_types::nullary_descriptor(*id, value, &mut 4096).unwrap_or(false)
+            }
             BuiltinDeclaration::Numeric(id) => {
                 value.signature.is_none()
                     && value.ty == Ty::Unknown
@@ -354,7 +358,7 @@ impl Checker {
         };
         if pending.context != context
             || pending.span != expr.span
-            || name != pending.contract.identity.name()
+            || !pending.contract.identity.matches_name(&name)
             || !original_declaration
             || !crate::sema::builtin_sources::is_catalog_environment(&pending.environment)
             || !self
@@ -403,6 +407,85 @@ impl Checker {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nullary_constructor_evidence_keeps_its_original_read_context_and_zero_fields() {
+        use crate::sema::{
+            builtin_sources::BuiltinDeclaration,
+            model::{Ty, Value},
+            validate::solved_facts,
+        };
+        for target in ["pointer32", "pointer64"] {
+            let source = ril_test::case_bytes(
+                "tests/regressions/constructor-receiving.ril::none-receiving-pointer64",
+            );
+            let program = crate::Session::with_options(
+                source.to_vec(),
+                crate::CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
+                },
+            )
+            .verify()
+            .unwrap();
+            let facts = program.facts();
+            let (index, row) = facts
+                .builtin_source_observations
+                .iter()
+                .enumerate()
+                .find(|(_, row)| matches!(row.full_header, BuiltinDeclaration::Nullary(_)))
+                .unwrap();
+            let sibling = facts
+                .builtin_source_observations
+                .iter()
+                .find(|other| {
+                    matches!(other.full_header, BuiltinDeclaration::Nullary(_))
+                        && other.expression != row.expression
+                })
+                .unwrap();
+            for mutation in 0..9 {
+                let mut changed = facts.clone();
+                match mutation {
+                    0 => {
+                        changed.builtin_source_observations.remove(index);
+                    }
+                    1 => changed.builtin_source_observations[index].expression = sibling.expression,
+                    2 => {
+                        changed.builtin_source_observations[index].full_header =
+                            BuiltinDeclaration::Generic(
+                                ril_compiler_core::builtin_calls::GenericBuiltin::ArrayPush,
+                            )
+                    }
+                    3 => {
+                        changed.builtin_source_observations[index].environment = Default::default()
+                    }
+                    4 => {
+                        changed.builtin_source_observations[index]
+                            .context
+                            .default_use = Some(crate::sema::default_uses::DefaultUseId(u32::MAX))
+                    }
+                    other => {
+                        let value = changed.expressions[row.expression]
+                            .value
+                            .corrupt_value(&mut 4_000_000)
+                            .unwrap();
+                        match other {
+                            5 => value.option_tag = Some(true),
+                            6 => {
+                                value.option_payload =
+                                    Some(Box::new(Value::scalar(Ty::Unit, None, value.cause)))
+                            }
+                            7 => value.permission = crate::sema::facts::Permission::Write,
+                            _ => value.ty = Ty::Optional(Box::new(Ty::Int("int".into()))),
+                        }
+                    }
+                }
+                assert!(
+                    solved_facts(&changed).is_err(),
+                    "{target} constructor mutation {mutation}"
+                );
+            }
+        }
+    }
     use super::*;
 
     #[test]

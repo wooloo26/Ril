@@ -119,6 +119,10 @@ pub enum KeyProjectionOrigin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceTypeNode {
     GenericBuiltin(ril_compiler_core::builtin_calls::GenericBuiltin),
+    NullaryConstructor {
+        declaration: ril_compiler_core::builtin_calls::NullaryConstructor,
+        source: ril_compiler_core::ids::ExprId,
+    },
     Scalar(SourceScalar),
     Nominal(SourceNominal),
     Binder(String),

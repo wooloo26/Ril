@@ -39,6 +39,12 @@ pub(crate) enum SourceNode {
     /// A catalog reference retains its quantified variables, full parameter
     /// correlations and mode alternatives without choosing a runtime instance.
     GenericBuiltin(ril_compiler_core::builtin_calls::GenericBuiltin),
+    /// An uninstantiated constructor at its original read. The source identity
+    /// prevents a stored alias from reopening that read as fresh construction.
+    NullaryConstructor {
+        declaration: ril_compiler_core::builtin_calls::NullaryConstructor,
+        source: ril_compiler_core::ids::ExprId,
+    },
     Scalar(SourceScalar),
     /// A closed nominal declaration in the immutable standard data catalog.
     Nominal(super::standard_data::Nominal),
@@ -104,6 +110,7 @@ impl SourceNode {
     pub(super) fn children(&self) -> Vec<SourceTypeId> {
         match self {
             Self::GenericBuiltin(_)
+            | Self::NullaryConstructor { .. }
             | Self::Scalar(_)
             | Self::Nominal(_)
             | Self::Binder(_)
@@ -154,6 +161,13 @@ impl SourceNode {
     ) -> Result<Self, SourceTypesError> {
         Ok(match self {
             Self::GenericBuiltin(id) => Self::GenericBuiltin(*id),
+            Self::NullaryConstructor {
+                declaration,
+                source,
+            } => Self::NullaryConstructor {
+                declaration: *declaration,
+                source: *source,
+            },
             Self::Scalar(kind) => Self::Scalar(*kind),
             Self::Nominal(id) => Self::Nominal(*id),
             Self::Binder(identity) => Self::Binder(identity.clone()),

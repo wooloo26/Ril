@@ -1,5 +1,27 @@
 //! Closed identities of polymorphic primitive declarations. Their Source
 //! schemes live in the semantic kernel; no user spelling introduces an ID.
+/// Sealed nullary language-item constructors. A template is instantiated at a
+/// receiving boundary; it is not a callable or an unknown payload value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NullaryConstructor {
+    None,
+}
+
+impl NullaryConstructor {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "None",
+        }
+    }
+
+    pub fn lookup(name: &str) -> Option<Self> {
+        match name.strip_prefix("Prelude::").unwrap_or(name) {
+            "None" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GenericBuiltin {
     ArrayPush,

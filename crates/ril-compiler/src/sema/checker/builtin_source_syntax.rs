@@ -342,6 +342,8 @@ impl NameIndex<'_> {
 
 fn builtin_bit(name: &str) -> u128 {
     match name {
+        "None" => 1 << 14,
+        "Prelude::None" => 1 << 15,
         "File::read_chunk" => 1,
         "File::write" => 2,
         "Process::wait" => 4,
@@ -382,7 +384,7 @@ fn bit(name: &str) -> u128 {
         "Prelude::clone_immut" => 1 << 13,
         // A genuinely unresolved local Prelude namespace cannot certify a
         // qualified standard export. A short Some binding does not hide it.
-        "Prelude" => (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12) | (1 << 13),
+        "Prelude" => (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12) | (1 << 13) | (1 << 15),
         "Io" => ((1 << 6) - 1) << 116,
         _ => builtin_bit(name),
     }

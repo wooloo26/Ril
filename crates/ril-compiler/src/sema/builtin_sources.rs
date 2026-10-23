@@ -57,6 +57,7 @@ pub(crate) fn parameter_labels(value: &super::model::Value, fallback: usize) -> 
 pub enum BuiltinDeclaration {
     Syntax(TypeExpr),
     Generic(ril_compiler_core::builtin_calls::GenericBuiltin),
+    Nullary(ril_compiler_core::builtin_calls::NullaryConstructor),
     Numeric(ril_compiler_core::numeric_builtins::NumericBuiltin),
 }
 
@@ -64,13 +65,13 @@ impl BuiltinDeclaration {
     pub fn syntax(&self) -> Option<&TypeExpr> {
         match self {
             Self::Syntax(syntax) => Some(syntax),
-            Self::Generic(_) | Self::Numeric(_) => None,
+            Self::Generic(_) | Self::Numeric(_) | Self::Nullary(_) => None,
         }
     }
     pub fn syntax_mut(&mut self) -> Option<&mut TypeExpr> {
         match self {
             Self::Syntax(syntax) => Some(syntax),
-            Self::Generic(_) | Self::Numeric(_) => None,
+            Self::Generic(_) | Self::Numeric(_) | Self::Nullary(_) => None,
         }
     }
 }

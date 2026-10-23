@@ -13,6 +13,7 @@ mod constructor_inputs;
 mod entries;
 #[path = "call_input_source_graph.rs"]
 mod graph_sources;
+pub(super) use graph_sources::schema_work;
 #[path = "inferred_parameter_sources.rs"]
 mod inferred_parameters;
 #[path = "numeric_source_declarations.rs"]

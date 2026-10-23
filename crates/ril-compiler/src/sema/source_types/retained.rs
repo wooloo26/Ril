@@ -73,6 +73,13 @@ fn node(
     let mut edge = |id| retained_id(types, id, work);
     Ok(match source {
         SourceNode::GenericBuiltin(id) => p::SourceTypeNode::GenericBuiltin(*id),
+        SourceNode::NullaryConstructor {
+            declaration,
+            source,
+        } => p::SourceTypeNode::NullaryConstructor {
+            declaration: *declaration,
+            source: *source,
+        },
         SourceNode::Scalar(kind) => p::SourceTypeNode::Scalar(*kind),
         SourceNode::Nominal(id) => p::SourceTypeNode::Nominal(nominal(*id)),
         SourceNode::Binder(identity) => p::SourceTypeNode::Binder(identity.clone()),

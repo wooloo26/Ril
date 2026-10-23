@@ -62,6 +62,16 @@ fn original_descriptor(
         return Err("builtin descriptor exceeds its original Source work bound".into());
     }
     match &contract.source {
+        BuiltinDeclaration::Nullary(id) => {
+            if !index_work(work, |work| {
+                builtin_source_types::nullary_descriptor(*id, value, work)
+                    .map_err(|error| error.to_string())
+            })? {
+                return Err(
+                    "nullary constructor changed its original zero-field descriptor".into(),
+                );
+            }
+        }
         BuiltinDeclaration::Numeric(id) => {
             if value.signature.is_some()
                 || value.ty != Ty::Unknown
@@ -412,7 +422,7 @@ pub(crate) fn original_canonical_source(
     let Some((declaration, environment)) = canonical_declaration(facts, usage, names, work)? else {
         return Ok(None);
     };
-    let schema = builtin_source_types::source_schema(&declaration, work)
+    let schema = builtin_source_types::source_schema(&declaration, usage.actual.hir_id, work)
         .map_err(|error| error.to_string())?;
     Ok(schema.map(|schema| (schema, environment)))
 }

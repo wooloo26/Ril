@@ -102,6 +102,10 @@ pub(crate) enum SchemaSensitivity {
 #[derive(Debug, Clone)]
 pub(crate) enum Construction {
     Opaque,
+    Nullary {
+        declaration: ril_compiler_core::builtin_calls::NullaryConstructor,
+        source: ril_compiler_core::ids::ExprId,
+    },
     Array(Vec<Construction>),
     Map(Vec<(Construction, Construction)>),
     Tuple(Vec<Construction>),
@@ -124,6 +128,28 @@ fn text_equal(left: &str, right: &str, work: &mut usize) -> Option<bool> {
 pub(crate) fn construction(expression: &Expr, work: &mut usize) -> Option<Construction> {
     fn walk(expression: &Expr, work: &mut usize, depth: usize) -> Option<Construction> {
         charge(work, depth)?;
+        // This records a syntactic claim only. Reception also requires the
+        // independently resolved constructor template at this same HIR read.
+        let declaration = match &expression.kind {
+            ExprKind::Name(name) => {
+                *work = work.checked_sub(name.len().div_ceil(32))?;
+                ril_compiler_core::builtin_calls::NullaryConstructor::lookup(name)
+            }
+            ExprKind::Path(path) => {
+                *work = work.checked_sub(path.len())?;
+                for part in path {
+                    *work = work.checked_sub(part.len().div_ceil(32))?;
+                }
+                ril_compiler_core::builtin_calls::NullaryConstructor::lookup(&path.join("::"))
+            }
+            _ => None,
+        };
+        if let Some((declaration, source)) = declaration.zip(expression.hir_id) {
+            return Some(Construction::Nullary {
+                declaration,
+                source,
+            });
+        }
         Some(match &expression.kind {
             ExprKind::Array(items) => Construction::Array(
                 items
@@ -170,32 +196,6 @@ pub(crate) fn construction(expression: &Expr, work: &mut usize) -> Option<Constr
         })
     }
     walk(expression, work, 0)
-}
-
-/// A genuinely empty construction has no existing element coordinates to
-/// reopen. Only its actual syntax and a complete receiving schema admit this
-/// rule; no current heap size or stored value supplies construction evidence.
-pub(crate) fn empty_context(
-    expected: &ArgumentKey,
-    fresh: &Construction,
-    work: &mut usize,
-) -> Option<bool> {
-    charge(work, 0)?;
-    match (expected, fresh) {
-        (ArgumentKey::Array { length, .. }, Construction::Array(items)) if items.is_empty() => {
-            complete(expected, work)?;
-            Some(
-                length
-                    .as_ref()
-                    .is_none_or(|length| length == "const(int:0)"),
-            )
-        }
-        (ArgumentKey::Map { .. }, Construction::Map(entries)) if entries.is_empty() => {
-            complete(expected, work)?;
-            Some(true)
-        }
-        _ => None,
-    }
 }
 
 fn fixed(length: &str, work: &mut usize) -> Option<u64> {

@@ -1,0 +1,92 @@
+--@ source: none-receiving
+--@ file: source.ril
+type Packet = { id: int, items: [0][2]int }
+type Holder = { mut packet: ?Packet }
+fn inspect(value: ?Packet) -> int {
+    match value { Some(packet) -> packet.id + len(packet.items), None -> 0 }
+}
+fn absent() -> ?Packet { None }
+fn defaulted(value: ?Packet = None) -> int { inspect(value) }
+fn nested(input: (?Packet, bool)) -> int { inspect(input.0) }
+fn generic<T>(value: ?T) -> bool { value == None }
+pub fn test_native() {
+    let value: ?Packet = None
+    let qualified: ?Packet = Prelude::None
+    assert(inspect(value) == 0)
+    assert(inspect(qualified) == 0)
+    assert(inspect(None) == 0)
+    assert(inspect(absent()) == 0)
+    assert(defaulted() == 0)
+    assert(nested((None, true)) == 0)
+    let pair: (?Packet, bool) = (None, false)
+    let record: { packet: ?Packet } = .{ packet: None }
+    assert(inspect(pair.0) == 0)
+    assert(inspect(record.packet) == 0)
+    let mut values: []?Packet = []
+    Array::push(mut values, None)
+    Array::insert(mut values, 0, None)
+    assert(len(values) == 2)
+    assert(inspect(values[0]) == 0)
+    let mut entries: [str: ?Packet] = [:]
+    Map::set(mut entries, "none", None)
+    assert(len(entries) == 1)
+    let mut holder = Holder.{ packet: None }
+    holder.packet = None
+    assert(inspect(holder.packet) == 0)
+    var selected: ?Packet = Some(Packet.{ id: 7, items: [] })
+    selected = None
+    assert(inspect(selected) == 0)
+    assert(generic<Packet>(None))
+}
+--@ end-file
+--@ end-source
+
+--@ case: none-receiving-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: reject-stored-none-dimension
+--@ use-source: none-receiving
+--@ end-case
+
+--@ case: none-receiving-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: none-receiving-native
+--@ use-source: none-receiving
+--@ end-case
+
+--@ case: none-receiving-native
+--@ mode: run-pass
+--@ entry: test_native
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: none-receiving-pointer32
+--@ use-source: none-receiving
+--@ end-case
+
+--@ case: reject-stored-none-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: none-receiving-pointer64
+-- Error [E0301]: A stored absent value retains its already selected payload dimensions.
+--@ file: source.ril
+fn example() {
+    let value: ?[0][3]int = None
+    let wrong: ?[0][2]int = value
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-shadowed-none-reinstantiation
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: none-receiving-pointer32
+-- Error [E0301]: A lookalike namespace cannot supply the canonical constructor.
+--@ file: source.ril
+type Prelude { None }
+fn example() {
+    let wrong: ?[0][2]int = Prelude::None
+}
+--@ end-file
+--@ end-case

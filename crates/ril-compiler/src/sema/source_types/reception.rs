@@ -205,6 +205,34 @@ fn compare(
             );
         }
     }
+    if let SourceNode::NullaryConstructor {
+        declaration,
+        source,
+    } = right
+    {
+        if let SourceNode::NullaryConstructor {
+            declaration: expected,
+            source: original,
+        } = left
+        {
+            return Ok(declaration == expected && source == original);
+        }
+        let receiver = match declaration {
+            ril_compiler_core::builtin_calls::NullaryConstructor::None => {
+                matches!(left, SourceNode::Container { kind: SourceContainer::Option, arguments } if arguments.len() == 1)
+            }
+        };
+        if position != Position::Receiving || !receiver {
+            return Ok(false);
+        }
+        if !matches!(fresh, Some(Construction::Nullary { declaration: actual, source: occurrence }) if actual == declaration && occurrence == source)
+        {
+            // A stored, still uninstantiated template needs an inference
+            // equation. Missing receiving evidence is not a type mismatch.
+            return Err(SourceTypesError::Unresolved);
+        }
+        return Ok(true);
+    }
     // Recursive declaration edges form finite regular schemas. A fresh syntax
     // construction is finite and must check every one of its physical children.
     if fresh.is_none() && !seen.insert((expected, actual, position)) {
@@ -727,6 +755,80 @@ pub(crate) fn receive_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nullary_constructor_templates_require_the_same_fresh_read_and_optional_receiver() {
+        use ril_compiler_core::{builtin_calls::NullaryConstructor, ids::ExprId};
+        let mut work = WorkLimit::new(16384);
+        let actual = super::super::SourceSchema::nullary_constructor(
+            NullaryConstructor::None,
+            ExprId(1),
+            &mut work,
+        )
+        .unwrap();
+        let mut builder = SourceBuilder::new().unwrap();
+        let int = builder
+            .insert(SourceNode::Scalar(SourceScalar::Int), &mut work)
+            .unwrap();
+        let array = builder
+            .insert(
+                SourceNode::Array {
+                    length: SourceLength::Fixed(2),
+                    element: int,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let root = builder
+            .insert(
+                SourceNode::Container {
+                    kind: SourceContainer::Option,
+                    arguments: vec![array],
+                },
+                &mut work,
+            )
+            .unwrap();
+        let types = builder.freeze(&mut work).unwrap();
+        let expected =
+            super::super::SourceSchema::frozen_view(&types, root, None, &mut work).unwrap();
+        let fresh = Construction::Nullary {
+            declaration: NullaryConstructor::None,
+            source: ExprId(1),
+        };
+        assert!(
+            expected
+                .receive_schema(&actual, Some(&fresh), &mut work)
+                .unwrap()
+        );
+        for absent in [
+            None,
+            Some(Construction::Opaque),
+            Some(Construction::Nullary {
+                declaration: NullaryConstructor::None,
+                source: ExprId(2),
+            }),
+        ] {
+            assert!(
+                expected
+                    .receive_schema(&actual, absent.as_ref(), &mut work)
+                    .is_err()
+            );
+        }
+        let integer =
+            super::super::SourceSchema::scalar(SourceScalar::Int, None, &mut work).unwrap();
+        assert!(
+            !integer
+                .receive_schema(&actual, Some(&fresh), &mut work)
+                .unwrap()
+        );
+        assert!(!expected.equivalent(&actual, &mut work).unwrap());
+        assert!(actual.equivalent(&actual, &mut work).unwrap());
+        assert!(
+            expected
+                .receive_schema(&actual, Some(&fresh), &mut WorkLimit::new(0))
+                .is_err()
+        );
+    }
 
     fn published_prefixes() -> (SourceTypes, SourceTypeId, SourceTypes, SourceTypeId) {
         let mut builder = SourceBuilder::new().unwrap();

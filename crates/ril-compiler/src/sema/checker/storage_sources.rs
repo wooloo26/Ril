@@ -1013,7 +1013,11 @@ impl Checker {
                     .storage
                     .types
                     .binding_schema_if_known(*binding, None, &mut work),
-                StorageDestination::Projection { slot, .. } => {
+                StorageDestination::Projection {
+                    slot,
+                    receiver: observed_receiver,
+                    ..
+                } => {
                     let syntax = match &target.kind {
                         ExprKind::Field { base, .. }
                         | ExprKind::Index { base, .. }
@@ -1021,8 +1025,13 @@ impl Checker {
                         _ => return Err(SourceTypesError::Unresolved),
                     };
                     let value = receiver.ok_or(SourceTypesError::MissingNode)?;
-                    let Some((schema, environment)) =
-                        self.original_source_receiving_schema(value, syntax, frame, &mut work)?
+                    let Some((schema, environment)) = self.original_source_receiving_schema_at(
+                        value,
+                        syntax,
+                        frame,
+                        &mut work,
+                        Some(observed_receiver.expression),
+                    )?
                     else {
                         return Ok(None);
                     };
@@ -1102,11 +1111,12 @@ impl Checker {
                 .value
                 .packet()
                 .clone();
-            let actual = self.original_source_receiving_schema(
+            let actual = self.original_source_receiving_schema_at(
                 original.value(),
                 rhs_syntax,
                 frame,
                 &mut work,
+                Some(rhs.expression),
             )?;
             let fresh = source_reception::construction(rhs_syntax, &mut 4096)
                 .ok_or(SourceTypesError::BudgetExceeded)?;

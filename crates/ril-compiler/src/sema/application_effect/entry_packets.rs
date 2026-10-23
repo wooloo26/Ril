@@ -1219,6 +1219,16 @@ fn construction_equal(
     )?;
     match (left, right) {
         (Construction::Opaque, Construction::Opaque) => Ok(true),
+        (
+            Construction::Nullary {
+                declaration: a,
+                source: x,
+            },
+            Construction::Nullary {
+                declaration: b,
+                source: y,
+            },
+        ) => Ok(a == b && x == y),
         (Construction::Array(a), Construction::Array(b))
         | (Construction::Tuple(a), Construction::Tuple(b)) => {
             if a.len() != b.len() {

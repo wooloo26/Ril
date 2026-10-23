@@ -102,9 +102,11 @@ duplicate source trees and historical verification reports.
   pipeline; retain a small explicit primitive/host contract boundary. Start with
   optional-value and Array combinators, then remove their duplicated checker,
   static evaluator, HOF lowering and runtime implementations.
-- Complete shared receiving for callable upper bounds and absent constructors,
+- Complete shared receiving for callable upper bounds and general constructors,
   and finish window graph copying. These gaps remain exposed by the
   conditional/rest-pattern corpus.
+  Stored uninstantiated constructor templates still need shared inference
+  equations; lost receiving evidence must not become a type-mismatch claim.
 - Complete the canonical abstract value, frozen environments, ten receiving
   boundaries and five domains. Replace remaining Span tables, erased-type
   reconstruction and legacy witnesses as their consumers migrate.

@@ -15,6 +15,27 @@ pub(crate) struct SourceSchema {
 }
 
 impl SourceSchema {
+    pub(crate) fn nullary_constructor(
+        declaration: ril_compiler_core::builtin_calls::NullaryConstructor,
+        source: ril_compiler_core::ids::ExprId,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        let mut builder = SourceBuilder::new()?;
+        let root = builder.insert(
+            SourceNode::NullaryConstructor {
+                declaration,
+                source,
+            },
+            work,
+        )?;
+        Ok(Self {
+            types: builder.freeze(work)?,
+            root,
+            original: None,
+        })
+    }
+
     pub(crate) fn scalar(
         scalar: SourceScalar,
         original: Option<TypeExprId>,

@@ -279,11 +279,12 @@ impl Checker {
             let fresh = source_reception::construction(request.syntax, &mut remaining)
                 .ok_or(SourceTypesError::BudgetExceeded)?;
             work.charge(work.remaining() - remaining)?;
-            match self.original_source_receiving_schema(
+            match self.original_source_receiving_schema_at(
                 &original,
                 request.syntax,
                 frame,
                 &mut work,
+                emission.map(|(token, _)| token),
             )? {
                 Some((actual, environment)) => {
                     if environment.is_poisoned() {

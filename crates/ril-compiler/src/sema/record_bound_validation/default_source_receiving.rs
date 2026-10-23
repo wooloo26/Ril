@@ -271,20 +271,35 @@ impl Replay<'_> {
         }
         let scope = self.scope(definition)?;
         let selected = self.declaration_default_selections(definition, receipt)?;
-        let expected = super::call_input_source::input_select_key(
-            &self.normalized_key(annotation, &scope)?,
-            &selected,
-            0,
-        )?;
-        let actual = self.original_source_key(syntax, &snapshot.value, context, sites);
-        let fresh = source_reception::construction(syntax, &mut 4096)
+        let mut work = 16384;
+        let environment = self.function(definition)?.typing_environment.clone();
+        let (expected, environment) =
+            self.source_type_header_raw(annotation, &scope, environment, &mut work)?;
+        let mut substitutions = BTreeMap::new();
+        for (identity, key) in selected {
+            let source = self
+                .source_header_schema(&key, environment.clone(), &mut work)?
+                .0;
+            substitutions.insert(identity, source);
+        }
+        let expected = super::call_input_source::schema_work(&mut work, |budget| {
+            expected.substitute(&substitutions, budget)
+        })?;
+        let actual = self
+            .original_observed_source_schema_with_work(syntax, token, context, sites, &mut work)?;
+        let fresh = source_reception::construction(syntax, &mut work)
             .ok_or_else(|| "declaration default construction exceeds its bound".to_owned())?;
-        let fits = match actual {
-            Ok(actual) => source_reception::compatible(&expected, &actual, Some(&fresh), &mut 4096),
-            Err(_) => source_reception::empty_context(&expected, &fresh, &mut 4096),
-        };
+        let fits = super::call_input_source::schema_work(&mut work, |budget| match actual {
+            Some((actual, environment)) if !environment.is_poisoned() => {
+                expected.receive_schema(&actual, Some(&fresh), budget)
+            }
+            Some(_) => Err(crate::sema::source_types::SourceTypesError::Unresolved),
+            None => expected
+                .empty_context(&fresh, budget)
+                .map(|answer| answer == Some(true)),
+        })?;
         require(
-            fits == Some(true),
+            fits,
             "declaration default original Source does not prove its receiving coordinates",
         )
     }

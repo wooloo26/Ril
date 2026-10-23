@@ -111,6 +111,9 @@ pub(super) fn lower(
                 context: resumption_context(value.context),
                 identity: value.identity.clone(),
                 full_header: match &value.full_header {
+                    crate::sema::builtin_sources::BuiltinDeclaration::Nullary(id) => {
+                        p::BuiltinDeclaration::Nullary(*id)
+                    }
                     crate::sema::builtin_sources::BuiltinDeclaration::Syntax(syntax) => {
                         p::BuiltinDeclaration::Syntax(contract(syntax))
                     }

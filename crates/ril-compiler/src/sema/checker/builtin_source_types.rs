@@ -18,6 +18,7 @@ pub(super) enum Identity {
     Closed(crate::sema::source_types::builtins::BuiltinId),
     Constant(crate::sema::source_types::builtins::ConstantId),
     Generic(GenericBuiltin),
+    Nullary(ril_compiler_core::builtin_calls::NullaryConstructor),
     Numeric(ril_compiler_core::numeric_builtins::NumericBuiltin),
 }
 
@@ -41,6 +42,9 @@ pub(super) struct Contract {
 impl Identity {
     fn lookup(name: &str) -> Option<Self> {
         use crate::sema::source_types::builtins;
+        if let Some(id) = ril_compiler_core::builtin_calls::NullaryConstructor::lookup(name) {
+            return Some(Self::Nullary(id));
+        }
         if let Some(id) = ril_compiler_core::numeric_builtins::NumericBuiltin::lookup(name) {
             return Some(Self::Numeric(id));
         }
@@ -71,7 +75,17 @@ impl Identity {
             Self::Closed(id) => id.definition().name,
             Self::Constant(id) => id.definition().0,
             Self::Generic(id) => id.name(),
+            Self::Nullary(id) => id.name(),
             Self::Numeric(id) => id.name(),
+        }
+    }
+
+    pub(super) fn matches_name(self, name: &str) -> bool {
+        match self {
+            Self::Nullary(id) => {
+                ril_compiler_core::builtin_calls::NullaryConstructor::lookup(name) == Some(id)
+            }
+            _ => self.name() == name,
         }
     }
 }
@@ -88,6 +102,15 @@ pub(super) fn has_declaration(name: &str) -> bool {
 pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
     use crate::sema::source_types::WorkLimit;
     let identity = Identity::lookup(canonical_name)?;
+    if let Identity::Nullary(id) = identity {
+        return Some(Contract {
+            identity,
+            source: BuiltinDeclaration::Nullary(id),
+            effects: &[],
+            written_formals: &[],
+            captures: BTreeSet::new(),
+        });
+    }
     if let Identity::Numeric(id) = identity {
         return Some(Contract {
             identity: Identity::Numeric(id),
@@ -170,6 +193,7 @@ pub(super) fn contract(canonical_name: &str, span: Span) -> Option<Contract> {
         Identity::Closed(_)
         | Identity::Constant(_)
         | Identity::Generic(_)
+        | Identity::Nullary(_)
         | Identity::Numeric(_) => unreachable!(),
     };
     Some(Contract {
@@ -205,7 +229,7 @@ pub(super) fn source_key(
     declaration: &BuiltinDeclaration,
 ) -> Option<crate::sema::effect_identity::ArgumentKey> {
     match declaration {
-        BuiltinDeclaration::Numeric(_) => None,
+        BuiltinDeclaration::Numeric(_) | BuiltinDeclaration::Nullary(_) => None,
         BuiltinDeclaration::Generic(id) => Some(
             crate::sema::effect_identity::ArgumentKey::GenericBuiltin(*id),
         ),
@@ -221,12 +245,21 @@ pub(super) fn source_key(
 
 pub(super) fn source_schema(
     declaration: &BuiltinDeclaration,
+    source: Option<ril_compiler_core::ids::ExprId>,
     work: &mut crate::sema::source_types::WorkLimit,
 ) -> Result<
     Option<crate::sema::source_types::SourceSchema>,
     crate::sema::source_types::SourceTypesError,
 > {
     use crate::sema::source_types::{SourceSchema, SourceTypesError};
+    if let BuiltinDeclaration::Nullary(id) = declaration {
+        return SourceSchema::nullary_constructor(
+            *id,
+            source.ok_or(SourceTypesError::MissingNode)?,
+            work,
+        )
+        .map(Some);
+    }
     if let BuiltinDeclaration::Numeric(id) = declaration {
         return crate::sema::source_types::numeric::definition(*id)
             .map(|definition| definition.schema(work))
@@ -239,6 +272,30 @@ pub(super) fn source_schema(
         work,
     )
     .map(Some)
+}
+
+pub(super) fn nullary_value(
+    declaration: ril_compiler_core::builtin_calls::NullaryConstructor,
+    cause: CauseId,
+) -> Value {
+    match declaration {
+        ril_compiler_core::builtin_calls::NullaryConstructor::None => {
+            let mut value = Value::scalar(Ty::Optional(Box::new(Ty::Unknown)), None, cause);
+            value.option_tag = Some(false);
+            value
+        }
+    }
+}
+
+pub(super) fn nullary_descriptor(
+    declaration: ril_compiler_core::builtin_calls::NullaryConstructor,
+    value: &Value,
+    work: &mut usize,
+) -> Result<bool, crate::sema::source_types::SourceTypesError> {
+    *work = work
+        .checked_sub(3)
+        .ok_or(crate::sema::source_types::SourceTypesError::BudgetExceeded)?;
+    crate::sema::evaluated::same_birth_value(&nullary_value(declaration, value.cause), value, work)
 }
 
 #[cfg(test)]

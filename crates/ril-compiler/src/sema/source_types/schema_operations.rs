@@ -162,6 +162,7 @@ impl SourceSchema {
             node.charge(work)?;
             let children = match node {
                 SourceNode::GenericBuiltin(_)
+                | SourceNode::NullaryConstructor { .. }
                 | SourceNode::Scalar(_)
                 | SourceNode::Nominal(_)
                 | SourceNode::StaticValue(_)

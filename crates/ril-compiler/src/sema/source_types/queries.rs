@@ -70,7 +70,8 @@ pub(crate) trait SourceTypeQueries: SourceGraph {
                 match node {
                     SourceNode::Array { .. }
                     | SourceNode::Callable { .. }
-                    | SourceNode::GenericBuiltin(_) => {
+                    | SourceNode::GenericBuiltin(_)
+                    | SourceNode::NullaryConstructor { .. } => {
                         return Ok(SourceSensitivity::Sensitive { coordinate: id });
                     }
                     SourceNode::Nominal(declaration) => {

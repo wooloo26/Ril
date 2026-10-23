@@ -134,6 +134,7 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
             };
             let key = match node {
                 SourceNode::GenericBuiltin(id) => ArgumentKey::GenericBuiltin(*id),
+                SourceNode::NullaryConstructor { .. } => return Err(SourceTypesError::Unresolved),
                 SourceNode::Scalar(SourceScalar::Unit) => ArgumentKey::Tuple(vec![]),
                 SourceNode::Scalar(kind) => ArgumentKey::Name {
                     name: scalar_name(*kind).into(),

@@ -4,7 +4,7 @@ use super::*;
 use crate::sema::source_types::projection_receipts::SourceRead;
 use ril_syntax::ast::RecordMember;
 
-pub(super) fn schema_work<T>(
+pub(in crate::sema::record_bound_validation) fn schema_work<T>(
     work: &mut usize,
     query: impl FnOnce(&mut WorkLimit) -> Result<T, crate::sema::source_types::SourceTypesError>,
 ) -> Check<T> {

@@ -210,6 +210,13 @@ impl ReturnContracts {
         }
         Ok(match source {
             Construction::Opaque => p::Construction::Opaque,
+            Construction::Nullary {
+                declaration,
+                source,
+            } => p::Construction::Nullary {
+                declaration: *declaration,
+                source: *source,
+            },
             Construction::Array(items) | Construction::Tuple(items) => {
                 self.packet_charge(items.len())?;
                 let output = items

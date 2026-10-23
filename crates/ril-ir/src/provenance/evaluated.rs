@@ -35,6 +35,10 @@ pub enum CapturedSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Construction {
     Opaque,
+    Nullary {
+        declaration: ril_compiler_core::builtin_calls::NullaryConstructor,
+        source: ExprId,
+    },
     Array(Vec<Construction>),
     Map(Vec<(Construction, Construction)>),
     Tuple(Vec<Construction>),
