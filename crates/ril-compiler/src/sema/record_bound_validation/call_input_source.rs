@@ -17,6 +17,8 @@ mod graph_sources;
 mod inferred_parameters;
 #[path = "numeric_source_declarations.rs"]
 mod numeric_sources;
+#[path = "pattern_value_sources.rs"]
+mod pattern_values;
 #[path = "call_input_source_result.rs"]
 mod producing_result;
 #[path = "call_input_source_reception.rs"]
@@ -230,11 +232,19 @@ impl<'a> OriginalOperandSources<'a> {
                 work,
             )
             .map_err(|error| error.to_string())?;
-        let syntax = self
-            .sites
-            .expressions
-            .get(&source)
-            .ok_or("receiver input lost its original HIR expression")?;
+        source_scan_work(
+            work,
+            2 + self.sites.expressions.len().checked_ilog2().unwrap_or(0) as usize,
+        )?;
+        let syntax = match self.sites.expressions.get(&source) {
+            Some(syntax) => std::borrow::Cow::Borrowed(*syntax),
+            None => std::borrow::Cow::Owned(pattern_values::expression(
+                &self.replay,
+                source,
+                observation,
+                work,
+            )?),
+        };
         let fact = self
             .replay
             .facts
@@ -261,10 +271,10 @@ impl<'a> OriginalOperandSources<'a> {
                 }),
             "a resumption transfer is not its completed expression value",
         )?;
-        let fresh = source_reception::construction(syntax, work)
+        let fresh = source_reception::construction(&syntax, work)
             .ok_or("receiver construction exceeded its work bound")?;
         let schema = self.replay.original_observed_source_schema_with_work(
-            syntax,
+            &syntax,
             observation,
             record.context,
             &self.sites,

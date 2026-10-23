@@ -17,6 +17,26 @@ pub fn test_native() {
 --@ end-file
 --@ end-case
 
+--@ case: catalog-constant-patterns
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ file: source.ril
+use ril/num
+fn invalid() -> bool {
+    Num::parse_int("invalid") is Err(Num::NumError::InvalidSyntax)
+}
+pub fn test_native() {
+    assert(invalid())
+    assert(invalid())
+    assert(!(Num::NumError::InvalidSyntax is Num::NumError::OutOfRange))
+    let expected = Num::NumError::InvalidSyntax
+    assert(Num::NumError::InvalidSyntax is expected)
+}
+--@ end-file
+--@ end-case
+
 --@ case: constructor-pattern-overflow
 --@ mode: check-fail
 --@ spec: SPEC#numeric-literals

@@ -174,6 +174,44 @@ pub(crate) fn checked_resolution_at_inputs(
     Ok(Some((id, resolution)))
 }
 
+/// A literal that was already selected at emission still requires its exact
+/// producing use and selection. A scalar descriptor alone is not that receipt.
+pub(crate) fn validate_literal_in_query(
+    facts: &SemanticFacts,
+    observation: EvaluationOccurrenceId,
+    session: &RefCell<NumericReplaySession>,
+    query: &std::rc::Rc<crate::sema::source_query::SourceQuery>,
+    work: &mut usize,
+) -> Result<(), SourceTypesError> {
+    charge(work, 2)?;
+    let record = facts
+        .evaluations
+        .get(observation.0 as usize)
+        .ok_or(SourceTypesError::MissingNode)?;
+    let source = record.identity.ok_or(SourceTypesError::MissingNode)?.source;
+    if !matches!(
+        &facts
+            .semantic_hir
+            .as_deref()
+            .ok_or(SourceTypesError::MissingNode)?
+            .expression(source)
+            .ok_or(SourceTypesError::MissingNode)?
+            .kind,
+        hir::ExprKind::Literal(Literal::Integer(_) | Literal::Float(_))
+    ) {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let _entered = query.enter(
+        crate::sema::source_query::QueryKind::Numeric,
+        observation,
+        work,
+    )?;
+    let mut inputs = NumericReplayInputs::from_facts(facts);
+    inputs.session = Some(session);
+    inputs.query = Some(query.clone());
+    Replay::new(inputs, work)?.expression_coverage(observation)
+}
+
 pub(crate) fn validate(facts: &SemanticFacts, work: &mut usize) -> Result<(), SourceTypesError> {
     charge(work, 1)?;
     if facts.semantic_hir.is_none() {

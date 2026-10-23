@@ -26,7 +26,7 @@ mod solve;
 pub(crate) use preferences::{NumericPreferences, preferences};
 pub(crate) use replay::{
     NumericReplayInputs, NumericReplaySession, checked_resolution_at_inputs,
-    checked_resolution_in_query, pattern_number_type_inputs, validate,
+    checked_resolution_in_query, pattern_number_type_inputs, validate, validate_literal_in_query,
 };
 #[cfg(test)]
 pub(crate) use replay::{checked_resolution_at, checked_resolution_in_session};
