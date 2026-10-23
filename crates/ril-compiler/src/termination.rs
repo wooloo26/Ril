@@ -805,7 +805,7 @@ impl Visitor<'_> {
     }
     fn mask_pattern(&mut self, pattern: &Pattern) {
         match &pattern.kind {
-            PatternKind::Name(name) => {
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
                 self.parameters.remove(name);
                 self.aliases.insert(
                     name.clone(),
@@ -817,6 +817,7 @@ impl Visitor<'_> {
                 );
             }
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..
@@ -867,6 +868,7 @@ impl Visitor<'_> {
         match &pattern.kind {
             PatternKind::Value(value) => result.include(self.expression(value)),
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..
@@ -1101,6 +1103,24 @@ impl Visitor<'_> {
                     }
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                result.include(self.expression(value));
+                result.include(self.pattern(pattern));
+                let aliases = self.aliases.clone();
+                let parameters = self.parameters.clone();
+                self.mask_pattern(pattern);
+                result.include(self.expression(then_branch));
+                self.aliases = aliases;
+                self.parameters = parameters;
+                if let Some(branch) = else_branch {
+                    result.include(self.expression(branch));
+                }
+            }
             ExprKind::Loop(block) => {
                 result.include(self.block(block));
                 if !block.statements.iter().any(|statement| {
@@ -1127,6 +1147,21 @@ impl Visitor<'_> {
                     result.include(self.block(body));
                     result.unresolved = true;
                 }
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                result.include(self.expression(value));
+                result.include(self.pattern(pattern));
+                let aliases = self.aliases.clone();
+                let parameters = self.parameters.clone();
+                self.mask_pattern(pattern);
+                result.include(self.block(body));
+                self.aliases = aliases;
+                self.parameters = parameters;
+                result.unresolved = true;
             }
             ExprKind::For {
                 iterable,

@@ -53,6 +53,11 @@ fn apply(value: &mut Expr, expected: &TypeExpr) -> bool {
             then_branch,
             else_branch,
             ..
+        }
+        | ExprKind::IfLet {
+            then_branch,
+            else_branch,
+            ..
         } => {
             let changed = apply(then_branch, expected);
             // Do not short-circuit: both syntactic alternatives are checked.

@@ -40,14 +40,16 @@ pub(crate) fn instantiate_defaults_bounded(
 
 fn mask(evaluator: &mut Evaluator, pattern: &Pattern) -> Result<()> {
     match &pattern.kind {
-        PatternKind::Name(name) => {
+        PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
             evaluator.values.remove(name);
         }
         PatternKind::Wildcard
+        | PatternKind::Rest(None)
         | PatternKind::Literal(_)
         | PatternKind::Value(_)
         | PatternKind::Error => {}
         PatternKind::Tuple(items)
+        | PatternKind::Array(items)
         | PatternKind::Alternative(items)
         | PatternKind::Constructor {
             arguments: items, ..
@@ -123,6 +125,7 @@ fn pattern(evaluator: &mut Evaluator, pattern: &mut Pattern, binding: bool) -> R
             }
         }
         PatternKind::Tuple(items)
+        | PatternKind::Array(items)
         | PatternKind::Alternative(items)
         | PatternKind::Constructor {
             arguments: items, ..
@@ -150,6 +153,7 @@ fn pattern(evaluator: &mut Evaluator, pattern: &mut Pattern, binding: bool) -> R
         }
         PatternKind::Value(value) => expression(evaluator, value)?,
         PatternKind::Name(_)
+        | PatternKind::Rest(_)
         | PatternKind::Literal(_)
         | PatternKind::Wildcard
         | PatternKind::Error => {}
@@ -429,9 +433,37 @@ fn expression(evaluator: &mut Evaluator, value: &mut Expr) -> Result<()> {
                 expression(evaluator, other)?;
             }
         }
+        ExprKind::IfLet {
+            pattern: binder,
+            value,
+            then_branch,
+            else_branch,
+        } => {
+            expression(evaluator, value)?;
+            pattern(evaluator, binder, true)?;
+            let saved = evaluator.snapshot_values()?;
+            mask(evaluator, binder)?;
+            expression(evaluator, then_branch)?;
+            evaluator.values = saved;
+            if let Some(other) = else_branch {
+                expression(evaluator, other)?;
+            }
+        }
         ExprKind::While { condition, body } => {
             expression(evaluator, condition)?;
             block(evaluator, body)?;
+        }
+        ExprKind::WhileLet {
+            pattern: binder,
+            value,
+            body,
+        } => {
+            expression(evaluator, value)?;
+            pattern(evaluator, binder, true)?;
+            let saved = evaluator.snapshot_values()?;
+            mask(evaluator, binder)?;
+            block(evaluator, body)?;
+            evaluator.values = saved;
         }
         ExprKind::For {
             iterable,

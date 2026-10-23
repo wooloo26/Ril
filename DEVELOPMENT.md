@@ -102,10 +102,9 @@ duplicate source trees and historical verification reports.
   pipeline; retain a small explicit primitive/host contract boundary. Start with
   optional-value and Array combinators, then remove their duplicated checker,
   static evaluator, HOF lowering and runtime implementations.
-- Close the partially connected pattern-window allocation records and current
-  binding/Source regressions before establishing the migration baseline. Keep
-  tests within SPEC syntax; ordinary function and lambda parameters are names,
-  while handler parameters admit the specified binding patterns.
+- Complete shared receiving for callable upper bounds and absent constructors,
+  preserve original child type views during projection, and finish window graph
+  copying. These gaps remain exposed by the conditional/rest-pattern corpus.
 - Complete the canonical abstract value, frozen environments, ten receiving
   boundaries and five domains. Replace remaining Span tables, erased-type
   reconstruction and legacy witnesses as their consumers migrate.
@@ -130,9 +129,8 @@ duplicate source trees and historical verification reports.
   answer; the current direct-resume path substitutes unit for those completions.
   Resolve the nine-scope channel replay
   case with finite work while preserving unknown guard/history obligations.
-- Implement conditional bindings (`if let`, `while let`) and array/tuple rest
-  patterns. Complete record-rest, nested closure/default
-  and retained-handler transport covered by the corpus.
+- Complete nested closure/default and retained-handler transport, including
+  conditional and rest-pattern receivers covered by the corpus.
 - Complete static extent/sort contexts, ordinary callable Const arguments,
   shared-constant audits and builtin source declarations. Ordinary explicit Const
   calls still reach bare-type checking (`E0318`); the floating-default cases in

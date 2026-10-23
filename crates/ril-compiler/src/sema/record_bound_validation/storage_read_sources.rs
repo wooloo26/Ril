@@ -94,6 +94,46 @@ impl Replay<'_> {
             .get(&id)
             .copied()
             .ok_or("stored Source has no initializer receipt")?;
+        if row.receiver.is_some() {
+            let expected = self
+                .pattern_receiver_source(row, sites, work)?
+                .ok_or("pattern receiver has no original Source graph")?;
+            let (stored, environment) = graph_sources::schema_work(work, |budget| {
+                self.facts
+                    .source_types
+                    .binding_schema_if_known(id, None, budget)
+            })?
+            .ok_or("pattern receiver Source index is absent")?;
+            let source = fact
+                .source_id
+                .ok_or("pattern receiver read has no original HIR")?;
+            let hir = self
+                .facts
+                .semantic_hir
+                .as_deref()
+                .ok_or("pattern receiver read has no HIR")?;
+            let path = graph_sources::schema_work(work, |budget| {
+                projection_receipts::projection_path(hir, source, budget)
+            })?
+            .ok_or("pattern receiver read has no Name root")?;
+            require(
+                self.lexical
+                    .as_ref()
+                    .ok_or("pattern receiver read has no lexical index")?
+                    .lookup(path.root(), work)
+                    .map_err(|error| error.to_string())?
+                    == binding.pattern,
+                "pattern receiver read borrowed another lexical binder",
+            )?;
+            require(
+                environment.id() == binding.typing_environment.id()
+                    && graph_sources::schema_work(work, |budget| {
+                        stored.equivalent_in(&expected.0, &environment, &expected.1, budget)
+                    })?,
+                "pattern receiver Source index differs from its original subject",
+            )?;
+            return Ok(());
+        }
         let owner = row
             .context
             .owner
@@ -169,11 +209,9 @@ impl Replay<'_> {
                 selected = Some(leaf.projection);
             }
         }
-        let path = selected
-            .ok_or("stored Source binder is absent from its original pattern")?
-            .ok_or("stored Source binder has no structural projection")?;
+        let path = selected.ok_or("stored Source binder is absent from its original pattern")?;
         require(
-            row.path.as_ref() == Some(&path),
+            row.path == path,
             "stored Source changed its original binding projection",
         )?;
         let source = fact
@@ -239,8 +277,9 @@ impl Replay<'_> {
                 )?
                 .ok_or("stored Source initializer has no original graph")?
             };
-            let expected =
-                graph_sources::schema_work(work, |budget| root.project_steps(&path, budget))?;
+            let expected = self
+                .pattern_binding_projection(row, &root, &original_environment, work)?
+                .ok_or("stored Source binder has no authenticated structural projection")?;
             require(
                 !original_environment.is_poisoned(),
                 "stored Source original environment is poisoned",

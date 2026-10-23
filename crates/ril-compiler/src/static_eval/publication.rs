@@ -89,10 +89,13 @@ pub(super) fn pattern_names<'a>(
     ) -> Result<()> {
         step(budget, depth)?;
         match &pattern.kind {
-            PatternKind::Name(name) => {
-                names.insert(name);
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
+                if name != "_" {
+                    names.insert(name);
+                }
             }
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..

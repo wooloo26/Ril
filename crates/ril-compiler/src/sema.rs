@@ -5,6 +5,7 @@ use ril_compiler_core::{
     source::{FileId, Span},
 };
 
+pub mod allocation;
 pub mod application_effect;
 pub mod bound_writes;
 pub mod builtin_sources;
@@ -38,6 +39,8 @@ pub mod invocation_loans;
 pub mod model;
 pub mod numeric_selection;
 pub mod optional_tags;
+pub(crate) mod pattern_sources;
+pub(crate) mod pattern_windows;
 #[cfg(test)]
 mod physical_packet_review_tests;
 pub(crate) mod record_bound_shapes;
@@ -96,6 +99,11 @@ pub struct SemanticFacts {
     pub closure_discards: Vec<closure_exclusivity::ClosureDiscard>,
     /// Real allocation transitions produced by this analysis, in epoch order.
     pub allocation_history: Vec<(facts::NodeId, facts::NodeId)>,
+    /// Actual fresh allocations, including births which reuse a recent node.
+    pub allocation_events: Vec<allocation::AllocationEvent>,
+    pub pattern_window_sites: Vec<allocation::PatternWindowSite>,
+    /// Exhaustion cannot leave an unrecorded allocation eligible for proof.
+    pub allocation_poisoned: bool,
     /// Scope identities allocated by the checker. The formal MAX sentinel is
     /// deliberately absent and must be admitted only by a formal fact's rule.
     pub scopes: scopes::ScopeIndex,
@@ -134,6 +142,7 @@ pub struct SemanticFacts {
     pub concurrent_boundaries: Vec<ConcurrentBoundary>,
     pub iter_steps: Vec<IterStepFact>,
     pub windows: std::collections::BTreeMap<facts::NodeId, WindowInfo>,
+    pub pattern_windows: Vec<pattern_windows::PatternWindowCreation>,
     pub budget_proofs: Vec<BudgetProof>,
     pub budget_termination: Vec<crate::termination::BudgetTerminationWitness>,
     pub inference_resolutions: Vec<InferenceResolution>,
@@ -271,6 +280,8 @@ pub struct ConcurrentBoundary {
 }
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
+    pub pattern: Option<ril_compiler_core::ids::PatternId>,
+    pub constant: Option<ril_compiler_core::ids::ConstRef>,
     pub backing: model::Origins,
     pub lower: Option<u64>,
     pub length: Option<u64>,

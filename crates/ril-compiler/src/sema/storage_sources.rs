@@ -17,6 +17,9 @@ pub struct StorageObservation {
 
 #[derive(Debug, Clone)]
 pub struct BindingSource {
+    /// A pattern receiver has a real enclosing match/conditional activation,
+    /// distinct from the subject occurrence which supplies this binding birth.
+    pub receiver: Option<super::application_effect::OccurrenceIdentity>,
     pub binding: BindingId,
     pub context: InvocationContext,
     pub activation: ScopeId,

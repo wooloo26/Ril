@@ -1225,6 +1225,23 @@ impl Resolver {
                     self.rewrite_expr(index, &mut arm.body, &child);
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.rewrite_expr(index, value, scope);
+                self.rewrite_pattern(index, pattern, scope, true, false);
+                let mut child = scope.clone();
+                let mut names = vec![];
+                pattern_bindings(pattern, &mut names);
+                child.shadow(names);
+                self.rewrite_expr(index, then_branch, &child);
+                if let Some(branch) = else_branch {
+                    self.rewrite_expr(index, branch, scope);
+                }
+            }
             ExprKind::Is { value, pattern } => {
                 self.rewrite_expr(index, value, scope);
                 self.rewrite_pattern(index, pattern, scope, false, false);
@@ -1232,6 +1249,19 @@ impl Resolver {
             ExprKind::While { condition, body } => {
                 self.rewrite_expr(index, condition, scope);
                 self.rewrite_block(index, body, scope);
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.rewrite_expr(index, value, scope);
+                self.rewrite_pattern(index, pattern, scope, true, false);
+                let mut child = scope.clone();
+                let mut names = vec![];
+                pattern_bindings(pattern, &mut names);
+                child.shadow(names);
+                self.rewrite_block(index, body, &child);
             }
             ExprKind::For {
                 iterable,
@@ -1363,7 +1393,9 @@ impl Resolver {
                     *name = path.join("::");
                 }
             }
-            PatternKind::Tuple(items) | PatternKind::Alternative(items) => {
+            PatternKind::Tuple(items)
+            | PatternKind::Array(items)
+            | PatternKind::Alternative(items) => {
                 for item in items {
                     self.rewrite_pattern(index, item, scope, binding, top);
                 }
@@ -1414,6 +1446,11 @@ impl Resolver {
             PatternKind::Mode { pattern, .. } => {
                 self.rewrite_pattern(index, pattern, scope, binding, top)
             }
+            PatternKind::Rest(name) => {
+                if top && let Some(name) = name {
+                    *name = self.canonical(index, name);
+                }
+            }
             PatternKind::Type { ty, .. } => self.rewrite_type(index, ty, scope),
             PatternKind::Value(value) => self.rewrite_expr(index, value, scope),
             PatternKind::Literal(_) | PatternKind::Wildcard | PatternKind::Error => {}
@@ -1456,8 +1493,8 @@ impl Resolver {
 
 fn pattern_bindings(pattern: &Pattern, names: &mut Vec<String>) {
     match &pattern.kind {
-        PatternKind::Name(name) => names.push(name.clone()),
-        PatternKind::Tuple(items) | PatternKind::Alternative(items) => {
+        PatternKind::Name(name) | PatternKind::Rest(Some(name)) => names.push(name.clone()),
+        PatternKind::Tuple(items) | PatternKind::Array(items) | PatternKind::Alternative(items) => {
             for item in items {
                 pattern_bindings(item, names);
             }
@@ -2194,13 +2231,32 @@ fn collect_expr_imports<'a>(expr: &'a Expr, imports: &mut Vec<&'a UseDeclaration
                 collect_expr_imports(&arm.body, imports);
             }
         }
+        ExprKind::IfLet {
+            value,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_expr_imports(value, imports);
+            collect_expr_imports(then_branch, imports);
+            if let Some(branch) = else_branch {
+                collect_expr_imports(branch, imports);
+            }
+        }
         ExprKind::While { condition, body } => {
             collect_expr_imports(condition, imports);
             collect_imports(&body.statements, imports);
+            collect_imports(&body.where_items, imports);
+        }
+        ExprKind::WhileLet { value, body, .. } => {
+            collect_expr_imports(value, imports);
+            collect_imports(&body.statements, imports);
+            collect_imports(&body.where_items, imports);
         }
         ExprKind::For { iterable, body, .. } => {
             collect_expr_imports(iterable, imports);
             collect_imports(&body.statements, imports);
+            collect_imports(&body.where_items, imports);
         }
         ExprKind::Call { callee, arguments } => {
             collect_expr_imports(callee, imports);

@@ -6,6 +6,11 @@ pub enum ConstNodeKind {
     Literal(crate::core::Literal),
     Tuple(Vec<ConstRef>),
     Array(Vec<ConstRef>),
+    ArrayWindow {
+        backing: ConstRef,
+        start: u64,
+        len: u64,
+    },
     Map(Vec<(ConstRef, ConstRef)>),
     Record(Vec<(String, ConstRef)>),
     Variant {

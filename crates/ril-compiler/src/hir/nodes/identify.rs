@@ -628,6 +628,25 @@ impl Identify<'_> {
                 self.opt_expr(else_branch.as_deref_mut(), *e, d)?;
             }
             (
+                ast::ExprKind::IfLet {
+                    pattern,
+                    value,
+                    then_branch,
+                    else_branch,
+                },
+                ExprKind::IfLet {
+                    pattern: p,
+                    value: v,
+                    then_branch: t,
+                    else_branch: e,
+                },
+            ) => {
+                self.expr(value, *v, d)?;
+                self.pattern(pattern, *p, d)?;
+                self.expr(then_branch, *t, d)?;
+                self.opt_expr(else_branch.as_deref_mut(), *e, d)?;
+            }
+            (
                 ast::ExprKind::Match {
                     value,
                     arms,
@@ -665,6 +684,22 @@ impl Identify<'_> {
                 },
             ) => {
                 self.expr(condition, *c, d)?;
+                self.block(body, b, d)?;
+            }
+            (
+                ast::ExprKind::WhileLet {
+                    pattern,
+                    value,
+                    body,
+                },
+                ExprKind::WhileLet {
+                    pattern: p,
+                    value: v,
+                    body: b,
+                },
+            ) => {
+                self.expr(value, *v, d)?;
+                self.pattern(pattern, *p, d)?;
                 self.block(body, b, d)?;
             }
             (
@@ -872,8 +907,12 @@ impl Identify<'_> {
             | (ast::PatternKind::Error, PatternKind::Error) => {}
             (ast::PatternKind::Literal(a), PatternKind::Literal(b)) => self.literal(a, b)?,
             (ast::PatternKind::Tuple(a), PatternKind::Tuple(b))
+            | (ast::PatternKind::Array(a), PatternKind::Array(b))
             | (ast::PatternKind::Alternative(a), PatternKind::Alternative(b)) => {
                 self.patterns(a, b, d)?
+            }
+            (ast::PatternKind::Rest(a), PatternKind::Rest(b)) => {
+                self.optional_text(a.as_deref(), b.as_deref())?
             }
             (
                 ast::PatternKind::Record {

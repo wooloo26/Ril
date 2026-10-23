@@ -21,6 +21,10 @@ pub(super) fn lower(
         .iter()
         .map(|value| {
             Ok(p::BindingSource {
+                receiver: value.receiver.map(|identity| p::OccurrenceIdentity {
+                    source: identity.source,
+                    activation: identity.activation,
+                }),
                 binding: value.binding as u32,
                 context: resumption_context(value.context),
                 activation: value.activation.0,

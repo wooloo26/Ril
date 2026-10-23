@@ -331,6 +331,7 @@ impl Lower {
         match pattern {
             Pattern::Value(value) => self.expression(value)?,
             Pattern::Tuple(values)
+            | Pattern::Array(values)
             | Pattern::Alternative(values)
             | Pattern::Constructor {
                 arguments: values, ..
@@ -339,7 +340,7 @@ impl Lower {
                     self.pattern(value)?;
                 }
             }
-            Pattern::Record(values) => {
+            Pattern::Record(values) | Pattern::RecordRest { fields: values, .. } => {
                 for (_, value) in values {
                     self.pattern(value)?;
                 }

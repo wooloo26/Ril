@@ -67,6 +67,7 @@ impl Meter<'_> {
             }
             StaticValue::Record(value) => self.strings(value.mutable_fields.iter()),
             StaticValue::Array(_)
+            | StaticValue::ArrayWindow(_)
             | StaticValue::Tuple(_)
             | StaticValue::Map(_)
             | StaticValue::Integer(_)
@@ -471,6 +472,19 @@ impl Meter<'_> {
                     self.expr(value, depth + 1)?;
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.expr(value, depth + 1)?;
+                self.pattern(pattern, depth + 1)?;
+                self.expr(then_branch, depth + 1)?;
+                if let Some(value) = else_branch {
+                    self.expr(value, depth + 1)?;
+                }
+            }
             ExprKind::Match { value, arms, .. } => {
                 self.expr(value, depth + 1)?;
                 for arm in arms {
@@ -487,6 +501,15 @@ impl Meter<'_> {
             }
             ExprKind::While { condition, body } => {
                 self.expr(condition, depth + 1)?;
+                self.block(body, depth + 1)?;
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.expr(value, depth + 1)?;
+                self.pattern(pattern, depth + 1)?;
                 self.block(body, depth + 1)?;
             }
             ExprKind::For {
@@ -522,9 +545,11 @@ impl Meter<'_> {
     fn pattern(&self, value: &Pattern, depth: usize) -> Result<()> {
         self.node(depth)?;
         match &value.kind {
-            PatternKind::Name(name) => self.text(name)?,
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => self.text(name)?,
             PatternKind::Literal(value) => self.literal(value)?,
-            PatternKind::Tuple(values) | PatternKind::Alternative(values) => {
+            PatternKind::Tuple(values)
+            | PatternKind::Array(values)
+            | PatternKind::Alternative(values) => {
                 for value in values {
                     self.pattern(value, depth + 1)?;
                 }
@@ -562,7 +587,7 @@ impl Meter<'_> {
                 }
             }
             PatternKind::Value(value) => self.expr(value, depth + 1)?,
-            PatternKind::Wildcard | PatternKind::Error => {}
+            PatternKind::Wildcard | PatternKind::Rest(None) | PatternKind::Error => {}
         }
         Ok(())
     }

@@ -19,6 +19,7 @@ fn edges(kind: &ConstNodeKind) -> Vec<ConstRef> {
     match kind {
         ConstNodeKind::Literal(_) => vec![],
         ConstNodeKind::Tuple(items) | ConstNodeKind::Array(items) => items.clone(),
+        ConstNodeKind::ArrayWindow { backing, .. } => vec![*backing],
         ConstNodeKind::Map(entries) => entries
             .iter()
             .flat_map(|(key, value)| [*key, *value])
@@ -61,7 +62,11 @@ pub(super) fn prepare(input: &native::Module) -> Result<Pool, BackendError> {
                 ));
             }
             if let Some(length) = node.fixed_array_length
-                && !matches!(&node.kind, ConstNodeKind::Array(items) if items.len() as u64 == length)
+                && !match &node.kind {
+                    ConstNodeKind::Array(items) => items.len() as u64 == length,
+                    ConstNodeKind::ArrayWindow { len, .. } => *len == length,
+                    _ => false,
+                }
             {
                 return Err(BackendError::InvalidIr(
                     "constant fixed-array shape differs from its witness".into(),
@@ -74,6 +79,29 @@ pub(super) fn prepare(input: &native::Module) -> Result<Pool, BackendError> {
                         "duplicate constant record field".into(),
                     ));
                 }
+            }
+        }
+    }
+    for node in nodes.values() {
+        if let ConstNodeKind::ArrayWindow {
+            backing,
+            start,
+            len,
+        } = &node.kind
+        {
+            let length = match nodes.get(backing).map(|node| &node.kind) {
+                Some(ConstNodeKind::Array(items)) => items.len() as u64,
+                Some(ConstNodeKind::ArrayWindow { len, .. }) => *len,
+                _ => {
+                    return Err(BackendError::InvalidIr(
+                        "constant array window has no array backing".into(),
+                    ));
+                }
+            };
+            if start.checked_add(*len).is_none_or(|end| end > length) {
+                return Err(BackendError::InvalidIr(
+                    "constant array window exceeds its backing".into(),
+                ));
             }
         }
     }
@@ -167,6 +195,22 @@ impl Emitter<'_, '_> {
     fn constant_node(&mut self, kind: &ConstNodeKind) -> Result<Value, BackendError> {
         match kind {
             ConstNodeKind::Literal(literal) => self.literal(literal),
+            ConstNodeKind::ArrayWindow {
+                backing,
+                start,
+                len,
+            } => {
+                let backing = self.constant_ref(*backing)?;
+                let lower = self.integer(i128::from(*start), 64, true)?;
+                let end = start.checked_add(*len).ok_or_else(|| {
+                    BackendError::InvalidIr("constant window bounds overflow".into())
+                })?;
+                let upper = self.integer(i128::from(end), 64, true)?;
+                let inclusive = self.i32(0);
+                let range = self.handle("ril_rt_range", &[lower, upper, inclusive])?;
+                let safe = self.i32(0);
+                self.handle("ril_rt_index", &[backing, range, safe])
+            }
             ConstNodeKind::Tuple(items) | ConstNodeKind::Array(items) => {
                 let values = items
                     .iter()
@@ -370,5 +414,84 @@ mod tests {
             prepare(&cycle).is_err(),
             "cycles require a separate shell-initialization contract"
         );
+    }
+
+    #[test]
+    fn constant_windows_retain_backing_edges_and_validate_relative_bounds() {
+        let mut window = node(
+            1,
+            ConstNodeKind::ArrayWindow {
+                backing: reference(7, 0),
+                start: 0,
+                len: 1,
+            },
+        );
+        window.fixed_array_length = Some(1);
+        let input = module(vec![
+            node(0, ConstNodeKind::Array(vec![reference(7, 3)])),
+            window,
+            node(
+                2,
+                ConstNodeKind::ArrayWindow {
+                    backing: reference(7, 1),
+                    start: 1,
+                    len: 0,
+                },
+            ),
+            node(3, ConstNodeKind::Literal(core::Literal::Unit)),
+            node(
+                4,
+                ConstNodeKind::Tuple(vec![reference(7, 0), reference(7, 1)]),
+            ),
+        ]);
+        let prepared = prepare(&input).unwrap();
+        let order: Vec<_> = prepared.nodes.iter().map(|node| node.reference).collect();
+        let ordinal = |reference| order.iter().position(|item| *item == reference).unwrap();
+        assert!(ordinal(reference(7, 0)) < ordinal(reference(7, 1)));
+        assert!(ordinal(reference(7, 1)) < ordinal(reference(7, 2)));
+        assert!(ordinal(reference(7, 1)) < ordinal(reference(7, 4)));
+        assert_eq!(
+            edges(&input.constant_graphs[0].nodes[1].kind),
+            [reference(7, 0)]
+        );
+        for change in 0..5 {
+            let mut damaged = input.clone();
+            match change {
+                0 => {
+                    damaged.constant_graphs[0].nodes[1].kind = ConstNodeKind::ArrayWindow {
+                        backing: reference(7, 3),
+                        start: 0,
+                        len: 1,
+                    }
+                }
+                1 => {
+                    damaged.constant_graphs[0].nodes[1].kind = ConstNodeKind::ArrayWindow {
+                        backing: reference(7, 99),
+                        start: 0,
+                        len: 1,
+                    }
+                }
+                2 => {
+                    damaged.constant_graphs[0].nodes[1].kind = ConstNodeKind::ArrayWindow {
+                        backing: reference(7, 0),
+                        start: u64::MAX,
+                        len: 1,
+                    }
+                }
+                3 => {
+                    damaged.constant_graphs[0].nodes[1].kind = ConstNodeKind::ArrayWindow {
+                        backing: reference(7, 0),
+                        start: 1,
+                        len: 1,
+                    }
+                }
+                4 => damaged.constant_graphs[0].nodes[1].fixed_array_length = Some(2),
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(prepare(&damaged), Err(BackendError::InvalidIr(_))),
+                "window corruption {change}"
+            );
+        }
     }
 }

@@ -733,6 +733,10 @@ impl Replay<'_> {
                     origin_work(work, 1)?;
                     vec![*pattern]
                 }
+                HirExpr::IfLet { pattern, .. } | HirExpr::WhileLet { pattern, .. } => {
+                    origin_work(work, 1)?;
+                    vec![*pattern]
+                }
                 _ => continue,
             };
             for root in roots {
@@ -817,6 +821,10 @@ impl Replay<'_> {
                     births.insert((pattern, birth, binding.name.as_str())),
                     "two bindings borrowed one original receiver birth",
                 )?;
+                if let Some(row) = receiving_rows.get(&id).filter(|row| row.receiver.is_some()) {
+                    let _ = self.pattern_receiver_source(row, sites, work)?;
+                    continue;
+                }
                 let activation = self
                     .facts
                     .activations
@@ -860,6 +868,24 @@ impl Replay<'_> {
                 let alias = sources.is_some_and(|sources| sources.contains(&birth.source))
                     && same_frame
                     && role == StorageBirthRole::Expression;
+                if alias
+                    && sources.is_some_and(|sources| {
+                        sources.iter().any(|source| {
+                            hir.expression(*source).is_some_and(|expression| {
+                                matches!(
+                                    expression.kind,
+                                    HirExpr::Match { .. }
+                                        | HirExpr::IfLet { .. }
+                                        | HirExpr::WhileLet { .. }
+                                )
+                            })
+                        })
+                    })
+                {
+                    return Err(
+                        "an actual pattern receiver lost its immutable subject receipt".into(),
+                    );
+                }
                 require(
                     storage || alias || self.storage_resource_lease_origin(id, pattern, work)?,
                     "binding introducer is not its actual storage, pattern or generated receiver role",
@@ -1626,9 +1652,6 @@ impl Replay<'_> {
             initial.ty != Ty::Never && initial.sources.iter().all(|source| *source < row.binding),
             "storage initializer is abrupt or creates a forward declaration cycle",
         )?;
-        let Some(path) = selected else {
-            return Ok(None);
-        };
         let identity = (
             row.declaration,
             row.initializer.expression,
@@ -1684,10 +1707,10 @@ impl Replay<'_> {
         roots[&identity]
             .as_ref()
             .map(|root| {
-                root.project_steps(path, &mut crate::sema::source_types::WorkLimit::new(16384))
-                    .map_err(|error| error.to_string())
+                self.pattern_binding_projection(row, root, &binding.typing_environment, work)
             })
             .transpose()
+            .map(Option::flatten)
     }
 
     pub(super) fn storage_sources(&self) -> Result<(), Failure> {
@@ -1792,6 +1815,24 @@ impl Replay<'_> {
                     declarations.insert(row.binding, row).is_none(),
                     "storage declaration was recorded twice",
                 )?;
+                if row.receiver.is_some() {
+                    let reconstructed =
+                        self.pattern_receiver_source(row, &sites, &mut plan_work)?;
+                    let binding = self
+                        .facts
+                        .bindings
+                        .get(row.binding)
+                        .ok_or("pattern receiver Source binding is absent")?;
+                    require(
+                        self.facts.source_types.validate_binding_schema(
+                            row.binding,
+                            reconstructed.as_ref().map(|(schema, _)| schema),
+                            binding.typing_environment.id(),
+                        ),
+                        "pattern receiver Source index lost or changed its original schema",
+                    )?;
+                    continue;
+                }
                 let owner = row
                     .context
                     .owner
@@ -2423,6 +2464,7 @@ mod tests {
     }
     fn source(id: BindingId) -> BindingSource {
         BindingSource {
+            receiver: None,
             binding: id,
             context: context(CallableOwner::Global),
             activation: ScopeId(0),

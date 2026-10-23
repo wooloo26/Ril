@@ -50,6 +50,27 @@ pub fn test_native() {
 --@ end-file
 --@ end-case
 
+--@ case: reject-shadowed-catalog-pattern-namespace
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ spec: STD#structured-concurrency-and-panic-containment
+--@ companion: scope-fault-declarations
+-- Error [E0204]: A local type cannot supply the canonical catalog constructor namespace.
+--@ file: source.ril
+use ril/concurrent::{TaskFault}
+
+fn inspect(value: TaskFault)
+where
+    type Concurrent = int
+{
+    match value {
+        Concurrent::TaskFault::DoubleFaultFatal(info) -> (),
+        _ -> (),
+    }
+}
+--@ end-file
+--@ end-case
+
 --@ case: repeated-scope-token
 --@ mode: run-pass
 --@ spec: STD#structured-concurrency-and-panic-containment

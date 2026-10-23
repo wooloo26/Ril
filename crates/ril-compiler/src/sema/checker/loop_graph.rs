@@ -61,22 +61,7 @@ pub(super) fn transport_fields(
     }
 }
 
-pub(super) fn forget_choices(value: &mut Value) {
-    value.origins.choices.clear();
-    for nested in [
-        &mut value.option_payload,
-        &mut value.variant_payload,
-        &mut value.result_payload,
-        &mut value.result_success,
-        &mut value.result_error,
-    ]
-    .into_iter()
-    .flatten()
-    .chain(value.variant_witnesses.values_mut())
-    {
-        forget_choices(nested);
-    }
-}
+pub(super) use super::super::model::forget_choices;
 
 #[cfg(test)]
 mod tests {

@@ -44,6 +44,28 @@ impl Rename {
                 env.insert(name.clone(), slot.clone());
                 Pattern::Name(slot)
             }
+            Pattern::Rest(Some(name)) => {
+                let slot = self.slot(name, preserve);
+                env.insert(name.clone(), slot.clone());
+                Pattern::Rest(Some(slot))
+            }
+            Pattern::Array(items) => Pattern::Array(
+                items
+                    .iter()
+                    .map(|pattern| self.binding_mode(pattern, env, preserve))
+                    .collect(),
+            ),
+            Pattern::RecordRest { fields, rest } => {
+                let fields = fields
+                    .iter()
+                    .map(|(name, pattern)| {
+                        (name.clone(), self.binding_mode(pattern, env, preserve))
+                    })
+                    .collect();
+                let slot = self.slot(rest, preserve);
+                env.insert(rest.clone(), slot.clone());
+                Pattern::RecordRest { fields, rest: slot }
+            }
             Pattern::Tuple(items) => Pattern::Tuple(
                 items
                     .iter()
@@ -89,6 +111,20 @@ impl Rename {
     fn bound_pattern(pattern: &Pattern, env: &Env) -> Pattern {
         match pattern {
             Pattern::Name(name) => Pattern::Name(env.get(name).unwrap_or(name).clone()),
+            Pattern::Rest(Some(name)) => Pattern::Rest(Some(env.get(name).unwrap_or(name).clone())),
+            Pattern::Array(items) => Pattern::Array(
+                items
+                    .iter()
+                    .map(|pattern| Self::bound_pattern(pattern, env))
+                    .collect(),
+            ),
+            Pattern::RecordRest { fields, rest } => Pattern::RecordRest {
+                fields: fields
+                    .iter()
+                    .map(|(name, pattern)| (name.clone(), Self::bound_pattern(pattern, env)))
+                    .collect(),
+                rest: env.get(rest).unwrap_or(rest).clone(),
+            },
             Pattern::Tuple(items) => Pattern::Tuple(
                 items
                     .iter()
@@ -121,6 +157,24 @@ impl Rename {
         Ok(match pattern {
             Pattern::Value(value) => Pattern::Value(Box::new(self.expr(value, env)?)),
             Pattern::Name(name) => Pattern::Name(env.get(name).unwrap_or(name).clone()),
+            Pattern::Rest(binding) => Pattern::Rest(
+                binding
+                    .as_ref()
+                    .map(|name| env.get(name).unwrap_or(name).clone()),
+            ),
+            Pattern::Array(items) => Pattern::Array(
+                items
+                    .iter()
+                    .map(|item| self.test_pattern(item, env))
+                    .collect::<Result<_, _>>()?,
+            ),
+            Pattern::RecordRest { fields, rest } => Pattern::RecordRest {
+                fields: fields
+                    .iter()
+                    .map(|(name, pattern)| Ok((name.clone(), self.test_pattern(pattern, env)?)))
+                    .collect::<Result<_, NotImplemented>>()?,
+                rest: env.get(rest).unwrap_or(rest).clone(),
+            },
             Pattern::Tuple(items) => Pattern::Tuple(
                 items
                     .iter()

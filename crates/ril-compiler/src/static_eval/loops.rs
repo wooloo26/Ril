@@ -22,6 +22,10 @@ enum Cursor {
         values: StaticCollection<Vec<StaticValue>>,
         index: usize,
     },
+    Window {
+        values: Box<StaticArrayWindow>,
+        index: usize,
+    },
     Map {
         values: StaticCollection<Vec<(StaticValue, StaticValue)>>,
         index: usize,
@@ -50,7 +54,26 @@ impl Cursor {
                 if value.is_some() {
                     *index += 1;
                 }
-                Ok(value)
+                value
+                    .map(|value| {
+                        evaluator.project_source_index(&StaticValue::Array(values.clone()), value)
+                    })
+                    .transpose()
+            }
+            Self::Window { values, index } => {
+                let value = values
+                    .get(*index)
+                    .map(|value| evaluator.copy_static_value(value))
+                    .transpose()?;
+                if value.is_some() {
+                    *index += 1;
+                }
+                value
+                    .map(|value| {
+                        evaluator
+                            .project_source_index(&StaticValue::ArrayWindow(values.clone()), value)
+                    })
+                    .transpose()
             }
             Self::Map { values, index } => {
                 if let Some((key, value)) = values.get(*index) {
@@ -228,6 +251,62 @@ impl Evaluator {
             }
         }
     }
+    pub(super) fn evaluate_if_let(
+        &mut self,
+        pattern: &Pattern,
+        value: &Expr,
+        yes: &Expr,
+        no: Option<&Expr>,
+        tail: bool,
+        expected: Option<&TypeExpr>,
+    ) -> Result<StaticValue> {
+        let value = self.expression(value)?;
+        let saved = self.capture_environment()?;
+        let result = (|| {
+            if self.match_pattern(pattern, &value)? {
+                self.expression_expected(yes, tail, expected)
+            } else {
+                let restored = self.copy_environment(&saved)?;
+                self.install_environment(restored);
+                no.map_or(Ok(StaticValue::Unit), |no| {
+                    self.expression_expected(no, tail, expected)
+                })
+            }
+        })();
+        self.install_environment(saved);
+        result
+    }
+    pub(super) fn evaluate_while_let(
+        &mut self,
+        pattern: &Pattern,
+        value: &Expr,
+        body: &Block,
+    ) -> Result<StaticValue> {
+        let frame = self.new_loop_frame(None, true)?;
+        loop {
+            self.budget.event(budget::Event::LoopIteration)?;
+            let value = self.expression(value)?;
+            let saved = self.capture_environment()?;
+            let result = (|| {
+                if !self.match_pattern(pattern, &value)? {
+                    return Ok(None);
+                }
+                self.loop_body(body, None, &frame).map(Some)
+            })();
+            self.install_environment(saved);
+            match result {
+                Ok(None) => return Ok(StaticValue::Unit),
+                Ok(Some(_)) => {}
+                Err(Failure::Loop(Transfer { target, exit })) if target == frame.target => {
+                    match exit {
+                        Exit::Next => {}
+                        Exit::Last(_) => return Ok(StaticValue::Unit),
+                    }
+                }
+                Err(failure) => return Err(failure),
+            }
+        }
+    }
     fn for_cursor(&mut self, iterable: &Expr) -> Result<Cursor> {
         if let ExprKind::Range {
             start,
@@ -267,6 +346,7 @@ impl Evaluator {
         }
         match self.expression(iterable)? {
             StaticValue::Array(values) => Ok(Cursor::Array { values, index: 0 }),
+            StaticValue::ArrayWindow(values) => Ok(Cursor::Window { values, index: 0 }),
             StaticValue::Map(values) => Ok(Cursor::Map { values, index: 0 }),
             _ => Err(Failure::Diagnostic(
                 "E0355",

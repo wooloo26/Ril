@@ -23,10 +23,11 @@ impl Validator<'_> {
     }
     fn bind_pattern(&mut self, pattern: &Pattern) {
         match &pattern.kind {
-            PatternKind::Name(name) => {
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
                 self.locals.insert(name.clone());
             }
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..
@@ -155,6 +156,7 @@ impl Validator<'_> {
         match &pattern.kind {
             PatternKind::Value(value) => self.validate_phase(value, static_phase, output),
             PatternKind::Tuple(patterns)
+            | PatternKind::Array(patterns)
             | PatternKind::Alternative(patterns)
             | PatternKind::Constructor {
                 arguments: patterns,
@@ -288,6 +290,23 @@ impl Validator<'_> {
                     self.validate_phase(branch, static_phase, output);
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.validate_phase(value, static_phase, output);
+                self.validate_test_phase(pattern, static_phase, output);
+                let saved = self.locals.clone();
+                self.bind_pattern(pattern);
+                self.validate_phase(then_branch, static_phase, output);
+                self.locals = saved.clone();
+                if let Some(branch) = else_branch {
+                    self.validate_phase(branch, static_phase, output);
+                }
+                self.locals = saved;
+            }
             ExprKind::Match { value, arms, .. } => {
                 self.validate_phase(value, static_phase, output);
                 for arm in arms {
@@ -317,6 +336,18 @@ impl Validator<'_> {
             ExprKind::While { condition, body } => {
                 self.validate_phase(condition, static_phase, output);
                 let saved = self.locals.clone();
+                self.block(body, static_phase, output);
+                self.locals = saved;
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.validate_phase(value, static_phase, output);
+                self.validate_test_phase(pattern, static_phase, output);
+                let saved = self.locals.clone();
+                self.bind_pattern(pattern);
                 self.block(body, static_phase, output);
                 self.locals = saved;
             }

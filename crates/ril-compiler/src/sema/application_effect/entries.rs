@@ -192,6 +192,7 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
     let mut work = 4_000_000usize;
     let mut packets = packets::Replay::new(facts, &mut work)?;
     packets.physical_sources(&mut work)?;
+    packets.pattern_windows(&mut work)?;
     work = work
         .checked_sub(facts.activations.len())
         .ok_or("callable body coverage exceeds its work bound")?;

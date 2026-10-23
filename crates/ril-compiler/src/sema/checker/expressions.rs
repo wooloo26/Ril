@@ -1795,6 +1795,27 @@ impl Checker {
             ExprKind::Call { .. } => {
                 self.application_expression(expr, expected, frame, source_call_event)
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                let checked = self.check_if_let(
+                    pattern,
+                    value,
+                    then_branch,
+                    else_branch.as_deref(),
+                    expr.span,
+                    frame,
+                    SourceContext {
+                        ordinary: expected,
+                        source,
+                    },
+                );
+                *source_handled = Some(checked.source_valid);
+                checked.value
+            }
             ExprKind::If {
                 condition,
                 then_branch,
@@ -2049,6 +2070,38 @@ impl Checker {
                         never
                     }
                 }
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.check_pattern_binder_uniqueness(pattern);
+                self.loop_depth += 1;
+                self.loop_allocation_owners.push(frame.owner);
+                self.loop_breaks.push((frame.owner, Vec::new()));
+                self.loop_continuations.push((frame.owner, false));
+                self.loop_unit.push(true);
+                let mut outcome = None;
+                self.loop_fixedpoint_with(body, frame, expr.span, false, |checker, frame| {
+                    let step = checker.check_while_let_iteration(pattern, value, body, frame);
+                    outcome = Some(step.0.clone());
+                    step
+                });
+                let breaks = self.loop_breaks.pop().unwrap().1;
+                self.loop_continuations.pop();
+                self.loop_unit.pop();
+                self.loop_depth -= 1;
+                self.loop_allocation_owners.pop();
+                if breaks.is_empty()
+                    && let Some(value) = outcome.filter(|value| value.ty == Ty::Never)
+                {
+                    return value;
+                }
+                for value in breaks {
+                    self.require_type(&value, &Ty::Unit, expr.span);
+                }
+                self.unit(expr.span)
             }
             ExprKind::While { condition, body } => {
                 let condition = self.expression(condition, frame);
@@ -2724,6 +2777,18 @@ impl Checker {
         values
     }
     fn loop_fixedpoint(&mut self, body: &Block, frame: &mut Frame, span: Span, at_most_once: bool) {
+        self.loop_fixedpoint_with(body, frame, span, at_most_once, |checker, frame| {
+            (checker.block(body, frame), false)
+        });
+    }
+    fn loop_fixedpoint_with(
+        &mut self,
+        body: &Block,
+        frame: &mut Frame,
+        span: Span,
+        at_most_once: bool,
+        mut evaluate: impl FnMut(&mut Self, &mut Frame) -> (Value, bool),
+    ) {
         let outside_bindings: BTreeMap<_, _> = self
             .bindings
             .iter()
@@ -2758,7 +2823,7 @@ impl Checker {
                 .collect();
             let result_scope = self.begin_loop_results(frame.owner);
             let channel_start = self.channel_message_sequence;
-            let mut iteration = self.block(body, frame);
+            let (mut iteration, matched_exit) = evaluate(self, frame);
             self.transport_frame_prefix(frame, recency, old_accesses, old_returns);
             if self
                 .deferred_arm_cleanups
@@ -2774,6 +2839,7 @@ impl Checker {
             }
             self.finish_loop_results(result_scope, &mut iteration, frame, span, body);
             let single_iteration = at_most_once
+                || matched_exit
                 || (iteration.ty == Ty::Never
                     && self
                         .loop_continuations
@@ -3169,8 +3235,8 @@ impl Checker {
 }
 pub(super) fn binding_count(pattern: &Pattern) -> usize {
     match &pattern.kind {
-        PatternKind::Name(_) => 1,
-        PatternKind::Tuple(items) | PatternKind::Alternative(items) => {
+        PatternKind::Name(name) | PatternKind::Rest(Some(name)) => usize::from(name != "_"),
+        PatternKind::Tuple(items) | PatternKind::Array(items) | PatternKind::Alternative(items) => {
             items.iter().map(binding_count).sum()
         }
         PatternKind::Record {
@@ -3238,6 +3304,22 @@ pub(super) fn collect_names(expr: &Expr, names: &mut BTreeSet<String>) {
             }
         }
         ExprKind::Block(block) | ExprKind::Loop(block) => collect_block_names(block, names),
+        ExprKind::IfLet {
+            pattern,
+            value,
+            then_branch,
+            else_branch,
+        } => {
+            collect_names(value, names);
+            collect_pattern_values(pattern, names);
+            let mut inner = BTreeSet::new();
+            collect_names(then_branch, &mut inner);
+            remove_pattern_names(pattern, &mut inner);
+            names.extend(inner);
+            if let Some(branch) = else_branch {
+                collect_names(branch, names);
+            }
+        }
         ExprKind::If {
             condition,
             then_branch,
@@ -3260,6 +3342,18 @@ pub(super) fn collect_names(expr: &Expr, names: &mut BTreeSet<String>) {
         ExprKind::While { condition, body } => {
             collect_names(condition, names);
             collect_block_names(body, names);
+        }
+        ExprKind::WhileLet {
+            pattern,
+            value,
+            body,
+        } => {
+            collect_names(value, names);
+            collect_pattern_values(pattern, names);
+            let mut inner = BTreeSet::new();
+            collect_block_names(body, &mut inner);
+            remove_pattern_names(pattern, &mut inner);
+            names.extend(inner);
         }
         ExprKind::For {
             iterable,
@@ -3369,10 +3463,11 @@ pub(super) fn collect_block_names(block: &Block, names: &mut BTreeSet<String>) {
 }
 fn remove_pattern_names(pattern: &Pattern, names: &mut BTreeSet<String>) {
     match &pattern.kind {
-        PatternKind::Name(name) => {
+        PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
             names.remove(name);
         }
         PatternKind::Tuple(items)
+        | PatternKind::Array(items)
         | PatternKind::Alternative(items)
         | PatternKind::Constructor {
             arguments: items, ..
@@ -3401,6 +3496,7 @@ fn collect_pattern_values(pattern: &Pattern, names: &mut BTreeSet<String>) {
     match &pattern.kind {
         PatternKind::Value(expression) => collect_names(expression, names),
         PatternKind::Tuple(items)
+        | PatternKind::Array(items)
         | PatternKind::Alternative(items)
         | PatternKind::Constructor {
             arguments: items, ..
@@ -3466,14 +3562,41 @@ fn mutation_names(source: MutationSource<'_>) -> BTreeSet<String> {
                 }
             }
             ExprKind::If {
+                condition,
                 then_branch,
                 else_branch,
-                ..
             } => {
+                visit(condition, result);
                 visit(then_branch, result);
                 if let Some(branch) = else_branch {
                     visit(branch, result);
                 }
+            }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                visit(value, result);
+                let mut branch = BTreeSet::new();
+                visit(then_branch, &mut branch);
+                remove_pattern_names(pattern, &mut branch);
+                result.extend(branch);
+                if let Some(branch) = else_branch {
+                    visit(branch, result);
+                }
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                visit(value, result);
+                let mut iteration = BTreeSet::new();
+                visit_block(body, &mut iteration);
+                remove_pattern_names(pattern, &mut iteration);
+                result.extend(iteration);
             }
             _ => {}
         }

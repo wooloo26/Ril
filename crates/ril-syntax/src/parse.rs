@@ -998,27 +998,29 @@ impl<'a> Parser<'a> {
         loop {
             let before = self.pos;
             let start = self.offset();
-            let operation = self.expression(100, true);
-            if !grouped && !self.at("->") {
+            let operation = self.expression_with_handler_boundary(100, true, Some(grouped));
+            if !grouped && !self.at("->") && (!self.at("(") || !self.handler_parameters_ahead()) {
                 return StmtKind::HandlerApplication(operation);
             }
-            // Postfix parsing leaves a Call for the operation-arm parameter list.
-            let (operation, parameters) =
-                if let ExprKind::Call { callee, arguments } = operation.kind {
-                    let parameters = arguments
-                        .into_iter()
-                        .map(|argument| Parameter {
-                            pattern: expr_pattern(argument.value),
-                            mode: argument.mode,
-                            ty: None,
-                            default: None,
-                            span: argument.span,
-                        })
-                        .collect();
-                    (*callee, parameters)
-                } else {
-                    (operation, vec![])
-                };
+            self.expect("(");
+            let mut parameters = vec![];
+            while !self.at(")") && !self.eof() {
+                let before = self.pos;
+                let start = self.offset();
+                let mode = self.parameter_mode();
+                let pattern = self.pattern(true);
+                parameters.push(Parameter {
+                    pattern,
+                    mode,
+                    ty: None,
+                    default: None,
+                    span: self.span(start),
+                });
+                if self.pos == before || !self.list_separator(")") {
+                    break;
+                }
+            }
+            self.expect(")");
             self.expect("->");
             let body = self.expression(0, false);
             arms.push(HandlerArm {
@@ -1035,6 +1037,37 @@ impl<'a> Parser<'a> {
             self.expect("}");
         }
         StmtKind::Handler(arms)
+    }
+
+    /// The closing parenthesis distinguishes a handler's pattern list from an
+    /// ordinary callable application before either list is parsed. Nested
+    /// constructor/tuple parentheses and arrows inside them do not select it.
+    fn handler_parameters_ahead(&self) -> bool {
+        let mut depth = 0usize;
+        let mut tokens = self.tokens[self.significant()..].iter().filter(|token| {
+            !matches!(
+                token.kind,
+                SyntaxKind::Whitespace | SyntaxKind::Comment | SyntaxKind::Newline
+            )
+        });
+        while let Some(token) = tokens.next() {
+            match &self.text[token.start..token.end] {
+                "(" => depth += 1,
+                ")" => {
+                    let Some(inner) = depth.checked_sub(1) else {
+                        return false;
+                    };
+                    depth = inner;
+                    if depth == 0 {
+                        return tokens
+                            .next()
+                            .is_some_and(|token| &self.text[token.start..token.end] == "->");
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     fn block(&mut self) -> Block {
@@ -1469,6 +1502,15 @@ impl<'a> Parser<'a> {
     }
 
     fn expression(&mut self, min: u8, multiline: bool) -> Expr {
+        self.expression_with_handler_boundary(min, multiline, None)
+    }
+
+    fn expression_with_handler_boundary(
+        &mut self,
+        min: u8,
+        multiline: bool,
+        handler: Option<bool>,
+    ) -> Expr {
         self.start(SyntaxKind::Expression);
         let start = self.offset();
         self.depth += 1;
@@ -1509,6 +1551,9 @@ impl<'a> Parser<'a> {
                 break;
             }
             if self.at("(") {
+                if handler.is_some_and(|grouped| grouped || self.handler_parameters_ahead()) {
+                    break;
+                }
                 self.bump();
                 let arguments = self.arguments();
                 self.expect(")");
@@ -1795,6 +1840,14 @@ impl<'a> Parser<'a> {
             "\\" => return self.lambda(),
             "if" => {
                 self.bump();
+                let pattern = if self.eat("let") {
+                    Some(self.pattern(true))
+                } else {
+                    None
+                };
+                if pattern.is_some() {
+                    self.expect("=");
+                }
                 let condition = Box::new(self.expression(0, true));
                 let then_branch = Box::new(self.expression(0, false));
                 let else_branch = if self.eat("else") {
@@ -1802,10 +1855,19 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-                ExprKind::If {
-                    condition,
-                    then_branch,
-                    else_branch,
+                if let Some(pattern) = pattern {
+                    ExprKind::IfLet {
+                        pattern,
+                        value: condition,
+                        then_branch,
+                        else_branch,
+                    }
+                } else {
+                    ExprKind::If {
+                        condition,
+                        then_branch,
+                        else_branch,
+                    }
                 }
             }
             "match" => return self.match_expr(),
@@ -1815,9 +1877,25 @@ impl<'a> Parser<'a> {
             }
             "while" => {
                 self.bump();
+                let pattern = if self.eat("let") {
+                    Some(self.pattern(true))
+                } else {
+                    None
+                };
+                if pattern.is_some() {
+                    self.expect("=");
+                }
                 let condition = Box::new(self.expression(0, true));
                 let body = self.block();
-                ExprKind::While { condition, body }
+                if let Some(pattern) = pattern {
+                    ExprKind::WhileLet {
+                        pattern,
+                        value: condition,
+                        body,
+                    }
+                } else {
+                    ExprKind::While { condition, body }
+                }
             }
             "for" => {
                 self.bump();
@@ -2250,7 +2328,7 @@ impl<'a> Parser<'a> {
         if alternatives && self.eat("|") {
             let mut choices = vec![pattern];
             loop {
-                choices.push(self.pattern_atom());
+                choices.push(self.pattern(false));
                 if !self.eat("|") {
                     break;
                 }
@@ -2322,16 +2400,11 @@ impl<'a> Parser<'a> {
             }
             "(" => {
                 self.bump();
-                let mut parts = vec![];
-                while !self.at(")") && !self.eof() {
-                    let before = self.pos;
-                    parts.push(self.pattern(true));
-                    if self.pos == before || !self.list_separator(")") {
-                        break;
-                    }
-                }
-                self.expect(")");
-                PatternKind::Tuple(parts)
+                PatternKind::Tuple(self.sequence_patterns(")", false))
+            }
+            "[" => {
+                self.bump();
+                PatternKind::Array(self.sequence_patterns("]", true))
             }
             "." if self.look(1) == "{" => {
                 self.bump();
@@ -2402,6 +2475,47 @@ impl<'a> Parser<'a> {
             kind,
             span: self.span(start),
         }
+    }
+    fn sequence_patterns(&mut self, close: &str, named_rest: bool) -> Vec<Pattern> {
+        let mut parts = vec![];
+        let mut has_rest = false;
+        while !self.at(close) && !self.eof() {
+            let before = self.pos;
+            if self.at("..") {
+                self.start(SyntaxKind::Pattern);
+                let start = self.offset();
+                self.bump();
+                if has_rest {
+                    self.error(
+                        "E0347",
+                        "one tuple or array pattern permits at most one rest",
+                    );
+                }
+                has_rest = true;
+                let name = if self.kind() == Some(SyntaxKind::Identifier) {
+                    let name = self.name();
+                    if !named_rest {
+                        self.error("E0120", "tuple rest cannot introduce a binding");
+                    }
+                    Some(name)
+                } else {
+                    None
+                };
+                parts.push(Pattern {
+                    hir_id: None,
+                    kind: PatternKind::Rest(name),
+                    span: self.span(start),
+                });
+                self.finish();
+            } else {
+                parts.push(self.pattern(true));
+            }
+            if self.pos == before || !self.list_separator(close) {
+                break;
+            }
+        }
+        self.expect(close);
+        parts
     }
     fn record_pattern(&mut self, ty: Option<TypeExpr>, start: usize) -> Pattern {
         self.expect("{");
@@ -2525,32 +2639,6 @@ fn expr_type(expr: &Expr) -> TypeExpr {
         text: path.join("::"),
         kind: TypeKind::Name { path, arguments },
         span: expr.span,
-    }
-}
-fn expr_pattern(expr: Expr) -> Pattern {
-    let span = expr.span;
-    let kind = match expr.kind {
-        ExprKind::Name(name) if name == "_" => PatternKind::Wildcard,
-        ExprKind::Name(name) => PatternKind::Name(name),
-        ExprKind::Literal(literal) => PatternKind::Literal(literal),
-        ExprKind::Tuple(parts) => PatternKind::Tuple(parts.into_iter().map(expr_pattern).collect()),
-        ExprKind::Path(path)
-            if path
-                .last()
-                .is_some_and(|name| name.chars().next().is_some_and(char::is_uppercase)) =>
-        {
-            PatternKind::Constructor {
-                path,
-                arguments: vec![],
-                parenthesized: false,
-            }
-        }
-        _ => PatternKind::Value(Box::new(expr)),
-    };
-    Pattern {
-        hir_id: None,
-        kind,
-        span,
     }
 }
 fn expr_test_pattern(expr: Expr, groups: &BTreeSet<(u32, u32)>) -> Pattern {

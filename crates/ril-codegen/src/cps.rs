@@ -1530,6 +1530,7 @@ impl Builder {
         let boolean = |value| expression(ExprKind::Literal(core::Literal::Bool(value)), span);
         match pattern {
             Pattern::Wildcard => Ok(self.assign_result(destination, boolean(true), next)),
+            Pattern::Rest(_) => Err(unsupported("standalone native sequence remainder")),
             Pattern::Literal(_) => Ok(self.assign_result(
                 destination,
                 expression(
@@ -1633,10 +1634,19 @@ impl Builder {
                 );
                 Ok(self.assign_result(&matched, tag_test, branch))
             }
-            Pattern::Tuple(items) => {
+            Pattern::Tuple(items) | Pattern::Array(items) => {
+                let mut rest = None;
+                for (index, pattern) in items.iter().enumerate() {
+                    if matches!(pattern, Pattern::Rest(_)) && rest.replace(index).is_some() {
+                        return Err(unsupported("native sequence pattern has multiple rests"));
+                    }
+                }
                 let false_result = self.assign_result(destination, boolean(false), next);
                 let mut tail = self.assign_result(destination, boolean(true), next);
                 for (index, pattern) in items.iter().enumerate().rev() {
+                    if matches!(pattern, Pattern::Rest(_)) {
+                        continue;
+                    }
                     let child = self.temporary();
                     let matched = self.temporary();
                     let branch = self.block(
@@ -1649,7 +1659,7 @@ impl Builder {
                         },
                     );
                     let check = self.pattern_test(pattern, &child, &matched, branch, span)?;
-                    let index = expression(
+                    let literal_index = expression(
                         ExprKind::Literal(core::Literal::Integer {
                             value: index as i128,
                             bits: 64,
@@ -1657,6 +1667,35 @@ impl Builder {
                         }),
                         span,
                     );
+                    let index = if rest.is_some_and(|rest| index > rest) {
+                        expression(
+                            ExprKind::Binary {
+                                operator: "-".into(),
+                                left: Box::new(expression(
+                                    ExprKind::Call {
+                                        callback_entry: false,
+                                        callee: Box::new(name("Prelude::len", span)),
+                                        arguments: vec![core::Argument {
+                                            label: None,
+                                            value: name(subject, span),
+                                        }],
+                                    },
+                                    span,
+                                )),
+                                right: Box::new(expression(
+                                    ExprKind::Literal(core::Literal::Integer {
+                                        value: (items.len() - index) as i128,
+                                        bits: 64,
+                                        signed: true,
+                                    }),
+                                    span,
+                                )),
+                            },
+                            span,
+                        )
+                    } else {
+                        literal_index
+                    };
                     let projection = expression(
                         ExprKind::Index {
                             base: Box::new(name(subject, span)),
@@ -1667,9 +1706,46 @@ impl Builder {
                     );
                     tail = self.assign_result(&child, projection, check);
                 }
-                Ok(tail)
+                // Native shape testing checks length before touching an item.
+                // The nested tests below run only after that first guard.
+                let shape_items = items
+                    .iter()
+                    .map(|item| {
+                        if matches!(item, Pattern::Rest(_)) {
+                            Pattern::Rest(None)
+                        } else {
+                            Pattern::Wildcard
+                        }
+                    })
+                    .collect();
+                let shape = if matches!(pattern, Pattern::Array(_)) {
+                    Pattern::Array(shape_items)
+                } else {
+                    Pattern::Tuple(shape_items)
+                };
+                let matched = self.temporary();
+                let branch = self.block(
+                    Input::Continue(None),
+                    vec![],
+                    Terminator::Branch {
+                        condition: name(&matched, span),
+                        then_block: tail,
+                        else_block: false_result,
+                    },
+                );
+                Ok(self.assign_result(
+                    &matched,
+                    expression(
+                        ExprKind::Is {
+                            value: Box::new(name(subject, span)),
+                            pattern: shape,
+                        },
+                        span,
+                    ),
+                    branch,
+                ))
             }
-            Pattern::Record(fields) => {
+            Pattern::Record(fields) | Pattern::RecordRest { fields, .. } => {
                 let false_result = self.assign_result(destination, boolean(false), next);
                 let mut tail = self.assign_result(destination, boolean(true), next);
                 for (field, pattern) in fields.iter().rev() {
@@ -1721,10 +1797,11 @@ impl Builder {
 
 fn pattern_names(pattern: &Pattern, names: &mut BTreeSet<String>) {
     match pattern {
-        Pattern::Name(name) => {
+        Pattern::Name(name) | Pattern::Rest(Some(name)) => {
             names.insert(name.clone());
         }
         Pattern::Tuple(items)
+        | Pattern::Array(items)
         | Pattern::Alternative(items)
         | Pattern::Constructor {
             arguments: items, ..
@@ -1736,6 +1813,12 @@ fn pattern_names(pattern: &Pattern, names: &mut BTreeSet<String>) {
         Pattern::Record(fields) => {
             for (_, pattern) in fields {
                 pattern_names(pattern, names)
+            }
+        }
+        Pattern::RecordRest { fields, rest } => {
+            names.insert(rest.clone());
+            for (_, pattern) in fields {
+                pattern_names(pattern, names);
             }
         }
         _ => {}
@@ -1825,6 +1908,14 @@ fn binding_test_pattern(pattern: &Pattern) -> Pattern {
     match pattern {
         Pattern::Name(_) => Pattern::Wildcard,
         Pattern::Tuple(items) => Pattern::Tuple(items.iter().map(binding_test_pattern).collect()),
+        Pattern::Array(items) => Pattern::Array(items.iter().map(binding_test_pattern).collect()),
+        Pattern::Rest(_) => Pattern::Rest(None),
+        Pattern::RecordRest { fields, .. } => Pattern::Record(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), binding_test_pattern(value)))
+                .collect(),
+        ),
         Pattern::Record(fields) => Pattern::Record(
             fields
                 .iter()
@@ -2100,6 +2191,7 @@ fn walk_pattern(pattern: &Pattern, visit: &mut impl FnMut(&Expr)) {
     match pattern {
         Pattern::Value(value) => walk_expr(value, visit),
         Pattern::Tuple(items)
+        | Pattern::Array(items)
         | Pattern::Alternative(items)
         | Pattern::Constructor {
             arguments: items, ..
@@ -2108,7 +2200,7 @@ fn walk_pattern(pattern: &Pattern, visit: &mut impl FnMut(&Expr)) {
                 walk_pattern(item, visit)
             }
         }
-        Pattern::Record(fields) => {
+        Pattern::Record(fields) | Pattern::RecordRest { fields, .. } => {
             for (_, pattern) in fields {
                 walk_pattern(pattern, visit)
             }

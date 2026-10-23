@@ -822,4 +822,112 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn sequence_remainders_and_open_record_remainders_emit_for_both_targets() {
+        use ril_compiler_core::{
+            ids::DefinitionId,
+            source::{FileId, Span},
+        };
+        use ril_ir::core::{self, Expr, ExprKind, Literal, Pattern, Statement};
+        let span = Span {
+            file: FileId(0),
+            start: 0,
+            end: 1,
+        };
+        let expr = |kind| Expr { kind, span };
+        let integer = |value| {
+            expr(ExprKind::Literal(Literal::Integer {
+                value,
+                bits: 64,
+                signed: true,
+            }))
+        };
+        let named = |value: &str| expr(ExprKind::Name(value.to_owned()));
+        let program = core::Program {
+            functions: vec![core::Function {
+                role: core::FunctionRole::Ordinary,
+                definition: DefinitionId(0),
+                name: "main".into(),
+                generic_parameters: vec![],
+                parameters: vec![],
+                span,
+                body: core::Block {
+                    statements: vec![
+                        Statement::Bind {
+                            pattern: Pattern::Array(vec![
+                                Pattern::Name("head".into()),
+                                Pattern::Rest(Some("tail".into())),
+                                Pattern::Name("last".into()),
+                            ]),
+                            value: expr(ExprKind::Array(vec![
+                                integer(1),
+                                integer(2),
+                                integer(3),
+                                integer(4),
+                            ])),
+                            scoped: false,
+                        },
+                        Statement::Bind {
+                            pattern: Pattern::RecordRest {
+                                fields: vec![("first".into(), Pattern::Name("first".into()))],
+                                rest: "other".into(),
+                            },
+                            value: expr(ExprKind::Record {
+                                fields: vec![
+                                    ("first".into(), named("head")),
+                                    ("tail".into(), named("tail")),
+                                ],
+                                members: vec![],
+                                spread: None,
+                            }),
+                            scoped: false,
+                        },
+                        Statement::Expr {
+                            expression: expr(ExprKind::Match {
+                                value: Box::new(expr(ExprKind::Array(vec![]))),
+                                arms: vec![
+                                    core::MatchArm {
+                                        pattern: Pattern::Array(vec![
+                                            Pattern::Name("item".into()),
+                                            Pattern::Rest(None),
+                                        ]),
+                                        guard: None,
+                                        body: integer(1),
+                                    },
+                                    core::MatchArm {
+                                        pattern: Pattern::Wildcard,
+                                        guard: None,
+                                        body: integer(0),
+                                    },
+                                ],
+                            }),
+                            terminated: true,
+                        },
+                    ],
+                },
+            }],
+            ..Default::default()
+        };
+        let module = ril_codegen::lower::lower_native(&program).unwrap();
+        for triple in ril_codegen::target::NATIVE_TARGETS {
+            let artifact = CraneliftBackend
+                .emit(&module, &TargetSpec::native(triple).unwrap())
+                .unwrap();
+            let object = object::File::parse(artifact.bytes.as_slice()).unwrap();
+            for required in [
+                "ril_rt_record_without",
+                "ril_rt_sequence_matches",
+                "ril_rt_range",
+                "ril_rt_index",
+            ] {
+                assert!(
+                    object
+                        .symbols()
+                        .any(|symbol| symbol.name() == Ok(required) && !symbol.is_definition()),
+                    "missing {required}"
+                );
+            }
+        }
+    }
 }

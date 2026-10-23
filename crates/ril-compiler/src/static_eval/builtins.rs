@@ -198,22 +198,24 @@ impl Evaluator {
                 )
             }
             PatternKind::Tuple(patterns) => {
-                if let StaticValue::Tuple(values) = value {
-                    if patterns.len() != values.len() {
-                        false
-                    } else {
-                        let mut matched = true;
-                        for (pattern, value) in patterns.iter().zip(values) {
-                            if !self.match_pattern(pattern, value)? {
-                                matched = false;
-                                break;
-                            }
-                        }
-                        matched
-                    }
-                } else {
-                    false
-                }
+                let values = match value {
+                    StaticValue::Tuple(values) => values.as_slice(),
+                    StaticValue::Unit => &[],
+                    _ => return Ok(false),
+                };
+                self.match_sequence(patterns, values, Some(value))?
+            }
+            PatternKind::Array(patterns) => {
+                let Some(values) = value.array_items() else {
+                    return Ok(false);
+                };
+                self.match_sequence(patterns, values, Some(value))?
+            }
+            PatternKind::Rest(_) => {
+                return Err(Failure::Diagnostic(
+                    "E0347",
+                    "rest requires a directly enclosing tuple or array pattern".into(),
+                ));
             }
             PatternKind::Record {
                 fields,
@@ -223,8 +225,10 @@ impl Evaluator {
                 if let StaticValue::Record(values) = value {
                     let mut matched = true;
                     for field in fields {
-                        if let Some(value) = values.get(&field.name) {
-                            if !self.match_pattern(&field.pattern, value)? {
+                        if let Some(child) = values.get(&field.name) {
+                            let child = self.copy_static_value(child)?;
+                            let child = self.project_source_field(value, child, &field.name)?;
+                            if !self.match_pattern(&field.pattern, &child)? {
                                 matched = false;
                                 break;
                             }
@@ -233,22 +237,12 @@ impl Evaluator {
                             break;
                         }
                     }
-                    if let Some(name) = rest_binding {
-                        let rest = self.record(
-                            values
-                                .iter()
-                                .filter(|(name, _)| {
-                                    !fields.iter().any(|field| &field.name == *name)
-                                })
-                                .map(|(name, value)| (name.clone(), value.clone()))
-                                .collect(),
-                            values
-                                .mutable_fields
-                                .iter()
-                                .filter(|name| !fields.iter().any(|field| &field.name == *name))
-                                .cloned()
-                                .collect(),
-                        );
+                    if matched
+                        && let Some(name) = rest_binding
+                        && name != "_"
+                    {
+                        let rest = self.static_record_remainder(value, fields, pattern.span)?;
+                        self.type_environment.mask_const(name);
                         self.values.insert(name.clone(), rest);
                     }
                     matched
@@ -329,14 +323,18 @@ impl Evaluator {
                 }
             }
             PatternKind::Alternative(patterns) => {
-                let saved = self.snapshot_values()?;
+                let saved = self.capture_environment()?;
                 let mut matched = false;
                 for pattern in patterns {
-                    self.values = self.copy_values(&saved)?;
+                    let environment = self.copy_environment(&saved)?;
+                    self.install_environment(environment);
                     if self.match_pattern(pattern, value)? {
                         matched = true;
                         break;
                     }
+                }
+                if !matched {
+                    self.install_environment(saved);
                 }
                 matched
             }
@@ -407,6 +405,13 @@ impl Evaluator {
                     None
                 }
             }
+            (StaticValue::ArrayWindow(values), StaticValue::Integer(index)) => values
+                .get(usize::try_from(index).unwrap_or(usize::MAX))
+                .map(|child| {
+                    let child = self.copy_static_value(child)?;
+                    self.project_source_index(&value, child)
+                })
+                .transpose()?,
             (StaticValue::Map(entries), key) => {
                 let found = entries
                     .iter()
@@ -437,6 +442,42 @@ impl Evaluator {
         name: &str,
         args: Vec<StaticValue>,
     ) -> Result<StaticValue> {
+        // Read algorithms borrow the selected sequence. The published handle
+        // remains an ArrayWindow with its real backing identity.
+        let args = if matches!(
+            name,
+            "Array::first"
+                | "Array::get"
+                | "Array::contains"
+                | "Array::reverse"
+                | "Array::concat"
+                | "Array::map"
+                | "Array::filter"
+                | "Array::fold"
+                | "Map::from"
+                | "String::join"
+        ) {
+            args.into_iter()
+                .map(|value| {
+                    if let StaticValue::ArrayWindow(window) = value {
+                        self.budget.work(window.len as u64 + 1)?;
+                        let selected = window
+                            .iter()
+                            .map(|value| self.copy_static_value(value))
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(StaticValue::Array(StaticCollection {
+                            id: window.id,
+                            values: std::sync::Arc::new(selected),
+                            source_type: window.source_type.clone(),
+                        }))
+                    } else {
+                        Ok(value)
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            args
+        };
         match (name, args.as_slice()) {
             ("assert", [StaticValue::Bool(true), ..]) => Ok(StaticValue::Unit),
             ("assert", [StaticValue::Bool(false), ..]) => Err(Failure::Diagnostic(
@@ -448,6 +489,7 @@ impl Evaluator {
                 StaticValue::String(value) => value.chars().count(),
                 StaticValue::Bytes(value) => value.len(),
                 StaticValue::Array(value) | StaticValue::Tuple(value) => value.len(),
+                StaticValue::ArrayWindow(value) => value.len,
                 StaticValue::Map(value) => value.len(),
                 _ => {
                     return Err(Failure::Diagnostic(

@@ -101,6 +101,92 @@ struct PhysicalPosition {
 }
 
 impl<'a> Replay<'a> {
+    pub(super) fn pattern_windows(&mut self, work: &mut usize) -> Check {
+        crate::sema::allocation::validate(self.facts, work)?;
+        use crate::sema::pattern_windows;
+        use std::collections::BTreeMap;
+        charge(
+            work,
+            self.facts.pattern_windows.len() + self.facts.windows.len(),
+        )?;
+        let mut covered = BTreeMap::<_, crate::sema::WindowInfo>::new();
+        for (ordinal, creation) in self.facts.pattern_windows.iter().enumerate() {
+            if let Some(observation) = creation.input.birth_coordinates().observation {
+                self.physical(
+                    &creation.input,
+                    observation,
+                    creation.heap.allocation_epoch,
+                    true,
+                    work,
+                )?;
+            } else {
+                let argument = pattern_windows::parameter_input(self.facts, creation, work)?
+                    .ok_or("window subject has neither an observation nor a parameter input")?;
+                self.full_value(
+                    argument.value(),
+                    argument.packet.current_epoch(),
+                    creation.input.value(),
+                    creation.input.current_epoch(),
+                    work,
+                )?;
+            }
+            pattern_windows::validate_creation(self.facts, ordinal, work)?;
+            let mut node = creation.output_node.origin;
+            let moves = self
+                .facts
+                .allocation_history
+                .get(creation.output.current_epoch()..)
+                .ok_or("window output lost its allocation history")?;
+            charge(
+                work,
+                moves.len() + 2 + covered.len().checked_ilog2().unwrap_or(0) as usize,
+            )?;
+            for &(recent, older) in moves {
+                if node == recent {
+                    node = older;
+                }
+            }
+            let mut info = pattern_windows::info_at(
+                &creation.info,
+                &self.facts.allocation_history,
+                creation.output.current_epoch(),
+                self.facts.allocation_history.len(),
+                work,
+            )?;
+            if let Some(previous) = covered.get(&node) {
+                pattern_windows::charge_info(previous, work).map_err(|e| e.to_string())?;
+                require(
+                    previous.pattern == info.pattern && previous.constant == info.constant,
+                    "window recency merged different original allocation roles",
+                )?;
+                info.backing.nodes.extend(&previous.backing.nodes);
+                info.backing.choices.clear();
+                if info.lower != previous.lower {
+                    info.lower = None;
+                }
+                if info.length != previous.length {
+                    info.length = None;
+                }
+            }
+            covered.insert(node, info);
+        }
+        for (&node, info) in &self.facts.windows {
+            if info.pattern.is_some() {
+                charge(
+                    work,
+                    1 + covered.len().checked_ilog2().unwrap_or(0) as usize,
+                )?;
+                require(
+                    covered
+                        .get(&node)
+                        .is_some_and(|expected| pattern_windows::same_info(info, expected)),
+                    "pattern window changed its independently replayed construction or retained metadata",
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn new(facts: &'a SemanticFacts, work: &mut usize) -> Check<Self> {
         charge(work, facts.call_arguments.len() + 1)?;
         let mut preparations = BTreeMap::new();

@@ -26,6 +26,80 @@ fn function(id: u32, name: &str, value: Expr) -> core::Function {
 }
 
 #[test]
+fn sequence_length_failure_skips_effectful_expected_elements_in_cps() {
+    let source = function(
+        0,
+        "main",
+        expression(
+            ExprKind::Is {
+                value: Box::new(expression(ExprKind::Array(vec![]), span())),
+                pattern: Pattern::Array(vec![
+                    Pattern::Value(Box::new(expression(
+                        ExprKind::Perform {
+                            operation: 51,
+                            arguments: vec![],
+                        },
+                        span(),
+                    ))),
+                    Pattern::Rest(None),
+                ]),
+            },
+            span(),
+        ),
+    );
+    let graph = lower(&source).unwrap();
+    let perform = graph
+        .blocks
+        .iter()
+        .position(|block| matches!(block.terminator, Terminator::Perform { operation: 51, .. }))
+        .unwrap();
+    let shape = graph.blocks.iter().find(|block| block.instructions.iter().any(|instruction| matches!(instruction,
+        cps::Instruction::Statement(statement) if matches!(&**statement,
+            Statement::Bind { value: Expr { kind: ExprKind::Is { pattern: Pattern::Array(items), .. }, .. }, .. }
+            if matches!(items.as_slice(), [Pattern::Wildcard, Pattern::Rest(None)]))
+    ))).unwrap();
+    let Terminator::Jump(branch) = shape.terminator else {
+        panic!("shape result");
+    };
+    let Terminator::Branch {
+        then_block,
+        else_block,
+        ..
+    } = graph.blocks[branch.0 as usize].terminator
+    else {
+        panic!("shape guard");
+    };
+    let reaches = |start: BlockId| {
+        let mut pending = vec![start];
+        let mut seen = BTreeSet::new();
+        while let Some(block) = pending.pop() {
+            if !seen.insert(block) {
+                continue;
+            }
+            if block.0 as usize == perform {
+                return true;
+            }
+            match &graph.blocks[block.0 as usize].terminator {
+                Terminator::Jump(next)
+                | Terminator::Charge { next, .. }
+                | Terminator::Perform { next, .. }
+                | Terminator::Call { next, .. }
+                | Terminator::ScopeLeave { next, .. } => pending.push(*next),
+                Terminator::Branch {
+                    then_block,
+                    else_block,
+                    ..
+                } => pending.extend([*then_block, *else_block]),
+                _ => {}
+            }
+        }
+        false
+    };
+    assert!(reaches(then_block));
+    assert!(!reaches(else_block));
+}
+
+#[test]
 fn concurrency_values_seed_callers_without_user_effects() {
     for builtin in [
         "Concurrent::scope",

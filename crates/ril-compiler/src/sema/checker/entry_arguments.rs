@@ -168,7 +168,7 @@ impl Checker {
         Ok(Arc::new(result))
     }
 
-    fn entry_heap_snapshot(
+    pub(in crate::sema::checker) fn entry_heap_snapshot(
         &mut self,
         value: &Value,
         epoch: usize,

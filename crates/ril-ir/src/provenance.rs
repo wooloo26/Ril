@@ -16,6 +16,10 @@ mod callable_entries;
 pub use callable_entries::*;
 mod evaluated;
 pub use evaluated::*;
+mod pattern_windows;
+pub use pattern_windows::*;
+mod allocation;
+pub use allocation::*;
 mod generated_sources;
 pub use generated_sources::*;
 mod numeric;
@@ -94,6 +98,9 @@ pub struct Graph {
     pub operation_loan_ends: Vec<(u32, CauseId)>,
     pub operation_loan_starts: Vec<OperationLoanStart>,
     pub allocation_history: Vec<(OriginId, OriginId)>,
+    pub allocation_events: Vec<AllocationEvent>,
+    pub pattern_window_sites: Vec<PatternWindowSite>,
+    pub allocation_poisoned: bool,
     pub implicit_unwraps: Vec<ImplicitUnwrap>,
     pub variant_projections: Vec<VariantProjection>,
     pub constructors: Vec<Constructor>,
@@ -126,6 +133,7 @@ pub struct Graph {
     pub callable_return_contracts: Vec<CallableReturnBound>,
     pub frozen_environments: Vec<FrozenEnvironment>,
     pub windows: Vec<Window>,
+    pub pattern_windows: Vec<PatternWindowCreation>,
     pub cleanup_events: Vec<CleanupEvent>,
     pub definition_checks: Vec<DefinitionCheck>,
     pub resumption_steps: Vec<ResumptionStep>,
@@ -987,6 +995,8 @@ pub struct IterStep {
 }
 #[derive(Debug, Clone)]
 pub struct Window {
+    pub pattern: Option<ril_compiler_core::ids::PatternId>,
+    pub constant: Option<ril_compiler_core::ids::ConstRef>,
     pub origin: OriginId,
     pub backing: Vec<OriginId>,
     pub choices: Vec<(u32, Vec<Vec<OriginId>>)>,

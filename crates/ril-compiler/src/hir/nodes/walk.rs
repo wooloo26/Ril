@@ -232,12 +232,34 @@ impl HirProgram {
                         expr(arm.body, edge)?;
                     }
                 }
+                ExprKind::IfLet {
+                    pattern: id,
+                    value,
+                    then_branch,
+                    else_branch,
+                } => {
+                    expr(*value, edge)?;
+                    pattern(*id, edge)?;
+                    expr(*then_branch, edge)?;
+                    if let Some(id) = else_branch {
+                        expr(*id, edge)?;
+                    }
+                }
                 ExprKind::Is { value, pattern: id } => {
                     expr(*value, edge)?;
                     pattern(*id, edge)?;
                 }
                 ExprKind::While { condition, body } => {
                     expr(*condition, edge)?;
+                    block(body, edge)?;
+                }
+                ExprKind::WhileLet {
+                    pattern: id,
+                    value,
+                    body,
+                } => {
+                    expr(*value, edge)?;
+                    pattern(*id, edge)?;
                     block(body, edge)?;
                 }
                 ExprKind::For {
@@ -367,10 +389,13 @@ impl HirProgram {
                 .kind
             {
                 PatternKind::Name(_)
+                | PatternKind::Rest(_)
                 | PatternKind::Wildcard
                 | PatternKind::Literal(_)
                 | PatternKind::Error => {}
-                PatternKind::Tuple(items) | PatternKind::Alternative(items) => {
+                PatternKind::Tuple(items)
+                | PatternKind::Array(items)
+                | PatternKind::Alternative(items) => {
                     for id in items {
                         pattern(*id, edge)?;
                     }

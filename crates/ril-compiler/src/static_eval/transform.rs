@@ -543,6 +543,11 @@ impl Evaluator {
                 then_branch,
                 else_branch,
                 ..
+            }
+            | ExprKind::IfLet {
+                then_branch,
+                else_branch,
+                ..
             } => {
                 self.constructor_context(expected, then_branch);
                 if let Some(other) = else_branch {
@@ -641,6 +646,11 @@ impl Evaluator {
                         then_branch,
                         else_branch,
                         ..
+                    }
+                    | ExprKind::IfLet {
+                        then_branch,
+                        else_branch,
+                        ..
                     } => {
                         if let ExprKind::Block(block) = &mut then_branch.kind {
                             self.constructor_block_context(expected, block, false);
@@ -665,6 +675,7 @@ impl Evaluator {
         match &mut pattern.kind {
             PatternKind::Value(value) => self.transform_expr(value, output, symbolic),
             PatternKind::Tuple(patterns)
+            | PatternKind::Array(patterns)
             | PatternKind::Alternative(patterns)
             | PatternKind::Constructor {
                 arguments: patterns,
@@ -861,6 +872,23 @@ impl Evaluator {
                         })?;
                     }
                 }
+                ExprKind::IfLet {
+                    pattern,
+                    value,
+                    then_branch,
+                    else_branch,
+                } => {
+                    self.transform_expr(value, output, symbolic);
+                    self.transform_test(pattern, output, symbolic)?;
+                    self.with_transform_scope(|evaluator| {
+                        evaluator.mask_runtime_pattern(pattern)?;
+                        evaluator.transform_expr(then_branch, output, symbolic);
+                        Ok(())
+                    })?;
+                    if let Some(branch) = else_branch {
+                        self.transform_expr(branch, output, symbolic);
+                    }
+                }
                 ExprKind::Match { value, arms, .. } => {
                     self.transform_expr(value, output, symbolic);
                     for arm in arms {
@@ -966,6 +994,18 @@ impl Evaluator {
                     self.transform_expr(condition, output, symbolic);
                     self.with_transform_scope(|evaluator| {
                         evaluator.mask_condition(condition, true)?;
+                        evaluator.transform_child_block(body, output, symbolic)
+                    })?;
+                }
+                ExprKind::WhileLet {
+                    pattern,
+                    value,
+                    body,
+                } => {
+                    self.transform_expr(value, output, symbolic);
+                    self.transform_test(pattern, output, symbolic)?;
+                    self.with_transform_scope(|evaluator| {
+                        evaluator.mask_runtime_pattern(pattern)?;
                         evaluator.transform_child_block(body, output, symbolic)
                     })?;
                 }
@@ -1119,6 +1159,7 @@ fn test_names(pattern: &Pattern, names: &mut BTreeSet<String>) {
     match &pattern.kind {
         PatternKind::Value(value) => value_names(value, names),
         PatternKind::Tuple(patterns)
+        | PatternKind::Array(patterns)
         | PatternKind::Alternative(patterns)
         | PatternKind::Constructor {
             arguments: patterns,
@@ -1234,6 +1275,19 @@ fn value_names(value: &Expr, names: &mut BTreeSet<String>) {
                 value_names(value, names);
             }
         }
+        ExprKind::IfLet {
+            pattern,
+            value,
+            then_branch,
+            else_branch,
+        } => {
+            value_names(value, names);
+            test_names(pattern, names);
+            value_names(then_branch, names);
+            if let Some(branch) = else_branch {
+                value_names(branch, names);
+            }
+        }
         ExprKind::Match { value, arms, .. } => {
             value_names(value, names);
             for arm in arms {
@@ -1250,6 +1304,15 @@ fn value_names(value: &Expr, names: &mut BTreeSet<String>) {
         ExprKind::Block(value) | ExprKind::Loop(value) => block(value, names),
         ExprKind::While { condition, body } => {
             value_names(condition, names);
+            block(body, names);
+        }
+        ExprKind::WhileLet {
+            pattern,
+            value,
+            body,
+        } => {
+            value_names(value, names);
+            test_names(pattern, names);
             block(body, names);
         }
         ExprKind::For { iterable, body, .. } => {

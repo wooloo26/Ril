@@ -408,8 +408,9 @@ impl Walk<'_, '_> {
         self.charge(depth)?;
         let mut mask = 0;
         match &pattern.kind {
-            PatternKind::Name(name) => mask |= bit(name),
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => mask |= bit(name),
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..
@@ -661,6 +662,7 @@ impl Walk<'_, '_> {
             }
             PatternKind::Value(value) => self.expr(value, owner, shadow, depth + 1)?,
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..
@@ -801,6 +803,20 @@ impl Walk<'_, '_> {
                     self.expr(&arm.body, owner, child_shadow, depth + 1)?;
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.expr(value, owner, shadow, depth + 1)?;
+                self.pattern(pattern, owner, shadow, depth + 1)?;
+                let child_shadow = shadow | self.pattern_names(pattern, depth + 1)?;
+                self.expr(then_branch, owner, child_shadow, depth + 1)?;
+                if let Some(other) = else_branch {
+                    self.expr(other, owner, shadow, depth + 1)?;
+                }
+            }
             ExprKind::Is { value, pattern } => {
                 self.expr(value, owner, shadow, depth + 1)?;
                 self.pattern(pattern, owner, shadow, depth + 1)?;
@@ -808,6 +824,16 @@ impl Walk<'_, '_> {
             ExprKind::While { condition, body } => {
                 self.expr(condition, owner, shadow, depth + 1)?;
                 self.block(body, owner, shadow, depth + 1)?;
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.expr(value, owner, shadow, depth + 1)?;
+                self.pattern(pattern, owner, shadow, depth + 1)?;
+                let child_shadow = shadow | self.pattern_names(pattern, depth + 1)?;
+                self.block(body, owner, child_shadow, depth + 1)?;
             }
             ExprKind::For {
                 iterable,

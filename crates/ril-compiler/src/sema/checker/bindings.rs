@@ -71,7 +71,8 @@ impl Checker {
     ) -> Result<(), crate::sema::source_types::SourceTypesError> {
         self.prepare_evaluation_packet(&mut packet, pattern.span)?;
         let birth = packet.identity;
-        self.bind_pattern_from(pattern, mode, packet.value, frame, true, birth);
+        let value = self.read_evaluation_packet(&packet, pattern.span)?;
+        self.bind_pattern_from(pattern, mode, value, frame, true, birth, Some(&packet));
         Ok(())
     }
     /// Every local receiver, including a resumed answer, installs the same
@@ -86,6 +87,9 @@ impl Checker {
         frame: &mut Frame,
     ) -> Value {
         let span = binding.pattern.span;
+        if !self.check_pattern_binder_uniqueness(&binding.pattern) {
+            return self.unit(span);
+        }
         let birth = initializer.and_then(|observed| {
             self.application_effect
                 .evaluations
@@ -96,6 +100,7 @@ impl Checker {
             || matches!(
                 binding.pattern.kind,
                 PatternKind::Constructor { .. }
+                    | PatternKind::Array(_)
                     | PatternKind::Literal(_)
                     | PatternKind::Alternative(_)
                     | PatternKind::Value(_)
@@ -144,7 +149,10 @@ impl Checker {
         }
         if guarded {
             let binding_start = self.bindings.len();
-            let result = self.check_guarded_binding(binding, value, span, frame, birth);
+            let packet = initializer
+                .and_then(|input| self.application_effect.packet_at(input.expression).ok());
+            let result =
+                self.check_guarded_binding(binding, value, span, frame, birth, packet.as_deref());
             if source_valid
                 && let (Some(initializer), Some(prepared)) =
                     (initializer, prepared_storage.as_ref())
@@ -160,7 +168,17 @@ impl Checker {
             return result;
         }
         let binding_start = self.bindings.len();
-        self.bind_pattern_from(&binding.pattern, binding.mode, value, frame, false, birth);
+        let packet =
+            initializer.and_then(|input| self.application_effect.packet_at(input.expression).ok());
+        self.bind_pattern_from(
+            &binding.pattern,
+            binding.mode,
+            value,
+            frame,
+            false,
+            birth,
+            packet.as_deref(),
+        );
         if source_valid
             && let (Some(initializer), Some(prepared)) = (initializer, prepared_storage.as_ref())
         {
@@ -182,8 +200,9 @@ impl Checker {
         frame: &mut Frame,
         parameter: bool,
     ) {
-        self.bind_pattern_from(pattern, mode, value, frame, parameter, None);
+        self.bind_pattern_from(pattern, mode, value, frame, parameter, None, None);
     }
+    #[allow(clippy::too_many_arguments)]
     fn bind_pattern_from(
         &mut self,
         pattern: &Pattern,
@@ -192,12 +211,10 @@ impl Checker {
         frame: &mut Frame,
         parameter: bool,
         birth: Option<crate::sema::application_effect::OccurrenceIdentity>,
+        packet: Option<&EvaluatedValue>,
     ) {
-        if !self.check_pattern_binder_uniqueness(pattern) {
-            return;
-        }
-        match &pattern.kind {
-            PatternKind::Name(name) => {
+        if matches!(pattern.kind, PatternKind::Name(_) | PatternKind::Wildcard) {
+            if let PatternKind::Name(name) = &pattern.kind {
                 self.bind_name(
                     name,
                     mode,
@@ -207,60 +224,53 @@ impl Checker {
                     parameter,
                 );
             }
-            PatternKind::Wildcard => {}
-            PatternKind::Mode { mode, pattern } => {
-                self.bind_pattern_from(pattern, *mode, value, frame, parameter, birth)
+            return;
+        }
+        if let PatternKind::Mode {
+            mode,
+            pattern: inner,
+        } = &pattern.kind
+        {
+            self.bind_pattern_from(inner, *mode, value, frame, parameter, birth, packet);
+            return;
+        }
+        if !self.check_pattern_binder_uniqueness(pattern) {
+            return;
+        }
+        let mut bindings = self.checked_pattern_bindings_from(
+            pattern,
+            &value,
+            Some(mode),
+            packet,
+            frame,
+            pattern.hir_id,
+        );
+        let Some(root) = pattern.hir_id else {
+            self.unsupported(pattern.span, "binding pattern lost its original HIR root");
+            return;
+        };
+        let plan = match self.semantic_hir.pattern_bindings(root, &mut 16384) {
+            Ok(plan) => plan,
+            Err(_) => {
+                self.unsupported(pattern.span, "binding pattern plan is incomplete");
+                return;
             }
-            PatternKind::Tuple(items) => {
-                for (i, pattern) in items.iter().enumerate() {
-                    let child =
-                        self.project(&value, Slot::Tuple(i as u32), pattern.span, frame, false);
-                    self.bind_pattern_from(pattern, mode, child, frame, parameter, birth);
-                }
-            }
-            PatternKind::Record {
-                fields,
-                rest_binding,
-                ..
-            } => {
-                for field in fields {
-                    let mut child = self.project(
-                        &value,
-                        Slot::Field(field.name.clone()),
-                        field.span,
-                        frame,
-                        false,
-                    );
-                    let child_mutable = mode.is_mutable()
-                        || matches!(field.pattern.kind,PatternKind::Mode{mode,..}if mode.is_mutable());
-                    if child_mutable && child.permission == Permission::Read {
-                        self.error(
-                            "E0521",
-                            field.span,
-                            "destructuring cannot acquire write authority",
-                            [child.cause],
-                        );
-                    }
-                    child.marker |= value.marker;
-                    self.bind_pattern_from(&field.pattern, mode, child, frame, parameter, birth);
-                }
-                if let Some(name) = rest_binding
-                    && let Some(rest) = self.record_rest_value(&value, fields, pattern.span, frame)
-                {
-                    self.bind_name(
-                        name,
-                        mode,
-                        rest,
-                        BindingSite::from(pattern).at(birth),
-                        frame,
-                        parameter,
-                    );
-                }
-            }
-            _ => self.unsupported(pattern.span, "refutable or computed pattern verification"),
+        };
+        for site in plan {
+            let Some((selected_mode, value, span)) = bindings.remove(&site.name) else {
+                continue;
+            };
+            self.bind_name(
+                &site.name,
+                selected_mode.unwrap_or(mode),
+                value,
+                BindingSite::original(span, site.pattern).at(birth),
+                frame,
+                parameter,
+            );
         }
     }
-    fn record_rest_value(
+    pub(super) fn record_rest_value(
         &mut self,
         source: &Value,
         extracted: &[PatternField],
@@ -992,6 +1002,11 @@ impl Checker {
         // A missing source proof may prevent a store, but cannot hide an
         // already proven readonly-path or immutable-member error.
         if base.permission != Permission::Write {
+            let window = base
+                .origins
+                .nodes
+                .iter()
+                .any(|node| self.windows.contains_key(node));
             let container = matches!(target.kind, ExprKind::Index { .. })
                 || base.sources.iter().any(|id| {
                     matches!(
@@ -1000,7 +1015,9 @@ impl Checker {
                     )
                 });
             self.error(
-                if container {
+                if window {
+                    "E0520"
+                } else if container {
                     "E0522"
                 } else if base.readonly_spread {
                     "E0525"

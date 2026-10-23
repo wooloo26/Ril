@@ -269,7 +269,16 @@ impl<'a> Walk<'a, '_> {
                     condition,
                     then_branch,
                     else_branch,
+                }
+                | ExprKind::IfLet {
+                    value: condition,
+                    then_branch,
+                    else_branch,
+                    ..
                 } => {
+                    if let ExprKind::IfLet { pattern, .. } = &expression.kind {
+                        self.push(Node::Pattern(pattern), child)?;
+                    }
                     self.push(Node::Expression(condition), child)?;
                     self.push(Node::Expression(then_branch), child)?;
                     self.optional(else_branch.as_deref(), child, Node::Expression)?;
@@ -284,6 +293,15 @@ impl<'a> Walk<'a, '_> {
                 }
                 ExprKind::While { condition, body } => {
                     self.push(Node::Expression(condition), child)?;
+                    self.push(Node::Block(body), child)?;
+                }
+                ExprKind::WhileLet {
+                    pattern,
+                    value,
+                    body,
+                } => {
+                    self.push(Node::Expression(value), child)?;
+                    self.push(Node::Pattern(pattern), child)?;
                     self.push(Node::Block(body), child)?;
                 }
                 ExprKind::For {
@@ -314,8 +332,10 @@ impl<'a> Walk<'a, '_> {
                 PatternKind::Name(_)
                 | PatternKind::Wildcard
                 | PatternKind::Literal(_)
+                | PatternKind::Rest(_)
                 | PatternKind::Error => {}
                 PatternKind::Tuple(items)
+                | PatternKind::Array(items)
                 | PatternKind::Alternative(items)
                 | PatternKind::Constructor {
                     arguments: items, ..

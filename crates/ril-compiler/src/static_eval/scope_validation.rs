@@ -197,6 +197,20 @@ impl ScopeChecker {
                     self.expr(branch, scope);
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.expr(value, scope);
+                let mut child = scope.clone();
+                application::binding_names(pattern, &mut child);
+                self.expr(then_branch, &child);
+                if let Some(branch) = else_branch {
+                    self.expr(branch, scope);
+                }
+            }
             ExprKind::Match { value, arms, .. } => {
                 self.expr(value, scope);
                 for arm in arms {
@@ -209,6 +223,16 @@ impl ScopeChecker {
             ExprKind::While { condition, body } => {
                 self.expr(condition, scope);
                 self.block(body, scope);
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.expr(value, scope);
+                let mut child = scope.clone();
+                application::binding_names(pattern, &mut child);
+                self.block(body, &child);
             }
             ExprKind::For { iterable, body, .. } => {
                 self.expr(iterable, scope);

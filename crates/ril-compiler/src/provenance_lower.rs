@@ -10,8 +10,10 @@ use ril_syntax::ast::{ParameterMode, PatternKind};
 mod call_arguments;
 mod callable_entries;
 use callable_entries::callable_entry;
+mod allocation;
 mod evaluated;
 mod numeric;
+mod pattern_windows;
 mod record_bounds;
 mod storage_sources;
 
@@ -1676,32 +1678,8 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
             unresolved: summary.unresolved.iter().copied().collect(),
         })
         .collect();
-    graph.windows = facts
-        .windows
-        .iter()
-        .map(|(&node, window)| p::Window {
-            origin: origin(node),
-            backing: window.backing.nodes.iter().copied().map(origin).collect(),
-            choices: window
-                .backing
-                .choices
-                .iter()
-                .map(|(&branch, alternatives)| {
-                    (
-                        branch,
-                        alternatives
-                            .iter()
-                            .map(|nodes| nodes.iter().copied().map(origin).collect())
-                            .collect(),
-                    )
-                })
-                .collect(),
-            lower: window.lower,
-            length: window.length,
-            span: window.span,
-            cause: window.cause,
-        })
-        .collect();
+    pattern_windows::lower(facts, &mut graph, &mut contracts)?;
+    allocation::lower(facts, &mut graph, &mut contracts)?;
     graph.budget_proofs = facts
         .budget_proofs
         .iter()

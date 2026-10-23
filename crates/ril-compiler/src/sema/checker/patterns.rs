@@ -1,6 +1,11 @@
 //! Binding match patterns and nonbinding value tests have different authority rules.
 use super::expressions::{SourceContext, SourceExpression};
 use super::*;
+#[path = "pattern_conditions.rs"]
+mod conditions;
+#[path = "pattern_sequences.rs"]
+mod sequences;
+use sequences::{array_patterns_exhaustive, sequence_rest, sequence_subsumes};
 
 #[derive(Clone)]
 struct PatternState {
@@ -53,6 +58,7 @@ impl Checker {
                         return Ok(true);
                     }
                     PatternKind::Tuple(items)
+                    | PatternKind::Array(items)
                     | PatternKind::Alternative(items)
                     | PatternKind::Constructor {
                         arguments: items, ..
@@ -196,18 +202,19 @@ impl Checker {
             return;
         }
         let bindings = self.checked_pattern_bindings(pattern, &value, None, None, frame);
-        self.bind_pattern_aliases(pattern, bindings, frame);
+        self.bind_pattern_aliases(pattern, bindings, frame, None);
     }
 
     pub(super) fn check_pattern_binder_uniqueness(&mut self, pattern: &Pattern) -> bool {
         fn collect(checker: &mut Checker, pattern: &Pattern, valid: &mut bool) -> BTreeSet<String> {
             let mut names = BTreeSet::new();
             let groups: Vec<_> = match &pattern.kind {
-                PatternKind::Name(name) => {
+                PatternKind::Name(name) | PatternKind::Rest(Some(name)) if name != "_" => {
                     names.insert(name.clone());
                     vec![]
                 }
                 PatternKind::Tuple(patterns)
+                | PatternKind::Array(patterns)
                 | PatternKind::Constructor {
                     arguments: patterns,
                     ..
@@ -229,8 +236,22 @@ impl Checker {
                         .collect()
                 }
                 PatternKind::Alternative(patterns) => {
+                    let mut expected = None;
                     for pattern in patterns {
-                        names.extend(collect(checker, pattern, valid));
+                        let group = collect(checker, pattern, valid);
+                        if expected.as_ref().is_some_and(|expected| expected != &group) {
+                            *valid = false;
+                            checker.error(
+                                "E0346",
+                                pattern.span,
+                                "or-pattern alternatives bind different names",
+                                [],
+                            );
+                        }
+                        if expected.is_none() {
+                            expected = Some(group.clone());
+                        }
+                        names.extend(group);
                     }
                     vec![]
                 }
@@ -487,6 +508,11 @@ impl Checker {
                 false,
             );
         }
+        // A rejected HIR binding plan cannot suppress the original source
+        // diagnostic by making the subject's Source unavailable first.
+        for arm in arms {
+            self.check_pattern_binder_uniqueness(&arm.pattern);
+        }
         // Subject and guards are not result positions. An explicit Return
         // inside them still receives its own fixed Frame return target.
         let needs_source =
@@ -516,7 +542,7 @@ impl Checker {
                 );
             }
         };
-        let numeric_subject = needs_source.then_some(&subject_packet);
+        let numeric_subject = Some(&subject_packet);
         let mut source_valid = true;
         if subject.ty == Ty::Never {
             for arm in arms {
@@ -573,6 +599,22 @@ impl Checker {
                 // checked under the definition's rigid generic parameters.
                 continue;
             }
+            if !self.universal
+                && !self.call_stack.is_empty()
+                && matches!(
+                    arm.pattern.kind,
+                    PatternKind::Array(_) | PatternKind::Tuple(_)
+                )
+                && self.binding_pattern_match(&arm.pattern, &subject, frame) == Some(false)
+            {
+                // Every named declaration is checked independently with its
+                // unselected formal inputs. A concrete specialization cannot
+                // construct a window for an arm whose length test failed.
+                if arm.guard.is_none() {
+                    previous.push(arm.pattern.clone());
+                }
+                continue;
+            }
             let possible = pattern_tag_possible(&arm.pattern, &subject, frame);
             let preview = (!possible).then(|| (self.snapshot_flow(), frame.clone()));
             let typed_subject = if possible {
@@ -607,7 +649,7 @@ impl Checker {
                 numeric_subject,
                 frame,
             );
-            self.bind_pattern_aliases(&arm.pattern, bindings, frame);
+            self.bind_pattern_aliases(&arm.pattern, bindings, frame, Some(&subject_packet));
             if let Some(guard) = &arm.guard {
                 let guard = self.expression(guard, frame);
                 self.require_type(&guard, &Ty::Bool, arm.span);
@@ -738,7 +780,10 @@ impl Checker {
         if !states.is_empty() {
             self.merge_pattern_states(&states, &baseline, span);
         }
-        if !self.patterns_exhaustive(&subject.ty, &previous, &mut BTreeSet::new()) {
+        if !self.patterns_exhaustive(&subject.ty, &previous, &mut BTreeSet::new())
+            && !(arms.iter().all(|arm| arm.guard.is_none())
+                && self.array_value_patterns_exhaustive(&subject, &previous))
+        {
             self.error(
                 "E0303",
                 span,
@@ -822,10 +867,11 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
         birth: Option<crate::sema::application_effect::OccurrenceIdentity>,
+        packet: Option<&EvaluatedValue>,
     ) -> Value {
         self.inspect_guaranteed_pattern_head(&value, &binding.pattern, span, frame);
-        let bindings = self.checked_pattern_bindings(&binding.pattern, &value, None, None, frame);
-        if binding.fallback.is_some() && bindings.is_empty() {
+        let bindings = self.checked_pattern_bindings(&binding.pattern, &value, None, packet, frame);
+        if binding.fallback.is_some() && super::expressions::binding_count(&binding.pattern) == 0 {
             self.error(
                 "E0309",
                 binding.pattern.span,
@@ -955,6 +1001,9 @@ impl Checker {
         value: &Value,
         frame: &mut Frame,
     ) -> bool {
+        if matches!(&pattern.kind, PatternKind::Array(_)) {
+            return self.binding_pattern_match(pattern, value, frame) == Some(true);
+        }
         if irrefutable(pattern) || structurally_irrefutable(pattern) {
             return true;
         }
@@ -1002,6 +1051,7 @@ impl Checker {
         pattern: &Pattern,
         bindings: BTreeMap<String, (Option<BindingMode>, Value, Span)>,
         frame: &mut Frame,
+        packet: Option<&EvaluatedValue>,
     ) {
         let mut work = 16384usize;
         let plan = pattern
@@ -1045,12 +1095,16 @@ impl Checker {
             );
             return;
         };
+        let start = self.bindings.len();
         for (name, (mode, value, span)) in bindings {
             let Some(introducer) = sites.remove(&name) else {
                 self.unsupported(span, "pattern alias has no original HIR introducer");
                 continue;
             };
             self.bind_pattern_alias(&name, mode, value, (span, introducer, birth), frame);
+        }
+        if let Some(packet) = packet {
+            self.record_pattern_binding_sources(pattern, packet, birth, start, frame);
         }
     }
 
@@ -1124,6 +1178,18 @@ impl Checker {
         packet: Option<&EvaluatedValue>,
         frame: &mut Frame,
     ) -> BTreeMap<String, (Option<BindingMode>, Value, Span)> {
+        self.checked_pattern_bindings_from(pattern, value, mode, packet, frame, pattern.hir_id)
+    }
+
+    pub(super) fn checked_pattern_bindings_from(
+        &mut self,
+        pattern: &Pattern,
+        value: &Value,
+        mode: Option<BindingMode>,
+        packet: Option<&EvaluatedValue>,
+        frame: &mut Frame,
+        root: Option<ril_compiler_core::ids::PatternId>,
+    ) -> BTreeMap<String, (Option<BindingMode>, Value, Span)> {
         let mut result = BTreeMap::new();
         match &pattern.kind {
             PatternKind::Name(name) => {
@@ -1131,7 +1197,14 @@ impl Checker {
             }
             PatternKind::Wildcard => {}
             PatternKind::Mode { mode, pattern } => {
-                return self.checked_pattern_bindings(pattern, value, Some(*mode), packet, frame);
+                return self.checked_pattern_bindings_from(
+                    pattern,
+                    value,
+                    Some(*mode),
+                    packet,
+                    frame,
+                    root,
+                );
             }
             PatternKind::Literal(literal) => {
                 let expected = if matches!(literal, Literal::Integer(_) | Literal::Float(_)) {
@@ -1155,8 +1228,15 @@ impl Checker {
                 }
             }
             PatternKind::Tuple(patterns) => {
-                if let Ty::Tuple(items) = self.expanded(&value.ty, &mut BTreeSet::new()) {
-                    if items.len() != patterns.len() {
+                let items = match self.expanded(&value.ty, &mut BTreeSet::new()) {
+                    Ty::Tuple(items) => Some(items),
+                    Ty::Unit => Some(Vec::new()),
+                    _ => None,
+                };
+                if let Some(items) = items {
+                    let rest = sequence_rest(patterns);
+                    let required = patterns.len() - usize::from(rest.is_some());
+                    if (rest.is_none() && items.len() != required) || items.len() < required {
                         self.error(
                             "E0305",
                             pattern.span,
@@ -1165,6 +1245,14 @@ impl Checker {
                         );
                     }
                     for (index, pattern) in patterns.iter().enumerate() {
+                        if matches!(pattern.kind, PatternKind::Rest(_)) {
+                            continue;
+                        }
+                        let index = if rest.is_some_and(|rest| index > rest) {
+                            items.len().saturating_sub(patterns.len() - index)
+                        } else {
+                            index
+                        };
                         let child = self.project(
                             value,
                             Slot::Tuple(index as u32),
@@ -1172,8 +1260,9 @@ impl Checker {
                             frame,
                             true,
                         );
-                        let bindings =
-                            self.checked_pattern_bindings(pattern, &child, mode, packet, frame);
+                        let bindings = self.checked_pattern_bindings_from(
+                            pattern, &child, mode, packet, frame, root,
+                        );
                         self.extend_pattern_bindings(&mut result, bindings, pattern.span);
                     }
                 } else {
@@ -1185,6 +1274,66 @@ impl Checker {
                     );
                 }
             }
+            PatternKind::Array(patterns) => {
+                if !matches!(self.expanded(&value.ty, &mut BTreeSet::new()), Ty::Array(_)) {
+                    self.error(
+                        "E0301",
+                        pattern.span,
+                        "array pattern requires an array subject",
+                        [value.cause],
+                    );
+                    return result;
+                }
+                let rest = sequence_rest(patterns);
+                let length = self.known_array_length(value);
+                for (index, part) in patterns.iter().enumerate() {
+                    if let PatternKind::Rest(name) = &part.kind {
+                        if let Some(name) = name.as_ref().filter(|name| name.as_str() != "_") {
+                            if let (Some(packet), Some(root), Some(rest)) =
+                                (packet, root, part.hir_id)
+                            {
+                                let prefix = u32::try_from(index);
+                                let suffix = u32::try_from(patterns.len() - index - 1);
+                                match (prefix, suffix) {
+                                    (Ok(prefix), Ok(suffix)) => {
+                                        if let Some(window) = self.pattern_array_window(
+                                            packet, value, root, rest, prefix, suffix, frame,
+                                        ) {
+                                            result.insert(name.clone(), (mode, window, part.span));
+                                        }
+                                    }
+                                    _ => self.unsupported(
+                                        part.span,
+                                        "array pattern coordinates exceed their identity space",
+                                    ),
+                                }
+                            } else {
+                                self.unsupported(part.span, "array remainder lost its actual subject packet or original pattern");
+                            }
+                        }
+                        continue;
+                    }
+                    let suffix = rest.is_some_and(|rest| index > rest);
+                    let selected = if suffix {
+                        length
+                            .and_then(|length| length.checked_sub((patterns.len() - index) as u64))
+                            .and_then(|index| i64::try_from(index).ok())
+                    } else {
+                        i64::try_from(index).ok()
+                    };
+                    let slot = selected.map(Slot::Index).unwrap_or(Slot::AnyIndex);
+                    let child = self.project(value, slot, part.span, frame, true);
+                    let bindings =
+                        self.checked_pattern_bindings_from(part, &child, mode, packet, frame, root);
+                    self.extend_pattern_bindings(&mut result, bindings, part.span);
+                }
+            }
+            PatternKind::Rest(_) => self.error(
+                "E0347",
+                pattern.span,
+                "rest must be owned by one sequence pattern",
+                [value.cause],
+            ),
             PatternKind::Record {
                 fields,
                 rest_binding,
@@ -1192,27 +1341,43 @@ impl Checker {
             } => {
                 if matches!(
                     self.expanded(&value.ty, &mut BTreeSet::new()),
-                    Ty::Record(_)
+                    Ty::Record(_) | Ty::OpenRecord { .. }
                 ) {
                     for field in fields {
-                        let child = self.project(
+                        let mut child = self.project(
                             value,
                             Slot::Field(field.name.clone()),
                             field.span,
                             frame,
                             true,
                         );
-                        let bindings = self.checked_pattern_bindings(
+                        if (mode.is_some_and(|mode| mode.is_mutable())
+                            || matches!(field.pattern.kind, PatternKind::Mode { mode, .. } if mode.is_mutable()))
+                            && child.permission == Permission::Read
+                        {
+                            self.error(
+                                "E0521",
+                                field.span,
+                                "destructuring cannot acquire write authority",
+                                [child.cause],
+                            );
+                        }
+                        child.marker |= value.marker;
+                        let bindings = self.checked_pattern_bindings_from(
                             &field.pattern,
                             &child,
                             mode,
                             packet,
                             frame,
+                            root,
                         );
                         self.extend_pattern_bindings(&mut result, bindings, field.span);
                     }
-                    if rest_binding.is_some() {
-                        self.unsupported(pattern.span, "record-rest binding provenance");
+                    if let Some(name) = rest_binding
+                        && let Some(rest) =
+                            self.record_rest_value(value, fields, pattern.span, frame)
+                    {
+                        result.insert(name.clone(), (mode, rest, pattern.span));
                     }
                 } else {
                     self.error(
@@ -1298,12 +1463,13 @@ impl Checker {
                         self.discharge_absent_results(value, pattern.span);
                     }
                     if arguments.len() == 1 {
-                        return self.checked_pattern_bindings(
+                        return self.checked_pattern_bindings_from(
                             &arguments[0],
                             &payload,
                             mode,
                             packet,
                             frame,
+                            root,
                         );
                     }
                     if !arguments.is_empty() {
@@ -1324,8 +1490,9 @@ impl Checker {
                                     frame,
                                     true,
                                 );
-                                let bindings = self
-                                    .checked_pattern_bindings(pattern, &child, mode, packet, frame);
+                                let bindings = self.checked_pattern_bindings_from(
+                                    pattern, &child, mode, packet, frame, root,
+                                );
                                 self.extend_pattern_bindings(&mut result, bindings, pattern.span);
                             }
                         } else {
@@ -1363,8 +1530,9 @@ impl Checker {
                             &mut BTreeSet::new(),
                         )
                     };
-                    let bindings =
-                        self.checked_pattern_bindings(pattern, &subject, mode, packet, frame);
+                    let bindings = self.checked_pattern_bindings_from(
+                        pattern, &subject, mode, packet, frame, root,
+                    );
                     choices.push((possible, bindings));
                     if let Some(preview) = preview {
                         self.restore_preview(&preview);
@@ -1465,6 +1633,13 @@ impl Checker {
                 payload.ty = *inner;
                 payload.permission = payload.permission.meet(value.permission);
                 payload.construction &= value.construction;
+                payload.sources = value.sources.clone();
+                payload.stable &= value.stable;
+                payload.scoped.extend(&value.scoped);
+                payload
+                    .callback_parameters
+                    .extend(&value.callback_parameters);
+                payload.inherit_copy_dependencies(&value.nested_copy_dependencies());
                 payload.retention_result =
                     value.retention_result || (value.construction && payload.retention_result);
                 payload.through_return |= value.through_return;
@@ -1689,6 +1864,9 @@ impl Checker {
             }
             PatternKind::Tuple(patterns) => {
                 if let Some(pattern) = patterns.first() {
+                    if matches!(pattern.kind, PatternKind::Rest(_)) {
+                        return;
+                    }
                     let child = self.project(value, Slot::Tuple(0), span, frame, true);
                     self.inspect_guaranteed_pattern_head(&child, pattern, span, frame)
                 }
@@ -2175,7 +2353,11 @@ impl Checker {
                 let values=constructor_payload_patterns(&patterns,tag);
                 self.patterns_exhaustive(payload,&values,&mut seen.clone())
             }),
+            Ty::Unit => patterns.iter().any(|pattern| matches!(&pattern.kind,
+                PatternKind::Literal(Literal::Unit)) || matches!(&pattern.kind,
+                PatternKind::Tuple(items) if items.iter().all(|item| matches!(item.kind, PatternKind::Rest(None))))),
             Ty::Tuple(_) | Ty::Record(_) => patterns.iter().any(|pattern|structurally_irrefutable(pattern)),
+            Ty::Array(_) => array_patterns_exhaustive(&patterns),
             owner @ (Ty::Named(_) | Ty::Applied{..})=>{
                 let variants = if let Some(tags) = self.constructor_possible_tags(&owner) {
                     tags.into_iter().map(|tag| {
@@ -2212,7 +2394,9 @@ fn structurally_irrefutable(pattern: &Pattern) -> bool {
         return true;
     }
     match &pattern.kind {
-        PatternKind::Tuple(items) => items.iter().all(structurally_irrefutable),
+        PatternKind::Tuple(items) => items.iter().all(|item| {
+            matches!(item.kind, PatternKind::Rest(None)) || structurally_irrefutable(item)
+        }),
         PatternKind::Record { fields, .. } => fields
             .iter()
             .all(|field| structurally_irrefutable(&field.pattern)),
@@ -2246,9 +2430,8 @@ fn pattern_subsumes(first: &Pattern, second: &Pattern) -> bool {
                         &constructor_payload_pattern(y, second.span),
                     ))
         }
-        (PatternKind::Tuple(a), PatternKind::Tuple(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| pattern_subsumes(a, b))
-        }
+        (PatternKind::Tuple(a), PatternKind::Tuple(b)) => sequence_subsumes(a, b),
+        (PatternKind::Array(a), PatternKind::Array(b)) => sequence_subsumes(a, b),
         (PatternKind::Alternative(patterns), _) => patterns
             .iter()
             .any(|pattern| pattern_subsumes(pattern, second)),

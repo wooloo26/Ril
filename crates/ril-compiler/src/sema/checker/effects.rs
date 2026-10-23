@@ -2398,6 +2398,12 @@ fn audit_resumes(expr: &Expr, nested: bool) -> ResumeAudit {
             condition,
             then_branch,
             else_branch,
+        }
+        | ExprKind::IfLet {
+            value: condition,
+            then_branch,
+            else_branch,
+            ..
         } => {
             include(&mut result, audit_resumes(condition, nested));
             let left = audit_resumes(then_branch, nested);
@@ -2466,8 +2472,17 @@ fn audit_resumes(expr: &Expr, nested: bool) -> ResumeAudit {
                 include(&mut result, audit_resumes(value, nested));
             }
         }
-        ExprKind::While { condition, body } => {
-            include(&mut result, audit_resumes(condition, nested));
+        ExprKind::While { condition, body }
+        | ExprKind::WhileLet {
+            value: condition,
+            body,
+            ..
+        } => {
+            let mut condition = audit_resumes(condition, nested);
+            if condition.count > 0 {
+                condition.count = 2;
+            }
+            include(&mut result, condition);
             let mut body = audit_resumes(
                 &Expr {
                     hir_id: None,
@@ -2519,5 +2534,16 @@ fn audit_resumes(expr: &Expr, nested: bool) -> ResumeAudit {
     result
 }
 fn tail_resume(expr: &Expr) -> bool {
-    match &expr.kind{ExprKind::Control{operation:ControlOperation::Resume,..}=>true,ExprKind::Block(block)=>block.statements.last().is_some_and(|statement|matches!(&statement.kind,StmtKind::Expr{expression,..}if tail_resume(expression))),ExprKind::If{then_branch,else_branch:Some(other),..}=>tail_resume(then_branch)&&tail_resume(other),ExprKind::Match{arms,..}=>!arms.is_empty()&&arms.iter().all(|arm|tail_resume(&arm.body)),_=>false}
+    match &expr.kind {
+        ExprKind::Control { operation: ControlOperation::Resume, .. } => true,
+        ExprKind::Block(block) => block.statements.last().is_some_and(|statement| {
+            matches!(&statement.kind, StmtKind::Expr { expression, .. } if tail_resume(expression))
+        }),
+        ExprKind::If { then_branch, else_branch: Some(other), .. }
+        | ExprKind::IfLet { then_branch, else_branch: Some(other), .. } => {
+            tail_resume(then_branch) && tail_resume(other)
+        }
+        ExprKind::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|arm| tail_resume(&arm.body)),
+        _ => false,
+    }
 }

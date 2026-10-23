@@ -204,10 +204,11 @@ impl Visitor<'_> {
     }
     fn unavailable(&self, pattern: &Pattern, env: &mut Env) {
         match &pattern.kind {
-            PatternKind::Name(name) => {
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
                 env.insert(name.clone(), Ty::Unknown);
             }
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..
@@ -257,6 +258,28 @@ impl Visitor<'_> {
             } => {
                 self.expr(condition, env.clone(), static_phase);
                 self.expr(then_branch, env.clone(), static_phase);
+                if let Some(branch) = else_branch {
+                    self.expr(branch, env, static_phase);
+                }
+            }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                let value_ty = self
+                    .checker
+                    .expr(value, &mut env.clone())
+                    .unwrap_or(Ty::Unknown);
+                self.expr(value, env.clone(), static_phase);
+                let saved = self.checker.const_shadows.borrow().clone();
+                let mut child = env.clone();
+                if self.checker.bind(pattern, value_ty, &mut child).is_err() {
+                    self.unavailable(pattern, &mut child);
+                }
+                self.expr(then_branch, child, static_phase);
+                *self.checker.const_shadows.borrow_mut() = saved;
                 if let Some(branch) = else_branch {
                     self.expr(branch, env, static_phase);
                 }
@@ -342,6 +365,22 @@ impl Visitor<'_> {
             ExprKind::While { condition, body } => {
                 self.expr(condition, env.clone(), static_phase);
                 self.block(body, env, static_phase);
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                let value_ty = self
+                    .checker
+                    .expr(value, &mut env.clone())
+                    .unwrap_or(Ty::Unknown);
+                self.expr(value, env.clone(), static_phase);
+                let mut child = env;
+                if self.checker.bind(pattern, value_ty, &mut child).is_err() {
+                    self.unavailable(pattern, &mut child);
+                }
+                self.block(body, child, static_phase);
             }
             ExprKind::For {
                 iterable,

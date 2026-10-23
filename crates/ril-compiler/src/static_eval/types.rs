@@ -329,7 +329,7 @@ impl Evaluator {
                 tuple,
             } => {
                 let keys = self.expression(keys)?;
-                let StaticValue::Array(keys) = keys else {
+                let Some(keys) = keys.array_items() else {
                     return Err(Failure::Diagnostic(
                         if *tuple { "E0342" } else { "E0341" },
                         "mapped keys must be a static array of the required key sort".into(),
@@ -341,6 +341,7 @@ impl Evaluator {
                     let mut items = vec![];
                     let mut names = BTreeSet::new();
                     for key in keys {
+                        let key = self.copy_static_value(key)?;
                         self.budget.event(budget::Event::LoopIteration)?;
                         self.values.insert(binder.clone(), key.clone());
                         let field = self.resolve_type(value, seen)?;
@@ -889,7 +890,10 @@ impl Evaluator {
             (TypeKind::Name { path, .. }, StaticValue::Bytes(_)) => {
                 normalized_path(path) == "bytes"
             }
-            (TypeKind::Array { element, length }, StaticValue::Array(items)) => {
+            (TypeKind::Array { element, length }, array) if array.array_items().is_some() => {
+                let items = array
+                    .array_items()
+                    .expect("the match guard admitted an array view");
                 if let Some(length) = length {
                     let StaticValue::Integer(length) = self.expression(length)? else {
                         return Err(Failure::Diagnostic(

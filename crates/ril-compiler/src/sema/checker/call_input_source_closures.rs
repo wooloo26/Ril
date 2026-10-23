@@ -2,7 +2,47 @@
 //! These type coordinates do not grant publication, loans or callable rows.
 use super::*;
 
+pub(in crate::sema::checker) struct FormalBindingHeader {
+    pub syntax: TypeExpr,
+    pub environment: crate::sema::context::FrozenEnvironment,
+    pub root: ril_compiler_core::ids::PatternId,
+}
+
 impl Checker {
+    pub(in crate::sema::checker) fn project_parameter_source(
+        &mut self,
+        binding: BindingId,
+        root: ril_compiler_core::ids::PatternId,
+        source: &SourceSchema,
+        environment: &crate::sema::context::FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<Option<SourceSchema>, SourceTypesError> {
+        let info = self
+            .bindings
+            .get(binding)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let introducer = info.pattern.ok_or(SourceTypesError::MissingNode)?;
+        if root == introducer && self.semantic_hir.pattern(root).is_some_and(|pattern|
+            matches!(&pattern.kind, crate::hir::nodes::PatternKind::Name(name) if name == &info.name)) {
+            work.charge(1)?;
+            return Ok(Some(source.clone()));
+        }
+        self.type_source
+            .with_header_index(&self.semantic_hir, |lexical| {
+                crate::sema::pattern_sources::project_binding(
+                    source,
+                    environment,
+                    &self.semantic_hir,
+                    lexical,
+                    &self.constructors,
+                    root,
+                    introducer,
+                    &info.name,
+                    work,
+                )
+            })
+    }
+
     pub(super) fn formal_source_declaration(
         &self,
         value: &Value,
@@ -34,6 +74,10 @@ impl Checker {
             ..
         }) = self.scopes.get(&binding.owner)
         {
+            if !self.semantic_hir.pattern(pattern).is_some_and(|original|
+                matches!(&original.kind, crate::hir::nodes::PatternKind::Name(actual) if actual == name)) {
+                return None;
+            }
             let handler = self.handler_definitions.get(entry.handler)?;
             let arm = handler
                 .arms
@@ -90,6 +134,99 @@ impl Checker {
         // Its names are interpreted only after entering the captured environment.
         crate::static_eval::effects::bounded_argument_key(syntax, &BTreeMap::new())?;
         Some((syntax.clone(), binding.typing_environment.clone()))
+    }
+
+    pub(in crate::sema::checker) fn formal_binding_source_header(
+        &self,
+        id: BindingId,
+        name: &str,
+        work: &mut WorkLimit,
+    ) -> Result<Option<FormalBindingHeader>, SourceTypesError> {
+        work.charge(1)?;
+        let Some(binding) = self.bindings.get(id) else {
+            return Err(SourceTypesError::MissingNode);
+        };
+        if !binding.parameter || binding.name != name {
+            return Ok(None);
+        }
+        let Some(introducer) = binding.pattern else {
+            return Ok(None);
+        };
+        let select = |parameters: &[Parameter],
+                      work: &mut WorkLimit|
+         -> Result<Option<usize>, SourceTypesError> {
+            work.charge(parameters.len())?;
+            let mut selected = None;
+            for (slot, parameter) in parameters.iter().enumerate() {
+                let Some(root) = parameter.pattern.hir_id else {
+                    continue;
+                };
+                if crate::sema::pattern_sources::contains_binding(
+                    &self.semantic_hir,
+                    root,
+                    introducer,
+                    name,
+                    work,
+                )? && selected.replace(slot).is_some()
+                {
+                    return Err(SourceTypesError::Unresolved);
+                }
+            }
+            Ok(selected)
+        };
+        if let Some(crate::sema::scopes::ScopeRecord {
+            origin: crate::sema::scopes::ScopeOrigin::Operation(entry),
+            ..
+        }) = self.scopes.get(&binding.owner)
+        {
+            let handler = self
+                .handler_definitions
+                .get(entry.handler)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let arm = handler
+                .arms
+                .values()
+                .find(|arm| arm.body.hir_id == entry.body)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let Some(slot) = select(&arm.parameters, work)? else {
+                return Ok(None);
+            };
+            let operation = self
+                .operations
+                .values()
+                .find(|operation| operation.identity == entry.operation)
+                .ok_or(SourceTypesError::MissingNode)?;
+            let source = operation
+                .source
+                .as_ref()
+                .ok_or(SourceTypesError::MissingNode)?;
+            let syntax = self
+                .effects
+                .get(&operation.effect)
+                .ok_or(SourceTypesError::MissingNode)?
+                .operations
+                .get(source.index as usize)
+                .ok_or(SourceTypesError::MissingNode)?
+                .parameters
+                .get(slot)
+                .ok_or(SourceTypesError::MissingNode)?
+                .ty
+                .as_ref()
+                .ok_or(SourceTypesError::MissingNode)?;
+            let mut remaining = work.remaining();
+            let admitted = crate::static_eval::charge_type_syntax_clone(syntax, &mut remaining);
+            work.charge(work.remaining() - remaining)?;
+            admitted.ok_or(SourceTypesError::BudgetExceeded)?;
+            return Ok(Some(FormalBindingHeader {
+                syntax: syntax.clone(),
+                environment: binding.typing_environment.clone(),
+                root: arm.parameters[slot]
+                    .pattern
+                    .hir_id
+                    .ok_or(SourceTypesError::MissingNode)?,
+            }));
+        }
+        Ok(None)
     }
 
     pub(in crate::sema::checker) fn remember_closure_source(

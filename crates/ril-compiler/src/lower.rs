@@ -157,13 +157,11 @@ pub fn lower_core_for(
             })
             .or_insert(current);
     }
-    let binding_patterns = patterns::BindingPatterns::new(program.facts())?;
     let numeric_index = numeric::NumericIndex::new(
         &program.facts().numeric_uses,
         crate::sema::source_types::WorkLimit::new(4_000_000),
     )?;
     let mut lower = Lower {
-        binding_patterns: &binding_patterns,
         numeric_index: &numeric_index,
         numeric_view: numeric_index.view(
             &program.facts().numeric_selections,
@@ -271,7 +269,6 @@ pub fn lower_core_for(
             .find(|info| info.definition == instance.record.template)
             .ok_or_else(|| unsupported("specialization template syntax is missing"))?;
         let mut selected = Lower {
-            binding_patterns: lower.binding_patterns,
             numeric_index: lower.numeric_index,
             numeric_view: lower.numeric_index.view(
                 &facts.numeric_selections,
@@ -354,7 +351,6 @@ pub fn lower_core_for(
     })
 }
 struct Lower<'a> {
-    binding_patterns: &'a patterns::BindingPatterns,
     numeric_index: &'a numeric::NumericIndex,
     numeric_view: numeric::NumericView,
     specializations: &'a specialize::Plan,
@@ -598,7 +594,6 @@ impl Lower<'_> {
             });
         };
         let mut nested = Lower {
-            binding_patterns: self.binding_patterns,
             numeric_index: self.numeric_index,
             numeric_view: self.numeric_index.view(
                 &facts.numeric_selections,
@@ -746,13 +741,9 @@ impl Lower<'_> {
         }))
     }
     fn pattern(&mut self, pattern: &ast::Pattern) -> Result<ir::Pattern, NotImplemented> {
-        self.lower_pattern(pattern, false)
+        self.lower_pattern(pattern)
     }
-    fn lower_pattern(
-        &mut self,
-        pattern: &ast::Pattern,
-        bind_remainders: bool,
-    ) -> Result<ir::Pattern, NotImplemented> {
+    fn lower_pattern(&mut self, pattern: &ast::Pattern) -> Result<ir::Pattern, NotImplemented> {
         Ok(match &pattern.kind {
             ast::PatternKind::Name(name) => ir::Pattern::Name(name.clone()),
             ast::PatternKind::Wildcard => ir::Pattern::Wildcard,
@@ -774,46 +765,50 @@ impl Lower<'_> {
             ast::PatternKind::Tuple(items) => ir::Pattern::Tuple(
                 items
                     .iter()
-                    .map(|item| self.lower_pattern(item, bind_remainders))
+                    .map(|item| self.lower_pattern(item))
                     .collect::<Result<_, _>>()?,
             ),
-            ast::PatternKind::Record {
-                rest_binding: Some(_),
-                ..
-            } if !bind_remainders => {
-                return Err(unsupported(
-                    "record-rest pattern requires its original binding projection",
-                ));
-            }
-            ast::PatternKind::Record { fields, .. } => ir::Pattern::Record(
-                fields
+            ast::PatternKind::Array(items) => ir::Pattern::Array(
+                items
                     .iter()
-                    .map(|field| {
-                        Ok((
-                            field.name.clone(),
-                            self.lower_pattern(&field.pattern, bind_remainders)?,
-                        ))
-                    })
-                    .collect::<Result<_, NotImplemented>>()?,
+                    .map(|item| self.lower_pattern(item))
+                    .collect::<Result<_, _>>()?,
             ),
+            ast::PatternKind::Rest(binding) => ir::Pattern::Rest(binding.clone()),
+            ast::PatternKind::Record {
+                fields,
+                rest_binding,
+                ..
+            } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| Ok((field.name.clone(), self.lower_pattern(&field.pattern)?)))
+                    .collect::<Result<_, NotImplemented>>()?;
+                if let Some(rest) = rest_binding {
+                    ir::Pattern::RecordRest {
+                        fields,
+                        rest: rest.clone(),
+                    }
+                } else {
+                    ir::Pattern::Record(fields)
+                }
+            }
             ast::PatternKind::Constructor {
                 path, arguments, ..
             } => ir::Pattern::Constructor {
                 tag: path.join("::"),
                 arguments: arguments
                     .iter()
-                    .map(|argument| self.lower_pattern(argument, bind_remainders))
+                    .map(|argument| self.lower_pattern(argument))
                     .collect::<Result<_, _>>()?,
             },
             ast::PatternKind::Alternative(patterns) => ir::Pattern::Alternative(
                 patterns
                     .iter()
-                    .map(|pattern| self.lower_pattern(pattern, bind_remainders))
+                    .map(|pattern| self.lower_pattern(pattern))
                     .collect::<Result<_, _>>()?,
             ),
-            ast::PatternKind::Mode { pattern, .. } => {
-                self.lower_pattern(pattern, bind_remainders)?
-            }
+            ast::PatternKind::Mode { pattern, .. } => self.lower_pattern(pattern)?,
             _ => return Err(unsupported("static or computed pattern lowering")),
         })
     }
@@ -1476,7 +1471,6 @@ impl Lower<'_> {
                         .specializations
                         .closure_facts(self.all_facts, index, site)?;
                     let mut nested = Lower {
-                        binding_patterns: self.binding_patterns,
                         numeric_index: self.numeric_index,
                         numeric_view: self.numeric_index.view(
                             &facts.numeric_selections,
@@ -1544,6 +1538,33 @@ impl Lower<'_> {
                     .map(|branch| self.expression(branch).map(Box::new))
                     .transpose()?,
             },
+            ast::ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => ir::ExprKind::Match {
+                value: Box::new(self.expression(value)?),
+                arms: vec![
+                    ir::MatchArm {
+                        pattern: self.pattern(pattern)?,
+                        guard: None,
+                        body: self.expression(then_branch)?,
+                    },
+                    ir::MatchArm {
+                        pattern: ir::Pattern::Wildcard,
+                        guard: None,
+                        body: else_branch
+                            .as_ref()
+                            .map(|branch| self.expression(branch))
+                            .transpose()?
+                            .unwrap_or(ir::Expr {
+                                kind: ir::ExprKind::Literal(ir::Literal::Unit),
+                                span: expression.span,
+                            }),
+                    },
+                ],
+            },
             ast::ExprKind::Match {
                 value,
                 arms,
@@ -1582,6 +1603,45 @@ impl Lower<'_> {
                 charge: Some(ir::ChargeEvent::LoopIteration),
                 condition: Box::new(self.expression(condition)?),
                 body: self.block(body)?,
+            },
+            ast::ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => ir::ExprKind::Loop {
+                charge: Some(ir::ChargeEvent::LoopIteration),
+                body: ir::Block {
+                    statements: vec![ir::Statement::Expr {
+                        expression: ir::Expr {
+                            kind: ir::ExprKind::Match {
+                                value: Box::new(self.expression(value)?),
+                                arms: vec![
+                                    ir::MatchArm {
+                                        pattern: self.pattern(pattern)?,
+                                        guard: None,
+                                        body: ir::Expr {
+                                            kind: ir::ExprKind::Block(self.block(body)?),
+                                            span: body.span,
+                                        },
+                                    },
+                                    ir::MatchArm {
+                                        pattern: ir::Pattern::Wildcard,
+                                        guard: None,
+                                        body: ir::Expr {
+                                            kind: ir::ExprKind::Control {
+                                                operation: ir::ControlOperation::Last,
+                                                value: None,
+                                            },
+                                            span: expression.span,
+                                        },
+                                    },
+                                ],
+                            },
+                            span: expression.span,
+                        },
+                        terminated: true,
+                    }],
+                },
             },
             ast::ExprKind::For {
                 iterable,
@@ -1743,6 +1803,14 @@ fn binding_test(pattern: &ir::Pattern) -> ir::Pattern {
     match pattern {
         ir::Pattern::Name(_) => ir::Pattern::Wildcard,
         ir::Pattern::Tuple(items) => ir::Pattern::Tuple(items.iter().map(binding_test).collect()),
+        ir::Pattern::Array(items) => ir::Pattern::Array(items.iter().map(binding_test).collect()),
+        ir::Pattern::Rest(_) => ir::Pattern::Rest(None),
+        ir::Pattern::RecordRest { fields, .. } => ir::Pattern::Record(
+            fields
+                .iter()
+                .map(|(name, value)| (name.clone(), binding_test(value)))
+                .collect(),
+        ),
         ir::Pattern::Record(fields) => ir::Pattern::Record(
             fields
                 .iter()

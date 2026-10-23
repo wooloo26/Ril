@@ -18,6 +18,7 @@ impl Checker {
                     .clone()
             };
             let shape = match &node.kind {
+                ConstNodeKind::ArrayWindow { backing, .. } => child(backing),
                 ConstNodeKind::Array(items) => {
                     Ty::Array(Box::new(items.iter().fold(Ty::Unknown, |ty, reference| {
                         join_type_holes(&ty, &child(reference))
@@ -102,6 +103,74 @@ impl Checker {
                     .clone()
             };
             let (ty, children, scalar) = match &constant.kind {
+                ConstNodeKind::ArrayWindow {
+                    backing,
+                    start,
+                    len,
+                } => {
+                    let backing_value = child(backing);
+                    let ty = self.collection_type(&backing_value);
+                    let site = SiteId(self.next_site);
+                    self.next_site = self
+                        .next_site
+                        .checked_add(1)
+                        .expect("constant window site identity exhausted");
+                    let node = self.allocate_site(span, site, ScopeId(0));
+                    let mut value = Value::reference(ty.clone(), node, cause);
+                    let mut origins = backing_value.origins.clone();
+                    let mut offset = *start;
+                    while origins.nodes.len() == 1 {
+                        let Some(parent) = self.windows.get(origins.nodes.first().unwrap()) else {
+                            break;
+                        };
+                        let Some(lower) = parent.lower.and_then(|lower| lower.checked_add(offset))
+                        else {
+                            self.unsupported(
+                                span,
+                                "constant window has an unresolved nested offset",
+                            );
+                            break;
+                        };
+                        offset = lower;
+                        origins = parent.backing.clone();
+                    }
+                    if let Some(end) = offset.checked_add(*len) {
+                        for ((origin, slot), child) in &self.fields {
+                            if origins.nodes.contains(origin)
+                                && matches!(slot, Slot::Index(i) if u64::try_from(*i).ok().is_some_and(|i| i >= offset && i < end))
+                            {
+                                value.results.extend(&child.results);
+                                value.must_results.extend(&child.must_results);
+                            }
+                        }
+                    } else {
+                        self.unsupported(span, "constant window interval overflow");
+                    }
+                    let reference = ConstRef {
+                        graph: ConstGraphId(0),
+                        node: ConstNodeId(index as u32),
+                    };
+                    self.windows.insert(
+                        node,
+                        super::super::WindowInfo {
+                            pattern: None,
+                            constant: Some(reference),
+                            backing: backing_value.origins.clone(),
+                            lower: Some(*start),
+                            length: Some(*len),
+                            span,
+                            cause,
+                        },
+                    );
+                    self.array_lengths.insert(node, Some(*len));
+                    self.storage_types.insert(node, ty.clone());
+                    self.store_field(
+                        node,
+                        Slot::Field("ril__window_backing".into()),
+                        backing_value,
+                    );
+                    (ty, vec![], Some(value))
+                }
                 ConstNodeKind::Literal(literal) => {
                     let (ty, fact) = match literal {
                         L::Unit => (Ty::Unit, Some(Constant::Unit)),

@@ -11,6 +11,8 @@ mod fallback;
 mod loops;
 #[path = "result_flow_maps.rs"]
 mod maps;
+#[path = "result_flow_patterns.rs"]
+mod pattern_sequences;
 #[path = "result_flow_receiving.rs"]
 mod receiving;
 #[path = "result_flow_contexts.rs"]
@@ -802,7 +804,7 @@ impl Engine<'_> {
         Ok(path)
     }
     fn bind_simple(
-        &self,
+        &mut self,
         pattern: &Pattern,
         value: Value,
         state: &mut State,
@@ -814,12 +816,22 @@ impl Engine<'_> {
                 state.env.insert(name.clone(), value);
             }
             (PatternKind::Wildcard, _) => {}
-            (PatternKind::Tuple(patterns), Shape::Tuple(items))
-                if patterns.len() == items.len() =>
-            {
-                for (pattern, value) in patterns.iter().zip(items) {
-                    self.bind_simple(pattern, value, state)?;
+            (PatternKind::Tuple(_) | PatternKind::Array(_), _) => {
+                let matched = self.pattern(pattern, &value, state.clone())?;
+                let mut paths = matched.into_iter();
+                let Some((next, true)) = paths.next() else {
+                    return Err(incomplete(
+                        pattern.span,
+                        "irrefutable static pattern did not select its subject",
+                    ));
+                };
+                if paths.next().is_some() {
+                    return Err(incomplete(
+                        pattern.span,
+                        "static binding needs one irrefutable pattern outcome",
+                    ));
                 }
+                *state = next;
             }
             (
                 PatternKind::Record {
@@ -1308,10 +1320,15 @@ impl Engine<'_> {
                 }
                 Ok(paths)
             }
-            ExprKind::Loop(body) => self.loop_flow(None, body, state, expr.span, context),
+            ExprKind::Loop(body) => self.loop_flow(None, None, body, state, expr.span, context),
             ExprKind::While { condition, body } => {
-                self.loop_flow(Some(condition), body, state, expr.span, None)
+                self.loop_flow(Some(condition), None, body, state, expr.span, None)
             }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => self.loop_flow(Some(value), Some(pattern), body, state, expr.span, None),
             ExprKind::For {
                 iterable,
                 pattern,
@@ -1335,6 +1352,41 @@ impl Engine<'_> {
                             output.extend(self.expr_expected(branch, state, context)?);
                         } else {
                             output.push(Path::normal(state, Value::unit()));
+                        }
+                    }
+                }
+                Ok(output)
+            }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                let mut output = vec![];
+                for path in self.expr(value, state)? {
+                    if path.exit != Exit::Normal {
+                        output.push(path);
+                        continue;
+                    }
+                    let env = path.state.env.clone();
+                    let scope = path.state.bound_scope.clone();
+                    for (mut state, matched) in self.pattern(pattern, &path.value, path.state)? {
+                        let paths = if matched {
+                            self.expr_expected(then_branch, state, context)?
+                        } else {
+                            state.env = env.clone();
+                            state.bound_scope = scope.clone();
+                            if let Some(branch) = else_branch {
+                                self.expr_expected(branch, state, context)?
+                            } else {
+                                vec![Path::normal(state, Value::unit())]
+                            }
+                        };
+                        for mut path in paths {
+                            path.state.env = env.clone();
+                            path.state.bound_scope = scope.clone();
+                            output.push(path);
                         }
                     }
                 }
@@ -1796,14 +1848,10 @@ impl Engine<'_> {
                 Ok(output)
             }
             PatternKind::Tuple(patterns) => {
-                if let Shape::Tuple(items) = &value.shape {
-                    self.pattern_members(patterns.iter().zip(items).collect(), state)
-                } else {
-                    Err(incomplete(
-                        pattern.span,
-                        "static Result tuple pattern member graph",
-                    ))
-                }
+                self.sequence_pattern(pattern, patterns, value, state, false)
+            }
+            PatternKind::Array(patterns) => {
+                self.sequence_pattern(pattern, patterns, value, state, true)
             }
             PatternKind::Record {
                 fields,
@@ -2745,6 +2793,11 @@ fn known_global(value: &mut Value, actual: &StaticValue) {
                 known_global(value, actual);
             }
         }
+        (Shape::Array(values), StaticValue::ArrayWindow(items)) => {
+            for (value, actual) in values.iter_mut().zip(items.iter()) {
+                known_global(value, actual);
+            }
+        }
         (
             Shape::Record(values) | Shape::BoundRecord { fields: values, .. },
             StaticValue::Record(items),
@@ -2865,7 +2918,7 @@ fn pattern_relevant(pattern: &Pattern) -> bool {
         PatternKind::Constructor {
             path, arguments, ..
         } => super::super::results::tag(path).is_some() || arguments.iter().any(pattern_relevant),
-        PatternKind::Tuple(items) | PatternKind::Alternative(items) => {
+        PatternKind::Tuple(items) | PatternKind::Array(items) | PatternKind::Alternative(items) => {
             items.iter().any(pattern_relevant)
         }
         PatternKind::Record { fields, .. } => {
@@ -2885,12 +2938,14 @@ fn expr_relevant(expr: &Expr) -> bool {
     ExprKind::Record{ty,members,..}=>ty.as_ref().is_some_and(type_computation_relevant)||members.iter().any(|member|match member{RecordMember::Field(field)=>expr_relevant(&field.value),RecordMember::Spread(value)=>expr_relevant(value)}),
     ExprKind::Call{callee,arguments}=>expr_relevant(callee)||arguments.iter().any(|argument|expr_relevant(&argument.value)),
     ExprKind::If{condition,then_branch,else_branch}=>expr_relevant(condition)||expr_relevant(then_branch)||else_branch.as_ref().is_some_and(|branch|expr_relevant(branch)),
+    ExprKind::IfLet{pattern,value,then_branch,else_branch}=>pattern_relevant(pattern)||expr_relevant(value)||expr_relevant(then_branch)||else_branch.as_ref().is_some_and(|branch|expr_relevant(branch)),
     ExprKind::Match{value,arms,..}=>expr_relevant(value)||arms.iter().any(|arm|pattern_relevant(&arm.pattern)||arm.guard.as_ref().is_some_and(expr_relevant)||expr_relevant(&arm.body)),
     ExprKind::Is{value,pattern}=>expr_relevant(value)||pattern_relevant(pattern),
     ExprKind::Binary{left,right,..}=>expr_relevant(left)||expr_relevant(right),
     ExprKind::Unary{operator,operand}=>operator!="typeof"&&expr_relevant(operand),
     ExprKind::Block(block)|ExprKind::Loop(block)=>block_relevant(block),
     ExprKind::While{condition,body}=>expr_relevant(condition)||block_relevant(body),
+    ExprKind::WhileLet{pattern,value,body}=>pattern_relevant(pattern)||expr_relevant(value)||block_relevant(body),
     ExprKind::For{iterable,pattern,body}=>expr_relevant(iterable)||pattern_relevant(pattern)||block_relevant(body),
     ExprKind::Lambda{parameters,body,return_type,..}=>parameters.iter().any(|parameter|parameter.ty.as_ref().is_some_and(type_relevant)||parameter.default.as_ref().is_some_and(expr_relevant))||return_type.as_ref().is_some_and(type_relevant)||expr_relevant(body),
     ExprKind::Control{value,..}=>value.as_ref().is_some_and(|value|expr_relevant(value)),
@@ -2976,6 +3031,7 @@ fn nested_meta(expr: &Expr) -> bool {
     match &expr.kind{
     ExprKind::Block(block)|ExprKind::Loop(block)=>runtime_meta_relevant(block),
     ExprKind::If{condition,then_branch,else_branch}=>nested_meta(condition)||nested_meta(then_branch)||else_branch.as_ref().is_some_and(|branch|nested_meta(branch)),
+    ExprKind::IfLet{value,then_branch,else_branch,..}=>nested_meta(value)||nested_meta(then_branch)||else_branch.as_ref().is_some_and(|branch|nested_meta(branch)),
     ExprKind::Match{value,arms,..}=>nested_meta(value)||arms.iter().any(|arm|arm.guard.as_ref().is_some_and(nested_meta)||nested_meta(&arm.body)),
     ExprKind::Call{callee,arguments}=>nested_meta(callee)||arguments.iter().any(|argument|nested_meta(&argument.value)),
     ExprKind::Tuple(items)|ExprKind::Array(items)=>items.iter().any(nested_meta),
@@ -2986,6 +3042,7 @@ fn nested_meta(expr: &Expr) -> bool {
     ExprKind::ComputedField{base,key}=>nested_meta(base)||nested_meta(key),
     ExprKind::Index{base,index,..}=>nested_meta(base)||nested_meta(index),
     ExprKind::While{condition,body}=>nested_meta(condition)||runtime_meta_relevant(body),
+    ExprKind::WhileLet{value,body,..}=>nested_meta(value)||runtime_meta_relevant(body),
     ExprKind::For{iterable,body,..}=>nested_meta(iterable)||runtime_meta_relevant(body),
     ExprKind::Lambda{body,..}=>nested_meta(body),
     ExprKind::Control{value,..}=>value.as_ref().is_some_and(|value|nested_meta(value)),

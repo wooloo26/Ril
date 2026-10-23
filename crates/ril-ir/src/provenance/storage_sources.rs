@@ -11,6 +11,7 @@ pub struct StorageObservation {
 
 #[derive(Debug, Clone)]
 pub struct BindingSource {
+    pub receiver: Option<super::OccurrenceIdentity>,
     pub binding: u32,
     pub context: ResumptionContext,
     pub activation: u32,

@@ -108,6 +108,7 @@ pub enum LazyOperator {
 pub enum GuardKind {
     Lazy(LazyOperator),
     If,
+    IfLet { pattern: PatternId },
     MatchPattern { arm: u32, pattern: PatternId },
     MatchGuard { arm: u32 },
 }
@@ -196,6 +197,7 @@ enum Plan {
     },
     If {
         condition: ChildStep,
+        pattern: Option<PatternId>,
         then_branch: ChildStep,
         else_branch: Option<ChildStep>,
     },
@@ -439,6 +441,32 @@ impl ExecutionCursor {
                     root: owner,
                     plan: Plan::If {
                         condition: children[0],
+                        pattern: None,
+                        then_branch: children[1],
+                        else_branch: children.get(2).copied(),
+                    },
+                    stage: Stage::IfCondition,
+                    depth,
+                });
+            }
+            hir::ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                hir.pattern(*pattern)
+                    .ok_or(ExecutionError::MissingNode(hir::NodeId::Pattern(*pattern)))?;
+                add!(ChildRole::Condition, *value)?;
+                add!(ChildRole::Then, *then_branch)?;
+                if let Some(branch) = else_branch {
+                    add!(ChildRole::Else, *branch)?;
+                }
+                return Ok(Self {
+                    root: owner,
+                    plan: Plan::If {
+                        condition: children[0],
+                        pattern: Some(*pattern),
                         then_branch: children[1],
                         else_branch: children.get(2).copied(),
                     },
@@ -480,7 +508,10 @@ impl ExecutionCursor {
                     depth,
                 });
             }
-            hir::ExprKind::Loop(_) | hir::ExprKind::While { .. } | hir::ExprKind::For { .. } => {
+            hir::ExprKind::Loop(_)
+            | hir::ExprKind::While { .. }
+            | hir::ExprKind::WhileLet { .. }
+            | hir::ExprKind::For { .. } => {
                 return Err(ExecutionError::Unsupported {
                     root,
                     kind: "loop control",
@@ -526,9 +557,9 @@ impl ExecutionCursor {
             BlockAnchor::ExpressionBody(id) => {
                 hir.expression(id).and_then(|node| match &node.kind {
                     hir::ExprKind::Block(block) | hir::ExprKind::Loop(block) => Some(block),
-                    hir::ExprKind::While { body, .. } | hir::ExprKind::For { body, .. } => {
-                        Some(body)
-                    }
+                    hir::ExprKind::While { body, .. }
+                    | hir::ExprKind::WhileLet { body, .. }
+                    | hir::ExprKind::For { body, .. } => Some(body),
                     _ => None,
                 })
             }
@@ -615,7 +646,10 @@ impl ExecutionCursor {
                 })
             }
             (Plan::If { condition, .. }, Stage::IfCondition) => CursorAction::Child(*condition),
-            (Plan::If { .. }, Stage::IfDecision) => guard(GuardKind::If),
+            (Plan::If { pattern, .. }, Stage::IfDecision) => guard(match pattern {
+                Some(pattern) => GuardKind::IfLet { pattern: *pattern },
+                None => GuardKind::If,
+            }),
             (
                 Plan::If {
                     then_branch,
@@ -710,6 +744,9 @@ impl ExecutionCursor {
                 Stage::LazyReduce(false)
             }
             (GuardKind::If, GuardAnswer::Boolean(selected)) => Stage::IfBranch(selected),
+            (GuardKind::IfLet { .. }, GuardAnswer::PatternMatched(selected)) => {
+                Stage::IfBranch(selected)
+            }
             (GuardKind::MatchPattern { arm, .. }, GuardAnswer::PatternMatched(false))
             | (GuardKind::MatchGuard { arm }, GuardAnswer::Boolean(false)) => {
                 Stage::MatchPattern(arm as usize + 1)

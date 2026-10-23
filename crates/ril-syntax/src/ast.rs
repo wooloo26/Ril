@@ -393,6 +393,12 @@ pub enum ExprKind {
         then_branch: Box<Expr>,
         else_branch: Option<Box<Expr>>,
     },
+    IfLet {
+        pattern: Pattern,
+        value: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Option<Box<Expr>>,
+    },
     Match {
         value: Box<Expr>,
         arms: Vec<MatchArm>,
@@ -405,6 +411,11 @@ pub enum ExprKind {
     Loop(Block),
     While {
         condition: Box<Expr>,
+        body: Block,
+    },
+    WhileLet {
+        pattern: Pattern,
+        value: Box<Expr>,
         body: Block,
     },
     For {
@@ -530,6 +541,10 @@ pub enum PatternKind {
     Wildcard,
     Literal(Literal),
     Tuple(Vec<Pattern>),
+    Array(Vec<Pattern>),
+    /// Only a directly enclosing tuple or array may introduce a rest. Tuples
+    /// discard their remainder; arrays may bind its read-only window.
+    Rest(Option<String>),
     Record {
         ty: Option<TypeExpr>,
         fields: Vec<PatternField>,

@@ -166,10 +166,11 @@ pub fn lower_native_with_entry(
 fn global_names(pattern: &ril_ir::core::Pattern, names: &mut std::collections::BTreeSet<String>) {
     use ril_ir::core::Pattern;
     match pattern {
-        Pattern::Name(name) => {
+        Pattern::Name(name) | Pattern::Rest(Some(name)) => {
             names.insert(name.clone());
         }
         Pattern::Tuple(items)
+        | Pattern::Array(items)
         | Pattern::Alternative(items)
         | Pattern::Constructor {
             arguments: items, ..
@@ -179,6 +180,12 @@ fn global_names(pattern: &ril_ir::core::Pattern, names: &mut std::collections::B
             }
         }
         Pattern::Record(fields) => {
+            for (_, pattern) in fields {
+                global_names(pattern, names);
+            }
+        }
+        Pattern::RecordRest { fields, rest } => {
+            names.insert(rest.clone());
             for (_, pattern) in fields {
                 global_names(pattern, names);
             }

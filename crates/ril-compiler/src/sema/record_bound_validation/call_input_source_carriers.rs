@@ -1003,6 +1003,11 @@ fn receiving_value_children<'a>(root: &'a Expr, work: &mut usize) -> Check<Vec<&
             then_branch,
             else_branch,
             ..
+        }
+        | ExprKind::IfLet {
+            then_branch,
+            else_branch,
+            ..
         } => {
             *work = work
                 .checked_sub(2)

@@ -5,6 +5,34 @@ use crate::sema::model::SourceTypeWitness;
 use std::sync::Arc;
 
 impl Evaluator {
+    pub(super) fn project_source_schema(
+        &self,
+        witness: &SourceTypeWitness,
+        path: &[ril_compiler_core::projection::TypeProjection],
+        span: Span,
+    ) -> Result<Option<Arc<SourceTypeWitness>>> {
+        let available = usize::try_from(self.budget.work_remaining())
+            .unwrap_or(usize::MAX)
+            .min(32768);
+        let mut work = crate::sema::source_types::WorkLimit::new(available);
+        let result = (|| {
+            let mut remaining = work.remaining();
+            let key =
+                effects::argument_key_with_work(&witness.syntax, &BTreeMap::new(), &mut remaining);
+            work.charge(work.remaining() - remaining)?;
+            let key = key.ok_or(crate::sema::source_types::SourceTypesError::BudgetExceeded)?;
+            let schema = crate::sema::source_types::SourceSchema::import(&key, None, &mut work)?;
+            let projected = schema.project_steps(path, &mut work)?;
+            projected.syntax_projection(span, &mut work, &mut |_, _, _| {
+                Err(crate::sema::source_types::SourceTypesError::Unresolved)
+            })
+        })();
+        self.budget.work((available - work.remaining()) as u64)?;
+        let syntax = result.map_err(|error| {
+            Failure::Unsupported(format!("static pattern Source projection: {error}"))
+        })?;
+        self.source_type_witness(syntax)
+    }
     pub(super) fn source_type_witness(
         &self,
         syntax: TypeExpr,
@@ -177,7 +205,7 @@ impl Evaluator {
     }
 
     pub(super) fn project_source_index(
-        &self,
+        &mut self,
         base: &StaticValue,
         child: StaticValue,
     ) -> Result<StaticValue> {
@@ -190,6 +218,9 @@ impl Evaluator {
             _ => None,
         };
         match syntax {
+            Some(syntax) if matches!(base, StaticValue::ArrayWindow(_)) => {
+                self.ascribe_application_value(child, syntax)
+            }
             Some(syntax) => self.receive_source_type(child, syntax),
             None => Ok(child),
         }
@@ -199,6 +230,7 @@ impl Evaluator {
 pub(super) fn view(value: &StaticValue) -> Option<&Arc<SourceTypeWitness>> {
     match value {
         StaticValue::Array(value) | StaticValue::Tuple(value) => value.source_type.as_ref(),
+        StaticValue::ArrayWindow(value) => value.source_type.as_ref(),
         StaticValue::Record(value) => value.storage.source_type.as_ref(),
         StaticValue::Map(value) => value.source_type.as_ref(),
         StaticValue::Variant(_, _, metadata) => metadata.as_ref(),
@@ -209,6 +241,7 @@ pub(super) fn view(value: &StaticValue) -> Option<&Arc<SourceTypeWitness>> {
 fn set_view(value: &mut StaticValue, witness: Arc<SourceTypeWitness>) {
     match value {
         StaticValue::Array(value) | StaticValue::Tuple(value) => value.source_type = Some(witness),
+        StaticValue::ArrayWindow(value) => value.source_type = Some(witness),
         StaticValue::Record(value) => value.storage.source_type = Some(witness),
         StaticValue::Map(value) => value.source_type = Some(witness),
         StaticValue::Variant(_, _, metadata) => *metadata = Some(witness),
@@ -305,6 +338,15 @@ impl Derive<'_> {
         let kind = match value {
             StaticValue::Unit => TypeKind::Tuple(vec![]),
             StaticValue::Array(values) => {
+                let Some(element) = self.homogeneous(values.iter(), depth)? else {
+                    return Ok(None);
+                };
+                TypeKind::Array {
+                    length: None,
+                    element: Box::new(element),
+                }
+            }
+            StaticValue::ArrayWindow(values) => {
                 let Some(element) = self.homogeneous(values.iter(), depth)? else {
                     return Ok(None);
                 };

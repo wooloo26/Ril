@@ -9,7 +9,122 @@ pub(super) struct Frame {
     lasts: Vec<Ty>,
 }
 
+struct Iteration {
+    element: Ty,
+    empty: bool,
+    diverged: bool,
+    source_type: Option<std::sync::Arc<crate::sema::model::SourceTypeWitness>>,
+}
+
 impl Typer<'_> {
+    pub(super) fn bind_sequence(
+        &self,
+        patterns: &[Pattern],
+        ty: Ty,
+        array: bool,
+        env: &mut Env,
+    ) -> Result<()> {
+        let positions = patterns
+            .iter()
+            .enumerate()
+            .filter(|(_, pattern)| matches!(pattern.kind, PatternKind::Rest(_)))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if positions.len() > 1 {
+            return Err(Failure::Diagnostic(
+                "E0347",
+                "one sequence permits at most one rest".into(),
+            ));
+        }
+        let rest = positions.first().copied();
+        let minimum = patterns.len() - usize::from(rest.is_some());
+        let (items, element, length) = match (array, ty) {
+            (false, Ty::Tuple(items)) => {
+                let length = items.len();
+                (items, None, Some(length))
+            }
+            (false, Ty::Unit) => (vec![], None, Some(0)),
+            (true, Ty::Array(element, length)) => (vec![], Some(*element), length),
+            (_, Ty::Never) => return Ok(()),
+            _ => {
+                return Err(Failure::Diagnostic(
+                    "E0301",
+                    "sequence pattern has an incompatible subject".into(),
+                ));
+            }
+        };
+        if length.is_some_and(|length| length < minimum || (rest.is_none() && length != minimum)) {
+            return Err(Failure::Diagnostic(
+                "E0301",
+                "sequence pattern length differs".into(),
+            ));
+        }
+        for (index, pattern) in patterns.iter().enumerate() {
+            if let PatternKind::Rest(name) = &pattern.kind {
+                if let Some(name) = name {
+                    let element = element.clone().ok_or_else(|| {
+                        Failure::Diagnostic("E0120", "tuple rest cannot bind a name".into())
+                    })?;
+                    if name != "_" {
+                        self.const_shadows.borrow_mut().insert(name.clone());
+                        self.schema_bindings.borrow_mut().insert(name.clone(), None);
+                        env.insert(
+                            name.clone(),
+                            Ty::Array(Box::new(element), length.map(|length| length - minimum)),
+                        );
+                    }
+                }
+                continue;
+            }
+            let selected = if let Some(element) = &element {
+                element.clone()
+            } else {
+                let index = if rest.is_some_and(|rest| index > rest) {
+                    items.len() - (patterns.len() - index)
+                } else {
+                    index
+                };
+                items[index].clone()
+            };
+            self.bind(pattern, selected, env)?;
+        }
+        Ok(())
+    }
+    pub(super) fn while_let_type(
+        &self,
+        pattern: &Pattern,
+        value: &Expr,
+        body: &Block,
+        env: &mut Env,
+    ) -> Result<Ty> {
+        let actual = self.expr(value, env)?;
+        let default_scope = bounds::BoundEnvironment::default();
+        let schema = self.expression_source_schema(
+            value,
+            &actual,
+            env,
+            self.bound_environment.as_deref().unwrap_or(&default_scope),
+            0,
+        )?;
+        self.with_const_shadow_scope(|| {
+            let mut child = env.clone();
+            self.bind(pattern, actual.clone(), &mut child)?;
+            self.bind_source_schema(pattern, schema)?;
+            self.loop_body_type(
+                body,
+                &mut child,
+                Some(&Ty::Unit),
+                None,
+                true,
+                self.reachable.get() && actual != Ty::Never,
+            )
+        })?;
+        Ok(if actual == Ty::Never {
+            Ty::Never
+        } else {
+            Ty::Unit
+        })
+    }
     pub(super) fn with_reachability(
         &self,
         reachable: bool,
@@ -124,6 +239,11 @@ impl Typer<'_> {
         iterable: &Expr,
         env: &mut Env,
     ) -> Result<(Ty, bool, bool)> {
+        let iteration = self.iteration(iterable, env)?;
+        Ok((iteration.element, iteration.empty, iteration.diverged))
+    }
+    fn iteration(&self, iterable: &Expr, env: &mut Env) -> Result<Iteration> {
+        let mut source_type = None;
         let (element, empty, diverged) = if let ExprKind::Range { start, end, .. } = &iterable.kind
         {
             let context = start
@@ -159,7 +279,24 @@ impl Typer<'_> {
             }
             (element, false, diverged)
         } else {
-            match self.expr(iterable, env)? {
+            let actual = self.expr(iterable, env)?;
+            if matches!(actual, Ty::Array(..)) {
+                let default_scope = bounds::BoundEnvironment::default();
+                if let Some(source) = self.expression_source_schema(
+                    iterable,
+                    &actual,
+                    env,
+                    self.bound_environment.as_deref().unwrap_or(&default_scope),
+                    0,
+                )? {
+                    source_type = self.evaluator.project_source_schema(
+                        &source,
+                        &[ril_compiler_core::projection::TypeProjection::Element],
+                        iterable.span,
+                    )?;
+                }
+            }
+            match actual {
                 Ty::Array(element, length) => (*element, length == Some(0), false),
                 Ty::Map(key, value) => (Ty::Tuple(vec![*key, *value]), false, false),
                 Ty::Never => (Ty::Infer, false, true),
@@ -176,7 +313,12 @@ impl Typer<'_> {
                 }
             }
         };
-        Ok((element, empty, diverged))
+        Ok(Iteration {
+            element,
+            empty,
+            diverged,
+            source_type,
+        })
     }
     pub(super) fn for_type(
         &self,
@@ -185,7 +327,12 @@ impl Typer<'_> {
         body: &Block,
         env: &mut Env,
     ) -> Result<Ty> {
-        let (element, empty, diverged) = self.iteration_type(iterable, env)?;
+        let Iteration {
+            element,
+            empty,
+            diverged,
+            source_type,
+        } = self.iteration(iterable, env)?;
         if !irrefutable(pattern, &element) {
             return Err(Failure::Diagnostic(
                 "E0345",
@@ -195,6 +342,7 @@ impl Typer<'_> {
         let mut child = env.clone();
         self.with_const_shadow_scope(|| {
             self.bind(pattern, element, &mut child)?;
+            self.bind_source_schema(pattern, source_type)?;
             self.loop_body_type(
                 body,
                 &mut child,
@@ -220,18 +368,70 @@ pub(super) fn known_bool(expr: &Expr) -> Option<bool> {
 fn irrefutable(pattern: &Pattern, ty: &Ty) -> bool {
     match (&pattern.kind, ty) {
         (PatternKind::Name(_) | PatternKind::Wildcard, _) => true,
-        (PatternKind::Tuple(patterns), Ty::Tuple(types)) => {
-            patterns.len() == types.len()
-                && patterns
-                    .iter()
-                    .zip(types)
-                    .all(|(pattern, ty)| irrefutable(pattern, ty))
+        (PatternKind::Tuple(patterns), Ty::Tuple(types)) => tuple_irrefutable(patterns, types),
+        (PatternKind::Tuple(patterns), Ty::Unit) => tuple_irrefutable(patterns, &[]),
+        (PatternKind::Array(patterns), Ty::Array(element, length)) => {
+            let Some(rest) = sequence_rest(patterns) else {
+                return false;
+            };
+            let minimum = patterns.len() - usize::from(rest.is_some());
+            let enough = match length {
+                Some(length) => *length >= minimum && (rest.is_some() || *length == minimum),
+                None => rest.is_some() && minimum == 0,
+            };
+            enough
+                && patterns.iter().all(|pattern| {
+                    matches!(pattern.kind, PatternKind::Rest(_)) || irrefutable(pattern, element)
+                })
         }
         (PatternKind::Record { fields, .. }, Ty::Record(types)) => fields.iter().all(|field| {
             types
                 .get(&field.name)
                 .is_some_and(|(_, ty)| irrefutable(&field.pattern, ty))
         }),
+        (PatternKind::Alternative(patterns), ty) => {
+            patterns.iter().any(|pattern| irrefutable(pattern, ty))
+        }
         _ => false,
     }
+}
+
+/// A rest belongs only to this sequence layer. Nested sequence checks have
+/// their own count, while two rests in this layer never prove irrefutability.
+fn sequence_rest(patterns: &[Pattern]) -> Option<Option<usize>> {
+    let mut rest = None;
+    for (index, pattern) in patterns.iter().enumerate() {
+        if matches!(pattern.kind, PatternKind::Rest(_)) {
+            if rest.is_some() {
+                return None;
+            }
+            rest = Some(index);
+        }
+    }
+    Some(rest)
+}
+
+fn tuple_irrefutable(patterns: &[Pattern], types: &[Ty]) -> bool {
+    let Some(rest) = sequence_rest(patterns) else {
+        return false;
+    };
+    let minimum = patterns.len() - usize::from(rest.is_some());
+    if types.len() < minimum || (rest.is_none() && types.len() != minimum) {
+        return false;
+    }
+    patterns
+        .iter()
+        .enumerate()
+        .all(|(index, pattern)| match &pattern.kind {
+            PatternKind::Rest(None) => true,
+            PatternKind::Rest(Some(_)) => false,
+            _ => {
+                let selected = if rest.is_some_and(|rest| index > rest) {
+                    types.len() - (patterns.len() - index)
+                } else {
+                    index
+                };
+                irrefutable(pattern, &types[selected])
+            }
+        })
 }

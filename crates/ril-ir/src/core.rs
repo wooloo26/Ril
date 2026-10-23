@@ -161,7 +161,14 @@ pub enum Pattern {
     Literal(Literal),
     Value(Box<Expr>),
     Tuple(Vec<Pattern>),
+    Array(Vec<Pattern>),
+    /// A sequence remainder; named remainders are array slot windows.
+    Rest(Option<String>),
     Record(Vec<(String, Pattern)>),
+    RecordRest {
+        fields: Vec<(String, Pattern)>,
+        rest: String,
+    },
     Constructor {
         tag: String,
         arguments: Vec<Pattern>,

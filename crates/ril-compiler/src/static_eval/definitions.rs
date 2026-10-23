@@ -202,6 +202,7 @@ impl Collector {
     fn pattern(&mut self, pattern: &Pattern) {
         match &pattern.kind {
             PatternKind::Tuple(patterns)
+            | PatternKind::Array(patterns)
             | PatternKind::Alternative(patterns)
             | PatternKind::Constructor {
                 arguments: patterns,
@@ -308,6 +309,19 @@ impl Collector {
                     self.expr(branch);
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.expr(value);
+                self.pattern(pattern);
+                self.expr(then_branch);
+                if let Some(branch) = else_branch {
+                    self.expr(branch);
+                }
+            }
             ExprKind::Match { value, arms, .. } => {
                 self.expr(value);
                 for arm in arms {
@@ -324,6 +338,15 @@ impl Collector {
             }
             ExprKind::While { condition, body } => {
                 self.expr(condition);
+                self.block(body);
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.expr(value);
+                self.pattern(pattern);
                 self.block(body);
             }
             ExprKind::For {

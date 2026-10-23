@@ -73,7 +73,9 @@ impl BlockIndex {
                 .kind
             {
                 hir::ExprKind::Block(block) | hir::ExprKind::Loop(block) => Some(block),
-                hir::ExprKind::While { body, .. } | hir::ExprKind::For { body, .. } => Some(body),
+                hir::ExprKind::While { body, .. }
+                | hir::ExprKind::WhileLet { body, .. }
+                | hir::ExprKind::For { body, .. } => Some(body),
                 _ => None,
             },
         }
@@ -117,9 +119,9 @@ impl BlockIndex {
                             .ok_or(BlockIndexError::MissingNode(node))?;
                         let block = match &expression.kind {
                             hir::ExprKind::Block(block) | hir::ExprKind::Loop(block) => Some(block),
-                            hir::ExprKind::While { body, .. } | hir::ExprKind::For { body, .. } => {
-                                Some(body)
-                            }
+                            hir::ExprKind::While { body, .. }
+                            | hir::ExprKind::WhileLet { body, .. }
+                            | hir::ExprKind::For { body, .. } => Some(body),
                             _ => None,
                         };
                         if let Some(block) = block {

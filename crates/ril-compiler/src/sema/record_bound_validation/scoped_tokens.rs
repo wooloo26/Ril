@@ -93,6 +93,15 @@ pub(super) fn source_expressions(function: &ril_syntax::ast::Function) -> Check<
                         children.extend([condition.as_ref(), then_branch.as_ref()]);
                         children.extend(else_branch.iter().map(Box::as_ref));
                     }
+                    ExprKind::IfLet {
+                        value,
+                        then_branch,
+                        else_branch,
+                        ..
+                    } => {
+                        children.extend([value.as_ref(), then_branch.as_ref()]);
+                        children.extend(else_branch.iter().map(Box::as_ref));
+                    }
                     ExprKind::Match { value, arms, .. } => {
                         children.push(value);
                         for arm in arms {
@@ -103,6 +112,10 @@ pub(super) fn source_expressions(function: &ril_syntax::ast::Function) -> Check<
                     ExprKind::Is { value, .. } => children.push(value),
                     ExprKind::While { condition, body } => {
                         children.push(condition);
+                        blocks.push(body);
+                    }
+                    ExprKind::WhileLet { value, body, .. } => {
+                        children.push(value);
                         blocks.push(body);
                     }
                     ExprKind::For { iterable, body, .. } => {

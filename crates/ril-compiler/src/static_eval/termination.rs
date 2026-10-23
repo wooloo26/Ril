@@ -137,7 +137,7 @@ pub(super) fn verify(evaluator: &Evaluator, output: &mut Evaluation) {
 struct Visitor<'a> {
     evaluator: &'a Evaluator,
     dependencies: Dependencies,
-    aliases: BTreeMap<String, Expr>,
+    aliases: BTreeMap<String, Option<Expr>>,
     types: BTreeSet<String>,
     parameters: BTreeSet<String>,
     finite_sources: BTreeSet<String>,
@@ -152,7 +152,11 @@ impl Visitor<'_> {
                     return;
                 }
                 if let Some(value) = self.aliases.get(name).cloned() {
-                    self.callable(&value, seen);
+                    if let Some(value) = value {
+                        self.callable(&value, seen);
+                    } else {
+                        self.dependencies.unknown = true;
+                    }
                 } else if self
                     .evaluator
                     .functions
@@ -198,7 +202,8 @@ impl Visitor<'_> {
                 StmtKind::Binding(binding) => {
                     self.expr(&binding.value);
                     if let PatternKind::Name(name) = &binding.pattern.kind {
-                        self.aliases.insert(name.clone(), binding.value.clone());
+                        self.aliases
+                            .insert(name.clone(), Some(binding.value.clone()));
                     }
                     if let Some(fallback) = &binding.fallback {
                         self.expr(fallback);
@@ -339,6 +344,23 @@ impl Visitor<'_> {
                     self.block(body);
                 }
             }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.expr(value);
+                self.pattern(pattern);
+                self.dependencies.divergent |= loops::repeats(body);
+                let saved = self.aliases.clone();
+                let mut names = BTreeSet::new();
+                application::binding_names(pattern, &mut names);
+                for name in names {
+                    self.aliases.insert(name, None);
+                }
+                self.block(body);
+                self.aliases = saved;
+            }
             ExprKind::For { iterable, body, .. } => {
                 self.expr(iterable);
                 if !self.finite_source(iterable, &mut BTreeSet::new()) && loops::repeats(body) {
@@ -384,6 +406,26 @@ impl Visitor<'_> {
                 if !matches!(condition.kind, ExprKind::Literal(Literal::Bool(true)))
                     && let Some(branch) = else_branch
                 {
+                    self.expr(branch);
+                }
+            }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.expr(value);
+                self.pattern(pattern);
+                let saved = self.aliases.clone();
+                let mut names = BTreeSet::new();
+                application::binding_names(pattern, &mut names);
+                for name in names {
+                    self.aliases.insert(name, None);
+                }
+                self.expr(then_branch);
+                self.aliases = saved;
+                if let Some(branch) = else_branch {
                     self.expr(branch);
                 }
             }
@@ -435,6 +477,7 @@ impl Visitor<'_> {
         match &pattern.kind {
             PatternKind::Type { ty, .. } => self.ty(ty),
             PatternKind::Tuple(patterns)
+            | PatternKind::Array(patterns)
             | PatternKind::Alternative(patterns)
             | PatternKind::Constructor {
                 arguments: patterns,

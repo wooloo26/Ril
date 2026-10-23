@@ -359,6 +359,7 @@ fn source_sites_inner<'a>(
                         pending.push(Pending::Pattern(owner, pattern, depth + 1))
                     }
                     PatternKind::Tuple(items)
+                    | PatternKind::Array(items)
                     | PatternKind::Alternative(items)
                     | PatternKind::Constructor {
                         arguments: items, ..
@@ -472,6 +473,16 @@ fn source_sites_inner<'a>(
                         children.extend([condition.as_ref(), then_branch.as_ref()]);
                         children.extend(else_branch.iter().map(Box::as_ref));
                     }
+                    ExprKind::IfLet {
+                        pattern,
+                        value,
+                        then_branch,
+                        else_branch,
+                    } => {
+                        children.extend([value.as_ref(), then_branch.as_ref()]);
+                        children.extend(else_branch.iter().map(Box::as_ref));
+                        pending.push(Pending::Pattern(owner, pattern, depth + 1));
+                    }
                     ExprKind::Match { value, arms, .. } => {
                         children.push(value.as_ref());
                         for arm in arms {
@@ -528,6 +539,15 @@ fn source_sites_inner<'a>(
                     } => children.extend([left.as_ref(), right.as_ref()]),
                     ExprKind::While { condition, body } => {
                         children.push(condition.as_ref());
+                        push_block(&mut pending, owner, body, depth + 1);
+                    }
+                    ExprKind::WhileLet {
+                        pattern,
+                        value,
+                        body,
+                    } => {
+                        children.push(value.as_ref());
+                        pending.push(Pending::Pattern(owner, pattern, depth + 1));
                         push_block(&mut pending, owner, body, depth + 1);
                     }
                     ExprKind::For {

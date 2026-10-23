@@ -6,7 +6,13 @@ use std::collections::BTreeSet;
 pub enum TypeProjection {
     Field(String),
     Tuple(u32),
+    /// Zero denotes the last tuple member.
+    TupleFromEnd(u32),
     Element,
+    ArrayRemainder {
+        prefix: u32,
+        suffix: u32,
+    },
     MapKey,
     MapValue,
     OptionalPayload,

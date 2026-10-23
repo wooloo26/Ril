@@ -540,6 +540,20 @@ impl Lower<'_> {
                     .map(|value| self.expr(value, owner, d))
                     .transpose()?,
             },
+            ast::ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => ExprKind::IfLet {
+                value: self.expr(value, owner, d)?,
+                pattern: self.pattern(pattern, owner, d)?,
+                then_branch: self.expr(then_branch, owner, d)?,
+                else_branch: else_branch
+                    .as_ref()
+                    .map(|value| self.expr(value, owner, d))
+                    .transpose()?,
+            },
             ast::ExprKind::Match {
                 value,
                 arms,
@@ -570,6 +584,15 @@ impl Lower<'_> {
             ast::ExprKind::Loop(block) => ExprKind::Loop(self.block(block, owner, d)?),
             ast::ExprKind::While { condition, body } => ExprKind::While {
                 condition: self.expr(condition, owner, d)?,
+                body: self.block(body, owner, d)?,
+            },
+            ast::ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => ExprKind::WhileLet {
+                value: self.expr(value, owner, d)?,
+                pattern: self.pattern(pattern, owner, d)?,
                 body: self.block(body, owner, d)?,
             },
             ast::ExprKind::For {
@@ -747,6 +770,13 @@ impl Lower<'_> {
                     .map(|item| self.pattern(item, owner, d))
                     .collect::<Result<_, _>>()?,
             ),
+            ast::PatternKind::Array(items) => PatternKind::Array(
+                items
+                    .iter()
+                    .map(|item| self.pattern(item, owner, d))
+                    .collect::<Result<_, _>>()?,
+            ),
+            ast::PatternKind::Rest(name) => PatternKind::Rest(self.optional_text(name.as_deref())?),
             ast::PatternKind::Record {
                 ty,
                 fields,

@@ -142,6 +142,15 @@ pub(crate) trait SourceTypeQueries: SourceGraph {
                 (SourceNode::Tuple(items), SourcePath::Tuple(index)) => *items
                     .get(*index as usize)
                     .ok_or(SourceTypesError::MissingProjection)?,
+                (SourceNode::Tuple(items), SourcePath::TupleFromEnd(offset)) => *items
+                    .get(
+                        items
+                            .len()
+                            .checked_sub(*offset as usize)
+                            .and_then(|n| n.checked_sub(1))
+                            .ok_or(SourceTypesError::MissingProjection)?,
+                    )
+                    .ok_or(SourceTypesError::MissingProjection)?,
                 (SourceNode::Array { element, .. }, SourcePath::Element) => *element,
                 (SourceNode::Map { key, .. }, SourcePath::MapKey) => *key,
                 (SourceNode::Callable { parameters, .. }, SourcePath::CallableParameter(index)) => {

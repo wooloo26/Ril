@@ -161,11 +161,38 @@ impl Replay<'_> {
         let pattern = binding
             .pattern
             .ok_or_else(|| "formal Source lost its HIR declaration".to_owned())?;
-        require(
-            self.facts.semantic_hir.as_deref().and_then(|hir| hir.pattern(pattern))
-                .is_some_and(|pattern| matches!(&pattern.kind,crate::hir::nodes::PatternKind::Name(name) if name == &binding.name)),
-            "formal Source declaration is not its actual HIR Name pattern",
-        )?;
+        let operation = self.frames.operation(binding.owner, work)?;
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("formal Source lost its original HIR")?;
+        if operation.is_none() {
+            require(hir.pattern(pattern).is_some_and(|pattern|
+                matches!(&pattern.kind,crate::hir::nodes::PatternKind::Name(name) if name == &binding.name)),
+                "formal Source declaration is not its actual HIR Name pattern")?;
+        } else {
+            require(
+                binding.parameter && value.sources == BTreeSet::from([binding_id]),
+                "formal Source declaration is not its unique parameter binding",
+            )?;
+            let source = expression
+                .hir_id
+                .ok_or("formal Source read has no original HIR")?;
+            let path = super::graph_sources::schema_work(work, |budget| {
+                crate::sema::source_types::projection_receipts::projection_path(hir, source, budget)
+            })?
+            .ok_or("formal Source read has no original Name root")?;
+            require(
+                self.lexical
+                    .as_ref()
+                    .ok_or("formal Source has no lexical index")?
+                    .lookup(path.root(), work)
+                    .map_err(|error| error.to_string())?
+                    == Some(pattern),
+                "formal Source read borrowed a different lexical binder",
+            )?;
+        }
         let index = self.original_source_root(expression, value, context, observation, work)?;
         let read = self
             .facts
@@ -173,7 +200,6 @@ impl Replay<'_> {
             .get(index)
             .ok_or_else(|| "formal Source read has no actual scope".to_owned())?;
         let declaration = binding.context;
-        let operation = self.frames.operation(binding.owner, work)?;
         if let Some(operation) = &operation {
             require(
                 binding.context == operation.entry.context
@@ -181,8 +207,17 @@ impl Replay<'_> {
                         .arm
                         .parameters
                         .iter()
-                        .any(|parameter| parameter.pattern.hir_id == Some(pattern)),
+                        .all(|parameter| parameter.pattern.hir_id.is_some()),
                 "operation formal Source borrowed another parameter receiver",
+            )?;
+            self.parameter_pattern_slot(
+                binding,
+                operation
+                    .arm
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.pattern.hir_id.unwrap()),
+                work,
             )?;
         }
         if operation.is_none()
@@ -286,18 +321,24 @@ impl Replay<'_> {
         let Some(frame) = self.frames.operation(binding.owner, work)? else {
             return Ok(None);
         };
-        let slots: Vec<_> = frame
-            .arm
-            .parameters
-            .iter()
-            .enumerate()
-            .filter(|(_, parameter)| {
-                parameter.pattern.hir_id.is_some() && parameter.pattern.hir_id == binding.pattern
-            })
-            .collect();
-        let [(slot, _)] = slots.as_slice() else {
-            return Err("operation formal Source has no unique original parameter".into());
-        };
+        source_scan_work(work, frame.arm.parameters.len())?;
+        require(
+            frame
+                .arm
+                .parameters
+                .iter()
+                .all(|parameter| parameter.pattern.hir_id.is_some()),
+            "operation formal lost its original parameter roots",
+        )?;
+        let (slot, pattern_root) = self.parameter_pattern_slot(
+            binding,
+            frame
+                .arm
+                .parameters
+                .iter()
+                .map(|parameter| parameter.pattern.hir_id.unwrap()),
+            work,
+        )?;
         let source = frame
             .operation
             .source
@@ -319,12 +360,50 @@ impl Replay<'_> {
             return Err("operation parameter has no callable Source signature".into());
         };
         let key = &parameters
-            .get(*slot)
+            .get(slot)
             .ok_or("operation parameter is outside its Source signature")?
             .1;
         crate::sema::clone_work::key(work, key, 0)
             .ok_or("operation parameter Source clone exceeds its shared work bound")?;
-        Ok(Some(key.clone()))
+        if Some(pattern_root) == binding.pattern {
+            return Ok(Some(key.clone()));
+        }
+        let hir = self
+            .facts
+            .semantic_hir
+            .as_deref()
+            .ok_or("operation formal has no original HIR")?;
+        let declaration = hir
+            .statement(source.effect)
+            .ok_or("operation formal lost its original effect")?;
+        let crate::hir::nodes::StmtKind::Effect { operations, .. } = &declaration.kind else {
+            return Err("operation formal declaration is not an effect".into());
+        };
+        let operation = operations
+            .get(source.index as usize)
+            .and_then(|operation| hir.statement(*operation))
+            .ok_or("operation formal lost its original operation")?;
+        let crate::hir::nodes::StmtKind::Function(operation) = &operation.kind else {
+            return Err("operation formal declaration is not a function".into());
+        };
+        let original = operation
+            .parameters
+            .get(slot)
+            .and_then(|parameter| parameter.ty)
+            .ok_or("operation formal lost its original TypeExpr")?;
+        let schema = super::graph_sources::schema_work(work, |budget| {
+            let schema = SourceSchema::import(key, Some(original), budget)?;
+            crate::sema::source_types::declarations::resolve_schema(&schema, hir, budget)
+        })?;
+        self.parameter_binding_projection(
+            binding,
+            pattern_root,
+            &schema,
+            &source.environment,
+            work,
+        )?
+        .map(|schema| schema.key().map_err(|error| error.to_string()))
+        .transpose()
     }
 
     pub(super) fn lambda_formal_source_key(

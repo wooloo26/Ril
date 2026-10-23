@@ -207,6 +207,7 @@ impl Engine<'_> {
     pub(super) fn loop_flow(
         &mut self,
         condition: Option<&Expr>,
+        pattern: Option<&Pattern>,
         body: &Block,
         state: State,
         span: Span,
@@ -240,12 +241,27 @@ impl Engine<'_> {
                     output.push(path);
                     continue;
                 }
-                for (state, truth) in truth_paths(path) {
+                let env = path.state.env.clone();
+                let scope = path.state.bound_scope.clone();
+                let decisions = if let Some(pattern) = pattern {
+                    self.pattern(pattern, &path.value, path.state)?
+                } else {
+                    truth_paths(path)
+                };
+                for (mut state, truth) in decisions {
                     if !truth {
+                        if pattern.is_some() {
+                            state.env = env.clone();
+                            state.bound_scope = scope.clone();
+                        }
                         output.push(Path::normal(state, Value::unit()));
                         continue;
                     }
                     for mut path in self.loop_body(body, state, target, None, context)? {
+                        if pattern.is_some() {
+                            path.state.env = env.clone();
+                            path.state.bound_scope = scope.clone();
+                        }
                         match path.exit {
                             Exit::Normal => pending.push_back(path.state),
                             Exit::Next(id) if id == target => pending.push_back(path.state),

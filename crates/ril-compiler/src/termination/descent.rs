@@ -279,6 +279,54 @@ struct Scanner<'a> {
     edges: Vec<Edge>,
 }
 impl Scanner<'_> {
+    fn pattern_preserves_measure(&self, pattern: &Pattern) -> bool {
+        let mut pending = vec![pattern];
+        while let Some(pattern) = pending.pop() {
+            if !spend(self.work, 1) {
+                return false;
+            }
+            let name = |name: &str| {
+                pay_key(self.work, self.functions.len(), name).is_some()
+                    && name != self.parameter
+                    && !self.functions.contains_key(name)
+            };
+            match &pattern.kind {
+                PatternKind::Name(value) | PatternKind::Rest(Some(value)) if !name(value) => {
+                    return false;
+                }
+                PatternKind::Tuple(items)
+                | PatternKind::Array(items)
+                | PatternKind::Alternative(items)
+                | PatternKind::Constructor {
+                    arguments: items, ..
+                } => {
+                    if !spend(self.work, items.len()) {
+                        return false;
+                    }
+                    pending.extend(items);
+                }
+                PatternKind::Record {
+                    fields,
+                    rest_binding,
+                    ..
+                } => {
+                    if rest_binding.as_ref().is_some_and(|value| !name(value))
+                        || !spend(self.work, fields.len())
+                    {
+                        return false;
+                    }
+                    pending.extend(fields.iter().map(|field| &field.pattern));
+                }
+                PatternKind::Mode { pattern, .. } => pending.push(pattern),
+                PatternKind::Type {
+                    binder: Some(value),
+                    ..
+                } if !name(value) => return false,
+                _ => {}
+            }
+        }
+        true
+    }
     fn block(&mut self, block: &Block, positive: bool) -> bool {
         if !spend(self.work, 1 + block.statements.len()) {
             return false;
@@ -328,6 +376,19 @@ impl Scanner<'_> {
                 .is_none_or(|value| self.expr(value, positive)),
             ExprKind::Tuple(values) | ExprKind::Array(values) => {
                 values.iter().all(|value| self.expr(value, positive))
+            }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.pattern_preserves_measure(pattern)
+                    && self.expr(value, positive)
+                    && self.expr(then_branch, positive)
+                    && else_branch
+                        .as_ref()
+                        .is_none_or(|branch| self.expr(branch, positive))
             }
             ExprKind::Call { callee, arguments } => {
                 let mut remaining = self.work.get();

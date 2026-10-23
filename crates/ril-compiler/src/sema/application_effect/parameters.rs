@@ -236,7 +236,9 @@ impl<'a> Preparations<'a> {
                         charge(work, 1)?;
                         pending.push(*pattern);
                     }
-                    hir::PatternKind::Tuple(items) | hir::PatternKind::Alternative(items) => {
+                    hir::PatternKind::Tuple(items)
+                    | hir::PatternKind::Array(items)
+                    | hir::PatternKind::Alternative(items) => {
                         charge(work, items.len())?;
                         pending.extend(items)
                     }

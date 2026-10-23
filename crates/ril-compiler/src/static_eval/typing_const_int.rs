@@ -168,8 +168,10 @@ impl Typer<'_> {
         action: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
         let saved = self.const_shadows.borrow().clone();
+        let saved_schemas = self.schema_bindings.borrow().clone();
         let result = action();
         *self.const_shadows.borrow_mut() = saved;
+        *self.schema_bindings.borrow_mut() = saved_schemas;
         result
     }
     pub(in crate::static_eval::typing) fn has_visible_const(

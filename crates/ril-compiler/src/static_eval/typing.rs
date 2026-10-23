@@ -456,41 +456,62 @@ impl<'a> Typer<'a> {
         Ok(result)
     }
     fn verify_defaults(&self, parameters: &[Parameter], environment: &Env) -> Result<()> {
-        let mut earlier = environment.clone();
-        for (index, parameter) in parameters.iter().enumerate() {
-            let ty = parameter
-                .ty
-                .as_ref()
-                .map_or(Ok(Ty::Unknown), |ty| self.ty(ty, &earlier))?;
-            if let Some(default) = &parameter.default {
-                if parameter.mode != ParameterMode::Read {
-                    return Err(Failure::Diagnostic(
-                        "E0404",
-                        "mutable parameters cannot have defaults".into(),
-                    ));
-                }
-                let mut forbidden = BTreeSet::new();
-                for later in &parameters[index..] {
-                    application::binding_names(&later.pattern, &mut forbidden);
-                }
-                let mut scope = earlier.clone();
-                for name in forbidden {
-                    scope.insert(name.clone(), Ty::ForbiddenDefault(name));
-                }
-                let syntax = record_contexts::expression(default, parameter.ty.as_ref());
-                let context = parameter
+        self.with_const_shadow_scope(|| {
+            let mut earlier = environment.clone();
+            for (index, parameter) in parameters.iter().enumerate() {
+                let ty = parameter
                     .ty
                     .as_ref()
-                    .map(|syntax| self.context_for_syntax(syntax, &scope))
-                    .transpose()?;
-                require(
-                    &self.expr_result_expected(&syntax, &mut scope, Some(&ty), context.as_ref())?,
-                    &ty,
-                )?;
+                    .map_or(Ok(Ty::Unknown), |ty| self.ty(ty, &earlier))?;
+                if let Some(default) = &parameter.default {
+                    if parameter.mode != ParameterMode::Read {
+                        return Err(Failure::Diagnostic(
+                            "E0404",
+                            "mutable parameters cannot have defaults".into(),
+                        ));
+                    }
+                    let mut forbidden = BTreeSet::new();
+                    for later in &parameters[index..] {
+                        application::binding_names(&later.pattern, &mut forbidden);
+                    }
+                    let mut scope = earlier.clone();
+                    for name in forbidden {
+                        scope.insert(name.clone(), Ty::ForbiddenDefault(name));
+                    }
+                    let syntax = record_contexts::expression(default, parameter.ty.as_ref());
+                    let context = parameter
+                        .ty
+                        .as_ref()
+                        .map(|syntax| self.context_for_syntax(syntax, &scope))
+                        .transpose()?;
+                    require(
+                        &self.expr_result_expected(
+                            &syntax,
+                            &mut scope,
+                            Some(&ty),
+                            context.as_ref(),
+                        )?,
+                        &ty,
+                    )?;
+                }
+                let mut source_scope = self
+                    .bound_environment
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or_default();
+                source_scope.values = earlier.clone();
+                self.apply_const_shadows(&mut source_scope)?;
+                let source = parameter
+                    .ty
+                    .as_ref()
+                    .map(|syntax| self.complete_source_syntax(syntax, &source_scope))
+                    .transpose()?
+                    .flatten();
+                self.bind(&parameter.pattern, ty, &mut earlier)?;
+                self.bind_source_schema(&parameter.pattern, source)?;
             }
-            self.bind(&parameter.pattern, ty, &mut earlier)?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
     fn globals(&self) -> Env {
         self.evaluator
@@ -866,22 +887,13 @@ impl<'a> Typer<'a> {
                 env.insert(name.clone(), ty);
             }
             PatternKind::Wildcard => {}
-            PatternKind::Tuple(patterns) => {
-                let Ty::Tuple(types) = ty else {
-                    return Err(Failure::Diagnostic(
-                        "E0301",
-                        "tuple pattern requires a tuple".into(),
-                    ));
-                };
-                if patterns.len() != types.len() {
-                    return Err(Failure::Diagnostic(
-                        "E0301",
-                        "tuple pattern arity differs".into(),
-                    ));
-                }
-                for (pattern, ty) in patterns.iter().zip(types) {
-                    self.bind(pattern, ty, env)?;
-                }
+            PatternKind::Tuple(patterns) => self.bind_sequence(patterns, ty, false, env)?,
+            PatternKind::Array(patterns) => self.bind_sequence(patterns, ty, true, env)?,
+            PatternKind::Rest(_) => {
+                return Err(Failure::Diagnostic(
+                    "E0347",
+                    "rest requires a directly enclosing sequence".into(),
+                ));
             }
             PatternKind::Record {
                 fields,
@@ -919,11 +931,44 @@ impl<'a> Typer<'a> {
                 }
             }
             PatternKind::Alternative(patterns) => {
-                if let Some(pattern) = patterns.first() {
-                    self.bind(pattern, ty, env)?;
+                let mut contract: Option<BTreeMap<String, Ty>> = None;
+                for pattern in patterns {
+                    let mut branch = env.clone();
+                    self.bind(pattern, ty.clone(), &mut branch)?;
+                    let mut names = BTreeSet::new();
+                    application::binding_names(pattern, &mut names);
+                    let bindings: BTreeMap<_, _> = names
+                        .into_iter()
+                        .filter_map(|name| branch.get(&name).cloned().map(|ty| (name, ty)))
+                        .collect();
+                    if let Some(expected) = &mut contract {
+                        if !expected.keys().eq(bindings.keys()) {
+                            return Err(Failure::Diagnostic(
+                                "E0346",
+                                "pattern alternatives have incompatible binding contracts".into(),
+                            ));
+                        }
+                        for (name, ty) in expected {
+                            *ty = join_types(ty, &bindings[name]).map_err(
+                                |failure| match failure {
+                                    Failure::Diagnostic(_, why) => {
+                                        Failure::Diagnostic("E0346", why)
+                                    }
+                                    other => other,
+                                },
+                            )?;
+                        }
+                    } else {
+                        contract = Some(bindings);
+                    }
+                }
+                if let Some(contract) = contract {
+                    env.extend(contract);
                 }
             }
-            PatternKind::Literal(_) | PatternKind::Value(_) => {}
+            PatternKind::Literal(_) | PatternKind::Value(_) => {
+                self.value_test(pattern, &ty, env)?
+            }
             _ => return Err(Failure::Unsupported("static binding mode typing".into())),
         }
         Ok(())
@@ -1671,8 +1716,48 @@ impl<'a> Typer<'a> {
             ExprKind::Block(block) => {
                 self.block_result_expected(block, &mut env.clone(), expected, result_context)
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                let actual = self.expr(value, env)?;
+                let default_scope = bounds::BoundEnvironment::default();
+                let schema = self.expression_source_schema(
+                    value,
+                    &actual,
+                    env,
+                    self.bound_environment.as_deref().unwrap_or(&default_scope),
+                    0,
+                )?;
+                let a = self.with_const_shadow_scope(|| {
+                    let mut child = env.clone();
+                    self.bind(pattern, actual.clone(), &mut child)?;
+                    self.bind_source_schema(pattern, schema)?;
+                    self.with_reachability(self.reachable.get() && actual != Ty::Never, || {
+                        self.expr_result_expected(then_branch, &mut child, expected, result_context)
+                    })
+                })?;
+                let b = else_branch.as_ref().map_or(Ok(Ty::Unit), |branch| {
+                    self.expr_result_expected(branch, &mut env.clone(), expected, result_context)
+                })?;
+                if actual == Ty::Never {
+                    Ok(Ty::Never)
+                } else {
+                    join_types(&a, &b).map_err(|failure| match failure {
+                        Failure::Diagnostic("E0301", why) => Failure::Diagnostic("E0351", why),
+                        other => other,
+                    })
+                }
+            }
             ExprKind::Loop(body) => self.loop_type(body, env, expected, result_context),
             ExprKind::While { condition, body } => self.while_type(condition, body, env),
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => self.while_let_type(pattern, value, body, env),
             ExprKind::For {
                 iterable,
                 pattern,
@@ -3200,6 +3285,22 @@ fn value_ty(value: &StaticValue) -> Ty {
         StaticValue::Array(values) => Ty::Array(
             Box::new(erase_constants(values.first().map_or(Ty::Infer, value_ty))),
             Some(values.len()),
+        ),
+        StaticValue::ArrayWindow(values) => Ty::Array(
+            Box::new(erase_constants(values.first().map_or(Ty::Infer, value_ty))),
+            values
+                .source_type
+                .as_ref()
+                .is_some_and(|source| {
+                    matches!(
+                        source.syntax.kind,
+                        TypeKind::Array {
+                            length: Some(_),
+                            ..
+                        }
+                    )
+                })
+                .then_some(values.len),
         ),
         StaticValue::Tuple(values) => Ty::Tuple(values.iter().map(value_ty).collect()),
         StaticValue::Record(fields) => Ty::Record(

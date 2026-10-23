@@ -1,5 +1,6 @@
 //! Read-only windows retain the identity of their actual backing storage.
 use super::*;
+mod patterns;
 pub(super) struct WindowBlockUses {
     pub statements: Vec<Stmt>,
     pub next: usize,
@@ -50,57 +51,74 @@ impl Checker {
             .any(|node| self.windows.contains_key(node))
     }
     pub(super) fn refresh_window_fields(&mut self) {
-        let windows: Vec<_> = self
-            .windows
-            .iter()
-            .map(|(node, window)| (*node, window.clone()))
-            .collect();
+        let Some(span) = self.windows.values().next().map(|info| info.span) else {
+            return;
+        };
+        let windows = self.application_effect.with_work(|work| {
+            use crate::sema::source_types::SourceTypesError;
+            *work = work
+                .checked_sub(1 + self.windows.len())
+                .ok_or(SourceTypesError::BudgetExceeded)?;
+            for info in self.windows.values() {
+                crate::sema::pattern_windows::charge_info(info, work)?;
+            }
+            Ok::<Vec<_>, SourceTypesError>(
+                self.windows
+                    .iter()
+                    .map(|(node, info)| (*node, info.clone()))
+                    .collect(),
+            )
+        });
+        let windows = match windows {
+            Ok(windows) => windows,
+            Err(error) => {
+                self.unsupported(span, format!("window storage projection: {error}"));
+                return;
+            }
+        };
         for (node, window) in windows {
             let publication = self
                 .fields
                 .get(&(node, Slot::Field(BACKING.into())))
                 .map(|value| value.publication)
                 .unwrap_or(Publication::Live);
-            let mut selected: BTreeMap<Slot, Value> = BTreeMap::new();
-            let fields: Vec<_> = self
-                .fields
-                .iter()
-                .filter(|((parent, slot), _)| {
-                    window.backing.nodes.contains(parent)
-                        && matches!(slot, Slot::Index(_) | Slot::AnyIndex)
-                })
-                .map(|((_, slot), value)| (slot.clone(), value.clone()))
-                .collect();
-            for (slot, mut value) in fields {
-                let relative = match (&slot, window.lower, window.length) {
-                    (Slot::Index(index), Some(lower), Some(length)) => {
-                        let Ok(index) = u64::try_from(*index) else {
-                            continue;
-                        };
-                        if index < lower || index - lower >= length {
-                            continue;
-                        }
-                        i64::try_from(index - lower)
-                            .ok()
-                            .map(Slot::Index)
-                            .unwrap_or(Slot::AnyIndex)
-                    }
-                    _ => Slot::AnyIndex,
-                };
-                value.permission = Permission::Read;
-                value.construction = false;
-                value.marker = false;
-                value.retention_result = false;
-                if publication == Publication::Immutable {
-                    value.publication = Publication::Immutable;
-                } else if value.publication != Publication::Immutable {
-                    value.publication = publication;
+            let selected = self.application_effect.with_work(|work| {
+                use crate::sema::source_types::SourceTypesError;
+                let scan = self
+                    .fields
+                    .len()
+                    .checked_mul(
+                        3 + window.backing.nodes.len().checked_ilog2().unwrap_or(0) as usize,
+                    )
+                    .ok_or(SourceTypesError::BudgetExceeded)?;
+                *work = work
+                    .checked_sub(scan + self.heap.nodes[node.0 as usize].fields.len())
+                    .ok_or(SourceTypesError::BudgetExceeded)?;
+                let selected = crate::sema::pattern_windows::selected_fields(
+                    self.fields
+                        .iter()
+                        .filter(|((parent, _), _)| window.backing.nodes.contains(parent))
+                        .map(|((_, slot), value)| (slot, value)),
+                    window.lower,
+                    window.length,
+                    publication,
+                    window.cause,
+                    work,
+                )?;
+                for value in selected.values() {
+                    *work = work
+                        .checked_sub(2 + value.origins.nodes.len())
+                        .ok_or(SourceTypesError::BudgetExceeded)?;
                 }
-                if let Some(previous) = selected.get(&relative).cloned() {
-                    value = previous.join(&value, self.choice(), window.cause);
+                Ok::<_, SourceTypesError>(selected)
+            });
+            let selected = match selected {
+                Ok(selected) => selected,
+                Err(error) => {
+                    self.unsupported(window.span, format!("window storage projection: {error}"));
+                    return;
                 }
-                selected.insert(relative, value);
-            }
+            };
             self.fields.retain(|(parent, slot), _| {
                 *parent != node || !matches!(slot, Slot::Index(_) | Slot::AnyIndex)
             });
@@ -403,6 +421,8 @@ impl Checker {
         self.windows.insert(
             node,
             super::super::WindowInfo {
+                pattern: None,
+                constant: None,
                 backing: backing.clone(),
                 lower: offset,
                 length,

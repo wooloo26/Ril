@@ -276,6 +276,11 @@ fn has_control(expression: &Expr, checked: &BTreeSet<(u32, u32, u32)>) -> bool {
         ExprKind::Lambda { .. } => false,
         ExprKind::Block(body) | ExprKind::Loop(body) => block(body),
         ExprKind::While { condition, body } => visit(condition) || block(body),
+        ExprKind::WhileLet {
+            pattern: binder,
+            value,
+            body,
+        } => visit(value) || pattern(binder) || block(body),
         ExprKind::For {
             iterable,
             pattern: binder,
@@ -287,6 +292,17 @@ fn has_control(expression: &Expr, checked: &BTreeSet<(u32, u32, u32)>) -> bool {
             else_branch,
         } => {
             visit(condition)
+                || visit(then_branch)
+                || else_branch.as_ref().is_some_and(|value| visit(value))
+        }
+        ExprKind::IfLet {
+            pattern: binder,
+            value,
+            then_branch,
+            else_branch,
+        } => {
+            visit(value)
+                || pattern(binder)
                 || visit(then_branch)
                 || else_branch.as_ref().is_some_and(|value| visit(value))
         }
@@ -357,6 +373,7 @@ fn pattern_control(pattern: &Pattern, checked: &BTreeSet<(u32, u32, u32)>) -> bo
     match &pattern.kind {
         PatternKind::Value(value) => has_control(value, checked),
         PatternKind::Tuple(patterns)
+        | PatternKind::Array(patterns)
         | PatternKind::Alternative(patterns)
         | PatternKind::Constructor {
             arguments: patterns,
@@ -369,6 +386,7 @@ fn pattern_control(pattern: &Pattern, checked: &BTreeSet<(u32, u32, u32)>) -> bo
             .any(|field| pattern_control(&field.pattern, checked)),
         PatternKind::Mode { pattern, .. } => pattern_control(pattern, checked),
         PatternKind::Name(_)
+        | PatternKind::Rest(_)
         | PatternKind::Wildcard
         | PatternKind::Literal(_)
         | PatternKind::Type { .. } => false,

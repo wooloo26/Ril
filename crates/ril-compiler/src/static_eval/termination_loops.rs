@@ -66,6 +66,16 @@ fn expr_flow(value: &Expr) -> u8 {
             Some(false) => else_branch.as_deref().map_or(NORMAL, expr_flow),
             None => expr_flow(then_branch) | else_branch.as_deref().map_or(NORMAL, expr_flow),
         }),
+        ExprKind::IfLet {
+            pattern,
+            value,
+            then_branch,
+            else_branch,
+        } => sequence(expr_flow(value), || {
+            sequence(pattern_flow(pattern), || {
+                expr_flow(then_branch) | else_branch.as_deref().map_or(NORMAL, expr_flow)
+            })
+        }),
         ExprKind::Match { value, arms, .. } => sequence(expr_flow(value), || {
             if arms.is_empty() {
                 return ABNORMAL;
@@ -91,6 +101,15 @@ fn expr_flow(value: &Expr) -> u8 {
                 } else {
                     0
                 }
+        }),
+        ExprKind::WhileLet {
+            pattern,
+            value,
+            body,
+        } => sequence(expr_flow(value), || {
+            sequence(pattern_flow(pattern), || {
+                NORMAL | (block_flow(body) & (RETURN | ABNORMAL))
+            })
         }),
         ExprKind::For { iterable, body, .. } => sequence(expr_flow(iterable), || {
             NORMAL | (block_flow(body) & (RETURN | ABNORMAL))
@@ -205,6 +224,7 @@ fn pattern_flow(pattern: &Pattern) -> u8 {
     match &pattern.kind {
         PatternKind::Value(value) => expr_flow(value),
         PatternKind::Tuple(values)
+        | PatternKind::Array(values)
         | PatternKind::Alternative(values)
         | PatternKind::Constructor {
             arguments: values, ..
@@ -227,7 +247,11 @@ impl Visitor<'_> {
             ExprKind::Range { end: Some(_), .. } => true,
             ExprKind::Name(name) => {
                 if !seen.insert(name.clone()) { return false; }
-                self.finite_sources.contains(name) || self.aliases.get(name).is_some_and(|source| self.finite_source(source, seen))
+                match self.aliases.get(name) {
+                    Some(Some(source)) => self.finite_source(source, seen),
+                    Some(None) => false,
+                    None => self.finite_sources.contains(name),
+                }
             }
             ExprKind::Block(body) => body.statements.last().is_some_and(|statement|
                 matches!(&statement.kind, StmtKind::Expr { expression, terminated: false } if self.finite_source(expression,seen))),

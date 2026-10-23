@@ -268,6 +268,19 @@ fn expression(value: &mut Expr) {
                 expression(&mut arm.body);
             }
         }
+        ExprKind::IfLet {
+            pattern: binder,
+            value,
+            then_branch,
+            else_branch,
+        } => {
+            expression(value);
+            pattern(binder);
+            expression(then_branch);
+            if let Some(value) = else_branch {
+                expression(value);
+            }
+        }
         ExprKind::Is {
             value,
             pattern: tested,
@@ -277,6 +290,15 @@ fn expression(value: &mut Expr) {
         }
         ExprKind::While { condition, body } => {
             expression(condition);
+            normalize_block(body);
+        }
+        ExprKind::WhileLet {
+            pattern: binder,
+            value,
+            body,
+        } => {
+            expression(value);
+            pattern(binder);
             normalize_block(body);
         }
         ExprKind::For {
@@ -377,7 +399,9 @@ fn ty(value: &mut TypeExpr) {
 
 fn pattern(value: &mut Pattern) {
     match &mut value.kind {
-        PatternKind::Tuple(values) | PatternKind::Alternative(values) => {
+        PatternKind::Tuple(values)
+        | PatternKind::Array(values)
+        | PatternKind::Alternative(values) => {
             for value in values {
                 pattern(value);
             }
@@ -401,6 +425,7 @@ fn pattern(value: &mut Pattern) {
         PatternKind::Type { ty: value, .. } => ty(value),
         PatternKind::Value(value) => expression(value),
         PatternKind::Name(_)
+        | PatternKind::Rest(_)
         | PatternKind::Wildcard
         | PatternKind::Literal(_)
         | PatternKind::Error => {}

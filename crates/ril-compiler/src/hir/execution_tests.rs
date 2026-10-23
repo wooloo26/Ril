@@ -278,6 +278,54 @@ fn if_and_match_only_enter_selected_original_branches() {
 }
 
 #[test]
+fn conditional_binding_cursor_requires_the_original_pattern_decision() {
+    let (hir, blocks, root) = lower(expr(ast::ExprKind::IfLet {
+        pattern: ast::Pattern {
+            hir_id: None,
+            span: span(),
+            kind: ast::PatternKind::Wildcard,
+        },
+        value: Box::new(name("subject")),
+        then_branch: Box::new(name("yes")),
+        else_branch: Some(Box::new(name("no"))),
+    }));
+    let hir::ExprKind::IfLet { pattern, .. } = hir.expression(root).unwrap().kind else {
+        unreachable!()
+    };
+    let mut cursor = ExecutionCursor::expression(&hir, &blocks, root, 0, &mut 4096).unwrap();
+    let value = pending(&cursor);
+    assert_eq!(value.role, ChildRole::Condition);
+    cursor.complete(value, &mut 4096).unwrap();
+    let decision = guard(&cursor);
+    assert_eq!(decision.kind, GuardKind::IfLet { pattern });
+    assert_eq!(
+        cursor.choose(decision, GuardAnswer::Boolean(true), &mut 4096),
+        Err(ExecutionError::UnexpectedGuard)
+    );
+    assert_eq!(guard(&cursor), decision);
+    for matched in [false, true] {
+        let mut selected = cursor.clone();
+        selected
+            .choose(decision, GuardAnswer::PatternMatched(matched), &mut 4096)
+            .unwrap();
+        let branch = pending(&selected);
+        let role = if matched {
+            ChildRole::Then
+        } else {
+            ChildRole::Else
+        };
+        assert_eq!(branch.role, role);
+        selected.complete(branch, &mut 4096).unwrap();
+        assert_eq!(
+            take_reduction(&mut selected).kind,
+            ReductionKind::If {
+                selected: Some(role)
+            }
+        );
+    }
+}
+
+#[test]
 fn strict_products_and_projections_preserve_child_roles() {
     for (syntax, roles, kind) in [
         (

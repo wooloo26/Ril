@@ -206,6 +206,32 @@ pub fn test_native() {
 --@ use-source: nested-array-closures
 --@ end-case
 
+--@ case: reject-array-factory-unused-capture
+--@ mode: check-fail
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: nested-array-closures-native
+-- Error [E0529]: Declaration checking still rejects an unused capture capability.
+--@ file: source.ril
+type Reader = fn() -> int &closure
+fn make(values: []int) -> Reader &capture {
+    match values { [.._] -> \-> 0 }
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-factory-missing-capture
+--@ mode: check-fail
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: nested-array-closures-native
+-- Error [E0510]: A possible newly surviving environment needs the declaration's capture capability.
+--@ file: source.ril
+type Reader = fn() -> int &closure
+fn make(values: []int) -> Reader {
+    match values { [first, ..] -> \-> first, [] -> \-> 0 }
+}
+--@ end-file
+--@ end-case
+
 --@ source: conditional-array-rests
 --@ file: source.ril
 pub fn test_native() {
@@ -516,8 +542,8 @@ pub fn test_native() {
     let right: [4]int = [4, 5, 6, 7]
     let ([a, ..xs], [b, ..ys]) = (left, right)
     assert(a == 1 && b == 4 && two(xs) == 5 && three(ys) == 18)
-    let ((head, ..), (.., last)) = ((10, 20), (30, 40))
-    assert(head == 10 && last == 40)
+    let ((head, ..), (.., final)) = ((10, 20), (30, 40))
+    assert(head == 10 && final == 40)
     let (.{ id, ..first }, .{ id: other, ..second }) =
         (.{ id: 7, saved: 8 }, .{ id: 9, saved: 10 })
     assert(id == 7 && other == 9 && first.saved == 8 && second.saved == 10)
@@ -597,6 +623,7 @@ pub fn test_native() {
 --@ file: source.ril
 fn invalid() {
     let mut values: []int = [1, 2, 3]
+    values[0] = 7
     let view [_, ..tail] = values
     tail[0] = 9
 }
@@ -633,4 +660,44 @@ fn invalid() {
     let count = fixed(tail)
 }
 --@ end-file
+--@ end-case
+
+--@ source: nested-window-evidence
+--@ file: source.ril
+pub fn test_native() {
+    let values: [4]int = [10, 20, 30, 40]
+    let [head, ..middle, final] = values
+    let [_, ..tail] = middle
+    let zero: [0]int = []
+    let [..empty] = zero
+    assert(head == 10 && final == 40 && len(middle) == 2)
+    assert(middle[0] == 20 && tail[0] == 30 && len(tail) == 1)
+    assert(len(empty) == 0)
+}
+--@ end-file
+--@ end-source
+
+--@ case: nested-window-evidence-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#range-and-slicing-expressions
+--@ companion: reject-array-rest-window-write
+--@ use-source: nested-window-evidence
+--@ end-case
+
+--@ case: nested-window-evidence-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: nested-window-evidence-native
+--@ use-source: nested-window-evidence
+--@ end-case
+
+--@ case: nested-window-evidence-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#range-and-slicing-expressions
+--@ entry: test_native
+--@ use-source: nested-window-evidence
 --@ end-case

@@ -81,6 +81,7 @@ mod invocation;
 mod loops;
 mod numeric;
 mod numeric_contexts;
+mod pattern_sequences;
 mod phases;
 mod publication;
 mod record_construction;
@@ -108,6 +109,7 @@ enum StaticValue {
     BigInteger(num_bigint::BigInt),
     Bytes(Vec<u8>),
     Array(StaticCollection<Vec<StaticValue>>),
+    ArrayWindow(Box<StaticArrayWindow>),
     Tuple(StaticCollection<Vec<StaticValue>>),
     Map(StaticCollection<Vec<(StaticValue, StaticValue)>>),
     Record(StaticRecord),
@@ -124,6 +126,20 @@ struct StaticCollection<T> {
     id: u64,
     values: std::sync::Arc<T>,
     source_type: Option<std::sync::Arc<crate::sema::model::SourceTypeWitness>>,
+}
+#[derive(Debug, Clone, PartialEq)]
+struct StaticArrayWindow {
+    id: u64,
+    backing: StaticCollection<Vec<StaticValue>>,
+    start: usize,
+    len: usize,
+    source_type: Option<std::sync::Arc<crate::sema::model::SourceTypeWitness>>,
+}
+impl std::ops::Deref for StaticArrayWindow {
+    type Target = [StaticValue];
+    fn deref(&self) -> &Self::Target {
+        &self.backing.values[self.start..self.start + self.len]
+    }
 }
 /// Record slot modes are part of its type, even though every evaluated handle
 /// is immutable. They must survive export so a later clone has the same slots.
@@ -174,11 +190,19 @@ where
     }
 }
 impl StaticValue {
+    fn array_items(&self) -> Option<&[StaticValue]> {
+        match self {
+            Self::Array(values) => Some(values.values.as_slice()),
+            Self::ArrayWindow(window) => Some(window),
+            _ => None,
+        }
+    }
     fn collection_id(&self) -> Option<u64> {
         match self {
             Self::Array(value) | Self::Tuple(value) => Some(value.id),
             Self::Map(value) => Some(value.id),
             Self::Record(value) => Some(value.storage.id),
+            Self::ArrayWindow(value) => Some(value.id),
             _ => None,
         }
     }
@@ -1040,6 +1064,19 @@ impl Evaluator {
                     "static condition must be bool".into(),
                 )),
             },
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => self.evaluate_if_let(
+                pattern,
+                value,
+                then_branch,
+                else_branch.as_deref(),
+                tail,
+                expected,
+            ),
             ExprKind::Block(block) => {
                 let saved = self.snapshot_values()?;
                 self.type_environment.admit_clone(&self.budget)?;
@@ -1051,6 +1088,11 @@ impl Evaluator {
             }
             ExprKind::Loop(body) => self.evaluate_loop(body, expected),
             ExprKind::While { condition, body } => self.evaluate_while(condition, body),
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => self.evaluate_while_let(pattern, value, body),
             ExprKind::For {
                 iterable,
                 pattern,
@@ -1544,6 +1586,9 @@ impl Evaluator {
                     span,
                 });
             }
+            StaticValue::ArrayWindow(window) => {
+                return self.materialize_graph(&StaticValue::ArrayWindow(window), span);
+            }
             StaticValue::Map(entries) => {
                 if entries.iter().any(|(key, value)| {
                     self.unpublished_reference(key) || self.unpublished_reference(value)
@@ -1655,6 +1700,7 @@ fn reference_value(value: &StaticValue) -> bool {
     matches!(
         value,
         StaticValue::Array(_)
+            | StaticValue::ArrayWindow(_)
             | StaticValue::Tuple(_)
             | StaticValue::Map(_)
             | StaticValue::Record(_)
@@ -1662,6 +1708,9 @@ fn reference_value(value: &StaticValue) -> bool {
     )
 }
 fn static_equal(a: &StaticValue, b: &StaticValue) -> bool {
+    if let (Some(a), Some(b)) = (a.array_items(), b.array_items()) {
+        return a.len() == b.len() && a.iter().zip(b).all(|(a, b)| static_equal(a, b));
+    }
     match (a, b) {
         (StaticValue::Result(a), StaticValue::Result(b)) => {
             a.success == b.success && static_equal(&a.payload, &b.payload)
@@ -1711,6 +1760,7 @@ fn contains_leaf(value: &StaticValue, predicate: impl Fn(&StaticValue) -> bool) 
         }
         match value {
             StaticValue::Array(values) | StaticValue::Tuple(values) => work.extend(values.iter()),
+            StaticValue::ArrayWindow(values) => work.extend(values.iter()),
             StaticValue::Record(values) => work.extend(values.values()),
             StaticValue::Map(values) => {
                 for (key, value) in values {

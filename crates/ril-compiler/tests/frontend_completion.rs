@@ -108,13 +108,9 @@ fn closed_record_rest_lowering_evaluates_the_source_once() {
         .find(|function| function.name == "example")
         .unwrap();
     let [
-        ril_ir::core::Statement::Bind { value, .. },
         ril_ir::core::Statement::Bind {
-            value: projected, ..
-        },
-        ril_ir::core::Statement::Bind {
-            pattern: ril_ir::core::Pattern::Name(rest),
-            value: record,
+            pattern: ril_ir::core::Pattern::RecordRest { fields, rest },
+            value,
             ..
         },
         ..,
@@ -123,19 +119,20 @@ fn closed_record_rest_lowering_evaluates_the_source_once() {
         panic!("{:?}", example.body);
     };
     assert!(matches!(value.kind, ril_ir::core::ExprKind::Call { .. }));
-    assert!(matches!(projected.kind, ril_ir::core::ExprKind::Name(_)));
     assert_eq!(rest, "rest");
-    let ril_ir::core::ExprKind::Record { fields, .. } = &record.kind else {
-        panic!("{record:?}");
-    };
     assert_eq!(
         fields
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        ["name", "stamp"]
+        ["id"]
     );
-    assert!(fields.iter().all(|(_, value)| matches!(&value.kind, ril_ir::core::ExprKind::Field { base, .. } if matches!(base.kind, ril_ir::core::ExprKind::Name(_)))));
+    assert!(
+        matches!(fields.as_slice(), [(label, ril_ir::core::Pattern::Name(name))] if label == "id" && name == "id")
+    );
+    assert_eq!(example.body.statements.iter().filter(|statement| matches!(statement,
+        ril_ir::core::Statement::Bind { value: ril_ir::core::Expr { kind: ril_ir::core::ExprKind::Call { callee, .. }, .. }, .. }
+        if matches!(&callee.kind, ril_ir::core::ExprKind::Name(name) if name == "source"))).count(), 1);
 }
 
 #[test]

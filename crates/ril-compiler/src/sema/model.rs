@@ -6,6 +6,25 @@ use std::sync::Arc;
 pub(crate) mod iteration;
 pub mod rows;
 
+/// Discard correlations after a may-join whose alternatives are no longer
+/// represented by a live branch identity. Descendant identities and duties stay.
+pub(crate) fn forget_choices(value: &mut Value) {
+    value.origins.choices.clear();
+    for nested in [
+        &mut value.option_payload,
+        &mut value.variant_payload,
+        &mut value.result_payload,
+        &mut value.result_success,
+        &mut value.result_error,
+    ]
+    .into_iter()
+    .flatten()
+    .chain(value.variant_witnesses.values_mut())
+    {
+        forget_choices(nested);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
     NumericHole(ril_compiler_core::ids::NumericHoleId),

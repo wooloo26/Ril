@@ -989,6 +989,25 @@ pub extern "C" fn ril_rt_range(lower: u64, upper: u64, inclusive: u32) -> u64 {
 pub extern "C" fn ril_rt_len(value: u64) -> u64 {
     ril_rt_length(value)
 }
+/// Check the container and complete arity before a pattern reads any slot.
+/// Unit is the zero-component tuple; ordinary len keeps its original domain.
+#[unsafe(no_mangle)]
+pub extern "C" fn ril_rt_sequence_matches(value: u64, array: u32, minimum: u64, rest: u32) -> u32 {
+    guarded(|runtime| {
+        let length = match runtime.heap.get(Handle(value))? {
+            Object::Unit if array == 0 => 0,
+            Object::Tuple(values) if array == 0 => values.len() as u64,
+            Object::Array(values) if array != 0 => values.len() as u64,
+            Object::ArrayWindow { len, .. } if array != 0 => *len as u64,
+            _ => return Ok(0),
+        };
+        Ok(u32::from(if rest == 0 {
+            length == minimum
+        } else {
+            length >= minimum
+        }))
+    })
+}
 #[unsafe(no_mangle)]
 pub extern "C" fn ril_rt_contains(element: u64, collection: u64) -> u64 {
     handle(|runtime| runtime.contains(Handle(element), Handle(collection)))
@@ -1104,6 +1123,32 @@ pub extern "C" fn ril_rt_record_copy(value: u64) -> u64 {
     })
 }
 
+/// Copy only the container: remainder fields retain their original child
+/// handles, including cycles, shared fields and opaque runtime payloads.
+#[unsafe(no_mangle)]
+pub extern "C" fn ril_rt_record_without(value: u64, excluded: u64) -> u64 {
+    handle(|runtime| {
+        let labels = runtime
+            .heap
+            .array_elements(Handle(excluded))?
+            .ok_or_else(|| RuntimeError::internal("record remainder exclusions are not an array"))?
+            .iter()
+            .map(|label| runtime.as_string(*label).map(str::to_owned))
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        let Object::Record(fields) = runtime.heap.get(Handle(value))? else {
+            return Err(RuntimeError::internal(
+                "record remainder source is not a record",
+            ));
+        };
+        let fields = fields
+            .iter()
+            .filter(|(label, _)| !labels.contains(*label))
+            .map(|(label, value)| (label.clone(), *value))
+            .collect();
+        runtime.allocate(Object::Record(fields))
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn ril_rt_record_merge(target: u64, source: u64) -> u64 {
     handle(|runtime| {
@@ -1195,6 +1240,61 @@ pub extern "C" fn ril_rt_finish(value: u64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_remainders_keep_child_identity_and_exclude_only_written_fields() {
+        ril_rt_init();
+        ril_rt_enter();
+        let source = ril_rt_record();
+        let shared = ril_rt_sequence(0);
+        let item = ril_rt_int(7, 0, 64, 1);
+        ril_rt_push(shared, item);
+        let key = |name: &str| handle(|runtime| runtime.string(name.to_owned()));
+        ril_rt_set_field(source, key("drop"), item);
+        ril_rt_set_field(source, key("left"), shared);
+        ril_rt_set_field(source, key("right"), shared);
+        ril_rt_set_field(source, key("self"), source);
+        let excluded = ril_rt_sequence(0);
+        ril_rt_push(excluded, key("drop"));
+        let result = ril_rt_record_without(source, excluded);
+        assert_ne!(result, source);
+        ril_rt_root(0, result);
+        ril_rt_statement_end();
+        with_runtime(|runtime| {
+            runtime.collect().unwrap();
+            let Object::Record(fields) = runtime.heap.get(Handle(result)).unwrap() else {
+                panic!("record remainder");
+            };
+            assert!(!fields.contains_key("drop"));
+            assert_eq!(fields["left"], Handle(shared));
+            assert_eq!(fields["right"], Handle(shared));
+            assert_eq!(fields["self"], Handle(source));
+            assert_eq!(runtime.field(Handle(source), "drop").unwrap(), Handle(item));
+        });
+        assert_eq!(ril_rt_status(), 0);
+        ril_rt_leave(result);
+    }
+
+    #[test]
+    fn sequence_patterns_distinguish_unit_and_arrays_without_changing_language_len() {
+        ril_rt_init();
+        ril_rt_enter();
+        let unit = ril_rt_unit();
+        assert_eq!(ril_rt_sequence_matches(unit, 0, 0, 0), 1);
+        assert_eq!(ril_rt_sequence_matches(unit, 1, 0, 0), 0);
+        assert_eq!(ril_rt_sequence_matches(unit, 0, 1, 1), 0);
+        assert_eq!(ril_rt_status(), 0);
+        with_runtime(|runtime| assert!(runtime.length(Handle(unit)).is_err()));
+        let tuple = ril_rt_sequence(1);
+        ril_rt_push(tuple, unit);
+        assert_eq!(ril_rt_sequence_matches(tuple, 0, 1, 0), 1);
+        assert_eq!(ril_rt_sequence_matches(tuple, 0, 2, 1), 0);
+        assert_eq!(ril_rt_sequence_matches(tuple, 1, 1, 0), 0);
+        let array = ril_rt_sequence(0);
+        assert_eq!(ril_rt_sequence_matches(array, 1, 0, 0), 1);
+        assert_eq!(ril_rt_sequence_matches(array, 0, 0, 0), 0);
+        ril_rt_leave(tuple);
+    }
     #[test]
     fn direct_callable_addresses_cannot_misinterpret_a_native_step_as_a_value() {
         for (suspends, metered) in [(false, false), (true, false), (false, true)] {

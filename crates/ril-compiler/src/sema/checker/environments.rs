@@ -251,12 +251,13 @@ impl Checker {
             table: &mut BTreeMap<(ScopeId, u32, String), Option<ril_compiler_core::ids::PatternId>>,
         ) {
             match &pattern.kind {
-                PatternKind::Name(name) => {
+                PatternKind::Name(name) | PatternKind::Rest(Some(name)) if name != "_" => {
                     table
                         .entry((owner, scope, name.clone()))
                         .or_insert(pattern.hir_id);
                 }
                 PatternKind::Tuple(items)
+                | PatternKind::Array(items)
                 | PatternKind::Alternative(items)
                 | PatternKind::Constructor {
                     arguments: items, ..
@@ -265,9 +266,18 @@ impl Checker {
                         register(item, owner, scope, table);
                     }
                 }
-                PatternKind::Record { fields, .. } => {
+                PatternKind::Record {
+                    fields,
+                    rest_binding,
+                    ..
+                } => {
                     for field in fields {
                         register(&field.pattern, owner, scope, table);
+                    }
+                    if let Some(name) = rest_binding.as_ref().filter(|name| name.as_str() != "_") {
+                        table
+                            .entry((owner, scope, name.clone()))
+                            .or_insert(pattern.hir_id);
                     }
                 }
                 PatternKind::Mode { pattern, .. } => register(pattern, owner, scope, table),
@@ -566,15 +576,28 @@ impl Checker {
 }
 pub(super) fn pattern_names(pattern: &Pattern) -> Vec<String> {
     match &pattern.kind {
-        PatternKind::Name(name) => vec![name.clone()],
+        PatternKind::Name(name) | PatternKind::Rest(Some(name)) if name != "_" => {
+            vec![name.clone()]
+        }
         PatternKind::Tuple(items)
+        | PatternKind::Array(items)
         | PatternKind::Alternative(items)
         | PatternKind::Constructor {
             arguments: items, ..
         } => items.iter().flat_map(pattern_names).collect(),
-        PatternKind::Record { fields, .. } => fields
+        PatternKind::Record {
+            fields,
+            rest_binding,
+            ..
+        } => fields
             .iter()
             .flat_map(|field| pattern_names(&field.pattern))
+            .chain(
+                rest_binding
+                    .iter()
+                    .filter(|name| name.as_str() != "_")
+                    .cloned(),
+            )
             .collect(),
         PatternKind::Mode { pattern, .. } => pattern_names(pattern),
         _ => Vec::new(),

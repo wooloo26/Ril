@@ -677,6 +677,20 @@ fn children<'a>(expression: &'a Expr, bounds: Bounds, stack: &mut Vec<Node<'a>>)
             stack.push(Node::Expr(condition, bounds.and(iteration)));
             stack.push(Node::Block(body, bounds.and(iteration)));
         }
+        ExprKind::WhileLet {
+            pattern,
+            value,
+            body,
+        } => {
+            let iteration = Bounds {
+                once: terminal(body),
+                entered: false,
+                repeated: !terminal(body),
+            };
+            stack.push(Node::Expr(value, bounds.and(iteration)));
+            stack.push(Node::Pattern(pattern, bounds.and(iteration)));
+            stack.push(Node::Block(body, bounds.and(iteration)));
+        }
         ExprKind::For {
             iterable,
             pattern,
@@ -698,6 +712,19 @@ fn children<'a>(expression: &'a Expr, bounds: Bounds, stack: &mut Vec<Node<'a>>)
             else_branch,
         } => {
             stack.push(Node::Expr(condition, bounds));
+            stack.push(Node::Expr(then_branch, bounds));
+            if let Some(value) = else_branch {
+                stack.push(Node::Expr(value, bounds));
+            }
+        }
+        ExprKind::IfLet {
+            pattern,
+            value,
+            then_branch,
+            else_branch,
+        } => {
+            stack.push(Node::Expr(value, bounds));
+            stack.push(Node::Pattern(pattern, bounds));
             stack.push(Node::Expr(then_branch, bounds));
             if let Some(value) = else_branch {
                 stack.push(Node::Expr(value, bounds));

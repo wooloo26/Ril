@@ -188,7 +188,16 @@ impl Checker {
             access.transport(&self.recency_moves);
         }
         self.check_exclusivity(&frame.obligations.accesses, span);
-        self.check_annotations(&info.syntax, &frame, info.owner);
+        self.check_annotations(
+            &info.syntax,
+            &frame,
+            info.owner,
+            if verifying {
+                super::calls::AnnotationCheck::Declaration
+            } else {
+                super::calls::AnnotationCheck::Invocation
+            },
+        );
         let invocation = self.named_invocation_summary(id, &frame, &returned);
         self.record_effect_invocation(&info, span, &invocation, verifying, callback_epoch);
         self.invocations.push(invocation);

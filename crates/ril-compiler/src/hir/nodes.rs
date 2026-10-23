@@ -17,7 +17,7 @@ mod identify;
 mod lower;
 mod patterns;
 mod walk;
-pub use patterns::PatternBinding;
+pub use patterns::{PatternBinding, PatternBindingAlternative, PatternValueProjection};
 pub use walk::WalkError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -316,6 +316,12 @@ pub enum ExprKind {
         then_branch: ExprId,
         else_branch: Option<ExprId>,
     },
+    IfLet {
+        pattern: PatternId,
+        value: ExprId,
+        then_branch: ExprId,
+        else_branch: Option<ExprId>,
+    },
     Match {
         value: ExprId,
         arms: Vec<MatchArm>,
@@ -328,6 +334,11 @@ pub enum ExprKind {
     Loop(Block),
     While {
         condition: ExprId,
+        body: Block,
+    },
+    WhileLet {
+        pattern: PatternId,
+        value: ExprId,
         body: Block,
     },
     For {
@@ -424,6 +435,8 @@ pub enum PatternKind {
     Wildcard,
     Literal(ast::Literal),
     Tuple(Vec<PatternId>),
+    Array(Vec<PatternId>),
+    Rest(Option<String>),
     Record {
         ty: Option<TypeExprId>,
         fields: Vec<PatternField>,

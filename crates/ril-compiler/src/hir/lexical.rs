@@ -18,6 +18,7 @@ pub struct LexicalBindings {
     names: BTreeMap<ExprId, NameBinding>,
     types: BTreeMap<TypeExprId, TypeNameBinding>,
     pattern_names: BTreeMap<PatternId, NameBinding>,
+    pattern_constructors: BTreeMap<PatternId, bool>,
     generated_roots: usize,
     scopes: Vec<Scope>,
 }
@@ -59,6 +60,19 @@ fn lookup_cost(entries: usize) -> usize {
 }
 
 impl LexicalBindings {
+    /// Only lexical non-shadowing. Catalog identity and the carrier's sealed
+    /// declaration must be authenticated by the caller independently.
+    pub fn pattern_constructor_unshadowed(
+        &self,
+        pattern: PatternId,
+        work: &mut usize,
+    ) -> Result<bool, LowerError> {
+        charge(work, lookup_cost(self.pattern_constructors.len()))?;
+        self.pattern_constructors
+            .get(&pattern)
+            .copied()
+            .ok_or(LowerError::Correspondence)
+    }
     pub fn new(hir: &HirProgram, work: &mut usize) -> Result<Self, LowerError> {
         charge(work, 1)?;
         let mut builder = Builder {
@@ -617,7 +631,7 @@ impl Builder<'_, '_> {
         self.enter(NodeId::Pattern(id), depth)?;
         let node = self.hir.pattern(id).ok_or(LowerError::Correspondence)?;
         match &node.kind {
-            h::PatternKind::Name(name) => {
+            h::PatternKind::Name(name) | h::PatternKind::Rest(Some(name)) => {
                 let binding = self.name(scope, name)?;
                 charge(self.work, lookup_cost(self.index.pattern_names.len()))?;
                 if self.index.pattern_names.insert(id, binding).is_some() {
@@ -625,7 +639,9 @@ impl Builder<'_, '_> {
                 }
             }
             h::PatternKind::Mode { pattern, .. } => self.pattern(*pattern, scope, depth + 1)?,
-            h::PatternKind::Tuple(items) | h::PatternKind::Alternative(items) => {
+            h::PatternKind::Tuple(items)
+            | h::PatternKind::Array(items)
+            | h::PatternKind::Alternative(items) => {
                 for item in items {
                     self.pattern(*item, scope, depth + 1)?;
                 }
@@ -638,7 +654,26 @@ impl Builder<'_, '_> {
                     self.pattern(field.pattern, scope, depth + 1)?;
                 }
             }
-            h::PatternKind::Constructor { arguments, .. } => {
+            h::PatternKind::Constructor {
+                path, arguments, ..
+            } => {
+                let unshadowed = if let Some(root) = path.first() {
+                    self.type_name(scope, root)? == TypeNameBinding::Unbound
+                } else {
+                    false
+                };
+                charge(
+                    self.work,
+                    lookup_cost(self.index.pattern_constructors.len()),
+                )?;
+                if self
+                    .index
+                    .pattern_constructors
+                    .insert(id, unshadowed)
+                    .is_some()
+                {
+                    return Err(LowerError::Correspondence);
+                }
                 for argument in arguments {
                     self.pattern(*argument, scope, depth + 1)?;
                 }
@@ -700,6 +735,21 @@ impl Builder<'_, '_> {
                     self.expression(arm.body, local, depth + 1)?;
                 }
             }
+            h::ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.expression(*value, scope, depth + 1)?;
+                self.pattern(*pattern, scope, depth + 1)?;
+                let local = self.scope(Some(scope))?;
+                self.bind_pattern(*pattern, local)?;
+                self.expression(*then_branch, local, depth + 1)?;
+                if let Some(other) = else_branch {
+                    self.expression(*other, scope, depth + 1)?;
+                }
+            }
             h::ExprKind::Is { value, pattern } => {
                 self.expression(*value, scope, depth + 1)?;
                 self.pattern(*pattern, scope, depth + 1)?;
@@ -707,6 +757,17 @@ impl Builder<'_, '_> {
             h::ExprKind::While { condition, body } => {
                 self.expression(*condition, scope, depth + 1)?;
                 let local = self.condition_scope(*condition, true, scope, depth + 1)?;
+                self.block(body, local, depth + 1)?;
+            }
+            h::ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.expression(*value, scope, depth + 1)?;
+                self.pattern(*pattern, scope, depth + 1)?;
+                let local = self.scope(Some(scope))?;
+                self.bind_pattern(*pattern, local)?;
                 self.block(body, local, depth + 1)?;
             }
             h::ExprKind::For {
@@ -1002,6 +1063,56 @@ mod tests {
             unreachable!()
         };
         assert_eq!(index.lookup(left, &mut 4096).unwrap(), Some(outer));
+    }
+
+    #[test]
+    fn conditional_and_rest_bindings_resolve_to_their_original_pattern_nodes() {
+        let hir = fixture("tests/conformance/conditional-bindings.ril::if-let-branches-pointer32");
+        let code = hir
+            .roots()
+            .iter()
+            .filter_map(|id| match &hir.statement(*id)?.kind {
+                h::StmtKind::Function(function) => Some(function),
+                _ => None,
+            })
+            .find(|function| function.name == "code")
+            .unwrap();
+        let h::ExprKind::IfLet {
+            pattern,
+            then_branch,
+            ..
+        } = hir
+            .expression(tail(&hir, code.body.as_ref().unwrap()))
+            .unwrap()
+            .kind
+        else {
+            unreachable!()
+        };
+        let index = LexicalBindings::new(&hir, &mut 4_000_000).unwrap();
+        let h::ExprKind::Block(then_body) = &hir.expression(then_branch).unwrap().kind else {
+            panic!("the conditional branch retains its source block")
+        };
+        assert_eq!(
+            index.lookup(tail(&hir, then_body), &mut 4096).unwrap(),
+            Some(pattern)
+        );
+
+        let hir = fixture("tests/conformance/rest-patterns.ril::array-rest-window-pointer32");
+        let mut tail_pattern = None;
+        let mut reads = Vec::new();
+        hir.walk(65_536, |id, _| match id {
+            NodeId::Pattern(id) if matches!(&hir.pattern(id).unwrap().kind, h::PatternKind::Rest(Some(name)) if name == "tail") => {
+                assert!(tail_pattern.replace(id).is_none());
+            }
+            NodeId::Expr(id) if matches!(&hir.expression(id).unwrap().kind, h::ExprKind::Name(name) if name == "tail") => reads.push(id),
+            _ => {}
+        }).unwrap();
+        let pattern = tail_pattern.expect("the rest owns an original PatternId");
+        assert!(reads.len() >= 2);
+        let index = LexicalBindings::new(&hir, &mut 4_000_000).unwrap();
+        for read in reads {
+            assert_eq!(index.lookup(read, &mut 4096).unwrap(), Some(pattern));
+        }
     }
 
     #[test]

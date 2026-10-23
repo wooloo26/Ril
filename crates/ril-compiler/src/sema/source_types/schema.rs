@@ -275,7 +275,9 @@ impl SourceSchema {
         let mut selected = self.clone();
         for step in path {
             work.charge(1)?;
-            if let SourcePath::RecordRemainder(excluded) = step {
+            if let SourcePath::ArrayRemainder { prefix, suffix } = step {
+                selected = selected.array_remainder(*prefix, *suffix, work)?;
+            } else if let SourcePath::RecordRemainder(excluded) = step {
                 selected = selected.record_remainder(excluded, work)?;
             } else {
                 selected.root =
@@ -285,6 +287,47 @@ impl SourceSchema {
             }
         }
         Ok(selected)
+    }
+
+    /// The remaining shape comes only from the declared array coordinate.
+    /// A dynamic input never becomes fixed merely because storage has a length.
+    pub(crate) fn array_remainder(
+        &self,
+        prefix: u32,
+        suffix: u32,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        work.charge(1)?;
+        let (length, element) = self
+            .array_parts(work)?
+            .ok_or(SourceTypesError::MissingProjection)?;
+        let removed = u64::from(prefix) + u64::from(suffix);
+        let length = match length {
+            SourceLength::Fixed(length) => SourceLength::Fixed(
+                length
+                    .checked_sub(removed)
+                    .ok_or(SourceTypesError::MissingProjection)?,
+            ),
+            SourceLength::Dynamic => SourceLength::Dynamic,
+        };
+        let remainder = Self::array(length, &element, self.original, work)?;
+        let root = self.types.unalias(self.root, work)?;
+        if matches!(
+            self.types.get(root)?,
+            SourceNode::Container {
+                kind: SourceContainer::Immutable,
+                ..
+            }
+        ) {
+            Self::container(
+                SourceContainer::Immutable,
+                &[remainder],
+                self.original,
+                work,
+            )
+        } else {
+            Ok(remainder)
+        }
     }
 
     pub(crate) fn original(&self) -> Option<TypeExprId> {
@@ -395,6 +438,95 @@ impl SourceSchema {
 mod tests {
     use super::*;
     use crate::sema::{effect_identity::ArgumentKey, source_reception::Construction};
+
+    #[test]
+    fn array_remainders_preserve_declared_coordinates_and_do_not_strengthen_dynamic_views() {
+        let mut work = WorkLimit::new(16384);
+        let leaf = SourceSchema::scalar(SourceScalar::I32, None, &mut work).unwrap();
+        let element = SourceSchema::array(SourceLength::Fixed(2), &leaf, None, &mut work).unwrap();
+        let fixed = SourceSchema::array(SourceLength::Fixed(5), &element, None, &mut work).unwrap();
+        let remainder = fixed.array_remainder(2, 1, &mut work).unwrap();
+        let (extent, retained) = remainder.array_parts(&mut work).unwrap().unwrap();
+        assert_eq!(extent, SourceLength::Fixed(2));
+        assert!(retained.equivalent(&element, &mut work).unwrap());
+        assert_eq!(
+            fixed
+                .array_remainder(5, 0, &mut work)
+                .unwrap()
+                .array_parts(&mut work)
+                .unwrap()
+                .unwrap()
+                .0,
+            SourceLength::Fixed(0)
+        );
+        assert!(fixed.array_remainder(4, 2, &mut work).is_err());
+        let dynamic =
+            SourceSchema::array(SourceLength::Dynamic, &element, None, &mut work).unwrap();
+        assert_eq!(
+            dynamic
+                .array_remainder(2, 1, &mut work)
+                .unwrap()
+                .array_parts(&mut work)
+                .unwrap()
+                .unwrap()
+                .0,
+            SourceLength::Dynamic
+        );
+        let immutable = SourceSchema::container(
+            SourceContainer::Immutable,
+            std::slice::from_ref(&fixed),
+            None,
+            &mut work,
+        )
+        .unwrap();
+        let expected =
+            SourceSchema::container(SourceContainer::Immutable, &[remainder], None, &mut work)
+                .unwrap();
+        assert!(
+            immutable
+                .array_remainder(2, 1, &mut work)
+                .unwrap()
+                .equivalent(&expected, &mut work)
+                .unwrap()
+        );
+        assert!(matches!(
+            fixed.array_remainder(0, 0, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        ));
+    }
+
+    #[test]
+    fn tuple_suffixes_select_the_original_member_and_reject_large_or_empty_offsets() {
+        let mut work = WorkLimit::new(8192);
+        let first = SourceSchema::scalar(SourceScalar::I32, None, &mut work).unwrap();
+        let last = SourceSchema::array(SourceLength::Fixed(3), &first, None, &mut work).unwrap();
+        let tuple = SourceSchema::tuple(&[first.clone(), last.clone()], None, &mut work).unwrap();
+        assert!(
+            tuple
+                .project_steps(&[SourcePath::TupleFromEnd(0)], &mut work)
+                .unwrap()
+                .equivalent(&last, &mut work)
+                .unwrap()
+        );
+        assert!(
+            tuple
+                .project_steps(&[SourcePath::TupleFromEnd(1)], &mut work)
+                .unwrap()
+                .equivalent(&first, &mut work)
+                .unwrap()
+        );
+        assert!(
+            tuple
+                .project_steps(&[SourcePath::TupleFromEnd(u32::MAX)], &mut work)
+                .is_err()
+        );
+        let empty = SourceSchema::tuple(&[], None, &mut work).unwrap();
+        assert!(
+            empty
+                .project_steps(&[SourcePath::TupleFromEnd(0)], &mut work)
+                .is_err()
+        );
+    }
 
     fn array(length: Option<u64>, element: ArgumentKey) -> ArgumentKey {
         ArgumentKey::Array {

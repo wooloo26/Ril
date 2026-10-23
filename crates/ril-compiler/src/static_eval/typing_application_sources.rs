@@ -473,8 +473,25 @@ impl Typer<'_> {
                     }
                     element = Some(schema);
                 }
+                // Every newly written array is received in its own declared
+                // construction context, including nested literals. Its element
+                // schema still comes from the actual values. Existing arrays
+                // and windows do not enter this literal-only path.
+                let length = if let Some(context) = result_context
+                    && let Some(schema) = context.closed_schema()
+                    && let TypeKind::Array {
+                        length: Some(length),
+                        ..
+                    } = &schema.syntax.kind
+                    && matches!(context.ordinary(), Ty::Array(_, Some(expected)) if *expected == values.len())
+                {
+                    clone_work::expression(&self.schema_work, length)?;
+                    Some(length.clone())
+                } else {
+                    None
+                };
                 TypeKind::Array {
-                    length: None,
+                    length,
                     element: Box::new(element.unwrap().syntax.clone()),
                 }
             }
@@ -685,28 +702,156 @@ impl Typer<'_> {
         schema: Option<Arc<SourceTypeWitness>>,
     ) -> Result<()> {
         match &pattern.kind {
-            PatternKind::Name(name) => {
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
                 self.schema_bindings
                     .borrow_mut()
                     .insert(name.clone(), schema);
             }
-            PatternKind::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) | PatternKind::Array(patterns) => {
+                let array = matches!(pattern.kind, PatternKind::Array(_));
+                let rest = patterns
+                    .iter()
+                    .position(|pattern| matches!(pattern.kind, PatternKind::Rest(_)));
                 for (index, pattern) in patterns.iter().enumerate() {
+                    use ril_compiler_core::projection::TypeProjection as P;
+                    let step = if matches!(pattern.kind, PatternKind::Rest(_)) {
+                        if !array {
+                            continue;
+                        }
+                        P::ArrayRemainder {
+                            prefix: index as u32,
+                            suffix: (patterns.len() - index - 1) as u32,
+                        }
+                    } else if array {
+                        P::Element
+                    } else if rest.is_some_and(|rest| index > rest) {
+                        P::TupleFromEnd((patterns.len() - index - 1) as u32)
+                    } else {
+                        P::Tuple(index as u32)
+                    };
                     let child = schema
                         .as_ref()
-                        .and_then(|schema| match &schema.syntax.kind {
-                            TypeKind::Tuple(items) => items.get(index),
-                            _ => None,
-                        })
-                        .map(|syntax| {
-                            self.complete_source_syntax(
-                                syntax,
-                                &bounds::BoundEnvironment::default(),
-                            )
+                        .map(|schema| {
+                            self.evaluator
+                                .project_source_schema(schema, &[step], pattern.span)
                         })
                         .transpose()?
                         .flatten();
                     self.bind_source_schema(pattern, child)?;
+                }
+            }
+            PatternKind::Record {
+                fields,
+                rest_binding,
+                ..
+            } => {
+                use ril_compiler_core::projection::TypeProjection as P;
+                for field in fields {
+                    let child = schema
+                        .as_ref()
+                        .map(|schema| {
+                            self.evaluator.project_source_schema(
+                                schema,
+                                &[P::Field(field.name.clone())],
+                                field.span,
+                            )
+                        })
+                        .transpose()?
+                        .flatten();
+                    self.bind_source_schema(&field.pattern, child)?;
+                }
+                if let Some(name) = rest_binding {
+                    let child = schema
+                        .as_ref()
+                        .map(|schema| {
+                            self.evaluator.project_source_schema(
+                                schema,
+                                &[P::RecordRemainder(
+                                    fields.iter().map(|field| field.name.clone()).collect(),
+                                )],
+                                pattern.span,
+                            )
+                        })
+                        .transpose()?
+                        .flatten();
+                    self.schema_bindings
+                        .borrow_mut()
+                        .insert(name.clone(), child);
+                }
+            }
+            PatternKind::Constructor {
+                path, arguments, ..
+            } => {
+                use ril_compiler_core::projection::TypeProjection as P;
+                let tag = match path.as_slice() {
+                    [name] => Some(name.as_str()),
+                    [namespace, name] if namespace == "Prelude" => Some(name.as_str()),
+                    _ => None,
+                };
+                let projection = match tag {
+                    Some("Some") => Some(P::OptionalPayload),
+                    Some("Ok") => Some(P::ResultSuccess),
+                    Some("Err") => Some(P::ResultError),
+                    _ => None,
+                };
+                let payload = if let (Some(schema), Some(step)) = (schema.as_ref(), projection) {
+                    self.evaluator
+                        .project_source_schema(schema, &[step], pattern.span)?
+                } else {
+                    None
+                };
+                for (index, child) in arguments.iter().enumerate() {
+                    let child_schema = if arguments.len() == 1 {
+                        payload.clone()
+                    } else {
+                        payload
+                            .as_ref()
+                            .map(|schema| {
+                                self.evaluator.project_source_schema(
+                                    schema,
+                                    &[P::Tuple(index as u32)],
+                                    child.span,
+                                )
+                            })
+                            .transpose()?
+                            .flatten()
+                    };
+                    self.bind_source_schema(child, child_schema)?;
+                }
+            }
+            PatternKind::Alternative(patterns) => {
+                let outer = self.schema_bindings.borrow().clone();
+                let mut common: Option<BTreeMap<String, Option<Arc<SourceTypeWitness>>>> = None;
+                for pattern in patterns {
+                    *self.schema_bindings.borrow_mut() = outer.clone();
+                    self.bind_source_schema(pattern, schema.clone())?;
+                    let mut names = BTreeSet::new();
+                    application::binding_names(pattern, &mut names);
+                    let branch = self.schema_bindings.borrow();
+                    if let Some(common) = &mut common {
+                        for (name, witness) in common {
+                            let candidate = branch.get(name).and_then(Option::as_ref);
+                            if witness.as_ref().map(|witness| &witness.key)
+                                != candidate.map(|witness| &witness.key)
+                            {
+                                *witness = None;
+                            }
+                        }
+                    } else {
+                        common = Some(
+                            names
+                                .into_iter()
+                                .map(|name| {
+                                    let witness = branch.get(&name).cloned().flatten();
+                                    (name, witness)
+                                })
+                                .collect(),
+                        );
+                    }
+                }
+                *self.schema_bindings.borrow_mut() = outer;
+                if let Some(common) = common {
+                    self.schema_bindings.borrow_mut().extend(common);
                 }
             }
             PatternKind::Mode { pattern, .. } => self.bind_source_schema(pattern, schema)?,

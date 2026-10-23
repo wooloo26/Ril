@@ -45,6 +45,15 @@ pub(super) fn validate(expression: &Expr, budget: &budget::Budget) -> Result<()>
                     push(Node::Expr(condition), loops);
                     push(Node::Block(body), loops + 1);
                 }
+                ExprKind::WhileLet {
+                    pattern,
+                    value,
+                    body,
+                } => {
+                    push(Node::Expr(value), loops);
+                    push(Node::Pattern(pattern), loops);
+                    push(Node::Block(body), loops + 1);
+                }
                 ExprKind::For {
                     iterable,
                     pattern,
@@ -127,6 +136,19 @@ pub(super) fn validate(expression: &Expr, budget: &budget::Budget) -> Result<()>
                     else_branch,
                 } => {
                     push(Node::Expr(condition), loops);
+                    push(Node::Expr(then_branch), loops);
+                    if let Some(branch) = else_branch {
+                        push(Node::Expr(branch), loops);
+                    }
+                }
+                ExprKind::IfLet {
+                    pattern,
+                    value,
+                    then_branch,
+                    else_branch,
+                } => {
+                    push(Node::Expr(value), loops);
+                    push(Node::Pattern(pattern), loops);
                     push(Node::Expr(then_branch), loops);
                     if let Some(branch) = else_branch {
                         push(Node::Expr(branch), loops);
@@ -249,6 +271,7 @@ pub(super) fn validate(expression: &Expr, budget: &budget::Budget) -> Result<()>
                 PatternKind::Type { ty, .. } => push(Node::Type(ty), loops),
                 PatternKind::Mode { pattern, .. } => push(Node::Pattern(pattern), loops),
                 PatternKind::Tuple(values)
+                | PatternKind::Array(values)
                 | PatternKind::Alternative(values)
                 | PatternKind::Constructor {
                     arguments: values, ..

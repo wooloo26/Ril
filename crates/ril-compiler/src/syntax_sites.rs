@@ -244,12 +244,34 @@ impl Visitor {
                     self.expr(&arm.body);
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.expr(value);
+                self.pattern(pattern);
+                self.expr(then_branch);
+                if let Some(branch) = else_branch {
+                    self.expr(branch);
+                }
+            }
             ExprKind::Is { value, pattern } => {
                 self.expr(value);
                 self.pattern(pattern);
             }
             ExprKind::While { condition, body } => {
                 self.expr(condition);
+                self.block(body);
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.expr(value);
+                self.pattern(pattern);
                 self.block(body);
             }
             ExprKind::For {
@@ -301,6 +323,7 @@ impl Visitor {
             ),
             PatternKind::Value(value) => self.expr(value),
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..
@@ -319,7 +342,10 @@ impl Visitor {
             }
             PatternKind::Mode { pattern, .. } => self.pattern(pattern),
             PatternKind::Type { ty, .. } => self.ty(ty),
-            PatternKind::Name(_) | PatternKind::Wildcard | PatternKind::Error => {}
+            PatternKind::Name(_)
+            | PatternKind::Rest(_)
+            | PatternKind::Wildcard
+            | PatternKind::Error => {}
         }
     }
     fn ty(&mut self, ty: &TypeExpr) {

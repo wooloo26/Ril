@@ -55,10 +55,11 @@ impl Resolver<'_> {
     }
     fn variable(&self, pattern: &Pattern, scope: &mut Scope) {
         match &pattern.kind {
-            PatternKind::Name(name) => {
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
                 scope.insert(name.clone(), name.clone());
             }
             PatternKind::Tuple(items)
+            | PatternKind::Array(items)
             | PatternKind::Alternative(items)
             | PatternKind::Constructor {
                 arguments: items, ..
@@ -362,7 +363,9 @@ impl Resolver<'_> {
                     self.pattern(pattern, scope);
                 }
             }
-            PatternKind::Tuple(items) | PatternKind::Alternative(items) => {
+            PatternKind::Tuple(items)
+            | PatternKind::Array(items)
+            | PatternKind::Alternative(items) => {
                 for item in items {
                     self.pattern(item, scope);
                 }
@@ -494,6 +497,21 @@ impl Resolver<'_> {
                     self.expr(branch, scope);
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.expr(value, scope);
+                self.pattern(pattern, scope);
+                let mut child = scope.clone();
+                self.variable(pattern, &mut child);
+                self.expr(then_branch, &child);
+                if let Some(branch) = else_branch {
+                    self.expr(branch, scope);
+                }
+            }
             ExprKind::Match { value, arms, .. } => {
                 self.expr(value, scope);
                 for arm in arms {
@@ -513,6 +531,17 @@ impl Resolver<'_> {
             ExprKind::While { condition, body } => {
                 self.expr(condition, scope);
                 self.block(body, scope);
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.expr(value, scope);
+                self.pattern(pattern, scope);
+                let mut child = scope.clone();
+                self.variable(pattern, &mut child);
+                self.block(body, &child);
             }
             ExprKind::For {
                 iterable,

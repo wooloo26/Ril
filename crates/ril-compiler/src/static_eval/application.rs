@@ -11,7 +11,7 @@ impl From<&Parameter> for ParameterSpec {
     fn from(parameter: &Parameter) -> Self {
         Self {
             label: match &parameter.pattern.kind {
-                PatternKind::Name(name) => Some(name.clone()),
+                PatternKind::Name(name) | PatternKind::Rest(Some(name)) => Some(name.clone()),
                 _ => None,
             },
             default: parameter.default.is_some(),
@@ -96,10 +96,13 @@ pub(super) struct CallableView {
 
 pub(super) fn binding_names(pattern: &Pattern, names: &mut BTreeSet<String>) {
     match &pattern.kind {
-        PatternKind::Name(name) => {
-            names.insert(name.clone());
+        PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
+            if name != "_" {
+                names.insert(name.clone());
+            }
         }
         PatternKind::Tuple(items)
+        | PatternKind::Array(items)
         | PatternKind::Alternative(items)
         | PatternKind::Constructor {
             arguments: items, ..
@@ -223,6 +226,9 @@ impl Evaluator {
                             .collect::<Result<_>>()?,
                     ),
                 })
+            }
+            (StaticValue::ArrayWindow(window), TypeKind::Array { .. }) => {
+                StaticValue::ArrayWindow(window)
             }
             (StaticValue::Tuple(items), TypeKind::Tuple(types)) if items.len() == types.len() => {
                 StaticValue::Tuple(StaticCollection {

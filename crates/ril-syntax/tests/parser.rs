@@ -2,6 +2,87 @@ use ril_compiler_core::source::FileId;
 use ril_syntax::{ast::*, parse, parse_expression, parse_file};
 
 #[test]
+fn conditional_bindings_and_nested_rests_have_lossless_explicit_syntax() {
+    for case in [
+        "tests/conformance/conditional-bindings.ril::if-let-branches-pointer32",
+        "tests/conformance/conditional-bindings.ril::while-let-control-pointer32",
+        "tests/conformance/rest-patterns.ril::tuple-rest-positions-pointer32",
+        "tests/conformance/rest-patterns.ril::nested-rest-layers-pointer32",
+        "tests/conformance/rest-patterns.ril::array-rest-window-pointer32",
+        "tests/conformance/parameter-patterns.ril::parameter-record-option-sources-pointer32",
+    ] {
+        let source = ril_test::case_source(case);
+        let parsed = parse(source);
+        assert!(parsed.is_ok(), "{case}: {:?}", parsed.diagnostics);
+        assert_eq!(parsed.syntax().to_string(), source, "{case}");
+    }
+    for case in [
+        "tests/conformance/rest-patterns.ril::reject-multiple-tuple-rests",
+        "tests/conformance/rest-patterns.ril::reject-multiple-array-rests",
+        "tests/conformance/rest-patterns.ril::reject-multiple-record-rests",
+    ] {
+        let source = ril_test::case_source(case);
+        let parsed = parse(source);
+        assert!(
+            parsed.diagnostics.iter().any(|error| error.code == "E0347"),
+            "{case}: {:?}",
+            parsed.diagnostics
+        );
+        assert_eq!(parsed.syntax().to_string(), source, "{case}");
+    }
+}
+
+#[test]
+fn handler_parameters_are_patterns_and_callable_applications_remain_expressions() {
+    let text = "fn example() { with { Visit::packet(mut .{ id, ..rest }) -> resume id, Visit::items(([head, ..tail], ..)) -> resume head }; with install(make(1), \\value: int -> value) }";
+    let parsed = valid(text);
+    let StmtKind::Function(function) = &parsed.program.statements[0].kind else {
+        panic!()
+    };
+    let body = function.body.as_ref().unwrap();
+    let StmtKind::Handler(arms) = &body.statements[0].kind else {
+        panic!()
+    };
+    assert_eq!(arms[0].parameters[0].mode, ParameterMode::Mut);
+    assert!(matches!(&arms[0].parameters[0].pattern.kind,
+        PatternKind::Record { fields, rest: true, rest_binding: Some(name), .. }
+        if fields.len() == 1 && name == "rest"));
+    let PatternKind::Tuple(parts) = &arms[1].parameters[0].pattern.kind else {
+        panic!()
+    };
+    assert!(matches!(&parts[1].kind, PatternKind::Rest(None)));
+    let PatternKind::Array(parts) = &parts[0].kind else {
+        panic!()
+    };
+    assert!(matches!(&parts[1].kind, PatternKind::Rest(Some(name)) if name == "tail"));
+    assert!(matches!(&body.statements[1].kind,
+        StmtKind::HandlerApplication(Expr { kind: ExprKind::Call { arguments, .. }, .. })
+        if matches!(&arguments[1].value.kind, ExprKind::Lambda { .. })));
+
+    for (source, code) in [
+        (
+            "fn example() { with Visit::items([head + 1, ..tail]) -> resume 0 }",
+            "E0349",
+        ),
+        (
+            "fn example() { with Visit::items([..left, ..right]) -> resume 0 }",
+            "E0347",
+        ),
+    ] {
+        let parsed = parse(source);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == code),
+            "{source}: {:?}",
+            parsed.diagnostics
+        );
+        assert_eq!(parsed.syntax().to_string(), source);
+    }
+}
+
+#[test]
 fn application_remainders_have_ordinary_callable_declaration_scopes() {
     let accepted =
         "fn example(){let value=1;with first();let value=2;with second();let value=3;value}";

@@ -12,6 +12,8 @@ use ril_compiler_core::{
 };
 use ril_syntax::ast::*;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+mod allocation_tests;
 mod applications;
 pub(crate) mod arrays;
 mod bindings;
@@ -259,6 +261,19 @@ fn analyze_inner(
         closure_exposures: checker.closure_exposures,
         closure_discards: checker.closure_discards,
         allocation_history: checker.recency_moves.clone(),
+        allocation_events: checker.allocation_events,
+        allocation_poisoned: checker.allocation_poisoned,
+        pattern_window_sites: checker
+            .pattern_window_sites
+            .into_iter()
+            .map(
+                |((rest, loop_owner), site)| super::allocation::PatternWindowSite {
+                    rest,
+                    loop_owner,
+                    site,
+                },
+            )
+            .collect(),
         scopes: checker.scopes,
         numeric_uses: checker.numeric.uses,
         numeric_holes: checker.numeric.holes,
@@ -279,6 +294,7 @@ fn analyze_inner(
         parallel_boundaries: checker.parallel_boundaries,
         concurrent_boundaries: checker.concurrent_boundaries,
         windows: checker.windows,
+        pattern_windows: checker.pattern_windows,
         iter_steps: checker.iter_steps.into_values().collect(),
         budget_proofs: checker.budget_proofs,
         budget_termination: termination.budget_witnesses,
@@ -567,6 +583,10 @@ struct Checker {
     analysis_depth: usize,
     analysis_visits: usize,
     windows: BTreeMap<NodeId, super::WindowInfo>,
+    pattern_windows: Vec<super::pattern_windows::PatternWindowCreation>,
+    pattern_window_sites: BTreeMap<(ril_compiler_core::ids::PatternId, ScopeId), SiteId>,
+    allocation_events: Vec<super::allocation::AllocationEvent>,
+    allocation_poisoned: bool,
     iter_steps: BTreeMap<String, iter::StepFact>,
     window_blocks: Vec<windows::WindowBlockUses>,
     window_expression_uses: Vec<windows::WindowExpressionUses>,
@@ -623,6 +643,10 @@ impl Checker {
             budget_coverage: Vec::new(),
             budget_recoveries: Vec::new(),
             windows: BTreeMap::new(),
+            pattern_windows: Vec::new(),
+            pattern_window_sites: BTreeMap::new(),
+            allocation_events: Vec::new(),
+            allocation_poisoned: false,
             iter_steps: BTreeMap::new(),
             window_blocks: Vec::new(),
             window_expression_uses: Vec::new(),
@@ -1356,8 +1380,36 @@ impl Checker {
         self.allocate_site(span, site, owner)
     }
     pub(super) fn allocate_site(&mut self, span: Span, site: SiteId, owner: ScopeId) -> NodeId {
+        // Admission precedes cause, heap and ledger growth. The infallible
+        // analysis API may finish its failed branch, but poison prevents any
+        // unrecorded birth from subsequently authenticating semantic evidence.
+        let admitted = !self.allocation_poisoned
+            && self.allocation_events.len() < u32::MAX as usize
+            && self.application_effect.admit(10);
+        if !admitted && !self.allocation_poisoned {
+            self.allocation_poisoned = true;
+            self.unsupported(
+                span,
+                "allocation event recording exhausted its shared work bound",
+            );
+        }
+        let epoch_before = self.recency_moves.len();
         let cause = self.cause(CauseKind::Allocation, span, "fresh storage allocation", []);
         let (id, remap) = self.heap.fresh_in_scopes(site, owner, cause, &self.scopes);
+        if admitted {
+            self.allocation_events
+                .push(super::allocation::AllocationEvent {
+                    id: super::allocation::AllocationEventId(self.allocation_events.len() as u32),
+                    site,
+                    recent: id,
+                    remap,
+                    epoch_before,
+                    cause,
+                    owner,
+                    anchor: self.application_effect.current_activation(),
+                    position: self.application_effect.expressions.len(),
+                });
+        }
         if let Some((recent, older)) = remap {
             self.recency_moves.push((recent, older));
             self.remap_concurrent_identity(recent, older);
@@ -1474,6 +1526,23 @@ impl Checker {
             }
         }
         id
+    }
+    /// Used immediately after allocation; equal node IDs from another birth
+    /// never select an older receipt. Exhaustion has no authenticated fallback.
+    pub(super) fn last_allocation_event(
+        &self,
+        node: NodeId,
+    ) -> Option<super::allocation::AllocationEventId> {
+        let event = self.allocation_events.last()?;
+        (!self.allocation_poisoned
+            && event.recent == node
+            && event.epoch_after() == self.recency_moves.len()
+            && self
+                .heap
+                .nodes
+                .get(node.0 as usize)
+                .is_some_and(|registered| registered.cause == event.cause))
+        .then_some(event.id)
     }
     fn formal_value(
         &mut self,

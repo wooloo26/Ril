@@ -144,10 +144,10 @@ fn cps_statements(
 
 fn names(pattern: &Pattern, result: &mut BTreeSet<String>) {
     match pattern {
-        Pattern::Name(name) => {
+        Pattern::Name(name) | Pattern::Rest(Some(name)) => {
             result.insert(name.clone());
         }
-        Pattern::Tuple(patterns) | Pattern::Alternative(patterns) => {
+        Pattern::Tuple(patterns) | Pattern::Array(patterns) | Pattern::Alternative(patterns) => {
             for pattern in patterns {
                 names(pattern, result)
             }
@@ -155,6 +155,12 @@ fn names(pattern: &Pattern, result: &mut BTreeSet<String>) {
         Pattern::Record(fields) => {
             for (_, pattern) in fields {
                 names(pattern, result)
+            }
+        }
+        Pattern::RecordRest { fields, rest } => {
+            result.insert(rest.clone());
+            for (_, pattern) in fields {
+                names(pattern, result);
             }
         }
         Pattern::Constructor { arguments, .. } => {
@@ -294,6 +300,7 @@ fn visit_pattern_values<'a>(pattern: &'a Pattern, visit: &mut impl FnMut(&'a Exp
     match pattern {
         Pattern::Value(value) => visit_expr(value, visit),
         Pattern::Tuple(patterns)
+        | Pattern::Array(patterns)
         | Pattern::Alternative(patterns)
         | Pattern::Constructor {
             arguments: patterns,
@@ -303,7 +310,7 @@ fn visit_pattern_values<'a>(pattern: &'a Pattern, visit: &mut impl FnMut(&'a Exp
                 visit_pattern_values(pattern, visit)
             }
         }
-        Pattern::Record(fields) => {
+        Pattern::Record(fields) | Pattern::RecordRest { fields, .. } => {
             for (_, pattern) in fields {
                 visit_pattern_values(pattern, visit)
             }
@@ -1239,6 +1246,77 @@ impl Emitter<'_, '_> {
         let safe = self.i32(0);
         self.handle("ril_rt_index", &[base, index, safe])
     }
+    fn sequence_rest(patterns: &[Pattern]) -> Result<Option<usize>, BackendError> {
+        let mut rest = None;
+        for (index, pattern) in patterns.iter().enumerate() {
+            if matches!(pattern, Pattern::Rest(_)) && rest.replace(index).is_some() {
+                return Err(BackendError::InvalidIr(
+                    "sequence pattern has multiple rests".into(),
+                ));
+            }
+        }
+        Ok(rest)
+    }
+    fn length_integer(&mut self, raw: Value) -> Result<Value, BackendError> {
+        let high = self.i64(0);
+        let bits = self.i32(64);
+        let signed = self.i32(1);
+        self.handle("ril_rt_int", &[raw, high, bits, signed])
+    }
+    fn sequence_field(
+        &mut self,
+        value: Value,
+        position: usize,
+        rest: Option<usize>,
+        patterns: usize,
+    ) -> Result<Value, BackendError> {
+        if rest.is_none_or(|rest| position < rest) {
+            return self.index_constant(value, position);
+        }
+        let length = self.raw("ril_rt_len", &[value])?.expect("length result");
+        let distance = i64::try_from(patterns - position).map_err(|_| {
+            BackendError::InvalidIr("sequence pattern exceeds native length".into())
+        })?;
+        let offset = self.builder.ins().iadd_imm_s(length, -distance);
+        let index = self.length_integer(offset)?;
+        let safe = self.i32(0);
+        self.handle("ril_rt_index", &[value, index, safe])
+    }
+    fn bind_sequence(
+        &mut self,
+        patterns: &[Pattern],
+        value: Value,
+        array: bool,
+    ) -> Result<(), BackendError> {
+        let rest = Self::sequence_rest(patterns)?;
+        for (index, pattern) in patterns.iter().enumerate() {
+            if let Pattern::Rest(binding) = pattern {
+                if let Some(name) = binding {
+                    if !array {
+                        return Err(BackendError::InvalidIr(
+                            "tuple remainder cannot have a binder".into(),
+                        ));
+                    }
+                    let lower = self.integer(index as i128, 64, true)?;
+                    let length = self.raw("ril_rt_len", &[value])?.expect("length result");
+                    let suffix = i64::try_from(patterns.len() - index - 1).map_err(|_| {
+                        BackendError::InvalidIr("array pattern exceeds native length".into())
+                    })?;
+                    let upper = self.builder.ins().iadd_imm_s(length, -suffix);
+                    let upper = self.length_integer(upper)?;
+                    let inclusive = self.i32(0);
+                    let range = self.handle("ril_rt_range", &[lower, upper, inclusive])?;
+                    let safe = self.i32(0);
+                    let window = self.handle("ril_rt_index", &[value, range, safe])?;
+                    self.bind(&Pattern::Name(name.clone()), window)?;
+                }
+            } else {
+                let field = self.sequence_field(value, index, rest, patterns.len())?;
+                self.bind(pattern, field)?;
+            }
+        }
+        Ok(())
+    }
     fn bind(&mut self, pattern: &Pattern, value: Value) -> Result<(), BackendError> {
         match pattern {
             Pattern::Name(name) => {
@@ -1258,13 +1336,11 @@ impl Emitter<'_, '_> {
                 Ok(())
             }
             Pattern::Wildcard | Pattern::Literal(_) | Pattern::Value(_) => Ok(()),
-            Pattern::Tuple(patterns) => {
-                for (index, pattern) in patterns.iter().enumerate() {
-                    let item = self.index_constant(value, index)?;
-                    self.bind(pattern, item)?;
-                }
-                Ok(())
-            }
+            Pattern::Tuple(patterns) => self.bind_sequence(patterns, value, false),
+            Pattern::Array(patterns) => self.bind_sequence(patterns, value, true),
+            Pattern::Rest(_) => Err(BackendError::InvalidIr(
+                "standalone sequence remainder".into(),
+            )),
             Pattern::Record(fields) => {
                 for (name, pattern) in fields {
                     let key = self.string(name)?;
@@ -1272,6 +1348,18 @@ impl Emitter<'_, '_> {
                     self.bind(pattern, item)?;
                 }
                 Ok(())
+            }
+            Pattern::RecordRest { fields, rest } => {
+                let mut labels = Vec::with_capacity(fields.len());
+                for (name, pattern) in fields {
+                    let key = self.string(name)?;
+                    labels.push(key);
+                    let item = self.handle("ril_rt_get_field", &[value, key])?;
+                    self.bind(pattern, item)?;
+                }
+                let excluded = self.sequence(0, &labels)?;
+                let remainder = self.handle("ril_rt_record_without", &[value, excluded])?;
+                self.bind(&Pattern::Name(rest.clone()), remainder)
             }
             Pattern::Constructor { tag, arguments } => {
                 let tuple_payload =
@@ -2247,6 +2335,57 @@ impl Emitter<'_, '_> {
         self.switch(exit);
         Ok(self.builder.block_params(exit)[0])
     }
+    fn sequence_pattern_test(
+        &mut self,
+        patterns: &[Pattern],
+        value: Value,
+        binding: bool,
+        array: bool,
+    ) -> Result<Value, BackendError> {
+        let rest = Self::sequence_rest(patterns)?;
+        let minimum =
+            i64::try_from(patterns.len() - usize::from(rest.is_some())).map_err(|_| {
+                BackendError::InvalidIr("sequence pattern exceeds native length".into())
+            })?;
+        let array = self.i32(i64::from(array));
+        let minimum = self.i64(minimum);
+        let has_rest = self.i32(i64::from(rest.is_some()));
+        let matched = self
+            .raw(
+                "ril_rt_sequence_matches",
+                &[value, array, minimum, has_rest],
+            )?
+            .expect("sequence pattern test result");
+        let fields = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.append_block_param(join, types::I32);
+        let zero = self.i32(0);
+        self.builder
+            .ins()
+            .brif(matched, fields, &[], join, &[zero.into()]);
+        self.switch(fields);
+        for (index, pattern) in patterns.iter().enumerate() {
+            if matches!(pattern, Pattern::Rest(_)) {
+                continue;
+            }
+            let field = self.sequence_field(value, index, rest, patterns.len())?;
+            let matched = self.pattern_test(pattern, field, binding)?;
+            if !self.reachable {
+                self.switch(join);
+                return Ok(self.builder.block_params(join)[0]);
+            }
+            let next = self.builder.create_block();
+            let zero = self.i32(0);
+            self.builder
+                .ins()
+                .brif(matched, next, &[], join, &[zero.into()]);
+            self.switch(next);
+        }
+        let one = self.i32(1);
+        self.builder.ins().jump(join, &[one.into()]);
+        self.switch(join);
+        Ok(self.builder.block_params(join)[0])
+    }
     fn pattern_test(
         &mut self,
         pattern: &Pattern,
@@ -2255,6 +2394,9 @@ impl Emitter<'_, '_> {
     ) -> Result<Value, BackendError> {
         match pattern {
             Pattern::Wildcard => Ok(self.i32(1)),
+            Pattern::Rest(_) => Err(BackendError::InvalidIr(
+                "standalone sequence remainder test".into(),
+            )),
             Pattern::Name(_) if binding => Ok(self.i32(1)),
             Pattern::Name(name) => {
                 let expected = self.name(name)?;
@@ -2340,6 +2482,10 @@ impl Emitter<'_, '_> {
                         self.handle("ril_rt_variant_field", &[value, index])?
                     };
                     let matched = self.pattern_test(pattern, field, binding)?;
+                    if !self.reachable {
+                        self.switch(join);
+                        return Ok(self.builder.block_params(join)[0]);
+                    }
                     let next = self.builder.create_block();
                     let zero = self.i32(0);
                     self.builder
@@ -2352,31 +2498,19 @@ impl Emitter<'_, '_> {
                 self.switch(join);
                 Ok(self.builder.block_params(join)[0])
             }
-            Pattern::Tuple(patterns) => {
-                let join = self.builder.create_block();
-                self.builder.append_block_param(join, types::I32);
-                for (index, pattern) in patterns.iter().enumerate() {
-                    let field = self.index_constant(value, index)?;
-                    let matched = self.pattern_test(pattern, field, binding)?;
-                    let next = self.builder.create_block();
-                    let zero = self.i32(0);
-                    self.builder
-                        .ins()
-                        .brif(matched, next, &[], join, &[zero.into()]);
-                    self.switch(next);
-                }
-                let one = self.i32(1);
-                self.builder.ins().jump(join, &[one.into()]);
-                self.switch(join);
-                Ok(self.builder.block_params(join)[0])
-            }
-            Pattern::Record(fields) => {
+            Pattern::Tuple(patterns) => self.sequence_pattern_test(patterns, value, binding, false),
+            Pattern::Array(patterns) => self.sequence_pattern_test(patterns, value, binding, true),
+            Pattern::Record(fields) | Pattern::RecordRest { fields, .. } => {
                 let join = self.builder.create_block();
                 self.builder.append_block_param(join, types::I32);
                 for (name, pattern) in fields {
                     let key = self.string(name)?;
                     let field = self.handle("ril_rt_get_field", &[value, key])?;
                     let matched = self.pattern_test(pattern, field, binding)?;
+                    if !self.reachable {
+                        self.switch(join);
+                        return Ok(self.builder.block_params(join)[0]);
+                    }
                     let next = self.builder.create_block();
                     let zero = self.i32(0);
                     self.builder
@@ -2394,6 +2528,10 @@ impl Emitter<'_, '_> {
                 self.builder.append_block_param(join, types::I32);
                 for pattern in patterns {
                     let matched = self.pattern_test(pattern, value, binding)?;
+                    if !self.reachable {
+                        self.switch(join);
+                        return Ok(self.builder.block_params(join)[0]);
+                    }
                     let next = self.builder.create_block();
                     let one = self.i32(1);
                     self.builder
@@ -2510,6 +2648,7 @@ fn runtime_signature(name: &str) -> Result<(Vec<Type>, Option<Type>), BackendErr
         | "ril_rt_push"
         | "ril_rt_get_field"
         | "ril_rt_record_merge"
+        | "ril_rt_record_without"
         | "ril_rt_global_set"
         | "ril_rt_cell_set"
         | "ril_rt_callable"
@@ -2539,6 +2678,7 @@ fn runtime_signature(name: &str) -> Result<(Vec<Type>, Option<Type>), BackendErr
         "ril_rt_index" => (vec![i, i, w], Some(i)),
         "ril_rt_binary" => (vec![w, i, i], Some(i)),
         "ril_rt_variant_is" => (vec![i, i], Some(w)),
+        "ril_rt_sequence_matches" => (vec![i, w, i, w], Some(w)),
         "ril_rt_variant_field" => (vec![i, w], Some(i)),
         "ril_rt_clone" => (vec![i, w], Some(i)),
         "ril_rt_range" => (vec![i, i, w], Some(i)),

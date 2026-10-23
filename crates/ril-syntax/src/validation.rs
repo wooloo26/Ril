@@ -281,8 +281,8 @@ impl Validator {
             );
         }
         match &pattern.kind {
-            PatternKind::Name(name) => {
-                if self.nullary.contains(name) {
+            PatternKind::Name(name) | PatternKind::Rest(Some(name)) => {
+                if matches!(&pattern.kind, PatternKind::Name(_)) && self.nullary.contains(name) {
                     self.error(
                         "E0309",
                         pattern.span,
@@ -300,7 +300,9 @@ impl Validator {
                     self.snake(name, pattern.span);
                 }
             }
-            PatternKind::Tuple(items) | PatternKind::Alternative(items) => {
+            PatternKind::Tuple(items)
+            | PatternKind::Array(items)
+            | PatternKind::Alternative(items) => {
                 for item in items {
                     self.binding_pattern(item, constant, true);
                 }
@@ -538,6 +540,19 @@ impl Validator {
                     self.expr(branch);
                 }
             }
+            ExprKind::IfLet {
+                pattern,
+                value,
+                then_branch,
+                else_branch,
+            } => {
+                self.binding_pattern(pattern, false, true);
+                self.expr(value);
+                self.expr(then_branch);
+                if let Some(branch) = else_branch {
+                    self.expr(branch);
+                }
+            }
             ExprKind::Match { value, arms, .. } => {
                 self.expr(value);
                 for arm in arms {
@@ -554,6 +569,15 @@ impl Validator {
             }
             ExprKind::While { condition, body } => {
                 self.expr(condition);
+                self.block(body);
+            }
+            ExprKind::WhileLet {
+                pattern,
+                value,
+                body,
+            } => {
+                self.binding_pattern(pattern, false, true);
+                self.expr(value);
                 self.block(body);
             }
             ExprKind::For {
@@ -602,8 +626,10 @@ fn declaration_names(statement: &Stmt) -> Vec<String> {
 }
 fn names(pattern: &Pattern, result: &mut Vec<String>) {
     match &pattern.kind {
-        PatternKind::Name(name) if name != "_" => result.push(name.clone()),
-        PatternKind::Tuple(items) | PatternKind::Alternative(items) => {
+        PatternKind::Name(name) | PatternKind::Rest(Some(name)) if name != "_" => {
+            result.push(name.clone())
+        }
+        PatternKind::Tuple(items) | PatternKind::Array(items) | PatternKind::Alternative(items) => {
             for item in items {
                 names(item, result);
             }

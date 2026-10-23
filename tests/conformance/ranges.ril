@@ -12,6 +12,21 @@ fn example() {
 --@ end-file
 --@ end-case
 
+--@ case: reject-live-window-element-write
+--@ mode: check-fail
+--@ spec: SPEC#range-and-slicing-expressions
+--@ companion: window-observes-replacement
+-- Error [E0520]: A slice window grants no element writer even when its backing has one.
+--@ file: reject-live-window-element-write.ril
+fn invalid() {
+    let mut items = [1, 2, 3]
+    items[0] = 7
+    let view window = items[1..]
+    window[0] = 9
+}
+--@ end-file
+--@ end-case
+
 --@ case: reject-live-window-structural-change
 --@ mode: check-fail
 --@ spec: SPEC#range-and-slicing-expressions

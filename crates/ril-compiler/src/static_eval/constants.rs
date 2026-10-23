@@ -110,6 +110,11 @@ impl ConstantPool {
                     ConstNodeKind::Tuple(children)
                 }
             }
+            StaticValue::ArrayWindow(window) => ConstNodeKind::ArrayWindow {
+                backing: self.export(&StaticValue::Array(window.backing.clone()), span, layout)?,
+                start: window.start as u64,
+                len: window.len as u64,
+            },
             StaticValue::Map(items) => ConstNodeKind::Map(
                 items
                     .iter()
@@ -263,6 +268,19 @@ impl Evaluator {
                     }
                 }
                 for value in items {
+                    self.retain_resolved_shape(value, element)?;
+                }
+            }
+            (StaticValue::ArrayWindow(window), TypeKind::Array { element, length }) => {
+                if length.is_some() {
+                    let mut pool = self.constants.borrow_mut();
+                    pool.fixed_collections.insert(window.id, window.len as u64);
+                    if let Some(reference) = pool.collections.get(&window.id).copied() {
+                        pool.nodes[reference.node.0 as usize].fixed_array_length =
+                            Some(window.len as u64);
+                    }
+                }
+                for value in window.iter() {
                     self.retain_resolved_shape(value, element)?;
                 }
             }

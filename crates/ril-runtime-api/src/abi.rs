@@ -1,7 +1,7 @@
 //! Versioned, representation-independent operation numbers for the native ABI.
 //! Rust collections and enums never cross the exported function boundary.
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 /// Flags passed to ril_rt_callable_with_budget. A synthetic entry requires the
 /// caller to supply a normative callback event; ordinary entries emit their own.
 pub const CALLABLE_NORMAL_IS_CPS: u32 = 1;

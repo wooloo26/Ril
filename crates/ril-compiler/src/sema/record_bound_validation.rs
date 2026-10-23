@@ -29,6 +29,7 @@ mod dependencies;
 mod explicit_named;
 mod formal_source_graph;
 mod observation_index;
+mod pattern_receivers;
 mod rigid;
 mod scoped_identity;
 mod scoped_members;
@@ -2002,6 +2003,12 @@ fn projection_sites_with_work<'a>(
                         condition,
                         then_branch,
                         else_branch,
+                    }
+                    | ExprKind::IfLet {
+                        value: condition,
+                        then_branch,
+                        else_branch,
+                        ..
                     } => {
                         children.extend([condition.as_ref(), then_branch.as_ref()]);
                         children.extend(else_branch.iter().map(Box::as_ref));
@@ -2014,7 +2021,12 @@ fn projection_sites_with_work<'a>(
                         }
                     }
                     ExprKind::Is { value, .. } => children.push(value),
-                    ExprKind::While { condition, body } => {
+                    ExprKind::While { condition, body }
+                    | ExprKind::WhileLet {
+                        value: condition,
+                        body,
+                        ..
+                    } => {
                         children.push(condition);
                         blocks.push(body)
                     }

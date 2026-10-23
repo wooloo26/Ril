@@ -296,6 +296,7 @@ impl<'a> Index<'a> {
                 Node::Pattern(pattern, bounds) => match &pattern.kind {
                     PatternKind::Value(value) => stack.push(Node::Expr(value, bounds)),
                     PatternKind::Tuple(values)
+                    | PatternKind::Array(values)
                     | PatternKind::Alternative(values)
                     | PatternKind::Constructor {
                         arguments: values, ..

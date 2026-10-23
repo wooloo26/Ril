@@ -3,6 +3,13 @@ use crate::sema::application_effect::{EntryArgument, EntryOrigin};
 use crate::sema::source_reception;
 use crate::sema::source_types::SourceTypesError;
 use std::sync::Arc;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AnnotationCheck {
+    Declaration,
+    Invocation,
+}
+
 impl Checker {
     pub(super) fn invoke_generated_values(
         &mut self,
@@ -1314,7 +1321,16 @@ impl Checker {
         }
         self.check_exclusivity(&frame.obligations.accesses, span);
         if function.body.is_some() {
-            self.check_annotations(function, &frame, info.owner);
+            self.check_annotations(
+                function,
+                &frame,
+                info.owner,
+                if verifying {
+                    AnnotationCheck::Declaration
+                } else {
+                    AnnotationCheck::Invocation
+                },
+            );
         }
         let summary = self.named_invocation_summary(id, &frame, &returned_nodes);
         if verifying {
@@ -2572,6 +2588,7 @@ impl Checker {
         function: &Function,
         frame: &Frame,
         enclosing: Option<ScopeId>,
+        checking: AnnotationCheck,
     ) {
         let mut declared = BTreeMap::new();
         let mut providers = Vec::new();
@@ -2811,12 +2828,16 @@ impl Checker {
                 );
             }
         }
+        // Minimality belongs to the declaration's conservative body check.
+        // A selected call may exclude a branch that uses this capability;
+        // its remaining obligations must still fit the declared upper bound.
         for (&binding, &mode) in &declared {
-            if frame
-                .obligations
-                .named
-                .get(&binding)
-                .is_none_or(|required| *required < mode)
+            if checking == AnnotationCheck::Declaration
+                && frame
+                    .obligations
+                    .named
+                    .get(&binding)
+                    .is_none_or(|required| *required < mode)
                 && !self.symbolic_named_use(&frame.obligations, binding, mode)
             {
                 self.error(
@@ -2827,9 +2848,10 @@ impl Checker {
                 );
             }
         }
-        if (mut_cap && !frame.obligations.parameter_write)
-            || (retained_cap && !frame.obligations.retention)
-            || (capture_cap && !frame.obligations.capture)
+        if checking == AnnotationCheck::Declaration
+            && ((mut_cap && !frame.obligations.parameter_write)
+                || (retained_cap && !frame.obligations.retention)
+                || (capture_cap && !frame.obligations.capture))
         {
             self.error(
                 "E0529",
@@ -2839,11 +2861,12 @@ impl Checker {
             );
         }
         for provider in providers {
-            if !frame
-                .obligations
-                .named
-                .iter()
-                .any(|(&binding, &mode)| self.provider_covers(provider, binding, mode))
+            if checking == AnnotationCheck::Declaration
+                && !frame
+                    .obligations
+                    .named
+                    .iter()
+                    .any(|(&binding, &mode)| self.provider_covers(provider, binding, mode))
             {
                 self.error(
                     "E0529",
