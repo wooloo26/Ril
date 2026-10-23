@@ -152,9 +152,3 @@ cargo run --locked -p xtask --bin unicode-data -- INPUT_DIRECTORY crates/ril-run
 Run the string/Unicode corpus after regeneration.
 
 ## Specification questions
-
-- Does the one-rest limit apply separately to each tuple/array/record pattern,
-  or to the whole alternative? For example, is `([a, ..xs], [b, ..ys])` valid?
-- Does a named array rest (`[head, ..tail]`) produce a shared read-only window
-  or a new array? Specify its object/slot identity, permissions and lifetime,
-  and whether a fixed input preserves the known remaining extent (`[N-k]T`).

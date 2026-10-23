@@ -2856,9 +2856,13 @@ WildcardPattern ::= "_"
 RangePattern    ::= NumericPattern ( ".." | "..=" ) NumericPattern
 ```
 
-Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once, and at most one rest pattern is permitted (`E0347`). A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
+Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing guard belongs to the whole or-pattern, not just its last alternative. Every alternative binds the same identifiers with compatible types and modes (`E0346`); within one alternative each identifier is bound at most once (`E0347`). Each tuple, array or record pattern permits at most one immediate rest (`E0347`); nested patterns count their rests independently. Thus `([a, ..xs], [b, ..ys])` is valid. A guard cannot establish exhaustiveness. Pattern/subject incompatibility uses `E0301`; incompatible result types across otherwise valid reachable arms use `E0351`.
 
 These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
+
+A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. A named array rest binds a read-only window over the remaining element slots, without copying them. It follows the [array window rules](#range-and-slicing-expressions); an unnamed rest creates no window. Read-only access alone does not make the window immutable.
+
+For a subject declared as `[N]T`, a successful array pattern with `k` non-rest elements preserves the remaining fixed extent `[N-k]T` in its named rest. The extent comes from the subject's declared fixed length, not the current backing length. A subject declared as `[]T` yields a `[]T` remainder even when its current length is known. Actual immutable sources preserve their immutable view in the remainder; other permissions, retained lifetimes and nested Result inspection duties follow the selected elements and backing window.
 
 ```ril
 type Choice { Left(int), Right(int) }

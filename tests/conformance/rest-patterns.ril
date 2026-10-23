@@ -505,3 +505,132 @@ pub fn test_native() { assert(pick(7) == 7 && pick(9) == 9 && pick(7) == 7) }
 --@ entry: test_native
 --@ use-source: repeated-record-rest-views
 --@ end-case
+
+--@ source: nested-rest-layers
+--@ file: source.ril
+fn two(values: [2]int) -> int { values[0] + values[1] }
+fn three(values: [3]int) -> int { values[0] + values[1] + values[2] }
+fn zero(values: [0]int) -> int { len(values) }
+pub fn test_native() {
+    let left: [3]int = [1, 2, 3]
+    let right: [4]int = [4, 5, 6, 7]
+    let ([a, ..xs], [b, ..ys]) = (left, right)
+    assert(a == 1 && b == 4 && two(xs) == 5 && three(ys) == 18)
+    let ((head, ..), (.., last)) = ((10, 20), (30, 40))
+    assert(head == 10 && last == 40)
+    let (.{ id, ..first }, .{ id: other, ..second }) =
+        (.{ id: 7, saved: 8 }, .{ id: 9, saved: 10 })
+    assert(id == 7 && other == 9 && first.saved == 8 && second.saved == 10)
+    let singleton: [1]int = [11]
+    let [only, ..empty] = singleton
+    assert(only == 11 && zero(empty) == 0)
+}
+--@ end-file
+--@ end-source
+
+--@ case: nested-rest-layers-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ companion: reject-multiple-array-rests
+--@ use-source: nested-rest-layers
+--@ end-case
+
+--@ case: nested-rest-layers-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: nested-rest-layers-native
+--@ use-source: nested-rest-layers
+--@ end-case
+
+--@ case: nested-rest-layers-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ use-source: nested-rest-layers
+--@ end-case
+
+--@ source: array-rest-window
+--@ file: source.ril
+pub fn test_native() {
+    let mut values: []int = [1, 2, 3, 4]
+    let view [_, ..tail] = values
+    values[1] = 9
+    assert(tail[0] == 9 && len(tail) == 3)
+    Array::push(mut values, 5)
+    assert(len(values) == 5)
+}
+--@ end-file
+--@ end-source
+
+--@ case: array-rest-window-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#range-and-slicing-expressions
+--@ companion: reject-array-rest-window-write
+--@ use-source: array-rest-window
+--@ end-case
+
+--@ case: array-rest-window-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#pattern-matching
+--@ companion: array-rest-window-native
+--@ use-source: array-rest-window
+--@ end-case
+
+--@ case: array-rest-window-native
+--@ mode: run-pass
+--@ spec: SPEC#pattern-matching
+--@ entry: test_native
+--@ use-source: array-rest-window
+--@ end-case
+
+--@ case: reject-array-rest-window-write
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#range-and-slicing-expressions
+--@ companion: array-rest-window-pointer64
+-- Error [E0520]: The remainder window grants no element writer.
+--@ file: source.ril
+fn invalid() {
+    let mut values: []int = [1, 2, 3]
+    let view [_, ..tail] = values
+    tail[0] = 9
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-rest-window-resize
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#range-and-slicing-expressions
+--@ companion: array-rest-window-native
+-- Error [E0537]: A later use of the remainder keeps its backing structure stable.
+--@ file: source.ril
+fn invalid() {
+    let mut values: []int = [1, 2, 3]
+    let view [_, ..tail] = values
+    Array::push(mut values, 4)
+    assert(tail[0] == 2)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-array-rest-hidden-dimension
+--@ mode: check-fail
+--@ spec: SPEC#pattern-matching
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: nested-rest-layers-pointer32
+-- Error [E0301]: A dynamic array view cannot recover a fixed remainder from backing length.
+--@ file: source.ril
+fn fixed(values: [2]int) -> int { len(values) }
+fn invalid() {
+    let values: []int = [1, 2, 3]
+    let [_, ..tail] = values
+    let count = fixed(tail)
+}
+--@ end-file
+--@ end-case
