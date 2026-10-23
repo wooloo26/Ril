@@ -13,6 +13,7 @@ use crate::sema::application_effect::generated_entries::{
 };
 
 enum Input {
+    Scope,
     Physical {
         source: ExprId,
         observation: usize,
@@ -250,6 +251,7 @@ impl Replay<'_> {
             EntryOrigin::Generated { .. } => {
                 let authenticated = self.generated_entries.get(key, work)?;
                 match authenticated.input(slot)? {
+                    GeneratedInput::Scope(_) => Input::Scope,
                     GeneratedInput::Copied {
                         source,
                         observation,
@@ -527,20 +529,16 @@ impl Replay<'_> {
             copy,
         } = input
         else {
-            let Input::Scalar(kind) = input else {
-                unreachable!()
+            let name = match input {
+                Input::Scope => "Concurrent::Scope",
+                Input::Scalar(crate::sema::application_effect::ScalarInput::PositiveInt) => "int",
+                Input::Scalar(_) => "bytes",
+                Input::Physical { .. } => unreachable!(),
             };
             return self
                 .source_header_schema(
                     &ArgumentKey::Name {
-                        name: match kind {
-                            crate::sema::application_effect::ScalarInput::PositiveInt => "int",
-                            crate::sema::application_effect::ScalarInput::ByteSuffix(_)
-                            | crate::sema::application_effect::ScalarInput::BufferedBytes(_) => {
-                                "bytes"
-                            }
-                        }
-                        .into(),
+                        name: name.into(),
                         arguments: vec![],
                     },
                     FrozenEnvironment::default(),

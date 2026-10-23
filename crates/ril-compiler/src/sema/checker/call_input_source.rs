@@ -943,6 +943,17 @@ impl Checker {
             return Ok(None);
         };
         let (observation, boundary) = match inputs.get(slot).ok_or(SourceTypesError::MissingNode)? {
+            InputOrigin::Scope(_) => {
+                return self.input_header_schema(
+                    &ArgumentKey::Name {
+                        name: "Concurrent::Scope".into(),
+                        arguments: vec![],
+                    },
+                    None,
+                    crate::sema::context::FrozenEnvironment::default(),
+                    &mut WorkLimit::new(16384),
+                );
+            }
             InputOrigin::Copied {
                 observation,
                 boundary,

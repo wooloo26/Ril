@@ -331,6 +331,13 @@ fn concurrent_boundary(boundary: &crate::sema::ConcurrentBoundary) -> p::Concurr
     use crate::sema::ConcurrentBoundaryKind as S;
     use p::ConcurrentBoundaryKind as P;
     p::ConcurrentBoundary {
+        input: boundary.input.as_ref().map(|input| p::ScopeInput {
+            application: p::CopyCallEventId(input.application.0),
+            anchor: input.anchor,
+            node: origin(input.node),
+            cause: input.cause,
+            allocation_epoch: input.allocation_epoch as u64,
+        }),
         span: boundary.span,
         scope: origin(boundary.scope),
         task: boundary.task.map(origin),

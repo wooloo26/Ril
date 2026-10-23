@@ -30,9 +30,13 @@ fn require(condition: bool, message: &str) -> Check<()> {
 pub(crate) trait EntryArguments {
     fn len(&self) -> usize;
     fn argument(&self, slot: usize) -> Option<(ParameterMode, &Value)>;
+    fn heap(&self, slot: usize) -> Option<&crate::sema::copy_contract::CopyHeapSnapshot>;
 }
 
 impl EntryArguments for Arc<Vec<EntryArgument>> {
+    fn heap(&self, slot: usize) -> Option<&crate::sema::copy_contract::CopyHeapSnapshot> {
+        self.as_ref().get(slot)?.heap.as_deref()
+    }
     fn len(&self) -> usize {
         self.as_ref().len()
     }
@@ -45,6 +49,9 @@ impl EntryArguments for Arc<Vec<EntryArgument>> {
 }
 
 impl EntryArguments for () {
+    fn heap(&self, _: usize) -> Option<&crate::sema::copy_contract::CopyHeapSnapshot> {
+        None
+    }
     fn len(&self) -> usize {
         0
     }
@@ -100,6 +107,7 @@ impl GeneratedTarget {
 /// independent consumers of the authenticated original operation.
 #[derive(Clone, Copy)]
 pub(crate) enum GeneratedInput<'a> {
+    Scope(&'a super::ScopeInput),
     Copied {
         source: ExprId,
         observation: usize,
@@ -398,6 +406,11 @@ impl<'a> GeneratedEntryRecords<'a> {
             operation_activation.parent == Some(*anchor),
             "record callback borrowed another primitive activation",
         )?;
+        if name == "Concurrent::scope" {
+            return self
+                .scope_input(&entry, parent, event, *callee, inputs, work)
+                .map(Some);
+        }
         let contract = super::record_callback(name)
             .ok_or("generated entry needs its original operation input contract")?;
         let rows = self
@@ -497,6 +510,106 @@ impl<'a> GeneratedEntryRecords<'a> {
                 GeneratedInput::Scalar(scalar),
             ],
         }))
+    }
+
+    fn scope_input(
+        &self,
+        entry: &EntryView<'a>,
+        parent: &super::EvaluationActivation,
+        event: &CopyCallEvent,
+        callee: EvaluationOccurrenceId,
+        inputs: &[InputOrigin],
+        work: &mut usize,
+    ) -> Check<AuthenticatedGeneratedEntry<'a>> {
+        use crate::sema::facts::{Multiplicity, OriginKind};
+        charge(work, 8)?;
+        let [InputOrigin::Scope(index)] = inputs else {
+            return Err("scope callback lost its generated token recipe".into());
+        };
+        let boundary = self
+            .facts
+            .concurrent_boundaries
+            .get(*index as usize)
+            .ok_or("scope callback boundary is absent")?;
+        let input = boundary
+            .input
+            .as_ref()
+            .ok_or("scope callback lost its token birth")?;
+        require(
+            boundary.kind == crate::sema::ConcurrentBoundaryKind::Scope
+                && input.application == event.id
+                && input.anchor == parent.id
+                && input.allocation_epoch == entry.allocation_epoch,
+            "scope callback borrowed another application, token or allocation epoch",
+        )?;
+        let rows = self
+            .preparations
+            .get(&event.id)
+            .ok_or("scope callback lost its actual argument preparation")?;
+        let [row] = rows.as_slice() else {
+            return Err("scope callback argument preparation is ambiguous".into());
+        };
+        require(
+            row.evaluation_complete
+                && row.supplied.len() == 1
+                && row
+                    .supplied
+                    .get(&0)
+                    .is_some_and(|arg| arg.expression == callee.0 as usize)
+                && entry.arguments.len() == 1,
+            "scope callback changed its actual callback operand or arity",
+        )?;
+        let (mode, value) = entry
+            .arguments
+            .argument(0)
+            .ok_or("scope callback token is absent")?;
+        let heap = entry
+            .arguments
+            .heap(0)
+            .ok_or("scope callback lost its entry heap")?;
+        charge(work, heap.nodes.len())?;
+        let node = heap
+            .nodes
+            .iter()
+            .find(|node| node.origin == input.node)
+            .ok_or("scope callback token has no actual allocation")?;
+        require(
+            mode == ParameterMode::Mut
+                && heap.allocation_epoch == input.allocation_epoch
+                && matches!(node.fact.kind, OriginKind::Fresh(_))
+                && node.fact.multiplicity == Multiplicity::One
+                && Some(node.fact.owner) == entry.caller_activation
+                && node.fact.cause == input.cause
+                && node.fact.fields.is_empty()
+                && node.fields.is_empty(),
+            "scope callback token changed its mode or original fresh allocation",
+        )?;
+        let expected = Value::reference(
+            crate::sema::model::Ty::Named("Concurrent::Scope".into()),
+            input.node,
+            input.cause,
+        );
+        require(
+            crate::sema::evaluated::same_birth_value(&expected, value, work)
+                .map_err(|error| error.to_string())?,
+            "scope callback token changed its complete value or authority",
+        )?;
+        let transported = crate::sema::evaluated::transport_value_at(
+            &expected,
+            &self.facts.allocation_history,
+            input.allocation_epoch,
+            self.facts.allocation_history.len(),
+            work,
+        )
+        .map_err(|error| error.to_string())?;
+        require(
+            transported.origins.nodes.len() == 1
+                && transported.origins.nodes.contains(&boundary.scope),
+            "scope callback token changed its retained lifetime identity",
+        )?;
+        Ok(AuthenticatedGeneratedEntry {
+            inputs: vec![GeneratedInput::Scope(input)],
+        })
     }
 }
 

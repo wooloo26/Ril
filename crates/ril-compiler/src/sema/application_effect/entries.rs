@@ -47,6 +47,7 @@ impl EntryArgument {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputOrigin {
+    Scope(u32),
     Observed(EvaluationOccurrenceId),
     Widened(EvaluationOccurrenceId),
     Scalar(ScalarInput),
@@ -54,6 +55,17 @@ pub enum InputOrigin {
         observation: EvaluationOccurrenceId,
         boundary: CopyBoundaryId,
     },
+}
+
+/// Historical coordinates of the scope token created by one physical
+/// Concurrent::scope application. Recency transport never rewrites this birth.
+#[derive(Debug, Clone)]
+pub struct ScopeInput {
+    pub application: CopyCallEventId,
+    pub anchor: ActivationEpochId,
+    pub node: crate::sema::facts::NodeId,
+    pub cause: ril_compiler_core::diagnostic::CauseId,
+    pub allocation_epoch: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

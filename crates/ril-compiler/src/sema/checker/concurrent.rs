@@ -5,6 +5,7 @@ use super::*;
 mod descriptors;
 mod message_presence;
 pub(super) mod messages;
+mod scope_input;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct DescriptorContext {
@@ -617,6 +618,7 @@ impl Checker {
         );
         self.concurrent_boundaries
             .push(super::super::ConcurrentBoundary {
+                input: None,
                 span,
                 scope,
                 task,
@@ -789,47 +791,15 @@ impl Checker {
                 },
             );
         }
-        let panic_info = Ty::Record(
-            [
-                ("message".into(), (false, Ty::Str)),
-                (
-                    "index".into(),
-                    (false, Ty::Optional(Box::new(Ty::Int("int".into())))),
-                ),
-            ]
-            .into(),
-        );
-        let double_fault = Ty::Record(
-            [
-                (
-                    "primary".into(),
-                    (false, Ty::Named("Concurrent::UnwindCause".into())),
-                ),
-                ("cleanup".into(), (false, panic_info.clone())),
-            ]
-            .into(),
-        );
-        for (owner, variants) in [
-            (
-                "Concurrent::TaskFault",
-                vec![
-                    ("Panicked", Some(panic_info.clone())),
-                    ("Cancelled", None),
-                    ("DoubleFaultFatal", Some(double_fault)),
-                ],
-            ),
-            (
-                "Concurrent::UnwindCause",
-                vec![
-                    ("Panicked", Some(panic_info)),
-                    ("Cancelled", None),
-                    ("EffectAborted", None),
-                ],
-            ),
-            ("Channel::ChannelError", vec![("Closed", None)]),
+        use crate::sema::source_types::{WorkLimit, standard_data::Nominal};
+        for declaration in [
+            Nominal::ConcurrentTaskFault,
+            Nominal::ConcurrentUnwindCause,
+            Nominal::ChannelError,
         ] {
-            let typing_environment = self.capture_typing_environment();
-            for (variant, payload) in variants {
+            let owner = declaration.name();
+            let typing_environment = crate::sema::builtin_sources::catalog_environment().clone();
+            for (variant, payload) in declaration.variants() {
                 let tag = format!("{owner}::{variant}");
                 self.constructors.insert(
                     tag.clone(),
@@ -840,10 +810,20 @@ impl Checker {
                         source_type_witness: None,
                         tag,
                         owner: Ty::Named(owner.into()),
-                        payload: payload.clone().unwrap_or(Ty::Unit),
+                        payload: payload
+                            .map(|schema| {
+                                schema
+                                    .erased()
+                                    .expect("closed concurrency payload fits its projection bound")
+                            })
+                            .unwrap_or(Ty::Unit),
                         nominal: false,
                         has_payload: payload.is_some(),
-                        payload_syntax: None,
+                        payload_syntax: payload.map(|schema| {
+                            schema
+                                .syntax(span, &mut WorkLimit::new(4096))
+                                .expect("closed concurrency payload fits its syntax bound")
+                        }),
                         span,
                     },
                 );
@@ -1304,6 +1284,7 @@ impl Checker {
             span,
             [body.cause, self.heap.nodes[node.0 as usize].cause],
         );
+        let generated = self.scope_callback_entry(node, scope.cause, frame);
         let callback_context = self.concurrency.scope_callbacks.clone();
         for callable in &body.callables {
             if let Callable::Closure(id) = callable {
@@ -1312,12 +1293,19 @@ impl Checker {
         }
         self.begin_scope_cancellation(node, span);
         let scope_recency = self.recency_moves.len();
-        let mut result = self.invoke_generated_values(
-            body,
-            vec![(ParameterMode::Mut, scope, span)],
-            span,
-            frame,
-        );
+        let mut result = match generated {
+            Ok((callee, origin)) => self.invoke_generated_arguments_from(
+                callee,
+                vec![(ParameterMode::Mut, scope, span)],
+                span,
+                frame,
+                origin,
+            ),
+            Err(error) => {
+                self.unsupported(span, format!("scope callback input: {error}"));
+                self.resource_unproved(span)
+            }
+        };
         if self.recency_moves[scope_recency..]
             .iter()
             .any(|(recent, _)| *recent == node)

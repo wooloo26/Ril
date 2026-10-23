@@ -97,6 +97,10 @@ pub enum SourceNominal {
     ProcessChild,
     IoReadBuffer,
     IoWriteBuffer,
+    ConcurrentScope,
+    ConcurrentTaskFault,
+    ConcurrentUnwindCause,
+    ChannelError,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

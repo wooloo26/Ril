@@ -49,6 +49,7 @@ pub struct EvaluationActivation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputOrigin {
+    Scope(u32),
     Observed(EvaluationOccurrenceId),
     Widened(EvaluationOccurrenceId),
     Scalar(ScalarInput),
@@ -56,6 +57,15 @@ pub enum InputOrigin {
         observation: EvaluationOccurrenceId,
         boundary: CopyBoundaryId,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct ScopeInput {
+    pub application: CopyCallEventId,
+    pub anchor: ActivationEpochId,
+    pub node: OriginId,
+    pub cause: CauseId,
+    pub allocation_epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

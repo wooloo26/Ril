@@ -23,7 +23,9 @@ mod signature_inputs;
 pub use activations::{ActivationKind, EvaluationActivation};
 mod parameters;
 pub(crate) use entries::record_field_source;
-pub use entries::{CallableEntry, EntryArgument, EntryOrigin, InputOrigin, ScalarInput};
+pub use entries::{
+    CallableEntry, EntryArgument, EntryOrigin, InputOrigin, ScalarInput, ScopeInput,
+};
 pub(crate) use entries::{ScalarSource, record_callback};
 pub(crate) use signature_inputs::{
     AuthenticatedSignatureInput, closure_signature_assumption, signature_assumption,

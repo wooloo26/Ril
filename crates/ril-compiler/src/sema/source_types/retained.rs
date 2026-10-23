@@ -56,6 +56,10 @@ fn nominal(declaration: super::standard_data::Nominal) -> p::SourceNominal {
         N::ProcessChild => p::SourceNominal::ProcessChild,
         N::IoReadBuffer => p::SourceNominal::IoReadBuffer,
         N::IoWriteBuffer => p::SourceNominal::IoWriteBuffer,
+        N::ConcurrentScope => p::SourceNominal::ConcurrentScope,
+        N::ConcurrentTaskFault => p::SourceNominal::ConcurrentTaskFault,
+        N::ConcurrentUnwindCause => p::SourceNominal::ConcurrentUnwindCause,
+        N::ChannelError => p::SourceNominal::ChannelError,
     }
 }
 

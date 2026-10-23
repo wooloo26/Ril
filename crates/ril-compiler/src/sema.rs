@@ -262,6 +262,7 @@ pub enum ConcurrentBoundaryKind {
 }
 #[derive(Debug, Clone)]
 pub struct ConcurrentBoundary {
+    pub input: Option<application_effect::ScopeInput>,
     pub span: Span,
     pub scope: facts::NodeId,
     pub task: Option<facts::NodeId>,

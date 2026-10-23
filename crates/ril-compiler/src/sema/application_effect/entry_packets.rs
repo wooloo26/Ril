@@ -1049,6 +1049,18 @@ impl<'a> Replay<'a> {
             "generated value claimed an unproved expression or Source birth",
         )?;
         match input {
+            GeneratedInput::Scope(input) => {
+                let expected = Value::reference(
+                    Ty::Named("Concurrent::Scope".into()),
+                    input.node,
+                    input.cause,
+                );
+                require(
+                    crate::sema::evaluated::same_birth_value(&expected, argument.value(), work)
+                        .map_err(|error| error.to_string())?,
+                    "generated scope token changed its original value",
+                )
+            }
             GeneratedInput::Copied { boundary, .. } => self.full_value(
                 boundary
                     .output

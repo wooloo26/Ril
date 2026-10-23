@@ -383,6 +383,7 @@ pub enum ConcurrentBoundaryKind {
 }
 #[derive(Debug, Clone)]
 pub struct ConcurrentBoundary {
+    pub input: Option<ScopeInput>,
     pub span: Span,
     pub scope: OriginId,
     pub task: Option<OriginId>,

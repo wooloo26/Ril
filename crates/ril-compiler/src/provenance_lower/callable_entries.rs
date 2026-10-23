@@ -129,6 +129,7 @@ pub(super) fn entry_origin(
             inputs: inputs
                 .iter()
                 .map(|input| match input {
+                    a::InputOrigin::Scope(boundary) => p::InputOrigin::Scope(*boundary),
                     a::InputOrigin::Observed(id) => p::InputOrigin::Observed(*id),
                     a::InputOrigin::Widened(id) => p::InputOrigin::Widened(*id),
                     a::InputOrigin::Scalar(a::ScalarInput::PositiveInt) => {

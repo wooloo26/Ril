@@ -112,7 +112,7 @@ duplicate source trees and historical verification reports.
   Complete default preparations for inferred earlier closure parameters and
   checked callable ascription views, including nested `where` captures.
 - Complete shared value derivations for historical heap reads, callback results
-  and generated inputs to parallel workers, scope/channel bodies, iterators,
+  and generated inputs to parallel workers, channel bodies, iterators,
   variant/recovery callbacks, resources and foreign calls. Their unmigrated
   `EntryOrigin::Unresolved` inputs now leave inferred closure parameters
   uncertified. Iterator creation recipes do not certify individual transitions.

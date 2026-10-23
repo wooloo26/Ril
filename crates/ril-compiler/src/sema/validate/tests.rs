@@ -200,6 +200,7 @@ fn boundary_and_scope_references_are_checked_against_independent_registries() {
     damaged
         .concurrent_boundaries
         .push(super::super::ConcurrentBoundary {
+            input: None,
             span,
             scope: NodeId(u32::MAX),
             task: Some(NodeId(u32::MAX - 1)),

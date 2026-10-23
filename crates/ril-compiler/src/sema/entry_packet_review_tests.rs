@@ -14,6 +14,56 @@ fn heap_mut(argument: &mut EntryArgument) -> &mut CopyHeapSnapshot {
             .expect("the original entry has actual heap evidence"),
     )
 }
+mod generated_scopes {
+    use super::*;
+    use crate::sema::application_effect::{EntryOrigin, InputOrigin};
+
+    #[test]
+    fn a_scope_recipe_cannot_invent_authority_or_hide_input_duties() {
+        let program = crate::Session::new(
+            ril_test::case_bytes("tests/regressions/generated-scopes.ril::scope-token").to_vec(),
+        )
+        .verify()
+        .unwrap();
+        let facts = program.facts();
+        let index = facts
+            .closure_invocations
+            .iter()
+            .position(|call| {
+                matches!(
+            &call.entry.origin, EntryOrigin::Generated { inputs, .. }
+            if matches!(inputs.as_slice(), [InputOrigin::Scope(_)]))
+            })
+            .unwrap();
+        for mutation in 0..6 {
+            let mut changed = facts.clone();
+            let value = value_mut(
+                &mut Arc::make_mut(&mut changed.closure_invocations[index].entry.arguments)[0],
+            );
+            match mutation {
+                0 => value.permission = crate::sema::facts::Permission::Read,
+                1 => value.publication = crate::sema::facts::Publication::Immutable,
+                2 => {
+                    value.results.insert(u32::MAX);
+                }
+                3 => value.origins.nodes.clear(),
+                4 => value.callables.push(crate::sema::model::Callable::Builtin(
+                    "Concurrent::scope".into(),
+                )),
+                5 => value.construction = false,
+                _ => unreachable!(),
+            };
+            assert!(
+                crate::sema::validate::solved_facts(&changed).is_err(),
+                "scope value mutation {mutation}"
+            );
+        }
+        use crate::sema::application_effect::generated_entries::GeneratedEntryIndex;
+        for mut short in [0, 1, 8] {
+            assert!(GeneratedEntryIndex::new(facts, &mut short).is_err());
+        }
+    }
+}
 mod callable_inputs {
     use super::value_mut;
     use crate as ril_compiler;

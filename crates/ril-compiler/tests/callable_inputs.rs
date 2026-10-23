@@ -40,6 +40,9 @@ fn assert_generated_origin_retained(
     assert_eq!(inputs.len(), retained_inputs.len());
     for (input, retained) in inputs.iter().zip(retained_inputs) {
         match (input, retained) {
+            (InputOrigin::Scope(value), core::InputOrigin::Scope(retained)) => {
+                assert_eq!(value, retained)
+            }
             (InputOrigin::Observed(value), core::InputOrigin::Observed(retained))
             | (InputOrigin::Widened(value), core::InputOrigin::Widened(retained)) => {
                 assert_eq!(value, retained)

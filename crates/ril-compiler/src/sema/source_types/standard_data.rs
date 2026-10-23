@@ -15,6 +15,10 @@ pub(crate) enum Nominal {
     ProcessChild,
     IoReadBuffer,
     IoWriteBuffer,
+    ConcurrentScope,
+    ConcurrentTaskFault,
+    ConcurrentUnwindCause,
+    ChannelError,
 }
 
 const UNIT: Schema = Scalar(SourceScalar::Unit);
@@ -54,6 +58,11 @@ pub(crate) const OUTPUT: Schema = Record(&[
     ("stdout", false, BYTES),
     ("stderr", false, BYTES),
 ]);
+const PANIC_INFO: Schema = Record(&[("message", false, STR), ("index", false, Optional(&INT))]);
+const DOUBLE_FAULT: Schema = Record(&[
+    ("primary", false, NominalRef(Nominal::ConcurrentUnwindCause)),
+    ("cleanup", false, PANIC_INFO),
+]);
 
 impl Nominal {
     pub(crate) fn lookup(name: &str) -> Option<Self> {
@@ -68,6 +77,10 @@ impl Nominal {
             "Process::Child" => Self::ProcessChild,
             "Io::ReadBuffer" => Self::IoReadBuffer,
             "Io::WriteBuffer" => Self::IoWriteBuffer,
+            "Concurrent::Scope" => Self::ConcurrentScope,
+            "Concurrent::TaskFault" => Self::ConcurrentTaskFault,
+            "Concurrent::UnwindCause" => Self::ConcurrentUnwindCause,
+            "Channel::ChannelError" => Self::ChannelError,
             _ => return None,
         })
     }
@@ -84,6 +97,10 @@ impl Nominal {
             Self::ProcessChild => "Process::Child",
             Self::IoReadBuffer => "Io::ReadBuffer",
             Self::IoWriteBuffer => "Io::WriteBuffer",
+            Self::ConcurrentScope => "Concurrent::Scope",
+            Self::ConcurrentTaskFault => "Concurrent::TaskFault",
+            Self::ConcurrentUnwindCause => "Concurrent::UnwindCause",
+            Self::ChannelError => "Channel::ChannelError",
         }
     }
 
@@ -91,7 +108,22 @@ impl Nominal {
         match self {
             // Opaque handles have no public constructor or payload. This is
             // declaration identity only; capabilities remain in their domain.
-            Self::FileHandle | Self::ProcessChild | Self::IoReadBuffer | Self::IoWriteBuffer => &[],
+            Self::FileHandle
+            | Self::ProcessChild
+            | Self::IoReadBuffer
+            | Self::IoWriteBuffer
+            | Self::ConcurrentScope => &[],
+            Self::ConcurrentTaskFault => &[
+                ("Panicked", Some(PANIC_INFO)),
+                ("Cancelled", None),
+                ("DoubleFaultFatal", Some(DOUBLE_FAULT)),
+            ],
+            Self::ConcurrentUnwindCause => &[
+                ("Panicked", Some(PANIC_INFO)),
+                ("EffectAborted", None),
+                ("Cancelled", None),
+            ],
+            Self::ChannelError => &[("Closed", None)],
             Self::NumError => &[
                 ("InvalidSyntax", None),
                 ("OutOfRange", None),
@@ -145,6 +177,8 @@ pub(crate) fn schema(name: &str) -> Option<Schema> {
         "Io::IoError" => IO_ERROR,
         "Io::ReadChunk" => READ_CHUNK,
         "Io::WriteProgress" => WRITE_PROGRESS,
+        "Concurrent::PanicInfo" => PANIC_INFO,
+        "Concurrent::DoubleFaultInfo" => DOUBLE_FAULT,
         name => Schema::Nominal(Nominal::lookup(name)?),
     })
 }
@@ -246,6 +280,7 @@ mod tests {
             Nominal::ProcessChild,
             Nominal::IoReadBuffer,
             Nominal::IoWriteBuffer,
+            Nominal::ConcurrentScope,
         ];
         for handle in handles {
             let mut work = WorkLimit::new(4096);
