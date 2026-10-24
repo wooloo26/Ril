@@ -123,6 +123,8 @@ duplicate source trees and historical verification reports.
 - Run static execution on the eligible elaborated operations used by compilation.
   Finish Const/Key argument and extent inference, selected numeric representation,
   and first-class explicit generic instantiation without AST reconstruction.
+  Replace immediate-callee prefix windows with callable instances that retain
+  static selections through binding, capture and invocation.
 - Move remaining collection/iterator/order and resource/I/O algorithms into
   ordinary library sources in `crates/ril-stdlib/modules/`. Delete each replaced
   checker simulation, static implementation, late backend body generator and

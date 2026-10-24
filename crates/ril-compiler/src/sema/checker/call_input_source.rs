@@ -551,7 +551,11 @@ impl Checker {
                 construction.ok_or(SourceTypesError::BudgetExceeded)?,
             ));
             stage = "original Source query";
-            let source = if let Some(owned) = owned {
+            let source = if packet.value.ty == Ty::Never {
+                // An interrupted operation has the complete bottom type. Its
+                // unevaluated children cannot provide a normal result graph.
+                self.owned_result_type(packet, work)?
+            } else if let Some(owned) = owned {
                 self.owned_result_type(&owned, work)?
             } else {
                 self.with_typing_environment(&birth_environment, |checker| {
