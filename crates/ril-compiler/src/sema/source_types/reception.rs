@@ -113,6 +113,36 @@ struct AnnotationContexts<'a> {
     right: &'a FrozenEnvironment,
 }
 
+/// Value binding changes preserve the same immutable static interpretation.
+/// Independent captures and changed selections have no shared static object.
+fn same_binder_interpretation(
+    left: &SourceNode,
+    right: &SourceNode,
+    contexts: AnnotationContexts<'_>,
+    work: &mut WorkLimit,
+) -> Result<bool, SourceTypesError> {
+    let (SourceNode::Binder(left), SourceNode::Binder(right)) = (left, right) else {
+        return Ok(false);
+    };
+    work.text(left)?;
+    work.text(right)?;
+    if left != right || !contexts.left.same_types(contexts.right) {
+        return Ok(false);
+    }
+    for environment in [contexts.left, contexts.right] {
+        work.charge(environment.generic_context.len() + 4)?;
+        let mut declared = false;
+        for identity in environment.generic_context.values() {
+            work.text(identity)?;
+            declared |= identity == left;
+        }
+        if !declared {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn compare(
     graph: &impl SourceTypeQueries,
     expected: SourceTypeId,
@@ -150,6 +180,7 @@ fn compare(
                 | SourceNode::OpaqueName { .. }
                 | SourceNode::KeyProjection { .. }
         ))
+        && !same_binder_interpretation(left, right, contexts, work)?
     {
         return Err(SourceTypesError::Unresolved);
     }
@@ -651,6 +682,10 @@ pub(crate) fn receive_from_in(
 ) -> Result<bool, SourceTypesError> {
     // Each root and all its edges belong to its own immutable prefix. Only
     // after that check may the relational walk see the union of two prefixes.
+    work.charge(1)?;
+    if environments.is_some_and(|(left, right)| left.is_poisoned() || right.is_poisoned()) {
+        return Err(SourceTypesError::Unresolved);
+    }
     complete(expected_graph, expected, work)?;
     complete(actual_graph, actual, work)?;
     compare(
@@ -790,6 +825,56 @@ pub(crate) fn receive_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binder_comparison_keeps_the_static_object_and_checks_each_binding_coordinate() {
+        use crate::sema::source_types::SourceSchema;
+        use crate::sema::{context::TypingEnvironment, effect_identity::StaticBinderSort};
+        let mut environment = TypingEnvironment::default();
+        environment
+            .generic_context
+            .insert("T".into(), "decl:T".into());
+        let original = environment.freeze();
+        let derived = original.with_contract_bindings(BTreeMap::from([("x".into(), 7)]));
+        let key = ArgumentKey::Binder {
+            identity: "decl:T".into(),
+            sort: StaticBinderSort::Type,
+        };
+        let mut work = WorkLimit::new(16384);
+        let schema = SourceSchema::import(&key, None, &mut work).unwrap();
+        assert!(
+            schema
+                .receive_schema_in(&schema, &original, &derived, None, &mut work)
+                .unwrap()
+        );
+        assert!(
+            schema
+                .equivalent_in(&schema, &original, &derived, &mut work)
+                .unwrap()
+        );
+        let independent = original.thaw().freeze();
+        assert!(
+            schema
+                .receive_schema_in(&schema, &original, &independent, None, &mut work)
+                .is_err()
+        );
+        assert!(
+            schema
+                .receive_schema_in(
+                    &schema,
+                    &original,
+                    &FrozenEnvironment::poisoned(),
+                    None,
+                    &mut work
+                )
+                .is_err()
+        );
+        assert!(
+            schema
+                .receive_schema_in(&schema, &original, &derived, None, &mut WorkLimit::new(0))
+                .is_err()
+        );
+    }
 
     #[test]
     fn nullary_constructor_templates_require_the_same_fresh_read_and_optional_receiver() {

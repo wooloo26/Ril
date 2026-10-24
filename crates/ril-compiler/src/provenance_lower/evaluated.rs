@@ -128,7 +128,7 @@ impl ReturnContracts {
         }
         self.source_query(|_, work| {
             let mut remaining = work.remaining();
-            let admitted = crate::sema::clone_work::environment(environment, &mut remaining);
+            let admitted = crate::sema::clone_work::frozen_environment(environment, &mut remaining);
             work.charge(work.remaining() - remaining)?;
             admitted.ok_or(SourceTypesError::BudgetExceeded)
         })?;

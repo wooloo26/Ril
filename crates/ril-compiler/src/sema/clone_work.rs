@@ -159,6 +159,22 @@ pub(crate) fn key(work: &mut usize, value: &ArgumentKey, depth: usize) -> Option
 }
 
 pub(crate) fn environment(value: &TypingEnvironment, work: &mut usize) -> Option<()> {
+    static_environment(&value.types, work)?;
+    bindings(value.contract_bindings(), work)
+}
+
+pub(crate) fn frozen_environment(
+    value: &crate::sema::context::FrozenEnvironment,
+    work: &mut usize,
+) -> Option<()> {
+    static_environment(value, work)?;
+    bindings(value.contract_bindings(), work)
+}
+
+pub(crate) fn static_environment(
+    value: &crate::sema::context::StaticEnvironment,
+    work: &mut usize,
+) -> Option<()> {
     charge(work, 1)?;
     for (name, identity) in &value.generic_context {
         text(work, name)?;
@@ -196,7 +212,6 @@ pub(crate) fn environment(value: &TypingEnvironment, work: &mut usize) -> Option
             crate::static_eval::charge_type_syntax_clone(&field.syntax, work)?;
         }
     }
-    bindings(&value.contract_bindings, work)?;
     Some(())
 }
 

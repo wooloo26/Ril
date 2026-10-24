@@ -816,10 +816,15 @@ pub struct CallableReturnBound {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrozenEnvironmentId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StaticInterpretationId(pub u32);
+
 /// One complete immutable interpretation. References preserve capture identity;
 /// equal contents captured independently do not become the same environment.
 #[derive(Debug, Clone, Default)]
 pub struct FrozenEnvironment {
+    /// Identity of the immutable static interpretation shared by these views.
+    pub interpretation: Option<StaticInterpretationId>,
     pub lexical: Vec<(String, u32)>,
     pub generic_context: Vec<(String, String)>,
     pub generic_substitutions: Vec<(String, TypeId)>,

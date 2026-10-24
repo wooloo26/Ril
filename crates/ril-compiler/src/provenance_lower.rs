@@ -2053,6 +2053,10 @@ struct ReturnContracts {
     environments: Vec<p::FrozenEnvironment>,
     environment_ids:
         std::collections::BTreeMap<crate::sema::context::FrozenEnvId, p::FrozenEnvironmentId>,
+    interpretation_ids: std::collections::BTreeMap<
+        crate::sema::context::FrozenTypeEnvId,
+        p::StaticInterpretationId,
+    >,
     // Copy memo only: addresses never become semantic or emitted identities.
     copied: std::collections::BTreeMap<*const m::CallableReturnBound, p::ReturnContractId>,
 }
@@ -2078,9 +2082,15 @@ impl ReturnContracts {
             });
             return id;
         }
+        let next_interpretation = p::StaticInterpretationId(self.interpretation_ids.len() as u32);
+        let interpretation = *self
+            .interpretation_ids
+            .entry(environment.type_id())
+            .or_insert(next_interpretation);
         let converted = p::FrozenEnvironment {
+            interpretation: Some(interpretation),
             lexical: environment
-                .contract_bindings
+                .contract_bindings()
                 .iter()
                 .map(|(name, &id)| (name.clone(), id as u32))
                 .collect(),
@@ -2584,6 +2594,32 @@ mod contract_graph_tests {
     use std::sync::Arc;
 
     #[test]
+    fn value_binding_views_keep_their_static_identity_in_core() {
+        let original = crate::sema::context::TypingEnvironment::default().freeze();
+        let view = original.with_contract_bindings([("value".into(), 7)].into());
+        let independent = original.thaw().freeze();
+        let mut contracts = ReturnContracts::default();
+        let mut types = vec![];
+        let first = contracts.environment(&mut types, &original);
+        let second = contracts.environment(&mut types, &view);
+        let third = contracts.environment(&mut types, &independent);
+        assert_ne!(first, second);
+        assert_eq!(
+            contracts.environments[first.0 as usize].interpretation,
+            contracts.environments[second.0 as usize].interpretation
+        );
+        assert_ne!(
+            contracts.environments[first.0 as usize].interpretation,
+            contracts.environments[third.0 as usize].interpretation
+        );
+        assert!(contracts.environments[first.0 as usize].lexical.is_empty());
+        assert_eq!(
+            contracts.environments[second.0 as usize].lexical,
+            [("value".into(), 7)]
+        );
+    }
+
+    #[test]
     fn shared_row_and_return_captures_keep_one_complete_environment_identity() {
         use crate::sema::context::TypingEnvironment;
         let span = Span {
@@ -2592,16 +2628,18 @@ mod contract_graph_tests {
             end: 1,
         };
         let environment = TypingEnvironment {
-            generic_context: [("T".into(), "creator:T".into())].into(),
-            generic_substitutions: [("creator:T".into(), m::Ty::Int("int".into()))].into(),
+            types: crate::sema::context::StaticEnvironment {
+                generic_context: [("T".into(), "creator:T".into())].into(),
+                generic_substitutions: [("creator:T".into(), m::Ty::Int("int".into()))].into(),
+                static_key_arguments: [(
+                    "field".into(),
+                    m::StaticCoordinate::Label("selected".into()),
+                )]
+                .into(),
+                bound_row_context: [("R".into(), ril_compiler_core::ids::BoundRowId(3))].into(),
+                ..Default::default()
+            },
             contract_bindings: [("state".into(), 7)].into(),
-            static_key_arguments: [(
-                "field".into(),
-                m::StaticCoordinate::Label("selected".into()),
-            )]
-            .into(),
-            bound_row_context: [("R".into(), ril_compiler_core::ids::BoundRowId(3))].into(),
-            ..Default::default()
         }
         .freeze();
         let mut input =

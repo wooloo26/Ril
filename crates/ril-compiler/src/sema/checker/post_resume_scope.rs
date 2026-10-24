@@ -121,7 +121,13 @@ impl Checker {
                 protected.extend(&value.scoped);
                 protected.extend(&value.callback_parameters);
                 for bound in &value.callable_bounds {
-                    protected.extend(bound.typing_environment.contract_bindings.values().copied());
+                    protected.extend(
+                        bound
+                            .typing_environment
+                            .contract_bindings()
+                            .values()
+                            .copied(),
+                    );
                 }
                 let mut returns: Vec<_> = value
                     .callable_returns
@@ -129,7 +135,13 @@ impl Checker {
                     .map(|bound| bound.as_ref())
                     .collect();
                 while let Some(bound) = returns.pop() {
-                    protected.extend(bound.typing_environment.contract_bindings.values().copied());
+                    protected.extend(
+                        bound
+                            .typing_environment
+                            .contract_bindings()
+                            .values()
+                            .copied(),
+                    );
                     returns.extend(bound.predecessors.iter().map(|bound| bound.as_ref()));
                 }
                 participants.extend(&value.participants);

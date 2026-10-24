@@ -1418,16 +1418,18 @@ mod callable_return_tests {
             span,
             callables: vec![callable],
             typing_environment: super::super::context::TypingEnvironment {
-                generic_context: [("T".into(), identity.into())].into(),
-                generic_substitutions: [(identity.into(), Ty::Int("int".into()))].into(),
-                generic_sources: BTreeMap::new(),
-                bound_row_context: BTreeMap::new(),
-                bound_row_selections: BTreeMap::new(),
-                static_key_arguments: [(
-                    format!("{identity}:key"),
-                    StaticCoordinate::Label("value".into()),
-                )]
-                .into(),
+                types: super::super::context::StaticEnvironment {
+                    generic_context: [("T".into(), identity.into())].into(),
+                    generic_substitutions: [(identity.into(), Ty::Int("int".into()))].into(),
+                    generic_sources: BTreeMap::new(),
+                    bound_row_context: BTreeMap::new(),
+                    bound_row_selections: BTreeMap::new(),
+                    static_key_arguments: [(
+                        format!("{identity}:key"),
+                        StaticCoordinate::Label("value".into()),
+                    )]
+                    .into(),
+                },
                 contract_bindings: [("source".into(), file as usize)].into(),
             }
             .freeze(),

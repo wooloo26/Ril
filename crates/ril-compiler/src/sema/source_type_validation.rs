@@ -238,7 +238,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
                 }
                 if self.environments.len() > 65536
                     || !environment
-                        .contract_bindings
+                        .contract_bindings()
                         .values()
                         .all(|id| *id < self.facts.bindings.len())
                 {
@@ -347,7 +347,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         }
     }
     for handler in &facts.handlers {
-        if handler.lexical != handler.typing_environment.contract_bindings
+        if handler.lexical != *handler.typing_environment.contract_bindings()
             || !walk.environment(&handler.typing_environment)
         {
             return Err((handler.span, CauseId(0)));
@@ -361,7 +361,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
         }
     }
     for function in &facts.functions {
-        if function.lexical != function.typing_environment.contract_bindings
+        if function.lexical != *function.typing_environment.contract_bindings()
             || !walk.environment(&function.typing_environment)
         {
             return Err((function.syntax.span, CauseId(0)));
@@ -391,7 +391,7 @@ pub(super) fn validate(facts: &SemanticFacts) -> Result<(), (Span, CauseId)> {
                 )
             });
         if (!generated_contract
-            && closure.lexical != closure.contract.typing_environment.contract_bindings)
+            && closure.lexical != *closure.contract.typing_environment.contract_bindings())
             || !walk.environment(&closure.contract.typing_environment)
         {
             return Err((closure.contract.span, CauseId(0)));

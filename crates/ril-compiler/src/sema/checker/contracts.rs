@@ -580,7 +580,7 @@ impl Checker {
         let info = &self.bindings[binding];
         for environment in self.type_contract_environments.values_mut() {
             if environment.owner == info.owner && environment.scope == info.lexical_scope {
-                let mut bindings = environment.typing_environment.contract_bindings.clone();
+                let mut bindings = environment.typing_environment.contract_bindings().clone();
                 bindings.insert(info.name.clone(), binding);
                 environment.typing_environment = environment
                     .typing_environment
@@ -794,7 +794,7 @@ impl Checker {
         let preview = self.snapshot_flow();
         let handlers = std::mem::take(&mut self.active_handlers);
         let previous_completed = self.completed_invocation.clone();
-        let mut context = self.frame(bound.typing_environment.contract_bindings.clone(), true);
+        let mut context = self.frame(bound.typing_environment.contract_bindings().clone(), true);
         context.input_environment = Some(bound.typing_environment.clone());
         let mut arguments = Vec::new();
         let mut formals = Vec::new();
@@ -1259,7 +1259,7 @@ impl Checker {
                     let header = group.capture_owner.unwrap_or("");
                     let mut layer = None;
                     for StateItem { mode, name } in group.items() {
-                        let Some(&binding) = bound.typing_environment.contract_bindings.get(name)
+                        let Some(&binding) = bound.typing_environment.contract_bindings().get(name)
                         else {
                             self.error(
                                 "E0204",

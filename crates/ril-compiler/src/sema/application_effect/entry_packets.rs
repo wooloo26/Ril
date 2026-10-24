@@ -848,6 +848,7 @@ impl<'a> Replay<'a> {
                             dependency,
                             work,
                         )? && source_environment.id() != expected_environment.id()
+                            && !source_environment.same_types(&expected_environment)
                         {
                             let diagnostic = self.source_diagnostic(observation, work)?;
                             return Err(format!(

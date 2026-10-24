@@ -113,10 +113,10 @@ fn rows<'a>(
             for item in group.items() {
                 work.charge(
                     (1 + item.name.len().div_ceil(32))
-                        * lookup_work(environment.contract_bindings.len()),
+                        * lookup_work(environment.contract_bindings().len()),
                 )?;
                 let binding = environment
-                    .contract_bindings
+                    .contract_bindings()
                     .get(item.name)
                     .copied()
                     .ok_or(SourceTypesError::Unresolved)?;
@@ -338,11 +338,14 @@ mod tests {
     #[test]
     fn generic_rows_and_opaque_effects_cannot_borrow_another_capture() {
         let original = TypingEnvironment {
-            generic_context: BTreeMap::from([
-                ("E".into(), "effect:actual".into()),
-                ("Alias".into(), "effect:actual".into()),
-                ("P".into(), "provider:actual".into()),
-            ]),
+            types: crate::sema::context::StaticEnvironment {
+                generic_context: BTreeMap::from([
+                    ("E".into(), "effect:actual".into()),
+                    ("Alias".into(), "effect:actual".into()),
+                    ("P".into(), "provider:actual".into()),
+                ]),
+                ..Default::default()
+            },
             ..Default::default()
         }
         .freeze();

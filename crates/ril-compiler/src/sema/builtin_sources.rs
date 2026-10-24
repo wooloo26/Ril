@@ -23,7 +23,7 @@ pub(crate) fn is_catalog_environment(environment: &super::context::FrozenEnviron
         && environment.static_key_arguments.is_empty()
         && environment.bound_row_context.is_empty()
         && environment.bound_row_selections.is_empty()
-        && environment.contract_bindings.is_empty()
+        && environment.contract_bindings().is_empty()
 }
 
 /// Candidate interface only. Original declaration/occurrence validation still

@@ -1413,6 +1413,44 @@ impl Checker {
     ) -> Ty {
         self.ty_substituted_mode(ty, &mut BTreeSet::new(), substitutions, false)
     }
+
+    /// A record's row is part of its outer shape, not a stored child view.
+    /// Expand transparent row aliases while retaining every member's declared
+    /// type. Carry the same ancestry through nested compositions and cycles.
+    fn shallow_row_shape(&self, tail: Ty, seen: &mut BTreeSet<String>) -> Ty {
+        let (name, arguments) = match &tail {
+            Ty::Named(name) => (name, &[][..]),
+            Ty::Applied {
+                constructor,
+                arguments,
+            } => (constructor, arguments.as_slice()),
+            _ => return tail,
+        };
+        let Some(declaration) = self.types.get(name) else {
+            return tail;
+        };
+        if declaration.nominal
+            || declaration.opaque
+            || !declaration.variants.is_empty()
+            || declaration.generics.len() != arguments.len()
+            || seen.len() >= 128
+            || !seen.insert(format!("row-shape:{name}"))
+        {
+            return tail;
+        }
+        let Some(body) = &declaration.value else {
+            return tail;
+        };
+        let substitutions = declaration
+            .generics
+            .iter()
+            .zip(arguments)
+            .map(|(parameter, argument)| (parameter.name.clone(), argument.clone()))
+            .collect();
+        let shape = self.ty_substituted_mode(body, seen, &substitutions, false);
+        self.shallow_row_shape(shape, seen)
+    }
+
     fn ty_substituted_mode(
         &self,
         ty: &TypeExpr,
@@ -1597,7 +1635,13 @@ impl Checker {
                     })
                     .collect();
                 if let Some(row) = row {
-                    let tail = substitute(row, &mut seen.clone(), substitutions);
+                    let mut ancestry = seen.clone();
+                    let tail = substitute(row, &mut ancestry, substitutions);
+                    let tail = if expand_aliases {
+                        tail
+                    } else {
+                        self.shallow_row_shape(tail, &mut ancestry)
+                    };
                     self.record_with_row(fields, row, tail)
                 } else {
                     Ty::Record(fields)

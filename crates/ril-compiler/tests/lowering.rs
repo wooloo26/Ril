@@ -285,7 +285,7 @@ fn core_retains_the_opaque_return_contract_of_an_aliased_exported_closure() {
             environment.lexical,
             source
                 .typing_environment
-                .contract_bindings
+                .contract_bindings()
                 .iter()
                 .map(|(name, &binding)| (name.clone(), binding as u32))
                 .collect::<Vec<_>>()

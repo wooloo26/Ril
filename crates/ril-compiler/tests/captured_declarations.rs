@@ -21,7 +21,7 @@ fn handlers_receive_in_their_declaration_environment_during_foreign_generic_call
             assert!(!handler.typing_environment.generic_context.contains_key("U"));
             assert_eq!(
                 handler.lexical,
-                handler.typing_environment.contract_bindings
+                *handler.typing_environment.contract_bindings()
             );
         }
         solved_facts(facts).unwrap();

@@ -188,6 +188,37 @@ impl Checker {
 mod tests {
     use super::*;
     #[test]
+    fn shallow_row_aliases_expand_the_outer_fields_and_preserve_named_children() {
+        let parsed = ril_syntax::parse(
+            "type Packet={values:[0][2]int}\ntype Inner<R>={child:Packet,..R}\ntype Outer<R>={flag:bool,..Inner<R>}",
+        );
+        assert!(parsed.is_ok(), "{:?}", parsed.diagnostics);
+        let mut checker = Checker::new(FileId(0));
+        for statement in &parsed.program.statements {
+            if let StmtKind::Type(declaration) = &statement.kind {
+                checker
+                    .types
+                    .insert(declaration.name.clone(), declaration.clone());
+            }
+        }
+        let row = Ty::Record([("label".into(), (true, Ty::Str))].into());
+        let applied = Ty::Applied {
+            constructor: "Outer".into(),
+            arguments: vec![TypeArgument::Type(Box::new(row))],
+        };
+        assert_eq!(
+            checker.top_representation_type(&applied),
+            Some(Ty::Record(
+                [
+                    ("flag".into(), (false, Ty::Bool)),
+                    ("child".into(), (false, Ty::Named("Packet".into()))),
+                    ("label".into(), (true, Ty::Str)),
+                ]
+                .into()
+            ))
+        );
+    }
+    #[test]
     fn graph_peeling_preserves_nested_public_names_and_source_visibility() {
         let owner = FileId(7);
         let parsed = ril_syntax::parse_file(

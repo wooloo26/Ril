@@ -2,8 +2,10 @@
 //! complete environment; its lexical contracts cannot be restored piecemeal.
 use crate::sema::clone_work;
 use crate::sema::context::{FrozenEnvironment, TypingEnvironment};
+use crate::sema::context::{FrozenStaticEnvironment, StaticEnvironment};
 use crate::sema::model::Env;
 use std::cell::{Cell, RefCell};
+use std::sync::Weak;
 
 pub(super) struct TypeSourceDomain {
     pub environment: TypingEnvironment,
@@ -11,6 +13,7 @@ pub(super) struct TypeSourceDomain {
     lexical: RefCell<Option<crate::hir::lexical::LexicalBindings>>,
     work: Cell<usize>,
     pub exhausted: Cell<bool>,
+    static_capture: RefCell<Option<Weak<FrozenStaticEnvironment>>>,
 }
 
 impl Default for TypeSourceDomain {
@@ -21,6 +24,7 @@ impl Default for TypeSourceDomain {
             lexical: RefCell::new(None),
             work: Cell::new(16 * 1024 * 1024),
             exhausted: Cell::new(false),
+            static_capture: RefCell::new(None),
         }
     }
 }
@@ -63,12 +67,14 @@ impl TypeSourceDomain {
         }
         query(index.as_ref().ok_or(SourceTypesError::MissingNode)?)
     }
-    fn admit_clone(&self, environment: &TypingEnvironment) -> bool {
+    fn admit_clone(&self, environment: &StaticEnvironment, bindings: &Env) -> bool {
         if self.exhausted.get() {
             return false;
         }
         let mut work = self.work.get();
-        let admitted = clone_work::environment(environment, &mut work).is_some();
+        let admitted = clone_work::static_environment(environment, &mut work)
+            .and_then(|()| clone_work::bindings(bindings, &mut work))
+            .is_some();
         self.work.set(work);
         if !admitted {
             self.exhausted.set(true);
@@ -77,10 +83,17 @@ impl TypeSourceDomain {
     }
 
     pub(super) fn capture(&self) -> FrozenEnvironment {
-        if !self.admit_clone(&self.environment) {
+        if !self.admit_clone(&self.environment, self.environment.contract_bindings()) {
             return FrozenEnvironment::poisoned();
         }
-        self.environment.clone().freeze()
+        let previous = self
+            .static_capture
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade);
+        let capture = self.environment.clone().freeze_reusing_types(previous);
+        *self.static_capture.borrow_mut() = Some(capture.weak_types());
+        capture
     }
 
     pub(super) fn copy_environment(
@@ -91,12 +104,13 @@ impl TypeSourceDomain {
             self.exhausted.set(true);
             return None;
         }
-        self.admit_clone(environment).then(|| environment.thaw())
+        self.admit_clone(environment, environment.contract_bindings())
+            .then(|| environment.thaw())
     }
 
     fn replace_bindings(
         &self,
-        mut environment: TypingEnvironment,
+        environment: FrozenEnvironment,
         bindings: &Env,
     ) -> FrozenEnvironment {
         let mut work = self.work.get();
@@ -106,15 +120,11 @@ impl TypeSourceDomain {
             self.exhausted.set(true);
             return FrozenEnvironment::poisoned();
         }
-        environment.contract_bindings = bindings.clone();
-        environment.freeze()
+        environment.with_contract_bindings(bindings.clone())
     }
 
     pub(super) fn capture_with_bindings(&self, bindings: &Env) -> FrozenEnvironment {
-        if !self.admit_clone(&self.environment) {
-            return FrozenEnvironment::poisoned();
-        }
-        self.replace_bindings(self.environment.clone(), bindings)
+        self.replace_bindings(self.capture(), bindings)
     }
 
     pub(super) fn derive_environment(
@@ -122,19 +132,27 @@ impl TypeSourceDomain {
         environment: &FrozenEnvironment,
         bindings: &Env,
     ) -> FrozenEnvironment {
-        let Some(environment) = self.copy_environment(environment) else {
+        if environment.is_poisoned() {
+            self.exhausted.set(true);
             return FrozenEnvironment::poisoned();
-        };
-        self.replace_bindings(environment, bindings)
+        }
+        if !self.admit_clone(environment, environment.contract_bindings()) {
+            return FrozenEnvironment::poisoned();
+        }
+        self.replace_bindings(environment.clone(), bindings)
     }
 
     pub(super) fn restore(&mut self, environment: FrozenEnvironment) {
-        if environment.is_poisoned() || (environment.is_shared() && !self.admit_clone(&environment))
+        if environment.is_poisoned()
+            || (environment.is_shared()
+                && !self.admit_clone(&environment, environment.contract_bindings()))
         {
             self.exhausted.set(true);
             self.environment = TypingEnvironment::default();
+            *self.static_capture.borrow_mut() = None;
             return;
         }
+        *self.static_capture.borrow_mut() = Some(environment.weak_types());
         self.environment = environment.into_typing_environment();
     }
 }
@@ -143,6 +161,107 @@ impl TypeSourceDomain {
 mod tests {
     use super::*;
     use crate::sema::model::Ty;
+
+    #[test]
+    fn captures_share_static_data_only_while_the_complete_selection_is_unchanged() {
+        use crate::sema::{model::SourceTypeWitness, source_types::TypeSourceSelection};
+        use ril_syntax::ast::StmtKind;
+        use std::sync::Arc;
+        let mut domain = TypeSourceDomain::default();
+        domain
+            .environment
+            .generic_context
+            .insert("T".into(), "decl:T".into());
+        let first = domain.capture();
+        domain
+            .environment
+            .contract_bindings
+            .insert("value".into(), 7);
+        let bound = domain.capture();
+        assert_ne!(first.id(), bound.id());
+        assert!(first.same_types(&bound));
+        assert!(first.contract_bindings().is_empty());
+        assert_eq!(bound.contract_bindings().get("value"), Some(&7));
+
+        let array = Ty::Array(Box::new(Ty::Int("int".into())));
+        domain
+            .environment
+            .generic_substitutions
+            .insert("decl:T".into(), array);
+        let erased = domain.capture();
+        assert!(
+            !erased.same_types(&domain.capture()),
+            "erased Ty equality cannot merge selections"
+        );
+        let select = |length: u64| {
+            let parsed = ril_syntax::parse(&format!("type Chosen=[{length}]int"));
+            let StmtKind::Type(declaration) = &parsed.program.statements[0].kind else {
+                panic!()
+            };
+            let syntax = declaration.value.clone().unwrap();
+            TypeSourceSelection::from_closed(
+                Arc::new(SourceTypeWitness {
+                    key: crate::static_eval::normalized_argument_key(&syntax),
+                    syntax,
+                }),
+                FrozenEnvironment::default(),
+            )
+            .unwrap()
+        };
+        domain
+            .environment
+            .generic_sources
+            .insert("decl:T".into(), select(2));
+        let two = domain.capture();
+        domain
+            .environment
+            .contract_bindings
+            .insert("other".into(), 8);
+        assert!(two.same_types(&domain.capture()));
+        domain
+            .environment
+            .generic_sources
+            .insert("decl:T".into(), select(3));
+        let three = domain.capture();
+        assert_eq!(two.generic_substitutions, three.generic_substitutions);
+        assert!(
+            !two.same_types(&three),
+            "distinct inner coordinates shared a static interpretation"
+        );
+        let id = ril_compiler_core::ids::BoundRowId(0);
+        let choice = Arc::new(crate::sema::record_bounds::BoundRowSelection {
+            row: id,
+            remainder: crate::sema::model::rows::Row::closed(
+                [(
+                    "items".into(),
+                    (false, Ty::Array(Box::new(Ty::Int("int".into())))),
+                )]
+                .into(),
+            ),
+            fields: vec![],
+            source_type_witness: None,
+        });
+        domain
+            .environment
+            .bound_row_selections
+            .insert(id, choice.clone());
+        let chosen = domain.capture();
+        assert!(chosen.same_types(&domain.capture()));
+        domain
+            .environment
+            .bound_row_selections
+            .insert(id, Arc::new((*choice).clone()));
+        let other = domain.capture();
+        assert_eq!(chosen.bound_row_selections, other.bound_row_selections);
+        assert_ne!(
+            chosen, other,
+            "frozen equality collapsed two unproved row choices"
+        );
+        assert!(
+            !chosen.same_types(&other),
+            "erased row views identified two unproved choices"
+        );
+    }
 
     #[test]
     fn header_name_index_is_paid_once_and_queries_keep_their_own_budget() {

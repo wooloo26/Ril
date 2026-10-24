@@ -648,7 +648,7 @@ impl Checker {
         };
         self.type_source
             .environment
-            .contract_bindings
+            .contract_bindings()
             .get(&name)
             .and_then(|binding| self.bindings.get(*binding))
             .map(|binding| &binding.value)

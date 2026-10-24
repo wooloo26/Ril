@@ -279,7 +279,7 @@ impl<'a> Index<'a> {
             name_work
                 .checked_mul(
                     3 + lookup(function.lexical.len())
-                        + lookup(function.typing_environment.contract_bindings.len()),
+                        + lookup(function.typing_environment.contract_bindings().len()),
                 )
                 .ok_or("named declaration lexical lookup work overflow")?,
         )?;
@@ -295,7 +295,7 @@ impl<'a> Index<'a> {
                 && !binding.typing_environment.is_poisoned()
                 && function
                     .typing_environment
-                    .contract_bindings
+                    .contract_bindings()
                     .get(&header.name)
                     == Some(&id),
             "named declaration lost its actual creation scope, self binding or frozen environment",

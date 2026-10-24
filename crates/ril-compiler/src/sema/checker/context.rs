@@ -49,25 +49,30 @@ mod tests {
 
     fn environment(identity: &str, selected: Ty, key: &str) -> FrozenEnvironment {
         TypingEnvironment {
-            generic_context: [("T".into(), identity.into())].into(),
-            generic_substitutions: [(identity.into(), selected)].into(),
-            generic_sources: BTreeMap::new(),
-            static_key_arguments: [("selected-key".into(), StaticCoordinate::Label(key.into()))]
+            types: crate::sema::context::StaticEnvironment {
+                generic_context: [("T".into(), identity.into())].into(),
+                generic_substitutions: [(identity.into(), selected)].into(),
+                generic_sources: BTreeMap::new(),
+                static_key_arguments: [(
+                    "selected-key".into(),
+                    StaticCoordinate::Label(key.into()),
+                )]
                 .into(),
-            bound_row_context: [("R".into(), BoundRowId(1))].into(),
-            bound_row_selections: [(
-                BoundRowId(1),
-                crate::sema::record_bounds::BoundRowSelection {
-                    row: BoundRowId(1),
-                    remainder: Row {
-                        fields: BTreeMap::new(),
-                        tail: RowTail::Closed,
-                    },
-                    fields: vec![],
-                    source_type_witness: None,
-                },
-            )]
-            .into(),
+                bound_row_context: [("R".into(), BoundRowId(1))].into(),
+                bound_row_selections: [(
+                    BoundRowId(1),
+                    std::sync::Arc::new(crate::sema::record_bounds::BoundRowSelection {
+                        row: BoundRowId(1),
+                        remainder: Row {
+                            fields: BTreeMap::new(),
+                            tail: RowTail::Closed,
+                        },
+                        fields: vec![],
+                        source_type_witness: None,
+                    }),
+                )]
+                .into(),
+            },
             contract_bindings: [(key.into(), 7)].into(),
         }
         .freeze()
@@ -118,7 +123,13 @@ mod tests {
                         .bound_row_selections
                         .is_empty()
                 );
-                assert!(checker.type_source.environment.contract_bindings.is_empty());
+                assert!(
+                    checker
+                        .type_source
+                        .environment
+                        .contract_bindings()
+                        .is_empty()
+                );
             });
             assert_eq!(checker.capture_typing_environment(), callee);
             Err(())
@@ -132,13 +143,13 @@ mod tests {
     fn completing_a_declaration_scope_derives_a_new_capture() {
         let original = environment("creator:T", Ty::Str, "original");
         let completed = original.with_contract_bindings([("completed".into(), 19)].into());
-        assert_eq!(original.contract_bindings.get("original"), Some(&7));
-        assert!(!original.contract_bindings.contains_key("completed"));
+        assert_eq!(original.contract_bindings().get("original"), Some(&7));
+        assert!(!original.contract_bindings().contains_key("completed"));
         assert_eq!(completed.generic_context, original.generic_context);
         assert_eq!(
             completed.static_key_arguments,
             original.static_key_arguments
         );
-        assert_eq!(completed.contract_bindings.get("completed"), Some(&19));
+        assert_eq!(completed.contract_bindings().get("completed"), Some(&19));
     }
 }

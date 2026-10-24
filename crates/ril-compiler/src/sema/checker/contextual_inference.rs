@@ -587,8 +587,8 @@ mod return_contract_tests {
                 prior.typing_environment.generic_context
             );
             assert_eq!(
-                bound.typing_environment.contract_bindings,
-                prior.typing_environment.contract_bindings
+                bound.typing_environment.contract_bindings(),
+                prior.typing_environment.contract_bindings()
             );
             assert_eq!(
                 bound.typing_environment.static_key_arguments,

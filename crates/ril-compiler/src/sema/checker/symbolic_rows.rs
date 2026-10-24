@@ -28,7 +28,7 @@ fn named_constraint(
         for super::contracts::StateItem { mode, name } in group.items() {
             if bound.source.is_some()
                 && !bound.typing_environment.is_poisoned()
-                && bound.typing_environment.contract_bindings.get(name) == Some(&target)
+                && bound.typing_environment.contract_bindings().get(name) == Some(&target)
             {
                 named = true;
                 allows |= mode >= required;

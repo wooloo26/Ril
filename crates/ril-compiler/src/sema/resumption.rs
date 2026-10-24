@@ -464,7 +464,13 @@ fn scope_protection(
             protected.extend(&value.callback_parameters);
             participants.extend(&value.participants);
             for bound in &value.callable_bounds {
-                protected.extend(bound.typing_environment.contract_bindings.values().copied());
+                protected.extend(
+                    bound
+                        .typing_environment
+                        .contract_bindings()
+                        .values()
+                        .copied(),
+                );
             }
             let mut returns: Vec<_> = value
                 .callable_returns
@@ -472,7 +478,13 @@ fn scope_protection(
                 .map(|bound| bound.as_ref())
                 .collect();
             while let Some(bound) = returns.pop() {
-                protected.extend(bound.typing_environment.contract_bindings.values().copied());
+                protected.extend(
+                    bound
+                        .typing_environment
+                        .contract_bindings()
+                        .values()
+                        .copied(),
+                );
                 returns.extend(bound.predecessors.iter().map(|bound| bound.as_ref()));
             }
             values.extend(nested(value));

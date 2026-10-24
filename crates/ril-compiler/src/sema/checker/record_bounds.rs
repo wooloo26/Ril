@@ -1118,7 +1118,7 @@ impl Checker {
                     .environment
                     .bound_row_selections
                     .get(id)
-                    .cloned()
+                    .map(|selection| (**selection).clone())
                     .or_else(|| {
                         let BoundRowRole::DeclaredTypeParameter { binder } =
                             &self.bound_rows[id.0 as usize].role
@@ -1386,10 +1386,11 @@ impl Checker {
                 }
             }
         }
-        self.type_source
-            .environment
-            .bound_row_selections
-            .extend(selections);
+        self.type_source.environment.bound_row_selections.extend(
+            selections
+                .into_iter()
+                .map(|(id, selection)| (id, std::sync::Arc::new(selection))),
+        );
         self.generic_bound_checks.extend(staged);
         true
     }
