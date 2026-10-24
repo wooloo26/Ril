@@ -305,3 +305,186 @@ pub fn test_cleanup() {
 }
 --@ end-file
 --@ end-case
+
+--@ source: result-inference
+--@ file: source.ril
+pub fn test_result_inference() {
+    let value: Result<int, str> = Ok(9)
+    assert(Results::expect(value, "missing") == 9)
+    assert(Test::assert_ok(value) == 9)
+    assert(Results::expect<int, str>(Ok(7), "missing") == 7)
+    assert(Test::assert_ok<int, str>(Ok(8)) == 8)
+    let require = Results::expect
+    assert(require(value, "missing") == 9)
+    let check = Test::assert_ok
+    assert(check(value) == 9)
+    assert(Results::expect(message: "missing", value: value) == 9)
+    assert(Test::assert_ok(message: "missing", value: value) == 9)
+    let inner: Result<int, str> = Err("inner")
+    let outer: Result<Result<int, str>, str> = Ok(inner)
+    let restored = Test::assert_ok(outer)
+    assert(restored is Err("inner"))
+}
+--@ end-file
+--@ end-source
+
+--@ case: result-inference-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: result-inference-pointer64
+--@ use-source: result-inference
+--@ end-case
+
+--@ case: result-inference-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: result-inference-native
+--@ use-source: result-inference
+--@ end-case
+
+--@ case: result-inference-native
+--@ mode: run-pass
+--@ entry: test_result_inference
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: result-inference-pointer32
+--@ use-source: result-inference
+--@ end-case
+
+--@ case: typed-testing-helpers
+--@ mode: run-pass
+--@ entry: test_library
+--@ spec: STD#testing
+--@ companion: reject-uninspected-nested-result-via-ok
+--@ file: source.ril
+use ril/test
+pub fn test_library() {
+    Test::assert_eq([1, 2], [1, 2], "equal")
+    Test::assert_ne(b"a", b"b")
+    assert(Test::assert_some(Some(7)) == 7)
+    let value: Result<int, str> = Ok(9)
+    assert(Test::assert_ok(value) == 9)
+    let inner: Result<int, str> = Err("inner")
+    let outer: Result<Result<int, str>, str> = Ok(inner)
+    let nested = Test::assert_ok(outer)
+    assert(nested is Err("inner"))
+    assert(b"a" < b"b" && b"a" <= b"a" && b"b" >= b"a")
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unselected-error-type
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: result-inference-pointer64
+-- Error [E0344]: An int result context chooses T but cannot choose the inactive E.
+--@ file: source.ril
+fn invalid() {
+    let value: int = Results::expect(Ok(1), "missing")
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unselected-test-error-type
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: typed-testing-helpers
+-- Error [E0344]: A Test wrapper does not supply an unspecified error type.
+--@ file: source.ril
+fn invalid() { let value: int = Test::assert_ok(Ok(1)) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-unselected-success-type
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: result-inference-pointer32
+-- Error [E0344]: An Err argument alone does not choose the success type.
+--@ file: source.ril
+fn invalid() { let _ = Results::expect(Err("failed"), "missing") }
+--@ end-file
+--@ end-case
+
+--@ case: reject-uninspected-nested-result-via-ok
+--@ mode: check-fail
+--@ spec: SPEC#mandatory-inspection-of-fallible-results
+--@ companion: typed-testing-helpers
+-- Error [E0720]: Inspecting the outer Ok does not inspect its Result payload.
+--@ file: source.ril
+fn invalid() {
+    let inner: Result<int, str> = Err("inner")
+    let outer: Result<Result<int, str>, str> = Ok(inner)
+    let _ = Test::assert_ok(outer)
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-result-payload-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: composite-payloads
+-- Error [E0301]: A Result expectation preserves the selected payload dimensions.
+--@ file: source.ril
+fn invalid() {
+    let matrix: [0][3]int = []
+    let value: Result<[0][3]int, str> = Ok(matrix)
+    let wrong: [0][2]int = Results::expect(value, "missing")
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-result-write-authority
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: composite-payloads
+-- Error [E0520]: Inspecting Ok cannot restore write authority to a read-only input.
+--@ file: source.ril
+type Cell = { mut value: int }
+fn invalid(cell: Cell) {
+    let value: Result<Cell, str> = Ok(cell)
+    let selected = Test::assert_ok(value)
+    selected.value = 9
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unselected-user-success-type
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: explicit-user-error-type
+-- Error [E0344]: Ordinary generic functions retain inference obligations across panic.
+--@ file: source.ril
+fn take<T, E>(value: Result<T, E>) -> T {
+    match value { Ok(item) -> item, Err(_) -> panic("failed") }
+}
+fn invalid() { let _ = take(Err("failed")) }
+--@ end-file
+--@ end-case
+
+--@ case: reject-discarded-user-success-type
+--@ mode: check-fail
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: explicit-user-error-type
+-- Error [E0344]: Discarding an abrupt expression cannot discard its static arguments.
+--@ file: source.ril
+fn take<T, E>(value: Result<T, E>) -> T {
+    match value { Ok(item) -> item, Err(_) -> panic("failed") }
+}
+fn invalid() { take(Err("failed")); }
+--@ end-file
+--@ end-case
+
+--@ case: explicit-user-error-type
+--@ mode: run-panic
+--@ entry: test_explicit_error
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: reject-unselected-user-success-type
+-- Panics: Explicit static arguments make the call well typed before its panic.
+--@ file: source.ril
+fn take<T, E>(value: Result<T, E>) -> T {
+    match value { Ok(item) -> item, Err(_) -> panic("failed") }
+}
+pub fn test_explicit_error() { let _ = take<int, str>(Err("failed")) }
+--@ end-file
+--@ end-case

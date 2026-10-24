@@ -35,7 +35,7 @@ fn bundled_fallbacks_are_checked_declarations_and_ordinary_core_functions() {
             .iter()
             .filter(|function| function.syntax.span.file.0 != 0)
             .collect();
-        assert_eq!(library.len(), 3);
+        assert_eq!(library.len(), 5);
         for function in &library {
             assert!(function.hir_id.is_some() && function.syntax.body.is_some());
             assert!(
@@ -71,6 +71,9 @@ fn ordinary_library_calls_preserve_imports_generics_and_composite_sources() {
         "eager-fallback-panic",
         "bottom-cleanup",
         "typed-bottom-cleanup",
+        "result-inference-pointer64",
+        "typed-testing-helpers",
+        "explicit-user-error-type",
     ] {
         for target in ["pointer32", "pointer64"] {
             match session(case, target).verify() {
@@ -92,11 +95,34 @@ fn ordinary_library_returns_cannot_retype_stored_payloads() {
             ("reject-restored-write-authority", "E0520"),
             ("reject-uninspected-nested-result", "E0720"),
             ("reject-nonunit-cleanup", "E0541"),
+            ("reject-uninspected-nested-result-via-ok", "E0720"),
+            ("reject-result-payload-dimension", "E0301"),
+            ("reject-result-write-authority", "E0520"),
         ] {
             let outcome = session(case, target).check();
             assert!(
                 matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
             if diagnostics.iter().any(|diagnostic| diagnostic.code == code)),
+                "{case}, {target}: {outcome:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn inactive_constructor_arguments_require_real_inference_constraints() {
+    for target in ["pointer32", "pointer64"] {
+        for case in [
+            "reject-unselected-error-type",
+            "reject-unselected-test-error-type",
+            "reject-unselected-success-type",
+            "reject-unselected-user-success-type",
+            "reject-discarded-user-success-type",
+        ] {
+            let outcome = session(case, target).check();
+            assert!(
+                matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+                if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0344")),
                 "{case}, {target}: {outcome:?}"
             );
         }

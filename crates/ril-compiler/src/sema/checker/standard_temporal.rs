@@ -18,7 +18,6 @@ pub(super) fn is_temporal_builtin(name: &str) -> bool {
             | "Random::entropy"
             | "Test::assert_eq"
             | "Test::assert_ne"
-            | "Test::assert_ok"
     )
 }
 pub(super) fn temporal_constant(name: &str) -> Option<Ty> {
@@ -63,7 +62,7 @@ impl Checker {
             return None;
         }
         if name.starts_with("Test::") {
-            return Some(self.standard_test_helper(name, args, span, frame));
+            return Some(self.standard_test_helper(args, span, frame));
         }
         let duration = Ty::Named("Time::Duration".into());
         let instant = Ty::Named("Time::Instant".into());
@@ -178,12 +177,11 @@ impl Checker {
     }
     fn standard_test_helper(
         &mut self,
-        name: &str,
         args: &[(ParameterMode, Value, Span)],
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        let minimum = if name == "Test::assert_ok" { 1 } else { 2 };
+        let minimum = 2;
         if !(minimum..=minimum + 1).contains(&args.len()) {
             self.error("E0314", span, "wrong testing helper argument count", []);
             return self.unit(span);
@@ -200,19 +198,6 @@ impl Checker {
         }
         if let Some((_, message, message_span)) = args.get(minimum) {
             self.require_type(message, &Ty::Str, *message_span);
-        }
-        if name == "Test::assert_ok" {
-            // Retained Result adapter pending the general constructor-hole rule.
-            let mut actual = args.to_vec();
-            if actual.len() == 1 {
-                let mut message = self.unit(span);
-                message.ty = Ty::Str;
-                message.constant = None;
-                actual.push((ParameterMode::Read, message, span));
-            }
-            return self
-                .standard_variant_builtin("Results::expect", &actual, span, frame)
-                .expect("fixed expectation builtin");
         }
         self.require_type(&args[1].1, &args[0].1.ty, args[1].2);
         for (_, value, argument_span) in &args[..2] {
@@ -268,7 +253,9 @@ mod tests {
             ("fn example() @{}{let _=Time::monotonic()}", "E0534"),
             ("fn example(){Test::assert_eq(\\->(),\\->())}", "E0327"),
             (
-                "fn example(){let _=Test::assert_ok(Ok(Err(\"nested\")))}",
+                ril_test::case_source(
+                    "tests/regressions/stdlib-declarations.ril::reject-uninspected-nested-result-via-ok",
+                ),
                 "E0720",
             ),
         ] {

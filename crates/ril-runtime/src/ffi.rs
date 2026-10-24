@@ -606,7 +606,6 @@ fn dispatch_builtin(name: u64, arguments: u64) -> u64 {
             | "Results::map_err"
             | "Results::and_then"
             | "Results::recover"
-            | "Results::expect"
     ) {
         return variant_operation(&name, arguments);
     }
@@ -731,15 +730,6 @@ fn variant_operation(name: &str, arguments: u64) -> u64 {
     } else {
         match name {
             "Options::unwrap_or_else" | "Results::recover" => fields[0].0,
-            "Results::expect" => {
-                if success {
-                    fields[0].0
-                } else {
-                    handle(|runtime| {
-                        Err(RuntimeError::panic(runtime.as_string(args[1])?.to_owned()))
-                    })
-                }
-            }
             _ => args[0].0,
         }
     };

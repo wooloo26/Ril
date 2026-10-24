@@ -1223,19 +1223,6 @@ impl Runtime {
                 }
                 self.unit()
             }
-            "Test::assert_ok" => {
-                if let Object::Variant { tag, fields } = self.heap.get(arg(0)?)?
-                    && tag == "Ok"
-                    && fields.len() == 1
-                {
-                    return Ok(fields[0]);
-                }
-                Err(RuntimeError::panic(if let Some(message) = args.get(1) {
-                    self.as_string(*message)?.to_owned()
-                } else {
-                    "expected Ok".into()
-                }))
-            }
             "panic" => Err(RuntimeError::panic(self.format(arg(0)?)?)),
             "len" => {
                 let count = self.length(arg(0)?)?;

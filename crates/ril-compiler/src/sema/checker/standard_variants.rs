@@ -12,7 +12,6 @@ pub(super) fn is_variant_builtin(name: &str) -> bool {
             | "Results::map_err"
             | "Results::and_then"
             | "Results::recover"
-            | "Results::expect"
     )
 }
 
@@ -45,9 +44,7 @@ impl Checker {
                 [source.cause],
             );
         }
-        if args[1].0 == ParameterMode::SharedMut
-            || (name == "Results::expect" && args[1].0 != ParameterMode::Read)
-        {
+        if args[1].0 == ParameterMode::SharedMut {
             self.error(
                 "E0405",
                 args[1].2,
@@ -200,10 +197,7 @@ impl Checker {
         let template = produces.then(|| self.make_result(true, unit, span, frame.owner));
         let before = self.snapshot_flow();
         let obligations = frame.obligations.clone();
-        let on_error = matches!(
-            name,
-            "Results::map_err" | "Results::recover" | "Results::expect"
-        );
+        let on_error = matches!(name, "Results::map_err" | "Results::recover");
         let execute = source
             .result_tag
             .map(|tag| if on_error { !tag } else { tag });
@@ -224,13 +218,6 @@ impl Checker {
         };
         let skipped_state = self.snapshot_flow();
         let executed = match name {
-            "Results::expect" => {
-                self.require_type(&argument.1, &Ty::Str, argument.2);
-                let mut value = self.unit(span);
-                value.ty = Ty::Never;
-                value.abnormal = true;
-                value
-            }
             "Results::recover" => {
                 let returned =
                     self.standard_invoke_callback(argument, vec![error_payload], span, frame);

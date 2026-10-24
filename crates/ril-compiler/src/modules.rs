@@ -1903,7 +1903,7 @@ fn standard_exports(path: &str) -> &'static [&'static str] {
             "println",
         ],
         "ril/option" => &["Option", "map", "and_then", "unwrap_or_else"],
-        "ril/result" => &["Result", "map", "map_err", "and_then", "recover", "expect"],
+        "ril/result" => &["Result", "map", "map_err", "and_then", "recover"],
         "ril/array" => &[
             "Elem", "push", "pop", "insert", "remove", "truncate", "get", "first", "contains",
             "reverse", "concat", "map", "filter", "fold", "find", "any", "all", "for_each",
@@ -2223,7 +2223,7 @@ fn standard_exports(path: &str) -> &'static [&'static str] {
             "join3",
             "for_each",
         ],
-        "ril/test" => &["assert_eq", "assert_ne", "assert_ok"],
+        "ril/test" => &["assert_eq", "assert_ne"],
         _ => &[],
     }
 }

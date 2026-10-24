@@ -269,20 +269,9 @@ pub fn test_library() @Fiber {
 }
 #[test]
 fn testing_helpers_inspect_the_outer_variant_and_return_the_existing_payload() {
-    execute(
-        r#"
-use ril/test
-pub fn test_library() {
-    Test::assert_eq([1,2],[1,2],"equal")
-    Test::assert_ne(b"a",b"b")
-    assert(Test::assert_some(Some(7))==7)
-    assert(Test::assert_ok(Ok(9))==9)
-    let nested=Test::assert_ok(Ok(Err("inner")))
-    assert(nested is Err("inner"))
-    assert(b"a"<b"b"&&b"a"<=b"a"&&b"b">=b"a")
-}
-"#,
-    );
+    execute(ril_test::case_source(
+        "tests/regressions/stdlib-declarations.ril::typed-testing-helpers",
+    ));
 }
 
 #[test]

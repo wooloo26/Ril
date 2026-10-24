@@ -1171,6 +1171,17 @@ impl Checker {
                         .cloned(),
                 )
                 .collect();
+            if result.ty == Ty::Never && !verifying && !pending.is_empty() {
+                // Abrupt control cannot determine a declaration's unselected
+                // static arguments. Preserve their actual invocation variables
+                // so a context-free receiver still diagnoses E0344.
+                for identity in &pending {
+                    let meta = format!("{identity}:invocation:{}", frame.owner.0);
+                    self.inference_metas.insert(meta.clone());
+                    result.pending_inference.insert(meta);
+                }
+                result.requires_inference = true;
+            }
             if result.ty != Ty::Never {
                 result.ty = expected.clone();
                 if !verifying && !pending.is_empty() {

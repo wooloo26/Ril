@@ -14,6 +14,11 @@ pub const MODULES: &[Module] = &[
         source: include_str!("../modules/option.ril"),
     },
     Module {
+        path: "ril/result",
+        namespace: "Results",
+        source: include_str!("../modules/result.ril"),
+    },
+    Module {
         path: "ril/test",
         namespace: "Test",
         source: include_str!("../modules/test.ril"),

@@ -103,11 +103,10 @@ duplicate source trees and historical verification reports.
   optional-value and Array combinators, then remove their duplicated checker,
   static evaluator, HOF lowering and runtime implementations.
   Versioned sources live in `crates/ril-stdlib/modules/` and are resolved and
-  checked as ordinary modules on demand. Optional fallbacks/expectations and
-  `Test::assert_some` form the first migrated family. Migrate Result expectations
-  under the general E0344 inference rule, removing the legacy acceptance of
-  undetermined constructor arguments. Broader collection and callback contracts
-  also remain on the migration adapter.
+  checked as ordinary modules on demand. Optional fallbacks, Option/Result
+  expectations and `Test::assert_some`/`Test::assert_ok` use this pipeline,
+  including the general E0344 inference rule. Broader collection and callback
+  contracts remain on the migration adapter.
 - Complete shared receiving for callable upper bounds and general constructors,
   and finish window graph copying. These gaps remain exposed by the
   conditional/rest-pattern corpus.

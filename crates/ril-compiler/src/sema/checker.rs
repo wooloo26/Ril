@@ -1836,6 +1836,17 @@ impl Checker {
                     self.suppress_refinement -= 1;
                 }
                 if value.ty == Ty::Never {
+                    if binding.ty.is_none()
+                        && (value.requires_inference
+                            || !self.pending_result_binders(&value).is_empty())
+                    {
+                        self.error(
+                            "E0344",
+                            binding.value.span,
+                            "abrupt initializer has unresolved result type variables",
+                            [value.cause],
+                        );
+                    }
                     return value;
                 }
                 self.receive_binding(
@@ -1877,7 +1888,7 @@ impl Checker {
                     frame,
                     if *terminated { None } else { expected },
                 );
-                if *terminated && value.ty != Ty::Never {
+                if *terminated {
                     let pending = self.pending_result_binders(&value);
                     if (value.requires_inference && pending.is_empty())
                         || !self.unresolved_inference_metas(pending).is_empty()
@@ -1890,6 +1901,8 @@ impl Checker {
                             [value.cause],
                         );
                     }
+                }
+                if *terminated && value.ty != Ty::Never {
                     self.record_closure_discard(
                         &value,
                         created_closures,
