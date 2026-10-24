@@ -198,19 +198,10 @@ fn expression(value: &mut Expr) {
         }
         ExprKind::Record {
             ty: record_type,
-            fields,
-            spread,
             members,
         } => {
             optional_type(record_type);
-            for field in fields {
-                expression(&mut field.value);
-            }
-            if let Some(spread) = spread {
-                expression(spread);
-            }
-            // The AST retains both its ordered members and convenient field
-            // projection; normalize both without changing either's identity.
+
             for member in members {
                 match member {
                     RecordMember::Field(field) => expression(&mut field.value),

@@ -471,24 +471,20 @@ impl Validator {
                     self.expr(value);
                 }
             }
-            ExprKind::Record {
-                ty,
-                fields,
-                members,
-                ..
-            } => {
+            ExprKind::Record { ty, members, .. } => {
                 if let Some(ty) = ty {
                     self.ty(ty);
                 }
                 let mut names = BTreeSet::new();
-                for field in fields {
-                    if !names.insert(&field.name) {
-                        self.error("E0210", field.span, "duplicate explicit record field");
-                    }
-                }
+
                 for member in members {
                     match member {
-                        RecordMember::Field(field) => self.expr(&field.value),
+                        RecordMember::Field(field) => {
+                            if !names.insert(&field.name) {
+                                self.error("E0210", field.span, "duplicate explicit record field");
+                            }
+                            self.expr(&field.value);
+                        }
                         RecordMember::Spread(value) => self.expr(value),
                     }
                 }

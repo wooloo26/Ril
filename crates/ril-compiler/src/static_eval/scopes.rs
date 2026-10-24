@@ -424,12 +424,7 @@ impl Resolver<'_> {
                     self.expr(value, scope);
                 }
             }
-            ExprKind::Record {
-                ty,
-                fields,
-                spread,
-                members,
-            } => {
+            ExprKind::Record { ty, members } => {
                 if let Some(ty) = ty {
                     self.ty(ty, scope);
                 }
@@ -439,23 +434,6 @@ impl Resolver<'_> {
                         RecordMember::Spread(value) => self.expr(value, scope),
                     }
                 }
-                *fields = members
-                    .iter()
-                    .filter_map(|member| {
-                        if let RecordMember::Field(field) = member {
-                            Some(field.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                *spread = members.iter().find_map(|member| {
-                    if let RecordMember::Spread(value) = member {
-                        Some(Box::new(value.clone()))
-                    } else {
-                        None
-                    }
-                });
             }
             ExprKind::Interpolated(parts) => {
                 for part in parts {

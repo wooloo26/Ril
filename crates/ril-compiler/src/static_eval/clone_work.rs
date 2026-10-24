@@ -381,22 +381,11 @@ impl Meter<'_> {
                     self.expr(value, depth + 1)?;
                 }
             }
-            ExprKind::Record {
-                ty,
-                fields,
-                spread,
-                members,
-            } => {
+            ExprKind::Record { ty, members } => {
                 if let Some(ty) = ty {
                     self.ty(ty, depth + 1)?;
                 }
-                if let Some(value) = spread {
-                    self.expr(value, depth + 1)?;
-                }
-                for field in fields {
-                    self.text(&field.name)?;
-                    self.expr(&field.value, depth + 1)?;
-                }
+
                 for member in members {
                     match member {
                         RecordMember::Field(field) => {

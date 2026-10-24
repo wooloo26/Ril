@@ -1253,21 +1253,11 @@ impl Resolver {
                     self.rewrite_expr(index, value, scope);
                 }
             }
-            ExprKind::Record {
-                ty,
-                fields,
-                spread,
-                members,
-            } => {
+            ExprKind::Record { ty, members } => {
                 if let Some(ty) = ty {
                     self.rewrite_type(index, ty, scope);
                 }
-                for field in fields {
-                    self.rewrite_expr(index, &mut field.value, scope);
-                }
-                if let Some(spread) = spread {
-                    self.rewrite_expr(index, spread, scope);
-                }
+
                 for member in members {
                     match member {
                         RecordMember::Field(field) => {
@@ -2419,12 +2409,12 @@ fn collect_expr_imports<'a>(expr: &'a Expr, imports: &mut Vec<&'a UseDeclaration
                 collect_expr_imports(item, imports);
             }
         }
-        ExprKind::Record { fields, spread, .. } => {
-            for field in fields {
-                collect_expr_imports(&field.value, imports);
-            }
-            if let Some(spread) = spread {
-                collect_expr_imports(spread, imports);
+        ExprKind::Record { members, .. } => {
+            for member in members {
+                match member {
+                    RecordMember::Field(field) => collect_expr_imports(&field.value, imports),
+                    RecordMember::Spread(value) => collect_expr_imports(value, imports),
+                }
             }
         }
         ExprKind::Interpolated(parts) => {

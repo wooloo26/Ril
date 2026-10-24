@@ -37,16 +37,6 @@ pub(super) fn validate(prepared: &Prepared) -> Result<(), BackendError> {
         );
         visit_block(body, &mut |expr| {
             match &expr.kind {
-                ExprKind::Record {
-                    members, fields, ..
-                } if members.is_empty() => {
-                    callbacks.extend(
-                        fields
-                            .iter()
-                            .filter(|(name, _)| name == "on_close")
-                            .map(|(_, value)| value.clone()),
-                    );
-                }
                 ExprKind::Record { members, .. } => {
                     callbacks.extend(members.iter().filter_map(|member| match member {
                         core::RecordMember::Field(name, value) if name == "on_close" => {

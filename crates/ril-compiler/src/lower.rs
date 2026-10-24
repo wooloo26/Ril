@@ -1042,20 +1042,7 @@ impl Lower<'_> {
                     .transpose()?,
                 inclusive: *inclusive,
             },
-            ast::ExprKind::Record {
-                fields,
-                spread,
-                members,
-                ..
-            } => ir::ExprKind::Record {
-                fields: fields
-                    .iter()
-                    .map(|field| Ok((field.name.clone(), self.expression(&field.value)?)))
-                    .collect::<Result<_, NotImplemented>>()?,
-                spread: spread
-                    .as_ref()
-                    .map(|value| self.expression(value).map(Box::new))
-                    .transpose()?,
+            ast::ExprKind::Record { members, .. } => ir::ExprKind::Record {
                 members: members
                     .iter()
                     .map(|member| match member {

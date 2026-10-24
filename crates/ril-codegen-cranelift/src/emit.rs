@@ -505,15 +505,16 @@ mod tests {
                     value: Expr {
                         span,
                         kind: ExprKind::Record {
-                            fields: vec![(
+                            members: (vec![(
                                 "on_close".into(),
                                 Expr {
                                     span,
                                     kind: ExprKind::Name("cleanup".into()),
                                 },
-                            )],
-                            spread: None,
-                            members: vec![],
+                            )])
+                            .into_iter()
+                            .map(|(name, value)| ril_ir::core::RecordMember::Field(name, value))
+                            .collect(),
                         },
                     },
                     scoped: true,
@@ -874,12 +875,13 @@ mod tests {
                                 rest: "other".into(),
                             },
                             value: expr(ExprKind::Record {
-                                fields: vec![
+                                members: (vec![
                                     ("first".into(), named("head")),
                                     ("tail".into(), named("tail")),
-                                ],
-                                members: vec![],
-                                spread: None,
+                                ])
+                                .into_iter()
+                                .map(|(name, value)| ril_ir::core::RecordMember::Field(name, value))
+                                .collect(),
                             }),
                             scoped: false,
                         },

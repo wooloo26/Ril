@@ -349,8 +349,7 @@ pub enum ExprKind {
     Map(Vec<(Expr, Expr)>),
     Record {
         ty: Option<TypeExpr>,
-        fields: Vec<RecordField>,
-        spread: Option<Box<Expr>>,
+        /// The single source-ordered list of evaluated fields and spreads.
         members: Vec<RecordMember>,
     },
     Unary {

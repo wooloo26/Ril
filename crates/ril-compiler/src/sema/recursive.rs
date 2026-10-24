@@ -959,21 +959,18 @@ impl Transfer<'_, '_> {
                     reception: Reception::Construction,
                 }
             }
-            ExprKind::Record {
-                ty,
-                fields,
-                spread,
-                members,
-            } => {
-                if spread.is_some()
-                    || members
-                        .iter()
-                        .any(|member| matches!(member, RecordMember::Spread(_)))
+            ExprKind::Record { ty, members } => {
+                if members
+                    .iter()
+                    .any(|member| matches!(member, RecordMember::Spread(_)))
                 {
                     return self.fail("recursive record spread requires shape composition");
                 }
                 let mut values = BTreeMap::new();
-                for field in fields {
+                for field in members.iter().filter_map(|member| match member {
+                    RecordMember::Field(field) => Some(field),
+                    RecordMember::Spread(_) => None,
+                }) {
                     let value = self.expr(&field.value, env);
                     if value == ReturnValue::Bottom {
                         return value;

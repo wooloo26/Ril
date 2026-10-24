@@ -38,8 +38,7 @@ pub enum ExprKind {
         inclusive: bool,
     },
     Record {
-        fields: Vec<(String, Expr)>,
-        spread: Option<Box<Expr>>,
+        /// Evaluate each member once in this order, then apply field precedence.
         members: Vec<RecordMember>,
     },
     Unary {

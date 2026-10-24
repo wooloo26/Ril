@@ -367,19 +367,12 @@ fn expression(evaluator: &mut Evaluator, value: &mut Expr) -> Result<()> {
         }
         ExprKind::Record {
             ty: syntax,
-            fields,
-            spread,
             members,
         } => {
             if let Some(syntax) = syntax {
                 ty(evaluator, syntax)?;
             }
-            for field in fields {
-                expression(evaluator, &mut field.value)?;
-            }
-            if let Some(spread) = spread {
-                expression(evaluator, spread)?;
-            }
+
             for member in members {
                 match member {
                     RecordMember::Field(field) => expression(evaluator, &mut field.value)?,

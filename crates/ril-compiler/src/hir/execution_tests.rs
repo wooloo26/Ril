@@ -354,8 +354,6 @@ fn strict_products_and_projections_preserve_child_roles() {
         (
             expr(ast::ExprKind::Record {
                 ty: None,
-                fields: vec![],
-                spread: None,
                 members: vec![
                     ast::RecordMember::Field(ast::RecordField {
                         name: "first".into(),

@@ -1007,22 +1007,8 @@ impl Builder {
                 let compute = self.assign_result(destination, expression(kind, span), next);
                 self.values(items, &names, compute)
             }
-            ExprKind::Record {
-                members,
-                fields,
-                spread,
-            } => {
-                let source_members = if members.is_empty() {
-                    spread
-                        .iter()
-                        .map(|value| core::RecordMember::Spread(*value.clone()))
-                        .chain(fields.iter().map(|(key, value)| {
-                            core::RecordMember::Field(key.clone(), value.clone())
-                        }))
-                        .collect::<Vec<_>>()
-                } else {
-                    members.clone()
-                };
+            ExprKind::Record { members } => {
+                let source_members = { members.clone() };
                 let mut values = vec![];
                 let mut keys = vec![];
                 let mut lowered = vec![];
@@ -1042,14 +1028,7 @@ impl Builder {
                 }
                 let compute = self.assign_result(
                     destination,
-                    expression(
-                        ExprKind::Record {
-                            members: lowered,
-                            fields: vec![],
-                            spread: None,
-                        },
-                        span,
-                    ),
+                    expression(ExprKind::Record { members: lowered }, span),
                     next,
                 );
                 self.values(&values, &keys, compute)
@@ -2081,24 +2060,11 @@ fn walk_expr(expr: &Expr, visit: &mut impl FnMut(&Expr)) {
                 walk_expr(value, visit)
             }
         }
-        ExprKind::Record {
-            members,
-            fields,
-            spread,
-        } => {
-            if members.is_empty() {
-                for (_, value) in fields {
-                    walk_expr(value, visit)
-                }
-                if let Some(value) = spread {
-                    walk_expr(value, visit)
-                }
-            } else {
-                for member in members {
-                    match member {
-                        core::RecordMember::Field(_, value) | core::RecordMember::Spread(value) => {
-                            walk_expr(value, visit)
-                        }
+        ExprKind::Record { members } => {
+            for member in members {
+                match member {
+                    core::RecordMember::Field(_, value) | core::RecordMember::Spread(value) => {
+                        walk_expr(value, visit)
                     }
                 }
             }

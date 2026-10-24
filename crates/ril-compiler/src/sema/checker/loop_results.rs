@@ -321,19 +321,10 @@ fn has_control(expression: &Expr, checked: &BTreeSet<(u32, u32, u32)>) -> bool {
         } => visit(value) || pattern(binder),
         ExprKind::Tuple(values) | ExprKind::Array(values) => values.iter().any(visit),
         ExprKind::Map(values) => values.iter().any(|(key, value)| visit(key) || visit(value)),
-        ExprKind::Record {
-            fields,
-            spread,
-            members,
-            ..
-        } => {
-            fields.iter().any(|field| visit(&field.value))
-                || spread.as_ref().is_some_and(|value| visit(value))
-                || members.iter().any(|member| match member {
-                    RecordMember::Field(field) => visit(&field.value),
-                    RecordMember::Spread(value) => visit(value),
-                })
-        }
+        ExprKind::Record { members, .. } => members.iter().any(|member| match member {
+            RecordMember::Field(field) => visit(&field.value),
+            RecordMember::Spread(value) => visit(value),
+        }),
         ExprKind::Generic { base, .. }
         | ExprKind::Unary { operand: base, .. }
         | ExprKind::Field { base, .. } => visit(base),

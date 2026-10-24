@@ -33,12 +33,10 @@ fn binary(operator: &str, left: Expr, right: Expr, span: Span) -> Expr {
 fn record(fields: Vec<(&str, Expr)>, span: Span) -> Expr {
     expr(
         ExprKind::Record {
-            fields: fields
+            members: fields
                 .into_iter()
-                .map(|(label, value)| (label.into(), value))
+                .map(|(label, value)| ril_ir::core::RecordMember::Field(label.into(), value))
                 .collect(),
-            spread: None,
-            members: vec![],
         },
         span,
     )

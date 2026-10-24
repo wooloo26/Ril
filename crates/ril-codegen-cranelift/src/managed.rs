@@ -197,18 +197,7 @@ fn visit_expr<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr) -> bool) {
                 visit_expr(value, visit)
             }
         }
-        ExprKind::Record {
-            fields,
-            spread,
-            members,
-        } if members.is_empty() => {
-            if let Some(spread) = spread {
-                visit_expr(spread, visit)
-            }
-            for (_, value) in fields {
-                visit_expr(value, visit)
-            }
-        }
+
         ExprKind::Record { members, .. } => {
             for member in members {
                 match member {
@@ -419,18 +408,7 @@ fn free_names(expr: &Expr, bound: &BTreeSet<String>, free: &mut BTreeSet<String>
                 free_names(value, bound, free)
             }
         }
-        ExprKind::Record {
-            fields,
-            spread,
-            members,
-        } if members.is_empty() => {
-            if let Some(value) = spread {
-                free_names(value, bound, free)
-            }
-            for (_, value) in fields {
-                free_names(value, bound, free)
-            }
-        }
+
         ExprKind::Record { members, .. } => {
             for member in members {
                 match member {
@@ -1960,30 +1938,7 @@ impl Emitter<'_, '_> {
                 self.locate(expr.span)?;
                 self.handle("ril_rt_range", &[lower, upper, inclusive])
             }
-            ExprKind::Record {
-                fields,
-                spread,
-                members,
-            } if members.is_empty() => {
-                let record = if let Some(spread) = spread {
-                    let base = self.expr(spread)?;
-                    if !self.reachable {
-                        return Ok(base);
-                    }
-                    self.handle("ril_rt_record_copy", &[base])?
-                } else {
-                    self.handle("ril_rt_record", &[])?
-                };
-                for (name, value) in fields {
-                    let value = self.expr(value)?;
-                    if !self.reachable {
-                        return Ok(value);
-                    }
-                    let key = self.string(name)?;
-                    self.handle("ril_rt_set_field", &[record, key, value])?;
-                }
-                Ok(record)
-            }
+
             ExprKind::Record { members, .. } => {
                 let mut fields = Vec::new();
                 let mut spreads = Vec::new();

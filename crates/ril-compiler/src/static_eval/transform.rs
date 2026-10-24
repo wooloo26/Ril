@@ -931,21 +931,11 @@ impl Evaluator {
                         self.transform_expr(value, output, symbolic);
                     }
                 }
-                ExprKind::Record {
-                    ty,
-                    fields,
-                    spread,
-                    members,
-                } => {
+                ExprKind::Record { ty, members } => {
                     if let Some(ty) = ty {
                         self.transform_type(ty, symbolic)?;
                     }
-                    for field in fields {
-                        self.transform_expr(&mut field.value, output, symbolic);
-                    }
-                    if let Some(spread) = spread {
-                        self.transform_expr(spread, output, symbolic);
-                    }
+
                     for member in members {
                         match member {
                             RecordMember::Field(field) => {

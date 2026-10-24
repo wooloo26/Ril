@@ -1002,26 +1002,12 @@ impl Visitor<'_> {
                     result.include(self.expression(value));
                 }
             }
-            ExprKind::Record {
-                fields,
-                spread,
-                members,
-                ..
-            } => {
-                if members.is_empty() {
-                    if let Some(spread) = spread {
-                        result.include(self.expression(spread));
-                    }
-                    for field in fields {
-                        result.include(self.expression(&field.value));
-                    }
-                } else {
-                    for member in members {
-                        result.include(self.expression(match member {
-                            RecordMember::Field(field) => &field.value,
-                            RecordMember::Spread(value) => value,
-                        }));
-                    }
+            ExprKind::Record { members, .. } => {
+                for member in members {
+                    result.include(self.expression(match member {
+                        RecordMember::Field(field) => &field.value,
+                        RecordMember::Spread(value) => value,
+                    }));
                 }
             }
             ExprKind::Range { start, end, .. } => {

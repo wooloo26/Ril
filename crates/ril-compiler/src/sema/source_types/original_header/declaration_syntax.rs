@@ -216,19 +216,9 @@ impl<'a> Walk<'a, '_> {
                 ExprKind::Map(entries) => {
                     self.slice(entries, child, |entry| Node::Pair(&entry.0, &entry.1))?;
                 }
-                ExprKind::Record {
-                    ty,
-                    fields,
-                    spread,
-                    members,
-                } => {
+                ExprKind::Record { ty, members } => {
                     self.optional(ty.as_ref(), child, Node::Type)?;
-                    // These compatibility fields mirror members after source
-                    // identification; their IDs are not another occurrence.
-                    if members.is_empty() {
-                        self.slice(fields, child, Node::RecordField)?;
-                        self.optional(spread.as_deref(), child, Node::Expression)?;
-                    } else {
+                    {
                         self.slice(members, child, Node::RecordMember)?;
                     }
                 }
@@ -523,8 +513,6 @@ mod tests {
                         expression: Expr {
                             kind: ExprKind::Record {
                                 ty: None,
-                                fields: vec![field.clone()],
-                                spread: None,
                                 members: vec![RecordMember::Field(field)],
                             },
                             span: span(),

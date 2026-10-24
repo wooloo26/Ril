@@ -311,12 +311,10 @@ fn internal_ir_aborted_iterator_step_keeps_cursor_state_and_committed_outside_wr
     let record = |fields: Vec<(&str, Expr)>| {
         expr(
             ExprKind::Record {
-                fields: fields
+                members: fields
                     .into_iter()
-                    .map(|(name, value)| (name.into(), value))
+                    .map(|(name, value)| ril_ir::core::RecordMember::Field(name.into(), value))
                     .collect(),
-                spread: None,
-                members: vec![],
             },
             46,
         )
@@ -670,9 +668,10 @@ fn internal_ir_budget_exhaustion_runs_cleanup_before_recovery_and_preserves_doub
                     "guard",
                     expr(
                         ExprKind::Record {
-                            fields: vec![("on_close".into(), name("cleanup"))],
-                            spread: None,
-                            members: vec![],
+                            members: (vec![("on_close".into(), name("cleanup"))])
+                                .into_iter()
+                                .map(|(name, value)| ril_ir::core::RecordMember::Field(name, value))
+                                .collect(),
                         },
                         9,
                     ),

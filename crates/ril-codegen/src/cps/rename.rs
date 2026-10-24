@@ -346,19 +346,7 @@ impl Rename {
                     .transpose()?,
                 inclusive: *inclusive,
             },
-            ExprKind::Record {
-                fields,
-                spread,
-                members,
-            } => ExprKind::Record {
-                fields: fields
-                    .iter()
-                    .map(|(key, value)| Ok((key.clone(), self.expr(value, env)?)))
-                    .collect::<Result<_, NotImplemented>>()?,
-                spread: spread
-                    .as_ref()
-                    .map(|value| self.expr(value, env).map(Box::new))
-                    .transpose()?,
+            ExprKind::Record { members } => ExprKind::Record {
                 members: members
                     .iter()
                     .map(|member| {

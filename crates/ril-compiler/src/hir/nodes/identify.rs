@@ -447,67 +447,23 @@ impl Identify<'_> {
                 }
             }
             (
-                ast::ExprKind::Record {
-                    ty,
-                    fields,
-                    spread,
-                    members,
-                },
+                ast::ExprKind::Record { ty, members },
                 ExprKind::Record {
                     ty: b,
                     members: expected,
                 },
             ) => {
                 self.opt_type(ty.as_mut(), *b, d)?;
-                if members.is_empty() {
-                    self.equal(expected.len() == fields.len() + usize::from(spread.is_some()))?;
-                    for (a, b) in fields.iter_mut().zip(expected) {
-                        self.field(a, b, d)?;
-                    }
-                    if let Some(a) = spread {
-                        let Some(RecordMember::Spread(b)) = expected.last() else {
-                            return Err(LowerError::Correspondence);
-                        };
-                        self.expr(a, *b, d)?;
-                    }
-                } else {
-                    self.equal(members.len() == expected.len())?;
-                    for (a, b) in members.iter_mut().zip(expected) {
-                        match (a, b) {
-                            (ast::RecordMember::Field(a), b @ RecordMember::Field { .. }) => {
-                                self.field(a, b, d)?
-                            }
-                            (ast::RecordMember::Spread(a), RecordMember::Spread(b)) => {
-                                self.expr(a, *b, d)?
-                            }
-                            _ => return Err(LowerError::Correspondence),
+                self.equal(members.len() == expected.len())?;
+                for (a, b) in members.iter_mut().zip(expected) {
+                    match (a, b) {
+                        (ast::RecordMember::Field(a), b @ RecordMember::Field { .. }) => {
+                            self.field(a, b, d)?
                         }
-                    }
-                    // Parser mirrors are controlled copies of the same semantic
-                    // fields, selected by ordered structure rather than spans.
-                    if !fields.is_empty() {
-                        let mut expected_fields = expected
-                            .iter()
-                            .filter(|member| matches!(member, RecordMember::Field { .. }));
-                        for field in fields {
-                            self.field(
-                                field,
-                                expected_fields.next().ok_or(LowerError::Correspondence)?,
-                                d,
-                            )?;
+                        (ast::RecordMember::Spread(a), RecordMember::Spread(b)) => {
+                            self.expr(a, *b, d)?
                         }
-                        self.equal(expected_fields.next().is_none())?;
-                    }
-                    if let Some(a) = spread {
-                        let b = expected
-                            .iter()
-                            .rev()
-                            .find_map(|member| match member {
-                                RecordMember::Spread(id) => Some(*id),
-                                RecordMember::Field { .. } => None,
-                            })
-                            .ok_or(LowerError::Correspondence)?;
-                        self.expr(a, b, d)?;
+                        _ => return Err(LowerError::Correspondence),
                     }
                 }
             }
@@ -1121,16 +1077,10 @@ mod tests {
             }],
         }
     }
-    fn record(value: ast::Expr, mirror: ast::Expr) -> ast::Expr {
+    fn record(value: ast::Expr) -> ast::Expr {
         ast::Expr {
             kind: ast::ExprKind::Record {
                 ty: None,
-                fields: vec![ast::RecordField {
-                    name: "item".into(),
-                    value: mirror,
-                    span: span(),
-                }],
-                spread: None,
                 members: vec![ast::RecordMember::Field(ast::RecordField {
                     name: "item".into(),
                     value,
@@ -1237,14 +1187,14 @@ mod tests {
     }
 
     #[test]
-    fn physical_record_mirrors_share_ids_but_cannot_bypass_preflight_budget() {
+    fn ordered_record_members_keep_one_identity_and_preflight_every_node() {
         let value = name("same");
-        let mut source = program(record(value.clone(), value));
+        let mut source = program(record(value));
         source.statements[0].hir_id = Some(StmtId(99));
-        // Three semantic nodes, but four physical AST nodes including the
-        // controlled field mirror. The failed admission writes no IDs.
+        // Statement, record and field expression each have one semantic node.
+        // Insufficient admission writes no occurrence IDs.
         let limits = HirLimits {
-            nodes: 3,
+            nodes: 2,
             ..Default::default()
         };
         assert!(
@@ -1260,50 +1210,46 @@ mod tests {
         let ast::StmtKind::Expr { expression, .. } = &source.statements[0].kind else {
             panic!()
         };
-        let ast::ExprKind::Record {
-            fields, members, ..
-        } = &expression.kind
-        else {
+        let ast::ExprKind::Record { members, .. } = &expression.kind else {
             panic!()
         };
         let ast::RecordMember::Field(member) = &members[0] else {
             panic!()
         };
-        assert_eq!(fields[0].value.hir_id, member.value.hir_id);
+        assert_ne!(expression.hir_id, member.value.hir_id);
         assert!(hir.expression(member.value.hir_id.unwrap()).is_some());
     }
 
     #[test]
-    fn generated_identification_commits_no_partial_ids_or_arena_on_mirror_mismatch() {
+    fn generated_identification_budget_failure_preserves_ids_and_arena() {
         let mut source = program(name("original"));
         let mut hir = HirProgram::lower_identified(&mut source, InputOrigin::Source).unwrap();
         let anchor = NodeId::Stmt(source.statements[0].hir_id.unwrap());
         let before = hir.node_count();
-        let mut generated = record(name("actual"), name("different"));
-        assert_eq!(
+        let mut generated = record(name("actual"));
+        assert!(matches!(
             hir.mint_generated_identified_expr(
                 &mut generated,
                 anchor,
                 GeneratedKind::Desugaring,
                 LexicalOwner::Module,
-                HirLimits::default()
+                HirLimits {
+                    nodes: 1,
+                    ..Default::default()
+                }
             ),
-            Err(LowerError::Correspondence)
-        );
+            Err(LowerError::Budget(_))
+        ));
         assert_eq!(hir.node_count(), before);
         assert!(hir.generated_roots().is_empty());
         assert_eq!(generated.hir_id, None);
-        let ast::ExprKind::Record {
-            fields, members, ..
-        } = &mut generated.kind
-        else {
+        let ast::ExprKind::Record { members, .. } = &mut generated.kind else {
             panic!()
         };
         let ast::RecordMember::Field(member) = &members[0] else {
             panic!()
         };
         assert_eq!(member.value.hir_id, None);
-        fields[0].value = member.value.clone();
         let id = hir
             .mint_generated_identified_expr(
                 &mut generated,
@@ -1330,20 +1276,23 @@ mod tests {
             hir_id: Some(StmtId(99)),
             span: span(),
             kind: ast::StmtKind::Expr {
-                expression: record(name("actual"), name("different")),
+                expression: record(name("actual")),
                 terminated: false,
             },
         };
-        assert_eq!(
+        assert!(matches!(
             hir.mint_generated_identified_statement(
                 &mut generated,
                 anchor,
                 GeneratedKind::StaticSpecialization,
                 LexicalOwner::Module,
-                HirLimits::default(),
+                HirLimits {
+                    text_bytes: 0,
+                    ..Default::default()
+                },
             ),
-            Err(LowerError::Correspondence)
-        );
+            Err(LowerError::Budget(_))
+        ));
         assert_eq!(hir.node_count(), before);
         assert!(hir.generated_roots().is_empty());
         assert_eq!(generated.hir_id, Some(StmtId(99)));
@@ -1351,17 +1300,13 @@ mod tests {
             unreachable!()
         };
         assert_eq!(expression.hir_id, None);
-        let ast::ExprKind::Record {
-            fields, members, ..
-        } = &mut expression.kind
-        else {
+        let ast::ExprKind::Record { members, .. } = &mut expression.kind else {
             unreachable!()
         };
         let ast::RecordMember::Field(member) = &members[0] else {
             unreachable!()
         };
         assert_eq!(member.value.hir_id, None);
-        fields[0].value = member.value.clone();
         let limited = HirLimits {
             nodes: 1,
             ..HirLimits::default()

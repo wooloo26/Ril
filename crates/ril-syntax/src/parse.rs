@@ -2145,16 +2145,13 @@ impl<'a> Parser<'a> {
 
     fn record(&mut self, ty: Option<TypeExpr>, start: usize) -> Expr {
         self.expect("{");
-        let mut fields = vec![];
-        let mut spread = None;
         let mut members = vec![];
         while !self.at("}") && !self.eof() {
             let before = self.pos;
             let start = self.offset();
             if self.eat("..") {
                 let value = self.expression(0, true);
-                members.push(RecordMember::Spread(value.clone()));
-                spread = Some(Box::new(value));
+                members.push(RecordMember::Spread(value));
             } else {
                 let name = self.name();
                 let value = if self.eat(":") {
@@ -2171,8 +2168,7 @@ impl<'a> Parser<'a> {
                     value,
                     span: self.span(start),
                 };
-                members.push(RecordMember::Field(field.clone()));
-                fields.push(field);
+                members.push(RecordMember::Field(field));
             }
             if self.pos == before || !self.list_separator("}") {
                 break;
@@ -2181,12 +2177,7 @@ impl<'a> Parser<'a> {
         self.expect("}");
         Expr {
             hir_id: None,
-            kind: ExprKind::Record {
-                ty,
-                fields,
-                spread,
-                members,
-            },
+            kind: ExprKind::Record { ty, members },
             span: self.span(start),
         }
     }
@@ -2714,19 +2705,29 @@ fn expr_test_pattern(expr: Expr, groups: &BTreeSet<(u32, u32)>) -> Pattern {
                     .collect(),
             }
         }
-        ExprKind::Record { ty, fields, .. } => PatternKind::Record {
-            ty,
-            fields: fields
-                .into_iter()
-                .map(|field| PatternField {
-                    name: field.name,
-                    pattern: expr_test_pattern(field.value, groups),
-                    span: field.span,
-                })
-                .collect(),
-            rest: false,
-            rest_binding: None,
-        },
+        ExprKind::Record { members, ty, .. }
+            if members
+                .iter()
+                .all(|member| matches!(member, RecordMember::Field(_))) =>
+        {
+            PatternKind::Record {
+                ty,
+                fields: members
+                    .into_iter()
+                    .filter_map(|member| match member {
+                        RecordMember::Field(field) => Some(field),
+                        RecordMember::Spread(_) => None,
+                    })
+                    .map(|field| PatternField {
+                        name: field.name,
+                        pattern: expr_test_pattern(field.value, groups),
+                        span: field.span,
+                    })
+                    .collect(),
+                rest: false,
+                rest_binding: None,
+            }
+        }
         _ => PatternKind::Value(Box::new(expr)),
     };
     Pattern {
@@ -2770,9 +2771,10 @@ fn has_test_binding_mode(expr: &Expr, groups: &BTreeSet<(u32, u32)>) -> bool {
         ExprKind::Tuple(items) | ExprKind::Array(items) => {
             items.iter().any(|item| has_test_binding_mode(item, groups))
         }
-        ExprKind::Record { fields, .. } => fields
-            .iter()
-            .any(|field| has_test_binding_mode(&field.value, groups)),
+        ExprKind::Record { members, .. } => members.iter().any(|member| match member {
+            RecordMember::Field(field) => has_test_binding_mode(&field.value, groups),
+            RecordMember::Spread(value) => has_test_binding_mode(value, groups),
+        }),
         _ => false,
     }
 }

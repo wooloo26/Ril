@@ -420,25 +420,9 @@ impl Lower<'_> {
                     })
                     .collect::<Result<_, LowerError>>()?,
             ),
-            ast::ExprKind::Record {
-                ty,
-                fields,
-                spread,
-                members,
-            } => {
+            ast::ExprKind::Record { ty, members } => {
                 let mut lowered = Vec::new();
-                if members.is_empty() {
-                    for field in fields {
-                        lowered.push(RecordMember::Field {
-                            name: self.text(&field.name)?,
-                            value: self.expr(&field.value, owner, d)?,
-                            span: field.span,
-                        });
-                    }
-                    if let Some(value) = spread {
-                        lowered.push(RecordMember::Spread(self.expr(value, owner, d)?));
-                    }
-                } else {
+                {
                     for member in members {
                         lowered.push(match member {
                             ast::RecordMember::Field(field) => RecordMember::Field {

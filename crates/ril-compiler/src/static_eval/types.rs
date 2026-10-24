@@ -760,13 +760,8 @@ impl Evaluator {
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
-                let members = fields.iter().cloned().map(RecordMember::Field).collect();
-                ExprKind::Record {
-                    ty: None,
-                    fields,
-                    spread: None,
-                    members,
-                }
+                let members = fields.into_iter().map(RecordMember::Field).collect();
+                ExprKind::Record { ty: None, members }
             }
             StaticValue::Array(values) => ExprKind::Array(
                 values
@@ -1542,14 +1537,19 @@ fn expression_key(expr: &Expr) -> String {
                 .collect::<Vec<_>>()
                 .join(",")
         ),
-        ExprKind::Record { fields, .. } => {
-            let mut fields = fields
+        ExprKind::Record { ty, members } => format!(
+            "record:{:?}:{}",
+            ty.as_ref().map(type_key),
+            members
                 .iter()
-                .map(|field| format!("{}:{}", field.name, expression_key(&field.value)))
-                .collect::<Vec<_>>();
-            fields.sort();
-            fields.join(",")
-        }
+                .map(|member| match member {
+                    RecordMember::Field(field) =>
+                        format!("field:{}:{}", field.name, expression_key(&field.value)),
+                    RecordMember::Spread(value) => format!("spread:{}", expression_key(value)),
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
         ExprKind::Name(name) => name.clone(),
         ExprKind::Path(path) => normalized_path(path),
         ExprKind::Call { callee, arguments } => format!(

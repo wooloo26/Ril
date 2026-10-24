@@ -404,17 +404,7 @@ impl Lower {
                     self.expression(value)?;
                 }
             }
-            ExprKind::Record {
-                members,
-                fields,
-                spread,
-            } => {
-                if let Some(value) = spread {
-                    self.expression(value)?;
-                }
-                for (_, value) in fields {
-                    self.expression(value)?;
-                }
+            ExprKind::Record { members } => {
                 for member in members {
                     match member {
                         core::RecordMember::Field(_, value) | core::RecordMember::Spread(value) => {
