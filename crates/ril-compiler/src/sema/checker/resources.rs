@@ -676,7 +676,7 @@ mod tests {
             let ty = Ty::Named("Node".into());
             assert_eq!(checker.resource_scan_type(&ty), expected);
             assert_eq!(
-                checker.ordinary_loop_type(&ty, &mut BTreeSet::new()),
+                checker.ordinary_data_type(&ty),
                 expected == ResourceScan::Absent
             );
             let Ty::Record(fields) = checker.capability_shallow_type(&ty).unwrap() else {
@@ -709,7 +709,7 @@ mod tests {
             checker.resource_scan_type(&growing),
             ResourceScan::Incomplete
         );
-        assert!(!checker.ordinary_loop_type(&growing, &mut BTreeSet::new()));
+        assert!(!checker.ordinary_data_type(&growing));
     }
     #[test]
     fn complete_keys_and_canonical_declaration_names_determine_instance_identity() {

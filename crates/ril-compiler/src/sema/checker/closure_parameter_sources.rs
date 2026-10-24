@@ -238,7 +238,18 @@ impl Checker {
         )?;
         let (result, environment) =
             self.selected_input_schema(result, source.environment.clone(), &mut work)?;
-        let syntax = result.syntax_projection(span, &mut work, &mut |identity, row, budget| {
+        self.owned_type_receiving_target(result, environment, span, &mut work)
+            .map(Some)
+    }
+
+    pub(in crate::sema::checker) fn owned_type_receiving_target(
+        &self,
+        schema: SourceSchema,
+        environment: crate::sema::context::FrozenEnvironment,
+        span: Span,
+        work: &mut WorkLimit,
+    ) -> Result<source_reception::Target, SourceTypesError> {
+        let syntax = schema.syntax_projection(span, work, &mut |identity, row, budget| {
             budget
                 .charge(environment.generic_context.len() + environment.bound_row_context.len())?;
             let name = environment
@@ -274,7 +285,7 @@ impl Checker {
             Err(SourceTypesError::BudgetExceeded) => return Err(SourceTypesError::BudgetExceeded),
             Err(_) => None,
         };
-        let sensitivity = match result.sensitivity(&mut work) {
+        let sensitivity = match schema.sensitivity(work) {
             crate::sema::source_types::SourceSensitivity::Absent { .. } => {
                 source_reception::SchemaSensitivity::NotRequired
             }
@@ -288,16 +299,16 @@ impl Checker {
                 source_reception::SchemaSensitivity::Unknown
             }
         };
-        Ok(Some(source_reception::Target {
+        Ok(source_reception::Target {
             source: None,
             environment,
             span,
-            schema: Some(result),
+            schema: Some(schema),
             syntax,
             empty_array_context: None,
             static_projection: None,
             sensitivity,
-        }))
+        })
     }
 
     pub(in crate::sema::checker) fn inferred_closure_parameter_source(

@@ -669,7 +669,7 @@ impl Checker {
                 }
                 let mut missing = path.to_vec();
                 missing.push(CopyProjection::Storage(slot.clone()));
-                if !expected.scalar() && !self.ordinary_loop_type(expected, &mut BTreeSet::new()) {
+                if !expected.scalar() && !self.ordinary_data_type(expected) {
                     result.push(CopyConstituent {
                         parent: origin.or(parent),
                         path: missing.clone(),
@@ -703,7 +703,7 @@ impl Checker {
         // Closed recursive ordinary-data shapes can prove absence of excluded
         // constituents coinductively. This proves only eligibility: it adds no
         // graph node, alias relation, singleton fact or writable permission.
-        if self.ordinary_loop_type(ty, &mut BTreeSet::new()) {
+        if self.ordinary_data_type(ty) {
             result.push(CopyConstituent {
                 parent,
                 path,
@@ -883,7 +883,7 @@ impl Checker {
             if checker.resource_scan_type(ty) == resources::ResourceScan::Present {
                 return Constituent::Rejected(Rejection::Resource);
             }
-            if checker.ordinary_loop_type(ty, &mut BTreeSet::new()) {
+            if checker.ordinary_data_type(ty) {
                 return Constituent::Ordinary;
             }
             let Some(key) = checker.capability_type_key(ty, budget) else {

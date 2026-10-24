@@ -212,8 +212,7 @@ impl Checker {
             }
             if !pending.parametric
                 && !self.copy_handler_answer_type(&declaration)
-                && !(pending.ordinary_transport
-                    && self.ordinary_loop_type(&declaration, &mut BTreeSet::new()))
+                && !(pending.ordinary_transport && self.ordinary_data_type(&declaration))
             {
                 self.unsupported(
                     pending.span,

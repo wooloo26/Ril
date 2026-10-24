@@ -31,6 +31,8 @@ impl Checker {
         if args.len() != arity {
             return true;
         }
+        let diagnostics = self.diagnostics.len();
+        let unsupported = self.unsupported.len();
         let answer = (|| {
             let mut work = WorkLimit::new(16384);
             let event = self
@@ -67,7 +69,7 @@ impl Checker {
                 let input = self
                     .storage_supplied_input(event, slot, &args[slot].1, span, frame, &mut work)?
                     .ok_or(SourceTypesError::MissingNode)?;
-                if !storage_compatible(
+                if !input_compatible(
                     &expected,
                     &input,
                     SourceTypesRef::Live(self.type_source.storage.live_types()),
@@ -75,18 +77,44 @@ impl Checker {
                 )? {
                     return Ok(false);
                 }
+                if expected.contains_callable(&mut work)? {
+                    let target = self.owned_type_receiving_target(
+                        expected,
+                        environment.clone(),
+                        args[slot].2,
+                        &mut work,
+                    )?;
+                    let syntax = target
+                        .syntax
+                        .as_deref()
+                        .ok_or(SourceTypesError::Unresolved)?;
+                    let origin = super::contracts::SignatureSource::receiving(&target)
+                        .ok_or(SourceTypesError::Unresolved)?;
+                    let unsupported = self.unsupported.len();
+                    self.with_typing_environment(&target.environment, |checker| {
+                        checker.check_signature_modes(&input.value, syntax);
+                        checker.check_receiving_callable_bounds_from(&input.value, syntax, &origin);
+                    });
+                    if self.diagnostics.len() != diagnostics
+                        || self.unsupported.len() != unsupported
+                    {
+                        return Ok(false);
+                    }
+                }
             }
             Ok(true)
         })();
         match answer {
             Ok(true) => true,
             Ok(false) => {
-                self.error(
-                    "E0301",
-                    span,
-                    "stored input source does not fit the receiver's original element or key schema",
-                    args.iter().map(|(_, value, _)| value.cause),
-                );
+                if self.diagnostics.len() == diagnostics && self.unsupported.len() == unsupported {
+                    self.error(
+                        "E0301",
+                        span,
+                        "stored input source does not fit the receiver's original element or key schema",
+                        args.iter().map(|(_, value, _)| value.cause),
+                    );
+                }
                 false
             }
             Err(error) => {
@@ -170,23 +198,6 @@ impl Checker {
     }
 }
 
-fn storage_compatible(
-    expected: &SourceSchema,
-    input: &Input,
-    types: SourceTypesRef<'_>,
-    work: &mut WorkLimit,
-) -> Result<bool, SourceTypesError> {
-    if let Some((actual, _)) = input.input_source(types, work)?.into_known()
-        && let (Some(expected), Some(actual)) = (
-            expected.callable_annotations(work)?,
-            actual.callable_annotations(work)?,
-        )
-        && expected != actual
-    {
-        return Err(SourceTypesError::Unresolved);
-    }
-    input_compatible(expected, input, types, work)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,7 +206,7 @@ mod tests {
         expected: &ArgumentKey,
         input: &(Input, crate::sema::source_types::LiveSourceTypes),
     ) -> Option<bool> {
-        storage_compatible(
+        input_compatible(
             &SourceSchema::import(expected, None, &mut WorkLimit::new(16384)).unwrap(),
             &input.0,
             SourceTypesRef::Live(&input.1),
@@ -301,23 +312,6 @@ mod tests {
                 )
             ),
             Some(false)
-        );
-    }
-
-    #[test]
-    fn source_coordinates_do_not_prove_an_unrelated_callable_bound_row() {
-        let callable = |annotations| ArgumentKey::Callable {
-            parameters: vec![],
-            result: Box::new(integer_key()),
-            annotations,
-        };
-        let expected = callable(vec!["@{}".into()]);
-        assert_eq!(
-            compatible(
-                &expected,
-                &input(callable(vec!["@Fiber".into()]), Construction::Opaque)
-            ),
-            None
         );
     }
 }

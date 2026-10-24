@@ -189,3 +189,95 @@ fn make()->Box{Box.{items:[]}}
 fn example(){var target=make();let replacement=Box.{items:[]};target=replacement}
 --@ end-file
 --@ end-case
+
+--@ source: storage-callable-contracts
+--@ file: source.ril
+type Reader = fn() -> int &closure
+fn make(value: int) -> Reader &capture { \-> value }
+pub fn test_native() {
+    let seed = 7
+    let mut readers: []Reader = []
+    Array::push(mut readers, \-> seed)
+    Array::insert(mut readers, 0, make(3))
+    let mut records: []{ read: Reader } = []
+    Array::push(mut records, .{ read: \-> 11 })
+    let mut named: [str: Reader] = [:]
+    Map::set(mut named, "chosen", \-> 13)
+    assert(readers[0]() == 3 && readers[1]() == 7)
+    assert(records[0].read() == 11)
+    match Map::get(named, "chosen") {
+        Some(reader) -> assert(reader() == 13),
+        None -> panic("missing stored reader"),
+    }
+}
+--@ end-file
+--@ end-source
+
+--@ case: storage-callable-contracts-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: reject-stored-callable-effect
+--@ use-source: storage-callable-contracts
+--@ end-case
+
+--@ case: storage-callable-contracts-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: reject-nested-stored-callable-effect
+--@ use-source: storage-callable-contracts
+--@ end-case
+
+--@ case: storage-callable-contracts-native
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ use-source: storage-callable-contracts
+--@ end-case
+
+--@ case: reject-stored-callable-effect
+--@ mode: check-fail
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: storage-callable-contracts-pointer32
+-- Error [E0534]: Insertion checks actual effects against the stored callable contract.
+--@ file: source.ril
+eff Read { get() -> int }
+eff Write { get() -> int }
+type Reader = fn() -> int @Read
+fn invalid() {
+    let mut readers: []Reader = []
+    Array::push(mut readers, \-> Write::get())
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-nested-stored-callable-effect
+--@ mode: check-fail
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: storage-callable-contracts-pointer64
+-- Error [E0534]: A record wrapper cannot hide a callback's incompatible effect.
+--@ file: source.ril
+eff Read { get() -> int }
+eff Write { get() -> int }
+type Reader = fn() -> int @Read
+fn invalid() {
+    let mut readers: []{ read: Reader } = []
+    Array::push(mut readers, .{ read: \-> Write::get() })
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-unreachable-loop-writer
+--@ mode: check-fail
+--@ spec: SPEC#binding-permissions-and-storage-matrix
+--@ companion: storage-callable-contracts-pointer32
+-- Error [E0527]: A definitely unmatched loop does not exercise writable authority.
+--@ file: source.ril
+fn invalid() {
+    let absent: ?int = None
+    let mut values: []int = []
+    while let Some(value) = absent { Array::push(mut values, value) }
+}
+--@ end-file
+--@ end-case

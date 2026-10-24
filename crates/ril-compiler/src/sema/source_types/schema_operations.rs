@@ -323,6 +323,16 @@ impl SourceSchema {
         self.environment_dependency(false, work)
     }
 
+    pub(crate) fn contains_callable(&self, work: &mut WorkLimit) -> Result<bool, SourceTypesError> {
+        for id in self.types.reachable([self.root], work)? {
+            work.charge(1)?;
+            if matches!(self.types.get(id)?, SourceNode::Callable { .. }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn environment_dependency(
         &self,
         binders: bool,

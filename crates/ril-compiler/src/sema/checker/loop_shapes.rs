@@ -1,6 +1,9 @@
 //! Ordinary-data loops use a finite may-graph over site recent/older nodes.
-//! Resource, Result, callable and unresolved-row transfer stay separate proofs.
+//! Immutable callable environments share this domain; mutable environments,
+//! resources, Result duties and unresolved rows retain their other domains.
 use super::*;
+#[path = "loop_equivalence.rs"]
+mod equivalence;
 
 impl Checker {
     pub(super) fn loop_allocation_context(&self, owner: ScopeId) -> ScopeId {
@@ -25,10 +28,18 @@ impl Checker {
             if !value.pending_copies.is_empty()
                 || !value.results.is_empty()
                 || !value.scoped.is_empty()
-                || !value.callables.is_empty()
+                || value.callables.iter().any(|callable| {
+                    matches!(callable, Callable::Symbolic(..))
+                        || checker.has_retained_handlers(callable)
+                })
+                || (value.callables.is_empty()
+                    && matches!(
+                        checker.expanded(&value.ty, &mut BTreeSet::new()),
+                        Ty::Callable(..)
+                    ))
                 || value.mutable_environment
                 || value.observer_environment
-                || !(checker.ordinary_loop_type(&value.ty, &mut BTreeSet::new())
+                || !(checker.ordinary_graph_type(&value.ty, true)
                     || checker.ordinary_loop_sum_carrier(value))
             {
                 return false;
@@ -64,7 +75,7 @@ impl Checker {
         match &value.ty {
             Ty::Applied { arguments, .. } => arguments.iter().all(|argument| match argument {
                 TypeArgument::Type(ty) | TypeArgument::CanonicalType { ty, .. } => {
-                    self.ordinary_loop_type(ty, &mut BTreeSet::new())
+                    self.ordinary_graph_type(ty, true)
                 }
                 TypeArgument::Static(_) => true,
                 TypeArgument::Symbolic(_) => false,
@@ -77,7 +88,12 @@ impl Checker {
         }
     }
 
-    pub(super) fn ordinary_loop_type(&self, ty: &Ty, _seen: &mut BTreeSet<String>) -> bool {
+    /// Type-only data eligibility cannot certify a callable environment.
+    pub(super) fn ordinary_data_type(&self, ty: &Ty) -> bool {
+        self.ordinary_graph_type(ty, false)
+    }
+
+    fn ordinary_graph_type(&self, ty: &Ty, callables: bool) -> bool {
         if self.resource_scan_type(ty) != resources::ResourceScan::Absent {
             return false;
         }
@@ -87,6 +103,7 @@ impl Checker {
             budget: &mut resources::TypeScanBudget,
             active: &mut BTreeSet<String>,
             complete: &mut BTreeMap<String, bool>,
+            callables: bool,
         ) -> bool {
             if !budget.node() {
                 return false;
@@ -95,24 +112,24 @@ impl Checker {
                 Ty::Unknown
                 | Ty::Result(..)
                 | Ty::Generic(_)
-                | Ty::Callable(..)
                 | Ty::OpenRecord { .. }
                 | Ty::Projection { .. } => false,
+                Ty::Callable(..) => callables,
                 Ty::Immutable(inner)
                 | Ty::Optional(inner)
                 | Ty::Array(inner)
                 | Ty::Set(inner)
-                | Ty::Range(inner) => visit(checker, inner, budget, active, complete),
+                | Ty::Range(inner) => visit(checker, inner, budget, active, complete, callables),
                 Ty::Map(key, value) => {
-                    visit(checker, key, budget, active, complete)
-                        && visit(checker, value, budget, active, complete)
+                    visit(checker, key, budget, active, complete, callables)
+                        && visit(checker, value, budget, active, complete, callables)
                 }
                 Ty::Tuple(items) => items
                     .iter()
-                    .all(|ty| visit(checker, ty, budget, active, complete)),
+                    .all(|ty| visit(checker, ty, budget, active, complete, callables)),
                 Ty::Record(fields) => fields
                     .values()
-                    .all(|(_, ty)| visit(checker, ty, budget, active, complete)),
+                    .all(|(_, ty)| visit(checker, ty, budget, active, complete, callables)),
                 Ty::Named(_) | Ty::Applied { .. } if !ty.scalar() => {
                     let Some(key) = checker.capability_type_key(ty, budget) else {
                         return false;
@@ -130,7 +147,8 @@ impl Checker {
                     let ordinary = checker
                         .capability_shallow_type_with_budget(ty, budget)
                         .is_some_and(|expanded| {
-                            expanded != *ty && visit(checker, &expanded, budget, active, complete)
+                            expanded != *ty
+                                && visit(checker, &expanded, budget, active, complete, callables)
                         });
                     active.remove(&key);
                     complete.insert(key, ordinary);
@@ -145,6 +163,7 @@ impl Checker {
             &mut resources::TypeScanBudget::default(),
             &mut BTreeSet::new(),
             &mut BTreeMap::new(),
+            callables,
         )
     }
 

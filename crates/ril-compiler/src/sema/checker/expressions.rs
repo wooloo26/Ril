@@ -2935,10 +2935,19 @@ impl Checker {
             }
             let mut changed =
                 self.concurrent_iteration_changes_authority(&before_concurrency, &outside);
+            let mut summary_work = self.application_effect.lease_work(32768);
+            let mut summary_error = None;
             for (id, before) in before_bindings {
                 let merged =
                     self.join_ordinary_loop_value(&before, &self.bindings[id].value, choice, cause);
-                changed |= !head_bindings[&id].same_abstract_value(&merged);
+                changed |=
+                    match self.same_loop_value(&head_bindings[&id], &merged, summary_work.work()) {
+                        Ok(same) => !same,
+                        Err(error) => {
+                            summary_error = Some(error);
+                            true
+                        }
+                    };
                 self.bindings[id].value = merged;
             }
             for (key, before) in before_fields {
@@ -2955,10 +2964,24 @@ impl Checker {
             }
             changed |= self.fields.iter().any(|(key, value)| {
                 outside.contains(&key.0)
-                    && head_fields
-                        .get(key)
-                        .is_none_or(|before| !before.same_abstract_value(value))
+                    && head_fields.get(key).is_none_or(|before| {
+                        match self.same_loop_value(before, value, summary_work.work()) {
+                            Ok(same) => !same,
+                            Err(error) => {
+                                summary_error = Some(error);
+                                true
+                            }
+                        }
+                    })
             });
+            let returned = self.application_effect.return_work(summary_work);
+            if let Some(error) = summary_error.or_else(|| returned.err()) {
+                self.unsupported(
+                    span,
+                    format!("loop summary comparison is incomplete: {error}"),
+                );
+                return;
+            }
             self.refresh_heap_fields();
             self.refresh_writable_roots();
             if !changed {

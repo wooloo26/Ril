@@ -55,7 +55,7 @@ impl Checker {
     /// does not authorize its binding reception or any suffix access.
     pub(super) fn ordinary_handler_answer(&self, answer: &Value) -> bool {
         !matches!(answer.ty, Ty::Unknown | Ty::Never)
-            && self.ordinary_loop_type(&answer.ty, &mut BTreeSet::new())
+            && self.ordinary_data_type(&answer.ty)
             && self.resource_free(answer)
             && !self.has_unresolved_row(answer)
             && self.ordinary_loop_value(answer, &self.fields)
