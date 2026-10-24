@@ -595,9 +595,9 @@ impl Checker {
         if target.syntax.return_type.is_none() {
             return Ok(None);
         }
-        // This query owns a direct reference to the original declaration.
-        // A published alias has its own callable Source view and is handled
-        // by the actual-callee graph query, even when it executes this body.
+        // The actual declaration supplies its instance equations. A stored
+        // callable keeps its own public result view, instantiated by those
+        // same equations rather than borrowing the implementation's header.
         let application = AstApplication::from_ast(syntax).ok_or(SourceTypesError::Unresolved)?;
         let event = self
             .copy_call_events
@@ -642,12 +642,9 @@ impl Checker {
                     .ok_or(SourceTypesError::MissingNode)?,
             )
             .ok_or(SourceTypesError::MissingNode)?;
-        if binding.parameter
-            || binding.span != target.syntax.span
-            || binding.name != target.syntax.name
-        {
-            return Ok(None);
-        }
+        let direct_declaration = !binding.parameter
+            && binding.span == target.syntax.span
+            && binding.name == target.syntax.name;
         let generic_work = target
             .syntax
             .generics
@@ -723,13 +720,6 @@ impl Checker {
             {
                 return None;
             }
-            let binding = self.bindings.get(*expression.value.sources.first()?)?;
-            if binding.parameter
-                || binding.span != self.functions[*index].syntax.span
-                || binding.name != self.functions[*index].syntax.name
-            {
-                return None;
-            }
             let target = self
                 .functions
                 .iter()
@@ -776,13 +766,13 @@ impl Checker {
             Some((*call, target, scope, key, *row, context))
         })()
         .ok_or(SourceTypesError::Unresolved)?;
-        let (call, target, scope, key, row, context) = admission;
+        let (call, target, scope, _key, row, context) = admission;
         let original = target
             .syntax
             .return_type
             .as_ref()
             .ok_or(SourceTypesError::MissingNode)?;
-        let environment = target.typing_environment.clone();
+        let mut environment = target.typing_environment.clone();
         if environment.is_poisoned() {
             return Err(SourceTypesError::Unresolved);
         }
@@ -804,7 +794,27 @@ impl Checker {
                 return Err(SourceTypesError::Unresolved);
             }
         }
-        let schema = self.original_header_source_schema_in(original, &names, work)?;
+        let schema = if direct_declaration {
+            self.original_header_source_schema_in(original, &names, work)?
+        } else {
+            let (public, public_environment) = callee
+                .value
+                .packet()
+                .input_source(
+                    SourceTypesRef::Live(self.type_source.storage.live_types()),
+                    work,
+                )?
+                .into_known()
+                .ok_or(SourceTypesError::Unresolved)?;
+            let (_, result) = public
+                .callable_parts(work)?
+                .ok_or(SourceTypesError::Unresolved)?;
+            if public_environment.is_poisoned() {
+                return Err(SourceTypesError::Unresolved);
+            }
+            environment = public_environment;
+            result
+        };
         let mut selected = BTreeMap::new();
         work.charge(row.arguments.len() + row.captured_arguments.len())?;
         for (index, argument) in row.arguments.iter().enumerate() {
@@ -954,11 +964,8 @@ impl Checker {
                 };
             selected.insert(argument.binder.clone(), source);
         }
-        if let ArgumentKey::Binder {
-            identity,
-            sort: StaticBinderSort::Type,
-        } = &key
-            && let Some(source) = selected.get(identity)
+        if let Some(identity) = schema.bare_binder_identity(work)?
+            && let Some(source) = selected.get(&identity)
         {
             return Ok(Some(source.clone()));
         }

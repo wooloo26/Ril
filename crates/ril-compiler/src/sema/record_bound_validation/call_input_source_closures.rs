@@ -782,15 +782,12 @@ impl Replay<'_> {
                         .expressions
                         .get(row.expression)
                         .filter(|fact| fact.source_id.is_some() && fact.source_id == body.hir_id)
-                        .map(|fact| (row.context, row.expression, &fact.value))
+                        .map(|_| (row.context, row.expression))
                 })
                 .collect();
-            let [(body_context, observation, result)] = roots.as_slice() else {
+            let [(body_context, observation)] = roots.as_slice() else {
                 continue;
             };
-            if result.ty == Ty::Never {
-                continue;
-            }
             let Some(result) = self.original_observed_source_schema_with_work(
                 body,
                 *observation,
@@ -911,6 +908,13 @@ impl Replay<'_> {
         let (_, result) =
             super::graph_sources::schema_work(work, |budget| schema.callable_parts(budget))?
                 .ok_or("lambda Source graph is not callable")?;
+        // The independently reconstructed bottom result supplies no normal
+        // payload; its compatibility does not depend on a projected header.
+        if super::graph_sources::schema_work(work, |budget| {
+            crate::sema::control_sources::never(&result, budget)
+        })? {
+            return Ok(true);
+        }
         for bound in value.callable_returns.iter().filter(|bound| !bound.raw) {
             let scope = BoundScope {
                 types: bound.typing_environment.generic_context.clone(),

@@ -19,6 +19,7 @@ mod channel_production;
 pub(crate) mod clone_work;
 pub mod closure_exclusivity;
 pub mod context;
+pub(crate) mod control_sources;
 pub mod copy_contract;
 pub mod copy_eligibility;
 pub mod copy_template_closure;

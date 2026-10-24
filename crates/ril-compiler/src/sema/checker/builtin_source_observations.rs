@@ -236,7 +236,7 @@ impl Checker {
                 return;
             }
         } else {
-            if !matches!(value.callables.as_slice(), [Callable::Builtin(actual)] if actual == name)
+            if !matches!(value.callables.as_slice(), [Callable::Builtin(actual)] if contract.identity.matches_name(actual))
             {
                 return;
             }
@@ -342,7 +342,7 @@ impl Checker {
                 ..
             }) => {
                 value.signature.as_ref() == Some(parameters)
-                    && matches!(value.callables.as_slice(), [Callable::Builtin(actual)] if actual == &name)
+                    && matches!(value.callables.as_slice(), [Callable::Builtin(actual)] if pending.contract.identity.matches_name(actual))
             }
             BuiltinDeclaration::Syntax(_)
                 if matches!(

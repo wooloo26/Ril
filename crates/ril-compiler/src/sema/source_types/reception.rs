@@ -167,6 +167,12 @@ fn compare(
     let right = graph.get(actual)?;
     left.charge(work)?;
     right.charge(work)?;
+    // Bottom is a subtype at a receiving position, including a callable's
+    // covariant result. This proves only type compatibility, never an exit.
+    // Invariant storage/parameter comparisons retain exact type identity.
+    if position == Position::Receiving && matches!(right, SourceNode::Scalar(SourceScalar::Never)) {
+        return Ok(true);
+    }
     if let Some(contexts) = annotations
         && contexts.left.id() != contexts.right.id()
         && (matches!(
@@ -825,6 +831,83 @@ pub(crate) fn receive_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bottom_receives_covariantly_but_cannot_erase_invariant_parameters_or_unknowns() {
+        let mut work = WorkLimit::new(100_000);
+        let mut graph = SourceBuilder::new().unwrap();
+        let unit = graph
+            .insert(SourceNode::Scalar(SourceScalar::Unit), &mut work)
+            .unwrap();
+        let bottom = graph
+            .insert(SourceNode::Scalar(SourceScalar::Never), &mut work)
+            .unwrap();
+        let unknown = graph
+            .insert(
+                SourceNode::Unresolved {
+                    description: "missing header".into(),
+                    arguments: vec![],
+                },
+                &mut work,
+            )
+            .unwrap();
+        let callback = |graph: &mut SourceBuilder,
+                        parameter: Option<(ParameterMode, SourceTypeId)>,
+                        result,
+                        work: &mut WorkLimit| {
+            graph
+                .insert(
+                    SourceNode::Callable {
+                        parameters: parameter.into_iter().collect(),
+                        result,
+                        annotations: vec![],
+                        row_identity: None,
+                    },
+                    work,
+                )
+                .unwrap()
+        };
+        let expected = callback(
+            &mut graph,
+            None::<(ParameterMode, SourceTypeId)>,
+            unit,
+            &mut work,
+        );
+        let actual = callback(&mut graph, None, bottom, &mut work);
+        assert_eq!(receive(&graph, expected, actual, None, &mut work), Ok(true));
+        assert_eq!(
+            equivalent_in(&graph, expected, actual, &mut work),
+            Ok(false)
+        );
+        assert_eq!(
+            receive(&graph, actual, expected, None, &mut work),
+            Ok(false)
+        );
+        let expected_mut = callback(
+            &mut graph,
+            Some((ParameterMode::Mut, unit)),
+            unit,
+            &mut work,
+        );
+        let actual_mut = callback(
+            &mut graph,
+            Some((ParameterMode::Mut, bottom)),
+            unit,
+            &mut work,
+        );
+        assert_eq!(
+            receive(&graph, expected_mut, actual_mut, None, &mut work),
+            Ok(false)
+        );
+        assert_eq!(
+            receive(&graph, unknown, bottom, None, &mut work),
+            Err(SourceTypesError::Unresolved)
+        );
+        assert_eq!(
+            receive(&graph, expected, actual, None, &mut WorkLimit::new(0)),
+            Err(SourceTypesError::BudgetExceeded)
+        );
+    }
 
     #[test]
     fn binder_comparison_keeps_the_static_object_and_checks_each_binding_coordinate() {

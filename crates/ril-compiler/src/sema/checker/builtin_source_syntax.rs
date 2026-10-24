@@ -384,7 +384,16 @@ fn bit(name: &str) -> u128 {
         "Prelude::clone_immut" => 1 << 13,
         // A genuinely unresolved local Prelude namespace cannot certify a
         // qualified standard export. A short Some binding does not hide it.
-        "Prelude" => (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12) | (1 << 13) | (1 << 15),
+        "Prelude" => {
+            (1 << 7)
+                | (1 << 8)
+                | (1 << 9)
+                | (1 << 12)
+                | (1 << 13)
+                | (1 << 15)
+                | crate::sema::source_types::builtins::BuiltinId::lookup("panic")
+                    .map_or(0, |id| id.bit())
+        }
         "Io" => ((1 << 6) - 1) << 116,
         _ => builtin_bit(name),
     }
@@ -731,6 +740,11 @@ impl Walk<'_, '_> {
                     let mut child_shadow = shadow;
                     for parameter in parameters {
                         child_shadow |= self.pattern_names(&parameter.pattern, depth + 1)?;
+                    }
+                    for parameter in parameters {
+                        if let Some(default) = &parameter.default {
+                            self.expr(default, child_owner, child_shadow, depth + 1)?;
+                        }
                     }
                     self.expr(body, child_owner, child_shadow, depth + 1)?;
                 }

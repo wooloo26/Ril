@@ -792,7 +792,7 @@ fn unresolved_standard_contracts_keep_the_resolved_export_identity() {
         outcome.diagnostics
     );
     assert!(outcome.program.is_some() || !outcome.unsupported.is_empty());
-    rejects("fn example(){Array::made_up()}", "E0204");
+    rejects("fn example(){Array::made_up()}", "E0209");
     rejects(
         "fn example(){let mut values=[1];let count=len(mut values)}",
         "E0405",

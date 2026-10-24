@@ -1223,14 +1223,9 @@ impl Runtime {
                 }
                 self.unit()
             }
-            "Test::assert_some" | "Test::assert_ok" => {
-                let expected = if name == "Test::assert_some" {
-                    "Some"
-                } else {
-                    "Ok"
-                };
+            "Test::assert_ok" => {
                 if let Object::Variant { tag, fields } = self.heap.get(arg(0)?)?
-                    && tag == expected
+                    && tag == "Ok"
                     && fields.len() == 1
                 {
                     return Ok(fields[0]);
@@ -1238,7 +1233,7 @@ impl Runtime {
                 Err(RuntimeError::panic(if let Some(message) = args.get(1) {
                     self.as_string(*message)?.to_owned()
                 } else {
-                    format!("expected {expected}")
+                    "expected Ok".into()
                 }))
             }
             "panic" => Err(RuntimeError::panic(self.format(arg(0)?)?)),

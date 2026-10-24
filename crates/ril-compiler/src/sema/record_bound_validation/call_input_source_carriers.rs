@@ -717,13 +717,17 @@ impl Replay<'_> {
                     let [preparation] = preparations.as_slice() else {
                         return Err("receiving call has no unique preparation".into());
                     };
+                    // An interrupted prefix has actual operand observations,
+                    // but no completed receiving/callee context to contribute.
+                    if !preparation.evaluation_complete {
+                        continue;
+                    }
                     let token = preparation
                         .supplied
                         .get(&(slot as u32))
                         .ok_or("receiving call operand is absent")?;
                     require(
                         preparation.target == event.target
-                            && preparation.evaluation_complete
                             && self
                                 .facts
                                 .expressions

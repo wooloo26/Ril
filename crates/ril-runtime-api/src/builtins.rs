@@ -8,7 +8,6 @@ pub const OPERATIONS: &[&str] = &[
     "assert_ne",
     "Test::assert_eq",
     "Test::assert_ne",
-    "Test::assert_some",
     "Test::assert_ok",
     "panic",
     "len",
@@ -70,9 +69,7 @@ pub const OPERATIONS: &[&str] = &[
     "Array::for_each",
     "Options::map",
     "Options::and_then",
-    "Options::unwrap_or",
     "Options::unwrap_or_else",
-    "Options::expect",
     "Results::map",
     "Results::map_err",
     "Results::and_then",
@@ -519,6 +516,9 @@ mod tests {
         }
         for name in [
             "Foo::Some",
+            "Options::unwrap_or",
+            "Options::expect",
+            "Test::assert_some",
             "Math::unknown",
             "Num::parse_unknown",
             "Binary::read_u128",

@@ -102,6 +102,12 @@ duplicate source trees and historical verification reports.
   pipeline; retain a small explicit primitive/host contract boundary. Start with
   optional-value and Array combinators, then remove their duplicated checker,
   static evaluator, HOF lowering and runtime implementations.
+  Versioned sources live in `crates/ril-stdlib/modules/` and are resolved and
+  checked as ordinary modules on demand. Optional fallbacks/expectations and
+  `Test::assert_some` form the first migrated family. Migrate Result expectations
+  under the general E0344 inference rule, removing the legacy acceptance of
+  undetermined constructor arguments. Broader collection and callback contracts
+  also remain on the migration adapter.
 - Complete shared receiving for callable upper bounds and general constructors,
   and finish window graph copying. These gaps remain exposed by the
   conditional/rest-pattern corpus.
@@ -140,8 +146,12 @@ duplicate source trees and historical verification reports.
   calls still reach bare-type checking (`E0318`); the floating-default cases in
   `tests/conformance/numeric.ril` retain this gap. Keep object identity separate
   from each reference's declared view.
+  Standalone explicit generic callable values still lack a retained checked
+  instantiation contract; `stdlib-declarations.ril::standalone-explicit-callable`
+  preserves this general gap separately from immediate explicit calls.
 - Resolve compiler and native acceptance failures on both platforms, then expose
   symbol and capability introspection through immutable analysis snapshots.
+  Select runtime link inputs by their build/ABI identity instead of modification time.
 
 Source transport regressions, including open row composition with fixed arrays
 and callbacks, are in `tests/regressions/source-transport.ril`.

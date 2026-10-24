@@ -1,0 +1,7 @@
+pub fn unwrap_or<T>(value: ?T, fallback: T) -> T {
+    match value { Some(item) -> item, None -> fallback }
+}
+
+pub fn expect<T>(value: ?T, message: str) -> T {
+    match value { Some(item) -> item, None -> panic(message) }
+}

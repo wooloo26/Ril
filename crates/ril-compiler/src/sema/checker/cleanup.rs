@@ -53,7 +53,9 @@ impl Checker {
             );
             return;
         };
-        if !parameters.is_empty() || **result != Ty::Unit {
+        // Bottom is compatible with a unit result. Invocation, effects and
+        // finite termination are still checked below; this is no exit proof.
+        if !parameters.is_empty() || !matches!(**result, Ty::Unit | Ty::Never) {
             self.error(
                 "E0541",
                 span,

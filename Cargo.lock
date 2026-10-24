@@ -963,6 +963,7 @@ dependencies = [
  "ril-codegen",
  "ril-compiler-core",
  "ril-ir",
+ "ril-stdlib",
  "ril-syntax",
  "ril-test",
  "ril-text-format",
@@ -1013,6 +1014,10 @@ dependencies = [
  "serde",
  "thiserror",
 ]
+
+[[package]]
+name = "ril-stdlib"
+version = "0.1.0"
 
 [[package]]
 name = "ril-syntax"

@@ -14,6 +14,7 @@ ril-syntax.workspace = true
 ril-ir.workspace = true
 ril-codegen.workspace = true
 ril-text-format.workspace = true
+ril-stdlib.workspace = true
 salsa.workspace = true
 tracing.workspace = true
 serde.workspace = true

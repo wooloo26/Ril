@@ -69,7 +69,9 @@ pub fn load(repo: &Path) -> Result<Metadata, ArchitectureError> {
 
 fn allowed_workspace_dependencies(name: &str) -> Option<&'static [&'static str]> {
     Some(match name {
-        "ril-compiler-core" | "ril-runtime-api" | "ril-test" | "ril-text-format" => &[],
+        "ril-compiler-core" | "ril-runtime-api" | "ril-test" | "ril-text-format" | "ril-stdlib" => {
+            &[]
+        }
         "ril-syntax" => &["ril-compiler-core", "ril-text-format"],
         "ril-ir" => &["ril-compiler-core"],
         "ril-codegen" => &["ril-compiler-core", "ril-ir"],
@@ -79,6 +81,7 @@ fn allowed_workspace_dependencies(name: &str) -> Option<&'static [&'static str]>
             "ril-ir",
             "ril-codegen",
             "ril-text-format",
+            "ril-stdlib",
         ],
         "ril-runtime" => &["ril-runtime-api", "ril-text-format"],
         "ril-cli" => &[
@@ -119,7 +122,7 @@ fn forbidden_transitive_dependency(root: &str, dependency: &str) -> bool {
                 || is_concrete_backend(dependency)
                 || is_cranelift(dependency)
         }
-        "ril-text-format" => {
+        "ril-text-format" | "ril-stdlib" => {
             is_frontend(dependency)
                 || matches!(
                     dependency,
@@ -266,6 +269,7 @@ mod tests {
                 "ril-runtime-api",
                 "ril-runtime",
                 "ril-text-format",
+                "ril-stdlib",
             ],
             &[
                 ("ril-syntax", "ril-compiler-core", None),
@@ -282,9 +286,10 @@ mod tests {
                 ("ril-runtime", "ril-text-format", None),
                 ("ril-syntax", "ril-text-format", None),
                 ("ril-compiler", "ril-text-format", None),
+                ("ril-compiler", "ril-stdlib", None),
             ],
         );
-        assert_eq!(check(&metadata).unwrap(), 9);
+        assert_eq!(check(&metadata).unwrap(), 10);
     }
 
     #[test]

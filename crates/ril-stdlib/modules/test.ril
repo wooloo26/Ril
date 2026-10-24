@@ -1,0 +1,5 @@
+use ril/option as Options
+
+pub fn assert_some<T>(value: ?T, message: str = "expected Some") -> T {
+    Options::expect(value, message)
+}

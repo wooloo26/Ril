@@ -141,10 +141,52 @@ pub fn load_project(path: &Path) -> io::Result<ResolvedProject> {
 }
 
 pub fn resolve(mut units: Vec<ModuleUnit>, root: FileId) -> ResolvedProject {
+    // Only this factory registers bundled module identities. A user-supplied
+    // path resembling a standard path never grants its declarations privileges.
+    let mut standard_sources = BTreeMap::new();
+    let mut diagnostics = Vec::new();
+    let mut unsupported = Vec::new();
+    let mut last_file = units.iter().map(|unit| unit.file.0).max().unwrap_or(root.0);
+    for module in ril_stdlib::MODULES {
+        let Some(next) = last_file.checked_add(1) else {
+            unsupported.push(UnsupportedFeature {
+                span: Span {
+                    file: root,
+                    start: 0,
+                    end: 0,
+                },
+                description: "standard-library source file identity exhausted".into(),
+            });
+            break;
+        };
+        last_file = next;
+        let parsed = ril_syntax::parse_file(module.source, FileId(next));
+        diagnostics.extend(parsed.diagnostics);
+        if parsed.incomplete {
+            unsupported.push(UnsupportedFeature {
+                span: Span {
+                    file: FileId(next),
+                    start: 0,
+                    end: module.source.len() as u32,
+                },
+                description: format!("incomplete bundled module {}", module.path),
+            });
+        }
+        standard_sources.insert(module.namespace.to_owned(), units.len());
+        units.push(ModuleUnit {
+            path: PathBuf::from(format!("{}.ril", module.path)),
+            file: FileId(next),
+            program: parsed.program,
+            is_declaration: false,
+        });
+    }
     for unit in &mut units {
         crate::normalize::program(&mut unit.program);
     }
-    Resolver::new(units, root).run()
+    let mut resolver = Resolver::new(units, root, standard_sources);
+    resolver.diagnostics.extend(diagnostics);
+    resolver.unsupported.extend(unsupported);
+    resolver.run()
 }
 
 pub fn validate_unit(unit: &ModuleUnit) -> Vec<Diagnostic> {
@@ -289,6 +331,8 @@ struct Resolver {
     root: FileId,
     symbols: Vec<Symbols>,
     targets: BTreeMap<String, usize>,
+    standard_sources: BTreeMap<String, usize>,
+    required_standard_sources: BTreeSet<usize>,
     diagnostics: Vec<Diagnostic>,
     unsupported: Vec<UnsupportedFeature>,
     variants: BTreeMap<String, Vec<String>>,
@@ -298,7 +342,11 @@ struct Resolver {
     value_declarations: BTreeSet<String>,
 }
 impl Resolver {
-    fn new(units: Vec<ModuleUnit>, root: FileId) -> Self {
+    fn new(
+        units: Vec<ModuleUnit>,
+        root: FileId,
+        standard_sources: BTreeMap<String, usize>,
+    ) -> Self {
         let directory = units
             .iter()
             .find(|unit| unit.file == root)
@@ -366,6 +414,8 @@ impl Resolver {
             root,
             symbols,
             targets,
+            standard_sources,
+            required_standard_sources: BTreeSet::new(),
             diagnostics: vec![],
             unsupported: vec![],
             variants: BTreeMap::new(),
@@ -457,7 +507,23 @@ impl Resolver {
         // Dependencies initialize before the root. Each real declaration occurs
         // once even when reached through aliases or re-export chains.
         let order = self.initialization_order();
-        for index in order {
+        let standard_units: BTreeSet<_> = self.standard_sources.values().copied().collect();
+        let mut pending: VecDeque<_> = order
+            .iter()
+            .copied()
+            .filter(|index| !standard_units.contains(index))
+            .collect();
+        let mut queued: BTreeSet<_> = pending.iter().copied().collect();
+        let mut rewritten = BTreeMap::new();
+        loop {
+            for &index in &self.required_standard_sources {
+                if queued.insert(index) {
+                    pending.push_back(index);
+                }
+            }
+            let Some(index) = pending.pop_front() else {
+                break;
+            };
             let mut statements = self.units[index].program.statements.clone();
             let mut scope = Scope {
                 local_effect_sets: BTreeSet::new(),
@@ -471,6 +537,12 @@ impl Resolver {
             self.import_scope(index, &statements, &mut scope);
             self.add_variants(&mut scope);
             self.rewrite_statements(index, &mut statements, &mut scope, true);
+            rewritten.insert(index, statements);
+        }
+        for index in order {
+            let Some(statements) = rewritten.remove(&index) else {
+                continue;
+            };
             program.statements.extend(
                 statements
                     .into_iter()
@@ -604,6 +676,9 @@ impl Resolver {
                 }
                 return vec![];
             };
+            if let Some(&source) = self.standard_sources.get(namespace) {
+                self.required_standard_sources.insert(source);
+            }
             Symbol::Standard(namespace.into())
         } else if let Some(&target) = self.targets.get(&path) {
             Symbol::Namespace(target)
@@ -637,15 +712,9 @@ impl Resolver {
                     .iter()
                     .map(|(name, symbol)| (name.clone(), symbol.clone()))
                     .collect(),
-                Symbol::Standard(namespace) => standard_exports(&path)
-                    .iter()
-                    .map(|name| {
-                        (
-                            name.to_string(),
-                            Symbol::Declaration(standard_identity(&namespace, name)),
-                        )
-                    })
-                    .collect(),
+                Symbol::Standard(namespace) => {
+                    self.standard_symbols(&namespace).into_iter().collect()
+                }
                 _ => vec![],
             };
         }
@@ -656,17 +725,15 @@ impl Resolver {
                     self.member(*target, &member.name, member.span, report)
                 }
                 Symbol::Standard(namespace) => {
-                    if report && !standard_exports(&path).contains(&member.name.as_str()) {
+                    let symbol = self.standard_symbols(namespace).remove(&member.name);
+                    if report && symbol.is_none() {
                         self.diagnostics.push(error_diagnostic(
                             "E0209",
                             member.span,
                             format!("module {path} has no member {}", member.name),
                         ));
                     }
-                    Some(Symbol::Declaration(standard_identity(
-                        namespace,
-                        &member.name,
-                    )))
+                    symbol
                 }
                 _ => None,
             };
@@ -679,6 +746,33 @@ impl Resolver {
         }
         let _ = index;
         result
+    }
+    /// One migration adapter for remaining catalog declarations. Source
+    /// exports are ordinary resolved symbols, including aliases and re-exports.
+    fn standard_symbols(&mut self, namespace: &str) -> BTreeMap<String, Symbol> {
+        if let Some(&source) = self.standard_sources.get(namespace) {
+            self.required_standard_sources.insert(source);
+        }
+        let mut symbols: BTreeMap<_, _> = standard_path(namespace)
+            .into_iter()
+            .flat_map(standard_exports)
+            .map(|name| {
+                (
+                    name.to_string(),
+                    if namespace == "Prelude" {
+                        prelude_symbols().get(*name).cloned().unwrap_or_else(|| {
+                            Symbol::Declaration(standard_identity(namespace, name))
+                        })
+                    } else {
+                        Symbol::Declaration(standard_identity(namespace, name))
+                    },
+                )
+            })
+            .collect();
+        if let Some(&module) = self.standard_sources.get(namespace) {
+            symbols.extend(self.symbols[module].exports.clone());
+        }
+        symbols
     }
     fn member(&mut self, target: usize, name: &str, span: Span, report: bool) -> Option<Symbol> {
         if let Some(symbol) = self.symbols[target].exports.get(name) {
@@ -789,7 +883,9 @@ impl Resolver {
             }
             return path.to_vec();
         }
-        let Some(mut symbol) = scope.names.get(first).cloned() else {
+        let mut symbol = if let Some(symbol) = scope.names.get(first).cloned() {
+            symbol
+        } else {
             if self
                 .canonical_names
                 .values()
@@ -812,10 +908,39 @@ impl Resolver {
                 ));
                 return vec![format!("ril_unresolved_{}_{}", span.file.0, span.start)];
             }
-            return path.to_vec();
+            // Preserve the remaining catalog's qualified namespace surface.
+            // Member resolution still selects a real source export first.
+            if standard_path(first).is_some() {
+                Symbol::Standard(first.clone())
+            } else {
+                return path.to_vec();
+            }
         };
         let mut cursor = 1;
-        while let Symbol::Namespace(target) = symbol {
+        loop {
+            let target = match &symbol {
+                Symbol::Namespace(target) => Some(*target),
+                Symbol::Standard(namespace) => {
+                    let Some(name) = path.get(cursor) else {
+                        break;
+                    };
+                    let Some(member) = self.standard_symbols(namespace).remove(name) else {
+                        self.diagnostics.push(error_diagnostic(
+                            "E0209",
+                            span,
+                            format!("module {namespace} has no member {name}"),
+                        ));
+                        return vec![format!("ril_missing_{}", span.start)];
+                    };
+                    cursor += 1;
+                    symbol = member;
+                    continue;
+                }
+                _ => None,
+            };
+            let Some(target) = target else {
+                break;
+            };
             let Some(name) = path.get(cursor) else {
                 return path.to_vec();
             };
@@ -1619,12 +1744,19 @@ fn prelude_symbols() -> BTreeMap<String, Symbol> {
     for name in ["Array", "Map", "String", "Set", "Options", "Results"] {
         symbols.insert(name.into(), Symbol::Standard(name.into()));
     }
+    symbols.insert("Prelude".into(), Symbol::Standard("Prelude".into()));
     symbols
 }
 fn is_implicit_prelude(name: &str, scope: &Scope) -> bool {
     prelude_symbols().get(name) == scope.names.get(name)
 }
 fn standard_namespace(path: &str) -> Option<&'static str> {
+    if let Some(module) = ril_stdlib::MODULES
+        .iter()
+        .find(|module| module.path == path)
+    {
+        return Some(module.namespace);
+    }
     Some(match path {
         "ril/prelude" => "Prelude",
         "ril/option" => "Options",
@@ -1668,7 +1800,24 @@ pub(crate) fn known_standard_identity(name: &str) -> bool {
     let Some((namespace, member)) = name.split_once("::") else {
         return false;
     };
-    let path = match namespace {
+    let Some(path) = standard_path(namespace) else {
+        return false;
+    };
+    standard_exports(path)
+        .iter()
+        .any(|export| standard_identity(namespace, export) == name)
+        || (namespace == "Prelude" && matches!(member, "Some" | "None" | "Ok" | "Err"))
+        || known_standard_constructor(name)
+}
+
+fn standard_path(namespace: &str) -> Option<&'static str> {
+    if let Some(module) = ril_stdlib::MODULES
+        .iter()
+        .find(|module| module.namespace == namespace)
+    {
+        return Some(module.path);
+    }
+    Some(match namespace {
         "Prelude" => "ril/prelude",
         "Options" => "ril/option",
         "Results" => "ril/result",
@@ -1701,35 +1850,38 @@ pub(crate) fn known_standard_identity(name: &str) -> bool {
         "Channel" => "ril/concurrent/channel",
         "Parallel" => "ril/parallel",
         "Test" => "ril/test",
-        _ => return false,
-    };
-    standard_exports(path)
-        .iter()
-        .any(|export| standard_identity(namespace, export) == name)
-        || (namespace == "Prelude" && matches!(member, "Some" | "None" | "Ok" | "Err"))
-        || matches!(
-            name,
-            "Order::Ordering::Less"
-                | "Order::Ordering::Equal"
-                | "Order::Ordering::Greater"
-                | "Num::NumError::InvalidSyntax"
-                | "Num::NumError::OutOfRange"
-                | "Num::NumError::InvalidRadix"
-                | "Binary::ByteOrder::Little"
-                | "Binary::ByteOrder::Big"
-                | "Binary::BinaryError::UnexpectedEnd"
-                | "Binary::BinaryError::Overflow"
-                | "Binary::BinaryError::NonCanonical"
-                | "Time::TimeError::OutOfRange"
-                | "Time::TimeError::DifferentClock"
-                | "Iter::Step::Done"
-                | "Iter::Step::Yielded"
-        )
+        _ => return None,
+    })
+}
+
+fn known_standard_constructor(name: &str) -> bool {
+    matches!(
+        name,
+        "Order::Ordering::Less"
+            | "Order::Ordering::Equal"
+            | "Order::Ordering::Greater"
+            | "Num::NumError::InvalidSyntax"
+            | "Num::NumError::OutOfRange"
+            | "Num::NumError::InvalidRadix"
+            | "Binary::ByteOrder::Little"
+            | "Binary::ByteOrder::Big"
+            | "Binary::BinaryError::UnexpectedEnd"
+            | "Binary::BinaryError::Overflow"
+            | "Binary::BinaryError::NonCanonical"
+            | "Time::TimeError::OutOfRange"
+            | "Time::TimeError::DifferentClock"
+            | "Iter::Step::Done"
+            | "Iter::Step::Yielded"
+    )
 }
 
 fn standard_exports(path: &str) -> &'static [&'static str] {
     match path {
         "ril/prelude" => &[
+            "Some",
+            "None",
+            "Ok",
+            "Err",
             "Option",
             "Result",
             "Immut",
@@ -1750,14 +1902,7 @@ fn standard_exports(path: &str) -> &'static [&'static str] {
             "print",
             "println",
         ],
-        "ril/option" => &[
-            "Option",
-            "map",
-            "and_then",
-            "unwrap_or",
-            "unwrap_or_else",
-            "expect",
-        ],
+        "ril/option" => &["Option", "map", "and_then", "unwrap_or_else"],
         "ril/result" => &["Result", "map", "map_err", "and_then", "recover", "expect"],
         "ril/array" => &[
             "Elem", "push", "pop", "insert", "remove", "truncate", "get", "first", "contains",
@@ -2078,7 +2223,7 @@ fn standard_exports(path: &str) -> &'static [&'static str] {
             "join3",
             "for_each",
         ],
-        "ril/test" => &["assert_eq", "assert_ne", "assert_some", "assert_ok"],
+        "ril/test" => &["assert_eq", "assert_ne", "assert_ok"],
         _ => &[],
     }
 }
@@ -2488,7 +2633,10 @@ mod tests {
             FileId(0),
         );
         assert!(project.diagnostics.is_empty(), "{:?}", project.diagnostics);
-        let funcs = functions(&project);
+        let funcs: Vec<_> = functions(&project)
+            .into_iter()
+            .filter(|function| function.span.file.0 < 3)
+            .collect();
         assert_eq!(funcs.len(), 2);
         let main = funcs
             .iter()

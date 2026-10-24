@@ -325,6 +325,91 @@ impl Replay<'_> {
         }
         let root =
             self.original_source_root(expression, value, context, visit.observation, work)?;
+        let contributors = if value.source_type_witness.is_none() {
+            schema_work(work, |budget| {
+                crate::sema::control_sources::contributors(
+                    self.facts
+                        .semantic_hir
+                        .as_deref()
+                        .ok_or(crate::sema::source_types::SourceTypesError::MissingNode)?,
+                    &crate::sema::source_types::projection_receipts::ProjectionReceipts::from_facts(
+                        self.facts,
+                    ),
+                    ril_compiler_core::ids::EvaluationOccurrenceId(root as u32),
+                    budget,
+                )
+            })?
+        } else {
+            None
+        };
+        if let Some(contributors) = contributors {
+            let children: Vec<&Expr> = match &expression.kind {
+                ExprKind::If {
+                    then_branch,
+                    else_branch: Some(other),
+                    ..
+                }
+                | ExprKind::IfLet {
+                    then_branch,
+                    else_branch: Some(other),
+                    ..
+                } => vec![then_branch, other],
+                ExprKind::Match {
+                    arms,
+                    type_match: false,
+                    ..
+                } => arms.iter().map(|arm| &arm.body).collect(),
+                _ => return Err("control Source changed its original syntax role".into()),
+            };
+            let mut selected: Option<OriginalSource> = None;
+            for input in contributors {
+                let fact = self
+                    .facts
+                    .expressions
+                    .get(input.0 as usize)
+                    .ok_or("control Source lost its actual child")?;
+                let mut matching = children
+                    .iter()
+                    .filter(|child| child.hir_id.is_some() && child.hir_id == fact.source_id);
+                let child = matching
+                    .next()
+                    .ok_or("control Source borrowed another result expression")?;
+                require(
+                    matching.next().is_none(),
+                    "control Source has ambiguous original children",
+                )?;
+                let Some(source) = self.original_source_schema_inner(
+                    child,
+                    &fact.value,
+                    context,
+                    sites,
+                    work,
+                    SourceVisit {
+                        depth: visit.depth + 1,
+                        observation: Some(input.0 as usize),
+                    },
+                )?
+                else {
+                    return Ok(None);
+                };
+                if schema_work(work, |budget| {
+                    crate::sema::control_sources::never(&source.0, budget)
+                })? {
+                    continue;
+                }
+                if let Some((schema, environment)) = &selected {
+                    require(
+                        schema_work(work, |budget| {
+                            schema.equivalent_in(&source.0, environment, &source.1, budget)
+                        })?,
+                        "control results have different complete Source views",
+                    )?;
+                } else {
+                    selected = Some(source);
+                }
+            }
+            return Ok(selected);
+        }
         if let Some(source) =
             self.public_builtin_result_source(expression, root, context, sites, work)?
         {

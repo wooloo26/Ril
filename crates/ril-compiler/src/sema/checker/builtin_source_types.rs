@@ -82,6 +82,9 @@ impl Identity {
 
     pub(super) fn matches_name(self, name: &str) -> bool {
         match self {
+            Self::Closed(id) => {
+                crate::sema::source_types::builtins::BuiltinId::lookup(name) == Some(id)
+            }
             Self::Nullary(id) => {
                 ril_compiler_core::builtin_calls::NullaryConstructor::lookup(name) == Some(id)
             }

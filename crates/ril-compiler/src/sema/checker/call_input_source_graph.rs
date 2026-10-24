@@ -346,6 +346,52 @@ impl Checker {
         if let Some(source) = self.storage_binding_source_schema(value, syntax, frame) {
             return source;
         }
+        // Finite closed witnesses retain their separate existing admission.
+        // A uniform branch derivation supplies the missing open graph view.
+        if value.source_type_witness.is_none()
+            && let Some(root) = observation
+        {
+            let inputs = crate::sema::control_sources::contributors(
+                &self.semantic_hir,
+                &self.source_projection_receipts(),
+                ril_compiler_core::ids::EvaluationOccurrenceId(root as u32),
+                work,
+            )?;
+            if let Some(inputs) = inputs {
+                let mut selected: Option<(SourceSchema, FrozenEnvironment)> = None;
+                for input in inputs {
+                    let input = self
+                        .application_effect
+                        .expressions
+                        .get(input.0 as usize)
+                        .ok_or(SourceTypesError::MissingNode)?
+                        .value
+                        .packet();
+                    let Some(source) = input
+                        .input_source(
+                            SourceTypesRef::Live(self.type_source.storage.live_types()),
+                            work,
+                        )?
+                        .into_known()
+                    else {
+                        // This operation only derives uniform complete
+                        // views; other existing ingress remains separate.
+                        return Ok(None);
+                    };
+                    if crate::sema::control_sources::never(&source.0, work)? {
+                        continue;
+                    }
+                    if let Some((schema, environment)) = &selected {
+                        if !schema.equivalent_in(&source.0, environment, &source.1, work)? {
+                            return Err(SourceTypesError::Unresolved);
+                        }
+                    } else {
+                        selected = Some(source);
+                    }
+                }
+                return Ok(selected);
+            }
+        }
         if let Some(source) = syntax.hir_id
             && let Some(schema) = crate::sema::source_types::declarations::construction_schema(
                 source,
@@ -1148,12 +1194,36 @@ mod application_result_tests {
                     let root = event.result_expression.unwrap();
                     let packet = facts.expressions[root].value.packet();
                     assert!(usage.entered.is_empty());
-                    assert!(
-                        matches!(packet.evidence_view().capture,
-                        SourceCaptureView::Captured { result: Ok(CapturedSource::Unknown(environment)), .. }
-                            if Some(environment) == facts.evaluations[root].environment),
-                        "an interrupted call cannot claim its declaration's normal result"
-                    );
+                    match packet.evidence_view().capture {
+                        SourceCaptureView::Captured {
+                            result: Ok(CapturedSource::Unknown(environment)),
+                            ..
+                        } => {
+                            assert_eq!(Some(environment), facts.evaluations[root].environment);
+                        }
+                        SourceCaptureView::Captured {
+                            result: Ok(CapturedSource::Known(_)),
+                            ..
+                        } => {
+                            let (schema, _) = packet
+                                .input_source(
+                                    SourceTypesRef::Frozen(&facts.source_types),
+                                    &mut WorkLimit::new(16384),
+                                )
+                                .unwrap()
+                                .into_known()
+                                .unwrap();
+                            assert!(
+                                crate::sema::control_sources::never(
+                                    &schema,
+                                    &mut WorkLimit::new(4096)
+                                )
+                                .unwrap(),
+                                "an interrupted call cannot claim its declaration's normal result"
+                            );
+                        }
+                        _ => panic!("interrupted call lost its original Source evidence"),
+                    }
                     for mutation in 0..2 {
                         let mut changed = facts.clone();
                         match mutation {

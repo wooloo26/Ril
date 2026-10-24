@@ -213,6 +213,14 @@ static DEFINITIONS: &[Definition] = &[
         deep: false,
         implementation: Implementation::Dedicated,
     },
+    // Panic is a language control primitive, not an ordinary library algorithm.
+    Definition {
+        name: "panic",
+        inputs: &[("message", STR)],
+        output: Scalar(SourceScalar::Never),
+        deep: false,
+        implementation: Implementation::Dedicated,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -220,6 +228,11 @@ pub(crate) struct BuiltinId(u8);
 
 impl BuiltinId {
     pub(crate) fn lookup(name: &str) -> Option<Self> {
+        let name = if name == "Prelude::panic" {
+            "panic"
+        } else {
+            name
+        };
         DEFINITIONS
             .iter()
             .position(|entry| entry.name == name)

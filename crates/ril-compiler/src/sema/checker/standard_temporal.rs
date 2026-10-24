@@ -18,7 +18,6 @@ pub(super) fn is_temporal_builtin(name: &str) -> bool {
             | "Random::entropy"
             | "Test::assert_eq"
             | "Test::assert_ne"
-            | "Test::assert_some"
             | "Test::assert_ok"
     )
 }
@@ -184,8 +183,7 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        let equality = matches!(name, "Test::assert_eq" | "Test::assert_ne");
-        let minimum = if equality { 2 } else { 1 };
+        let minimum = if name == "Test::assert_ok" { 1 } else { 2 };
         if !(minimum..=minimum + 1).contains(&args.len()) {
             self.error("E0314", span, "wrong testing helper argument count", []);
             return self.unit(span);
@@ -203,47 +201,38 @@ impl Checker {
         if let Some((_, message, message_span)) = args.get(minimum) {
             self.require_type(message, &Ty::Str, *message_span);
         }
-        if equality {
-            self.require_type(&args[1].1, &args[0].1.ty, args[1].2);
-            for (_, value, argument_span) in &args[..2] {
-                self.deep_read(value, *argument_span, frame);
-                if self.contains_callable(value) || self.contains_resource(value) {
-                    self.error(
-                        "E0327",
-                        *argument_span,
-                        "structural equality cannot contain callable values",
-                        [value.cause],
-                    );
-                }
-                if unknown_type(&value.ty) || self.equality_has_generic(&value.ty) {
-                    self.unsupported(
-                        *argument_span,
-                        "testing equality requires proven constituent types",
-                    );
-                }
+        if name == "Test::assert_ok" {
+            // Retained Result adapter pending the general constructor-hole rule.
+            let mut actual = args.to_vec();
+            if actual.len() == 1 {
+                let mut message = self.unit(span);
+                message.ty = Ty::Str;
+                message.constant = None;
+                actual.push((ParameterMode::Read, message, span));
             }
-            return self.unit(span);
+            return self
+                .standard_variant_builtin("Results::expect", &actual, span, frame)
+                .expect("fixed expectation builtin");
         }
-        // Reuse the single-visit expectation contract: it inspects only the
-        // outer tag, preserves nested Result duties, and cannot restore writes.
-        let mut actual = args.to_vec();
-        if actual.len() == 1 {
-            let mut message = self.unit(span);
-            message.ty = Ty::Str;
-            message.constant = None;
-            actual.push((ParameterMode::Read, message, span));
+        self.require_type(&args[1].1, &args[0].1.ty, args[1].2);
+        for (_, value, argument_span) in &args[..2] {
+            self.deep_read(value, *argument_span, frame);
+            if self.contains_callable(value) || self.contains_resource(value) {
+                self.error(
+                    "E0327",
+                    *argument_span,
+                    "structural equality cannot contain callable values",
+                    [value.cause],
+                );
+            }
+            if unknown_type(&value.ty) || self.equality_has_generic(&value.ty) {
+                self.unsupported(
+                    *argument_span,
+                    "testing equality requires proven constituent types",
+                );
+            }
         }
-        self.standard_variant_builtin(
-            if name == "Test::assert_some" {
-                "Options::expect"
-            } else {
-                "Results::expect"
-            },
-            &actual,
-            span,
-            frame,
-        )
-        .expect("fixed expectation builtin")
+        self.unit(span)
     }
 }
 

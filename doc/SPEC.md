@@ -1349,6 +1349,8 @@ let known: []int = make_empty()       -- OK: result context determines T
 
 An explicit generic argument list that cannot fit the declared parameter list is `E0340`, distinct from ordinary value-argument arity (`E0314`) and a supplied argument's kind/sort (`E0306`/`E0323`). Defaults and permitted inference apply before diagnosing absent generic arguments. Where a type or static argument must be determined and neither supplied information nor contextual constraints determine it, use `E0344`; this does not invent a default type for an unconstrained parameter. Incompatible determined types still use their specific mismatch diagnostic.
 
+An inactive constructor alternative does not determine an otherwise unconstrained function type argument. After applying declared defaults, an ordinary generic call with an `Ok` argument still needs information choosing the error type; a result context choosing only the success type is insufficient. For example, `Results::expect(Ok(1), "missing")` and `Test::assert_ok(Ok(1))` require an explicit `Result<int, str>` input context or explicit function type arguments. Without such information they use `E0344`; an inactive argument does not become a hidden existential variable or acquire an implicit `never` or `str` default.
+
 ```ril
 -- Sum Type with default type argument:
 pub type Result<T, E = str> {

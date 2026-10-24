@@ -7,9 +7,7 @@ pub(super) fn is_variant_builtin(name: &str) -> bool {
         name,
         "Options::map"
             | "Options::and_then"
-            | "Options::unwrap_or"
             | "Options::unwrap_or_else"
-            | "Options::expect"
             | "Results::map"
             | "Results::map_err"
             | "Results::and_then"
@@ -47,11 +45,8 @@ impl Checker {
                 [source.cause],
             );
         }
-        let callback = !matches!(
-            name,
-            "Options::unwrap_or" | "Options::expect" | "Results::expect"
-        );
-        if args[1].0 == ParameterMode::SharedMut || (!callback && args[1].0 != ParameterMode::Read)
+        if args[1].0 == ParameterMode::SharedMut
+            || (name == "Results::expect" && args[1].0 != ParameterMode::Read)
         {
             self.error(
                 "E0405",
@@ -131,10 +126,7 @@ impl Checker {
         let inner = payload.ty.clone();
         let before = self.snapshot_flow();
         let obligations = frame.obligations.clone();
-        let (mut skipped, execute) = if matches!(
-            name,
-            "Options::unwrap_or" | "Options::unwrap_or_else" | "Options::expect"
-        ) {
+        let (mut skipped, execute) = if matches!(name, "Options::unwrap_or_else") {
             (payload.clone(), source.option_tag.map(|tag| !tag))
         } else {
             self.discharge_absent_results(source, span);
@@ -143,17 +135,6 @@ impl Checker {
         let skipped_state = self.snapshot_flow();
         self.restore_preview(&before);
         let executed = match name {
-            "Options::expect" => {
-                self.require_type(&argument.1, &Ty::Str, argument.2);
-                self.standard_abnormal(span)
-            }
-            "Options::unwrap_or" => {
-                self.require_type(&argument.1, &inner, argument.2);
-                self.discharge_absent_results(source, span);
-                let mut fallback = argument.1.clone();
-                self.standard_borrowed_variant_payload(&mut fallback);
-                fallback
-            }
             "Options::unwrap_or_else" => {
                 self.discharge_absent_results(source, span);
                 let returned = self.standard_invoke_callback(argument, vec![], span, frame);
@@ -245,7 +226,10 @@ impl Checker {
         let executed = match name {
             "Results::expect" => {
                 self.require_type(&argument.1, &Ty::Str, argument.2);
-                self.standard_abnormal(span)
+                let mut value = self.unit(span);
+                value.ty = Ty::Never;
+                value.abnormal = true;
+                value
             }
             "Results::recover" => {
                 let returned =
@@ -332,12 +316,6 @@ impl Checker {
         value.constant = None;
         value.static_coordinate = None;
         value.option_tag = Some(false);
-        value
-    }
-    fn standard_abnormal(&mut self, span: Span) -> Value {
-        let mut value = self.unit(span);
-        value.ty = Ty::Never;
-        value.abnormal = true;
         value
     }
     fn standard_result_branch(

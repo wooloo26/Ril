@@ -479,6 +479,15 @@ impl Checker {
                 return Ok(false);
             }
         }
+        let (_, actual_result) = schema
+            .callable_parts(work)?
+            .ok_or(SourceTypesError::MissingProjection)?;
+        // An authenticated bottom result has no normal payload to contradict
+        // a public return bound. Keep the actual graph; do not import a
+        // projected contextual syntax as if it were a written header.
+        if crate::sema::control_sources::never(&actual_result, work)? {
+            return Ok(true);
+        }
         for bound in value.callable_returns.iter().filter(|bound| !bound.raw) {
             if bound.syntax.hir_id.is_none() {
                 // A contextual return projection is not another written type.
