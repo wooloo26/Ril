@@ -315,6 +315,7 @@ impl Checker {
                             header: &origin.header,
                             environment: origin.environment.clone(),
                             path: origin.path.clone(),
+                            schema: target.schema.clone(),
                         },
                     );
                 });
@@ -2262,6 +2263,7 @@ impl Checker {
                                 header: &origin.header,
                                 environment: origin.environment.clone(),
                                 path: origin.path.clone(),
+                                schema: target.schema.clone(),
                             },
                         );
                     });
@@ -2699,13 +2701,14 @@ impl Checker {
                             .iter()
                             .find(|syntax| syntax.span == operation.span)
                     })
-                    .map(|syntax| syntax.parameters.clone());
+                    .map(|syntax| self.callable_signature(syntax.parameters.clone()));
                 if value.signature.is_none() && operation.parameters.is_empty() {
-                    value.signature = Some(Vec::new());
+                    value.signature = Some(self.callable_signature(Vec::new()));
                 }
             }
             if value.signature.is_none() {
-                value.signature = standard_signature.map(|(_, parameters)| parameters);
+                value.signature =
+                    standard_signature.map(|(_, parameters)| self.callable_signature(parameters));
             }
             if name == "Div::budget" {
                 value.ty = Ty::Callable(
@@ -2716,28 +2719,30 @@ impl Checker {
                     Box::new(Ty::Unknown),
                 );
                 value.signature = Some(
-                    ["limit", "action"]
-                        .into_iter()
-                        .map(|name| Parameter {
-                            pattern: Pattern {
-                                hir_id: None,
-                                kind: PatternKind::Name(name.into()),
-                                span,
-                            },
-                            mode: ParameterMode::Read,
-                            ty: (name == "limit").then(|| TypeExpr {
-                                hir_id: None,
-                                text: "int".into(),
-                                kind: TypeKind::Name {
-                                    path: vec!["int".into()],
-                                    arguments: Vec::new(),
+                    self.callable_signature(
+                        ["limit", "action"]
+                            .into_iter()
+                            .map(|name| Parameter {
+                                pattern: Pattern {
+                                    hir_id: None,
+                                    kind: PatternKind::Name(name.into()),
+                                    span,
                                 },
+                                mode: ParameterMode::Read,
+                                ty: (name == "limit").then(|| TypeExpr {
+                                    hir_id: None,
+                                    text: "int".into(),
+                                    kind: TypeKind::Name {
+                                        path: vec!["int".into()],
+                                        arguments: Vec::new(),
+                                    },
+                                    span,
+                                }),
+                                default: None,
                                 span,
-                            }),
-                            default: None,
-                            span,
-                        })
-                        .collect(),
+                            })
+                            .collect(),
+                    ),
                 );
             }
             value.callables.push(Callable::Builtin(builtin_name.into()));
@@ -3079,7 +3084,7 @@ impl Checker {
         for binding in &captures {
             value.scoped.extend(&self.bindings[*binding].value.scoped);
         }
-        value.signature = Some(parameters.to_vec());
+        value.signature = Some(self.callable_signature(parameters.to_vec()));
         if !annotations.is_empty() {
             value.callable_bounds.push(CallableBound {
                 annotations: annotations.to_vec(),

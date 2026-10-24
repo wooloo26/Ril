@@ -221,7 +221,7 @@ impl Checker {
             let labels = callee
                 .signature
                 .as_ref()
-                .map(|parameters| crate::hir::application::parameter_labels(parameters))
+                .map(|signature| crate::hir::application::parameter_labels(&signature.parameters))
                 .unwrap_or_else(|| vec![None; parameters.len()]);
             return crate::hir::application::bind_slots(
                 &labels,
@@ -343,7 +343,11 @@ impl Checker {
         }
         self.restore_typing_environment(previous_typing);
 
-        let interface = callee.signature.as_ref().unwrap_or(&info.syntax.parameters);
+        let interface = callee
+            .signature
+            .as_ref()
+            .map(|signature| &signature.parameters)
+            .unwrap_or(&info.syntax.parameters);
         let labels = crate::hir::application::parameter_labels(interface);
         let slots: Vec<_> = crate::hir::application::bind_slots(
             &labels,

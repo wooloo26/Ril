@@ -158,7 +158,13 @@ impl Checker {
                     SchemaSensitivity::Required
                 }
                 crate::sema::source_types::SourceSensitivity::Unknown { reason } => {
-                    return Err(reason);
+                    // A rigid generic result still has a complete type graph.
+                    // Unknown sensitivity requires that graph at reception;
+                    // it does not prove the absence of source coordinates.
+                    if reason == SourceTypesError::BudgetExceeded {
+                        return Err(reason);
+                    }
+                    SchemaSensitivity::Unknown
                 }
             };
             Ok(Target {
@@ -226,18 +232,10 @@ impl Checker {
         }
         let source = source.clone();
         let mut work = WorkLimit::new(32768);
-        crate::sema::application_effect::SignatureProbeSource::validate_header(
-            &source.header,
-            &self.semantic_hir,
+        let result = source.schema.project_steps(
+            &[crate::sema::source_types::SourcePath::CallableResult],
             &mut work,
         )?;
-        let root = self.with_typing_environment(&source.environment, |checker| {
-            checker.original_header_source_schema(&source.header, &mut work)
-        })?;
-        work.charge(source.path.len() + 1)?;
-        let mut path = source.path.as_ref().clone();
-        path.push(crate::sema::source_types::SourcePath::CallableResult);
-        let result = root.project_steps(&path, &mut work)?;
         let (result, environment) =
             self.selected_input_schema(result, source.environment.clone(), &mut work)?;
         let syntax = result.syntax_projection(span, &mut work, &mut |identity, row, budget| {
@@ -283,14 +281,15 @@ impl Checker {
             crate::sema::source_types::SourceSensitivity::Sensitive { .. } => {
                 source_reception::SchemaSensitivity::Required
             }
-            crate::sema::source_types::SourceSensitivity::Unknown { reason } => return Err(reason),
+            crate::sema::source_types::SourceSensitivity::Unknown { reason } => {
+                if reason == SourceTypesError::BudgetExceeded {
+                    return Err(reason);
+                }
+                source_reception::SchemaSensitivity::Unknown
+            }
         };
         Ok(Some(source_reception::Target {
-            source: Some(source_reception::TargetSource {
-                header: source.header.clone(),
-                environment: source.environment.clone(),
-                path,
-            }),
+            source: None,
             environment,
             span,
             schema: Some(result),
@@ -424,20 +423,13 @@ impl Checker {
             }
             EntryOrigin::SignatureProbe(source) => (|| {
                 let mut work = WorkLimit::new(32768);
-                let auth = crate::sema::application_effect::closure_signature_assumption(
-                    &call,
-                    slot,
-                    &self.semantic_hir,
-                    &self.bindings,
-                    self.recency_moves.len(),
-                    &mut work,
-                )?;
-                let environment = auth.environment.clone();
-                let root = self.with_typing_environment(&environment, |checker| {
-                    checker.original_header_source_schema(auth.header, &mut work)
-                })?;
-                let schema = source.parameter_schema(&root, slot, auth.mode, &mut work)?;
-                self.selected_input_schema(schema, environment, &mut work)
+                let input = call
+                    .entry
+                    .arguments
+                    .get(slot)
+                    .ok_or(SourceTypesError::MissingNode)?;
+                let schema = source.parameter_schema(slot, input.mode, &mut work)?;
+                self.selected_input_schema(schema, source.environment.clone(), &mut work)
                     .map(Some)
             })(),
             _ => Err(SourceTypesError::Unresolved),

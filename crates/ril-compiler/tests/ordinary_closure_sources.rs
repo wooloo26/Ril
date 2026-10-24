@@ -25,6 +25,42 @@ fn verified(source: &str) -> SemanticFacts {
 }
 
 #[test]
+fn nested_generic_stages_keep_each_enclosing_binding() {
+    verified(ril_test::case_source(
+        "tests/regressions/nested-closures.ril::generic-three-stage-pointer64",
+    ));
+    verified(ril_test::case_source(
+        "tests/regressions/nested-closures.ril::generic-interface-shadow-pointer64",
+    ));
+}
+
+#[test]
+fn separate_generic_instances_keep_types_and_hidden_dimensions() {
+    for case in [
+        "reject-generic-instance-mix",
+        "reject-generic-instance-hidden-extent",
+    ] {
+        let source =
+            ril_test::case_source(&format!("tests/regressions/nested-closures.ril::{case}"));
+        for target in ["pointer32", "pointer64"] {
+            let outcome = Session::with_options(
+                source.as_bytes().to_vec(),
+                CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
+                },
+            )
+            .check();
+            assert!(
+                matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+                if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0301")),
+                "{case} {target}: {outcome:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn real_lambda_bodies_and_immutable_generic_locals_supply_complete_source() {
     for source in [
         step_fixture(),

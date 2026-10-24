@@ -113,8 +113,58 @@ struct AnnotationContexts<'a> {
     right: &'a FrozenEnvironment,
 }
 
-/// Value binding changes preserve the same immutable static interpretation.
-/// Independent captures and changed selections have no shared static object.
+/// Compare a resolved binder's interpretation, independently of capture
+/// allocation. Distinct instances still need the same complete selected type.
+pub(crate) fn same_binder_selection(
+    identity: &str,
+    left: &FrozenEnvironment,
+    right: &FrozenEnvironment,
+    work: &mut WorkLimit,
+) -> Result<bool, SourceTypesError> {
+    work.text(identity)?;
+    if left.is_poisoned() || right.is_poisoned() {
+        return Ok(false);
+    }
+    for environment in [left, right] {
+        work.charge(environment.generic_context.len() + 4)?;
+        let mut declared = environment.generic_sources.contains_key(identity)
+            || environment.generic_substitutions.contains_key(identity);
+        for actual in environment.generic_context.values() {
+            work.text(actual)?;
+            declared |= actual == identity;
+        }
+        if !declared {
+            return Ok(false);
+        }
+    }
+    if left.same_types(right) {
+        return Ok(true);
+    }
+    if left.static_key_arguments.get(identity) != right.static_key_arguments.get(identity) {
+        return Ok(false);
+    }
+    match (
+        left.generic_sources.get(identity),
+        right.generic_sources.get(identity),
+    ) {
+        (Some(left), Some(right)) => {
+            if std::sync::Arc::ptr_eq(left, right) {
+                Ok(true)
+            } else {
+                left.schema.equivalent_in(
+                    &right.schema,
+                    &left.environment,
+                    &right.environment,
+                    work,
+                )
+            }
+        }
+        (None, None) => Ok(!left.generic_substitutions.contains_key(identity)
+            && !right.generic_substitutions.contains_key(identity)),
+        _ => Ok(false),
+    }
+}
+
 fn same_binder_interpretation(
     left: &SourceNode,
     right: &SourceNode,
@@ -126,21 +176,10 @@ fn same_binder_interpretation(
     };
     work.text(left)?;
     work.text(right)?;
-    if left != right || !contexts.left.same_types(contexts.right) {
+    if left != right {
         return Ok(false);
     }
-    for environment in [contexts.left, contexts.right] {
-        work.charge(environment.generic_context.len() + 4)?;
-        let mut declared = false;
-        for identity in environment.generic_context.values() {
-            work.text(identity)?;
-            declared |= identity == left;
-        }
-        if !declared {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    same_binder_selection(left, contexts.left, contexts.right, work)
 }
 
 fn compare(
@@ -906,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn binder_comparison_keeps_the_static_object_and_checks_each_binding_coordinate() {
+    fn binder_comparison_uses_resolved_identity_and_checks_each_selection() {
         use crate::sema::source_types::SourceSchema;
         use crate::sema::{context::TypingEnvironment, effect_identity::StaticBinderSort};
         let mut environment = TypingEnvironment::default();
@@ -935,7 +974,7 @@ mod tests {
         assert!(
             schema
                 .receive_schema_in(&schema, &original, &independent, None, &mut work)
-                .is_err()
+                .unwrap()
         );
         assert!(
             schema
@@ -953,6 +992,75 @@ mod tests {
                 .receive_schema_in(&schema, &original, &derived, None, &mut WorkLimit::new(0))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn selected_binders_compare_complete_types_across_captures() {
+        use crate::sema::{
+            context::TypingEnvironment,
+            model::SourceTypeWitness,
+            source_types::{SourceSchema, TypeSourceSelection},
+        };
+        use ril_compiler_core::source::{FileId, Span};
+        use std::sync::Arc;
+        let mut work = WorkLimit::new(32768);
+        let mut capture = |extent: &str| {
+            let key = ArgumentKey::Array {
+                length: Some("const(int:0)".into()),
+                element: Box::new(ArgumentKey::Array {
+                    length: Some(format!("const(int:{extent})")),
+                    element: Box::new(ArgumentKey::Name {
+                        name: "int".into(),
+                        arguments: vec![],
+                    }),
+                }),
+            };
+            let schema = SourceSchema::import(&key, None, &mut work).unwrap();
+            let syntax = schema
+                .syntax_projection(
+                    Span {
+                        file: FileId(0),
+                        start: 0,
+                        end: 0,
+                    },
+                    &mut work,
+                    &mut |_, _, _| Err(SourceTypesError::Unresolved),
+                )
+                .unwrap();
+            let witness = SourceTypeWitness {
+                key: crate::static_eval::normalized_argument_key(&syntax),
+                syntax,
+            };
+            let source = TypeSourceSelection::from_closed(
+                Arc::new(witness),
+                TypingEnvironment::default().freeze(),
+            )
+            .unwrap();
+            let mut environment = TypingEnvironment::default();
+            environment
+                .generic_context
+                .insert("T".into(), "factory:T".into());
+            environment
+                .generic_sources
+                .insert("factory:T".into(), source);
+            environment.freeze()
+        };
+        let first = capture("2");
+        let same = capture("2");
+        let different = capture("3");
+        assert!(same_binder_selection("factory:T", &first, &same, &mut work).unwrap());
+        assert!(!same_binder_selection("factory:T", &first, &different, &mut work).unwrap());
+        assert!(!same_binder_selection("other:T", &first, &same, &mut work).unwrap());
+        assert!(
+            !same_binder_selection(
+                "factory:T",
+                &first,
+                &FrozenEnvironment::poisoned(),
+                &mut work
+            )
+            .unwrap()
+        );
+        assert!(same_binder_selection("factory:T", &first, &same, &mut WorkLimit::new(0)).is_err());
     }
 
     #[test]

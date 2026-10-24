@@ -255,9 +255,8 @@ impl Checker {
                 return Err(SourceTypesError::Unresolved);
             }
             if schema.requires_environment(work)? {
-                if environment
-                    .as_ref()
-                    .is_some_and(|previous| previous.id() != child_environment.id())
+                if let Some(previous) = &environment
+                    && !schema.same_interpretation_in(previous, &child_environment, work)?
                 {
                     return Err(SourceTypesError::Unresolved);
                 }

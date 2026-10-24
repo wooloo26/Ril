@@ -1332,7 +1332,7 @@ impl Checker {
                     );
                     let mut value = Value::scalar(ty, None, cause);
                     value.callables.push(Callable::Named(id));
-                    value.signature = Some(function.parameters.clone());
+                    value.signature = Some(self.callable_signature(function.parameters.clone()));
                     self.bind_name(
                         &function.name,
                         BindingMode::Let,

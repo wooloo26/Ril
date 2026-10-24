@@ -1,4 +1,6 @@
 use super::*;
+use crate::sema::evaluated::SourceRef;
+use crate::sema::source_types::SourceSchema;
 use crate::sema::summary::InvocationSummary;
 use std::sync::Arc;
 
@@ -16,6 +18,7 @@ pub(super) struct SignatureSource<'a> {
     pub header: &'a TypeExpr,
     pub environment: crate::sema::context::FrozenEnvironment,
     pub path: Vec<crate::sema::source_types::SourcePath>,
+    pub schema: Option<SourceSchema>,
 }
 
 impl SignatureSource<'_> {
@@ -31,11 +34,16 @@ impl SignatureSource<'_> {
             }
         }
         let mut path = self.path.clone();
-        path.push(step);
+        path.push(step.clone());
         Ok(Self {
             header: self.header,
             environment: self.environment.clone(),
             path,
+            schema: self
+                .schema
+                .as_ref()
+                .map(|schema| schema.project_steps(std::slice::from_ref(&step), &mut work))
+                .transpose()?,
         })
     }
 }
@@ -114,6 +122,13 @@ pub(super) struct ContractEnvironment {
     typing_environment: crate::sema::context::FrozenEnvironment,
 }
 impl Checker {
+    pub(super) fn callable_signature(&self, parameters: Vec<Parameter>) -> Arc<CallableSignature> {
+        Arc::new(CallableSignature {
+            parameters,
+            environment: self.capture_typing_environment(),
+        })
+    }
+
     pub(super) fn completed_summary(&self) -> Option<&InvocationSummary> {
         match self.completed_invocation.as_ref()? {
             CompletedInvocation::Recorded(id) => self.invocations.get(id.0 as usize),
@@ -188,7 +203,12 @@ impl Checker {
         let TypeKind::Callable { parameters, .. } = &header.kind else {
             return None;
         };
-        if value.signature.as_ref() != Some(parameters) {
+        if value
+            .signature
+            .as_ref()
+            .map(|signature| &signature.parameters)
+            != Some(parameters)
+        {
             return None;
         }
         let preview = self.snapshot_flow();
@@ -321,14 +341,33 @@ impl Checker {
         let Some(result) = result_syntax(self, syntax, &mut BTreeSet::new()) else {
             return;
         };
+        let environment = self.capture_typing_environment();
+        let mut work = crate::sema::source_types::WorkLimit::new(32768);
+        let source = (|| {
+            let callable = self.signature_type_schema(origin, &mut work)?;
+            let (_, result) = callable
+                .callable_parts(&mut work)?
+                .ok_or(crate::sema::source_types::SourceTypesError::MissingProjection)?;
+            SourceRef::intern(
+                &result,
+                environment.clone(),
+                self.type_source.storage.live_types_mut(),
+                &mut work,
+            )
+        })();
+        let source = source.ok();
+        if !self.application_effect.admit(32768 - work.remaining()) {
+            self.unsupported(syntax.span, "callable return type exceeded its work bound");
+        }
         let bound = CallableReturnBound {
             raw: false,
             predecessors: vec![],
             target: self.ty(&result),
+            source,
             syntax: result,
             span: syntax.span,
             callables: value.callables.clone(),
-            typing_environment: origin.environment.clone(),
+            typing_environment: environment,
         };
         let same_stage = |previous: &Arc<CallableReturnBound>| {
             !previous.raw
@@ -485,7 +524,21 @@ impl Checker {
                 .generic_substitutions
                 .extend(selected);
         }
-        self.ascribe_signature(alternative, &bound.syntax);
+        let mut origin = self.signature_source(&bound.syntax);
+        if let Some(source) = bound.source {
+            match self.type_source.storage.live_types().view_schema(
+                source.view,
+                source.original,
+                &mut crate::sema::source_types::WorkLimit::new(16384),
+            ) {
+                Ok((schema, _)) => origin.schema = Some(schema),
+                Err(error) => self.unsupported(
+                    bound.span,
+                    format!("callable return type is unavailable: {error}"),
+                ),
+            }
+        }
+        self.ascribe_signature_from(alternative, &bound.syntax, &origin);
         self.require_type(alternative, &bound.target, bound.span);
         let mut shape_frame = frame.clone();
         self.check_storage_shape(alternative, &bound.syntax, &mut shape_frame);
@@ -635,16 +688,46 @@ impl Checker {
             );
         }
     }
-    pub(super) fn signature_source<'a>(&self, syntax: &'a TypeExpr) -> SignatureSource<'a> {
+    pub(super) fn signature_source<'a>(&mut self, syntax: &'a TypeExpr) -> SignatureSource<'a> {
         let environment = self
             .callable_type_source(syntax)
             .and_then(|id| self.type_contract_environments.get(&id))
             .map(|source| source.typing_environment.clone())
             .unwrap_or_else(|| self.capture_typing_environment());
+        let schema = if syntax.hir_id.is_none() {
+            self.source_type_from_syntax(syntax).and_then(|source| {
+                let key = crate::static_eval::effects::bounded_argument_key(
+                    &source.syntax,
+                    &BTreeMap::new(),
+                )?;
+                SourceSchema::import(
+                    &key,
+                    None,
+                    &mut crate::sema::source_types::WorkLimit::new(16384),
+                )
+                .ok()
+            })
+        } else {
+            None
+        };
         SignatureSource {
             header: syntax,
             environment,
             path: Vec::new(),
+            schema,
+        }
+    }
+
+    fn signature_type_schema(
+        &self,
+        origin: &SignatureSource<'_>,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<SourceSchema, crate::sema::source_types::SourceTypesError> {
+        match &origin.schema {
+            Some(schema) => Ok(schema.clone()),
+            None => self
+                .original_header_source_schema(origin.header, work)?
+                .project_steps(&origin.path, work),
         }
     }
 
@@ -735,7 +818,7 @@ impl Checker {
             self.probing_contracts.remove(&key);
             return result;
         }
-        let Some(parameters) = value.signature.clone() else {
+        let Some(signature) = value.signature.clone() else {
             self.unsupported(
                 syntax.span,
                 "callable row bounds require a checked parameter signature",
@@ -743,51 +826,42 @@ impl Checker {
             self.probing_contracts.remove(&key);
             return BoundProbe::Unresolved;
         };
-        let header = origin.header;
-        let mut header_work = crate::sema::source_types::WorkLimit::new(32768);
-        if crate::sema::application_effect::SignatureProbeSource::validate_header(
-            header,
-            &self.semantic_hir,
-            &mut header_work,
-        )
-        .is_err()
-        {
-            self.unsupported(
-                syntax.span,
-                "signature probe header differs from its canonical HIR",
-            );
-            self.probing_contracts.remove(&key);
-            return BoundProbe::Unresolved;
-        }
-        let path_admitted = (|| {
-            header_work.charge(origin.path.len())?;
-            for step in &origin.path {
-                if let crate::sema::source_types::SourcePath::Field(label) = step {
-                    header_work.text(label)?;
-                }
+        let parameters = &signature.parameters;
+        let mut source_work = crate::sema::source_types::WorkLimit::new(32768);
+        let probe_type = self.with_typing_environment(&signature.environment, |checker| {
+            let callable = checker.signature_type_schema(origin, &mut source_work)?;
+            checker.selected_input_schema(callable, signature.environment.clone(), &mut source_work)
+        });
+        let probe_type = probe_type.and_then(|(schema, environment)| {
+            let formals = schema.callable_parameters(&mut source_work)?;
+            if formals.len() != parameters.len()
+                || formals
+                    .iter()
+                    .zip(parameters)
+                    .any(|((mode, _), parameter)| *mode != parameter.mode)
+            {
+                return Err(crate::sema::source_types::SourceTypesError::Unresolved);
             }
-            Ok::<_, crate::sema::source_types::SourceTypesError>(())
-        })();
-        if path_admitted.is_err() {
-            self.unsupported(
-                syntax.span,
-                "signature Source projection exceeded its work bound",
-            );
-            self.probing_contracts.remove(&key);
-            return BoundProbe::Unresolved;
-        }
-        if !self
+            Ok((schema, environment))
+        });
+        let admitted = self
             .application_effect
-            .admit(32768 - header_work.remaining() + parameters.len() + 1)
-        {
-            self.unsupported(
-                syntax.span,
-                "signature probe source admission exhausted its work bound",
-            );
-            self.probing_contracts.remove(&key);
-            return BoundProbe::Unresolved;
-        }
-        let header = Arc::new(header.clone());
+            .admit(32768 - source_work.remaining() + parameters.len() + 1);
+        let (schema, environment) = match probe_type {
+            Ok(probe_type) if admitted => probe_type,
+            result => {
+                self.unsupported(
+                    syntax.span,
+                    format!("callable signature type is incomplete: {result:?}"),
+                );
+                self.probing_contracts.remove(&key);
+                return BoundProbe::Unresolved;
+            }
+        };
+        let probe_source = Arc::new(crate::sema::application_effect::SignatureProbeSource {
+            schema: Arc::new(schema),
+            environment,
+        });
         // Check fixed body obligations at ascription even when the value is
         // never called. Symbolic callback dependence is constrained again at
         // each invocation with the actual callback values.
@@ -795,10 +869,9 @@ impl Checker {
         let handlers = std::mem::take(&mut self.active_handlers);
         let previous_completed = self.completed_invocation.clone();
         let mut context = self.frame(bound.typing_environment.contract_bindings().clone(), true);
-        context.input_environment = Some(bound.typing_environment.clone());
+        context.input_environment = Some(signature.environment.clone());
         let mut arguments = Vec::new();
-        let mut formals = Vec::new();
-        let previous_environment = self.enter_typing_environment(&bound.typing_environment);
+        let previous_environment = self.enter_typing_environment(&signature.environment);
         for (index, parameter) in parameters.iter().enumerate() {
             let ty = parameter
                 .ty
@@ -827,20 +900,9 @@ impl Checker {
                 true,
             );
             let argument = self.bindings[binding].value.clone();
-            formals.push(crate::sema::application_effect::SignatureFormal {
-                slot: index as u32,
-                binding,
-            });
             arguments.push((parameter.mode, argument, parameter.span));
         }
         self.restore_typing_environment(previous_environment);
-        let probe_source = Arc::new(crate::sema::application_effect::SignatureProbeSource {
-            source: header.hir_id.expect("authenticated callable header"),
-            header,
-            path: Arc::new(origin.path.clone()),
-            environment: bound.typing_environment.clone(),
-            formals: Arc::new(formals),
-        });
         let invocation_state = self.snapshot_flow();
         let mut complete = !value.callables.is_empty();
         for callable in value.callables.clone() {
@@ -873,7 +935,7 @@ impl Checker {
                         &mut context,
                         probe_source.clone(),
                     );
-                    self.with_typing_environment(&probe_source.environment, |checker| {
+                    self.with_typing_environment(&signature.environment, |checker| {
                         if let Ty::Callable(_, expected) = checker.ty(syntax)
                             && !checker.compatible_at(&returned.ty, &expected, syntax.span.file)
                         {

@@ -247,7 +247,7 @@ impl Checker {
                         None
                     };
                     let labels = if let Some(parameters) = &value.signature {
-                        crate::hir::application::parameter_labels(parameters)
+                        crate::hir::application::parameter_labels(&parameters.parameters)
                     } else if let Some(id) = generic {
                         crate::sema::source_types::polymorphic::parameter_labels(id)
                     } else {
@@ -721,6 +721,7 @@ impl Checker {
         let parameters = callee
             .signature
             .as_ref()
+            .map(|signature| &signature.parameters)
             .expect("default-capable public signature");
         let target = match callee.callables.as_slice() {
             [Callable::Named(id)] => Some(*id),

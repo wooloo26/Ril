@@ -338,7 +338,12 @@ impl Checker {
                 return self.unit(span);
             }
         };
-        match callback.value().signature.as_ref() {
+        match callback
+            .value()
+            .signature
+            .as_ref()
+            .map(|signature| &signature.parameters)
+        {
             Some(parameters) if parameters.len() == 2 => {
                 if parameters[0].mode != ParameterMode::Mut
                     || parameters[1].mode != ParameterMode::Read

@@ -201,7 +201,7 @@ impl Checker {
         if action
             .signature
             .as_ref()
-            .is_some_and(|parameters| !parameters.is_empty())
+            .is_some_and(|signature| !signature.parameters.is_empty())
             || matches!(&action.ty, Ty::Callable(parameters, _) if !parameters.is_empty())
         {
             self.error(

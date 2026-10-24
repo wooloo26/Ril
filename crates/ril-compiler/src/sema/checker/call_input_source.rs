@@ -1126,30 +1126,24 @@ impl Checker {
         ) {
             return Ok(None);
         }
-        let authenticated: crate::sema::application_effect::AuthenticatedSignatureInput<'_> =
-            crate::sema::application_effect::signature_assumption(
-                call,
-                slot,
-                &self.semantic_hir,
-                &self.bindings,
-                self.recency_moves.len(),
-                &mut WorkLimit::new(16384),
-            )?;
-        let header = authenticated.header.clone();
-        let environment = authenticated.environment.clone();
-        let mode = authenticated.mode;
         let crate::sema::application_effect::EntryOrigin::SignatureProbe(source) =
             &call.entry.origin
         else {
             unreachable!()
         };
         let source = source.clone();
-        let root = self.with_typing_environment(&environment, |checker| {
-            checker.original_header_source_schema(&header, &mut WorkLimit::new(16384))
-        })?;
-        let schema = source.parameter_schema(&root, slot, mode, &mut WorkLimit::new(16384))?;
-        self.selected_input_schema(schema, environment, &mut WorkLimit::new(16384))
-            .map(Some)
+        let input = call
+            .entry
+            .arguments
+            .get(slot)
+            .ok_or(SourceTypesError::MissingNode)?;
+        let schema = source.parameter_schema(slot, input.mode, &mut WorkLimit::new(16384))?;
+        self.selected_input_schema(
+            schema,
+            source.environment.clone(),
+            &mut WorkLimit::new(16384),
+        )
+        .map(Some)
     }
     pub(super) fn check_public_call_input_sources(
         &mut self,
@@ -1345,14 +1339,17 @@ impl Checker {
         // A pipeline/internal callback has no ordinary operand receipt. Written
         // scalar inputs remain ordinary; arrays and Fn inputs require the real
         // caller boundary rather than borrowing a surrounding call's event.
-        let sensitive = callee.signature.as_ref().is_some_and(|parameters| {
-            parameters
-                .iter()
-                .filter_map(|parameter| parameter.ty.as_ref())
-                .any(|syntax| {
-                    self.freeze_source_receiving_target(syntax).sensitivity
-                        != source_reception::SchemaSensitivity::NotRequired
-                })
+        let sensitive = callee.signature.as_ref().is_some_and(|signature| {
+            self.with_typing_environment(&signature.environment, |checker| {
+                signature
+                    .parameters
+                    .iter()
+                    .filter_map(|parameter| parameter.ty.as_ref())
+                    .any(|syntax| {
+                        checker.freeze_source_receiving_target(syntax).sensitivity
+                            != source_reception::SchemaSensitivity::NotRequired
+                    })
+            })
         });
         if sensitive {
             self.unsupported(

@@ -1190,20 +1190,31 @@ pub(super) fn result_environment<'a>(
     if fallback.is_poisoned() {
         return Err(SourceTypesError::Unresolved);
     }
-    let mut selected: Option<&FrozenEnvironment> = None;
+    let mut parts_owned = Vec::new();
     for (schema, environment) in parts {
         work.charge(1)?;
         if environment.is_poisoned() {
             return Err(SourceTypesError::Unresolved);
         }
         if schema.requires_environment(work)? {
-            if selected.is_some_and(|original| original.id() != environment.id()) {
-                return Err(SourceTypesError::Unresolved);
-            }
-            selected = Some(environment);
+            parts_owned.push((schema, environment));
         }
     }
-    Ok(selected.unwrap_or(fallback).clone())
+    for candidate in
+        std::iter::once(fallback).chain(parts_owned.iter().map(|(_, environment)| *environment))
+    {
+        let mut compatible = true;
+        for (schema, environment) in &parts_owned {
+            if !schema.same_interpretation_in(environment, candidate, work)? {
+                compatible = false;
+                break;
+            }
+        }
+        if compatible {
+            return Ok(candidate.clone());
+        }
+    }
+    Err(SourceTypesError::Unresolved)
 }
 
 fn result_causes(checker: &Checker, root: CauseId) -> Option<BTreeSet<u32>> {

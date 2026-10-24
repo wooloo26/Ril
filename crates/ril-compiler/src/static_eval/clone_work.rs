@@ -644,7 +644,8 @@ pub(super) fn expression(budget: &budget::Budget, value: &Expr) -> Result<()> {
 pub(super) fn type_syntax(budget: &budget::Budget, value: &TypeExpr) -> Result<()> {
     Meter(budget).ty(value, 0)
 }
-pub(super) fn parameter(budget: &budget::Budget, value: &Parameter) -> Result<()> {
+#[cfg(test)]
+fn parameter(budget: &budget::Budget, value: &Parameter) -> Result<()> {
     Meter(budget).parameter(value, 0)
 }
 

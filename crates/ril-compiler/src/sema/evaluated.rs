@@ -668,11 +668,6 @@ fn charge_value_clone(value: &Value, work: &mut usize, depth: usize) -> Option<(
                 *work = work.checked_sub(1 + annotation.text.len())?;
             }
         }
-        if let Some(parameters) = &value.signature {
-            for parameter in parameters {
-                crate::static_eval::charge_parameter_syntax_clone(parameter, work)?;
-            }
-        }
         for identity in &value.pending_inference {
             *work = work.checked_sub(identity.len())?;
         }

@@ -472,7 +472,11 @@ impl Checker {
         {
             return Ok(Some(source));
         }
-        if let Some(source) = self.original_closure_source_schema(value, work)? {
+        if let Some(source) = self.original_closure_source_schema(
+            value,
+            matches!(syntax.kind, ExprKind::Lambda { .. }),
+            work,
+        )? {
             return Ok(Some(source));
         }
         if let Some(source) = self.original_named_header_source_schema(value, syntax, work)? {

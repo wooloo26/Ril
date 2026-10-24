@@ -334,9 +334,12 @@ impl Checker {
                     source
                 };
                 if schema.requires_environment(&mut work)? {
-                    if environment
-                        .as_ref()
-                        .is_some_and(|original| original.id() != parameter_environment.id())
+                    if let Some(original) = &environment
+                        && !schema.same_interpretation_in(
+                            original,
+                            &parameter_environment,
+                            &mut work,
+                        )?
                     {
                         return Err(SourceTypesError::Unresolved);
                     }
@@ -413,6 +416,7 @@ impl Checker {
     pub(super) fn original_closure_source_schema(
         &mut self,
         value: &Value,
+        construction: bool,
         work: &mut WorkLimit,
     ) -> InputSource {
         let [Callable::Closure(index)] = value.callables.as_slice() else {
@@ -451,7 +455,10 @@ impl Checker {
             source.original,
             work,
         )?;
-        if self.closure_public_view_agrees(value, &schema, work)? {
+        // A fresh lambda supplies its inferred implementation type to the
+        // receiver. Only an existing public view may hide implementation
+        // coordinates; applying that filter before reception is circular.
+        if construction || self.closure_public_view_agrees(value, &schema, work)? {
             Ok(Some((schema, environment)))
         } else {
             Ok(None)
@@ -511,17 +518,13 @@ impl Checker {
                     return Err(SourceTypesError::Unresolved);
                 };
                 if call.closure != *closure
-                    || source.environment.id() != bound.typing_environment.id()
                     || !bound.callables.contains(&Callable::Closure(*closure))
                 {
                     return Err(SourceTypesError::Unresolved);
                 }
                 let source = source.clone();
-                let root = self.with_typing_environment(&source.environment, |checker| {
-                    checker.original_header_source_schema(&source.header, work)
-                })?;
-                let callable = root.project_steps(&source.path, work)?;
-                let (_, expected) = callable
+                let (_, expected) = source
+                    .schema
                     .callable_parts(work)?
                     .ok_or(SourceTypesError::MissingProjection)?;
                 let (expected, _) =

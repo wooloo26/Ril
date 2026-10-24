@@ -490,6 +490,7 @@ pub struct CallableReturnBound {
     /// Alternative prior contracts for this value, before this ascription.
     pub predecessors: Vec<Arc<CallableReturnBound>>,
     pub target: Ty,
+    pub(crate) source: Option<super::evaluated::SourceRef>,
     pub syntax: TypeExpr,
     pub span: Span,
     pub callables: Vec<Callable>,
@@ -501,6 +502,7 @@ impl CallableReturnBound {
             raw: true,
             predecessors: vec![],
             target: Ty::Unknown,
+            source: None,
             syntax: TypeExpr {
                 hir_id: None,
                 text: String::new(),
@@ -513,6 +515,15 @@ impl CallableReturnBound {
         }
     }
 }
+/// A callable interface keeps the interpretation in which its parameter types
+/// were elaborated. The implementation's declaration environment and the
+/// environment of a named row contract are separate scopes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableSignature {
+    pub parameters: Vec<Parameter>,
+    pub environment: super::context::FrozenEnvironment,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Value {
     pub numeric: super::numeric_selection::NumericDependencies,
@@ -531,7 +542,7 @@ pub struct Value {
     pub callables: Vec<Callable>,
     pub callable_bounds: Vec<CallableBound>,
     pub callable_returns: Vec<Arc<CallableReturnBound>>,
-    pub signature: Option<Vec<Parameter>>,
+    pub signature: Option<Arc<CallableSignature>>,
     pub participants: BTreeSet<Participant>,
     pub sources: BTreeSet<BindingId>,
     pub callback_parameters: BTreeSet<BindingId>,
@@ -1406,6 +1417,7 @@ mod callable_return_tests {
             raw: false,
             predecessors: vec![],
             target,
+            source: None,
             syntax: TypeExpr {
                 hir_id: None,
                 text: "T".into(),

@@ -305,3 +305,73 @@ fn example() {
 }
 --@ end-file
 --@ end-case
+
+--@ source: generic-interface-shadow
+--@ file: source.ril
+fn make<T>(seed: T) -> fn(T) -> T { \value: T -> value }
+fn consume<T>(outer: T) -> int {
+    let action = make(1)
+    action(2)
+}
+pub fn test_native() {
+    assert(consume("outer") == 2 && consume(true) == 2)
+    let numbers = make(3)
+    let words = make("first")
+    assert(numbers(4) == 4 && words("second") == "second")
+}
+--@ end-file
+--@ end-source
+
+--@ case: generic-interface-shadow-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: reject-generic-instance-mix
+--@ use-source: generic-interface-shadow
+--@ end-case
+
+--@ case: generic-interface-shadow-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: generic-interface-shadow-native
+--@ use-source: generic-interface-shadow
+--@ end-case
+
+--@ case: generic-interface-shadow-native
+--@ mode: run-pass
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ entry: test_native
+--@ use-source: generic-interface-shadow
+--@ end-case
+
+--@ case: reject-generic-instance-mix
+--@ mode: check-fail
+--@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+--@ companion: generic-interface-shadow-pointer32
+-- Error [E0301]: Separate instances of one factory retain their selected types.
+--@ file: source.ril
+fn make<T>(seed: T) -> fn(T) -> T { \value: T -> value }
+fn example() {
+    let numbers = make(1)
+    let words = make("first")
+    let wrong = words(numbers(2))
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-generic-instance-hidden-extent
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: generic-interface-shadow-pointer64
+-- Error [E0301]: A selected generic type retains its hidden inner extent.
+--@ file: source.ril
+fn make<T>(seed: T) -> fn(T) -> T { \value: T -> value }
+fn example() {
+    let two: [0][2]int = []
+    let three: [0][3]int = []
+    let action = make(two)
+    let wrong = action(three)
+}
+--@ end-file
+--@ end-case

@@ -460,7 +460,8 @@ impl Checker {
                             [callback.cause],
                         );
                     }
-                    if callback.signature.as_ref().is_some_and(|parameters| {
+                    if callback.signature.as_ref().is_some_and(|signature| {
+                        let parameters = &signature.parameters;
                         parameters.len() != 1 || parameters[0].mode != ParameterMode::Read
                     }) {
                         self.error(
@@ -568,7 +569,8 @@ impl Checker {
                 [step.cause],
             );
         }
-        if step.signature.as_ref().is_some_and(|parameters| {
+        if step.signature.as_ref().is_some_and(|signature| {
+            let parameters = &signature.parameters;
             parameters.len() != 1 || parameters[0].mode != ParameterMode::Read
         }) {
             self.error(
@@ -679,7 +681,8 @@ impl Checker {
                     [callback.cause],
                 );
             }
-            if callback.signature.as_ref().is_some_and(|parameters| {
+            if callback.signature.as_ref().is_some_and(|signature| {
+                let parameters = &signature.parameters;
                 parameters.len() != 2
                     || parameters
                         .iter()
@@ -1082,7 +1085,7 @@ impl Checker {
         let mut step =
             Value::reference(Ty::Callable(vec![state], Box::new(result_ty)), node, cause);
         step.callables.push(Callable::Closure(closure));
-        step.signature = Some(self.closures[closure].parameters.clone());
+        step.signature = Some(self.callable_signature(self.closures[closure].parameters.clone()));
         let callable_schema = TypeExpr {
             hir_id: None,
             text: String::new(),
@@ -1537,7 +1540,8 @@ impl Checker {
                 [step.cause],
             );
         }
-        if step.signature.as_ref().is_some_and(|parameters| {
+        if step.signature.as_ref().is_some_and(|signature| {
+            let parameters = &signature.parameters;
             parameters.len() != 1 || parameters[0].mode != ParameterMode::Read
         }) {
             self.error(

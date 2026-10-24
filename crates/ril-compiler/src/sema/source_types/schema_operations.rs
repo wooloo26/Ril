@@ -288,6 +288,32 @@ impl SourceSchema {
         self.environment_dependency(true, work)
     }
 
+    /// A graph's resolved binders may be read from another capture only when
+    /// their complete selections agree. Lexical contract names stay local.
+    pub(crate) fn same_interpretation_in(
+        &self,
+        left: &FrozenEnvironment,
+        right: &FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<bool, SourceTypesError> {
+        work.charge(1)?;
+        if left.is_poisoned() || right.is_poisoned() {
+            return Ok(false);
+        }
+        if left.id() == right.id() {
+            return Ok(true);
+        }
+        if self.requires_declaration_environment(work)? {
+            return Ok(false);
+        }
+        for identity in self.binder_identities(work)? {
+            if !super::super::reception::same_binder_selection(&identity, left, right, work)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// A declaration's own lexical names/rows remain interpreted there even
     /// after every generic UID has been substituted by an actual source view.
     pub(crate) fn requires_declaration_environment(

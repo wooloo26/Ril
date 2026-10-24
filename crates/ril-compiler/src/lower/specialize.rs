@@ -738,8 +738,9 @@ fn shape(facts: &SemanticFacts, original: &SemanticFacts) -> Result<Shape, NotIm
             .iter()
             .map(|callable| callable_shape(facts, callable))
             .collect::<Result<_, NotImplemented>>()?;
-        let signature = fact.value.signature.as_ref().map(|parameters| {
-            parameters
+        let signature = fact.value.signature.as_ref().map(|signature| {
+            signature
+                .parameters
                 .iter()
                 .map(|parameter| {
                     (

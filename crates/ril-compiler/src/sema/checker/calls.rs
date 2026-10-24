@@ -218,7 +218,7 @@ impl Checker {
             .iter()
             .any(|id| frame.anonymous || self.bindings[*id].owner == frame.owner);
         if let Some(parameters) = &callee.signature {
-            for ((mode, value, arg_span), parameter) in args.iter().zip(parameters) {
+            for ((mode, value, arg_span), parameter) in args.iter().zip(&parameters.parameters) {
                 if *mode != parameter.mode {
                     self.error(
                         if *mode != ParameterMode::Read && parameter.mode != ParameterMode::Read {

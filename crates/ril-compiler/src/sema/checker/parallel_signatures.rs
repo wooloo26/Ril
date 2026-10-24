@@ -191,7 +191,7 @@ impl Checker {
         }
         let output = parallel_output(&name, &signature, span).unwrap();
         value.ty = Ty::Callable(types, Box::new(self.ty(&output)));
-        value.signature = Some(signature);
+        value.signature = Some(self.callable_signature(signature));
         true
     }
 
@@ -204,25 +204,28 @@ impl Checker {
         frame: &mut Frame,
     ) -> Value {
         if let Some(signature) = &callee.signature {
-            for ((_, argument, argument_span), parameter) in args.iter().zip(signature) {
+            let previous = self.enter_typing_environment(&signature.environment);
+            for ((_, argument, argument_span), parameter) in args.iter().zip(&signature.parameters)
+            {
                 if let Some(syntax) = &parameter.ty {
                     self.check_storage_shape(argument, syntax, frame);
                     let ty = self.ty(syntax);
                     self.require_type(argument, &ty, *argument_span);
                 }
             }
+            self.restore_typing_environment(previous);
         }
         let output = self
             .parallel_builtin(name, args, span, frame)
             .expect("parallel signature has a contract");
-        if let Some(syntax) = callee
-            .signature
-            .as_ref()
-            .and_then(|signature| parallel_output(name, signature, span))
+        if let Some(signature) = &callee.signature
+            && let Some(syntax) = parallel_output(name, &signature.parameters, span)
         {
+            let previous = self.enter_typing_environment(&signature.environment);
             let ty = self.ty(&syntax);
             self.require_type(&output, &ty, span);
             self.check_storage_shape(&output, &syntax, frame);
+            self.restore_typing_environment(previous);
         }
         output
     }

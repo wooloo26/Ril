@@ -2278,8 +2278,9 @@ impl Checker {
     pub(super) fn check_signature_modes(&mut self, value: &Value, syntax: &TypeExpr) {
         if let Some((parameters, _)) = self.callable_syntax(syntax, &mut BTreeSet::new())
             && let Some(source) = &value.signature
-            && source.len() == parameters.len()
+            && source.parameters.len() == parameters.len()
             && source
+                .parameters
                 .iter()
                 .zip(&parameters)
                 .any(|(a, b)| a.mode != b.mode)
@@ -2346,7 +2347,7 @@ impl Checker {
         if let Some((parameters, annotations)) = self.callable_syntax(syntax, &mut BTreeSet::new())
         {
             self.check_signature_modes(value, syntax);
-            value.signature = Some(parameters);
+            value.signature = Some(self.callable_signature(parameters));
             self.ascribe_callable_return(value, syntax, source);
             self.ascribe_callable_bounds_from(value, syntax, &annotations, source);
         }

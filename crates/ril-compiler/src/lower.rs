@@ -326,6 +326,7 @@ impl Lower<'_> {
         for fact in observations {
             let parameters: Vec<_> = if let Some(parameters) = &fact.value.signature {
                 parameters
+                    .parameters
                     .iter()
                     .map(|parameter| ir::CallParameter {
                         label: if let ast::PatternKind::Name(name) = &parameter.pattern.kind {

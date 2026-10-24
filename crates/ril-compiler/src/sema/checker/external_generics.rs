@@ -369,11 +369,13 @@ impl Checker {
                 });
             index
         };
-        let instance = &mut self.external_instances[instance];
-        instance.applications.push(application);
+        self.external_instances[instance]
+            .applications
+            .push(application);
+        let instance = &self.external_instances[instance];
         value.callables = vec![Callable::Named(instance.callable)];
         value.ty = instance.callable_type.clone();
-        value.signature = Some(instance.syntax.parameters.clone());
+        value.signature = Some(self.callable_signature(instance.syntax.parameters.clone()));
         true
     }
 }

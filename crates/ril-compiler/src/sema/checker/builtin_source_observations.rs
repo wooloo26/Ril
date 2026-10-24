@@ -296,7 +296,11 @@ impl Checker {
                 kind: TypeKind::Callable { parameters, .. },
                 ..
             }) => {
-                value.signature.as_ref() == Some(parameters)
+                value
+                    .signature
+                    .as_ref()
+                    .map(|signature| &signature.parameters)
+                    == Some(parameters)
                     && matches!(value.callables.as_slice(), [Callable::Builtin(actual)] if pending.contract.identity.matches_name(actual))
             }
             BuiltinDeclaration::Syntax(_)

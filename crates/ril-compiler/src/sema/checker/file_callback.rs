@@ -101,7 +101,10 @@ impl Checker {
                 "with_file builtin action requires a complete checked callable signature",
             );
         }
-        if let Some(parameters) = &action.signature
+        if let Some(parameters) = action
+            .signature
+            .as_ref()
+            .map(|signature| &signature.parameters)
             && (parameters.len() != 1 || parameters[0].mode != ParameterMode::Mut)
         {
             self.error(

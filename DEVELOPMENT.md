@@ -104,8 +104,10 @@ duplicate source trees and historical verification reports.
   witnesses and capture-time reconstruction with the common typed operations.
 - Unify complete types and constraints with resolved declaration/binder identities.
   Replace erased `Ty`, syntax witnesses and repeated environment reconstruction.
-  Calls, generics, defaults, nested closures, rows and constructors must share the
-  same typed operations and receiving rules.
+  Callable interfaces retain their lexical type interpretation; signature probes
+  and return contracts retain complete type graphs. Finish routing calls,
+  generics, defaults, rows and constructors through the same typed operations
+  and receiving rules.
 - Complete control-flow analysis for heap access, borrowing, effects, duties,
   resources and channels. Replace unresolved generated callback inputs, retain
   actual protected answers across resume, and use finite loop/recursion summaries.
