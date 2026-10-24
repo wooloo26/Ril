@@ -110,10 +110,11 @@ duplicate source trees and historical verification reports.
   dependencies separately from invocation answer constraints. Finish routing
   generics, defaults, rows and constructors through the same typed operations.
 - Complete control-flow analysis for heap access, borrowing, effects, duties,
-  resources and channels. Replace unresolved generated callback inputs, retain
-  actual protected answers across resume, and use finite loop/recursion summaries.
-  Carry normal and abrupt result types directly, replacing block-exit/cause
-  replay. Preserve conditional/rest-pattern receiving and correlated aggregates.
+  resources and channels. Resolve generated callback inputs, use finite
+  loop/recursion summaries and preserve correlated aggregates. Normal,
+  abrupt and resumed answers now carry owned type graphs; block-exit/cause replay
+  has been removed. Finish conditional/rest-pattern receiving and contextual
+  inference across defaults, callbacks and control transfers.
 - Run static execution on the eligible elaborated operations used by compilation.
   Finish Const/Key argument and extent inference, selected numeric representation,
   and first-class explicit generic instantiation without AST reconstruction.

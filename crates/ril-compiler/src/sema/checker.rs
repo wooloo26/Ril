@@ -17,6 +17,7 @@ mod allocation_tests;
 mod applications;
 pub(crate) mod arrays;
 mod bindings;
+mod boundary_results;
 mod budget;
 mod builtin_source_observations;
 mod builtin_source_types;
@@ -544,7 +545,7 @@ struct Checker {
     ended_operation_loans: BTreeSet<LoanId>,
     operation_loan_ends: BTreeMap<LoanId, CauseId>,
     operation_loan_starts: Vec<super::resumption::OperationLoanStart>,
-    pending_abort: Option<(u32, Value)>,
+    pending_abort: Option<(u32, EvaluatedValue)>,
     effect_answer_probe: bool,
     checked_definitions: BTreeSet<DefinitionId>,
     type_alternatives: BTreeMap<u32, Vec<Value>>,
@@ -1932,11 +1933,10 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::source_reception::Target>,
     ) -> expressions::SourceExpression {
-        if source.is_some()
-            && let StmtKind::Expr {
-                expression,
-                terminated: false,
-            } = &statement.kind
+        if let StmtKind::Expr {
+            expression,
+            terminated: false,
+        } = &statement.kind
         {
             return self.expression_expected_source(expression, frame, expected, source);
         }
@@ -1975,6 +1975,7 @@ impl Checker {
             repeated: self.loop_depth > 0,
         });
         let mut value = self.unit(block.span);
+        let mut packet = EvaluatedValue::unobserved(value.clone(), self.recency_moves.len(), true);
         let mut source_valid = true;
         for (position, statement) in block.statements.iter().enumerate() {
             if let Some(context) = self.window_blocks.last_mut() {
@@ -2002,8 +2003,9 @@ impl Checker {
                         None
                     },
                 );
-                value = received.value;
+                value = received.value.clone();
                 source_valid &= received.source_valid;
+                packet = received;
                 if value.ty == Ty::Never {
                     if let Some(before) = before
                         && self
@@ -2050,39 +2052,35 @@ impl Checker {
                 }
             }
         }
-        let mut received_value = EvaluatedValue::new(value.clone(), self.recency_moves.len());
         self.verify_local_definitions(definitions, frame);
-        self.check_local_effect_boundary(block, &old_env, &value, frame);
+        self.transport_evaluation_packet(&mut packet, block.span);
+        self.check_local_effect_boundary(block, &old_env, &packet.value, frame);
         self.window_blocks.pop();
-        self.exit_cleanups(start, &value, block.span, frame);
-        self.finish_deferred_cleanups(boundary, frame, block.span, &mut value, start);
-        self.finish_budget_recoveries(boundary, &mut value);
-        self.finish_foreign_abort_exits(boundary, &mut value);
+        self.exit_cleanups(start, &packet.value, block.span, frame);
+        self.transport_evaluation_packet(&mut packet, block.span);
+        let mut replaced =
+            self.finish_deferred_cleanups(boundary, frame, block.span, &mut packet, start);
+        replaced |= self.finish_budget_recoveries(boundary, &mut packet);
+        replaced |= self.finish_foreign_abort_exits(boundary, &mut packet);
         if self
             .pending_abort
             .as_ref()
             .is_some_and(|(target, _)| *target == boundary)
         {
-            value = self.pending_abort.take().unwrap().1;
+            replaced = true;
+            packet = self.pending_abort.take().unwrap().1;
+            self.transport_evaluation_packet(&mut packet, block.span);
         }
-        if source.is_some_and(|target| {
-            target.sensitivity != super::source_reception::SchemaSensitivity::NotRequired
-        }) && value.ty != Ty::Never
-        {
-            let original = received_value.current(&self.recency_moves);
-            let same_schema = match (&original.source_type_witness, &value.source_type_witness) {
-                (Some(original), Some(current)) => original == current,
-                _ => original.same_abstract_value(&value),
-            };
-            if !same_schema {
-                self.unsupported(
-                    block.span,
-                    "a replaced block answer requires its own original source receiving proof",
-                );
-                source_valid = false;
-                frame.return_source_valid = false;
+        if let Some(target) = source {
+            if replaced {
+                self.receive_boundary_target(&mut packet, expected, target, block.span);
+            } else {
+                self.ascribe_received_signature(&mut packet.value, target);
             }
         }
+        packet.source_valid &= source_valid;
+        frame.return_source_valid &= packet.source_valid;
+        let mut value = packet.value.clone();
         self.record_handler_answer(boundary, &value.ty);
         self.active_handlers.truncate(handlers);
         self.block_boundaries.pop();
@@ -2104,7 +2102,10 @@ impl Checker {
             value.publication = Publication::Unpublished;
         }
         frame.env = old_env;
-        expressions::SourceExpression::unobserved(value, self.recency_moves.len(), source_valid)
+        {
+            packet.value = value;
+            packet
+        }
     }
     fn access(
         &mut self,

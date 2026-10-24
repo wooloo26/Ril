@@ -25,7 +25,12 @@ impl Checker {
             if selected.environment.is_poisoned() {
                 return Err(SourceTypesError::Unresolved);
             }
-            return Ok((selected.schema.clone(), selected.environment.clone()));
+            let schema = crate::sema::source_types::declarations::resolve_schema(
+                &selected.schema,
+                &self.semantic_hir,
+                work,
+            )?;
+            return Ok((schema, selected.environment.clone()));
         }
         work.charge(environment.generic_sources.len())?;
         let mut selected = BTreeMap::new();
@@ -41,6 +46,11 @@ impl Checker {
             }
         }
         let result = schema.substitute(&selected, work)?;
+        let result = crate::sema::source_types::declarations::resolve_schema(
+            &result,
+            &self.semantic_hir,
+            work,
+        )?;
         if !result.requires_environment(work)? {
             return Ok((result, environment));
         }
@@ -209,6 +219,13 @@ impl Checker {
             )
             .ok_or(SourceTypesError::BudgetExceeded)?;
             selected.insert(identity, SourceSchema::import(&key, syntax.hir_id, work)?);
+        }
+        for schema in selected.values_mut() {
+            *schema = crate::sema::source_types::declarations::resolve_schema(
+                schema,
+                &self.semantic_hir,
+                work,
+            )?;
         }
         Ok(selected)
     }

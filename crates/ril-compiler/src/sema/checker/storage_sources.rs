@@ -601,37 +601,10 @@ impl Checker {
                     None
                 }
             }
-        } else if let Some(source) = original.as_ref().and_then(|original| {
-            self.storage_binding_source_schema_view(
-                original.value(),
-                &binding.value,
-                frame,
-                SourceRead::Received,
-            )
-        }) {
-            match source {
-                Ok(Some((schema, captured))) => {
-                    environment = captured;
-                    Some(schema)
-                }
-                Ok(None) => None,
-                Err(_) => {
-                    self.unsupported(
-                        binding.value.span,
-                        "storage input lost its original Source graph or work budget",
-                    );
-                    None
-                }
-            }
         } else {
-            original.as_ref().and_then(|original| {
-                match self.original_source_receiving_schema_at(
-                    original.value(),
-                    &binding.value,
-                    frame,
-                    &mut work,
-                    Some(initializer.expression),
-                ) {
+            original
+                .as_ref()
+                .and_then(|packet| match self.owned_result_type(packet, &mut work) {
                     Ok(Some((schema, captured))) => {
                         environment = captured;
                         Some(schema)
@@ -640,12 +613,11 @@ impl Checker {
                     Err(error) => {
                         self.unsupported(
                             binding.value.span,
-                            format!("storage input Source graph could not be admitted: {error}"),
+                            format!("storage initializer's owned type is unavailable: {error}"),
                         );
                         None
                     }
-                }
-            })
+                })
         };
         PreparedBindingSource {
             context,

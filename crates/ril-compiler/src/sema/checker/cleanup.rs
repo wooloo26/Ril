@@ -207,9 +207,10 @@ impl Checker {
         boundary: u32,
         caller: &mut Frame,
         span: Span,
-        answer: &mut Value,
+        answer: &mut EvaluatedValue,
         ending_start: usize,
-    ) {
+    ) -> bool {
+        let mut replaced = false;
         while let Some(index) = self
             .deferred_arm_cleanups
             .iter()
@@ -219,17 +220,17 @@ impl Checker {
             let scoped: BTreeSet<_> = deferred.registrations.iter().copied().collect();
             let mut ending: BTreeSet<_> = caller.locals[ending_start..].iter().copied().collect();
             ending.extend(&deferred.frame.locals);
-            if self.carries_scoped(answer, &scoped)
+            if self.carries_scoped(&answer.value, &scoped)
                 || caller
                     .returned
                     .iter()
-                    .any(|value| self.carries_scoped(value, &scoped))
+                    .any(|packet| self.carries_scoped(&packet.value, &scoped))
             {
                 self.error(
                     "E0604",
                     span,
                     "resumed-arm scoped authority escapes the protected continuation boundary",
-                    [answer.cause],
+                    [answer.value.cause],
                 );
             }
             let escaped: Vec<_> = self
@@ -254,13 +255,14 @@ impl Checker {
             let active = std::mem::replace(&mut self.active_handlers, deferred.outer_handlers);
             let previous_typing = self.enter_typing_environment(&deferred.typing_environment);
             if let Some(suffix) = deferred.suffix.take() {
+                replaced = true;
                 let scope_exit = self.retire_continuation_writers(
                     boundary,
                     caller,
                     ending_start,
                     &deferred.frame,
                     &deferred.registrations,
-                    answer,
+                    &mut answer.value,
                 );
                 *answer = self.run_arm_suffix(suffix, answer, &mut deferred.frame, scope_exit);
             }
@@ -279,7 +281,7 @@ impl Checker {
                     CauseKind::Cleanup,
                     source,
                     "resumed-arm cleanup follows completion of its protected continuation",
-                    [value.cause, answer.cause],
+                    [value.cause, answer.value.cause],
                 );
                 self.cleanup_events.push(super::super::CleanupEvent {
                     binding,
@@ -317,6 +319,7 @@ impl Checker {
                 self.bindings[binding].alive = false;
             }
         }
+        replaced
     }
     pub(super) fn carries_scoped(&self, value: &Value, scoped: &BTreeSet<BindingId>) -> bool {
         if !value.scoped.is_disjoint(scoped) {

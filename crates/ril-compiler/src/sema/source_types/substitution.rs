@@ -205,7 +205,9 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
                     }
                 }
                 SourceNode::Alias { target, .. } => child(*target)?,
-                SourceNode::OpaqueName { name, arguments } => ArgumentKey::Name {
+                SourceNode::OpaqueName {
+                    name, arguments, ..
+                } => ArgumentKey::Name {
                     name: name.clone(),
                     arguments: arguments
                         .iter()

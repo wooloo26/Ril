@@ -15,7 +15,7 @@ pub(super) struct Coverage {
 #[derive(Clone)]
 pub(super) struct Recovery {
     pub boundary: u32,
-    pub answer: Value,
+    pub answer: EvaluatedValue,
     pub span: Span,
     before: Box<flow::FlowSnapshot>,
     state: Box<flow::FlowSnapshot>,
@@ -236,7 +236,7 @@ impl Checker {
             Some(Constant::Integer(value)) => Some(value),
             _ => None,
         };
-        let validation_only = limit.is_some_and(|value| value <= 0);
+        let validation_only = self.effect_answer_probe || limit.is_some_and(|value| value <= 0);
         if validation_only {
             self.budget_validation_depth += 1;
         }
@@ -303,6 +303,12 @@ impl Checker {
                 "budget return membership requires path-indexed Result and scoped ownership",
             );
         }
+        // The delimited answer's type comes from the protected computation's
+        // ordinary type, even when the actual allowance cannot enter it. This
+        // visit is isolated by probe_handler_answer's complete flow snapshot.
+        if self.effect_answer_probe {
+            return result;
+        }
         if self.pending_abort.is_some() {
             coverage.complete = false;
             self.unsupported(
@@ -364,7 +370,7 @@ impl Checker {
             self.perform_operation_from("Div::exhausted", &[], span, &mut recovery_frame, origin);
         let recovery_pending = self.pending_handler_obligations.clone();
         let transfer = self.pending_abort.take();
-        let answer = transfer.as_ref().map(|(_, answer)| answer.clone());
+        let answer = transfer.as_ref().map(|(_, answer)| answer.value.clone());
         let mut recovery_state = self.snapshot_flow();
         let result_causes = self.budget_result_exit_causes(
             &before,
@@ -509,7 +515,11 @@ impl Checker {
         caller.obligations.include(&outward, true);
     }
 
-    pub(super) fn finish_budget_recoveries(&mut self, boundary: u32, normal: &mut Value) {
+    pub(super) fn finish_budget_recoveries(
+        &mut self,
+        boundary: u32,
+        normal: &mut EvaluatedValue,
+    ) -> bool {
         let mut retained = Vec::new();
         let recoveries = std::mem::take(&mut self.budget_recoveries);
         let (mut matching, other): (Vec<_>, Vec<_>) = recoveries
@@ -517,29 +527,43 @@ impl Checker {
             .partition(|exit| exit.boundary == boundary);
         retained.extend(other);
         self.budget_recoveries = retained;
+        let replaced = !matching.is_empty();
         while let Some(mut recovery) = matching.pop() {
             self.reset_budget_exits(&mut recovery.before);
             self.reset_budget_exits(&mut recovery.state);
-            if normal.ty != Ty::Never {
-                self.require_type(&recovery.answer, &normal.ty, recovery.span);
+            let no_normal = normal.value.ty == Ty::Never;
+            if !no_normal {
+                self.receive_boundary_type(&mut recovery.answer, normal, recovery.span);
             }
+            self.transport_evaluation_packet(normal, recovery.span);
+            self.transport_evaluation_packet(&mut recovery.answer, recovery.span);
+            let before = self
+                .rebase_flow_snapshot(&recovery.before, recovery.span)
+                .unwrap_or_else(|| (*recovery.before).clone());
+            let state = self
+                .rebase_flow_snapshot(&recovery.state, recovery.span)
+                .unwrap_or_else(|| (*recovery.state).clone());
             let cause = self.cause(
                 CauseKind::BranchJoin,
                 recovery.span,
                 "budget recovery aborts the remaining delimited continuation",
-                [normal.cause, recovery.answer.cause],
+                [normal.value.cause, recovery.answer.value.cause],
             );
             let mut joined = self.branch_flow(
-                &recovery.before,
-                &recovery.state,
-                &recovery.answer,
-                normal,
+                &before,
+                &state,
+                &recovery.answer.value,
+                &normal.value,
                 recovery.span,
             );
             joined.cause = cause;
             self.apply_budget_result_causes(&recovery.result_causes);
-            *normal = joined;
+            if no_normal {
+                *normal = recovery.answer;
+            }
+            normal.value = joined;
         }
+        replaced
     }
 }
 

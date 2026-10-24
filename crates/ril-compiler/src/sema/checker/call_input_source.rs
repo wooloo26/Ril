@@ -399,6 +399,38 @@ impl Checker {
         self.call_input_source.operands.truncate(marker);
     }
 
+    pub(in crate::sema::checker) fn owned_result_type(
+        &self,
+        packet: &EvaluatedValue,
+        work: &mut WorkLimit,
+    ) -> InputSource {
+        if packet.value.ty == Ty::Never || packet.value.ty == Ty::Unit {
+            let key = if packet.value.ty == Ty::Never {
+                ArgumentKey::Name {
+                    name: "never".into(),
+                    arguments: vec![],
+                }
+            } else {
+                ArgumentKey::Tuple(vec![])
+            };
+            return self.input_header_schema(&key, None, self.capture_typing_environment(), work);
+        }
+        let result = packet
+            .current_source(
+                SourceTypesRef::Live(self.type_source.storage.live_types()),
+                work,
+            )
+            .map(|source| source.into_known());
+        if (matches!(result, Ok(None))
+            || (packet.observation.is_none()
+                && matches!(result, Err(SourceTypesError::SourceNotCaptured))))
+            && let Some(key) = Self::complete_builtin_type_key(&packet.value.ty, work)?
+        {
+            return self.input_header_schema(&key, None, self.capture_typing_environment(), work);
+        }
+        result
+    }
+
     /// Capture the exact completed child before any later operand can execute.
     /// The packet's birth coordinates remain immutable if this query probes a
     /// callable and advances heap recency.
@@ -407,6 +439,7 @@ impl Checker {
         packet: &mut EvaluatedValue,
         syntax: &Expr,
         frame: &Frame,
+        owned: Option<EvaluatedValue>,
         mut lease: crate::sema::application_effect::WorkLease,
     ) {
         enum Capture {
@@ -518,15 +551,19 @@ impl Checker {
                 construction.ok_or(SourceTypesError::BudgetExceeded)?,
             ));
             stage = "original Source query";
-            let source = self.with_typing_environment(&birth_environment, |checker| {
-                checker.original_source_receiving_schema_at(
-                    &packet.value,
-                    syntax,
-                    frame,
-                    work,
-                    Some(observation),
-                )
-            })?;
+            let source = if let Some(owned) = owned {
+                self.owned_result_type(&owned, work)?
+            } else {
+                self.with_typing_environment(&birth_environment, |checker| {
+                    checker.original_source_receiving_schema_at(
+                        &packet.value,
+                        syntax,
+                        frame,
+                        work,
+                        Some(observation),
+                    )
+                })?
+            };
             if source.is_none()
                 && let Ty::NumericHole(hole) = packet.value.ty
             {
@@ -540,6 +577,15 @@ impl Checker {
             } else {
                 stage = "Source interning";
                 let captured = if let Some((schema, environment)) = source {
+                    let schema = if schema.requires_declaration_environment(work)? {
+                        crate::sema::source_types::declarations::resolve_schema(
+                            &schema,
+                            &self.semantic_hir,
+                            work,
+                        )?
+                    } else {
+                        schema
+                    };
                     CapturedSource::Known(SourceRef::intern(
                         &schema,
                         environment,

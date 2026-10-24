@@ -4,7 +4,7 @@
 use super::*;
 use crate::sema::effect_identity::ArgumentKey;
 
-pub(super) fn scalar(name: &str) -> Option<SourceScalar> {
+pub(crate) fn scalar(name: &str) -> Option<SourceScalar> {
     use SourceScalar::*;
     Some(match name.strip_prefix("Prelude::").unwrap_or(name) {
         "bool" => Bool,
@@ -86,6 +86,8 @@ pub(super) fn import_node(
                 SourceNode::Container { kind, arguments }
             } else {
                 SourceNode::OpaqueName {
+                    declaration: super::graph::IntrinsicNominal::lookup(name)
+                        .map(super::graph::NominalDeclaration::Intrinsic),
                     name: name.clone(),
                     arguments,
                 }

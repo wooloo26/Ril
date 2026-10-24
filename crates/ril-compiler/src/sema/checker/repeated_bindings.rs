@@ -54,8 +54,8 @@ impl Checker {
         let mut values: Vec<&Value> = invocation
             .iter()
             .map(|(_, value, _)| value)
-            .chain(frame.returned.iter())
-            .chain(self.pending_abort.iter().map(|(_, value)| value))
+            .chain(frame.returned.iter().map(|packet| &packet.value))
+            .chain(self.pending_abort.iter().map(|(_, value)| &value.value))
             .chain(self.loop_breaks.iter().flat_map(|(_, values)| values))
             .chain(self.repeated_handler_answers())
             .chain(self.concurrency.cancellation_retained_values())

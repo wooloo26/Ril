@@ -2,7 +2,13 @@
 //! path. Only the failed wrapper is exported on that path.
 use super::*;
 impl Checker {
-    pub(super) fn propagate_value(&mut self, value: Value, span: Span, frame: &mut Frame) -> Value {
+    pub(super) fn propagate_value(
+        &mut self,
+        input: EvaluatedValue,
+        span: Span,
+        frame: &mut Frame,
+    ) -> Value {
+        let value = input.value.clone();
         if value.ty == Ty::Never {
             return value;
         }
@@ -189,7 +195,9 @@ impl Checker {
             for (id, abnormal) in dormant {
                 self.result_duties[id as usize].abnormal = abnormal;
             }
-            frame.returned.push(failure.clone());
+            let packet =
+                self.propagation_return_packet(failure.clone(), &input, frame, valid, span);
+            frame.returned.push(packet);
         }
         if tag == Some(false) {
             failure.ty = Ty::Never;
@@ -218,6 +226,86 @@ impl Checker {
             [value.cause],
         );
         payload
+    }
+    fn propagation_return_packet(
+        &mut self,
+        failure: Value,
+        input: &EvaluatedValue,
+        frame: &Frame,
+        valid: bool,
+        span: Span,
+    ) -> EvaluatedValue {
+        use crate::sema::{
+            evaluated::{CapturedSource, SourceRef},
+            source_types::{SourcePath, SourceSensitivity, SourceTypesError},
+        };
+        let mut packet = EvaluatedValue::unobserved(failure, self.recency_moves.len(), valid);
+        let Some(target) = frame.expected_return_source.as_ref().filter(|_| valid) else {
+            return packet;
+        };
+        let Some(schema) = &target.schema else {
+            return packet;
+        };
+        let mut lease = self.application_effect.lease_work(32768);
+        let received = (|| {
+            let work = lease.work();
+            if matches!(packet.value.ty, Ty::Result(..)) {
+                let expected_error = schema.project_steps(&[SourcePath::ResultError], work)?;
+                if !matches!(
+                    expected_error.sensitivity(work),
+                    SourceSensitivity::Absent { .. }
+                ) {
+                    let (actual, environment) = self
+                        .owned_result_type(input, work)?
+                        .ok_or(SourceTypesError::Unresolved)?;
+                    let error = actual.project_steps(&[SourcePath::ResultError], work)?;
+                    if !expected_error.receive_schema_in(
+                        &error,
+                        &target.environment,
+                        &environment,
+                        None,
+                        work,
+                    )? {
+                        return Ok(None);
+                    }
+                }
+            }
+            SourceRef::intern(
+                schema,
+                target.environment.clone(),
+                self.type_source.storage.live_types_mut(),
+                work,
+            )
+            .map(Some)
+        })();
+        let returned = self.application_effect.return_work(lease);
+        match received.and_then(|source| returned.map(|()| source)) {
+            Ok(Some(source)) => {
+                if let Some(expected) = &frame.expected_return {
+                    packet.value.ty = expected.clone();
+                }
+                if let Err(error) = packet.set_current_type(CapturedSource::Known(source)) {
+                    packet.fail_current_source(error);
+                }
+            }
+            Ok(None) => {
+                self.error(
+                    "E0301",
+                    span,
+                    "propagated error does not fit the complete return error type",
+                    [packet.value.cause],
+                );
+                packet.source_valid = false;
+            }
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("propagation return type is incomplete: {error}"),
+                );
+                packet.fail_current_source(error);
+            }
+        }
+        packet
     }
 }
 fn contains_result_type(ty: &Ty) -> bool {

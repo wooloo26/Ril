@@ -141,6 +141,7 @@ impl Checker {
         let terminal: BTreeSet<_> = frame
             .returned
             .iter()
+            .map(|packet| &packet.value)
             .chain(
                 self.loop_breaks
                     .iter()
@@ -160,7 +161,7 @@ impl Checker {
         }
         strip_closed(iteration, &removable);
         for value in &mut frame.returned {
-            strip_closed(value, &removable);
+            strip_closed(&mut value.value, &removable);
         }
         for (_, values) in &mut self.loop_breaks {
             for value in values {

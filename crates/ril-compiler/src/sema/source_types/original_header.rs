@@ -6,6 +6,7 @@ use super::super::{
     SourceSchema, SourceTypeId, SourceTypesError, WorkLimit,
 };
 use crate::hir::lexical::{LexicalBindings, TypeNameBinding};
+use crate::sema::source_types::graph::{IntrinsicNominal, NominalDeclaration};
 use crate::{hir::nodes as hir, static_eval};
 use ril_compiler_core::{
     ids::{GenericParamId, StmtId, TypeExprId},
@@ -1026,6 +1027,7 @@ impl<'a> Header<'a> {
                             let schema = SourceSchema::certified_const_nominal(
                                 &name,
                                 &arguments,
+                                Some(declaration_id),
                                 syntax.hir_id,
                                 work,
                             )?;
@@ -1062,7 +1064,21 @@ impl<'a> Header<'a> {
                     {
                         return Err(SourceTypesError::Unresolved);
                     }
-                    SourceNode::OpaqueName { name, arguments }
+                    SourceNode::OpaqueName {
+                        declaration: match binding {
+                            Some(TypeNameBinding::Declaration(id)) => {
+                                Some(NominalDeclaration::Hir(id))
+                            }
+                            _ => match IntrinsicNominal::lookup(&name) {
+                                Some(id) => Some(NominalDeclaration::Intrinsic(id)),
+                                None => self
+                                    .declaration(&name, work)?
+                                    .map(|(id, _)| NominalDeclaration::Hir(id)),
+                            },
+                        },
+                        name,
+                        arguments,
+                    }
                 }
             }
             TypeKind::Optional(inner) => SourceNode::Container {

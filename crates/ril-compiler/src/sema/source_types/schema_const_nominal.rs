@@ -10,6 +10,7 @@ impl SourceSchema {
     pub(crate) fn certified_const_nominal(
         name: &str,
         arguments: &[ArgumentKey],
+        declaration: Option<ril_compiler_core::ids::StmtId>,
         original: Option<TypeExprId>,
         work: &mut WorkLimit,
     ) -> Result<Self, SourceTypesError> {
@@ -29,6 +30,7 @@ impl SourceSchema {
         }
         let root = builder.insert(
             SourceNode::OpaqueName {
+                declaration: declaration.map(super::graph::NominalDeclaration::Hir),
                 name: name.to_owned(),
                 arguments: coordinates,
             },
@@ -54,6 +56,7 @@ mod tests {
         SourceSchema::certified_const_nominal(
             "Token",
             &[ArgumentKey::Closed(value.into())],
+            Some(ril_compiler_core::ids::StmtId(9)),
             Some(TypeExprId(7)),
             work,
         )
@@ -110,6 +113,7 @@ mod tests {
             SourceSchema::certified_const_nominal(
                 "Token",
                 &[ArgumentKey::Tuple(vec![])],
+                None,
                 None,
                 &mut work
             ),

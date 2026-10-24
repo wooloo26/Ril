@@ -1296,7 +1296,7 @@ pub struct Frame {
     pub owner: ScopeId,
     pub obligations: Obligations,
     pub locals: Vec<BindingId>,
-    pub returned: Vec<Value>,
+    pub returned: Vec<super::evaluated::EvaluatedValue>,
     pub(crate) foreign_return_states: Vec<usize>,
     pub anonymous: bool,
     pub callback_call: bool,

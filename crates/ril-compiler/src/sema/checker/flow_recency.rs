@@ -57,17 +57,14 @@ impl Checker {
     pub(in crate::sema::checker) fn transport_frame_prefix(
         &self,
         frame: &mut Frame,
-        cursor: usize,
         accesses: usize,
         returns: usize,
     ) {
         for access in frame.obligations.accesses.iter_mut().take(accesses) {
             access.transport(&self.recency_moves);
         }
-        for &(recent, older) in &self.recency_moves[cursor..] {
-            for returned in frame.returned.iter_mut().take(returns) {
-                copy::remap_value_origins(returned, recent, older);
-            }
+        for returned in frame.returned.iter_mut().take(returns) {
+            let _ = returned.current(&self.recency_moves);
         }
     }
     pub(in crate::sema::checker) fn rebase_flow_snapshot(

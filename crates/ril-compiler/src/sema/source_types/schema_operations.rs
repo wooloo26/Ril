@@ -333,7 +333,7 @@ impl SourceSchema {
             work.charge(1)?;
             match self.types.get(id)? {
                 SourceNode::Binder(_) => required |= binders,
-                SourceNode::OpaqueName { .. } => required = true,
+                SourceNode::OpaqueName { declaration, .. } => required |= declaration.is_none(),
                 SourceNode::KeyProjection { .. } => required = true,
                 SourceNode::OpaqueComputation(_) | SourceNode::Unresolved { .. } => {
                     return Err(SourceTypesError::Unresolved);
@@ -859,7 +859,9 @@ impl SourceSchema {
         work.text(expected)?;
         let root = self.read_root(work)?;
         match self.types.get(root)? {
-            SourceNode::OpaqueName { name, arguments } if name == expected => {
+            SourceNode::OpaqueName {
+                name, arguments, ..
+            } if name == expected => {
                 if arguments.len() != arity {
                     return Err(SourceTypesError::InvalidContainer);
                 }
@@ -1177,6 +1179,7 @@ mod tests {
         let root = builder
             .insert(
                 SourceNode::OpaqueName {
+                    declaration: None,
                     name: "i8".into(),
                     arguments: vec![],
                 },
@@ -1279,6 +1282,7 @@ mod tests {
                 arguments: vec![],
             },
             SourceNode::OpaqueName {
+                declaration: None,
                 name: "unresolved nominal row".into(),
                 arguments: vec![],
             },

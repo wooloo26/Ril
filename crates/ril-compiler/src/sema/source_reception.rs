@@ -78,20 +78,6 @@ pub(crate) struct Target {
     pub(crate) sensitivity: SchemaSensitivity,
 }
 
-impl Target {
-    pub(crate) fn receive_schema(
-        &self,
-        actual: &super::source_types::SourceSchema,
-        fresh: Option<&Construction>,
-        work: &mut super::source_types::WorkLimit,
-    ) -> Result<bool, super::source_types::SourceTypesError> {
-        self.schema
-            .as_ref()
-            .ok_or(super::source_types::SourceTypesError::Unresolved)?
-            .receive_schema(actual, fresh, work)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchemaSensitivity {
     NotRequired,

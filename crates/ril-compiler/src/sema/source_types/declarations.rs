@@ -25,6 +25,7 @@ struct Alias {
 struct Resolve<'a> {
     hir: &'a HirProgram,
     aliases: BTreeMap<String, Option<Alias>>,
+    nominals: BTreeMap<String, Option<StmtId>>,
     definitions: BTreeMap<(StmtId, TypeScope), SourceTypeId>,
     syntax: BTreeMap<(TypeExprId, TypeScope), SourceTypeId>,
     lexical: Option<&'a LexicalBindings>,
@@ -67,6 +68,7 @@ pub(crate) fn type_schema(
     let mut resolver = Resolve {
         hir,
         aliases: BTreeMap::new(),
+        nominals: BTreeMap::new(),
         definitions: BTreeMap::new(),
         syntax: BTreeMap::new(),
         lexical: Some(&lexical),
@@ -173,6 +175,26 @@ impl<'a> Resolve<'a> {
                 );
             }
         }
+        let mut nominals = BTreeMap::new();
+        work.charge(hir.statements().len())?;
+        for (id, statement) in hir.statements() {
+            if let hir::StmtKind::Type {
+                name,
+                nominal,
+                opaque,
+                variants,
+                ..
+            } = &statement.kind
+                && statement.info.owner == hir::LexicalOwner::Module
+                && (*nominal || *opaque || !variants.is_empty())
+            {
+                work.text(name)?;
+                nominals
+                    .entry(name.clone())
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(Some(id));
+            }
+        }
         // Legacy names do not carry a lexical declaration ID. Until that
         // ingress is removed, a same-spelled local declaration/binder makes
         // the global-name interpretation ambiguous, never coordinate-free.
@@ -184,8 +206,17 @@ impl<'a> Resolve<'a> {
             {
                 *alias = None;
             }
+            if statement.info.owner != hir::LexicalOwner::Module
+                && let hir::StmtKind::Type { name, .. } = &statement.kind
+                && let Some(nominal) = nominals.get_mut(name)
+            {
+                *nominal = None;
+            }
         }
         for generic in hir.generics() {
+            if let Some(nominal) = nominals.get_mut(&generic.name) {
+                *nominal = None;
+            }
             if let Some(alias) = aliases.get_mut(&generic.name) {
                 *alias = None;
             }
@@ -193,6 +224,7 @@ impl<'a> Resolve<'a> {
         Ok(Self {
             hir,
             aliases,
+            nominals,
             definitions: BTreeMap::new(),
             syntax: BTreeMap::new(),
             lexical: None,
@@ -279,6 +311,7 @@ impl Resolve<'_> {
         if *opaque || *nominal || !variants.is_empty() {
             return self.builder.insert(
                 SourceNode::OpaqueName {
+                    declaration: Some(NominalDeclaration::Hir(declaration)),
                     name: name.clone(),
                     arguments: arguments.to_vec(),
                 },
@@ -386,7 +419,11 @@ impl Resolve<'_> {
         }
         let node = input.get(id)?;
         node.charge(work)?;
-        if let SourceNode::OpaqueName { name, arguments } = node
+        if let SourceNode::OpaqueName {
+            name,
+            arguments,
+            declaration: None,
+        } = node
             && arguments.is_empty()
             && let Some(output) = self.alias(name, work, depth + 1)?
         {
@@ -395,7 +432,19 @@ impl Resolve<'_> {
         }
         let output = self.builder.reserve(work)?;
         self.copied.insert(id, output);
-        let node = node.map_children(|child| self.copy(input, child, work, depth + 1))?;
+        let mut node = node.map_children(|child| self.copy(input, child, work, depth + 1))?;
+        if let SourceNode::OpaqueName {
+            declaration, name, ..
+        } = &mut node
+            && declaration.is_none()
+        {
+            *declaration = self
+                .nominals
+                .get(name)
+                .copied()
+                .flatten()
+                .map(NominalDeclaration::Hir);
+        }
         self.builder.define(output, node, work)?;
         Ok(output)
     }
@@ -471,7 +520,12 @@ impl Resolve<'_> {
                 } else if binding.is_some() {
                     return Err(SourceTypesError::Unresolved);
                 } else {
-                    SourceNode::OpaqueName { name, arguments }
+                    SourceNode::OpaqueName {
+                        declaration: IntrinsicNominal::lookup(&name)
+                            .map(NominalDeclaration::Intrinsic),
+                        name,
+                        arguments,
+                    }
                 }
             }
             hir::TypeKind::Optional(inner) => SourceNode::Container {

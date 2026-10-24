@@ -171,15 +171,46 @@ fn same_binder_interpretation(
     contexts: AnnotationContexts<'_>,
     work: &mut WorkLimit,
 ) -> Result<bool, SourceTypesError> {
-    let (SourceNode::Binder(left), SourceNode::Binder(right)) = (left, right) else {
-        return Ok(false);
-    };
-    work.text(left)?;
-    work.text(right)?;
-    if left != right {
-        return Ok(false);
+    match (left, right) {
+        (SourceNode::Binder(left), SourceNode::Binder(right)) => {
+            work.text(left)?;
+            work.text(right)?;
+            if left != right {
+                return Ok(false);
+            }
+            same_binder_selection(left, contexts.left, contexts.right, work)
+        }
+        (
+            SourceNode::KeyProjection {
+                parameter: left_parameter,
+                identity: left,
+                ..
+            },
+            SourceNode::KeyProjection {
+                parameter: right_parameter,
+                identity: right,
+                ..
+            },
+        ) => {
+            work.text(left)?;
+            work.text(right)?;
+            let declared = [contexts.left, contexts.right]
+                .into_iter()
+                .all(|environment| {
+                    environment.static_key_arguments.contains_key(left)
+                        || environment
+                            .generic_context
+                            .values()
+                            .any(|identity| identity == left)
+                });
+            Ok(declared
+                && left_parameter == right_parameter
+                && left == right
+                && contexts.left.static_key_arguments.get(left)
+                    == contexts.right.static_key_arguments.get(right))
+        }
+        _ => Ok(false),
     }
-    same_binder_selection(left, contexts.left, contexts.right, work)
 }
 
 fn compare(
@@ -217,13 +248,19 @@ fn compare(
         && (matches!(
             left,
             SourceNode::Binder(_)
-                | SourceNode::OpaqueName { .. }
                 | SourceNode::KeyProjection { .. }
+                | SourceNode::OpaqueName {
+                    declaration: None,
+                    ..
+                }
         ) || matches!(
             right,
             SourceNode::Binder(_)
-                | SourceNode::OpaqueName { .. }
                 | SourceNode::KeyProjection { .. }
+                | SourceNode::OpaqueName {
+                    declaration: None,
+                    ..
+                }
         ))
         && !same_binder_interpretation(left, right, contexts, work)?
     {
@@ -528,15 +565,17 @@ fn compare(
         }
         (
             SourceNode::OpaqueName {
+                declaration: left_declaration,
                 name: left,
                 arguments: la,
             },
             SourceNode::OpaqueName {
+                declaration: right_declaration,
                 name: right,
                 arguments: ra,
             },
         ) => {
-            if left != right || la.len() != ra.len() {
+            if left != right || la.len() != ra.len() || left_declaration != right_declaration {
                 return Ok(false);
             }
             for (left, right) in la.iter().zip(ra) {
@@ -1061,6 +1100,124 @@ mod tests {
             .unwrap()
         );
         assert!(same_binder_selection("factory:T", &first, &same, &mut WorkLimit::new(0)).is_err());
+    }
+
+    #[test]
+    fn resolved_nominals_use_declarations_and_unresolved_names_keep_their_scope() {
+        use crate::sema::{context::TypingEnvironment, source_types::SourceSchema};
+        use ril_compiler_core::ids::StmtId;
+        let mut work = WorkLimit::new(8192);
+        let mut nominal = |declaration: Option<StmtId>| {
+            let mut builder = SourceBuilder::new().unwrap();
+            let root = builder
+                .insert(
+                    SourceNode::OpaqueName {
+                        declaration: declaration.map(NominalDeclaration::Hir),
+                        name: "Cell".into(),
+                        arguments: vec![],
+                    },
+                    &mut work,
+                )
+                .unwrap();
+            let types = builder.freeze(&mut work).unwrap();
+            SourceSchema::frozen_view(&types, root, None, &mut work).unwrap()
+        };
+        let first = nominal(Some(StmtId(1)));
+        let same = nominal(Some(StmtId(1)));
+        let distinct = nominal(Some(StmtId(2)));
+        let unresolved = nominal(None);
+        let left = TypingEnvironment::default().freeze();
+        let right = TypingEnvironment::default().freeze();
+        assert!(
+            first
+                .equivalent_in(&same, &left, &right, &mut work)
+                .unwrap()
+        );
+        assert!(
+            !first
+                .equivalent_in(&distinct, &left, &right, &mut work)
+                .unwrap()
+        );
+        assert!(
+            unresolved
+                .equivalent_in(&unresolved, &left, &right, &mut work)
+                .is_err()
+        );
+        assert!(
+            !first
+                .equivalent_in(&unresolved, &left, &left, &mut work)
+                .unwrap()
+        );
+        assert!(!first.requires_declaration_environment(&mut work).unwrap());
+        assert!(
+            unresolved
+                .requires_declaration_environment(&mut work)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn key_projection_identity_compares_selected_keys_across_snapshots() {
+        use crate::sema::{
+            context::TypingEnvironment, model::StaticCoordinate, source_types::SourceSchema,
+        };
+        use ril_compiler_core::ids::{GenericParamId, TypeExprId};
+        let mut work = WorkLimit::new(8192);
+        let mut builder = SourceBuilder::new().unwrap();
+        let base = builder
+            .insert(SourceNode::Binder("declaration:T".into()), &mut work)
+            .unwrap();
+        let root = builder
+            .insert(
+                SourceNode::KeyProjection {
+                    origin: KeyProjectionOrigin::Type(TypeExprId(1)),
+                    parameter: GenericParamId(2),
+                    identity: "declaration:K".into(),
+                    base,
+                },
+                &mut work,
+            )
+            .unwrap();
+        let types = builder.freeze(&mut work).unwrap();
+        let schema = SourceSchema::frozen_view(&types, root, None, &mut work).unwrap();
+        let mut environment = TypingEnvironment::default();
+        environment
+            .generic_context
+            .insert("T".into(), "declaration:T".into());
+        environment
+            .generic_context
+            .insert("K".into(), "declaration:K".into());
+        environment.static_key_arguments.insert(
+            "declaration:K".into(),
+            StaticCoordinate::Label("left".into()),
+        );
+        let left = environment.clone().freeze();
+        let same = environment.clone().freeze();
+        environment.static_key_arguments.insert(
+            "declaration:K".into(),
+            StaticCoordinate::Label("right".into()),
+        );
+        let distinct = environment.freeze();
+        assert!(
+            schema
+                .equivalent_in(&schema, &left, &same, &mut work)
+                .unwrap()
+        );
+        assert!(
+            schema
+                .equivalent_in(&schema, &left, &distinct, &mut work)
+                .is_err()
+        );
+        assert!(
+            schema
+                .equivalent_in(
+                    &schema,
+                    &left,
+                    &TypingEnvironment::default().freeze(),
+                    &mut work
+                )
+                .is_err()
+        );
     }
 
     #[test]

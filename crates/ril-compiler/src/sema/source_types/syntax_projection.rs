@@ -68,7 +68,9 @@ pub(super) fn project(
                     path: identity.name().split("::").map(str::to_owned).collect(),
                     arguments: vec![],
                 },
-                SourceNode::OpaqueName { name, arguments } => {
+                SourceNode::OpaqueName {
+                    name, arguments, ..
+                } => {
                     work.charge(arguments.len())?;
                     TypeKind::Name {
                         path: name.split("::").map(str::to_owned).collect(),

@@ -83,13 +83,13 @@ pub(crate) fn constructor_instance(
         matches!(&statement.kind, StmtKind::Type(declaration) if declaration.name == name)
     });
     let catalog = !source_owned && is_canonical_step(candidate, work)?;
-    let declaration = if catalog {
-        candidate.clone()
+    let (declaration_id, declaration) = if catalog {
+        (None, candidate.clone())
     } else {
-        header
+        let (id, declaration) = header
             .declaration(&name, work)?
-            .ok_or(SourceTypesError::MissingNode)?
-            .1
+            .ok_or(SourceTypesError::MissingNode)?;
+        (Some(id), declaration)
     };
     if declaration.opaque || (!declaration.nominal && declaration.variants.is_empty()) {
         return Err(SourceTypesError::Unresolved);
@@ -144,7 +144,7 @@ pub(crate) fn constructor_instance(
             }
             coordinates.push(key);
         }
-        SourceSchema::certified_const_nominal(&name, &coordinates, None, work)?
+        SourceSchema::certified_const_nominal(&name, &coordinates, declaration_id, None, work)?
             .copy_into(&mut header.builder, work)?
     } else {
         work.charge(normalized.arguments.len())?;
@@ -153,9 +153,16 @@ pub(crate) fn constructor_instance(
             .iter()
             .map(|argument| header.ty(argument, true, false, work, 0))
             .collect::<Result<_, _>>()?;
-        header
-            .builder
-            .insert(SourceNode::OpaqueName { name, arguments }, work)?
+        header.builder.insert(
+            SourceNode::OpaqueName {
+                declaration: declaration_id
+                    .map(NominalDeclaration::Hir)
+                    .or_else(|| IntrinsicNominal::lookup(&name).map(NominalDeclaration::Intrinsic)),
+                name,
+                arguments,
+            },
+            work,
+        )?
     };
     work.charge(normalized.payloads.len())?;
     let mut payloads = Vec::with_capacity(normalized.payloads.len());

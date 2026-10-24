@@ -3,6 +3,12 @@ use crate::sema::source_reception;
 
 pub(super) type SourceExpression = EvaluatedValue;
 
+#[derive(Default)]
+struct ExpressionResult {
+    received: Option<bool>,
+    owned: Option<EvaluatedValue>,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct SourceContext<'a> {
     pub(super) ordinary: Option<&'a Ty>,
@@ -152,7 +158,7 @@ impl Checker {
         self.window_expression_uses
             .push(self.window_expression_uses(expr, frame));
         let expected = expected.map(|ty| self.expanded_at(ty, expr.span.file));
-        let mut source_handled = None;
+        let mut source_handled = ExpressionResult::default();
         let mut source_call_event = None;
         let mut value = expected
             .as_ref()
@@ -282,7 +288,13 @@ impl Checker {
             let _ = packet.capture_birth_source(Err(error.clone()), None);
             packet.fail_current_source(error);
         } else if let Some(lease) = capture_lease.take() {
-            self.capture_evaluation_source(&mut packet, expr, frame, lease);
+            self.capture_evaluation_source(
+                &mut packet,
+                expr,
+                frame,
+                source_handled.owned.take(),
+                lease,
+            );
         }
         self.transport_evaluation_packet(&mut packet, expr.span);
         let value = &packet.value;
@@ -293,7 +305,7 @@ impl Checker {
                 checker.check_signature_modes(value, syntax);
             });
         }
-        let source_valid = source_handled.unwrap_or_else(|| {
+        let source_valid = source_handled.received.unwrap_or_else(|| {
             source.is_none_or(|target| {
                 self.require_source_reception(target, expr, value, Some(observation), frame)
             })
@@ -315,6 +327,14 @@ impl Checker {
                 });
             }
         }
+        if source_valid
+            && packet.source_valid
+            && packet.value.ty != Ty::Never
+            && let Some(target) = source
+            && target.sensitivity != source_reception::SchemaSensitivity::NotRequired
+        {
+            self.record_received_type(&mut packet, target, expr.span);
+        }
         self.cancellation_checkpoint(expr.span, frame);
         self.expression_owners.pop();
         self.application_effect.leave(activation);
@@ -328,7 +348,7 @@ impl Checker {
         frame: &mut Frame,
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
-        source_handled: &mut Option<bool>,
+        source_handled: &mut ExpressionResult,
         source_call_event: &mut Option<super::super::copy_contract::CopyCallEventId>,
     ) -> Value {
         if let ExprKind::Name(name) = &expr.kind
@@ -415,8 +435,10 @@ impl Checker {
             }
             ExprKind::Block(block) => {
                 let result = self.block_expected_source(block, frame, expected, source);
-                *source_handled = Some(result.source_valid);
-                result.value
+                source_handled.received = Some(result.source_valid);
+                let value = result.value.clone();
+                source_handled.owned = Some(result);
+                value
             }
             ExprKind::Match {
                 value,
@@ -437,7 +459,7 @@ impl Checker {
                         source,
                     },
                 );
-                *source_handled = Some(result.source_valid);
+                source_handled.received = Some(result.source_valid);
                 result.value
             }
             ExprKind::Is { value, pattern } => {
@@ -595,7 +617,7 @@ impl Checker {
                     values.push(EvaluatedValue::new(value, self.recency_moves.len()));
                 }
                 if receiving.is_some() {
-                    *source_handled = Some(source_valid);
+                    source_handled.received = Some(source_valid);
                 }
                 let current: Vec<_> = values
                     .iter_mut()
@@ -997,7 +1019,7 @@ impl Checker {
                     && explicit_construction
                     && receiving_fields_complete
                 {
-                    *source_handled = Some(source_valid);
+                    source_handled.received = Some(source_valid);
                 }
                 if !source_valid {
                     frame.return_source_valid = false;
@@ -1239,6 +1261,10 @@ impl Checker {
                 self.computed_projection(base, key, expr.span, frame)
             }
             ExprKind::Unary { operator, operand } => {
+                if operator == "?" {
+                    let packet = self.expression_expected_source(operand, frame, None, None);
+                    return self.propagate_value(packet, expr.span, frame);
+                }
                 let previous_negative = self.literal_negative;
                 self.literal_negative = operator == "-"
                     && matches!(operand.kind, ExprKind::Literal(Literal::Integer(_)));
@@ -1327,7 +1353,6 @@ impl Checker {
                             None
                         };
                     }
-                    "?" => return self.propagate_value(value, expr.span, frame),
                     _ => self.unsupported(expr.span, format!("unary operator {operator}")),
                 }
                 value.static_coordinate = if operator == "-" && value.static_coordinate.is_some() {
@@ -1834,7 +1859,7 @@ impl Checker {
                         source,
                     },
                 );
-                *source_handled = Some(checked.source_valid);
+                source_handled.received = Some(checked.source_valid);
                 checked.value
             }
             ExprKind::If {
@@ -1853,7 +1878,7 @@ impl Checker {
                             .preview_expression_source(other, frame, expected, source)
                             .source_valid;
                     }
-                    *source_handled = Some(valid);
+                    source_handled.received = Some(valid);
                     return condition;
                 }
                 self.require_boolean(&condition, expr.span);
@@ -1909,22 +1934,20 @@ impl Checker {
                     self.type_alternatives
                         .insert(cause.0, vec![selected.clone(), dead]);
                     selected.cause = cause;
-                    *source_handled = Some(source_valid);
+                    source_handled.received = Some(source_valid);
                     return selected;
                 }
                 let before_duties = self.result_duties.clone();
                 let before = self.snapshot_flow();
                 let return_count = frame.returned.len();
-                let before_cursor = self.recency_moves.len();
                 let before_accesses = frame.obligations.accesses.len();
                 self.inspect_condition_value(&condition, true, condition_syntax.span);
                 self.refine_condition(condition_syntax, true, condition.cause, frame);
                 let left = self.expression_expected_source(then_branch, frame, expected, source);
                 let mut source_valid = left.source_valid;
                 let mut left = left.value;
-                self.transport_frame_prefix(frame, before_cursor, before_accesses, return_count);
+                self.transport_frame_prefix(frame, before_accesses, return_count);
                 let left_state = self.snapshot_flow();
-                let left_cursor = self.recency_moves.len();
                 let left_accesses = frame.obligations.accesses.len();
                 let left_returns = frame.returned.len();
                 self.restore_definition_state(&before);
@@ -1942,7 +1965,7 @@ impl Checker {
                     });
                 source_valid &= right.source_valid;
                 let mut right = right.value;
-                self.transport_frame_prefix(frame, left_cursor, left_accesses, left_returns);
+                self.transport_frame_prefix(frame, left_accesses, left_returns);
                 // Type reception can inspect aggregate members. It needs the
                 // current graph too; branch_flow still receives the original
                 // epoch and performs its own checked snapshot transport.
@@ -1956,11 +1979,11 @@ impl Checker {
                         .any(|duty| duty.owner == frame.owner && !duty.covered && !duty.abnormal)
                     && frame.returned[return_count..]
                         .iter()
-                        .any(|value| !self.result_return_covered(frame.owner, value))
+                        .any(|packet| !self.result_return_covered(frame.owner, &packet.value))
                 {
                     self.unsupported(expr.span,"conditional callable exits require path-sensitive Result obligation summaries");
                 }
-                *source_handled = Some(source_valid);
+                source_handled.received = Some(source_valid);
                 joined
             }
             ExprKind::Control { operation, value } => {
@@ -1996,7 +2019,7 @@ impl Checker {
                         .and_then(|context| context.source.clone()),
                     _ => None,
                 };
-                let value = value
+                let supplied = value
                     .as_ref()
                     .map(|v| {
                         let mut supplied = self.expression_expected_source(
@@ -2011,16 +2034,23 @@ impl Checker {
                         {
                             self.ascribe_received_signature(&mut supplied.value, target);
                         }
-                        supplied.value
+                        supplied
                     })
-                    .unwrap_or_else(|| self.unit(expr.span));
+                    .unwrap_or_else(|| {
+                        EvaluatedValue::unobserved(
+                            self.unit(expr.span),
+                            self.recency_moves.len(),
+                            true,
+                        )
+                    });
+                let value = supplied.value.clone();
                 match operation {
                     ControlOperation::Return => {
-                        *source_handled = Some(frame.return_source_valid);
+                        source_handled.received = Some(frame.return_source_valid);
                         self.record_result_control_exit(frame.owner, &value, expr.span, true);
                         self.return_results(&value);
-                        self.record_foreign_return(&value, frame);
-                        frame.returned.push(value.clone());
+                        self.record_foreign_return(&supplied, frame);
+                        frame.returned.push(supplied);
                         let mut never = value.clone();
                         never.ty = Ty::Never;
                         never.unsuffixed_numeric = false;
@@ -2828,7 +2858,7 @@ impl Checker {
             let result_scope = self.begin_loop_results(frame.owner);
             let channel_start = self.channel_message_sequence;
             let (mut iteration, matched_exit) = evaluate(self, frame);
-            self.transport_frame_prefix(frame, recency, old_accesses, old_returns);
+            self.transport_frame_prefix(frame, old_accesses, old_returns);
             if self
                 .deferred_arm_cleanups
                 .iter()

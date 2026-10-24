@@ -41,6 +41,36 @@ pub(crate) enum KeyProjectionOrigin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NominalDeclaration {
+    Hir(StmtId),
+    Intrinsic(IntrinsicNominal),
+}
+
+/// Necessary opaque runtime/iteration contracts have identities even when no
+/// source declaration is present. Ordinary names never enter this catalog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IntrinsicNominal {
+    Task,
+    Sender,
+    Receiver,
+    Detached,
+    Step,
+}
+
+impl IntrinsicNominal {
+    pub(crate) fn lookup(name: &str) -> Option<Self> {
+        Some(match name {
+            "Concurrent::Task" => Self::Task,
+            "Channel::Sender" => Self::Sender,
+            "Channel::Receiver" => Self::Receiver,
+            "Channel::Detached" => Self::Detached,
+            "Iter::Step" => Self::Step,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SourceContainer {
     Immutable,
     Option,
@@ -144,9 +174,10 @@ pub(crate) enum SourceNode {
         declaration: String,
         target: SourceTypeId,
     },
-    /// Exact legacy name identity without a declaration-resolution proof.
-    /// It may be transported, but can never prove coordinate absence.
+    /// Nominal references retain their resolved declaration when available.
+    /// Legacy imports require declaration resolution for transport across scopes.
     OpaqueName {
+        declaration: Option<NominalDeclaration>,
         name: String,
         arguments: Vec<SourceTypeId>,
     },
@@ -304,7 +335,12 @@ impl SourceNode {
                 declaration: declaration.clone(),
                 target: map(*target)?,
             },
-            Self::OpaqueName { name, arguments } => Self::OpaqueName {
+            Self::OpaqueName {
+                declaration,
+                name,
+                arguments,
+            } => Self::OpaqueName {
+                declaration: *declaration,
                 name: name.clone(),
                 arguments: arguments
                     .iter()
@@ -368,7 +404,9 @@ impl SourceNode {
                 work.text(description)?;
                 work.charge(arguments.len())
             }
-            Self::OpaqueName { name, arguments } => {
+            Self::OpaqueName {
+                name, arguments, ..
+            } => {
                 work.text(name)?;
                 work.charge(arguments.len())
             }

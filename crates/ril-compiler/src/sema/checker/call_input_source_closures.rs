@@ -232,7 +232,7 @@ impl Checker {
     pub(in crate::sema::checker) fn remember_closure_source(
         &mut self,
         index: usize,
-        result: &Value,
+        result_type: crate::sema::evaluated::CheckedSource,
         frame: &Frame,
     ) {
         let Some(id) = self.closure_invocation_stack.last().copied() else {
@@ -249,51 +249,10 @@ impl Checker {
         {
             return;
         }
-        let context = self.invocation_context(frame.callable_owner);
         let mut work = WorkLimit::new(16384);
-        if work.charge(self.application_effect.contexts.len()).is_err() {
-            return;
-        }
-        let mut observations = self
-            .application_effect
-            .contexts
-            .iter()
-            .filter(|row| {
-                row.context == context
-                    && self
-                        .application_effect
-                        .expressions
-                        .get(row.expression)
-                        .is_some_and(|fact| {
-                            fact.source_id.is_some()
-                                && fact.source_id == closure.body.hir_id
-                                && self
-                                    .application_effect
-                                    .evaluations
-                                    .get(row.expression)
-                                    .is_some_and(|record| record.scope == frame.owner)
-                                && fact.value.cause == result.cause
-                                && fact.value.ty == result.ty
-                        })
-            })
-            .map(|row| row.expression);
-        let Some(observation) = observations.next() else {
-            return;
-        };
-        if observations.next().is_some() {
-            return;
-        }
         let declaration_environment = closure.contract.typing_environment.clone();
         let composed = (|| -> Result<Option<SourceRef>, SourceTypesError> {
-            let Some((result, result_environment)) = self.raw_original_source_schema(
-                result,
-                &closure.body,
-                frame,
-                &mut work,
-                0,
-                Some(observation),
-            )?
-            else {
+            let Some((result, result_environment)) = result_type? else {
                 return Ok(None);
             };
             let mut environment = if result.requires_environment(&mut work)? {

@@ -150,7 +150,7 @@ pub(crate) struct NumericSourceDerivation {
 enum CurrentSource {
     Birth,
     Numeric(Arc<NumericSourceDerivation>),
-    Derived(SourceRef),
+    Derived(CapturedSource),
     Pending,
     Failed(SourceTypesError),
 }
@@ -457,7 +457,7 @@ impl EvaluatedValue {
             CurrentSource::Numeric(derived) => {
                 CapturedSource::Known(derived.source).resolve(types, work)
             }
-            CurrentSource::Derived(derived) => CapturedSource::Known(*derived).resolve(types, work),
+            CurrentSource::Derived(derived) => derived.resolve(types, work),
             CurrentSource::Pending => Err(SourceTypesError::SourceViewPending),
             CurrentSource::Failed(error) => Err(error.clone()),
         }
@@ -479,6 +479,20 @@ impl EvaluatedValue {
 
     pub fn value(&self) -> &Value {
         &self.value
+    }
+
+    pub(crate) fn set_current_type(
+        &mut self,
+        source: CapturedSource,
+    ) -> Result<(), SourceTypesError> {
+        if let CurrentSource::Failed(error) = &self.current_source {
+            return Err(error.clone());
+        }
+        if self.birth.source.get().is_none() {
+            self.capture_birth_source(Ok(source), None)?;
+        }
+        self.current_source = CurrentSource::Derived(source);
+        Ok(())
     }
 
     pub(crate) fn invalidate_current_source(&mut self) {
@@ -708,24 +722,6 @@ pub(crate) fn same_birth_value(
         return Ok(false);
     }
     Ok(left == right)
-}
-
-/// Source forwarding checks the complete public callable/type interface.
-/// Storage authority and duties remain inputs of their own transfer checks.
-pub(crate) fn same_source_public_view(
-    left: &Value,
-    right: &Value,
-    work: &mut usize,
-) -> Result<bool, SourceTypesError> {
-    charge_value_export(left, work)?;
-    charge_value_export(right, work)?;
-    Ok(left.cause == right.cause
-        && left.ty == right.ty
-        && left.source_type_witness == right.source_type_witness
-        && left.callables == right.callables
-        && left.callable_bounds == right.callable_bounds
-        && left.callable_returns == right.callable_returns
-        && left.signature == right.signature)
 }
 
 /// Compare retained semantic values within the shared work allowance.

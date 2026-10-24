@@ -4,7 +4,6 @@
 //! a binder or proving absence of Array/Fn coordinates grants no storage,
 //! effect, borrowing, resource, constructor or publication authority.
 mod annotation_identity;
-pub(crate) mod block_exits;
 pub(crate) mod builtins;
 pub(crate) mod constants;
 pub(crate) mod declarations;
@@ -25,8 +24,8 @@ mod substitution;
 mod syntax_projection;
 
 pub(crate) use graph::{
-    CallableRowIdentity, CallableRowOrigin, KeyProjectionOrigin, SourceBuilder, SourceContainer,
-    SourceField, SourceLength, SourceNode, SourceScalar, SourceTypes, WorkLimit,
+    CallableRowIdentity, CallableRowOrigin, IntrinsicNominal, KeyProjectionOrigin, SourceBuilder,
+    SourceContainer, SourceField, SourceLength, SourceNode, SourceScalar, SourceTypes, WorkLimit,
 };
 pub use graph::{SourceTypeId, SourceTypesError};
 pub(crate) use index::{LiveSourceTypes, steps_in};

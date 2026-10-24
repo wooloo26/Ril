@@ -696,7 +696,7 @@ impl Checker {
                     .any(|duty| duty.owner == frame.owner)
                 && frame.returned[returned_before..]
                     .iter()
-                    .any(|value| !self.result_return_covered(frame.owner, value))
+                    .any(|packet| !self.result_return_covered(frame.owner, &packet.value))
             {
                 self.unsupported(
                     arm.body.span,
@@ -917,7 +917,7 @@ impl Checker {
                 }
                 if frame.returned[returned_before..]
                     .iter()
-                    .any(|value| !value.origins.nodes.is_empty())
+                    .any(|packet| !packet.value.origins.nodes.is_empty())
                 {
                     self.unsupported(
                         span,

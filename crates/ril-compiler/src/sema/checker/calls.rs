@@ -1066,7 +1066,6 @@ impl Checker {
                 expected_return.as_ref(),
                 frozen_return_source.as_ref(),
             )
-            .value
         } else if self.declaration_files.contains(&function.span.file.0) {
             self.check_external_invocation(
                 function,
@@ -1096,38 +1095,41 @@ impl Checker {
                 .as_ref()
                 .map(|t| self.ty(t))
                 .unwrap_or(Ty::Unit);
-            self.external_formal_value(
+            let value = self.external_formal_value(
                 ty,
                 id as u32,
                 function.return_type.as_ref(),
                 span,
                 &mut frame,
-            )
+            );
+            EvaluatedValue::unobserved(value, self.recency_moves.len(), true)
         } else {
             self.unsupported(function.span, "foreign function contract");
-            self.unit(span)
+            EvaluatedValue::unobserved(self.unit(span), self.recency_moves.len(), false)
         };
         if let Some(before) = &foreign_body_before {
             self.finish_foreign_returns(before, &mut frame, &mut result, span, foreign_exit_epoch);
         }
         self.flush_handler_obligations(&mut frame);
-        self.check_deep_uncertainty(&result, span);
-        self.finish_results(frame.owner, &result);
-        for returned in &frame.returned {
-            let cause = self.cause(
-                CauseKind::BranchJoin,
-                span,
-                "explicit return alternatives",
-                [result.cause, returned.cause],
-            );
-            if result.ty == Ty::Never {
-                result = returned.clone();
+        self.check_deep_uncertainty(&result.value, span);
+        self.finish_results(frame.owner, &result.value);
+        for mut returned in frame.returned.clone() {
+            self.transport_evaluation_packet(&mut returned, span);
+            if result.value.ty == Ty::Never {
+                result = returned;
             } else {
-                self.require_type(returned, &result.ty, function.span);
-                result = result.join(returned, self.choice(), cause);
+                self.receive_boundary_type(&mut returned, &mut result, function.span);
+                let cause = self.cause(
+                    CauseKind::BranchJoin,
+                    span,
+                    "explicit return alternatives",
+                    [result.value.cause, returned.value.cause],
+                );
+                result.value = result.value.join(&returned.value, self.choice(), cause);
             }
         }
         self.finish_retained_handlers(retained, &mut frame, &mut result, span);
+        let mut result = result.value;
         if let Some(expected) = &function.return_type {
             self.set_contract_environment(&frame.env);
             if frame.return_source_valid {
@@ -2001,34 +2003,38 @@ impl Checker {
         }
         frame.expected_return_source = frozen_return_source.clone();
         let expected_return = frame.expected_return.clone();
-        let mut result = self
-            .expression_expected_source(
-                &closure.body,
-                &mut frame,
-                expected_return.as_ref(),
-                frozen_return_source.as_ref(),
-            )
-            .value;
+        let mut result = self.expression_expected_source(
+            &closure.body,
+            &mut frame,
+            expected_return.as_ref(),
+            frozen_return_source.as_ref(),
+        );
         if let Some(before) = &foreign_body_before {
             self.finish_foreign_returns(before, &mut frame, &mut result, span, foreign_exit_epoch);
         }
         self.flush_handler_obligations(&mut frame);
-        self.finish_results(frame.owner, &result);
-        for returned in frame.returned.clone() {
-            if result.ty == Ty::Never {
+        self.finish_results(frame.owner, &result.value);
+        for mut returned in frame.returned.clone() {
+            self.transport_evaluation_packet(&mut returned, span);
+            if result.value.ty == Ty::Never {
                 result = returned;
             } else {
-                self.require_type(&returned, &result.ty, span);
+                self.receive_boundary_type(&mut returned, &mut result, span);
                 let cause = self.cause(
                     CauseKind::BranchJoin,
                     span,
                     "anonymous returns retain every continuing result path",
-                    [result.cause, returned.cause],
+                    [result.value.cause, returned.value.cause],
                 );
-                result = result.join(&returned, self.choice(), cause);
+                result.value = result.value.join(&returned.value, self.choice(), cause);
             }
         }
         self.finish_retained_handlers(retained, &mut frame, &mut result, span);
+        let mut type_work = self.application_effect.lease_work(32768);
+        let result_type = self.owned_result_type(&result, type_work.work());
+        let returned_work = self.application_effect.return_work(type_work);
+        let result_type = result_type.and_then(|result| returned_work.map(|()| result));
+        let mut result = result.value;
         self.flush_handler_obligations(&mut frame);
         if result.temporary {
             result.permission = Permission::Read;
@@ -2102,7 +2108,7 @@ impl Checker {
         }
         frame.obligations.handler_environment |= self.has_retained_handlers(&Callable::Closure(id));
         self.check_lambda_contract(id, &frame, &mut result, span);
-        self.remember_closure_source(id, &result, &frame);
+        self.remember_closure_source(id, result_type, &frame);
         // Check before local loans are projected back to their caller roots.
         // Captured paths and separate parameters remain independent access
         // participants during this invocation, as for named callables.
@@ -3024,12 +3030,11 @@ impl Checker {
                     {
                         return cloned;
                     }
-                    let recency = self.recency_moves.len();
                     self.deep_read(value, span, frame);
                     let accesses = frame.obligations.accesses.len();
                     let returned = frame.returned.len();
                     let result = self.clone_value(value, span, frame, name == "clone_immut");
-                    self.transport_frame_prefix(frame, recency, accesses, returned);
+                    self.transport_frame_prefix(frame, accesses, returned);
                     result
                 } else {
                     self.error("E0404", span, "clone requires a value", []);
@@ -3430,12 +3435,11 @@ impl Checker {
                 [source.cause],
             );
         }
-        let recency = self.recency_moves.len();
         let accesses = frame.obligations.accesses.len();
         let returned = frame.returned.len();
         let copy = crate::sema::copy_contract::CopyBoundaryId(self.copy_boundaries.len() as u32);
         let draft = self.clone_value(&source, span, frame, false);
-        self.transport_frame_prefix(frame, recency, accesses, returned);
+        self.transport_frame_prefix(frame, accesses, returned);
         let mut draft = EvaluatedValue::new(draft, self.recency_moves.len());
         let recipe = Arc::new(self.expression_source_packet(recipe, frame, None, None));
         let callee_observation = recipe.observation;

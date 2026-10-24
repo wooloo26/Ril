@@ -148,9 +148,16 @@ impl Checker {
     ) {
         if let Some(source) = SignatureSource::receiving(target) {
             let syntax = target
-                .syntax
-                .as_deref()
-                .expect("receiving signature syntax");
+                .source
+                .as_ref()
+                .filter(|source| source.path.is_empty())
+                .map(|source| source.header.as_ref())
+                .unwrap_or_else(|| {
+                    target
+                        .syntax
+                        .as_deref()
+                        .expect("receiving signature syntax")
+                });
             self.with_typing_environment(&target.environment, |checker| {
                 checker.ascribe_signature_from(value, syntax, &source);
             });

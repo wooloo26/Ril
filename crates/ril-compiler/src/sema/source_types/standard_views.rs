@@ -66,6 +66,9 @@ pub(super) fn instantiate(
             work.text("Iter::Step")?;
             let result = builder.insert(
                 SourceNode::OpaqueName {
+                    declaration: Some(super::graph::NominalDeclaration::Intrinsic(
+                        super::graph::IntrinsicNominal::Step,
+                    )),
                     name: "Iter::Step".into(),
                     arguments: vec![*state, *item],
                 },

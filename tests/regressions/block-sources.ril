@@ -30,3 +30,81 @@ fn invalid() {
 }
 --@ end-file
 --@ end-case
+
+--@ source: owned-boundary-arrays
+--@ file: source.ril
+eff Interrupt { choose() -> int }
+fn aborted() -> [0][2]int {
+    let early: [0][2]int = []
+    with Interrupt::choose() -> early
+    let _ = Interrupt::choose()
+    let normal: [0][2]int = []
+    normal
+}
+fn resumed() -> [0][2]int {
+    with Interrupt::choose() -> { let continued = resume 7; continued }
+    let _ = Interrupt::choose()
+    let normal: [0][2]int = []
+    normal
+}
+pub fn test_native() {
+    assert(len(aborted()) == 0 && len(resumed()) == 0)
+}
+--@ end-file
+--@ end-source
+
+--@ case: owned-boundary-arrays-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#effect-handlers
+--@ companion: reject-abort-hidden-dimension
+--@ use-source: owned-boundary-arrays
+--@ end-case
+
+--@ case: owned-boundary-arrays-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#effect-handlers
+--@ companion: owned-boundary-arrays-native
+--@ use-source: owned-boundary-arrays
+--@ end-case
+
+--@ case: owned-boundary-arrays-native
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ entry: test_native
+--@ use-source: owned-boundary-arrays
+--@ end-case
+
+--@ case: reject-abort-hidden-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: owned-boundary-arrays-pointer32
+-- Error [E0301]: An abort answer retains its hidden inner array dimension.
+--@ file: source.ril
+eff Interrupt { choose() -> int }
+fn invalid() -> [0][2]int {
+    let early: [0][3]int = []
+    with Interrupt::choose() -> early
+    let _ = Interrupt::choose()
+    let normal: [0][2]int = []
+    normal
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-resume-answer-hidden-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: owned-boundary-arrays-pointer64
+-- Error [E0301]: A resumption binder receives the actual protected array type.
+--@ file: source.ril
+eff Interrupt { choose() -> int }
+fn invalid() -> [0][2]int {
+    with Interrupt::choose() -> { let continued: [0][3]int = resume 7; continued }
+    let _ = Interrupt::choose()
+    let normal: [0][2]int = []
+    normal
+}
+--@ end-file
+--@ end-case

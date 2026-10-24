@@ -84,7 +84,8 @@ impl Checker {
         let mut values: Vec<&Value> = caller
             .returned
             .iter()
-            .chain(self.pending_abort.iter().map(|(_, value)| value))
+            .map(|packet| &packet.value)
+            .chain(self.pending_abort.iter().map(|(_, value)| &value.value))
             .chain(self.loop_breaks.iter().flat_map(|(_, values)| values))
             .collect();
         loop {

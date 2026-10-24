@@ -81,7 +81,7 @@ impl EvaluatedValue {
             recency,
             source_valid,
             birth,
-            current_source: CurrentSource::Derived(source),
+            current_source: CurrentSource::Derived(CapturedSource::Known(source)),
         })
     }
 }

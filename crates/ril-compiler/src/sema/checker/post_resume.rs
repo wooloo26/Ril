@@ -144,17 +144,19 @@ impl Checker {
     pub(super) fn run_arm_suffix(
         &mut self,
         suffix: ArmSuffix,
-        answer: &Value,
+        input: &EvaluatedValue,
         frame: &mut Frame,
         scope_exit: Option<super::super::resumption::ContinuationScopeExit>,
-    ) -> Value {
+    ) -> EvaluatedValue {
+        let answer_value = input.value.clone();
+        let answer = &answer_value;
         let (Some(resume_source), Some(arm_source)) = (suffix.resume_source, suffix.body_source)
         else {
             self.unsupported(
                 suffix.span,
                 "resumed answer lost its original Resume or arm HIR identity",
             );
-            return answer.clone();
+            return input.clone();
         };
         let transport = if suffix.identity && self.identity_handler_answer(answer) {
             AnswerTransport::Identity
@@ -164,7 +166,7 @@ impl Checker {
             AnswerTransport::OrdinaryChecked
         } else {
             self.unsupported(suffix.span,"non-tail resumption answer requires a complete ordinary graph; Result, resource, scoped or callable transfer needs a separate proof");
-            return answer.clone();
+            return input.clone();
         };
         let continuation_epoch = self.recency_moves.len();
         let continuation_value = self.copy_value_snapshot(answer);
@@ -175,7 +177,11 @@ impl Checker {
                     suffix.resume,
                     format!("continuation physical emission: {error}"),
                 );
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         self.block_boundaries.push(suffix.boundary);
@@ -194,7 +200,7 @@ impl Checker {
             None,
         ) else {
             self.block_boundaries.pop();
-            return answer.clone();
+            return input.clone();
         };
         let mut held_answer = match self
             .application_effect
@@ -208,27 +214,33 @@ impl Checker {
                     suffix.resume,
                     format!("continuation physical packet: {error}"),
                 );
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
+        self.inherit_result_type(&mut held_answer, input, suffix.resume);
         if let Some(binding) = &suffix.binding {
             self.set_contract_environment(&frame.env);
             let source_target = binding
                 .ty
                 .as_ref()
                 .map(|syntax| self.freeze_source_receiving_target(syntax));
-            let source_valid = source_target.as_ref().is_none_or(|target| {
-                self.require_source_reception(
+            if let Some(target) = &source_target {
+                let expected = binding.ty.as_ref().map(|syntax| self.ty(syntax));
+                self.receive_boundary_target(
+                    &mut held_answer,
+                    expected.as_ref(),
                     target,
-                    &binding.value,
-                    answer,
-                    Some(continuation_expression),
-                    frame,
-                )
-            });
+                    binding.value.span,
+                );
+            }
+            let source_valid = held_answer.source_valid;
             self.receive_binding(
                 binding,
-                answer.clone(),
+                held_answer.value.clone(),
                 Some(super::super::storage_sources::StorageObservation {
                     expression: continuation_expression,
                     allocation_epoch: continuation_epoch,
@@ -238,19 +250,20 @@ impl Checker {
                 frame,
             );
         }
-        let mut result = self.unit(suffix.span);
+        let mut result_packet =
+            EvaluatedValue::unobserved(self.unit(suffix.span), self.recency_moves.len(), true);
         for statement in &suffix.statements {
             if !matches!(
                 statement.kind,
                 StmtKind::Function(_) | StmtKind::Type(_) | StmtKind::Effect(_)
             ) {
-                result = self.statement(statement, frame);
-                if result.ty == Ty::Never {
+                result_packet = self.statement_expected_source(statement, frame, None, None);
+                if result_packet.value.ty == Ty::Never {
                     break;
                 }
             }
         }
-        let mut held_result = EvaluatedValue::new(result, self.recency_moves.len());
+        let mut held_result = result_packet;
         self.verify_local_definitions(suffix.definitions_start, frame);
         let mut result = held_result.current(&self.recency_moves);
         let answer = held_answer.current(&self.recency_moves);
@@ -275,6 +288,8 @@ impl Checker {
             );
         }
         self.require_type(&result, &answer.ty, suffix.span);
+        held_result.value = result.clone();
+        self.receive_boundary_type(&mut held_result, &mut held_answer, suffix.span);
         if result.ty != Ty::Never {
             result.ty = answer.ty.clone();
         }
@@ -302,19 +317,29 @@ impl Checker {
             arm_environment,
             None,
         ) else {
-            return emitted.unwrap_or_else(|| Value::scalar(Ty::Unknown, None, CauseId(0)));
+            return EvaluatedValue::unobserved(
+                emitted.unwrap_or_else(|| Value::scalar(Ty::Unknown, None, CauseId(0))),
+                self.recency_moves.len(),
+                false,
+            );
         };
-        let result = match self
+        let mut result_packet = match self
             .application_effect
             .packet_at(arm_expression)
-            .and_then(|packet| self.read_evaluation_packet(&packet, suffix.span))
+            .and_then(|packet| self.clone_evaluation_packet(&packet, suffix.span))
         {
             Ok(value) => value,
             Err(error) => {
                 self.unsupported(suffix.span, format!("arm physical packet: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
+        self.inherit_result_type(&mut result_packet, &held_result, suffix.span);
+        let result = &result_packet.value;
         self.resumption_steps.push(super::super::ResumptionStep {
             id: ril_compiler_core::ids::ProtectedAnswerId(continuation_expression as u32),
             resume_source,
@@ -330,7 +355,7 @@ impl Checker {
             boundary: suffix.handler_boundary,
             context: suffix.context,
             continuation_value,
-            arm_value: self.copy_value_snapshot(&result),
+            arm_value: self.copy_value_snapshot(result),
             continuation_epoch,
             completion_epoch: self.recency_moves.len(),
             ended_operation_loans: suffix.ended_operation_loans,
@@ -341,6 +366,6 @@ impl Checker {
             scope_exit,
         });
         self.mark_post_resume_checked(suffix.handler, &suffix.operation);
-        result
+        result_packet
     }
 }

@@ -518,174 +518,21 @@ impl Checker {
 
     fn original_block_source_schema(
         &mut self,
-        value: &Value,
+        _value: &Value,
         syntax: &Expr,
-        frame: &Frame,
+        _frame: &Frame,
         work: &mut WorkLimit,
         observation: Option<usize>,
     ) -> InputSource {
-        let ExprKind::Block(block) = &syntax.kind else {
+        let Some(observation) = observation else {
             return Ok(None);
         };
-        let root = observation.ok_or(SourceTypesError::MissingNode)?;
-        work.charge(2 + block.statements.len() + block.where_items.len())?;
-        let record = self
-            .application_effect
-            .evaluations
-            .get(root)
-            .ok_or(SourceTypesError::MissingNode)?;
-        let identity = record.identity.ok_or(SourceTypesError::MissingNode)?;
-        let context = self.invocation_context(frame.callable_owner);
-        let original = self
-            .semantic_hir
-            .expression(identity.source)
-            .ok_or(SourceTypesError::MissingNode)?;
-        let crate::hir::nodes::ExprKind::Block(canonical) = &original.kind else {
-            return Err(SourceTypesError::Unresolved);
-        };
-        let has_handler = canonical.statements.iter().any(|statement| {
-            self.semantic_hir
-                .statement(*statement)
-                .is_some_and(|statement| {
-                    matches!(statement.kind, crate::hir::nodes::StmtKind::Handler(_))
-                })
-        });
-        if syntax.hir_id != Some(identity.source) || record.context != context {
-            return Err(SourceTypesError::Unresolved);
-        }
-        let mut remaining = work.remaining();
-        let matches =
-            crate::hir::blocks::BlockIndex::matches_source(canonical, block, &mut remaining);
-        work.charge(work.remaining() - remaining)?;
-        if !matches.map_err(|error| match error {
-            crate::hir::blocks::BlockIndexError::Budget => SourceTypesError::BudgetExceeded,
-            _ => SourceTypesError::Unresolved,
-        })? {
-            return Err(SourceTypesError::Unresolved);
-        }
-        let mut remaining = work.remaining();
-        let tail = crate::hir::blocks::BlockIndex::tail_from_hir(
-            &self.semantic_hir,
-            ril_compiler_core::ids::BlockAnchor::ExpressionBody(identity.source),
-            &mut remaining,
-        );
-        work.charge(work.remaining() - remaining)?;
-        let Some((statement, tail_id)) = tail.map_err(|error| match error {
-            crate::hir::blocks::BlockIndexError::Budget => SourceTypesError::BudgetExceeded,
-            _ => SourceTypesError::Unresolved,
-        })?
-        else {
-            return Ok(None);
-        };
-        let tail = block
-            .statements
-            .iter()
-            .find_map(|node| {
-                if node.hir_id != Some(statement) {
-                    return None;
-                }
-                match &node.kind {
-                    StmtKind::Expr {
-                        expression,
-                        terminated: false,
-                    } => Some(expression),
-                    _ => None,
-                }
-            })
-            .ok_or(SourceTypesError::MissingNode)?;
-        if tail.hir_id != Some(tail_id) {
-            return Err(SourceTypesError::Unresolved);
-        }
-        let child = self
-            .source_projection_receipts()
-            .child_observation(
-                ProjectionOccurrence {
-                    identity,
-                    context,
-                    cause: value.cause,
-                },
-                tail_id,
-                work,
-            )?
-            .0 as usize;
         work.charge(1)?;
-        let packet = self
-            .application_effect
-            .expressions
-            .get(child)
-            .ok_or(SourceTypesError::MissingNode)?
-            .value
-            .packet()
-            .clone();
-        let mut remaining = work.remaining();
-        let expected = crate::sema::evaluated::transport_value_at(
-            packet.value(),
-            &self.recency_moves,
-            packet.current_epoch(),
-            record.allocation_epoch,
-            &mut remaining,
-        );
-        work.charge(work.remaining() - remaining)?;
-        let expected = expected?;
-        let mut remaining = work.remaining();
-        let agrees =
-            crate::sema::evaluated::same_source_public_view(&expected, value, &mut remaining);
-        work.charge(work.remaining() - remaining)?;
-        if !agrees? || has_handler {
-            let mut remaining = work.remaining();
-            let exits = crate::sema::source_types::block_exits::Inputs {
-                hir: &self.semantic_hir,
-                expressions: &self.application_effect.expressions,
-                evaluations: &self.application_effect.evaluations,
-                activations: &self.application_effect.activations,
-                scopes: &self.scopes,
-                explanations: &self.explanations,
-                history: &self.recency_moves,
-                open: self.application_effect.current_activation(),
-            }
-            .joined(root, child, &mut remaining);
-            work.charge(work.remaining() - remaining)?;
-            let exits = exits?;
-            let mut common: Option<(SourceSchema, FrozenEnvironment)> = None;
-            for exit in exits {
-                work.charge(1)?;
-                let packet = self
-                    .application_effect
-                    .expressions
-                    .get(exit.observation)
-                    .ok_or(SourceTypesError::MissingNode)?
-                    .value
-                    .packet();
-                let known = packet
-                    .input_source(
-                        crate::sema::source_types_ref::SourceTypesRef::Live(
-                            self.type_source.storage.live_types(),
-                        ),
-                        work,
-                    )?
-                    .into_known()
-                    .ok_or(SourceTypesError::Unresolved)?;
-                if let Some((schema, environment)) = &common {
-                    if !schema.equivalent_in(&known.0, environment, &known.1, work)? {
-                        return Err(SourceTypesError::Unresolved);
-                    }
-                } else {
-                    common = Some(known);
-                }
-            }
-            return common.map(Some).ok_or(SourceTypesError::Unresolved);
+        let packet = self.application_effect.packet_at(observation)?;
+        if packet.identity.map(|identity| identity.source) != syntax.hir_id {
+            return Err(SourceTypesError::Unresolved);
         }
-        // The lexical frame has already left this block. Its tail packet owns
-        // the original Source and interpretation; looking up the tail syntax
-        // again would lose block-local bindings and their captured context.
-        packet
-            .input_source(
-                crate::sema::source_types_ref::SourceTypesRef::Live(
-                    self.type_source.storage.live_types(),
-                ),
-                work,
-            )
-            .map(|source| source.into_known())
+        self.owned_result_type(&packet, work)
     }
 
     /// Qualified module references keep their canonical Path node after name

@@ -2,7 +2,11 @@
 use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 
 fn accepts(name: &str) {
-    let source = ril_test::case_source(&format!("tests/regressions/source-transport.ril::{name}"));
+    accepts_case(&format!("tests/regressions/source-transport.ril::{name}"));
+}
+
+fn accepts_case(name: &str) {
+    let source = ril_test::case_source(name);
     for layout in ["pointer32", "pointer64"] {
         let program = Session::with_options(
             source.as_bytes().to_vec(),
@@ -16,6 +20,11 @@ fn accepts(name: &str) {
         ril_compiler::lower::lower_core(&program)
             .unwrap_or_else(|error| panic!("{name}, {layout}: {error:?}"));
     }
+}
+
+#[test]
+fn nominal_carriers_keep_declarations_through_generic_receiving() {
+    accepts_case("tests/regressions/source-types.ril::carriers");
 }
 
 fn rejects(name: &str, code: &str) {

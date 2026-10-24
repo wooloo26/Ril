@@ -56,7 +56,7 @@ pub(super) struct ControlState {
     pub(super) budget_recoveries: Vec<budget::Recovery>,
     resumes: Vec<ResumeContext>,
     ended: BTreeSet<LoanId>,
-    pub(super) abort: Option<(u32, Value)>,
+    pub(super) abort: Option<(u32, EvaluatedValue)>,
     breaks: Vec<(ScopeId, Vec<Value>)>,
     continuations: Vec<(ScopeId, bool)>,
     completed_cleanups: BTreeSet<BindingId>,
@@ -321,7 +321,7 @@ impl Checker {
         &mut self,
         activation: Option<RetainedActivation>,
         frame: &mut Frame,
-        answer: &mut Value,
+        answer: &mut EvaluatedValue,
         span: Span,
     ) {
         let Some(activation) = activation else {
@@ -344,7 +344,7 @@ impl Checker {
         {
             *answer = self.pending_abort.take().unwrap().1;
         }
-        self.record_handler_answer(activation.boundary, &answer.ty);
+        self.record_handler_answer(activation.boundary, &answer.value.ty);
         for diagnostic in &mut self.diagnostics[activation.diagnostics..] {
             if diagnostic.code == "E0625" {
                 diagnostic.code = "E0614".into();
@@ -359,8 +359,8 @@ impl Checker {
                     .retained_post_checks
                     .entry(operation.clone())
                     .or_default();
-                if !answers.contains(&answer.ty) {
-                    answers.push(answer.ty.clone());
+                if !answers.contains(&answer.value.ty) {
+                    answers.push(answer.value.ty.clone());
                 }
             }
             self.handler_definitions[id] = previous;
@@ -2050,13 +2050,20 @@ impl Checker {
             abortive: name == "Div::exhausted",
             receptions,
         });
-        let (answer, suffix) = if !tail_resume(&arm.body)
+        let (mut answer_packet, suffix) = if !tail_resume(&arm.body)
             && let Some((answer, suffix)) = self.arm_prefix(&arm.body, id, name, &mut frame)
         {
-            (answer, Some(suffix))
+            (
+                EvaluatedValue::unobserved(answer, self.recency_moves.len(), true),
+                Some(suffix),
+            )
         } else {
-            (self.expression(&arm.body, &mut frame), None)
+            (
+                self.expression_expected_source(&arm.body, &mut frame, None, None),
+                None,
+            )
         };
+        let answer = answer_packet.value.clone();
         let context = self.resume_contexts.pop().unwrap();
         let exported = context.supplied.as_ref().unwrap_or(&answer);
         let delayed = if context.supplied.is_some() {
@@ -2154,7 +2161,9 @@ impl Checker {
             self.handler_definitions[id]
                 .abort_answers
                 .push(answer.clone());
-            self.pending_abort = Some((definition.boundary, answer.clone()));
+            answer_packet.value = answer.clone();
+            self.transport_evaluation_packet(&mut answer_packet, arm.span);
+            self.pending_abort = Some((definition.boundary, answer_packet));
             let mut never = answer;
             never.ty = Ty::Never;
             never.abnormal = true;
@@ -2224,25 +2233,26 @@ impl Checker {
         frame: &mut Frame,
         span: Span,
     ) {
-        let pending = self.pending_abort.take().unwrap();
+        let mut pending = self.pending_abort.take().unwrap();
         let actual = self.snapshot_flow();
         let actual_frame = frame.clone();
         self.restore_definition_state(before);
         *frame = prior.clone();
         self.effect_answer_probe = true;
-        let mut normal = self.unit(span);
+        let mut normal =
+            EvaluatedValue::unobserved(self.unit(span), self.recency_moves.len(), true);
         for statement in remaining {
-            normal = self.statement(statement, frame);
-            if normal.ty == Ty::Never {
+            normal = self.statement_expected_source(statement, frame, None, None);
+            if normal.value.ty == Ty::Never {
                 break;
             }
-        }
-        if normal.ty != Ty::Never {
-            self.require_type(&pending.1, &normal.ty, span);
         }
         self.effect_answer_probe = false;
         self.restore_preview(&actual);
         *frame = actual_frame;
+        if normal.value.ty != Ty::Never {
+            self.receive_boundary_type(&mut pending.1, &mut normal, span);
+        }
         self.pending_abort = Some(pending);
     }
     pub(super) fn resume_operation(

@@ -212,6 +212,11 @@ impl Checker {
                 }
             }
             let schema = schema.substitute(&selected, &mut work)?;
+            let schema = crate::sema::source_types::declarations::resolve_schema(
+                &schema,
+                &self.semantic_hir,
+                &mut work,
+            )?;
             Ok(Some(schema))
         })();
         let schema = match schema {
@@ -352,49 +357,31 @@ impl Checker {
             use crate::sema::source_types::{SourceTypesError, WorkLimit};
             let original = original
                 .as_ref()
-                .ok_or("original receiving observation is absent")?
-                .value();
+                .ok_or("original receiving observation is absent")?;
             let fresh = source_reception::construction(actual, &mut work)
                 .ok_or_else(|| SourceTypesError::BudgetExceeded.to_string())?;
             let mut graph_work = WorkLimit::new(16384);
-            let original_source = self
-                .original_source_receiving_schema(original, actual, frame, &mut graph_work)
-                .map_err(|error| format!("original read Source: {error}"))?;
-            // Recency transport may change graph identities, but it must not
-            // change immutable source coordinates before this boundary. This
-            // comparison also rejects passing an unrelated historical token.
-            let current_source = self
-                .original_source_receiving_schema(value, actual, frame, &mut graph_work)
-                .map_err(|error| format!("transported read Source: {error}"))?;
-            match (&original_source, &current_source) {
-                (Some((original, original_env)), Some((current, current_env))) => {
-                    let equivalent = original
-                        .equivalent(current, &mut graph_work)
-                        .map_err(|error| format!("immutable Source comparison: {error}"))?;
-                    let dependent = original
-                        .requires_environment(&mut graph_work)
-                        .map_err(|error| format!("Source environment dependence: {error}"))?;
-                    if original_env.is_poisoned()
-                        || current_env.is_poisoned()
-                        || !equivalent
-                        || (dependent && original_env.id() != current_env.id())
-                    {
-                        return Err(
-                            "read transport changed its immutable Source or frozen environment"
-                                .into(),
-                        );
+            match self
+                .owned_result_type(original, &mut graph_work)
+                .map_err(|error| format!("actual receiving type: {error}"))?
+            {
+                Some((schema, environment)) => {
+                    if environment.is_poisoned() || target.environment.is_poisoned() {
+                        return Err(SourceTypesError::Unresolved.to_string());
                     }
-                    target
-                        .receive_schema(original, Some(&fresh), &mut graph_work)
+                    // This is the structural coordinate check. Callable rows,
+                    // effects and capabilities are checked by their receiving
+                    // operations; exact annotation equality is not subtyping.
+                    expected
+                        .receive_schema(&schema, Some(&fresh), &mut graph_work)
                         .map_err(|error| format!("declared Source reception: {error}"))
                 }
-                (None, None) => expected
+                None => expected
                     .empty_context(&fresh, &mut graph_work)
                     .map_err(|error| format!("empty Source reception: {error}"))?
                     .ok_or_else(|| {
-                        "receiving has no original Source graph or fresh empty construction".into()
+                        "receiving has no complete actual type or fresh empty construction".into()
                     }),
-                _ => Err("read transport changed Source availability".into()),
             }
         })();
         match answer {

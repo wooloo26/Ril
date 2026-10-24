@@ -294,8 +294,13 @@ fn overwriting_the_current_descriptor_does_not_rewrite_the_original_observation(
     let target = checker.freeze_source_receiving_target(&destination);
     checker.ascribe_source_type(&mut value, &destination);
     assert!(!checker.require_source_reception(&target, &actual, &value, Some(index), &frame));
-    assert!(checker.diagnostics.is_empty());
-    assert_eq!(checker.unsupported.len(), 1);
+    assert!(
+        checker
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "E0301")
+    );
+    assert!(checker.unsupported.is_empty());
 }
 
 #[test]
