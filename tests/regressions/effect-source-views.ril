@@ -81,3 +81,71 @@ fn example(){
 }
 --@ end-file
 --@ end-case
+
+--@ source: generic-callback-interface
+--@ file: source.ril
+eff Echo<T> { apply(T) -> T }
+type Callback = fn(value: int) -> int
+fn number(original: int = 7) -> int { original }
+pub fn test_native() {
+    with Echo<Callback>::apply(action) -> resume action
+    let action = Echo<Callback>::apply(number)
+    assert(action(value: 9) == 9 && action(value: 12) == 12)
+}
+--@ end-file
+--@ end-source
+
+--@ case: generic-callback-interface-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#effect-handlers
+--@ companion: reject-generic-callback-default-recovery
+--@ use-source: generic-callback-interface
+--@ end-case
+
+--@ case: generic-callback-interface-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#effect-handlers
+--@ companion: generic-callback-interface-native
+--@ use-source: generic-callback-interface
+--@ end-case
+
+--@ case: generic-callback-interface-native
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ entry: test_native
+--@ use-source: generic-callback-interface
+--@ end-case
+
+--@ case: reject-generic-resumption-hidden-dimension
+--@ mode: check-fail
+--@ spec: SPEC#complete-provenance-and-optional-annotations
+--@ companion: generic-operation-view
+-- Error [E0301]: Generic operation results retain every selected array dimension.
+--@ file: source.ril
+eff Read<T> { get() -> T }
+fn example() {
+    let wrong: [0][3]int = []
+    with Read<[0][2]int>::get() -> resume wrong
+    let result = Read<[0][2]int>::get()
+}
+--@ end-file
+--@ end-case
+
+--@ case: reject-generic-callback-default-recovery
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: generic-callback-interface-pointer64
+-- Error [E0314]: Passing through an effect cannot recover a hidden default.
+--@ file: source.ril
+eff Echo<T> { apply(T) -> T }
+type Callback = fn(value: int) -> int
+fn number(original: int = 7) -> int { original }
+fn example() {
+    with Echo<Callback>::apply(action) -> resume action
+    let action = Echo<Callback>::apply(number)
+    let missing = action()
+}
+--@ end-file
+--@ end-case

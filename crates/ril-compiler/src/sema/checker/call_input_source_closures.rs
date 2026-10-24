@@ -496,52 +496,13 @@ impl Checker {
             return Ok(true);
         }
         for bound in value.callable_returns.iter().filter(|bound| !bound.raw) {
-            if bound.syntax.hir_id.is_none() {
-                // A contextual return projection is not another written type.
-                // Its actual probe retains the complete original header and
-                // exact receiver, so select its result directly from that graph.
-                let [Callable::Closure(closure)] = value.callables.as_slice() else {
-                    return Err(SourceTypesError::Unresolved);
-                };
-                let (id, _) = self
-                    .call_input_source
-                    .closure_views
-                    .get(closure)
-                    .ok_or(SourceTypesError::MissingNode)?;
-                let call = self
-                    .closure_invocations
-                    .get(*id as usize)
-                    .ok_or(SourceTypesError::MissingNode)?;
-                let crate::sema::application_effect::EntryOrigin::SignatureProbe(source) =
-                    &call.entry.origin
-                else {
-                    return Err(SourceTypesError::Unresolved);
-                };
-                if call.closure != *closure
-                    || !bound.callables.contains(&Callable::Closure(*closure))
-                {
-                    return Err(SourceTypesError::Unresolved);
-                }
-                let source = source.clone();
-                let (_, expected) = source
-                    .schema
-                    .callable_parts(work)?
-                    .ok_or(SourceTypesError::MissingProjection)?;
-                let (expected, _) =
-                    self.selected_input_schema(expected, source.environment.clone(), work)?;
-                let (_, actual) = schema
-                    .callable_parts(work)?
-                    .ok_or(SourceTypesError::MissingProjection)?;
-                if !actual.equivalent(&expected, work)? {
-                    return Ok(false);
-                }
-                continue;
-            }
-            let result = self.with_typing_environment(&bound.typing_environment, |checker| {
-                checker.original_header_source_schema(&bound.syntax, work)
-            })?;
-            let (result, _) =
-                self.selected_input_schema(result, bound.typing_environment.clone(), work)?;
+            let source = bound.source.ok_or(SourceTypesError::Unresolved)?;
+            let (result, environment) = self.type_source.storage.live_types().view_schema(
+                source.view,
+                source.original,
+                work,
+            )?;
+            let (result, _) = self.selected_input_schema(result, environment, work)?;
             let (_, actual) = schema
                 .callable_parts(work)?
                 .ok_or(SourceTypesError::MissingProjection)?;

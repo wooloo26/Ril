@@ -35,6 +35,79 @@ fn nested_generic_stages_keep_each_enclosing_binding() {
 }
 
 #[test]
+fn retained_handlers_use_each_factorys_lexical_type_and_answer() {
+    let facts = verified(ril_test::case_source(
+        "tests/regressions/nested-closures.ril::nested-retained-handlers-pointer64",
+    ));
+    let factory = facts
+        .functions
+        .iter()
+        .find(|function| function.syntax.name.ends_with("make"))
+        .unwrap();
+    let sites: Vec<_> = facts
+        .closure_sites
+        .iter()
+        .filter(|site| {
+            site.owner == ril_compiler_core::ids::CallableOwner::Function(factory.definition)
+        })
+        .collect();
+    assert!(
+        !sites.is_empty(),
+        "the fixture must contain an escaping factory"
+    );
+    for site in sites {
+        assert!(facts.retained_handlers.iter().any(|environment|
+            matches!(environment.callable, ril_compiler::sema::model::Callable::Closure(id)
+                if facts.closures[id].site == Some(site.id)) && !environment.handlers.is_empty()),
+            "an escaping factory must retain its descendant's lexical handler dependencies");
+    }
+    for case in [
+        "tests/regressions/closures.ril::immediate-instances",
+        "tests/regressions/closures.ril::retained-instances",
+    ] {
+        verified(ril_test::case_source(case));
+    }
+}
+
+#[test]
+fn effect_receivers_keep_complete_array_and_callable_types() {
+    for case in [
+        "fixed-operation-view",
+        "generic-operation-view",
+        "generic-callback-interface-pointer64",
+    ] {
+        verified(ril_test::case_source(&format!(
+            "tests/regressions/effect-source-views.ril::{case}"
+        )));
+    }
+    for (case, code) in [
+        ("reject-operation-hidden-dimension", "E0301"),
+        ("reject-resumption-hidden-dimension", "E0301"),
+        ("reject-generic-resumption-hidden-dimension", "E0301"),
+        ("reject-generic-callback-default-recovery", "E0314"),
+    ] {
+        let source = ril_test::case_source(&format!(
+            "tests/regressions/effect-source-views.ril::{case}"
+        ));
+        for target in ["pointer32", "pointer64"] {
+            let outcome = Session::with_options(
+                source.as_bytes().to_vec(),
+                CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
+                },
+            )
+            .check();
+            assert!(
+                matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+                if diagnostics.iter().any(|diagnostic| diagnostic.code == code)),
+                "{case} {target}: {outcome:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn separate_generic_instances_keep_types_and_hidden_dimensions() {
     for case in [
         "reject-generic-instance-mix",

@@ -1232,12 +1232,13 @@ pub struct HandlerFact {
     pub arms: Vec<ril_syntax::ast::HandlerArm>,
     pub outer: Vec<usize>,
 }
+/// A callable's selected lexical environment. Invocation answer constraints
+/// belong to RetainedHandlerAnswerFact and the actual continuation activation.
 #[derive(Debug, Clone)]
 pub struct RetainedHandlerFact {
     pub callable: Callable,
     pub span: Span,
     pub handlers: Vec<usize>,
-    pub answer: Ty,
     pub cause: CauseId,
 }
 #[derive(Debug, Clone)]

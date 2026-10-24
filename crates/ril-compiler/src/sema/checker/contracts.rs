@@ -21,7 +21,26 @@ pub(super) struct SignatureSource<'a> {
     pub schema: Option<SourceSchema>,
 }
 
-impl SignatureSource<'_> {
+impl<'a> SignatureSource<'a> {
+    pub(super) fn receiving(target: &'a crate::sema::source_reception::Target) -> Option<Self> {
+        let syntax = target.syntax.as_deref()?;
+        Some(Self {
+            header: target
+                .source
+                .as_ref()
+                .map_or(syntax, |source| &source.header),
+            environment: target.source.as_ref().map_or_else(
+                || target.environment.clone(),
+                |source| source.environment.clone(),
+            ),
+            path: target
+                .source
+                .as_ref()
+                .map_or_else(Vec::new, |source| source.path.clone()),
+            schema: target.schema.clone(),
+        })
+    }
+
     fn project(
         &self,
         step: crate::sema::source_types::SourcePath,
@@ -122,6 +141,22 @@ pub(super) struct ContractEnvironment {
     typing_environment: crate::sema::context::FrozenEnvironment,
 }
 impl Checker {
+    pub(super) fn ascribe_received_signature(
+        &mut self,
+        value: &mut Value,
+        target: &crate::sema::source_reception::Target,
+    ) {
+        if let Some(source) = SignatureSource::receiving(target) {
+            let syntax = target
+                .syntax
+                .as_deref()
+                .expect("receiving signature syntax");
+            self.with_typing_environment(&target.environment, |checker| {
+                checker.ascribe_signature_from(value, syntax, &source);
+            });
+        }
+    }
+
     pub(super) fn callable_signature(&self, parameters: Vec<Parameter>) -> Arc<CallableSignature> {
         Arc::new(CallableSignature {
             parameters,

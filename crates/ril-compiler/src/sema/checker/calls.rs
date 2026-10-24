@@ -1295,6 +1295,13 @@ impl Checker {
             frame.owner,
             function.span,
         );
+        self.record_returned_handler_context(
+            Callable::Named(id),
+            &info.handler_context,
+            &result,
+            &frame,
+            span,
+        );
         frame.obligations.handler_environment |= self.has_retained_handlers(&Callable::Named(id));
         for access in &mut frame.obligations.accesses {
             access.transport(&self.recency_moves);
@@ -2083,6 +2090,13 @@ impl Checker {
                 &frame.obligations.selected_handlers,
                 &result,
                 frame.owner,
+                span,
+            );
+            self.record_returned_handler_context(
+                Callable::Closure(id),
+                &closure.handler_context,
+                &result,
+                &frame,
                 span,
             );
         }

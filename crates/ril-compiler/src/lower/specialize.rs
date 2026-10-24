@@ -690,11 +690,7 @@ struct Shape {
         crate::sema::model::Ty,
         crate::sema::model::StaticCoordinate,
     )>,
-    recipes: Vec<(
-        CallableShape,
-        Vec<ril_compiler_core::ids::HandlerSiteId>,
-        crate::sema::model::Ty,
-    )>,
+    recipes: Vec<(CallableShape, Vec<ril_compiler_core::ids::HandlerSiteId>)>,
 }
 type ExpressionShape = (
     crate::sema::model::Ty,
@@ -808,7 +804,7 @@ fn shape(facts: &SemanticFacts, original: &SemanticFacts) -> Result<Shape, NotIm
                 )
             })
             .collect(),
-        recipes:facts.retained_handlers.iter().map(|proof|Ok((callable_shape(original,&proof.callable)?,proof.handlers.iter().map(|id|original.handlers.get(*id).and_then(|handler|handler.site).ok_or_else(||unsupported("retained specialization proof references an unowned handler"))).collect::<Result<_,_>>()?,proof.answer.clone()))).collect::<Result<_,NotImplemented>>()?,
+        recipes:facts.retained_handlers.iter().map(|proof|Ok((callable_shape(original,&proof.callable)?,proof.handlers.iter().map(|id|original.handlers.get(*id).and_then(|handler|handler.site).ok_or_else(||unsupported("retained specialization proof references an unowned handler"))).collect::<Result<_,_>>()?))).collect::<Result<_,NotImplemented>>()?,
     })
 }
 

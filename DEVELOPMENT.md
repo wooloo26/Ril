@@ -105,13 +105,15 @@ duplicate source trees and historical verification reports.
 - Unify complete types and constraints with resolved declaration/binder identities.
   Replace erased `Ty`, syntax witnesses and repeated environment reconstruction.
   Callable interfaces retain their lexical type interpretation; signature probes
-  and return contracts retain complete type graphs. Finish routing calls,
-  generics, defaults, rows and constructors through the same typed operations
-  and receiving rules.
+  and return contracts retain complete type graphs. Effect inputs and resume
+  operands share the receiving operation. Factories retain lexical handler
+  dependencies separately from invocation answer constraints. Finish routing
+  generics, defaults, rows and constructors through the same typed operations.
 - Complete control-flow analysis for heap access, borrowing, effects, duties,
   resources and channels. Replace unresolved generated callback inputs, retain
   actual protected answers across resume, and use finite loop/recursion summaries.
-  Preserve conditional/rest-pattern receiving and correlated aggregate contents.
+  Carry normal and abrupt result types directly, replacing block-exit/cause
+  replay. Preserve conditional/rest-pattern receiving and correlated aggregates.
 - Run static execution on the eligible elaborated operations used by compilation.
   Finish Const/Key argument and extent inference, selected numeric representation,
   and first-class explicit generic instantiation without AST reconstruction.

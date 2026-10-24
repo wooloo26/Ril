@@ -200,7 +200,7 @@ impl Checker {
         Ok(Some((schema, environment)))
     }
 
-    pub(super) fn input_header_schema(
+    pub(in crate::sema::checker) fn input_header_schema(
         &self,
         key: &ArgumentKey,
         original: Option<ril_compiler_core::ids::TypeExprId>,

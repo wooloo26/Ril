@@ -304,20 +304,14 @@ impl Checker {
             // an earlier failure cannot erase a later declaration's own Source.
             frame.return_source_valid = false;
             if let Some(target) = source
-                && let (Some(syntax), Some(origin)) =
-                    (target.syntax.as_deref(), target.source.as_ref())
+                && let Some(origin) = super::contracts::SignatureSource::receiving(target)
             {
-                self.with_typing_environment(&origin.environment, |checker| {
-                    checker.check_receiving_callable_bounds_from(
-                        value,
-                        syntax,
-                        &super::contracts::SignatureSource {
-                            header: &origin.header,
-                            environment: origin.environment.clone(),
-                            path: origin.path.clone(),
-                            schema: target.schema.clone(),
-                        },
-                    );
+                let syntax = target
+                    .syntax
+                    .as_deref()
+                    .expect("receiving signature syntax");
+                self.with_typing_environment(&target.environment, |checker| {
+                    checker.check_receiving_callable_bounds_from(value, syntax, &origin);
                 });
             }
         }
@@ -2013,19 +2007,9 @@ impl Checker {
                         );
                         if *operation == ControlOperation::Resume
                             && let Some(target) = &return_source
+                            && supplied.source_valid
                         {
-                            let valid = self.require_source_reception(
-                                target,
-                                v,
-                                &supplied.value,
-                                supplied.observation,
-                                frame,
-                            );
-                            if valid && let Some(syntax) = target.syntax.as_ref() {
-                                self.with_typing_environment(&target.environment, |checker| {
-                                    checker.ascribe_signature(&mut supplied.value, syntax)
-                                });
-                            }
+                            self.ascribe_received_signature(&mut supplied.value, target);
                         }
                         supplied.value
                     })
@@ -2251,22 +2235,8 @@ impl Checker {
             }
             ExprKind::Lambda { .. } => {
                 let mut value = self.lambda(expr, frame, source);
-                if let Some(target) = source
-                    && let (Some(syntax), Some(origin)) =
-                        (target.syntax.as_deref(), target.source.as_ref())
-                {
-                    self.with_typing_environment(&origin.environment, |checker| {
-                        checker.ascribe_signature_from(
-                            &mut value,
-                            syntax,
-                            &super::contracts::SignatureSource {
-                                header: &origin.header,
-                                environment: origin.environment.clone(),
-                                path: origin.path.clone(),
-                                schema: target.schema.clone(),
-                            },
-                        );
-                    });
+                if let Some(target) = source {
+                    self.ascribe_received_signature(&mut value, target);
                 }
                 value
             }

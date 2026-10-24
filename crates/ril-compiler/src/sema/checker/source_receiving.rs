@@ -133,7 +133,17 @@ impl Checker {
         let schema = (|| {
             use crate::sema::source_types::{SourceTypesError, WorkLimit};
             let mut work = WorkLimit::new(16384);
-            let schema = self.original_header_source_schema(syntax, &mut work)?;
+            let schema = if syntax.hir_id.is_none() {
+                // Generated receiving syntax describes an already elaborated
+                // type. Its complete key enters the same owned graph store;
+                // it cannot authenticate itself as an original HIR occurrence.
+                let key = key.as_ref().ok_or(SourceTypesError::Unresolved)?;
+                self.input_header_schema(key, None, environment.clone(), &mut work)?
+                    .ok_or(SourceTypesError::Unresolved)?
+                    .0
+            } else {
+                self.original_header_source_schema(syntax, &mut work)?
+            };
             for identity in schema.binder_identities(&mut work)? {
                 if let Some(binder) = self.generic_binders.get(&identity) {
                     work.charge(self.functions.len())?;

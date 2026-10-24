@@ -1223,101 +1223,41 @@ impl Checker {
         syntax: &Expr,
         frame: &Frame,
     ) -> Result<Option<Vec<Option<SourceSchema>>>, SourceTypesError> {
-        // A sealed public view has priority over an underlying inferred lambda.
+        // The value's public declaration owns its input types and their scope.
+        // Calling it does not reconstruct that declaration from a past body.
+        if let Some(signature) = &callee.signature {
+            return self.with_typing_environment(&signature.environment, |checker| {
+                let parameters = signature
+                    .parameters
+                    .iter()
+                    .map(|parameter| {
+                        let Some(syntax) = &parameter.ty else {
+                            return Ok(None);
+                        };
+                        let target = checker.freeze_source_receiving_target(syntax);
+                        if target.sensitivity == source_reception::SchemaSensitivity::NotRequired {
+                            Ok(None)
+                        } else {
+                            target.schema.map(Some).ok_or(SourceTypesError::Unresolved)
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Some(parameters))
+            });
+        }
+        // A join without one syntactic interface still has a complete common
+        // type graph. Use that graph; never choose an implementation's header.
         let mut work = WorkLimit::new(16384);
-        if let Some((source, _)) =
-            self.original_source_receiving_schema(callee, syntax, frame, &mut work)?
-        {
-            return source.callable_parameters(&mut work).map(|parameters| {
-                Some(
+        self.original_source_receiving_schema(callee, syntax, frame, &mut work)?
+            .map(|(source, _)| {
+                source.callable_parameters(&mut work).map(|parameters| {
                     parameters
                         .into_iter()
                         .map(|(_, schema)| Some(schema))
-                        .collect(),
-                )
-            });
-        }
-        if callee.callables.is_empty() {
-            return Ok(None);
-        }
-        let mut common: Option<Vec<Option<SourceSchema>>> = None;
-        for callable in &callee.callables {
-            let keys = match callable {
-                Callable::Closure(index) => {
-                    let closure = self
-                        .closures
-                        .get(*index)
-                        .ok_or(SourceTypesError::MissingNode)?
-                        .clone();
-                    let contract = self
-                        .lambda_contract(*index)
-                        .ok_or(SourceTypesError::MissingNode)?
-                        .clone();
-                    let previous = self.enter_typing_environment(&contract.typing_environment);
-                    let keys: Result<Vec<_>, SourceTypesError> = closure
-                        .parameters
-                        .iter()
-                        .map(|parameter| match &parameter.ty {
-                            None => Ok(None),
-                            Some(syntax) => {
-                                let target = self.freeze_source_receiving_target(syntax);
-                                if target.sensitivity
-                                    == source_reception::SchemaSensitivity::NotRequired
-                                {
-                                    Ok(None)
-                                } else {
-                                    target.schema.map(Some).ok_or(SourceTypesError::Unresolved)
-                                }
-                            }
-                        })
-                        .collect();
-                    self.restore_typing_environment(previous);
-                    keys?
-                }
-                Callable::Symbolic(..) if self.symbolic_has_no_inputs(callee) => Vec::new(),
-                _ => return Ok(None),
-            };
-            if let Some(previous) = common.as_ref()
-                && !input_schema_lists_agree(previous, &keys, &mut work)?
-            {
-                return Err(SourceTypesError::Unresolved);
-            }
-            common = Some(keys);
-        }
-        Ok(common)
-    }
-
-    fn symbolic_has_no_inputs(&mut self, callee: &Value) -> bool {
-        let sources: BTreeSet<_> = callee
-            .callback_parameters
-            .union(&callee.sources)
-            .copied()
-            .collect();
-        !sources.is_empty()
-            && sources.iter().all(|id| {
-                let Some(binding) = self.bindings.get(*id) else {
-                    return false;
-                };
-                if !binding.parameter {
-                    return false;
-                }
-                let parameters: Vec<_> = self
-                    .functions
-                    .iter()
-                    .flat_map(|function| function.syntax.parameters.iter())
-                    .filter(|parameter| parameter.pattern.span == binding.span)
-                    .collect();
-                let [parameter] = parameters.as_slice() else {
-                    return false;
-                };
-                let Some(mut syntax) = parameter.ty.as_ref() else {
-                    return false;
-                };
-                if let TypeKind::Optional(inner) = &syntax.kind {
-                    syntax = inner;
-                }
-                matches!(&syntax.kind,TypeKind::Callable {parameters,..} if parameters.is_empty())
+                        .collect()
+                })
             })
+            .transpose()
     }
 
     pub(super) fn require_recorded_public_call_inputs(
@@ -1379,25 +1319,6 @@ fn input_compatible(
         Ok(Some(_)) => Err(SourceTypesError::Unresolved),
         Err(error) => Err(error.clone()),
     }
-}
-
-fn input_schema_lists_agree(
-    left: &[Option<SourceSchema>],
-    right: &[Option<SourceSchema>],
-    work: &mut WorkLimit,
-) -> Result<bool, SourceTypesError> {
-    work.charge(left.len() + right.len())?;
-    if left.len() != right.len() {
-        return Ok(false);
-    }
-    for (left, right) in left.iter().zip(right) {
-        match (left, right) {
-            (Some(left), Some(right)) if left.equivalent(right, work)? => {}
-            (None, None) => {}
-            _ => return Ok(false),
-        }
-    }
-    Ok(true)
 }
 
 #[cfg(test)]

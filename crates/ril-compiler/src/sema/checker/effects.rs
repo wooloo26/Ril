@@ -115,26 +115,67 @@ impl Checker {
         operation: &OperationFact,
         parameter: Option<usize>,
     ) -> Option<crate::sema::source_reception::Target> {
-        let source = operation.source.as_ref()?;
-        let header = self
-            .effects
-            .get(&operation.effect)?
-            .operations
-            .get(source.index as usize)?;
-        let syntax = match parameter {
-            Some(index) => header.parameters.get(index)?.ty.as_ref()?,
-            None => header.return_type.as_ref()?,
+        use crate::sema::{
+            source_reception::{SchemaSensitivity, Target},
+            source_types::{SourcePath, SourceSensitivity, SourceTypesError, WorkLimit},
         };
-        crate::static_eval::effects::bounded_argument_key(
-            syntax,
-            &source.environment.generic_context,
-        )?;
-        let syntax = syntax.clone();
-        Some(
-            self.with_typing_environment(&source.environment, |checker| {
-                checker.freeze_source_receiving_target(&syntax)
-            }),
-        )
+        let signature = operation.signature.as_ref()?;
+        let environment = operation
+            .source
+            .as_ref()
+            .map(|source| source.environment.clone())
+            .unwrap_or_else(|| self.capture_typing_environment());
+        let header = operation.source.as_ref().and_then(|source| {
+            self.effects
+                .get(&operation.effect)?
+                .operations
+                .get(source.index as usize)
+        });
+        let syntax = header.and_then(|header| match parameter {
+            Some(index) => header.parameters.get(index)?.ty.clone(),
+            None => header.return_type.clone(),
+        });
+        let span = syntax.as_ref().map_or(operation.span, |syntax| syntax.span);
+        let mut work = WorkLimit::new(32768);
+        let projected = (|| {
+            let path = match parameter {
+                Some(index) => SourcePath::CallableParameter(index as u32),
+                None => SourcePath::CallableResult,
+            };
+            let schema = signature.project_steps(&[path], &mut work)?;
+            if operation.source.is_none() && schema.requires_environment(&mut work)? {
+                return Err(SourceTypesError::Unresolved);
+            }
+            self.selected_input_schema(schema, environment.clone(), &mut work)
+        })();
+        let (schema, environment) = match projected {
+            Ok((schema, environment)) => (Some(schema), environment),
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("effect receiving type is unavailable: {error}"),
+                );
+                (None, environment)
+            }
+        };
+        let sensitivity = match schema.as_ref().map(|schema| schema.sensitivity(&mut work)) {
+            Some(SourceSensitivity::Absent { .. }) => SchemaSensitivity::NotRequired,
+            Some(SourceSensitivity::Sensitive { .. }) => SchemaSensitivity::Required,
+            _ => SchemaSensitivity::Unknown,
+        };
+        if !self.application_effect.admit(32768 - work.remaining()) {
+            self.unsupported(span, "effect receiving type exceeded its work bound");
+        }
+        Some(Target {
+            schema,
+            environment,
+            syntax: syntax.map(std::sync::Arc::new),
+            span,
+            sensitivity,
+            source: None,
+            static_projection: None,
+            empty_array_context: None,
+        })
     }
     pub(super) fn finish_retained_answer_contracts(&mut self) {
         for pending in self.retained_answer_uses.clone() {
@@ -357,6 +398,7 @@ impl Checker {
                     self.retained_answer_uses
                         .push(retained_answers::PendingUse {
                             handler: *id,
+                            callable: callable.clone(),
                             operation: operation.clone(),
                             invocation: answer.ty.clone(),
                             copy: self.copy_handler_answer(answer),
@@ -397,11 +439,88 @@ impl Checker {
                 }
             }
         }
+        self.record_handler_environment(callable, context, handlers, span, answer.cause);
+    }
+
+    /// Returning a newly created callable may require the creator to retain
+    /// its lexical handler chain for that future creation. This is an
+    /// environment dependency, not a handler invocation with the creator's A.
+    pub(super) fn record_returned_handler_context(
+        &mut self,
+        callable: Callable,
+        context: &[usize],
+        answer: &Value,
+        frame: &Frame,
+        span: Span,
+    ) {
+        if context.is_empty() || (answer.callables.is_empty() && answer.origins.nodes.is_empty()) {
+            return;
+        }
+        if !self.application_effect.admit(
+            1 + self.heap.nodes.len()
+                + self.fields.len()
+                + self.closures.len()
+                + self.functions.len(),
+        ) {
+            self.unsupported(
+                span,
+                "returned callable handler environment exceeded its work bound",
+            );
+            return;
+        }
+        let created: Vec<_> = self
+            .graph_callables(answer)
+            .into_iter()
+            .filter(|child| {
+                let owner = match child {
+                    Callable::Closure(id) => Some(self.closures[*id].owner),
+                    Callable::Named(id) => self.functions[*id].owner,
+                    _ => None,
+                };
+                owner.is_some_and(|owner| self.scope_is_within(owner, frame.owner))
+            })
+            .collect();
+        if !self
+            .retained_handlers
+            .len()
+            .checked_mul(created.len().saturating_add(1))
+            .is_some_and(|work| self.application_effect.admit(work))
+        {
+            self.unsupported(
+                span,
+                "returned callable handler selection exceeded its work bound",
+            );
+            return;
+        }
+        let required: BTreeSet<_> = self
+            .retained_handlers
+            .iter()
+            .filter(|environment| created.contains(&environment.callable))
+            .flat_map(|environment| environment.handlers.iter().copied())
+            .collect();
+        let handlers: Vec<_> = context
+            .iter()
+            .copied()
+            .filter(|id| required.contains(id))
+            .collect();
+        if !handlers.is_empty() {
+            self.record_handler_environment(callable, context, handlers, span, answer.cause);
+        }
+    }
+
+    fn record_handler_environment(
+        &mut self,
+        callable: Callable,
+        context: &[usize],
+        handlers: Vec<usize>,
+        span: Span,
+        parent: CauseId,
+    ) {
         let cause = self.cause(
             CauseKind::Handler,
             span,
-            "selected lexical handler definitions have a fresh invocation answer boundary",
-            [answer.cause],
+            "callable retains its selected lexical handler definitions",
+            [parent],
         );
         let owner = match &callable {
             Callable::Named(id) => Some(CallableOwner::Function(self.functions[*id].definition)),
@@ -416,7 +535,6 @@ impl Checker {
                     callable: callable.clone(),
                     span,
                     handlers: handlers.clone(),
-                    answer: answer.ty.clone(),
                     cause,
                 },
             ),
@@ -446,7 +564,6 @@ impl Checker {
                 callable,
                 span,
                 handlers,
-                answer: answer.ty.clone(),
                 cause,
             });
         }
@@ -1631,8 +1748,8 @@ impl Checker {
                     let mut assumed = frame.clone();
                     self.with_typing_environment(&target.environment, |checker| {
                         checker.promise_array_shape(&value, syntax, &mut assumed);
-                        checker.ascribe_signature(&mut value, syntax);
                     });
+                    self.ascribe_received_signature(&mut value, &target);
                 }
                 if *mode != ParameterMode::Read && !self.formal_is_immutable(&value.ty) {
                     value.permission = Permission::Write;
@@ -1903,9 +2020,9 @@ impl Checker {
                 && let Some(syntax) = target.syntax.as_ref()
             {
                 self.with_typing_environment(&target.environment, |checker| {
-                    checker.ascribe_signature(&mut value, syntax);
                     checker.check_storage_shape(&value, syntax, &mut frame);
                 });
+                self.ascribe_received_signature(&mut value, &target);
             }
             self.bind_pattern(
                 &parameter.pattern,

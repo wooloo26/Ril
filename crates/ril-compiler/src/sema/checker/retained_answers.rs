@@ -10,6 +10,7 @@ use super::*;
 #[derive(Clone)]
 pub(super) struct PendingUse {
     pub handler: usize,
+    pub callable: Callable,
     pub operation: String,
     pub invocation: Ty,
     pub copy: bool,
@@ -77,7 +78,8 @@ impl Checker {
             .filter(|proof| value.callables.contains(&proof.callable))
             .any(|proof| {
                 self.retained_answer_uses.iter().any(|pending| {
-                    !pending.parametric
+                    pending.callable == proof.callable
+                        && !pending.parametric
                         && proof.handlers.contains(&pending.handler)
                         && !self.compatible(&pending.invocation, &answer)
                 })

@@ -105,10 +105,12 @@ impl Checker {
             caller,
             mut result_source,
         } = context;
+        let parent_closure = self.closure_invocation_stack.last().copied();
         let probe = matches!(
             origin,
             EntryOrigin::DeclarationProbe | EntryOrigin::SignatureProbe(_)
-        );
+        ) || parent_closure
+            .is_some_and(|parent| self.closure_invocations[parent.0 as usize].probe);
         if !self.application_effect.admit(1 + args.len()) {
             self.unsupported(site, "callable input recording exhausted its work bound");
             return Value::scalar(Ty::Unknown, None, CauseId(0));
@@ -140,7 +142,7 @@ impl Checker {
                 Ok(target) => result_source = target,
                 Err(error) => {
                     self.unsupported(site, format!("closure callee result Source: {error}"));
-                    return self.unit(site);
+                    return Value::scalar(Ty::Unknown, None, CauseId(0));
                 }
             }
         }
@@ -153,10 +155,6 @@ impl Checker {
             arguments: arguments.clone(),
         };
         let id = ClosureInvocationId(self.closure_invocations.len() as u32);
-        let parent_closure = self.closure_invocation_stack.last().copied();
-        let probe = probe
-            || parent_closure
-                .is_some_and(|parent| self.closure_invocations[parent.0 as usize].probe);
         self.closure_invocations.push(ClosureInvocation {
             id,
             summary: None,
