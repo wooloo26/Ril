@@ -75,21 +75,6 @@ impl SourceTypeIndex {
     pub(super) fn retained_types(&self) -> Result<&SourceTypes, SourceTypesError> {
         self.0.types.as_ref().map_err(Clone::clone)
     }
-    pub(super) fn retained_bindings(
-        &self,
-    ) -> impl ExactSizeIterator<
-        Item = (
-            usize,
-            &Result<Option<SourceTypeId>, SourceTypesError>,
-            &FrozenEnvironment,
-        ),
-    > {
-        self.0
-            .bindings
-            .iter()
-            .map(|(&binding, view)| (binding, &view.ty, &view.environment))
-    }
-
     /// Admission failure and a poisoned declaration environment are not an
     /// unknown schema, even when no later source query happens to use them.
     pub(crate) fn validate(&self, work: &mut WorkLimit) -> Result<(), SourceTypesError> {
@@ -597,14 +582,6 @@ mod tests {
             frozen.environment(id, &mut WorkLimit::new(0)),
             Err(SourceTypesError::BudgetExceeded)
         );
-        assert!(
-            frozen
-                .retained(&mut WorkLimit::new(4096))
-                .unwrap()
-                .graph
-                .nodes
-                .is_empty()
-        );
     }
 
     #[test]
@@ -628,28 +605,6 @@ mod tests {
                 .equivalent(&source, &mut WorkLimit::new(4096))
                 .unwrap()
         );
-        let retained = index.retained(&mut WorkLimit::new(4096)).unwrap();
-        let root = retained.view_root(view, &mut WorkLimit::new(128)).unwrap();
-        let ril_ir::provenance::SourceTypeNode::Record { fields, .. } =
-            retained.graph.get(root).unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(
-            fields
-                .iter()
-                .find(|field| field.label == "again")
-                .unwrap()
-                .value,
-            root
-        );
-        assert!(retained.graph.nodes.iter().any(|node| matches!(
-            node,
-            ril_ir::provenance::SourceTypeNode::Array {
-                length: SourceLength::Fixed(3),
-                ..
-            }
-        )));
         assert!(
             index
                 .view_schema(view, None, &mut WorkLimit::new(0))
@@ -732,11 +687,6 @@ mod tests {
         first
             .view_schema(view, None, &mut WorkLimit::new(4096))
             .unwrap();
-        let retained = first.retained(&mut WorkLimit::new(4096)).unwrap();
-        assert_eq!(
-            retained.view_root(foreign, &mut WorkLimit::new(128)),
-            Err(SourceTypesError::ForeignIdentity)
-        );
     }
 
     #[test]
@@ -764,7 +714,6 @@ mod tests {
         assert!(!frozen.validate_binding_schema(1, None, environment.id()));
         assert!(frozen.validate_binding_schema(2, None, environment.id()));
         frozen.validate(&mut WorkLimit::new(4096)).unwrap();
-        frozen.retained(&mut WorkLimit::new(4096)).unwrap();
     }
 
     #[test]
@@ -814,10 +763,6 @@ mod tests {
             frozen.validate(&mut WorkLimit::new(1_000_000)),
             Err(SourceTypesError::BudgetExceeded)
         );
-        assert!(matches!(
-            frozen.retained(&mut WorkLimit::new(1_000_000)),
-            Err(SourceTypesError::BudgetExceeded)
-        ));
     }
 
     #[test]

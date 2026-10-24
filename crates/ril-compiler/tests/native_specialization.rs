@@ -19,14 +19,14 @@ fn main(){
 }
 "#,
     );
-    assert_eq!(program.provenance.specializations.len(), 4);
+    assert_eq!(program.metadata.specializations.len(), 4);
     let ids: std::collections::BTreeSet<_> = program
         .functions
         .iter()
         .map(|function| function.definition)
         .collect();
     assert_eq!(ids.len(), program.functions.len());
-    for instance in &program.provenance.specializations {
+    for instance in &program.metadata.specializations {
         assert_ne!(instance.template, instance.definition);
         assert!(!instance.invocations.is_empty());
         assert!(
@@ -68,11 +68,11 @@ fn previewed_branches_have_closed_operation_coverage_for_both_runtime_paths() {
         .first()
         .unwrap();
     let program = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert_eq!(program.provenance.specializations.len(), 1);
+    assert_eq!(program.metadata.specializations.len(), 1);
     let specialized = &program
         .functions
         .iter()
-        .find(|function| function.definition == program.provenance.specializations[0].definition)
+        .find(|function| function.definition == program.metadata.specializations[0].definition)
         .unwrap()
         .body;
     let ril_ir::core::Statement::Expr { expression, .. } = &specialized.statements[0] else {
@@ -98,9 +98,9 @@ fn local<T>(value:T)->T{with Read<T>::get()->resume value;Read<T>::get()}
 fn main(){assert(local(7)==7 && local("seven")=="seven" && local(9)==9)}
 "#,
     );
-    assert_eq!(program.provenance.specializations.len(), 2);
+    assert_eq!(program.metadata.specializations.len(), 2);
     let mapped: Vec<_> = program
-        .provenance
+        .metadata
         .specializations
         .iter()
         .flat_map(|instance| &instance.handlers)

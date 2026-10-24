@@ -191,9 +191,5 @@ mod tests {
         let mut live = LiveSourceTypes::default();
         live.record_schema(0, Some(&first), FrozenEnvironment::default())
             .unwrap();
-        let retained = live.freeze().retained(&mut work).unwrap();
-        assert!(retained.graph.nodes.iter().any(|node| {
-            matches!(node, ril_ir::provenance::SourceTypeNode::StaticValue(value) if value == "const(int:1)")
-        }));
     }
 }

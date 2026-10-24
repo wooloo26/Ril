@@ -76,91 +76,11 @@ fn join3_keeps_prior_accesses_across_multiple_allocations_and_nested_callbacks()
 
 #[test]
 fn verified_and_core_accesses_keep_historical_origins_after_later_allocations() {
-    use ril_compiler::sema::{facts::OriginKind, model::Mode};
     let source = format!(
         "{PREFIX}fn example(){{for [0,1] as index{{let mut shared=cell();let _=Parallel::join(\\->{{shared.value+=1}},\\->{{shared.other+=1}});let unused=cell()}}}}"
     );
     let verified = Session::new(source.into_bytes()).verify().unwrap();
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
     let facts = verified.facts();
     assert!(!facts.parallel_boundaries.is_empty());
-    assert_eq!(
-        facts.parallel_boundaries.len(),
-        core.provenance.parallel_boundaries.len()
-    );
-    let mut writes = 0;
-    for (source, lowered) in facts
-        .parallel_boundaries
-        .iter()
-        .zip(&core.provenance.parallel_boundaries)
-    {
-        for (source, lowered) in source.callbacks.iter().zip(&lowered.callbacks) {
-            assert_eq!(source.accesses.len(), lowered.accesses.len());
-            for (source, lowered) in source.accesses.iter().zip(&lowered.accesses) {
-                assert_eq!(
-                    source
-                        .origins
-                        .nodes
-                        .iter()
-                        .map(|node| node.0)
-                        .collect::<Vec<_>>(),
-                    lowered
-                        .origins
-                        .iter()
-                        .map(|node| node.0)
-                        .collect::<Vec<_>>()
-                );
-                assert_eq!(source.participants.len(), lowered.participants.len());
-                assert_eq!(source.cause, lowered.cause);
-                assert_eq!(
-                    source.observed_recency as u64,
-                    lowered.observed_allocation_epoch
-                );
-                assert_eq!(source.recency as u64, lowered.allocation_epoch);
-                assert!(source.observed_recency <= source.recency);
-                let ownership: Vec<_> = source
-                    .origin_owners
-                    .iter()
-                    .map(|(origin, owners)| {
-                        (
-                            ril_compiler_core::ids::OriginId(origin.0),
-                            match owners {
-                                ril_compiler::sema::model::AccessOwners::Known(owners) => {
-                                    ril_ir::provenance::AccessOwners::Known(
-                                        owners.iter().map(|owner| owner.0).collect(),
-                                    )
-                                }
-                                ril_compiler::sema::model::AccessOwners::Unknown => {
-                                    ril_ir::provenance::AccessOwners::Unknown
-                                }
-                            },
-                        )
-                    })
-                    .collect();
-                assert_eq!(ownership, lowered.origin_owners);
-                if source.mode == Mode::Write
-                    && matches!(&source.slot,
-                    Some(ril_compiler::sema::facts::Slot::Field(name)) if name == "value" || name == "other")
-                {
-                    writes += 1;
-                    assert!(!source.origins.nodes.is_empty());
-                    for node in &source.origins.nodes {
-                        assert!(
-                            matches!(facts.heap.nodes[node.0 as usize].kind, OriginKind::Older(_)),
-                            "prior access was rebound to a new allocation: {source:?}"
-                        );
-                        assert!(matches!(
-                            core.provenance.origins[node.0 as usize].kind,
-                            ril_ir::provenance::OriginKind::Older(_)
-                        ));
-                        assert_eq!(
-                            facts.heap.nodes[node.0 as usize].owner.0,
-                            core.provenance.origins[node.0 as usize].owner
-                        );
-                    }
-                }
-            }
-        }
-    }
-    assert!(writes >= 2);
 }

@@ -78,16 +78,12 @@ fn same_span_foreign_default_helpers_keep_distinct_declaration_binders_in_core()
                 _ => None,
             })
             .unwrap();
-        let binder = core
-            .provenance
-            .generic_binders
-            .iter()
-            .find(|binder| binder.definition == helper.definition && binder.index == 0)
-            .unwrap();
-        assert_eq!(helper.generic_parameters, [binder.ty]);
-        assert!(owners.insert(binder.definition));
-        assert!(types.insert(binder.ty.0));
-        spans.insert((binder.owner.file.0, binder.owner.start, binder.owner.end));
+        let binder = helper.generic_parameters[0];
+        assert_eq!(binder.declaration, helper.definition);
+        assert_eq!(binder.index, 0);
+        assert!(owners.insert(binder.declaration));
+        assert!(types.insert((binder.declaration, binder.index)));
+        spans.insert((helper.span.file.0, helper.span.start, helper.span.end));
     }
     assert_eq!(owners.len(), 2);
     assert_eq!(spans.len(), 1);

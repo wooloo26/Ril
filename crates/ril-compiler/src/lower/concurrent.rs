@@ -31,28 +31,15 @@ impl Lower<'_> {
         let owner = self.callable_owner.ok_or_else(|| {
             unsupported("bound concurrent adapter requires a verified lexical owner")
         })?;
-        let causes: Vec<_> = self
-            .facts
-            .expressions
-            .iter()
-            .filter(|fact| fact.span == span)
-            .map(|fact| fact.value.cause)
-            .collect();
-        if causes.is_empty() {
-            return Err(unsupported(
-                "bound concurrent adapter requires its builtin selection certificate",
-            ));
-        }
         self.nonretaining_adapters
-            .push(ril_ir::provenance::NonRetainingAdapter {
+            .push(ril_ir::metadata::NonRetainingAdapter {
                 owner,
                 span,
                 builtin: if operation == "Concurrent::fork" {
-                    ril_ir::provenance::NonRetainingBuiltin::ConcurrentFork
+                    ril_ir::metadata::NonRetainingBuiltin::ConcurrentFork
                 } else {
-                    ril_ir::provenance::NonRetainingBuiltin::ConcurrentJoin
+                    ril_ir::metadata::NonRetainingBuiltin::ConcurrentJoin
                 },
-                causes,
             });
         let receiver = format!("\0ril.concurrent.receiver.{}", self.next_temporary);
         self.next_temporary += 1;

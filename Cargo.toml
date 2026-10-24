@@ -54,3 +54,9 @@ todo = "deny"
 
 [profile.dev]
 debug = 1
+
+# Hundreds of integration targets otherwise each link a full compiler with
+# debug information. Keep development debugging available without duplicating
+# that data in every test executable.
+[profile.test]
+debug = 0

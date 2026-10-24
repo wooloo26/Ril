@@ -30,7 +30,7 @@ fn core_uses_the_verified_layout_and_cannot_change_it_after_checking() {
         let verified = program(target);
         assert_eq!(verified.facts().target_layout, Some(layout));
         let core = ril_compiler::lower::lower_core(&verified).unwrap();
-        assert_eq!(core.provenance.target_layout, Some(layout));
+        assert_eq!(core.metadata.target_layout, Some(layout));
         let error = ril_compiler::lower::lower_core_for(&verified, other)
             .expect_err("a different layout cannot reuse this semantic certificate");
         assert_eq!(error.stage, Stage::Lowering);

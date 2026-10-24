@@ -37,10 +37,6 @@ fn verified(source: &str, target: &str) -> SemanticFacts {
     );
     solved_facts(&facts).unwrap();
     let core = ril_compiler::lower::lower_core(&program).unwrap();
-    assert_eq!(
-        core.provenance.scoped_source_identities.len(),
-        facts.scoped_source_identities.len()
-    );
     if target == "pointer64" {
         ril_codegen::lower::lower_native_with_entry(&core, "test_native").unwrap();
     }

@@ -17,7 +17,6 @@ pub(crate) mod polymorphic;
 pub(crate) mod projection_receipts;
 mod queries;
 pub(crate) mod reception;
-mod retained;
 mod schema;
 mod selection;
 pub(crate) mod standard_data;

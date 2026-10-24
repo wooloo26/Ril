@@ -3,6 +3,6 @@ pub mod constants;
 pub mod core;
 pub mod cps;
 pub mod foreign;
+pub mod metadata;
 pub mod native;
-pub mod provenance;
 pub mod specialization;

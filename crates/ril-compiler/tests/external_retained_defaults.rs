@@ -41,27 +41,20 @@ pub fn retained<n:int>(callback:Reader={with Helper::Read::get()->resume n;\->He
     for function in &core.external_functions {
         let owner = CallableOwner::Function(function.definition);
         let sites: Vec<_> = core
-            .provenance
+            .metadata
             .closure_sites
             .iter()
             .filter(|site| site.owner == owner)
             .collect();
         assert_eq!(sites.len(), 1);
         let proof = core
-            .provenance
+            .metadata
             .retained_handlers
             .iter()
             .find(|proof| proof.callable == Some(CallableOwner::Lambda(sites[0].id)))
             .unwrap();
         let definitions = proof.definitions.as_ref().unwrap();
         assert_eq!(definitions.len(), 1);
-        assert!(
-            core.provenance
-                .handlers
-                .iter()
-                .any(|handler| handler.callable_owner == Some(owner)
-                    && handler.definition == Some(definitions[0]))
-        );
         selected.push((sites[0].id, definitions[0]));
     }
     assert_eq!(selected.len(), 2);
@@ -132,7 +125,7 @@ pub fn main(){let seven=factory();let again=factory();let nine=other();assert(se
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
     for identity in identities {
         assert!(
-            core.provenance
+            core.metadata
                 .retained_handlers
                 .iter()
                 .any(|proof| proof.callable == Some(CallableOwner::Function(identity)))

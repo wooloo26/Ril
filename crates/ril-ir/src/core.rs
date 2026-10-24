@@ -2,16 +2,9 @@
 //! semantic validity; these public data structures are not certificates.
 use ril_compiler_core::{
     diagnostic::CauseId,
-    ids::{ConstRef, DefinitionId, OriginId, TypeId},
+    ids::{ConstRef, DefinitionId},
     source::Span,
 };
-
-#[derive(Debug, Clone)]
-pub struct Value {
-    pub ty: TypeId,
-    pub origins: Vec<OriginId>,
-    pub span: Span,
-}
 
 #[derive(Debug, Clone)]
 pub struct Expr {
@@ -241,7 +234,7 @@ pub struct Function {
     pub role: FunctionRole,
     pub definition: DefinitionId,
     pub name: String,
-    pub generic_parameters: Vec<TypeId>,
+    pub generic_parameters: Vec<crate::metadata::GenericParameter>,
     pub parameters: Vec<Parameter>,
     pub body: Block,
     pub span: Span,
@@ -254,7 +247,7 @@ pub struct Program {
     pub external_constants: Vec<crate::foreign::ExternalConstant>,
     pub functions: Vec<Function>,
     pub globals: Block,
-    pub provenance: crate::provenance::Graph,
+    pub metadata: crate::metadata::ProgramMetadata,
     pub operations: Vec<Operation>,
     pub constructors: Vec<Constructor>,
     pub call_signatures: Vec<CallSignature>,

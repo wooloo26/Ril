@@ -8,19 +8,7 @@ fn accepted(source: &str) -> ril_compiler::hir::VerifiedProgram {
         .verify()
         .unwrap_or_else(|error| panic!("{source}: {error:?}"));
     sema::resumption::validate(verified.facts()).unwrap();
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert_eq!(
-        core.provenance.resumption_steps.len(),
-        verified.facts().resumption_steps.len()
-    );
-    assert_eq!(
-        core.provenance.operation_loan_starts.len(),
-        verified.facts().operation_loan_starts.len()
-    );
-    assert_eq!(
-        core.provenance.allocation_history.len(),
-        verified.facts().allocation_history.len()
-    );
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
     verified
 }
 fn rejected(source: &str, codes: &[&str]) {
@@ -103,13 +91,7 @@ fn retained_reference_answers_require_each_fresh_invocations_own_steps() {
             .windows(2)
             .any(|pair| pair[0].activation != pair[1].activation)
     );
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert!(
-        core.provenance
-            .retained_handler_answers
-            .iter()
-            .any(|proof| proof.transport == ril_ir::provenance::AnswerTransport::OrdinaryChecked)
-    );
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
 }
 
 const OPERATION: &str = r#"
@@ -354,13 +336,7 @@ fn example(){let child=Cell.{value:3};let result=answer(child)}
         exit.answer_before.value.participants,
         exit.answer_received.value.participants
     );
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert!(
-        core.provenance
-            .resumption_steps
-            .iter()
-            .any(|step| step.scope_exit.is_some())
-    );
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
     let mut damaged = verified.facts().clone();
     damaged.resumption_steps[index].scope_exit = None;
     assert!(

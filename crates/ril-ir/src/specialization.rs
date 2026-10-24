@@ -1,7 +1,12 @@
 //! Traceability for closed native instances selected from a verified program.
 //! These records present solved evidence; constructing them grants no authority.
-use crate::provenance::CopyInstanceId;
 use ril_compiler_core::ids::{CallableOwner, DefinitionId, HandlerSiteId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InvocationId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ApplicationId(pub u32);
 
 /// A closed normalized static shape. Lengths, qualifiers and callable modes
 /// survive even when the boxed runtime representation does not distinguish them.
@@ -66,7 +71,7 @@ pub struct DefaultUseId(pub u32);
 #[derive(Debug, Clone)]
 pub struct DefaultSlot {
     pub parameter: u32,
-    pub applications: Vec<crate::provenance::CopyCallEventId>,
+    pub applications: Vec<ApplicationId>,
     /// Empty only when every application supplies this parameter explicitly.
     pub evaluations: Vec<DefaultUseId>,
 }
@@ -79,7 +84,7 @@ pub struct Instance {
     pub arguments: Vec<Argument>,
     pub captured_arguments: Vec<Argument>,
     /// Exact semantic call records; equal source spans never merge invocations.
-    pub invocations: Vec<CopyInstanceId>,
+    pub invocations: Vec<InvocationId>,
     /// Includes the template function and all remapped nested lexical owners.
     /// Normal and metered entries use the same target identities.
     pub owners: Vec<OwnerMap>,

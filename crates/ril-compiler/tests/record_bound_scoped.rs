@@ -30,56 +30,6 @@ fn verified(source: &str) -> SemanticFacts {
     );
     solved_facts(&facts).unwrap();
     let core = ril_compiler::lower::lower_core(&program).unwrap();
-    assert_eq!(
-        core.provenance.scoped_source_identities.len(),
-        facts.scoped_source_identities.len()
-    );
-    for (source, lowered) in facts
-        .scoped_source_identities
-        .iter()
-        .zip(&core.provenance.scoped_source_identities)
-    {
-        assert_eq!(source.id, lowered.id);
-        assert_eq!(source.cause, lowered.cause);
-        assert_eq!(source.occurrences.len(), lowered.occurrences.len());
-        let original = &source.occurrences[0].formal;
-        let binding = core
-            .provenance
-            .bindings
-            .iter()
-            .find(|binding| binding.id as usize == original.binding)
-            .unwrap();
-        assert_eq!(lowered.environment, binding.typing_environment);
-        let environment = &core.provenance.frozen_environments[lowered.environment.0 as usize];
-        assert_eq!(
-            environment.generic_context,
-            source
-                .typing_environment
-                .generic_context
-                .iter()
-                .map(|(name, identity)| (name.clone(), identity.clone()))
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            environment.generic_substitutions.len(),
-            source.typing_environment.generic_substitutions.len()
-        );
-        assert_eq!(
-            environment.generic_sources.len(),
-            source.typing_environment.generic_sources.len()
-        );
-        for (source, lowered) in source.occurrences.iter().zip(&lowered.occurrences) {
-            assert_eq!(
-                source.formal.root_expression,
-                lowered.formal.root_expression
-            );
-            assert_eq!(
-                source.formal.type_path.len(),
-                lowered.formal.type_path.len()
-            );
-            assert_eq!(source.selection_path.len(), lowered.selection_path.len());
-        }
-    }
     ril_codegen::lower::lower_native_with_entry(&core, "test_native").unwrap();
     facts
 }

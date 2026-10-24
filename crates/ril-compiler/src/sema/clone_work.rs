@@ -163,14 +163,6 @@ pub(crate) fn environment(value: &TypingEnvironment, work: &mut usize) -> Option
     bindings(value.contract_bindings(), work)
 }
 
-pub(crate) fn frozen_environment(
-    value: &crate::sema::context::FrozenEnvironment,
-    work: &mut usize,
-) -> Option<()> {
-    static_environment(value, work)?;
-    bindings(value.contract_bindings(), work)
-}
-
 pub(crate) fn static_environment(
     value: &crate::sema::context::StaticEnvironment,
     work: &mut usize,

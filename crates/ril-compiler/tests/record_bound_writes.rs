@@ -19,29 +19,6 @@ fn facts() -> SemanticFacts {
     assert!(!facts.bound_field_writes.is_empty());
     solved_facts(&facts).unwrap();
     let core = ril_compiler::lower::lower_core(&program).unwrap();
-    assert_eq!(
-        core.provenance.bound_field_writes.len(),
-        facts.bound_field_writes.len()
-    );
-    assert_eq!(
-        core.provenance.observed_accesses.len(),
-        facts.observed_accesses.len()
-    );
-    for (source, lowered) in facts
-        .observed_accesses
-        .iter()
-        .zip(&core.provenance.observed_accesses)
-    {
-        assert_eq!(source.id, lowered.id);
-        assert_eq!(
-            source.access.observed_recency as u64,
-            lowered.access.observed_allocation_epoch
-        );
-        assert_eq!(
-            source.access.recency as u64,
-            lowered.access.allocation_epoch
-        );
-    }
     ril_codegen::lower::lower_native_with_entry(&core, "test_native").unwrap();
     facts
 }

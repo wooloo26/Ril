@@ -185,7 +185,6 @@ pub(crate) enum SourceCaptureView<'a> {
         hole: NumericHoleId,
         birth: &'a NumericBirth,
         environment: FrozenEnvId,
-        fresh: Option<&'a Construction>,
     },
 }
 
@@ -214,7 +213,6 @@ pub(crate) struct PacketEvidenceView<'a> {
     pub(crate) current_epoch: usize,
     pub(crate) capture: SourceCaptureView<'a>,
     pub(crate) current: CurrentSourceView<'a>,
-    pub(crate) source_valid: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -323,7 +321,6 @@ impl EvaluatedValue {
                 hole: basis.hole,
                 birth: &basis.birth,
                 environment: basis.environment,
-                fresh: basis.fresh.as_deref(),
             },
         };
         let current = match &self.current_source {
@@ -348,7 +345,6 @@ impl EvaluatedValue {
             current_epoch: self.current_epoch(),
             capture,
             current,
-            source_valid: self.source_valid,
         }
     }
 
@@ -1333,7 +1329,7 @@ mod packet_tests {
             evidence.current,
             CurrentSourceView::Failed(SourceTypesError::BudgetExceeded)
         ));
-        assert!(!evidence.source_valid);
+        assert!(!unknown.source_valid);
         assert!(matches!(evidence.capture, SourceCaptureView::Captured {
             result: Ok(actual), ..
         } if actual == captured));
@@ -1365,10 +1361,12 @@ mod packet_tests {
                 hole,
                 birth: numeric_birth,
                 environment,
-                fresh: Some(Construction::Opaque),
             } => {
                 assert_eq!(hole, NumericHoleId(3));
                 assert_eq!(Some(numeric_birth.occurrence), birth.identity);
+                assert!(matches!(packet.birth.source.get(),
+                    Some(SourceCapture::NumericPending(basis))
+                        if matches!(basis.fresh.as_deref(), Some(Construction::Opaque))));
                 environment
             }
             other => panic!("missing numeric basis: {other:?}"),

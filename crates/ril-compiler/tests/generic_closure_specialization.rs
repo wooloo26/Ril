@@ -16,10 +16,10 @@ fn escaping_instances_map_closures_and_recipes_to_their_actual_static_owner() {
     let source = ril_test::case_source("tests/regressions/closures.ril::retained-instances");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let program = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert_eq!(program.provenance.specializations.len(), 2);
+    assert_eq!(program.metadata.specializations.len(), 2);
     let mut sources = std::collections::BTreeSet::new();
     let mut targets = std::collections::BTreeSet::new();
-    for instance in &program.provenance.specializations {
+    for instance in &program.metadata.specializations {
         let mut closures = instance
             .owners
             .iter()
@@ -34,14 +34,14 @@ fn escaping_instances_map_closures_and_recipes_to_their_actual_static_owner() {
         };
         assert!(
             program
-                .provenance
+                .metadata
                 .closure_sites
                 .iter()
                 .any(|site| site.id == target
                     && site.owner == CallableOwner::Function(instance.definition))
         );
         let proof = program
-            .provenance
+            .metadata
             .retained_handlers
             .iter()
             .find(|proof| proof.callable == Some(closure.target))
@@ -54,10 +54,6 @@ fn escaping_instances_map_closures_and_recipes_to_their_actual_static_owner() {
                 .iter()
                 .any(|mapping| mapping.target == definitions[0])
         );
-        assert!(matches!(
-            &program.provenance.types[proof.answer.0 as usize],
-            ril_ir::provenance::Type::Integer(_) | ril_ir::provenance::Type::String
-        ));
     }
     assert_eq!(
         sources.len(),
@@ -71,7 +67,7 @@ fn nested_sites_follow_their_specialized_parent_closure() {
     let source = ril_test::case_source("tests/regressions/closures.ril::immediate-instances");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let program = ril_compiler::lower::lower_core(&verified).unwrap();
-    for instance in &program.provenance.specializations {
+    for instance in &program.metadata.specializations {
         let closures: Vec<_> = instance
             .owners
             .iter()
@@ -82,7 +78,7 @@ fn nested_sites_follow_their_specialized_parent_closure() {
             closures.iter().map(|mapping| mapping.target).collect();
         assert!(
             program
-                .provenance
+                .metadata
                 .closure_sites
                 .iter()
                 .any(|site| targets.contains(&CallableOwner::Lambda(site.id))

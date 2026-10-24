@@ -552,10 +552,7 @@ mod tests {
 
     #[test]
     fn retained_default_sites_cannot_borrow_another_owners_or_incomplete_proof() {
-        use ril_compiler_core::{
-            diagnostic::CauseId,
-            ids::{CallableOwner, ClosureSiteId, HandlerSiteId, TypeId},
-        };
+        use ril_compiler_core::ids::{CallableOwner, ClosureSiteId, HandlerSiteId};
         let mut module = module();
         let external = &mut module.external_functions[0];
         let span = external.span;
@@ -617,7 +614,7 @@ mod tests {
                 function.body = Body::Foreign(external.clone());
             }
         }
-        module.closure_sites.push(ril_ir::provenance::ClosureSite {
+        module.closure_sites.push(ril_ir::metadata::ClosureSite {
             id: ClosureSiteId(1),
             owner: CallableOwner::Function(external.definition),
             source: ril_compiler_core::ids::ExprId(0),
@@ -625,13 +622,10 @@ mod tests {
         });
         module
             .retained_handlers
-            .push(ril_ir::provenance::RetainedHandler {
+            .push(ril_ir::metadata::RetainedHandler {
                 callable: Some(CallableOwner::Lambda(ClosureSiteId(1))),
                 span,
-                handlers: vec![0],
                 definitions: Some(vec![HandlerSiteId(100)]),
-                answer: TypeId(0),
-                cause: CauseId(0),
             });
         let module = prepare(&module).unwrap().module;
         crate::managed::prepare(&module).unwrap();

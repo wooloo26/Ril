@@ -109,7 +109,13 @@ fn inspected_static_results_enter_core_with_one_private_receipt_per_producer() {
         })
         .unwrap();
     assert_eq!(tuple[0], tuple[1]);
-    assert_eq!(results[0].value.results.len(), 1);
+    let result = verified
+        .facts()
+        .constant_values
+        .iter()
+        .find(|value| value.reference.graph == graph.id && value.reference.node == results[0].id)
+        .unwrap();
+    assert_eq!(result.value.results.len(), 1);
     assert!(
         verified
             .facts()

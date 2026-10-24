@@ -19,7 +19,7 @@ fn verified(name: &str, layout: &str) -> SemanticFacts {
     let core = ril_compiler::lower::lower_core(&program).unwrap();
     for site in &program.facts().closure_sites {
         assert!(
-            core.provenance
+            core.metadata
                 .closure_sites
                 .iter()
                 .any(|lowered| lowered.id == site.id && lowered.source == site.source)

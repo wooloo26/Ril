@@ -246,17 +246,18 @@ fn core_keeps_node_identity_proofs_without_expression_span_lookup() {
     };
     assert_eq!(children[0], children[1]);
     assert_eq!(children[0], roots[1]);
-    let distinct_origins: std::collections::BTreeSet<_> = graph
-        .nodes
+    let distinct_origins: std::collections::BTreeSet<_> = verified
+        .facts()
+        .constant_values
         .iter()
-        .flat_map(|node| node.value.origins.iter().map(|origin| origin.0))
+        .flat_map(|value| value.value.origins.nodes.iter().map(|origin| origin.0))
         .collect();
     assert_eq!(distinct_origins.len(), 2);
     assert!(
         graph
             .nodes
             .iter()
-            .all(|node| node.value.span == graph.nodes[0].value.span)
+            .all(|node| node.span == graph.nodes[0].span)
     );
 }
 
@@ -351,15 +352,5 @@ fn constant_certificates_include_the_solved_empty_collection_types() {
     );
     assert!(facts.constant_values.iter().any(|value| value.value.ty
         == Ty::Tuple(vec![array.clone(), Ty::Optional(Box::new(array.clone()))])));
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert!(
-        !core
-            .provenance
-            .constant_values
-            .iter()
-            .any(|(_, value)| matches!(
-                core.provenance.types[value.ty.0 as usize],
-                ril_ir::provenance::Type::Unknown
-            ))
-    );
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
 }

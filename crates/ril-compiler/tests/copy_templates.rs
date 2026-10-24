@@ -43,8 +43,7 @@ fn private_direct_instances_prove_scalars_reference_data_and_environment_free_fu
                 .iter()
                 .all(|boundary| boundary.output.is_none() && !boundary.requirements.is_empty())
         );
-        let core = ril_compiler::lower::lower_core(&program).unwrap();
-        assert!(core.provenance.copy_template_closure.is_some());
+        let _core = ril_compiler::lower::lower_core(&program).unwrap();
     }
 }
 

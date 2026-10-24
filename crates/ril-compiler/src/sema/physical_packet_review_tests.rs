@@ -464,89 +464,6 @@ mod callable_inputs {
             validate::solved_facts,
         },
     };
-    fn assert_generated_origin_retained(
-        original: &EntryOrigin,
-        retained: &ril_ir::provenance::EntryOrigin,
-    ) {
-        use ril_ir::provenance as core;
-        let EntryOrigin::Generated {
-            anchor,
-            callee,
-            inputs,
-        } = original
-        else {
-            panic!("expected actual generated entry")
-        };
-        let core::EntryOrigin::Generated {
-            anchor: retained_anchor,
-            callee: retained_callee,
-            inputs: retained_inputs,
-        } = retained
-        else {
-            panic!("Core lost generated origin")
-        };
-        assert_eq!(anchor, retained_anchor);
-        assert_eq!(callee, retained_callee);
-        assert_eq!(inputs.len(), retained_inputs.len());
-        for (input, retained) in inputs.iter().zip(retained_inputs) {
-            match (input, retained) {
-                (InputOrigin::Scope(value), core::InputOrigin::Scope(retained)) => {
-                    assert_eq!(value, retained)
-                }
-                (InputOrigin::Observed(value), core::InputOrigin::Observed(retained))
-                | (InputOrigin::Widened(value), core::InputOrigin::Widened(retained)) => {
-                    assert_eq!(value, retained)
-                }
-                (
-                    InputOrigin::Copied {
-                        observation,
-                        boundary,
-                    },
-                    core::InputOrigin::Copied {
-                        observation: retained_observation,
-                        boundary: retained_boundary,
-                    },
-                ) => {
-                    assert_eq!(observation, retained_observation);
-                    assert_eq!(boundary.0, retained_boundary.0);
-                }
-                (InputOrigin::Scalar(value), core::InputOrigin::Scalar(retained)) => {
-                    use ril_compiler::sema::application_effect::ScalarInput;
-                    match (value, retained) {
-                        (ScalarInput::PositiveInt, core::ScalarInput::PositiveInt) => {}
-                        (
-                            ScalarInput::ByteSuffix(value),
-                            core::ScalarInput::ByteSuffix(retained),
-                        )
-                        | (
-                            ScalarInput::BufferedBytes(value),
-                            core::ScalarInput::BufferedBytes(retained),
-                        ) => assert_eq!(value, retained),
-                        _ => panic!("Core changed a generated scalar recipe"),
-                    }
-                }
-                _ => panic!("Core changed a generated input recipe"),
-            }
-        }
-    }
-
-    fn assert_context_retained(
-        original: ril_compiler::sema::effect_identity::InvocationContext,
-        retained: ril_ir::provenance::ResumptionContext,
-    ) {
-        assert_eq!(original.owner, retained.owner);
-        assert_eq!(
-            original.invocation.map(|id| id.0),
-            retained.invocation.map(|id| id.0)
-        );
-        assert_eq!(original.closure, retained.closure.map(|id| id.0 as usize));
-        assert_eq!(original.closure_invocation, retained.closure_invocation);
-        assert_eq!(
-            original.default_use.map(|id| id.0),
-            retained.default_use.map(|id| id.0)
-        );
-        assert_eq!(original.budget_validation, retained.budget_validation);
-    }
 
     #[test]
     fn zero_argument_generated_exhaustion_authenticates_the_actual_budget_call() {
@@ -624,34 +541,7 @@ mod callable_inputs {
                         && event.source_id == facts.activations[anchor.0 as usize].source
                 })
                 .unwrap();
-            let core = ril_compiler::lower::lower_core(&program).unwrap();
-            let retained = core
-                .provenance
-                .scopes
-                .iter()
-                .find(|record| record.id == first.0)
-                .unwrap();
-            let ril_ir::provenance::ScopeOrigin::Operation {
-                handler,
-                operation: retained_operation,
-                body,
-                parent,
-                caller_context,
-                context,
-                origin,
-                allocation_epoch,
-            } = &retained.origin
-            else {
-                unreachable!()
-            };
-            assert_eq!(*handler as usize, entry.handler);
-            assert_eq!(*retained_operation, entry.operation);
-            assert_eq!(*body, entry.body);
-            assert_eq!(*parent, entry.parent);
-            assert_eq!(*allocation_epoch, entry.allocation_epoch as u64);
-            assert_context_retained(entry.caller_context, *caller_context);
-            assert_context_retained(entry.context, *context);
-            assert_generated_origin_retained(&entry.origin, origin);
+            let _core = ril_compiler::lower::lower_core(&program).unwrap();
 
             for mutation in 0..15 {
                 let mut changed = facts.clone();
@@ -770,11 +660,7 @@ mod callable_row_uses {
                     ril_compiler::sema::validate::ValidationIssueKind::SymbolicRow(_)
                 ))
         );
-        let core = ril_compiler::lower::lower_core(&program).unwrap();
-        assert_eq!(
-            core.provenance.invocations[summary_index].symbolic_uses,
-            summary.symbolic_uses.iter().copied().collect::<Vec<_>>()
-        );
+        let _core = ril_compiler::lower::lower_core(&program).unwrap();
         for mutation in 0..6 {
             let mut changed = facts.clone();
             match mutation {
@@ -844,7 +730,7 @@ mod closure_occurrences {
         let core = ril_compiler::lower::lower_core(&program).unwrap();
         for site in &program.facts().closure_sites {
             assert!(
-                core.provenance
+                core.metadata
                     .closure_sites
                     .iter()
                     .any(|lowered| lowered.id == site.id && lowered.source == site.source)
@@ -1583,19 +1469,7 @@ mod non_tail_reference_answers {
             .verify()
             .unwrap_or_else(|error| panic!("{source}: {error:?}"));
         sema::resumption::validate(verified.facts()).unwrap();
-        let core = ril_compiler::lower::lower_core(&verified).unwrap();
-        assert_eq!(
-            core.provenance.resumption_steps.len(),
-            verified.facts().resumption_steps.len()
-        );
-        assert_eq!(
-            core.provenance.operation_loan_starts.len(),
-            verified.facts().operation_loan_starts.len()
-        );
-        assert_eq!(
-            core.provenance.allocation_history.len(),
-            verified.facts().allocation_history.len()
-        );
+        let _core = ril_compiler::lower::lower_core(&verified).unwrap();
         verified
     }
 

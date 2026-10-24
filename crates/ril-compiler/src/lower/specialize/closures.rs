@@ -223,7 +223,7 @@ impl Plan {
     pub fn publish_closures(
         &self,
         facts: &SemanticFacts,
-        graph: &mut ril_ir::provenance::Graph,
+        graph: &mut ril_ir::metadata::ProgramMetadata,
     ) -> Result<(), NotImplemented> {
         for (index, instance) in self.instances.iter().enumerate() {
             for (&source, closure) in &instance.closures {
@@ -239,7 +239,7 @@ impl Plan {
                     .find(|mapping| mapping.source == original.owner)
                     .ok_or_else(|| unsupported("specialized closure parent owner is missing"))?
                     .target;
-                graph.closure_sites.push(ril_ir::provenance::ClosureSite {
+                graph.closure_sites.push(ril_ir::metadata::ClosureSite {
                     id: closure.target,
                     owner,
                     source: original.source,
@@ -276,13 +276,10 @@ impl Plan {
                         .collect::<Result<Vec<_>, NotImplemented>>()?;
                     graph
                         .retained_handlers
-                        .push(ril_ir::provenance::RetainedHandler {
+                        .push(ril_ir::metadata::RetainedHandler {
                             callable: Some(CallableOwner::Lambda(closure.target)),
                             span: proof.span,
-                            handlers: proof.handlers.iter().map(|id| *id as u32).collect(),
                             definitions: Some(definitions),
-                            answer: crate::provenance_lower::ty(&mut graph.types, &proof.answer),
-                            cause: proof.cause,
                         });
                 }
             }

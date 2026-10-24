@@ -6,7 +6,6 @@ pub mod lower;
 pub mod modules;
 mod normalize;
 pub mod numeric_literals;
-mod provenance_lower;
 pub mod sema;
 pub mod session;
 pub mod static_eval;

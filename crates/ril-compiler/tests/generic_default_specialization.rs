@@ -12,8 +12,8 @@ fn default_slots_preserve_exact_application_and_evaluation_identities() {
     ] {
         let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
         let core = ril_compiler::lower::lower_core(&verified).unwrap();
-        assert!(!core.provenance.specializations.is_empty());
-        for instance in &core.provenance.specializations {
+        assert!(!core.metadata.specializations.is_empty());
+        for instance in &core.metadata.specializations {
             for slot in &instance.defaults {
                 assert!(!slot.applications.is_empty());
                 for id in &slot.evaluations {
@@ -39,10 +39,10 @@ fn supplied_only_slot_prunes_only_its_private_instances_fallback() {
     let source = ril_test::case_source("tests/regressions/defaults.ril::supplied-only");
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert_eq!(core.provenance.specializations.len(), 2);
+    assert_eq!(core.metadata.specializations.len(), 2);
     let mut omitted = 0;
     let mut supplied = 0;
-    for instance in &core.provenance.specializations {
+    for instance in &core.metadata.specializations {
         let function = core
             .functions
             .iter()

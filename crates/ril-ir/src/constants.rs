@@ -23,8 +23,7 @@ pub enum ConstNodeKind {
 pub struct ConstNode {
     pub id: ConstNodeId,
     pub kind: ConstNodeKind,
-    /// Complete semantic evidence, including per-path type and permissions.
-    pub value: crate::provenance::Value,
+    pub span: ril_compiler_core::source::Span,
     pub fixed_array_length: Option<u64>,
 }
 

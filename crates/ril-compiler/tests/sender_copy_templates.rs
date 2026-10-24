@@ -60,16 +60,6 @@ fn private_helpers_use_the_actual_sender_contract_and_keep_ordinary_copies_separ
         }
     }
     let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert!(!core.provenance.resource_clones.is_empty());
-    assert_eq!(
-        core.provenance
-            .copy_template_closure
-            .as_ref()
-            .unwrap()
-            .discharges
-            .len(),
-        closure.discharges.len()
-    );
     ril_codegen::lower::lower_native_with_entry(&core, "test_native").unwrap();
 }
 

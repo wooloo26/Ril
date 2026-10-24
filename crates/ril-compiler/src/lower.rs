@@ -1,6 +1,6 @@
 //! Lowering consumes the semantic certificate, never an unverified syntax tree.
 use ril_compiler_core::{
-    ids::{CallableOwner, DefinitionId, TypeId},
+    ids::{CallableOwner, DefinitionId},
     phase::{NotImplemented, Stage},
     source::Span,
     target::TargetLayout,
@@ -11,6 +11,7 @@ mod budget;
 mod concurrent;
 mod constants;
 mod foreign;
+mod metadata;
 mod numeric;
 mod patterns;
 mod specialize;
@@ -37,73 +38,7 @@ pub fn lower_core_for(
     let specializations = specialize::Plan::new(program)?;
     crate::sema::copy_template_closure::validate(program.facts()).map_err(unsupported)?;
     crate::sema::closure_exclusivity::validate(program.facts()).map_err(unsupported)?;
-    let mut provenance = crate::provenance_lower::lower(program.facts())?;
-    provenance.static_termination = program
-        .static_termination()
-        .iter()
-        .map(|(name, judgment)| ril_ir::provenance::Termination {
-            function: name.clone(),
-            may_diverge: judgment.may_diverge,
-            unresolved: judgment.unresolved,
-            callable_parameters: judgment
-                .callable_parameters
-                .iter()
-                .map(|&index| index as u32)
-                .collect(),
-        })
-        .collect();
-    provenance.static_definitions = program
-        .static_definitions()
-        .iter()
-        .map(|function| ril_ir::provenance::StaticDefinition {
-            name: function.name.clone(),
-            span: function.span,
-            family: ril_ir::provenance::StaticFamily::Meta,
-            parameters: function
-                .parameters
-                .iter()
-                .map(|parameter| ril_ir::provenance::Parameter {
-                    name: if let ast::PatternKind::Name(name) = &parameter.pattern.kind {
-                        Some(name.clone())
-                    } else {
-                        None
-                    },
-                    mode: match parameter.mode {
-                        ast::ParameterMode::Read => ril_ir::provenance::Access::Read,
-                        ast::ParameterMode::Mut => ril_ir::provenance::Access::Write,
-                        ast::ParameterMode::SharedMut => ril_ir::provenance::Access::Retain,
-                    },
-                    type_annotation: parameter.ty.as_ref().map(|ty| ty.text.clone()),
-                    default: parameter.default.as_ref().map(|value| value.span),
-                })
-                .collect(),
-            generic_names: function
-                .generics
-                .iter()
-                .map(|parameter| parameter.name.clone())
-                .collect(),
-            result_annotation: function.return_type.as_ref().map(|ty| ty.text.clone()),
-        })
-        .chain(program.type_functions().iter().map(|function| {
-            ril_ir::provenance::StaticDefinition {
-                name: function.name.clone(),
-                span: function.span,
-                family: ril_ir::provenance::StaticFamily::Type,
-                parameters: vec![],
-                generic_names: function
-                    .generics
-                    .iter()
-                    .map(|parameter| parameter.name.clone())
-                    .collect(),
-                result_annotation: function.value.as_ref().map(|ty| ty.text.clone()),
-            }
-        }))
-        .collect();
-    let generic_types = provenance
-        .generic_binders
-        .iter()
-        .map(|binder| ((binder.definition, binder.index), binder.ty))
-        .collect();
+    let mut metadata = metadata::lower(program.facts());
     // One source expression can be checked under several call substitutions.
     // A concrete observation from one call cannot specialize every invocation.
     let mut operation_observations =
@@ -201,7 +136,6 @@ pub fn lower_core_for(
                 .map_or(0, |id| id.saturating_add(1)),
         ),
         next_temporary: 0,
-        generic_types,
         specialized_builtins: builtin_observations
             .into_iter()
             .filter_map(|(span, name)| name.map(|name| (span, name)))
@@ -289,7 +223,6 @@ pub fn lower_core_for(
             definitions: lower.definitions,
             next_definition: lower.next_definition,
             next_temporary: lower.next_temporary,
-            generic_types: lower.generic_types.clone(),
             specialized_builtins: specialize::builtins(&facts)?,
             operations: lower.operations.clone(),
             expression_operations: instance.operations.clone(),
@@ -309,15 +242,15 @@ pub fn lower_core_for(
         }
         functions.push(function);
     }
-    specializations.publish_closures(program.facts(), &mut provenance)?;
-    provenance.specializations = specializations
+    specializations.publish_closures(program.facts(), &mut metadata)?;
+    metadata.specializations = specializations
         .instances
         .iter()
         .map(|instance| instance.record.clone())
         .collect();
-    provenance.nonretaining_adapters = lower.nonretaining_adapters;
+    metadata.nonretaining_adapters = lower.nonretaining_adapters;
     Ok(ir::Program {
-        constant_graphs: constants::lower(program.facts(), &provenance)?,
+        constant_graphs: constants::lower(program.facts())?,
         external_functions,
         external_constants,
         call_signatures: lower.call_signatures,
@@ -325,7 +258,7 @@ pub fn lower_core_for(
         globals: ir::Block {
             statements: globals,
         },
-        provenance,
+        metadata,
         constructors: program
             .facts()
             .constructors
@@ -356,7 +289,7 @@ struct Lower<'a> {
     specializations: &'a specialize::Plan,
     specialization_context: Option<usize>,
     default_context: Option<u32>,
-    nonretaining_adapters: Vec<ril_ir::provenance::NonRetainingAdapter>,
+    nonretaining_adapters: Vec<ril_ir::metadata::NonRetainingAdapter>,
     callable_owner: Option<CallableOwner>,
     external_generic_names: std::collections::BTreeSet<String>,
     facts: &'a crate::sema::SemanticFacts,
@@ -366,7 +299,6 @@ struct Lower<'a> {
     definitions: &'a [crate::hir::Definition],
     next_definition: u32,
     next_temporary: u32,
-    generic_types: std::collections::BTreeMap<(DefinitionId, u32), TypeId>,
     specialized_builtins: std::collections::BTreeMap<(u32, u32, u32), String>,
     operations: std::collections::BTreeMap<String, u64>,
     expression_operations: std::collections::BTreeMap<(u32, u32, u32), u64>,
@@ -540,13 +472,11 @@ impl Lower<'_> {
                 .generics
                 .iter()
                 .enumerate()
-                .map(|(index, _)| {
-                    self.generic_types
-                        .get(&(definition, index as u32))
-                        .copied()
-                        .ok_or_else(|| unsupported("verified generic binder is missing"))
+                .map(|(index, _)| ril_ir::metadata::GenericParameter {
+                    declaration: definition,
+                    index: index as u32,
                 })
-                .collect::<Result<_, _>>()?,
+                .collect(),
             parameters: function
                 .parameters
                 .iter()
@@ -614,7 +544,6 @@ impl Lower<'_> {
             definitions: self.definitions,
             next_definition: self.next_definition,
             next_temporary: self.next_temporary,
-            generic_types: self.generic_types.clone(),
             specialized_builtins: specialize::builtins(&facts)?,
             operations: self.operations.clone(),
             expression_operations: self
@@ -1491,7 +1420,6 @@ impl Lower<'_> {
                         definitions: self.definitions,
                         next_definition: self.next_definition,
                         next_temporary: self.next_temporary,
-                        generic_types: self.generic_types.clone(),
                         specialized_builtins: specialize::builtins(&facts)?,
                         operations: self.operations.clone(),
                         expression_operations: self

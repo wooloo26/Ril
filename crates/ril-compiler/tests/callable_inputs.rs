@@ -14,87 +14,6 @@ fn verified(name: &str, layout: &str) -> ril_compiler::hir::VerifiedProgram {
     .unwrap_or_else(|outcome| panic!("{name} {layout}: {outcome:?}"))
 }
 
-fn assert_generated_origin_retained(
-    original: &EntryOrigin,
-    retained: &ril_ir::provenance::EntryOrigin,
-) {
-    use ril_ir::provenance as core;
-    let EntryOrigin::Generated {
-        anchor,
-        callee,
-        inputs,
-    } = original
-    else {
-        panic!("expected actual generated entry")
-    };
-    let core::EntryOrigin::Generated {
-        anchor: retained_anchor,
-        callee: retained_callee,
-        inputs: retained_inputs,
-    } = retained
-    else {
-        panic!("Core lost generated origin")
-    };
-    assert_eq!(anchor, retained_anchor);
-    assert_eq!(callee, retained_callee);
-    assert_eq!(inputs.len(), retained_inputs.len());
-    for (input, retained) in inputs.iter().zip(retained_inputs) {
-        match (input, retained) {
-            (InputOrigin::Scope(value), core::InputOrigin::Scope(retained)) => {
-                assert_eq!(value, retained)
-            }
-            (InputOrigin::Observed(value), core::InputOrigin::Observed(retained))
-            | (InputOrigin::Widened(value), core::InputOrigin::Widened(retained)) => {
-                assert_eq!(value, retained)
-            }
-            (
-                InputOrigin::Copied {
-                    observation,
-                    boundary,
-                },
-                core::InputOrigin::Copied {
-                    observation: retained_observation,
-                    boundary: retained_boundary,
-                },
-            ) => {
-                assert_eq!(observation, retained_observation);
-                assert_eq!(boundary.0, retained_boundary.0);
-            }
-            (InputOrigin::Scalar(value), core::InputOrigin::Scalar(retained)) => {
-                use ril_compiler::sema::application_effect::ScalarInput;
-                match (value, retained) {
-                    (ScalarInput::PositiveInt, core::ScalarInput::PositiveInt) => {}
-                    (ScalarInput::ByteSuffix(value), core::ScalarInput::ByteSuffix(retained))
-                    | (
-                        ScalarInput::BufferedBytes(value),
-                        core::ScalarInput::BufferedBytes(retained),
-                    ) => assert_eq!(value, retained),
-                    _ => panic!("Core changed a generated scalar recipe"),
-                }
-            }
-            _ => panic!("Core changed a generated input recipe"),
-        }
-    }
-}
-
-fn assert_context_retained(
-    original: ril_compiler::sema::effect_identity::InvocationContext,
-    retained: ril_ir::provenance::ResumptionContext,
-) {
-    assert_eq!(original.owner, retained.owner);
-    assert_eq!(
-        original.invocation.map(|id| id.0),
-        retained.invocation.map(|id| id.0)
-    );
-    assert_eq!(original.closure, retained.closure.map(|id| id.0 as usize));
-    assert_eq!(original.closure_invocation, retained.closure_invocation);
-    assert_eq!(
-        original.default_use.map(|id| id.0),
-        retained.default_use.map(|id| id.0)
-    );
-    assert_eq!(original.budget_validation, retained.budget_validation);
-}
-
 #[test]
 fn original_inputs_cross_ordinary_and_generated_callable_entries_on_both_layouts() {
     for layout in ["pointer32", "pointer64"] {
@@ -109,72 +28,7 @@ fn original_inputs_cross_ordinary_and_generated_callable_entries_on_both_layouts
             "derive-distinct-targets",
         ] {
             let program = verified(name, layout);
-            let core = ril_compiler::lower::lower_core(&program).unwrap();
-            assert_eq!(
-                core.provenance.activations.len(),
-                program.facts().activations.len()
-            );
-            assert_eq!(
-                core.provenance.closure_invocations.len(),
-                program.facts().closure_invocations.len()
-            );
-            assert_eq!(
-                core.provenance.copy_invocations.len(),
-                program.facts().copy_invocations.len()
-            );
-            for (original, retained) in program
-                .facts()
-                .closure_invocations
-                .iter()
-                .zip(&core.provenance.closure_invocations)
-            {
-                if matches!(original.entry.origin, EntryOrigin::Generated { .. }) {
-                    assert_generated_origin_retained(
-                        &original.entry.origin,
-                        &retained.entry.origin,
-                    );
-                    assert_eq!(original.entry.parent, retained.entry.parent);
-                    assert_eq!(
-                        original.entry.allocation_epoch as u64,
-                        retained.entry.allocation_epoch
-                    );
-                    assert_eq!(
-                        original.entry.arguments.len(),
-                        retained.entry.arguments.len()
-                    );
-                    assert_context_retained(
-                        original.entry.caller_context,
-                        retained.entry.caller_context,
-                    );
-                }
-            }
-            for (original, retained) in program
-                .facts()
-                .copy_invocations
-                .iter()
-                .zip(&core.provenance.copy_invocations)
-            {
-                if matches!(original.entry.origin, EntryOrigin::Generated { .. }) {
-                    assert_generated_origin_retained(
-                        &original.entry.origin,
-                        &retained.entry.origin,
-                    );
-                    assert_eq!(original.target, retained.target);
-                    assert_eq!(original.entry.parent, retained.entry.parent);
-                    assert_eq!(
-                        original.entry.allocation_epoch as u64,
-                        retained.entry.allocation_epoch
-                    );
-                    assert_eq!(
-                        original.entry.arguments.len(),
-                        retained.entry.arguments.len()
-                    );
-                    assert_context_retained(
-                        original.entry.caller_context,
-                        retained.entry.caller_context,
-                    );
-                }
-            }
+            let _core = ril_compiler::lower::lower_core(&program).unwrap();
         }
     }
 }
@@ -183,7 +37,7 @@ fn original_inputs_cross_ordinary_and_generated_callable_entries_on_both_layouts
 fn a_named_recipe_receives_the_actual_resume_completion_occurrence() {
     for layout in ["pointer32", "pointer64"] {
         let program = verified("derive-resume-completion", layout);
-        let core = ril_compiler::lower::lower_core(&program).unwrap();
+        let _core = ril_compiler::lower::lower_core(&program).unwrap();
         let facts = program.facts();
         let hir = facts.semantic_hir.as_deref().unwrap();
         let identity = facts
@@ -212,12 +66,6 @@ fn a_named_recipe_receives_the_actual_resume_completion_occurrence() {
         assert_eq!(
             facts.activations[identity.activation.0 as usize].kind,
             ril_compiler::sema::application_effect::ActivationKind::ControlTransfer
-        );
-        let retained = &core.provenance.activations[identity.activation.0 as usize];
-        assert_eq!(retained.source, Some(identity.source));
-        assert_eq!(
-            retained.kind,
-            ril_ir::provenance::ActivationKind::ControlTransfer
         );
     }
 }

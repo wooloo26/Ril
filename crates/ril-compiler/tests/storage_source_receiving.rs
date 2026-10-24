@@ -130,15 +130,7 @@ fn canonical_write_views_cannot_lose_their_graph_or_borrow_another_environment()
             .unwrap();
         let other = facts.source_types.binding_view(other).unwrap();
         assert_ne!(original.environment, other.environment);
-        let core = ril_compiler::lower::lower_core(&verified).unwrap();
-        let retained = core.provenance.storage_writes[0].expected.unwrap();
-        assert!(matches!(
-            core.provenance.source_types.nodes[retained.ty.0 as usize],
-            ril_ir::provenance::SourceTypeNode::Array {
-                length: ril_ir::provenance::SourceLength::Fixed(0),
-                ..
-            }
-        ));
+        let _core = ril_compiler::lower::lower_core(&verified).unwrap();
         for mutation in 0..3 {
             let mut changed = facts.clone();
             match mutation {

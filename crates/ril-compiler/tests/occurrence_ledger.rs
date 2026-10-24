@@ -22,48 +22,7 @@ fn facts_for(name: &str, layout: &str) -> SemanticFacts {
     )
     .verify()
     .unwrap();
-    let core = ril_compiler::lower::lower_core(&program).unwrap();
-    assert_eq!(
-        core.provenance.activations.len(),
-        program.facts().activations.len()
-    );
-    for (lowered, original) in core
-        .provenance
-        .activations
-        .iter()
-        .zip(&program.facts().activations)
-    {
-        assert_eq!(lowered.id, original.id);
-        assert_eq!(lowered.parent, original.parent);
-        assert_eq!(lowered.source, original.source);
-        assert_eq!(lowered.result, original.result);
-        assert_eq!(lowered.start_expression, original.start_expression as u64);
-        assert_eq!(
-            lowered.end_expression,
-            original.end_expression.map(|end| end as u64)
-        );
-    }
-    assert_eq!(
-        core.provenance.evaluations.len(),
-        program.facts().evaluations.len()
-    );
-    for (lowered, original) in core
-        .provenance
-        .evaluations
-        .iter()
-        .zip(&program.facts().evaluations)
-    {
-        assert_eq!(lowered.id, original.id);
-        assert_eq!(
-            lowered.source,
-            original.identity.map(|identity| identity.source)
-        );
-        assert_eq!(
-            lowered.activation,
-            original.identity.map(|identity| identity.activation)
-        );
-        assert_eq!(lowered.allocation_epoch, original.allocation_epoch as u64);
-    }
+    let _core = ril_compiler::lower::lower_core(&program).unwrap();
     program.facts().clone()
 }
 

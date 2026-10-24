@@ -1,15 +1,8 @@
 use ril_compiler::{CompilationOutcome, Session};
-use ril_ir::provenance::AnswerTransport;
 
 fn accepted(source: &str) -> ril_compiler::hir::VerifiedProgram {
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert!(
-        core.provenance
-            .retained_handler_answers
-            .iter()
-            .any(|proof| proof.parametric && proof.transport == AnswerTransport::Identity)
-    );
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
     verified
 }
 

@@ -57,19 +57,6 @@ fn bound_builtin_capture_graph_is_not_an_environment_free_copy_certificate() {
             "the captured receiver is still checked independently"
         );
 
-        let facts = SemanticFacts {
-            copy_boundaries: checker.copy_boundaries.clone(),
-            heap: checker.heap.clone(),
-            explanations: checker.explanations.clone(),
-            ..Default::default()
-        };
-        let core = crate::provenance_lower::lower(&facts).unwrap();
-        assert!(matches!(
-            core.copy_boundaries[0].constituents[0].qualification,
-            ril_ir::provenance::CopyQualification::RetainedEnvironment
-        ));
-        assert!(core.copy_boundaries[0].output.is_none());
-
         // The same builtin identity without any captured receiver is a
         // different value. Names alone prove neither case's environment.
         let mut unbound = Value::scalar(Ty::Callable(vec![], Box::new(Ty::Unit)), None, CauseId(0));
@@ -227,28 +214,10 @@ fn generic_copy_retains_identity_and_has_no_verified_output() {
     assert_eq!(boundary.source.origins, source.origins);
     assert!(boundary.output.is_none());
     assert!(boundary.constituents.iter().any(|part| part.qualification
-        == Constituent::Deferred(AbstractMember::DataBinder("owner:T".into()))));
+        == crate::sema::copy_eligibility::Constituent::Deferred(
+            crate::sema::copy_eligibility::AbstractMember::DataBinder("owner:T".into())
+        )));
     assert!(frame.obligations.copy_boundaries.contains(&boundary.id));
-    let facts = SemanticFacts {
-        copy_boundaries: checker.copy_boundaries.clone(),
-        heap: checker.heap.clone(),
-        explanations: checker.explanations.clone(),
-        ..Default::default()
-    };
-    let core = crate::provenance_lower::lower(&facts).unwrap();
-    let boundary = &core.copy_boundaries[0];
-    assert!(
-        boundary.output.is_none()
-            && boundary.output_nodes.is_empty()
-            && boundary.output_relations.is_empty()
-    );
-    assert!(boundary.constituents.iter().any(|part| matches!(&part.qualification, ril_ir::provenance::CopyQualification::DeferredData(binder) if binder == "owner:T")));
-    assert!(
-        boundary
-            .requirements
-            .iter()
-            .all(|requirement| (requirement.constituent as usize) < boundary.constituents.len())
-    );
 }
 
 #[test]

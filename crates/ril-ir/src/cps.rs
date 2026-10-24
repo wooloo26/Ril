@@ -1,10 +1,7 @@
 //! Native continuation graph after selective CPS conversion. Every block is
 //! emitted as machine code; these instructions are never source-interpreted.
 use crate::core::{self, Expr, Parameter, Pattern};
-use ril_compiler_core::{
-    ids::{DefinitionId, TypeId},
-    source::Span,
-};
+use ril_compiler_core::{ids::DefinitionId, source::Span};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -16,7 +13,7 @@ pub struct Function {
     pub metered: bool,
     pub name: String,
     pub definition: DefinitionId,
-    pub generic_parameters: Vec<TypeId>,
+    pub generic_parameters: Vec<crate::metadata::GenericParameter>,
     pub span: Span,
     pub parameters: Vec<Parameter>,
     pub entry: BlockId,

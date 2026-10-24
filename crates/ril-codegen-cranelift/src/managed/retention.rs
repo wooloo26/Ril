@@ -1,18 +1,13 @@
 //! Empty handler selection is certified for exact generated builtin adapters.
 //! It says nothing about whether their receiver environment may escape or copy.
 use super::*;
-use ril_ir::provenance::NonRetainingBuiltin;
+use ril_ir::metadata::NonRetainingBuiltin;
 
 pub(super) type Adapters = HashMap<(CallableOwner, (u32, u32, u32)), NonRetainingBuiltin>;
 
-pub(super) fn certificates(input: &native::Module) -> Result<Adapters, BackendError> {
+pub(super) fn adapters(input: &native::Module) -> Result<Adapters, BackendError> {
     let mut adapters = HashMap::new();
     for proof in &input.nonretaining_adapters {
-        if proof.causes.is_empty() {
-            return Err(BackendError::InvalidIr(
-                "non-retaining adapter has no builtin selection evidence".into(),
-            ));
-        }
         let key = (
             proof.owner,
             (proof.span.file.0, proof.span.start, proof.span.end),
@@ -85,11 +80,10 @@ pub(super) fn validate(
 mod tests {
     use super::*;
     use ril_compiler_core::{
-        diagnostic::CauseId,
         ids::{ClosureSiteId, DefinitionId},
         source::{FileId, Span},
     };
-    use ril_ir::provenance::{ClosureSite, NonRetainingAdapter};
+    use ril_ir::metadata::{ClosureSite, NonRetainingAdapter};
 
     fn module(builtin: NonRetainingBuiltin) -> native::Module {
         let span = Span {
@@ -159,12 +153,11 @@ mod tests {
                     ],
                 },
             }],
-            provenance: ril_ir::provenance::Graph {
+            metadata: ril_ir::metadata::ProgramMetadata {
                 nonretaining_adapters: vec![NonRetainingAdapter {
                     owner: CallableOwner::Function(DefinitionId(0)),
                     span,
                     builtin,
-                    causes: vec![CauseId(0)],
                 }],
                 ..Default::default()
             },
@@ -211,7 +204,7 @@ mod tests {
 
     #[test]
     fn missing_wrong_or_source_callable_certificates_cannot_skip_retention_checks() {
-        for change in 0..5 {
+        for change in 0..4 {
             let mut input = module(NonRetainingBuiltin::ConcurrentFork);
             let site = input.nonretaining_adapters[0].span;
             match change {
@@ -226,7 +219,7 @@ mod tests {
                     source: ril_compiler_core::ids::ExprId(0),
                     span: site,
                 }),
-                _ => input.nonretaining_adapters[0].causes.clear(),
+                _ => unreachable!(),
             }
             assert!(
                 super::super::prepare(&input).is_err(),

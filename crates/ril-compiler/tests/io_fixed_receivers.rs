@@ -1,5 +1,4 @@
 use ril_compiler::{CompilationOutcome, Session};
-use ril_ir::specialization::ArgumentKey;
 
 #[test]
 fn original_fixed_receiver_and_dynamic_control_keep_actual_callback_schemas() {
@@ -42,8 +41,7 @@ fn exact_scratch_storage_survives_summary_without_changing_dynamic_view_identity
     )
     .verify()
     .unwrap();
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert!(core.provenance.bindings.iter().filter(|binding|binding.name=="reader").filter_map(|binding|binding.value.source_type_witness.as_ref()).any(|witness|matches!(&witness.shape,ArgumentKey::Record{fields,..} if fields.iter().any(|(name,_,shape)|name=="scratch" && matches!(shape,ArgumentKey::Array{length:None,..})))));
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
 }
 
 #[test]
@@ -114,8 +112,7 @@ fn actual_stream_callback_permissions_and_ambient_capabilities_remain_obligation
 fn receiver_resources_are_not_erased_by_schema_reification() {
     let source = "use ril/io\nuse ril/file\ntype Reader={scratch:[2]u8,file:File::Handle,mut calls:int}\nfn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{reader.calls+=1;Ok(.{data:b\"\",end:true})}\nfn example(file:File::Handle){let mut reader=Reader.{scratch:[1u8,2u8],file:file,calls:0};assert(Io::read_all(mut reader,.{read:read}) is Ok(_)|Err(_))}";
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert!(core.provenance.bindings.iter().filter_map(|binding|binding.value.source_type_witness.as_ref()).any(|witness|matches!(&witness.shape,ArgumentKey::Record{fields,..} if fields.iter().any(|(name,_,shape)|name=="file" && matches!(shape,ArgumentKey::Name{name,..} if name=="File::Handle")))));
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
     rejects(
         &source.replace(
             "assert(Io::read_all",

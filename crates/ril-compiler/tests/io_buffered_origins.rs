@@ -48,6 +48,5 @@ fn example() @Fiber {
     for expression in &verified.facts().expressions {
         complete_origins(&expression.value);
     }
-    let core = ril_compiler::lower::lower_core(&verified).unwrap();
-    assert!(!core.provenance.values.is_empty());
+    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
 }

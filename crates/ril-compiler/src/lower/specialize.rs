@@ -272,7 +272,7 @@ impl Plan {
                 plan.instances[index]
                     .record
                     .invocations
-                    .push(ril_ir::provenance::CopyInstanceId(invocation.0));
+                    .push(ril_ir::specialization::InvocationId(invocation.0));
                 index
             } else {
                 let definition = DefinitionId(next);
@@ -287,7 +287,7 @@ impl Plan {
                         name: format!("\0ril.specialized.{}", definition.0),
                         arguments,
                         captured_arguments: vec![],
-                        invocations: vec![ril_ir::provenance::CopyInstanceId(invocation.0)],
+                        invocations: vec![ril_ir::specialization::InvocationId(invocation.0)],
                         owners: vec![irs::OwnerMap {
                             source: CallableOwner::Function(observed.function),
                             target: CallableOwner::Function(definition),

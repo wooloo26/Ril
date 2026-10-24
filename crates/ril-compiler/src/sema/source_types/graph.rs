@@ -1,4 +1,4 @@
-use ril_compiler_core::ids::GenericParamId;
+use ril_compiler_core::ids::{ExprId, GenericParamId, StmtId, TypeExprId};
 use ril_syntax::ast::ParameterMode;
 use std::sync::{
     Arc,
@@ -22,10 +22,66 @@ pub struct SourceTypeId {
     pub(super) index: u32,
 }
 
-pub(crate) use ril_ir::provenance::CallableRowOrigin;
-pub(crate) use ril_ir::provenance::KeyProjectionOrigin;
-pub(crate) use ril_ir::provenance::{SourceContainer, SourceLength, SourceScalar};
-pub(crate) type CallableRowIdentity<I = SourceTypeId> = ril_ir::provenance::CallableRowIdentity<I>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallableRowOrigin {
+    Declaration(StmtId),
+    Lambda(ExprId),
+    Type(TypeExprId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CallableRowIdentity<I = SourceTypeId> {
+    pub origin: CallableRowOrigin,
+    pub parameters: Vec<(GenericParamId, I)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyProjectionOrigin {
+    Type(TypeExprId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceContainer {
+    Immutable,
+    Option,
+    Result,
+    Set,
+    Range,
+    Heap,
+    Deque,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceLength {
+    Dynamic,
+    Fixed(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceScalar {
+    Unit,
+    Bool,
+    Str,
+    Bytes,
+    Never,
+    Int,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+    BigInt,
+    F32,
+    F64,
+    Intrinsic(ril_compiler_core::builtin_types::AtomicBuiltinType),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceField {
@@ -674,18 +730,6 @@ impl SourceGraph for SourceTypes {
 }
 
 impl SourceTypes {
-    pub(super) fn indexed_nodes(
-        &self,
-    ) -> impl ExactSizeIterator<Item = Result<(SourceTypeId, &SourceNode), SourceTypesError>> {
-        (0..self.nodes.len()).map(|index| {
-            let id = SourceTypeId {
-                arena: self.arena,
-                index: index as u32,
-            };
-            self.get(id).map(|node| (id, node))
-        })
-    }
-
     pub(crate) fn get(&self, id: SourceTypeId) -> Result<&SourceNode, SourceTypesError> {
         if id.arena != self.arena {
             return Err(SourceTypesError::ForeignIdentity);

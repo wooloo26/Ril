@@ -13,7 +13,7 @@ pub fn lower_native_with_entry(
 ) -> Result<ril_ir::native::Module, NotImplemented> {
     use ril_ir::{core, native};
     if program
-        .provenance
+        .metadata
         .target_layout
         .is_some_and(|layout| layout.pointer_bits != 64)
     {
@@ -28,15 +28,9 @@ pub fn lower_native_with_entry(
         .find(|function| function.name == entry)
         .is_some_and(|selected| {
             program
-                .provenance
-                .copy_template_closure
-                .as_ref()
-                .is_some_and(|closure| {
-                    closure
-                        .templates
-                        .iter()
-                        .any(|template| template.owner == selected.definition)
-                })
+                .metadata
+                .generic_templates
+                .contains(&selected.definition)
         })
     {
         return Err(NotImplemented::new(
@@ -146,15 +140,15 @@ pub fn lower_native_with_entry(
         },
     });
     Ok(native::Module {
-        specializations: program.provenance.specializations.clone(),
+        specializations: program.metadata.specializations.clone(),
         constant_graphs: program.constant_graphs.clone(),
         global_bindings,
         external_functions: program.external_functions.clone(),
         external_constants: program.external_constants.clone(),
         foreign_bindings: vec![],
-        retained_handlers: program.provenance.retained_handlers.clone(),
-        closure_sites: program.provenance.closure_sites.clone(),
-        nonretaining_adapters: program.provenance.nonretaining_adapters.clone(),
+        retained_handlers: program.metadata.retained_handlers.clone(),
+        closure_sites: program.metadata.closure_sites.clone(),
+        nonretaining_adapters: program.metadata.nonretaining_adapters.clone(),
         budget_entries,
         functions,
         constructors: program.constructors.clone(),

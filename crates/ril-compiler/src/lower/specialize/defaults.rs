@@ -119,7 +119,7 @@ pub(super) fn prepare(plan: &mut Plan, facts: &SemanticFacts) -> Result<(), NotI
                 parameter,
                 applications: applications
                     .into_iter()
-                    .map(|id| ril_ir::provenance::CopyCallEventId(id.0))
+                    .map(|id| ril_ir::specialization::ApplicationId(id.0))
                     .collect(),
                 evaluations: uses.iter().map(|id| irs::DefaultUseId(id.0)).collect(),
             });

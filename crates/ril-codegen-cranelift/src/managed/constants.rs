@@ -1,7 +1,7 @@
 //! A constant node is allocated once, then read through a program-owned cell.
 use super::*;
 use ril_compiler_core::{ids::ConstRef, source::Span};
-use ril_ir::{constants::ConstNodeKind, provenance};
+use ril_ir::constants::ConstNodeKind;
 use std::collections::{BTreeMap, VecDeque};
 
 pub(crate) struct Pool {
@@ -46,19 +46,6 @@ pub(super) fn prepare(input: &native::Module) -> Result<Pool, BackendError> {
             if nodes.insert(reference, node).is_some() {
                 return Err(BackendError::InvalidIr(
                     "duplicate constant node identity".into(),
-                ));
-            }
-            if !matches!(node.value.permission, provenance::Permission::Read)
-                || !matches!(node.value.publication, provenance::Publication::Immutable)
-                || !node.value.callables.is_empty()
-                || !node.value.scoped_bindings.is_empty()
-                || !node.value.pending_copies.is_empty()
-                || node.value.flags.temporary
-                || node.value.flags.mutable_environment
-                || node.value.flags.observer_environment
-            {
-                return Err(BackendError::InvalidIr(
-                    "constant node lacks immutable ordinary-data evidence".into(),
                 ));
             }
             if let Some(length) = node.fixed_array_length
@@ -139,7 +126,7 @@ pub(super) fn prepare(input: &native::Module) -> Result<Pool, BackendError> {
         order.push(Node {
             reference,
             kind: node.kind.clone(),
-            span: node.value.span,
+            span: node.span,
         });
         for parent in parents.get(&reference).into_iter().flatten() {
             let count = pending
@@ -267,8 +254,7 @@ impl Emitter<'_, '_> {
 mod tests {
     use super::*;
     use ril_compiler_core::{
-        diagnostic::CauseId,
-        ids::{ConstGraphId, ConstNodeId, TypeId},
+        ids::{ConstGraphId, ConstNodeId},
         source::FileId,
     };
     use ril_ir::constants::{ConstGraph, ConstNode};
@@ -285,49 +271,10 @@ mod tests {
             id: ConstNodeId(id),
             kind,
             fixed_array_length: None,
-            value: provenance::Value {
-                option_identity: None,
-                source_type_witness: None,
-                numeric: Default::default(),
-                condition_inspections: Default::default(),
-                span: Span {
-                    file: FileId(0),
-                    start: 1,
-                    end: 2,
-                },
-                ty: TypeId(0),
-                origins: vec![],
-                choices: vec![],
-                permission: provenance::Permission::Read,
-                publication: provenance::Publication::Immutable,
-                participants: vec![],
-                sources: vec![],
-                callback_parameters: vec![],
-                results: vec![],
-                outer_results: vec![],
-                must_results: vec![],
-                must_outer_results: vec![],
-                scoped_bindings: vec![],
-                result_payload: None,
-                result_success: None,
-                result_error: None,
-                result_tag: None,
-                option_payload: None,
-                option_tag: None,
-                variant_tag: None,
-                variant_payload: None,
-                variant_witnesses: BTreeMap::new(),
-                abnormal: false,
-                callables: vec![],
-                callable_bounds: vec![],
-                callable_returns: vec![],
-                signature: None,
-                constant: None,
-                static_coordinate: None,
-                pending_inference: vec![],
-                pending_copies: vec![],
-                flags: provenance::ValueFlags::default(),
-                cause: CauseId(0),
+            span: Span {
+                file: FileId(0),
+                start: 1,
+                end: 2,
             },
         }
     }
@@ -378,9 +325,9 @@ mod tests {
     }
 
     #[test]
-    fn malformed_identity_edges_publication_and_lengths_fail_closed() {
+    fn malformed_identity_edges_and_lengths_fail_closed() {
         let valid = module(vec![node(0, ConstNodeKind::Array(vec![]))]);
-        for change in 0..7 {
+        for change in 0..5 {
             let mut input = valid.clone();
             match change {
                 0 => input.constant_graphs.push(input.constant_graphs[0].clone()),
@@ -391,15 +338,7 @@ mod tests {
                     input.constant_graphs[0].nodes[0].kind =
                         ConstNodeKind::Array(vec![reference(7, 9)])
                 }
-                3 => {
-                    input.constant_graphs[0].nodes[0].value.permission =
-                        provenance::Permission::Write
-                }
-                4 => {
-                    input.constant_graphs[0].nodes[0].value.publication =
-                        provenance::Publication::Live
-                }
-                5 => input.constant_graphs[0].nodes[0].fixed_array_length = Some(1),
+                3 => input.constant_graphs[0].nodes[0].fixed_array_length = Some(1),
                 _ => {
                     input.global_bindings.insert("\0ril.const.7.0".into());
                 }

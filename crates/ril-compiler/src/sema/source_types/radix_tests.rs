@@ -33,7 +33,7 @@ fn snapshots_share_payloads_and_keep_every_old_prefix_across_radix_heights() {
             snapshot.get(id).unwrap(),
             builder.get(id).unwrap()
         ));
-        assert_eq!(snapshot.indexed_nodes().len(), id.index as usize + 1);
+        assert_eq!(snapshot.nodes.len(), id.index as usize + 1);
         assert_eq!(
             snapshot.get(SourceTypeId {
                 index: id.index + 1,
@@ -48,7 +48,7 @@ fn snapshots_share_payloads_and_keep_every_old_prefix_across_radix_heights() {
             builder
                 .snapshot(&mut WorkLimit::new(2))
                 .unwrap()
-                .indexed_nodes()
+                .nodes
                 .len(),
             4100
         );

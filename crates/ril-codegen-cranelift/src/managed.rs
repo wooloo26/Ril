@@ -564,7 +564,7 @@ pub(crate) fn prepare(input: &native::Module) -> Result<Prepared, BackendError> 
     }
     let mut prepared = Prepared {
         constants,
-        nonretaining_adapters: retention::certificates(input)?,
+        nonretaining_adapters: retention::adapters(input)?,
         handler_budget_entries: HashMap::new(),
         retained_handlers: HashMap::new(),
         retained_proofs: HashMap::new(),

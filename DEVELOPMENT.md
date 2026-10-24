@@ -80,9 +80,10 @@ Pure Rust models, generated cases and invalid-byte inputs remain Rust tests.
 - Follow SPEC/STD for behavior and AXIOMS for implementation. Add positive and
   negative regressions, update affected IR/runtime consumers, and remove the
   superseded implementation in the same change.
-- Validate original HIR and actual evaluation records independently. Missing
-  evidence or exhausted work cannot authorize behavior. Failed analysis retains
-  an uncertified `AnalysisSnapshot`; only complete validation mints `VerifiedProgram`.
+- Semantic analysis is trusted compiler code. Check every required language rule
+  and validate IR structure; do not require an independent certificate/replay
+  engine. Missing required information or exhausted work cannot authorize behavior.
+  Incomplete analysis remains inspectable without authorizing compilation.
 - Run focused checks, then the relevant full matrix. Report the scope and any
   remaining failures. Preserve case identity, expectations and execution coverage.
 - Keep source explanations beside the implementation. Commits use one descriptive
@@ -97,64 +98,29 @@ duplicate source trees and historical verification reports.
 
 ## Current work
 
-- Refactor the compiler/library/runtime boundary following AXIOMS: ordinary
-  library definitions use the common declaration, checking and compilation
-  pipeline; retain a small explicit primitive/host contract boundary. Start with
-  optional-value and Array combinators, then remove their duplicated checker,
-  static evaluator, HOF lowering and runtime implementations.
-  Versioned sources live in `crates/ril-stdlib/modules/` and are resolved and
-  checked as ordinary modules on demand. Optional fallbacks, Option/Result
-  expectations and `Test::assert_some`/`Test::assert_ok` use this pipeline,
-  including the general E0344 inference rule. Broader collection and callback
-  contracts remain on the migration adapter.
-- Complete shared receiving for callable upper bounds and general constructors,
-  and finish window graph copying. These gaps remain exposed by the
-  conditional/rest-pattern corpus.
-  Stored uninstantiated constructor templates still need shared inference
-  equations; lost receiving evidence must not become a type-mismatch claim.
-  Complete constructor instance transport through primitive aliases and
-  automatically packed primitive payloads.
-- Complete the canonical abstract value, frozen environments, ten receiving
-  boundaries and five domains. Replace remaining Span tables, erased-type
-  reconstruction and legacy witnesses as their consumers migrate.
-- Extend Source transport to local/generic recursive declarations. Finish migrating
-  generic Source consumers to graph views paired with frozen environments; preserve
-  open rows and qualified callables through inputs, returns, captures, constructors
-  and containers, then remove the remaining closed-witness adapters. Replace raw
-  callable annotation text with frozen declaration references so composites can
-  retain contracts originating in different lexical environments. Complete mixed
-  static sorts and captured/local aliases, and solve pending Source equations
-  before certifying a producing context. Finish Source coverage for normalized
-  and generic operation input headers and typed record members.
-  Complete default preparations for inferred earlier closure parameters and
-  checked callable ascription views, including nested `where` captures.
-- Complete shared value derivations for historical heap reads, callback results
-  and generated inputs to parallel workers, channel bodies, iterators,
-  variant/recovery callbacks, resources and foreign calls. Their unmigrated
-  `EntryOrigin::Unresolved` inputs now leave inferred closure parameters
-  uncertified. Iterator creation recipes do not certify individual transitions.
-  Finish channel payloads, handler activations and resumption transport.
-  Resume completions nested inside expressions still need their actual protected
-  answer; the current direct-resume path substitutes unit for those completions.
-  Resolve the nine-scope channel replay
-  case with finite work while preserving unknown guard/history obligations.
-- Complete nested closure/default and retained-handler transport, including
-  conditional and rest-pattern receivers covered by the corpus.
-- Complete static extent/sort contexts, ordinary callable Const arguments,
-  shared-constant audits and builtin source declarations. Ordinary explicit Const
-  calls still reach bare-type checking (`E0318`); the floating-default cases in
-  `tests/conformance/numeric.ril` retain this gap. Keep object identity separate
-  from each reference's declared view.
-  Standalone explicit generic callable values still lack a retained checked
-  instantiation contract; `stdlib-declarations.ril::standalone-explicit-callable`
-  preserves this general gap separately from immediate explicit calls.
-- Resolve compiler and native acceptance failures on both platforms, then expose
-  symbol and capability introspection through immutable analysis snapshots.
-  Select runtime link inputs by their build/ABI identity instead of modification time.
-
-Source transport regressions, including open row composition with fixed arrays
-and callbacks, are in `tests/regressions/source-transport.ril`.
-Operation and resumption Source views are in `tests/regressions/effect-source-views.ril`.
+- Replace the frontend's mandatory fact/certificate replay with trusted semantic
+  analysis and ordinary IR validation. Core/native IR now carries only executable
+  metadata; it no longer duplicates frontend values, Source graphs or analysis
+  histories. The frontend replay gate and its proof-producing paths still remain.
+- Unify complete types and constraints with resolved declaration/binder identities.
+  Replace erased `Ty`, syntax witnesses and repeated environment reconstruction.
+  Calls, generics, defaults, nested closures, rows and constructors must share the
+  same typed operations and receiving rules.
+- Complete control-flow analysis for heap access, borrowing, effects, duties,
+  resources and channels. Replace unresolved generated callback inputs, retain
+  actual protected answers across resume, and use finite loop/recursion summaries.
+  Preserve conditional/rest-pattern receiving and correlated aggregate contents.
+- Run static execution on the eligible elaborated operations used by compilation.
+  Finish Const/Key argument and extent inference, selected numeric representation,
+  and first-class explicit generic instantiation without AST reconstruction.
+- Move remaining collection/iterator/order and resource/I/O algorithms into
+  ordinary library sources in `crates/ril-stdlib/modules/`. Delete each replaced
+  checker simulation, static implementation, late backend body generator and
+  runtime algorithm. Keep one explicit set of necessary primitive contracts.
+- Eliminate remaining language and native failures, select runtime archives by
+  build/ABI identity, and complete Windows/Linux, pointer32/pointer64 and applicable
+  native acceptance. Preserved corpus cases define behavior; internal proof-export
+  tests change with the removed representation.
 
 ## Unicode regeneration
 

@@ -1499,10 +1499,7 @@ mod tests {
         )
         .unwrap();
         let frozen = live.freeze();
-        let retained = frozen.retained(&mut WorkLimit::new(16384)).unwrap();
-        assert!(retained.graph.nodes.iter().any(|node| matches!(node,
-            ril_ir::provenance::SourceTypeNode::KeyProjection { origin: actual_origin, parameter: actual_parameter, identity: actual_identity, .. }
-                if actual_origin == origin && actual_parameter == parameter && actual_identity == identity)));
+        frozen.validate(&mut WorkLimit::new(16384)).unwrap();
         for mutation in 0..3 {
             let mut builder = SourceBuilder::new().unwrap();
             let mut budget = WorkLimit::new(4096);
@@ -1964,34 +1961,7 @@ mod tests {
         live.record_schema(0, Some(&selected), environment.clone())
             .unwrap();
         let frozen = live.freeze();
-        let retained = frozen.retained(&mut work).unwrap();
-        let root = retained.binding_root(0, &mut work).unwrap().unwrap();
-        let ril_ir::provenance::SourceTypeNode::Callable {
-            row_identity: Some(retained_row),
-            ..
-        } = retained.graph.get(root).unwrap()
-        else {
-            panic!("row identity was erased")
-        };
-        assert_eq!(retained_row.origin, row.origin);
-        assert_eq!(retained_row.parameters[0].0, row.parameters[0].0);
-        let mut dependency = retained_row.parameters[0].1;
-        let mut aliases = BTreeSet::new();
-        while let Some(ril_ir::provenance::SourceTypeNode::Alias { target, .. }) =
-            retained.graph.get(dependency)
-        {
-            assert!(
-                aliases.insert(dependency),
-                "row substitution introduced an alias cycle"
-            );
-            dependency = *target;
-        }
-        assert!(matches!(
-            retained.graph.get(dependency),
-            Some(ril_ir::provenance::SourceTypeNode::Scalar(
-                SourceScalar::Int
-            ))
-        ));
+        frozen.validate(&mut WorkLimit::new(16384)).unwrap();
         let str_source = SourceSchema::scalar(SourceScalar::Str, None, &mut work).unwrap();
         let identities = source.binder_identities(&mut work).unwrap();
         let other = source
