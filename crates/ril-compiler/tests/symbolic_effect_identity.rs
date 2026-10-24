@@ -185,6 +185,6 @@ fn generic_callback_observations_keep_symbolic_and_actual_targets() {
                 && callback
                     .targets
                     .iter()
-                    .any(|target| matches!(target, ril_compiler::sema::model::Callable::Named(_)))
+                    .any(|target| matches!(target, ril_compiler::sema::model::Callable::Named(..)))
         })));
 }

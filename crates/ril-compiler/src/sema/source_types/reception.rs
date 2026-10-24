@@ -27,6 +27,14 @@ pub(super) fn complete(
         }
         let node = graph.get(id)?;
         node.charge(work)?;
+        if let SourceNode::Callable {
+            interpretation: Some(context),
+            ..
+        } = node
+            && context.is_poisoned()
+        {
+            return Err(SourceTypesError::Unresolved);
+        }
         if matches!(
             node,
             SourceNode::OpaqueComputation(_) | SourceNode::Unresolved { .. }
@@ -101,10 +109,23 @@ fn record_view<'a>(
     }
 }
 
+type ComparedTypes = (
+    SourceTypeId,
+    SourceTypeId,
+    Position,
+    Option<(
+        crate::sema::context::FrozenEnvId,
+        crate::sema::context::FrozenEnvId,
+    )>,
+);
+
 struct ReceptionState<'a> {
     work: &'a mut WorkLimit,
-    seen: &'a mut BTreeSet<(SourceTypeId, SourceTypeId, Position)>,
+    seen: &'a mut BTreeSet<ComparedTypes>,
     annotations: Option<AnnotationContexts<'a>>,
+    // Structural receiving leaves latent row bounds to the value checker.
+    // Capturing a scope must not turn that upper-bound check into equality.
+    compare_rows: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -223,6 +244,7 @@ fn compare(
     depth: usize,
 ) -> Result<bool, SourceTypesError> {
     let ReceptionState {
+        compare_rows,
         work,
         seen,
         annotations,
@@ -235,6 +257,25 @@ fn compare(
     let actual = graph.unalias(actual, work)?;
     let left = graph.get(expected)?;
     let right = graph.get(actual)?;
+    fn contextual<'a>(
+        node: &'a SourceNode,
+        fallback: Option<&'a FrozenEnvironment>,
+    ) -> Option<&'a FrozenEnvironment> {
+        match node {
+            SourceNode::Callable {
+                interpretation: Some(context),
+                ..
+            } => Some(context),
+            _ => fallback,
+        }
+    }
+    let annotations = match (
+        contextual(left, annotations.map(|c| c.left)),
+        contextual(right, annotations.map(|c| c.right)),
+    ) {
+        (Some(left), Some(right)) => Some(AnnotationContexts { left, right }),
+        _ => None,
+    };
     left.charge(work)?;
     right.charge(work)?;
     // Bottom is a subtype at a receiving position, including a callable's
@@ -244,6 +285,7 @@ fn compare(
         return Ok(true);
     }
     if let Some(contexts) = annotations
+        && (compare_rows || position == Position::Invariant)
         && contexts.left.id() != contexts.right.id()
         && (matches!(
             left,
@@ -295,6 +337,7 @@ fn compare(
                 fresh,
                 position,
                 ReceptionState {
+                    compare_rows,
                     work,
                     seen,
                     annotations,
@@ -310,6 +353,7 @@ fn compare(
                 fresh,
                 position,
                 ReceptionState {
+                    compare_rows,
                     work,
                     seen,
                     annotations,
@@ -348,7 +392,14 @@ fn compare(
     }
     // Recursive declaration edges form finite regular schemas. A fresh syntax
     // construction is finite and must check every one of its physical children.
-    if fresh.is_none() && !seen.insert((expected, actual, position)) {
+    if fresh.is_none()
+        && !seen.insert((
+            expected,
+            actual,
+            position,
+            annotations.map(|c| (c.left.id(), c.right.id())),
+        ))
+    {
         return Ok(true);
     }
     if let (
@@ -365,6 +416,7 @@ fn compare(
     ) = (left, right)
     {
         if let Some(contexts) = annotations
+            && (compare_rows || position == Position::Invariant)
             && !(position == Position::Receiving && left.is_empty())
         {
             match super::annotation_identity::equivalent(
@@ -413,6 +465,7 @@ fn compare(
                                 None,
                                 Position::Invariant,
                                 ReceptionState {
+                                    compare_rows,
                                     work,
                                     seen,
                                     annotations,
@@ -440,6 +493,7 @@ fn compare(
             fresh,
             position,
             ReceptionState {
+                compare_rows,
                 work,
                 seen,
                 annotations,
@@ -528,20 +582,44 @@ fn compare(
             if lp.len() != rp.len() {
                 return Ok(false);
             }
+            drop(child);
+            let mut callable_child = |left, right, position, reverse| {
+                compare(
+                    graph,
+                    left,
+                    right,
+                    None,
+                    position,
+                    ReceptionState {
+                        compare_rows,
+                        work,
+                        seen,
+                        annotations: if reverse {
+                            annotations.map(|contexts| AnnotationContexts {
+                                left: contexts.right,
+                                right: contexts.left,
+                            })
+                        } else {
+                            annotations
+                        },
+                    },
+                    depth + 1,
+                )
+            };
             for ((lm, left), (rm, right)) in lp.iter().zip(rp) {
                 if lm != rm {
                     return Ok(false);
                 }
                 let fits = if *lm == ParameterMode::Read && position == Position::Receiving {
-                    child(*right, *left, None, Position::Receiving)?
+                    callable_child(*right, *left, Position::Receiving, true)?
                 } else {
-                    child(*left, *right, None, Position::Invariant)?
+                    callable_child(*left, *right, Position::Invariant, false)?
                 };
                 if !fits {
                     return Ok(false);
                 }
             }
-            child(*lr, *rr, None, position)?
+            callable_child(*lr, *rr, position, false)?
         }
         (
             SourceNode::Container {
@@ -644,6 +722,7 @@ fn compare(
                     fresh,
                     position,
                     ReceptionState {
+                        compare_rows,
                         work,
                         seen,
                         annotations,
@@ -662,6 +741,7 @@ fn compare(
                     None,
                     Position::Invariant,
                     ReceptionState {
+                        compare_rows,
                         work,
                         seen,
                         annotations,
@@ -695,6 +775,7 @@ pub(crate) fn receive(
         fresh,
         Position::Receiving,
         ReceptionState {
+            compare_rows: false,
             work,
             seen: &mut BTreeSet::new(),
             annotations: None,
@@ -782,6 +863,7 @@ pub(crate) fn receive_from_in(
         fresh,
         Position::Receiving,
         ReceptionState {
+            compare_rows: environments.is_some(),
             work,
             seen: &mut BTreeSet::new(),
             annotations: environments.map(|(left, right)| AnnotationContexts { left, right }),
@@ -807,6 +889,7 @@ pub(crate) fn equivalent_in(
         None,
         Position::Invariant,
         ReceptionState {
+            compare_rows: true,
             work,
             seen: &mut BTreeSet::new(),
             annotations: None,
@@ -832,6 +915,7 @@ pub(crate) fn equivalent(
         None,
         Position::Invariant,
         ReceptionState {
+            compare_rows: true,
             work,
             seen: &mut BTreeSet::new(),
             annotations: None,
@@ -862,6 +946,7 @@ pub(super) fn equivalent_with_environments(
         None,
         Position::Invariant,
         ReceptionState {
+            compare_rows: true,
             work,
             seen: &mut BTreeSet::new(),
             annotations: Some(AnnotationContexts {
@@ -936,6 +1021,7 @@ mod tests {
                         result,
                         annotations: vec![],
                         row_identity: None,
+                        interpretation: None,
                     },
                     work,
                 )

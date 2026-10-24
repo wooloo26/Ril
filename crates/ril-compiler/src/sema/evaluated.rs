@@ -37,8 +37,9 @@ impl SourceRef {
         types: &mut LiveSourceTypes,
         work: &mut WorkLimit,
     ) -> Result<Self, SourceTypesError> {
+        let schema = schema.capture_interpretation(&environment, false, work)?;
         Ok(Self {
-            view: types.intern_schema(schema, environment, work)?,
+            view: types.intern_schema(&schema, environment, work)?,
             original: schema.original(),
         })
     }

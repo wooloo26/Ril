@@ -56,7 +56,7 @@ impl Checker {
             hir_id: None,
             span,
             kind: match &value.callables[0] {
-                Callable::Named(id) => ExprKind::Name(self.functions[*id].syntax.name.clone()),
+                Callable::Named(id, _) => ExprKind::Name(self.functions[*id].syntax.name.clone()),
                 Callable::Builtin(name) => {
                     ExprKind::Path(name.split("::").map(str::to_owned).collect())
                 }
@@ -93,10 +93,10 @@ impl Checker {
             };
             let lexical = match target {
                 Callable::Closure(id) => Some(&self.closures[*id].lexical),
-                Callable::Named(id) => Some(&self.functions[*id].lexical),
+                Callable::Named(id, _) => Some(&self.functions[*id].lexical),
                 _ => None,
             };
-            if let Callable::Named(id) = target
+            if let Callable::Named(id, _) = target
                 && let Some(body) = &self.functions[*id].syntax.body
             {
                 // Recheck the selected body in its own creation environment;
@@ -149,7 +149,7 @@ impl Checker {
             .iter()
             .filter_map(|(name, binding)| {
                 let value = &self.bindings[*binding].value;
-                if matches!(value.callables.as_slice(), [Callable::Named(id)] if self.functions[*id].syntax.name==*name)
+                if matches!(value.callables.as_slice(), [Callable::Named(id, _)] if self.functions[*id].syntax.name==*name)
                 {
                     return None;
                 }

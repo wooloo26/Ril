@@ -14,7 +14,7 @@ impl Checker {
         if !matches!(syntax.kind, ExprKind::Generic { .. }) {
             return Ok(None);
         }
-        let [Callable::Named(callable)] = value.callables.as_slice() else {
+        let [Callable::Named(callable, _)] = value.callables.as_slice() else {
             return Ok(None);
         };
         work.charge(self.external_instances.len())?;
@@ -161,7 +161,7 @@ impl Checker {
             || record.context != parent.context
             || child.context != parent.context
             || fact.source_id != Some(*base)
-            || !matches!(fact.value.callables.as_slice(),[Callable::Named(actual)] if *actual == target)
+            || !matches!(fact.value.callables.as_slice(),[Callable::Named(actual, _)] if *actual == target)
         {
             return Err("foreign static base observation belongs to another target or context");
         }
@@ -177,7 +177,7 @@ impl Checker {
         arguments: &[TypeExpr],
         span: Span,
     ) -> bool {
-        let [Callable::Named(id)] = value.callables.as_slice() else {
+        let [Callable::Named(id, _)] = value.callables.as_slice() else {
             return false;
         };
         let original = self.functions[*id].clone();
@@ -373,7 +373,7 @@ impl Checker {
             .applications
             .push(application);
         let instance = &self.external_instances[instance];
-        value.callables = vec![Callable::Named(instance.callable)];
+        value.callables = vec![Callable::Named(instance.callable, None)];
         value.ty = instance.callable_type.clone();
         value.signature = Some(self.callable_signature(instance.syntax.parameters.clone()));
         true

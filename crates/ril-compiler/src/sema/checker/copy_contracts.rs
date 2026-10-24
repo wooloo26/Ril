@@ -109,7 +109,7 @@ impl Checker {
             }
             for callable in &value.callables {
                 let captures = match callable {
-                    Callable::Named(id) => Some(&self.functions[*id].captures),
+                    Callable::Named(id, _) => Some(&self.functions[*id].captures),
                     Callable::Closure(id) => Some(&self.closures[*id].captures),
                     _ => None,
                 };
@@ -850,7 +850,7 @@ impl Checker {
                         {
                             return Constituent::Rejected(Rejection::RetainedEnvironment);
                         }
-                        Callable::Named(id)
+                        Callable::Named(id, _)
                             if !self.functions[*id].captures.is_empty()
                                 || self.has_retained_handlers(callable) =>
                         {

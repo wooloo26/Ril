@@ -610,6 +610,7 @@ impl Resolve<'_> {
                     result,
                     annotations: rows,
                     row_identity: None,
+                    interpretation: None,
                 }
             }
             _ => return Err(SourceTypesError::NeedsStaticElaboration),

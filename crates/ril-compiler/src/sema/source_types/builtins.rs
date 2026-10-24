@@ -308,6 +308,7 @@ impl Definition {
                 result,
                 annotations: vec![],
                 row_identity: None,
+                interpretation: None,
             },
             work,
         )?;
@@ -679,6 +680,7 @@ mod runtime_projection_tests {
                     result: array,
                     annotations: vec!["&mut".into()],
                     row_identity: None,
+                    interpretation: None,
                 },
                 &mut work,
             )

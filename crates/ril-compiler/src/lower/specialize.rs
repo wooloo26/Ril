@@ -402,6 +402,60 @@ impl Plan {
         self.names.contains(name)
     }
 
+    pub fn value_target(
+        &self,
+        facts: &SemanticFacts,
+        owner: Option<CallableOwner>,
+        source: Option<ril_compiler_core::ids::ExprId>,
+    ) -> Result<Option<String>, NotImplemented> {
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        let mut selected = BTreeSet::new();
+        for observation in &facts.invocation_expressions {
+            if observation.context.owner != owner {
+                continue;
+            }
+            let fact = &facts.expressions[observation.expression];
+            if fact.source_id != Some(source) {
+                continue;
+            }
+            for callable in &fact.value.callables {
+                let Callable::Named(_, Some(instance)) = callable else {
+                    continue;
+                };
+                if !self.templates.contains(&instance.target) {
+                    continue;
+                }
+                let arguments = instance
+                    .selections
+                    .iter()
+                    .map(|s| {
+                        key(&s.key).map(|key| irs::Argument {
+                            definition: instance.target,
+                            index: s.index,
+                            key,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                let Ok(arguments) = arguments else { continue };
+                for compiled in &self.instances {
+                    if compiled.record.template == instance.target
+                        && compiled.record.arguments == arguments
+                    {
+                        selected.insert(compiled.record.name.clone());
+                    }
+                }
+            }
+        }
+        if selected.len() > 1 {
+            return Err(unsupported(
+                "one unspecialized callable value has different static instances",
+            ));
+        }
+        Ok(selected.into_iter().next())
+    }
+
     pub fn call_target(
         &self,
         facts: &SemanticFacts,
@@ -411,7 +465,8 @@ impl Plan {
         span: Span,
     ) -> Result<Option<(DefinitionId, String)>, NotImplemented> {
         self.validate_default_applications(facts, owner, context, default_context, span)?;
-        let mut selected = None;
+        let mut selected = BTreeSet::new();
+        let mut indirect = true;
         for observed in &facts.invocation_calls {
             if observed.caller_owner != owner {
                 continue;
@@ -463,14 +518,18 @@ impl Plan {
                     "generic effect call has no closed native instance for this invocation",
                 ));
             };
-            if selected.is_some_and(|previous| previous != index) {
-                return Err(unsupported(
-                    "one unspecialized call site selects different generic effect instances",
-                ));
-            }
-            selected = Some(index);
+            indirect &= call.instance.is_some();
+            selected.insert(index);
         }
-        Ok(selected.map(|index| {
+        if indirect {
+            return Ok(None);
+        }
+        if selected.len() > 1 {
+            return Err(unsupported(
+                "one unspecialized call site selects different generic effect instances",
+            ));
+        }
+        Ok(selected.into_iter().next().map(|index| {
             (
                 self.instances[index].record.template,
                 self.instances[index].record.name.clone(),
@@ -664,7 +723,7 @@ impl Plan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CallableShape {
-    Named(DefinitionId),
+    Named(DefinitionId, Vec<crate::sema::effect_identity::ArgumentKey>),
     Builtin(String),
     Constructor(String),
     Closure(ril_compiler_core::ids::ClosureSiteId),
@@ -702,7 +761,14 @@ fn callable_shape(
     callable: &Callable,
 ) -> Result<CallableShape, NotImplemented> {
     Ok(match callable {
-        Callable::Named(id) => CallableShape::Named(facts.functions[*id].definition),
+        Callable::Named(id, instance) => CallableShape::Named(
+            facts.functions[*id].definition,
+            instance
+                .iter()
+                .flat_map(|instance| instance.selections.iter())
+                .map(|s| s.key.clone())
+                .collect(),
+        ),
         Callable::Builtin(name) => CallableShape::Builtin(name.clone()),
         Callable::Constructor(name) => CallableShape::Constructor(name.clone()),
         Callable::Closure(id) => {

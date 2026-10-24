@@ -329,7 +329,7 @@ impl Checker {
             .graph_callables(value)
             .iter()
             .any(|callable| match callable {
-                Callable::Named(id) => self.functions[*id]
+                Callable::Named(id, _) => self.functions[*id]
                     .captures
                     .iter()
                     .any(|binding| !self.bindings[*binding].value.scoped.is_disjoint(scoped)),

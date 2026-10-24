@@ -419,7 +419,7 @@ impl Checker {
         }
         for callable in &value.callables {
             let key = match callable {
-                Callable::Named(id) => (false, *id),
+                Callable::Named(id, _) => (false, *id),
                 Callable::Closure(id) => (true, *id),
                 _ => continue,
             };

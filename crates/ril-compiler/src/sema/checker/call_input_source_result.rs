@@ -499,7 +499,7 @@ impl Checker {
         let mut targets = BTreeMap::new();
         for callable in &callee_fact.value.callables {
             work.charge(2 + targets.len().checked_ilog2().unwrap_or(0) as usize)?;
-            let Callable::Named(index) = callable else {
+            let Callable::Named(index, _) = callable else {
                 return Err(SourceTypesError::Unresolved);
             };
             let function = self
@@ -628,7 +628,7 @@ impl Checker {
                 .contexts
                 .get(callee_index)
                 .is_none_or(|row| row.expression != callee_index || row.context != caller)
-            || !matches!(callee.value.callables.as_slice(),[Callable::Named(index)] if self.functions.get(*index).is_some_and(|function|function.definition==target.definition))
+            || !matches!(callee.value.callables.as_slice(),[Callable::Named(index, _)] if self.functions.get(*index).is_some_and(|function|function.definition==target.definition))
             || callee.value.sources.len() != 1
         {
             return Err(SourceTypesError::Unresolved);
@@ -713,7 +713,7 @@ impl Checker {
             {
                 return None;
             }
-            let [Callable::Named(index)] = expression.value.callables.as_slice() else {
+            let [Callable::Named(index, _)] = expression.value.callables.as_slice() else {
                 return None;
             };
             if self.functions.get(*index)?.definition != call.target

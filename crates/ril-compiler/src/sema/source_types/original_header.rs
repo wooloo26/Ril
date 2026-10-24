@@ -1258,6 +1258,7 @@ impl<'a> Header<'a> {
                     result,
                     annotations,
                     row_identity,
+                    interpretation: None,
                 }
             }
             _ => return Err(SourceTypesError::NeedsStaticElaboration),

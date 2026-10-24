@@ -1116,7 +1116,7 @@ impl Checker {
                 return false;
             }
             let key = match callable {
-                Callable::Named(id) => (false, id),
+                Callable::Named(id, _) => (false, id),
                 Callable::Closure(id) => (true, id),
                 _ => continue,
             };
@@ -1150,7 +1150,7 @@ impl Checker {
                 );
             }
             let key = match callable {
-                Callable::Named(id) => (false, id),
+                Callable::Named(id, _) => (false, id),
                 Callable::Closure(id) => (true, id),
                 Callable::Symbolic(..) => {
                     self.unsupported(span, "callable transfer requires a complete latent environment and named-dependency proof");

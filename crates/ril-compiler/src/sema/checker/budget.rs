@@ -34,7 +34,7 @@ impl Checker {
             return;
         }
         let (description, covered) = match callable {
-            Callable::Named(id) => (
+            Callable::Named(id, _) => (
                 "ordinary Ril function entry",
                 self.functions[*id].syntax.body.is_some(),
             ),

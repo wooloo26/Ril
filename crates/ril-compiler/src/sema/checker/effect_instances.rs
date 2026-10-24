@@ -306,12 +306,27 @@ impl Checker {
         info: &FunctionInfo,
         site: Span,
     ) -> StaticArguments {
+        let instance = self.named_instance_for_invocation(info);
         let arguments = info
             .syntax
             .generics
             .iter()
             .enumerate()
             .map(|(index, parameter)| {
+                if let Some(selected) = instance.as_ref().and_then(|instance| {
+                    instance
+                        .selections
+                        .iter()
+                        .find(|selection| selection.index as usize == index)
+                }) {
+                    return StaticArgumentWitness {
+                        definition: info.definition,
+                        index: index as u32,
+                        binder: selected.binder.clone(),
+                        key: Some(selected.key.clone()),
+                        syntax: Some(selected.source.syntax.as_ref().clone()),
+                    };
+                }
                 let identity = self
                     .type_source
                     .environment

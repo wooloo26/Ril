@@ -26,7 +26,7 @@ pub(super) fn lower(facts: &SemanticFacts) -> ProgramMetadata {
             .iter()
             .map(|handler| RetainedHandler {
                 callable: match handler.callable {
-                    Callable::Named(id) => {
+                    Callable::Named(id, _) => {
                         Some(CallableOwner::Function(facts.functions[id].definition))
                     }
                     Callable::Closure(id) => facts.closures[id].site.map(CallableOwner::Lambda),

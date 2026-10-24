@@ -78,6 +78,99 @@ fn freeze(
 }
 
 impl SourceSchema {
+    pub(crate) fn callable_interpretation(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Option<FrozenEnvironment>, SourceTypesError> {
+        match self.types.get(self.read_root(work)?)? {
+            SourceNode::Callable { interpretation, .. } => Ok(interpretation.clone()),
+            _ => Ok(None),
+        }
+    }
+    /// A callable closes over its own type interpretation. Product construction
+    /// can then retain members from different lexical scopes without choosing
+    /// one member's environment for all the others.
+    pub(crate) fn capture_interpretation(
+        &self,
+        environment: &FrozenEnvironment,
+        replace_root: bool,
+        work: &mut WorkLimit,
+    ) -> Result<Self, SourceTypesError> {
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let mut pending = vec![self.root];
+        let mut seen = BTreeSet::new();
+        let mut captures = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            work.charge(1)?;
+            if !seen.insert(id) {
+                continue;
+            }
+            let node = self.types.get(id)?;
+            if let SourceNode::Callable { interpretation, .. } = node {
+                if interpretation.is_none() || replace_root && id == self.root {
+                    captures.insert(id);
+                }
+            } else {
+                pending.extend(node.children());
+            }
+        }
+        if captures.is_empty() {
+            return Ok(self.clone());
+        }
+        let nodes = self.types.reachable([self.root], work)?;
+        let mut builder = SourceBuilder::new()?;
+        let mut mapping = BTreeMap::new();
+        for id in &nodes {
+            mapping.insert(*id, builder.reserve(work)?);
+        }
+        for id in &nodes {
+            let mut node = self.types.get(*id)?.map_children(|child| {
+                mapping
+                    .get(&child)
+                    .copied()
+                    .ok_or(SourceTypesError::MissingNode)
+            })?;
+            if captures.contains(id)
+                && let SourceNode::Callable { interpretation, .. } = &mut node
+            {
+                *interpretation = Some(environment.clone());
+            }
+            builder.define(mapping[id], node, work)?;
+        }
+        freeze(builder, mapping[&self.root], self.original, work)
+    }
+
+    fn external_context_nodes(
+        &self,
+        work: &mut WorkLimit,
+    ) -> Result<Vec<SourceTypeId>, SourceTypesError> {
+        let mut pending = vec![self.root];
+        let mut seen = BTreeSet::new();
+        let mut nodes = Vec::new();
+        while let Some(id) = pending.pop() {
+            work.charge(1)?;
+            if !seen.insert(id) {
+                continue;
+            }
+            let node = self.types.get(id)?;
+            node.charge(work)?;
+            if let SourceNode::Callable {
+                interpretation: Some(context),
+                ..
+            } = node
+            {
+                if context.is_poisoned() {
+                    return Err(SourceTypesError::Unresolved);
+                }
+                continue;
+            }
+            nodes.push(id);
+            pending.extend(node.children());
+        }
+        Ok(nodes)
+    }
     /// Only actual transparent graph edges expose a scalar representation.
     /// Nominal or unresolved spelling is never interpreted as a scalar name.
     pub(crate) fn scalar_representation(
@@ -306,8 +399,10 @@ impl SourceSchema {
         if self.requires_declaration_environment(work)? {
             return Ok(false);
         }
-        for identity in self.binder_identities(work)? {
-            if !super::super::reception::same_binder_selection(&identity, left, right, work)? {
+        for id in self.external_context_nodes(work)? {
+            if let SourceNode::Binder(identity) = self.types.get(id)?
+                && !super::super::reception::same_binder_selection(identity, left, right, work)?
+            {
                 return Ok(false);
             }
         }
@@ -339,7 +434,7 @@ impl SourceSchema {
         work: &mut WorkLimit,
     ) -> Result<bool, SourceTypesError> {
         let mut required = false;
-        for id in self.types.reachable([self.root], work)? {
+        for id in self.external_context_nodes(work)? {
             work.charge(1)?;
             match self.types.get(id)? {
                 SourceNode::Binder(_) => required |= binders,
@@ -610,6 +705,7 @@ impl SourceSchema {
                     .collect(),
                 result: parts[parameters.len()],
                 annotations: annotations.to_vec(),
+                interpretation: None,
                 row_identity: row_identity.map(|row| CallableRowIdentity {
                     origin: row.origin,
                     parameters: row

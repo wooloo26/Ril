@@ -471,11 +471,53 @@ pub type Env = BTreeMap<String, BindingId>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Callable {
     Constructor(String),
-    Named(usize),
+    Named(usize, Option<Arc<NamedInstance>>),
     Closure(usize),
     Symbolic(u32, Vec<String>),
     Builtin(String),
 }
+impl Callable {
+    pub(crate) fn same_environment(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Named(left, _), Self::Named(right, _)) => left == right,
+            _ => self == other,
+        }
+    }
+}
+
+/// Static choices belong to the implementation value, including parameters
+/// absent from its public signature. Copies and captures retain this instance.
+#[derive(Debug, Clone)]
+pub struct NamedInstance {
+    pub(crate) target: ril_compiler_core::ids::DefinitionId,
+    pub(crate) selections: Vec<GenericSelection>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GenericSelection {
+    pub(crate) binder: String,
+    pub(crate) index: u32,
+    pub(crate) ty: Ty,
+    pub(crate) key: super::effect_identity::ArgumentKey,
+    pub(crate) source: Arc<super::source_types::TypeSourceSelection>,
+}
+
+impl PartialEq for GenericSelection {
+    fn eq(&self, other: &Self) -> bool {
+        self.binder == other.binder
+            && self.index == other.index
+            && self.ty == other.ty
+            && self.key == other.key
+            && self.source == other.source
+    }
+}
+impl Eq for GenericSelection {}
+impl PartialEq for NamedInstance {
+    fn eq(&self, other: &Self) -> bool {
+        self.target == other.target && self.selections == other.selections
+    }
+}
+impl Eq for NamedInstance {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableBound {
     pub annotations: Vec<Annotation>,
@@ -521,6 +563,7 @@ impl CallableReturnBound {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableSignature {
     pub parameters: Vec<Parameter>,
+    pub generics: Vec<ril_compiler_core::ids::GenericParamId>,
     pub environment: super::context::FrozenEnvironment,
 }
 
@@ -1474,8 +1517,8 @@ mod callable_return_tests {
 
     #[test]
     fn nested_payload_joins_keep_callable_selection_and_return_contracts_together() {
-        let left = bounded(Callable::Named(1), 1, "left:T");
-        let right = bounded(Callable::Named(2), 2, "right:T");
+        let left = bounded(Callable::Named(1, None), 1, "left:T");
+        let right = bounded(Callable::Named(2, None), 2, "right:T");
         let wrap = |payload: Value| {
             let mut value =
                 Value::scalar(Ty::Optional(Box::new(payload.ty.clone())), None, CauseId(0));
@@ -1487,7 +1530,7 @@ mod callable_return_tests {
         let payload = joined.option_payload.unwrap();
         assert_eq!(
             payload.callables,
-            vec![Callable::Named(1), Callable::Named(2)]
+            vec![Callable::Named(1, None), Callable::Named(2, None)]
         );
         assert_eq!(
             payload.callable_returns,

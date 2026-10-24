@@ -2,7 +2,7 @@ use super::*;
 impl Checker {
     pub(super) fn widen_callable_environment(&mut self, callable: &Callable) {
         let environment = match callable {
-            Callable::Named(id) => self.functions[*id].lexical.clone(),
+            Callable::Named(id, _) => self.functions[*id].lexical.clone(),
             Callable::Closure(id) => self.closures[*id].lexical.clone(),
             _ => return,
         };

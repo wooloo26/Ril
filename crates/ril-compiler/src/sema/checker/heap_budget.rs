@@ -55,7 +55,7 @@ impl Checker {
             && callback.callables.iter().all(|target| {
                 !self.has_retained_handlers(target)
                     && match target {
-                        Callable::Named(id) => {
+                        Callable::Named(id, _) => {
                             self.functions[*id].captures.is_empty()
                                 && self.functions[*id].syntax.body.is_some()
                         }

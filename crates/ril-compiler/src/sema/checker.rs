@@ -35,6 +35,7 @@ mod context;
 mod contract_types;
 mod contracts;
 pub(crate) use contracts::state_group;
+mod callable_instances;
 mod copy;
 mod copy_classes;
 mod copy_contracts;
@@ -48,7 +49,6 @@ mod environments;
 mod evaluated;
 #[cfg(test)]
 mod execution_oracle;
-mod explicit_named;
 mod formal_values;
 mod generated_sources;
 mod symbolic_rows;
@@ -402,7 +402,6 @@ struct Checker {
     pattern_value_sources:
         BTreeMap<ril_compiler_core::ids::PatternId, ril_compiler_core::ids::ExprId>,
     checked_source: Option<std::sync::Arc<Program>>,
-    explicit_named: explicit_named::State,
     call_input_source: call_input_source::State,
     invocation_loan_starts: Vec<super::invocation_loans::InvocationLoanStart>,
     invocation_loan_ends: Vec<super::invocation_loans::InvocationLoanEnd>,
@@ -604,7 +603,6 @@ impl Checker {
             semantic_hir: Default::default(),
             pattern_value_sources: Default::default(),
             checked_source: None,
-            explicit_named: Default::default(),
             call_input_source: Default::default(),
             numeric: Default::default(),
             constant_pool: std::sync::Arc::default(),
@@ -1333,8 +1331,14 @@ impl Checker {
                         ),
                     );
                     let mut value = Value::scalar(ty, None, cause);
-                    value.callables.push(Callable::Named(id));
-                    value.signature = Some(self.callable_signature(function.parameters.clone()));
+                    value.callables.push(Callable::Named(id, None));
+                    let mut signature = self.callable_signature(function.parameters.clone());
+                    std::sync::Arc::make_mut(&mut signature).generics = function
+                        .generics
+                        .iter()
+                        .filter_map(|parameter| parameter.hir_id)
+                        .collect();
+                    value.signature = Some(signature);
                     self.bind_name(
                         &function.name,
                         BindingMode::Let,

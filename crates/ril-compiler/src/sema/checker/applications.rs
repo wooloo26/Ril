@@ -187,11 +187,9 @@ impl Checker {
                     _ => false,
                 };
                 let reference_start = self.copy_references.len();
-                let window = self.begin_explicit_named_callee(syntax, frame);
                 let packet = self.expression_source_packet(syntax, frame, None, None);
                 let observation = packet.observation;
                 let value = packet.value();
-                let explicit = self.end_explicit_named_callee(window, observation);
                 self.append_application_evaluation(application, site, role, &packet, frame);
                 self.complete_copy_call_callee(
                     event,
@@ -203,7 +201,6 @@ impl Checker {
                 );
                 self.call_arguments[site.preparation].target =
                     self.copy_call_events[event.0 as usize].target;
-                self.seal_explicit_named_callee(explicit, event, frame);
                 if value.ty != Ty::Never {
                     generic = if let Some(id) =
                         crate::sema::builtin_sources::generic_reference(value)
@@ -724,7 +721,7 @@ impl Checker {
             .map(|signature| &signature.parameters)
             .expect("default-capable public signature");
         let target = match callee.callables.as_slice() {
-            [Callable::Named(id)] => Some(*id),
+            [Callable::Named(id, _)] => Some(*id),
             _ => None,
         };
         let caller_context = self.invocation_context(frame.callable_owner);
@@ -735,6 +732,11 @@ impl Checker {
         let previous_typing = self.capture_typing_environment();
         let mut defaults_frame = None;
         let result = (|| {
+            // Supplied packets enter the real callee directly. A synthetic
+            // parameter environment is needed only to evaluate omitted defaults.
+            if !has_default && slots.iter().all(Option::is_some) {
+                return Ok(slots.into_iter().flatten().collect::<Vec<_>>());
+            }
             if has_default && let Some(id) = target {
                 let info = self.functions[id].clone();
                 self.generic_scope(id);
@@ -761,7 +763,7 @@ impl Checker {
                         .static_key_arguments
                         .remove(binder);
                 }
-                let explicit = self.explicit_named_for_event(source_event, info.definition);
+                let explicit = self.named_instance_for_event(source_event, info.definition);
                 let mut supplied = info.syntax.clone();
                 supplied.parameters = supplied
                     .parameters
@@ -794,17 +796,17 @@ impl Checker {
                         .collect()
                 });
                 if let Some(prepared) = &explicit {
-                    self.seed_explicit_named(prepared);
+                    self.seed_named_instance(prepared);
                 }
                 self.infer_named_arguments(
                     &supplied,
                     &actual,
                     &binders,
                     raw_templates,
-                    explicit.as_ref(),
+                    explicit.as_deref(),
                 );
                 if let Some(prepared) = &explicit {
-                    self.finish_explicit_named_inference(prepared, span);
+                    self.finish_named_instance_inference(prepared, span);
                 }
             }
             if has_default && let [Callable::Closure(id)] = callee.callables.as_slice() {
@@ -818,7 +820,7 @@ impl Checker {
                 }
             }
             let environment = match callee.callables.as_slice() {
-                [Callable::Named(id)] => self.functions[*id].lexical.clone(),
+                [Callable::Named(id, _)] => self.functions[*id].lexical.clone(),
                 [Callable::Closure(id)] => self.closures[*id].lexical.clone(),
                 _ => frame.env.clone(),
             };
@@ -826,7 +828,7 @@ impl Checker {
             let defaults = defaults_frame.as_mut().expect("default frame was created");
             self.scopes.set_parent(defaults.owner, frame.owner);
             defaults.callable_owner = match callee.callables.as_slice() {
-                [Callable::Named(id)] => {
+                [Callable::Named(id, _)] => {
                     Some(CallableOwner::Function(self.functions[*id].definition))
                 }
                 [Callable::Closure(id)] => self.closures[*id].site.map(CallableOwner::Lambda),
@@ -940,18 +942,6 @@ impl Checker {
                 let unit = self.unit(span);
                 self.finish_results(defaults.owner, &unit);
             }
-            self.call_arguments[preparation].evaluation_complete = self.call_arguments[preparation]
-                .slots_bound
-                && self.call_arguments[preparation].supplied.len()
-                    == self.call_arguments[preparation]
-                        .evaluated
-                        .iter()
-                        .filter(|evaluation| evaluation.role != EvaluationRole::Callee)
-                        .count()
-                && result.len() == parameters.len()
-                && result
-                    .iter()
-                    .all(|(_, value, _)| value.value.ty != Ty::Never);
             Ok::<_, SourceTypesError>(result)
         })();
         if let Some(defaults) = defaults_frame {
@@ -962,6 +952,18 @@ impl Checker {
         }
         self.restore_typing_environment(previous_typing);
         let result = result?;
+        self.call_arguments[preparation].evaluation_complete = self.call_arguments[preparation]
+            .slots_bound
+            && self.call_arguments[preparation].supplied.len()
+                == self.call_arguments[preparation]
+                    .evaluated
+                    .iter()
+                    .filter(|evaluation| evaluation.role != EvaluationRole::Callee)
+                    .count()
+            && result.len() == parameters.len()
+            && result
+                .iter()
+                .all(|(_, value, _)| value.value.ty != Ty::Never);
         self.check_public_call_input_sources(callee, callee_syntax, source_event, frame);
         let mut result = result
             .into_iter()

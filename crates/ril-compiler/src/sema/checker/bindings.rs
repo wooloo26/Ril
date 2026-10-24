@@ -637,7 +637,7 @@ impl Checker {
                 .value
                 .callables
                 .iter()
-                .all(|c| !matches!(c, Callable::Named(_)))
+                .all(|c| !matches!(c, Callable::Named(..)))
         {
             frame
                 .obligations

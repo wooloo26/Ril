@@ -137,7 +137,7 @@ impl Checker {
         &mut self,
         slot: usize,
     ) -> Option<std::sync::Arc<crate::sema::source_types::TypeSourceSelection>> {
-        use crate::sema::source_types::{SourceSelectionInput, TypeSourceSelection, WorkLimit};
+        use crate::sema::source_types::{TypeSourceSelection, WorkLimit};
         let invocation = *self.copy_invocation_stack.last()?;
         let call = self.copy_invocations.get(invocation.0 as usize)?;
         let event = call.source_event?;
@@ -216,18 +216,7 @@ impl Checker {
             return None;
         }
         let source_span = syntax.span;
-        match TypeSourceSelection::from_parameter(
-            schema,
-            syntax,
-            environment,
-            SourceSelectionInput {
-                invocation,
-                event,
-                slot: u32::try_from(slot).ok()?,
-                observation,
-                binding,
-            },
-        ) {
+        match TypeSourceSelection::from_elaborated(schema, syntax, environment, &mut work) {
             Ok(source) => Some(source),
             Err(error) => {
                 self.unsupported(
@@ -259,7 +248,7 @@ impl Checker {
         callee: &Value,
         event: CopyCallEventId,
     ) -> Vec<Option<source_reception::Target>> {
-        let [Callable::Named(index)] = callee.callables.as_slice() else {
+        let [Callable::Named(index, _)] = callee.callables.as_slice() else {
             return Vec::new();
         };
         let info = self.functions[*index].clone();
@@ -287,8 +276,8 @@ impl Checker {
                 .static_key_arguments
                 .remove(binder);
         }
-        if let Some(prepared) = self.explicit_named_for_event(event, info.definition) {
-            self.seed_explicit_named(&prepared);
+        if let Some(prepared) = self.named_instance_for_event(event, info.definition) {
+            self.seed_named_instance(&prepared);
         }
         self.set_contract_environment(&info.lexical);
         // Operand contexts are prepared before the callee has a body entry.
@@ -1202,7 +1191,7 @@ impl Checker {
         event: CopyCallEventId,
         frame: &Frame,
     ) {
-        if matches!(callee.callables.as_slice(), [Callable::Named(_)])
+        if matches!(callee.callables.as_slice(), [Callable::Named(..)])
             || callee
                 .callables
                 .iter()
@@ -1320,7 +1309,7 @@ impl Checker {
             || callee.callables.iter().all(|callable| {
                 matches!(
                     callable,
-                    Callable::Named(_) | Callable::Builtin(_) | Callable::Constructor(_)
+                    Callable::Named(..) | Callable::Builtin(_) | Callable::Constructor(_)
                 )
             })
         {

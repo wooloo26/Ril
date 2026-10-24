@@ -190,6 +190,7 @@ pub struct CopyInvocation {
     pub caller_owner: Option<CallableOwner>,
     pub caller_activation: Option<super::facts::ScopeId>,
     pub target: DefinitionId,
+    pub instance: Option<std::sync::Arc<super::model::NamedInstance>>,
     pub span: Span,
     pub declaration_probe: bool,
     pub direct: bool,

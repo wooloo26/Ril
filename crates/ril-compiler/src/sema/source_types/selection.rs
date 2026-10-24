@@ -13,19 +13,27 @@ pub struct TypeSourceSelection {
     pub(crate) syntax: Arc<TypeExpr>,
     pub(crate) environment: FrozenEnvironment,
     closed: Option<Arc<SourceTypeWitness>>,
-    pub(crate) input: Option<SourceSelectionInput>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SourceSelectionInput {
-    pub invocation: crate::sema::copy_templates::InstanceId,
-    pub event: crate::sema::copy_contract::CopyCallEventId,
-    pub slot: u32,
-    pub observation: usize,
-    pub binding: usize,
 }
 
 impl TypeSourceSelection {
+    pub(crate) fn from_elaborated(
+        schema: SourceSchema,
+        syntax: TypeExpr,
+        environment: FrozenEnvironment,
+        work: &mut WorkLimit,
+    ) -> Result<Arc<Self>, SourceTypesError> {
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let schema = schema.capture_interpretation(&environment, false, work)?;
+        Ok(Arc::new(Self {
+            schema,
+            syntax: Arc::new(syntax),
+            environment,
+            closed: None,
+        }))
+    }
+
     pub(crate) fn from_closed(
         witness: Arc<SourceTypeWitness>,
         environment: FrozenEnvironment,
@@ -42,30 +50,6 @@ impl TypeSourceSelection {
             syntax: Arc::new(witness.syntax.clone()),
             environment,
             closed: Some(witness),
-            input: None,
-        }))
-    }
-
-    pub(crate) fn from_parameter(
-        schema: SourceSchema,
-        syntax: TypeExpr,
-        environment: FrozenEnvironment,
-        input: SourceSelectionInput,
-    ) -> Result<Arc<Self>, SourceTypesError> {
-        if environment.is_poisoned()
-            || syntax.hir_id.is_none()
-            || schema.original() != syntax.hir_id
-        {
-            return Err(SourceTypesError::Unresolved);
-        }
-        crate::static_eval::effects::bounded_argument_key(&syntax, &BTreeMap::new())
-            .ok_or(SourceTypesError::BudgetExceeded)?;
-        Ok(Arc::new(Self {
-            schema,
-            syntax: Arc::new(syntax),
-            environment,
-            input: Some(input),
-            closed: None,
         }))
     }
 
@@ -80,12 +64,7 @@ impl TypeSourceSelection {
         binder: &mut impl FnMut(&str, bool, &mut WorkLimit) -> Result<TypeExpr, SourceTypesError>,
     ) -> Result<TypeExpr, SourceTypesError> {
         work.charge(1)?;
-        if self.closed.is_some()
-            || self.environment.is_poisoned()
-            || self.input.is_none()
-            || self.syntax.hir_id.is_none()
-            || self.schema.original() != self.syntax.hir_id
-        {
+        if self.closed.is_some() || self.environment.is_poisoned() {
             return Err(SourceTypesError::Unresolved);
         }
         self.schema.syntax_projection(span, work, binder)
@@ -123,14 +102,15 @@ impl PartialEq for TypeSourceSelection {
     fn eq(&self, other: &Self) -> bool {
         match (&self.closed, &other.closed) {
             (Some(left), Some(right)) => left == right,
-            _ => {
-                self.environment.id() == other.environment.id()
-                    && self
-                        .key()
-                        .ok()
-                        .zip(other.key().ok())
-                        .is_some_and(|(a, b)| a == b)
-            }
+            _ => self
+                .schema
+                .equivalent_in(
+                    &other.schema,
+                    &self.environment,
+                    &other.environment,
+                    &mut WorkLimit::new(32768),
+                )
+                .unwrap_or(false),
         }
     }
 }

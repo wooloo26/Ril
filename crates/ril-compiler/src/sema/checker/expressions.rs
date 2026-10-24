@@ -425,13 +425,18 @@ impl Checker {
             ExprKind::Name(name) => self.name(name, expr.span, frame),
             ExprKind::Path(path) => self.name(&path.join("::"), expr.span, frame),
             ExprKind::Generic { base, arguments } => {
-                let mut value = self.expression(base, frame);
-                if !self.prepare_explicit_named(expr, &value, frame)
-                    && !self.constructor_generic(&mut value, arguments, expr.span)
-                {
-                    self.standard_generic(&mut value, arguments, expr.span);
+                let mut packet = self.expression_source_packet(base, frame, None, None);
+                if packet.value.ty == Ty::Never || self.instantiate_named_value(expr, &mut packet) {
+                    let value = packet.value.clone();
+                    source_handled.owned = Some(packet);
+                    value
+                } else {
+                    let mut value = packet.value;
+                    if !self.constructor_generic(&mut value, arguments, expr.span) {
+                        self.standard_generic(&mut value, arguments, expr.span);
+                    }
+                    value
                 }
-                value
             }
             ExprKind::Block(block) => {
                 let result = self.block_expected_source(block, frame, expected, source);

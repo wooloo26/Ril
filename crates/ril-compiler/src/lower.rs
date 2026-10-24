@@ -981,6 +981,21 @@ impl Lower<'_> {
             ),
             ast::ExprKind::Path(path) => ir::ExprKind::Name(path.join("::")),
             ast::ExprKind::Generic { base, .. } => {
+                if let Some(name) = self.specializations.value_target(
+                    self.facts,
+                    self.callable_owner,
+                    expression.hir_id,
+                )? {
+                    if !matches!(base.kind, ast::ExprKind::Name(_) | ast::ExprKind::Path(_)) {
+                        return Err(unsupported(
+                            "computed generic callable instantiation must preserve its base evaluation",
+                        ));
+                    }
+                    return Ok(ir::Expr {
+                        span: expression.span,
+                        kind: ir::ExprKind::Name(name),
+                    });
+                }
                 let instances: std::collections::BTreeSet<_> = self
                     .facts
                     .external_instances

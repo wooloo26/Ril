@@ -357,7 +357,7 @@ impl Checker {
             }
             for callable in &value.callables {
                 let captures = match callable {
-                    Callable::Named(id) => Some(&self.functions[*id].captures),
+                    Callable::Named(id, _) => Some(&self.functions[*id].captures),
                     Callable::Closure(id) => Some(&self.closures[*id].captures),
                     Callable::Symbolic(..) => {
                         result = result.merge(ResourceScan::Incomplete);

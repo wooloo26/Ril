@@ -85,7 +85,7 @@ impl Checker {
             }
             return Ok(None);
         }
-        let [Callable::Named(index)] = source.value.callables.as_slice() else {
+        let [Callable::Named(index, _)] = source.value.callables.as_slice() else {
             return Ok(None);
         };
         let function = self
@@ -344,7 +344,7 @@ impl Checker {
                 .into_iter()
                 .flat_map(|binding| self.bindings[*binding].value.callables.iter())
                 .filter_map(|callable| match callable {
-                    Callable::Named(other) => Some(*other),
+                    Callable::Named(other, _) => Some(*other),
                     _ => None,
                 })
                 .collect();
@@ -487,7 +487,7 @@ impl Checker {
             .callables
             .iter()
             .filter_map(|callable| match callable {
-                Callable::Named(id) => Some(*id),
+                Callable::Named(id, _) => Some(*id),
                 _ => None,
             })
             .collect();
@@ -531,7 +531,7 @@ impl Checker {
     }
     pub(super) fn publish_named_environments(&mut self, value: &Value) {
         for callable in self.graph_callables(value) {
-            if let Callable::Named(id) = callable {
+            if let Callable::Named(id, _) = callable {
                 self.functions[id].environment_published = true;
             }
         }
@@ -549,7 +549,7 @@ impl Checker {
             return Vec::new();
         }
         let captures = match callable {
-            Callable::Named(id) => self.functions[*id].captures.clone(),
+            Callable::Named(id, _) => self.functions[*id].captures.clone(),
             Callable::Closure(id) => self.closures[*id].captures.clone(),
             _ => return Vec::new(),
         };

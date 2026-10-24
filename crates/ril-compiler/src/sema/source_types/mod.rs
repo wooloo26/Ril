@@ -33,7 +33,7 @@ pub use index::{SourceTypeIndex, SourceView};
 pub(crate) use queries::SourceTypeQueries;
 pub use queries::{SourcePath, SourceSensitivity};
 pub(crate) use schema::SourceSchema;
-pub use selection::{SourceSelectionInput, TypeSourceSelection};
+pub use selection::TypeSourceSelection;
 pub(crate) use substitution::LegacySourceExport;
 pub(crate) use substitution::scalar_name;
 pub(crate) use substitution::substitute_key_with;

@@ -110,8 +110,10 @@ duplicate source trees and historical verification reports.
   dependencies separately from invocation answer constraints. Record construction
   composes complete types from evaluated members and spreads; contextual `typeof`
   reads the declared type graph, including nested queries and field projections.
-  Finish routing generics, defaults, rows and constructors through the same typed
-  operations.
+  Named Type instances travel with function values, including phantom parameters;
+  callable type graphs retain their lexical interpretation inside products.
+  Finish routing other static sorts, defaults, rows and constructors through the
+  same typed operations.
 - Complete control-flow analysis for heap access, borrowing, effects, duties,
   resources and channels. Resolve generated callback inputs, use finite
   loop/recursion summaries and preserve correlated aggregates. Normal,
@@ -122,9 +124,9 @@ duplicate source trees and historical verification reports.
   inference across defaults, callbacks and control transfers.
 - Run static execution on the eligible elaborated operations used by compilation.
   Finish Const/Key argument and extent inference, selected numeric representation,
-  and first-class explicit generic instantiation without AST reconstruction.
-  Replace immediate-callee prefix windows with callable instances that retain
-  static selections through binding, capture and invocation.
+  and callable instantiation without AST reconstruction. Complete foreign,
+  computed and partially selected effectful callable lowering through the same
+  instance model.
 - Move remaining collection/iterator/order and resource/I/O algorithms into
   ordinary library sources in `crates/ril-stdlib/modules/`. Delete each replaced
   checker simulation, static implementation, late backend body generator and

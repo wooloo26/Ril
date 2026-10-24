@@ -249,6 +249,7 @@ impl Checker {
         span: Span,
         work: &mut WorkLimit,
     ) -> Result<source_reception::Target, SourceTypesError> {
+        let environment = schema.callable_interpretation(work)?.unwrap_or(environment);
         let syntax = schema.syntax_projection(span, work, &mut |identity, row, budget| {
             budget
                 .charge(environment.generic_context.len() + environment.bound_row_context.len())?;

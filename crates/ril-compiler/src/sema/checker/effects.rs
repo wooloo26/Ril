@@ -264,7 +264,7 @@ impl Checker {
     pub(super) fn has_retained_handlers(&self, callable: &Callable) -> bool {
         self.retained_handlers
             .iter()
-            .any(|proof| &proof.callable == callable && !proof.handlers.is_empty())
+            .any(|proof| proof.callable.same_environment(callable) && !proof.handlers.is_empty())
     }
     pub(super) fn begin_retained_handlers(
         &mut self,
@@ -275,7 +275,7 @@ impl Checker {
         let selected = self
             .retained_handlers
             .iter()
-            .find(|proof| &proof.callable == callable)
+            .find(|proof| proof.callable.same_environment(callable))
             .map(|proof| proof.handlers.clone())
             .unwrap_or_else(|| context.to_vec());
         let selected: Vec<_> = selected
@@ -473,7 +473,7 @@ impl Checker {
             .filter(|child| {
                 let owner = match child {
                     Callable::Closure(id) => Some(self.closures[*id].owner),
-                    Callable::Named(id) => self.functions[*id].owner,
+                    Callable::Named(id, _) => self.functions[*id].owner,
                     _ => None,
                 };
                 owner.is_some_and(|owner| self.scope_is_within(owner, frame.owner))
@@ -522,7 +522,7 @@ impl Checker {
             [parent],
         );
         let owner = match &callable {
-            Callable::Named(id) => Some(CallableOwner::Function(self.functions[*id].definition)),
+            Callable::Named(id, _) => Some(CallableOwner::Function(self.functions[*id].definition)),
             Callable::Closure(id) => self.closures[*id].site.map(CallableOwner::Lambda),
             _ => None,
         };
@@ -541,7 +541,7 @@ impl Checker {
         if let Some(proof) = self
             .retained_handlers
             .iter_mut()
-            .find(|proof| proof.callable == callable)
+            .find(|proof| proof.callable.same_environment(&callable))
         {
             for id in handlers {
                 if !proof.handlers.contains(&id) {
@@ -556,7 +556,7 @@ impl Checker {
                 Callable::Closure(id) => self
                     .lambda_contract(*id)
                     .map_or(span, |contract| contract.span),
-                Callable::Named(id) => self.functions[*id].syntax.span,
+                Callable::Named(id, _) => self.functions[*id].syntax.span,
                 _ => span,
             };
             self.retained_handlers.push(RetainedHandlerFact {
@@ -601,7 +601,7 @@ impl Checker {
         }
         for callable in self.graph_callables(value) {
             let stored = match &callable {
-                Callable::Named(id) => self.callable_local_effects.get(&(false, *id)),
+                Callable::Named(id, _) => self.callable_local_effects.get(&(false, *id)),
                 Callable::Closure(id) => self.callable_local_effects.get(&(true, *id)),
                 Callable::Builtin(name) => {
                     if let Some(operation) = self.operations.get(name)

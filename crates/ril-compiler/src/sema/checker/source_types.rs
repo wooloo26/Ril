@@ -653,13 +653,20 @@ impl Checker {
                     .generic_context
                     .get(&path.join("::"))
             {
-                return checker
+                let selection = checker
                     .type_source
                     .environment
                     .generic_sources
-                    .get(identity)
-                    .and_then(|selection| selection.closed())
-                    .map(|witness| witness.syntax.clone());
+                    .get(identity)?;
+                let mut budget = crate::sema::source_types::WorkLimit::new(4096 - *work);
+                let projected = selection
+                    .schema
+                    .syntax_projection(syntax.span, &mut budget, &mut |_, _, _| {
+                        Err(SourceTypesError::Unresolved)
+                    })
+                    .ok();
+                *work = 4096 - budget.remaining();
+                return projected;
             }
             let mut output = syntax.clone();
             output.text.clear();
@@ -793,10 +800,20 @@ impl Checker {
         args: &[(ParameterMode, Value, Span)],
         binders: &BTreeSet<String>,
         selected: &BTreeMap<String, Ty>,
-        explicit: Option<&super::explicit_named::Prepared>,
+        explicit: Option<&NamedInstance>,
     ) {
         let mut schemas = BTreeMap::new();
-        let mut captured = BTreeMap::new();
+        let mut captured = explicit
+            .into_iter()
+            .flat_map(|instance| &instance.selections)
+            .map(|selection| (selection.binder.clone(), selection.source.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let inferred = binders
+            .iter()
+            .filter(|id| !captured.contains_key(*id))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let binders = &inferred;
         for (slot, ((_, value, span), template)) in args.iter().zip(templates).enumerate() {
             let Some(template) = template else { continue };
             let mut mentioned = BTreeSet::new();
@@ -874,18 +891,6 @@ impl Checker {
         for (identity, ty) in selected {
             if captured.contains_key(identity) {
                 continue;
-            }
-            // Preserve a genuine explicit Source when the actual value has
-            // no closed projection. Do this after operand inference: fresh
-            // literals still receive context through the common input gate.
-            if !schemas.contains_key(identity)
-                && let Some(witness) = explicit
-                    .into_iter()
-                    .flat_map(|prepared| &prepared.selections)
-                    .find(|selection| &selection.binder == identity)
-                    .and_then(|selection| selection.witness.as_ref())
-            {
-                schemas.insert(identity.clone(), witness.clone());
             }
             if !schemas.contains_key(identity)
                 && let Some(witness) = self.closed_product_bound_identity(identity, templates)
@@ -1173,7 +1178,7 @@ impl Checker {
                 self.source_composite_syntax(value, expression.span)
             }
             _ if value.callables.len() == 1 => match &value.callables[0] {
-                Callable::Named(id) if self.functions[*id].syntax.generics.is_empty() => {
+                Callable::Named(id, _) if self.functions[*id].syntax.generics.is_empty() => {
                     named_environment = Some(self.functions[*id].clone());
                     let function = &self.functions[*id].syntax;
                     let mut parameters = function.parameters.clone();

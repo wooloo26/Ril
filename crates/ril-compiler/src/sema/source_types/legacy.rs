@@ -154,6 +154,7 @@ pub(super) fn import_node(
                 result,
                 annotations: annotations.clone(),
                 row_identity: None,
+                interpretation: None,
             }
         }
     };

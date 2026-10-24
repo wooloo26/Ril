@@ -167,6 +167,7 @@ impl Checker {
     pub(super) fn callable_signature(&self, parameters: Vec<Parameter>) -> Arc<CallableSignature> {
         Arc::new(CallableSignature {
             parameters,
+            generics: vec![],
             environment: self.capture_typing_environment(),
         })
     }
@@ -958,9 +959,10 @@ impl Checker {
             self.completed_invocation = None;
             let captures = self.contract_captures(&callable);
             match callable {
-                Callable::Named(id) => {
+                Callable::Named(id, instance) => {
                     self.invoke_named_generated_from(
                         id,
+                        instance,
                         arguments.clone(),
                         syntax.span,
                         Some(&mut context),
@@ -1267,7 +1269,7 @@ impl Checker {
     fn contract_captures(&self, callable: &Callable) -> BTreeSet<BindingId> {
         match callable {
             Callable::Closure(id) => self.closures[*id].captures.clone(),
-            Callable::Named(id) => self.functions[*id].captures.clone(),
+            Callable::Named(id, _) => self.functions[*id].captures.clone(),
             _ => BTreeSet::new(),
         }
     }

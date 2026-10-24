@@ -126,7 +126,7 @@ impl Checker {
                     .captures
                     .iter()
                     .any(|binding| self.bindings[*binding].value.temporary),
-                Callable::Named(id) => self.functions[id]
+                Callable::Named(id, _) => self.functions[id]
                     .captures
                     .iter()
                     .any(|binding| self.bindings[*binding].value.temporary),

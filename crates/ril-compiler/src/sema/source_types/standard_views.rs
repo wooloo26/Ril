@@ -50,6 +50,7 @@ pub(super) fn instantiate(
                     result,
                     annotations: vec!["&mut".into()],
                     row_identity: None,
+                    interpretation: None,
                 },
                 work,
             )?;
@@ -80,6 +81,7 @@ pub(super) fn instantiate(
                     result,
                     annotations: Vec::new(),
                     row_identity: None,
+                    interpretation: None,
                 },
                 work,
             )?;

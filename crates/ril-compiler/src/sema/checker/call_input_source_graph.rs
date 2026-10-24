@@ -259,88 +259,10 @@ impl Checker {
         {
             return Ok(Some(source));
         }
-        if let ExprKind::Generic { base, arguments } = &syntax.kind
-            && matches!(value.callables.as_slice(), [Callable::Named(_)])
+        if matches!(syntax.kind, ExprKind::Generic { .. })
+            && matches!(value.callables.as_slice(), [Callable::Named(_, Some(_))])
         {
-            // An ordinary explicit prefix prepares the application's static
-            // arguments; it does not replace the callable's public value or
-            // its original header. Keep that Source at the real base read.
-            // The application separately authenticates its selected arguments.
-            let root = observation.ok_or(SourceTypesError::MissingNode)?;
-            work.charge(3 + arguments.len())?;
-            let fact = self
-                .application_effect
-                .expressions
-                .get(root)
-                .ok_or(SourceTypesError::MissingNode)?;
-            let record = self
-                .application_effect
-                .evaluations
-                .get(root)
-                .ok_or(SourceTypesError::MissingNode)?;
-            let identity = record.identity.ok_or(SourceTypesError::MissingNode)?;
-            let context = self.invocation_context(frame.callable_owner);
-            let original = self
-                .semantic_hir
-                .expression(identity.source)
-                .ok_or(SourceTypesError::MissingNode)?;
-            let crate::hir::nodes::ExprKind::Generic {
-                base: original_base,
-                arguments: original_arguments,
-            } = &original.kind
-            else {
-                return Err(SourceTypesError::Unresolved);
-            };
-            if Some(identity.source) != syntax.hir_id
-                || fact.source_id != syntax.hir_id
-                || record.context != context
-                || Some(*original_base) != base.hir_id
-                || original_arguments.len() != arguments.len()
-                || arguments
-                    .iter()
-                    .zip(original_arguments)
-                    .any(|(actual, original)| actual.hir_id != Some(*original))
-            {
-                return Err(SourceTypesError::Unresolved);
-            }
-            let parent = ProjectionOccurrence {
-                identity,
-                context,
-                cause: fact.value.cause,
-            };
-            let child = self
-                .source_projection_receipts()
-                .child_observation(parent, *original_base, work)?
-                .0 as usize;
-            let actual = &self.application_effect.expressions[child];
-            let mut remaining = work.remaining();
-            let agrees =
-                crate::sema::evaluated::same_birth_value(&fact.value, value, &mut remaining)
-                    .and_then(|agrees| {
-                        if agrees {
-                            crate::sema::evaluated::same_birth_value(
-                                &actual.value,
-                                value,
-                                &mut remaining,
-                            )
-                        } else {
-                            Ok(false)
-                        }
-                    });
-            work.charge(work.remaining() - remaining)?;
-            if !agrees? {
-                return Err(SourceTypesError::Unresolved);
-            }
-            work.charge(1)?;
-            let input = actual.value.packet().clone();
-            return self.raw_original_source_schema(
-                input.value(),
-                base,
-                frame,
-                work,
-                depth + 1,
-                Some(child),
-            );
+            return self.owned_expression_source_schema(syntax, work, observation);
         }
         if let Some(source) = self.storage_binding_source_schema(value, syntax, frame) {
             return source;
@@ -565,7 +487,7 @@ impl Checker {
         if value.sources.len() != 1 || binding.parameter || binding.name != name.as_ref() {
             return Ok(None);
         }
-        let [Callable::Named(index)] = value.callables.as_slice() else {
+        let [Callable::Named(index, _)] = value.callables.as_slice() else {
             return Ok(None);
         };
         let function = self
@@ -600,7 +522,7 @@ impl Checker {
                     .and_then(|ty| ty.hir_id)
             || original.annotations.len() != function.syntax.annotations.len()
             || original.generics.len() != function.syntax.generics.len()
-            || !matches!(binding.value.callables.as_slice(), [Callable::Named(actual)] if actual == index)
+            || !matches!(binding.value.callables.as_slice(), [Callable::Named(actual, _)] if actual == index)
         {
             return Err(SourceTypesError::Unresolved);
         }
@@ -750,6 +672,15 @@ impl Checker {
         // creation. Its original header still names the declaration's UID;
         // applying those selections after composition keeps both every graph
         // edge and the selected view's interpretation intact.
+        let mut scope = environment.thaw();
+        for parameter in &function.syntax.generics {
+            if let Some(identity) = binders.get(&parameter.name) {
+                scope
+                    .generic_context
+                    .insert(parameter.name.clone(), identity.clone());
+            }
+        }
+        let environment = &scope.freeze();
         let required = schema.binder_identities(work)?;
         work.charge(required.len())?;
         let mut replacements = BTreeMap::new();

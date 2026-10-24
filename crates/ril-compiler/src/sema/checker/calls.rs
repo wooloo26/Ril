@@ -272,11 +272,11 @@ impl Checker {
                 Callable::Constructor(name) => {
                     self.invoke_constructor(name, &args, span, copy_call_event, frame)
                 }
-                Callable::Named(id) => {
+                Callable::Named(..) => {
                     frame.copy_call_event = copy_call_event;
                     if let Some(origin) = self.application_effect.snapshot_origin(origin) {
                         self.invoke_named_packets_from(
-                            *id,
+                            callable,
                             argument_packets.clone(),
                             Some(saved_callee.clone()),
                             span,
@@ -565,7 +565,7 @@ impl Checker {
         self.universal = verifying
             || (previous_universal && info.owner.is_some() && function.generics.is_empty());
         let explicit = (!verifying)
-            .then(|| self.explicit_named_for_invocation(&info))
+            .then(|| self.named_instance_for_invocation(&info))
             .flatten();
         // Preserve the genuine unselected templates before seeding a prefix.
         let raw_templates = explicit.as_ref().map(|_| {
@@ -581,15 +581,21 @@ impl Checker {
                 .collect()
         });
         if let Some(prepared) = &explicit {
-            self.seed_explicit_named(prepared);
+            self.seed_named_instance(prepared);
         }
         let (mut missing_inference, argument_templates) = if verifying {
             (BTreeSet::new(), Vec::new())
         } else {
-            self.infer_named_arguments(function, &args, &binders, raw_templates, explicit.as_ref())
+            self.infer_named_arguments(
+                function,
+                &args,
+                &binders,
+                raw_templates,
+                explicit.as_deref(),
+            )
         };
         if let Some(prepared) = &explicit {
-            self.finish_explicit_named_inference(prepared, span);
+            self.finish_named_instance_inference(prepared, span);
         }
         let source_event = self
             .copy_invocation_stack
@@ -640,9 +646,7 @@ impl Checker {
                     );
                 }
             }
-            if input_sources_valid.iter().all(|valid| *valid)
-                && self.validate_explicit_named_arguments(&info, span)
-            {
+            if input_sources_valid.iter().all(|valid| *valid) {
                 self.validate_numeric_application(&info, span);
             } else if let Some(event) = self
                 .copy_invocation_stack
@@ -1039,7 +1043,7 @@ impl Checker {
             }
         }
         let retained =
-            self.begin_retained_handlers(&Callable::Named(id), &info.handler_context, &frame);
+            self.begin_retained_handlers(&Callable::Named(id, None), &info.handler_context, &frame);
         let foreign_body_before = (self.foreign_callback_depth > 0).then(|| self.snapshot_flow());
         let declared_body_boundary = function.body.as_ref().map(|_| self.next_boundary);
         let exchange_arguments = exchange_arguments
@@ -1290,7 +1294,7 @@ impl Checker {
         self.escape_obligations(&result, &mut frame);
         self.record_callable_local_effects(false, id, &frame, &result);
         self.record_retained_handlers(
-            Callable::Named(id),
+            Callable::Named(id, None),
             &info.handler_context,
             &frame.obligations.selected_handlers,
             &result,
@@ -1298,13 +1302,14 @@ impl Checker {
             function.span,
         );
         self.record_returned_handler_context(
-            Callable::Named(id),
+            Callable::Named(id, None),
             &info.handler_context,
             &result,
             &frame,
             span,
         );
-        frame.obligations.handler_environment |= self.has_retained_handlers(&Callable::Named(id));
+        frame.obligations.handler_environment |=
+            self.has_retained_handlers(&Callable::Named(id, None));
         for access in &mut frame.obligations.accesses {
             access.transport(&self.recency_moves);
         }
@@ -1476,7 +1481,7 @@ impl Checker {
         args: &[(ParameterMode, Value, Span)],
         binders: &BTreeSet<String>,
         raw_templates: Option<Vec<Option<Ty>>>,
-        explicit: Option<&super::explicit_named::Prepared>,
+        explicit: Option<&NamedInstance>,
     ) -> (BTreeSet<String>, Vec<Option<Ty>>) {
         if function.generics.is_empty() {
             return (BTreeSet::new(), Vec::new());
@@ -2389,7 +2394,7 @@ impl Checker {
                 .iter()
                 .any(|callable| match callable {
                     Callable::Closure(id) => !self.closures[*id].captures.is_empty(),
-                    Callable::Named(id) => !self.functions[*id].captures.is_empty(),
+                    Callable::Named(id, _) => !self.functions[*id].captures.is_empty(),
                     _ => false,
                 })
             && let Some(id) = self.pending_copy_dependencies(result).first()
@@ -2490,11 +2495,11 @@ impl Checker {
             );
         }
         for callable in self.graph_callables(result) {
-            let Callable::Named(id) = callable else {
+            let Callable::Named(id, _) = callable else {
                 continue;
             };
             let info = self.functions[id].clone();
-            if info.captures.is_empty() && !self.has_retained_handlers(&Callable::Named(id)) {
+            if info.captures.is_empty() && !self.has_retained_handlers(&Callable::Named(id, None)) {
                 continue;
             }
             if info
@@ -2696,7 +2701,7 @@ impl Checker {
                                 .value
                                 .callables
                                 .iter()
-                                .any(|c| matches!(c, Callable::Named(_)))
+                                .any(|c| matches!(c, Callable::Named(..)))
                         {
                             self.error(
                                 "E0538",
@@ -3286,7 +3291,7 @@ impl Checker {
         let closures = self.graph_callables(source);
         let captured = closures.iter().any(|callable| match callable {
             Callable::Closure(id) => !self.closures[*id].captures.is_empty(),
-            Callable::Named(id) => !self.functions[*id].captures.is_empty(),
+            Callable::Named(id, _) => !self.functions[*id].captures.is_empty(),
             _ => false,
         });
         if closures

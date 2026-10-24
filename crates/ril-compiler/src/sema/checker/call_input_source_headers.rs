@@ -129,10 +129,6 @@ impl Checker {
             if let Some(source) = self.type_source.environment.generic_sources.get(&identity) {
                 if source.environment.is_poisoned()
                     || (source.closed().is_some() && !source.validate_closed())
-                    || (source.closed().is_none()
-                        && (source.input.is_none()
-                            || source.syntax.hir_id.is_none()
-                            || source.schema.original() != source.syntax.hir_id))
                 {
                     return Err(SourceTypesError::Unresolved);
                 }

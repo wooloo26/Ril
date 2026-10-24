@@ -151,7 +151,13 @@ impl Checker {
                             }
                         }
                         let fresh = crate::sema::source_reception::Construction::Record(fields);
-                        if !expected.receive_schema(&schema, Some(&fresh), lease.work())? {
+                        if !expected.receive_schema_in(
+                            &schema,
+                            &target.environment,
+                            &environment,
+                            Some(&fresh),
+                            lease.work(),
+                        )? {
                             self.error(
                                 "E0301",
                                 expression.span,

@@ -163,6 +163,7 @@ pub(crate) enum SourceNode {
         result: SourceTypeId,
         annotations: Vec<String>,
         row_identity: Option<CallableRowIdentity>,
+        interpretation: Option<crate::sema::context::FrozenEnvironment>,
     },
     Container {
         kind: SourceContainer,
@@ -300,6 +301,7 @@ impl SourceNode {
                 result,
                 annotations,
                 row_identity,
+                interpretation,
             } => Self::Callable {
                 parameters: parameters
                     .iter()
@@ -307,6 +309,7 @@ impl SourceNode {
                     .collect::<Result<_, SourceTypesError>>()?,
                 result: map(*result)?,
                 annotations: annotations.clone(),
+                interpretation: interpretation.clone(),
                 row_identity: row_identity
                     .as_ref()
                     .map(|row| {

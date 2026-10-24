@@ -286,6 +286,7 @@ mod tests {
                     result: unit,
                     annotations: vec![],
                     row_identity: None,
+                    interpretation: None,
                 },
                 &mut work,
             )
@@ -297,6 +298,7 @@ mod tests {
                     result: unit,
                     annotations: vec!["&mut".into()],
                     row_identity: None,
+                    interpretation: None,
                 },
                 &mut work,
             )

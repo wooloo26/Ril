@@ -214,7 +214,7 @@ impl Checker {
                 return vec![Some(payload.clone())];
             }
         }
-        let [Callable::Named(id)] = callee.callables.as_slice() else {
+        let [Callable::Named(id, _)] = callee.callables.as_slice() else {
             let Ty::Callable(parameters, _) = self.expanded_at(&callee.ty, span.file) else {
                 return vec![None; arguments.len()];
             };
@@ -273,7 +273,7 @@ impl Checker {
                 })
             })
             .collect();
-        let explicit = self.explicit_named_for_event(source_event, info.definition);
+        let explicit = self.named_instance_for_event(source_event, info.definition);
         let mut selected: BTreeMap<_, _> = explicit
             .iter()
             .flat_map(|prepared| prepared.selections.iter())

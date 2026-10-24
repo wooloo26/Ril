@@ -160,7 +160,7 @@ impl Checker {
             );
             for callable in self.graph_callables(&value) {
                 let captures: Vec<_> = match callable {
-                    Callable::Named(function) => {
+                    Callable::Named(function, _) => {
                         let info = &self.functions[function];
                         let Some(body) = &info.syntax.body else {
                             continue;

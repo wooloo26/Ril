@@ -103,7 +103,7 @@ impl Checker {
     }
     pub(super) fn record_copy_references(&mut self, value: &Value, span: Span, frame: &Frame) {
         for callable in &value.callables {
-            if let Callable::Named(index) = callable {
+            if let Callable::Named(index, _) = callable {
                 self.copy_references.push(CopyReference {
                     id: CopyReferenceId(self.copy_references.len() as u32),
                     expression: self.application_effect.expressions.len(),
@@ -150,7 +150,7 @@ impl Checker {
     ) {
         let parent = self.copy_invocation_stack.last().copied();
         let target = match value.callables.as_slice() {
-            [Callable::Named(index)] => Some(self.functions[*index].definition),
+            [Callable::Named(index, _)] => Some(self.functions[*index].definition),
             _ => None,
         };
         let mut parts = 1;
@@ -170,7 +170,7 @@ impl Checker {
         // one matching callable expression per layer; unexpected nested uses
         // fail closed instead of inheriting directness.
         let direct = target.is_some()
-            && matches!(value.callables.as_slice(), [Callable::Named(index)]
+            && matches!(value.callables.as_slice(), [Callable::Named(index, _)]
                 if name.as_ref() == Some(&self.functions[*index].syntax.name))
             && references.len() == parts
             && references.iter().all(|reference| {
@@ -255,12 +255,13 @@ impl Checker {
         span: Span,
     ) -> Value {
         use crate::sema::application_effect::EntryOrigin;
-        self.invoke_named_generated_from(id, args, span, None, EntryOrigin::DeclarationProbe)
+        self.invoke_named_generated_from(id, None, args, span, None, EntryOrigin::DeclarationProbe)
     }
 
     pub(super) fn invoke_named_generated_from(
         &mut self,
         id: usize,
+        instance: Option<std::sync::Arc<NamedInstance>>,
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
         caller: Option<&mut Frame>,
@@ -273,12 +274,19 @@ impl Checker {
                 return Value::scalar(Ty::Unknown, None, CauseId(0));
             }
         };
-        self.invoke_named_packets_from(id, args, None, span, caller, origin)
+        self.invoke_named_packets_from(
+            &Callable::Named(id, instance),
+            args,
+            None,
+            span,
+            caller,
+            origin,
+        )
     }
 
     pub(super) fn invoke_named_packets_from(
         &mut self,
-        id: usize,
+        target_value: &Callable,
         args: std::sync::Arc<Vec<crate::sema::application_effect::EntryArgument>>,
         callee: Option<std::sync::Arc<EvaluatedValue>>,
         span: Span,
@@ -286,6 +294,11 @@ impl Checker {
         origin: crate::sema::application_effect::EntryOrigin,
     ) -> Value {
         use crate::sema::application_effect::{CallableEntry, EntryOrigin};
+        let Callable::Named(id, selected) = target_value else {
+            self.unsupported(span, "named entry requires a named callable target");
+            return Value::scalar(Ty::Unknown, None, CauseId(0));
+        };
+        let id = *id;
         let verifying = origin == EntryOrigin::DeclarationProbe;
         if !self.application_effect.admit(1 + args.len()) {
             self.unsupported(
@@ -347,6 +360,7 @@ impl Checker {
             caller_owner,
             caller_activation: caller.as_ref().map(|frame| frame.owner),
             target,
+            instance: selected.clone(),
             span,
             declaration_probe: verifying,
             direct,

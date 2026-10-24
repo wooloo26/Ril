@@ -500,13 +500,13 @@ impl Checker {
                 [callback.cause],
             );
         }
-        if callback.callables.iter().any(|callable| matches!(callable,Callable::Named(id) if self.functions[*id].syntax.annotations.iter().any(|annotation| annotation.text != "@{}" && annotation.text != "&{}"))) {
+        if callback.callables.iter().any(|callable| matches!(callable,Callable::Named(id, _) if self.functions[*id].syntax.annotations.iter().any(|annotation| annotation.text != "@{}" && annotation.text != "&{}"))) {
             self.error("E0534",span,"ordering comparator retains a nonempty invocation row",[callback.cause]);
         }
         if retained
             && callback.callables.iter().any(|callable| match callable {
                 Callable::Closure(id) => !self.closures[*id].captures.is_empty(),
-                Callable::Named(id) => !self.functions[*id].captures.is_empty(),
+                Callable::Named(id, _) => !self.functions[*id].captures.is_empty(),
                 _ => false,
             })
         {
@@ -541,7 +541,7 @@ impl Checker {
                 {
                     continue;
                 }
-                Callable::Named(id) => Some(Expr {
+                Callable::Named(id, _) => Some(Expr {
                     hir_id: None,
                     kind: ExprKind::Name(self.functions[*id].syntax.name.clone()),
                     span,
