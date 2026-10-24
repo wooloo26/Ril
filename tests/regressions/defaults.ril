@@ -252,3 +252,63 @@ pub fn test_native(){
 --@ entry: test_native
 --@ use-source: source-transitive
 --@ end-case
+
+--@ source: contextual-default-values
+--@ file: source.ril
+fn bytes(value: [0][2]u8 = []) -> [0][2]u8 { value }
+fn optional(value: ?u8 = Some(255)) -> ?u8 { value }
+fn identity(value: u8) -> u8 { value }
+fn callback(action: fn(u8) -> u8 = identity) -> u8 { action(255u8) }
+pub fn test_defaults() {
+    assert(len(bytes()) == 0)
+    assert(optional() == Some(255u8))
+    assert(callback() == 255u8)
+}
+--@ end-file
+--@ end-source
+
+--@ case: contextual-values-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: contextual-values-pointer64
+--@ use-source: contextual-default-values
+--@ end-case
+
+--@ case: contextual-values-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: contextual-values-native
+--@ use-source: contextual-default-values
+--@ end-case
+
+--@ case: contextual-values-native
+--@ mode: run-pass
+--@ entry: test_defaults
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: contextual-values-pointer32
+--@ use-source: contextual-default-values
+--@ end-case
+
+--@ case: unused-default-keeps-inner-dimension
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: contextual-values-pointer64
+-- Error [E0301]: An unused default cannot replace a stored inner dimension.
+--@ file: source.ril
+fn old() -> [0][3]u8 { [] }
+fn unused(value: [0][2]u8 = old()) {}
+--@ end-file
+--@ end-case
+
+--@ case: unused-default-keeps-callback-input
+--@ mode: check-fail
+--@ spec: SPEC#default-parameters-and-named-arguments
+--@ companion: contextual-values-pointer64
+-- Error [E0301]: A default callback retains its actual input dimensions.
+--@ file: source.ril
+fn triple(value: [3]u8) -> int { 0 }
+fn unused(action: fn([2]u8) -> int = triple) {}
+--@ end-file
+--@ end-case

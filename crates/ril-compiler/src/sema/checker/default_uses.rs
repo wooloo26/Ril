@@ -53,12 +53,14 @@ impl Checker {
             result_allocation_epoch: None,
         });
         self.default_use_stack.push(id);
-        let expected = info
+        let annotation = info
             .as_ref()
             .and_then(|info| info.syntax.parameters.get(parameter))
-            .and_then(|parameter| parameter.ty.as_ref())
-            .map(|syntax| self.ty(syntax));
-        let mut packet = self.expression_source_packet(syntax, frame, expected.as_ref(), None);
+            .and_then(|parameter| parameter.ty.as_ref());
+        let expected = annotation.map(|syntax| self.ty(syntax));
+        let source = annotation.map(|syntax| self.freeze_source_receiving_target(syntax));
+        let mut packet =
+            self.expression_source_packet(syntax, frame, expected.as_ref(), source.as_ref());
         let transport = self.prepare_evaluation_packet(&mut packet, syntax.span);
         if let Err(error) = transport {
             assert_eq!(self.default_use_stack.pop(), Some(id));

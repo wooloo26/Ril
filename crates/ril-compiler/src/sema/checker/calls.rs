@@ -3607,10 +3607,6 @@ impl Checker {
                     );
                 }
                 self.set_contract_environment(&frame.env);
-                let source_target = parameter
-                    .ty
-                    .as_ref()
-                    .map(|syntax| self.freeze_source_receiving_target(syntax));
                 let caller = self.invocation_context(frame.callable_owner);
                 let packet = self.evaluate_default(
                     Some(id),
@@ -3630,6 +3626,7 @@ impl Checker {
                         break;
                     }
                 };
+                let source_valid = packet.source_valid;
                 let mut value = match self.consume_evaluation_packet(packet, default.span) {
                     Ok(value) => value,
                     Err(error) => {
@@ -3643,17 +3640,6 @@ impl Checker {
                     }
                 };
                 self.default_use_stack.push(use_id);
-                let source_valid = self.check_declared_default_source(
-                    super::default_source_receiving::DeclaredDefault {
-                        function: self.functions[id].definition,
-                        parameter: index as u32,
-                        receipt: use_id,
-                        syntax: default,
-                        target: source_target.as_ref(),
-                    },
-                    &value,
-                    &frame,
-                );
                 if let Some(ty) = &parameter.ty {
                     self.set_contract_environment(&frame.env);
                     if source_valid {

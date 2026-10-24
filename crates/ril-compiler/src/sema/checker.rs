@@ -47,7 +47,6 @@ mod copy;
 mod copy_classes;
 mod copy_contracts;
 mod copy_invocations;
-mod default_source_receiving;
 mod default_uses;
 mod effect_instances;
 mod effect_invocations;

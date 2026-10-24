@@ -153,3 +153,12 @@ fn complete_tuple_record_and_nested_literal_defaults_keep_their_receiving_contex
         }
     }
 }
+
+#[test]
+fn contextual_defaults_use_the_shared_expression_receiver() {
+    let source =
+        ril_test::case_source("tests/regressions/defaults.ril::contextual-values-pointer64");
+    for layout in ["pointer32", "pointer64"] {
+        verified(source, layout);
+    }
+}
