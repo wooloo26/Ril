@@ -718,7 +718,7 @@ pub(super) fn resolved_symbolic_names(
                     key: crate::static_eval::normalized_argument_key(&head),
                     syntax: head,
                 };
-                if !crate::sema::source_type_validation::resolved_names(&witness, declarations) {
+                if !crate::sema::source_types::legacy::resolved_names(&witness, declarations) {
                     return None;
                 }
             }

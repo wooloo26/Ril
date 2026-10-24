@@ -234,7 +234,6 @@ pub(crate) struct EffectSource {
     pub(crate) declaration: std::sync::Arc<EffectDeclaration>,
     pub(crate) arguments: std::sync::Arc<[TypeExpr]>,
     pub(crate) operations: SourceSchema,
-    pub(crate) names: std::sync::Arc<BTreeMap<String, u32>>,
 }
 
 pub(crate) enum EffectSourceError {
@@ -337,7 +336,6 @@ pub(crate) fn effect_source(
         declaration: std::sync::Arc::new(normalized.declaration),
         arguments: normalized.arguments.into(),
         operations,
-        names: std::sync::Arc::new(names),
     })
 }
 

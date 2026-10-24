@@ -334,7 +334,7 @@ mod tests {
             syntax,
         };
         assert!(witness.validate_closed());
-        assert!(crate::sema::source_type_validation::resolved_names(
+        assert!(crate::sema::source_types::legacy::resolved_names(
             &witness,
             &Default::default()
         ));
@@ -348,7 +348,7 @@ mod tests {
         );
         witness.key = crate::static_eval::normalized_argument_key(&witness.syntax);
         assert!(
-            !crate::sema::source_type_validation::resolved_names(&witness, &Default::default()),
+            !crate::sema::source_types::legacy::resolved_names(&witness, &Default::default()),
             "a closed catalog nominal declaration does not invent generic arguments"
         );
     }

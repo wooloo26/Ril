@@ -1,7 +1,4 @@
-use ril_compiler::{
-    Session,
-    sema::{model::Value, validate::solved_facts},
-};
+use ril_compiler::{Session, sema::model::Value};
 use std::collections::BTreeSet;
 
 fn complete_origins(value: &Value) {
@@ -44,7 +41,6 @@ fn example() @Fiber {
 }
 "#;
     let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    solved_facts(verified.facts()).unwrap();
     for expression in &verified.facts().expressions {
         complete_origins(&expression.value);
     }

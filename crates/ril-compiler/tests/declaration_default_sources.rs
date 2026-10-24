@@ -1,5 +1,5 @@
 //! Defaults retain their original Source even when the function is never called.
-use ril_compiler::sema::{SemanticFacts, default_uses::DefaultOrigin, validate::solved_facts};
+use ril_compiler::sema::SemanticFacts;
 use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 
 fn verified(source: &str, layout: &str) -> SemanticFacts {
@@ -53,79 +53,6 @@ fn unused_defaults_receive_real_literals_and_earlier_formals_without_body_entry(
             verified(source, layout);
         }
     }
-}
-
-#[test]
-fn declaration_receipt_and_root_deletion_cannot_erase_the_source_duty() {
-    let baseline = verified("fn unused(value:[2]int=[7,9]){}", "pointer64");
-    let receipt = baseline
-        .default_uses
-        .iter()
-        .find(|receipt| receipt.origin == DefaultOrigin::DeclarationProbe)
-        .unwrap();
-    let id = receipt.id;
-    let token = receipt.result_expression.unwrap();
-    assert!(receipt.entered.is_empty());
-    let mut changed = baseline.clone();
-    changed.default_uses.clear();
-    assert!(
-        solved_facts(&changed).is_err(),
-        "default arena deletion passed"
-    );
-    let mut changed = baseline.clone();
-    changed.default_uses[id.0 as usize].result_expression = None;
-    assert!(solved_facts(&changed).is_err(), "missing root token passed");
-    let mut changed = baseline.clone();
-    changed.default_uses[id.0 as usize].result_allocation_epoch = None;
-    assert!(solved_facts(&changed).is_err(), "missing root epoch passed");
-    let mut changed = baseline.clone();
-    changed.default_uses[id.0 as usize].evaluation_complete = false;
-    assert!(
-        solved_facts(&changed).is_err(),
-        "incomplete normal root passed"
-    );
-    let mut changed = baseline;
-    changed
-        .invocation_expressions
-        .iter_mut()
-        .find(|row| row.expression == token)
-        .unwrap()
-        .context
-        .default_use = None;
-    assert!(
-        solved_facts(&changed).is_err(),
-        "unowned root emission passed"
-    );
-}
-
-#[test]
-fn changing_only_the_frozen_default_to_bottom_cannot_erase_its_receiving_duty() {
-    use ril_compiler::sema::{model::Ty, validate::ValidationIssueKind};
-    let baseline = verified("fn unused(value:[2]int=[7,9]){}", "pointer64");
-    let receipt = baseline
-        .default_uses
-        .iter()
-        .find(|receipt| receipt.origin == DefaultOrigin::DeclarationProbe)
-        .unwrap();
-    let id = receipt.id;
-    let token = receipt.result_expression.unwrap();
-    assert_ne!(baseline.expressions[token].value.ty, Ty::Never);
-    let mut changed = baseline.clone();
-    changed.default_uses[id.0 as usize]
-        .result
-        .as_mut()
-        .unwrap()
-        .value
-        .ty = Ty::Never;
-    changed.default_uses[id.0 as usize].evaluation_complete = false;
-    assert_eq!(
-        changed.expressions[token].value.ty,
-        baseline.expressions[token].value.ty
-    );
-    let issues = solved_facts(&changed).expect_err("a changed frozen snapshot cannot claim bottom");
-    assert!(issues.iter().any(|issue| matches!(&issue.kind,
-        ValidationIssueKind::RecordBound(message) if message.contains("default root source view differs"))),
-        "must reject the original Source disagreement before using bottom: {issues:?}");
 }
 
 #[test]

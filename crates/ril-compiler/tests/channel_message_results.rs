@@ -1,15 +1,5 @@
 use ril_compiler::{Session, sema::channel_messages::ChannelAction};
 
-fn facts() -> ril_compiler::sema::SemanticFacts {
-    Session::new(
-        ril_test::case_bytes("tests/regressions/channels.ril::channel-formal-result").to_vec(),
-    )
-    .verify()
-    .unwrap()
-    .facts()
-    .clone()
-}
-
 #[test]
 fn representative_callbacks_and_loop_bodies_do_not_prove_message_cardinality() {
     let repeated = ril_test::case_source(
@@ -54,247 +44,6 @@ fn scalar_only_and_empty_message_repetitions_keep_their_own_execution_regions() 
             .all(|entry| entry.end_sequence.is_some() && entry.call.is_some())
     );
     let _core = ril_compiler::lower::lower_core(&verified).unwrap();
-}
-
-#[test]
-fn erasing_repetition_tables_cannot_erase_callback_and_incoming_loop_call_bounds() {
-    use ril_syntax::ast::{ExprKind, Literal, StmtKind};
-    for (source, array) in [
-        (
-            ril_test::case_source(
-                "tests/regressions/channels.ril::channel-message-repeated-cardinality-gap",
-            )
-            .replace("[1,2]", "[1]"),
-            true,
-        ),
-        (
-            ril_test::case_source(
-                "tests/regressions/channels.ril::channel-message-loop-cardinality-gap",
-            )
-            .replace("0..2", "0..1"),
-            false,
-        ),
-    ] {
-        let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-        let mut changed = verified.facts().clone();
-        changed.channel_repetitions.clear();
-        for event in &mut changed.channel_messages {
-            event.repetition = None;
-        }
-        let mut edits = 0;
-        for closure in &mut changed.closures {
-            let ExprKind::Block(body) = &mut closure.body.kind else {
-                continue;
-            };
-            for statement in &mut body.statements {
-                let value = match &mut statement.kind {
-                    StmtKind::Binding(binding) => &mut binding.value,
-                    StmtKind::Expr { expression, .. } => expression,
-                    _ => continue,
-                };
-                if array {
-                    if let ExprKind::Call { callee, arguments } = &mut value.kind
-                        && matches!(&callee.kind, ExprKind::Path(path) if path.join("::") == "Array::map")
-                        && let ExprKind::Array(values) = &mut arguments[0].value.kind
-                    {
-                        values.push(values[0].clone());
-                        edits += 1;
-                    }
-                } else if let ExprKind::For { iterable, .. } = &mut value.kind
-                    && let ExprKind::Range { end: Some(end), .. } = &mut iterable.kind
-                {
-                    end.kind = ExprKind::Literal(Literal::Integer("2".into()));
-                    edits += 1;
-                }
-            }
-        }
-        assert!(edits > 0);
-        rejected(&changed);
-    }
-    let mut changed = facts();
-    changed
-        .closure_invocations
-        .iter_mut()
-        .filter(|invocation| !invocation.probe)
-        .for_each(|invocation| invocation.source_event = None);
-    rejected(&changed);
-}
-
-#[test]
-fn zero_entry_inspection_cannot_pay_a_later_channel_message() {
-    use ril_syntax::ast::{ExprKind, StmtKind};
-    let original = ril_test::case_source("tests/regressions/channels.ril::channel-formal-result");
-    let inspected = original.replace(
-        "let sent=publish(mut tx,payload)",
-        "let inspect=\\number:int->{assert(payload is Ok(_)|Err(_));number}\nlet _=Array::map([1],inspect)\nlet sent=publish(mut tx,payload)",
-    ).replace("Ok(value)->assert(value is Ok(7)|Err(_))", "Ok(_)->()");
-    let verified = Session::new(inspected.as_bytes().to_vec())
-        .verify()
-        .unwrap();
-    ril_compiler::lower::lower_core(&verified).unwrap();
-    let mut changed = verified.facts().clone();
-    changed.channel_repetitions.clear();
-    for event in &mut changed.channel_messages {
-        event.repetition = None;
-    }
-    for duty in &mut changed.result_duties {
-        duty.inspected = true;
-        duty.covered = true;
-    }
-    let mut edits = 0;
-    for closure in &mut changed.closures {
-        let ExprKind::Block(body) = &mut closure.body.kind else {
-            continue;
-        };
-        for statement in &mut body.statements {
-            if let StmtKind::Binding(binding) = &mut statement.kind
-                && let ExprKind::Call { callee, arguments } = &mut binding.value.kind
-                && matches!(&callee.kind, ExprKind::Path(path) if path.join("::") == "Array::map")
-                && let ExprKind::Array(values) = &mut arguments[0].value.kind
-            {
-                values.clear();
-                edits += 1;
-            }
-        }
-    }
-    assert!(edits > 0);
-    rejected(&changed);
-    for source in [
-        inspected.replace("[1],inspect", "[],inspect"),
-        inspected.replace("[1],inspect", "[1,2],inspect").replace(
-            "assert(payload is Ok(_)|Err(_));number",
-            "if false {assert(payload is Ok(_)|Err(_))};number",
-        ),
-    ] {
-        assert!(
-            !matches!(
-                Session::new(source.as_bytes().to_vec()).check(),
-                ril_compiler::CompilationOutcome::Accepted { .. }
-            ),
-            "{source}"
-        );
-    }
-}
-
-fn rejected(facts: &ril_compiler::sema::SemanticFacts) {
-    let issues = ril_compiler::sema::validate::solved_facts(facts).unwrap_err();
-    assert!(
-        issues.iter().any(|issue| matches!(
-            issue.kind,
-            ril_compiler::sema::validate::ValidationIssueKind::ChannelMessage(_)
-        )),
-        "{issues:?}"
-    );
-}
-
-#[test]
-fn deleting_transport_or_normal_exit_tables_cannot_erase_their_coverage() {
-    let original = facts();
-    for table in 0..3 {
-        let mut changed = original.clone();
-        if table != 1 {
-            changed.channel_messages.clear();
-        }
-        if table != 0 {
-            changed.channel_exits.clear();
-        }
-        changed.channel_message_sequence = 0;
-        rejected(&changed);
-    }
-    let mut changed = original;
-    changed.channel_exits.last_mut().unwrap().guard =
-        ril_compiler::sema::channel_messages::ChannelGuard::never();
-    rejected(&changed);
-}
-
-#[test]
-fn producer_ownership_receive_sources_and_physical_generations_need_actual_evidence() {
-    use ril_compiler::sema::{channel_messages::ChannelAnchor, facts::ScopeId};
-    let original = facts();
-    let mut changed = original.clone();
-    let owners = changed
-        .channel_messages
-        .iter_mut()
-        .find_map(|event| match &mut event.action {
-            ChannelAction::Send {
-                anchor: ChannelAnchor::Known { .. },
-                original_owners,
-                ..
-            } => Some(original_owners),
-            _ => None,
-        })
-        .unwrap();
-    *owners.values_mut().next().unwrap() = ScopeId(0);
-    rejected(&changed);
-    let mut changed = original.clone();
-    let sources = changed
-        .channel_messages
-        .iter_mut()
-        .find_map(|event| match &mut event.action {
-            ChannelAction::Receive { sources, .. } => Some(sources),
-            _ => None,
-        })
-        .unwrap();
-    sources[0].send = None;
-    rejected(&changed);
-    let mut changed = original;
-    let versions = changed
-        .channel_messages
-        .iter_mut()
-        .find_map(|event| match &mut event.action {
-            ChannelAction::Send {
-                anchor: ChannelAnchor::Known { .. },
-                producer_versions,
-                ..
-            } => Some(producer_versions),
-            _ => None,
-        })
-        .unwrap();
-    for version in versions.values_mut() {
-        *version += 1;
-    }
-    rejected(&changed);
-}
-
-#[test]
-fn final_inspected_flags_cannot_replace_missing_business_inspection_events() {
-    use ril_compiler::sema::channel_messages::ChannelAnchor;
-    let mut changed = facts();
-    let producers = changed
-        .channel_messages
-        .iter()
-        .find_map(|event| match &event.action {
-            ChannelAction::Send {
-                anchor: ChannelAnchor::Known { .. },
-                payload,
-                ..
-            } => Some(payload.value.results.clone()),
-            _ => None,
-        })
-        .unwrap();
-    for event in &mut changed.channel_messages {
-        if let ChannelAction::Inspect { value, .. } = &mut event.action {
-            value
-                .value
-                .must_outer_results
-                .retain(|producer| !producers.contains(producer));
-        }
-    }
-    for evaluation in &mut changed.condition_evaluations {
-        evaluation
-            .inspections
-            .when_true
-            .retain(|producer| !producers.contains(producer));
-        evaluation
-            .inspections
-            .when_false
-            .retain(|producer| !producers.contains(producer));
-    }
-    for duty in &mut changed.result_duties {
-        duty.inspected = true;
-        duty.covered = true;
-    }
-    rejected(&changed);
 }
 
 #[test]
@@ -425,49 +174,6 @@ fn a_returned_family_tag_is_selected_by_its_actual_member_receipt() {
 }
 
 #[test]
-fn caller_summary_identity_and_complete_return_coverage_are_not_optional() {
-    let original = facts();
-    let mut changed = original.clone();
-    for summary in &mut changed.invocations {
-        summary.channel_messages.clear();
-    }
-    rejected(&changed);
-    let mut changed = original;
-    for summary in &mut changed.invocations {
-        summary.activation = None;
-        summary.context = None;
-    }
-    rejected(&changed);
-    let mut changed = Session::new(
-        ril_test::case_bytes("tests/regressions/channels.ril::channel-message-question-checked")
-            .to_vec(),
-    )
-    .verify()
-    .unwrap()
-    .facts()
-    .clone();
-    let returned = changed
-        .channel_exits
-        .iter()
-        .find(|exit| exit.kind == ril_compiler::sema::channel_messages::ChannelExitKind::Return)
-        .unwrap()
-        .clone();
-    let completion = changed
-        .channel_exits
-        .iter_mut()
-        .find(|exit| {
-            exit.activation == returned.activation
-                && exit.kind == ril_compiler::sema::channel_messages::ChannelExitKind::Complete
-        })
-        .unwrap();
-    completion.guard = completion
-        .guard
-        .and(&returned.guard.not().unwrap())
-        .unwrap();
-    rejected(&changed);
-}
-
-#[test]
 fn a_business_error_from_scope_does_not_supply_cancellation_proof() {
     let source = ril_test::case_source(
         "tests/regressions/channels.ril::channel-message-inline-unread-close",
@@ -487,129 +193,6 @@ fn a_business_error_from_scope_does_not_supply_cancellation_proof() {
         ),
         other => panic!("{other:?}"),
     }
-}
-
-#[test]
-fn unknown_nested_and_collection_producer_graphs_never_become_complete_from_one_tag() {
-    for source in [
-        ril_test::case_source(
-            "tests/regressions/channels.ril::channel-message-formal-array-graph-gap",
-        ),
-        ril_test::case_source(
-            "tests/regressions/channels.ril::channel-message-formal-map-graph-gap",
-        ),
-    ] {
-        match Session::new(source.as_bytes().to_vec()).check() {
-            ril_compiler::CompilationOutcome::NotImplemented { reason } => assert!(
-                format!("{reason:?}").contains("complete ordinary graph"),
-                "{reason:?}"
-            ),
-            other => panic!("{other:?}\n{source}"),
-        }
-    }
-    let source =
-        ril_test::case_source("tests/regressions/channels.ril::channel-message-finite-graphs");
-    let verified = Session::new(source.as_bytes().to_vec())
-        .verify()
-        .unwrap_or_else(|error| panic!("{error:?}"));
-    ril_compiler::lower::lower_core(&verified).unwrap();
-    let mut changed = verified.facts().clone();
-    for event in &mut changed.channel_messages {
-        if let ChannelAction::Send { payload, .. } = &mut event.action
-            && matches!(payload.value.ty, ril_compiler::sema::model::Ty::Result(..))
-        {
-            payload.value.result_success = None;
-            payload.value.result_payload = None;
-            payload.value.result_tag = None;
-            break;
-        }
-    }
-    rejected(&changed);
-}
-
-#[test]
-fn finite_formal_nested_results_retain_branch_exclusive_borrowed_producers() {
-    for source in [
-        ril_test::case_source(
-            "tests/regressions/channels.ril::channel-message-formal-nested-checked",
-        ),
-        ril_test::case_source(
-            "tests/regressions/channels.ril::channel-message-formal-two-branches-checked",
-        ),
-    ] {
-        let verified = Session::new(source.as_bytes().to_vec())
-            .verify()
-            .unwrap_or_else(|error| panic!("{error:?}\n{source}"));
-        ril_compiler::lower::lower_core(&verified).unwrap();
-        let mut changed = verified.facts().clone();
-        for event in &mut changed.channel_messages {
-            if let ChannelAction::Send { payload, .. } = &mut event.action
-                && payload
-                    .value
-                    .result_success
-                    .as_ref()
-                    .is_some_and(|value| !value.outer_results.is_empty())
-            {
-                payload.value.result_success = None;
-                break;
-            }
-        }
-        rejected(&changed);
-    }
-    let source = ril_test::case_source(
-        "tests/regressions/channels.ril::channel-message-formal-nested-graph-gap",
-    );
-    match Session::new(source.as_bytes().to_vec()).check() {
-        ril_compiler::CompilationOutcome::Rejected { diagnostics, .. } => assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "E0720"),
-            "{diagnostics:?}"
-        ),
-        other => panic!("{other:?}\n{source}"),
-    }
-    let source = ril_test::case_source(
-        "tests/regressions/channels.ril::channel-message-formal-two-branches-checked",
-    );
-    for source in [
-        source.replace("Err(inner)->assert(inner is Ok(_)|Err(_))", "Err(_)->()"),
-        source.replace("Ok(inner)->assert(inner is Ok(_)|Err(_))", "Ok(_)->()"),
-    ] {
-        match Session::new(source.as_bytes().to_vec()).check() {
-            ril_compiler::CompilationOutcome::Rejected { diagnostics, .. } => assert!(
-                diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.code == "E0720"),
-                "{diagnostics:?}"
-            ),
-            other => panic!("{other:?}\n{source}"),
-        }
-    }
-}
-
-#[test]
-fn a_business_event_cannot_move_to_an_unrelated_declaration_region() {
-    let source = ril_test::case_source(
-        "tests/regressions/channels.ril::channel-message-formal-nested-checked",
-    );
-    let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let mut changed = verified.facts().clone();
-    let other = changed
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "test_native")
-        .unwrap()
-        .definition;
-    let send = changed
-        .channel_messages
-        .iter_mut()
-        .find(|event| matches!(event.action, ChannelAction::Send { .. }))
-        .unwrap();
-    send.context.invocation = None;
-    send.context.closure_invocation = None;
-    send.context.closure = None;
-    send.context.owner = Some(ril_compiler_core::ids::CallableOwner::Function(other));
-    rejected(&changed);
 }
 
 #[test]
@@ -664,97 +247,6 @@ fn an_optional_clone_keeps_the_tag_bit_but_has_a_new_result_producer() {
         ),
         other => panic!("{other:?}\n{unchecked}"),
     }
-}
-
-#[test]
-fn deleting_the_entire_formal_input_table_cannot_skip_header_coverage() {
-    let source = ril_test::case_source(
-        "tests/regressions/channels.ril::channel-message-formal-two-optionals-checked",
-    );
-    let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let mut changed = verified.facts().clone();
-    let invocation = changed
-        .copy_invocations
-        .iter_mut()
-        .find(|invocation| {
-            invocation.declaration_probe
-                && invocation.caller_activation.is_none()
-                && invocation.entry.arguments.len() == 2
-                && invocation.entry.arguments[0]
-                    .value()
-                    .option_identity
-                    .is_some()
-                && invocation.entry.arguments[1]
-                    .value()
-                    .option_identity
-                    .is_some()
-        })
-        .unwrap();
-    std::sync::Arc::make_mut(&mut invocation.entry.arguments).clear();
-    let result = ril_compiler::sema::validate::solved_facts(&changed);
-    println!("deleted whole declaration input table: {result:?}");
-    let issues = result.unwrap_err();
-    assert!(
-        issues.iter().any(|issue| {
-            matches!(&issue.kind, ril_compiler::sema::validate::ValidationIssueKind::ChannelMessage(message)
-                if message.contains("actual parameter header"))
-        }),
-        "{issues:?}"
-    );
-}
-
-#[test]
-fn unrelated_global_optional_inputs_do_not_require_business_message_source_proofs() {
-    let scalar =
-        ril_test::case_source("tests/regressions/channels.ril::channel-message-optional-scalar");
-    Session::new(scalar.as_bytes().to_vec()).verify().unwrap();
-    let source = format!(
-        "{scalar}\nfn unrelated_global_optional(value:?int)->int{{value ?? 0}}\nlet STORED=unrelated_global_optional(Array::get([1],0))\n"
-    );
-    let outcome = Session::new(source.as_bytes().to_vec()).verify();
-    match &outcome {
-        Ok(_) => println!("unrelated global scalar Option input: verified"),
-        Err(error) => println!("unrelated global scalar Option input: {error:?}"),
-    }
-    let verified = outcome.unwrap();
-    ril_compiler::lower::lower_core(&verified).unwrap();
-
-    // Ordinary Result receipts can depend on a scalar Option tag even when
-    // every channel payload is Result-free. That tag still owes its source.
-    let ordinary = format!(
-        "{scalar}\nfn ordinary_tag_receipts(value:?int){{let result:Result<int,str>=Ok(1);if value is Some(_){{assert(result is Ok(_)|Err(_))}}else{{assert(result is Ok(_)|Err(_))}}}}\nfn ordinary_tag_forward(value:?int){{ordinary_tag_receipts(value)}}\n"
-    );
-    let verified = Session::new(ordinary.as_bytes().to_vec()).verify().unwrap();
-    ril_compiler::lower::lower_core(&verified).unwrap();
-    let mut changed = verified.facts().clone();
-    let target = changed
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "ordinary_tag_receipts")
-        .unwrap()
-        .definition;
-    let call = changed
-        .copy_invocations
-        .iter_mut()
-        .find(|invocation| {
-            invocation.target == target
-                && !invocation.declaration_probe
-                && invocation.source_event.is_some()
-                && invocation.entry.arguments[0]
-                    .value()
-                    .option_identity
-                    .is_some()
-        })
-        .unwrap();
-    call.source_event = None;
-    let issues = ril_compiler::sema::validate::solved_facts(&changed).unwrap_err();
-    assert!(
-        issues.iter().any(|issue| {
-            matches!(&issue.kind, ril_compiler::sema::validate::ValidationIssueKind::ChannelMessage(message)
-                if message.contains("optional input call lacks its actual named source application"))
-        }),
-        "ordinary Result conditional source was erased: {issues:?}"
-    );
 }
 
 #[test]
@@ -862,4 +354,26 @@ fn formal_sender_results_keep_actual_message_events_and_lower_complete_evidence(
     );
     assert!(!verified.facts().channel_exits.is_empty());
     let _core = ril_compiler::lower::lower_core(&verified).unwrap();
+}
+
+#[test]
+fn complete_outer_evaluation_cannot_pay_nested_or_cloned_message_debt() {
+    for source in [
+        ril_test::case_bytes(
+            "tests/regressions/channels.ril::channel-condition-receipts-clone-unpaid",
+        ),
+        ril_test::case_bytes(
+            "tests/regressions/channels.ril::channel-condition-receipts-nested-unpaid",
+        ),
+    ] {
+        match Session::new(source.to_vec()).check() {
+            ril_compiler::CompilationOutcome::Rejected { diagnostics, .. } => assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == "E0720"),
+                "{diagnostics:?}"
+            ),
+            other => panic!("unpaid business message is not a semantic pass: {other:?}"),
+        }
+    }
 }

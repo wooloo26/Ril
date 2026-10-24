@@ -5,8 +5,8 @@ use super::*;
 
 impl Checker {
     pub(super) fn finish_copy_templates(&mut self) {
-        use super::super::{copy_template_closure as closure, copy_templates as domain};
-        let owners = closure::template_owners(&self.copy_boundaries, &self.copy_invocations);
+        use super::super::copy_templates as domain;
+        let owners = domain::template_owners(&self.copy_boundaries, &self.copy_invocations);
         if owners.is_empty() {
             return;
         }
@@ -59,7 +59,7 @@ impl Checker {
                 },
             );
         }
-        let result = closure::instances(
+        let result = domain::instances(
             &templates,
             &self.copy_boundaries,
             &self.copy_invocations,

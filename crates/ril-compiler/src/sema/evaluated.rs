@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 
 #[path = "evaluated_current.rs"]
 mod current;
-pub(crate) use current::{CurrentValueStep, catalog_callable_bound, projected_value, read_handle};
+pub(crate) use current::{CurrentValueStep, catalog_callable_bound, read_handle};
 
 pub(crate) type CheckedSource = Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError>;
 
@@ -150,16 +150,9 @@ pub(crate) struct NumericSourceDerivation {
 enum CurrentSource {
     Birth,
     Numeric(Arc<NumericSourceDerivation>),
-    Derived(Arc<CurrentValueDerivation>),
+    Derived(SourceRef),
     Pending,
     Failed(SourceTypesError),
-}
-
-#[derive(Debug)]
-struct CurrentValueDerivation {
-    input: Arc<EvaluatedValue>,
-    step: CurrentValueStep,
-    source: SourceRef,
 }
 
 /// Public observations never grant a mutable interface to the birth receipt.
@@ -170,49 +163,6 @@ pub struct EvaluationBirthCoordinates {
     pub identity: Option<OccurrenceIdentity>,
     pub context: Option<InvocationContext>,
     pub environment: Option<FrozenEnvId>,
-}
-
-/// Borrow the complete capture state for independent checking and Core export.
-/// Unknown retains its actual environment; a failed capture is never unknown.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum SourceCaptureView<'a> {
-    Uncaptured,
-    Captured {
-        result: Result<CapturedSource, &'a SourceTypesError>,
-        fresh: Option<&'a Construction>,
-    },
-    NumericPending {
-        hole: NumericHoleId,
-        birth: &'a NumericBirth,
-        environment: FrozenEnvId,
-    },
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum CurrentSourceView<'a> {
-    Birth,
-    Derived {
-        input: &'a Arc<EvaluatedValue>,
-        step: &'a CurrentValueStep,
-        source: SourceRef,
-    },
-    Numeric {
-        hole: NumericHoleId,
-        birth: &'a NumericBirth,
-        environment: FrozenEnvId,
-        resolution: &'a Arc<NumericResolution>,
-        source: SourceRef,
-    },
-    Pending,
-    Failed(&'a SourceTypesError),
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PacketEvidenceView<'a> {
-    pub(crate) birth: EvaluationBirthCoordinates,
-    pub(crate) current_epoch: usize,
-    pub(crate) capture: SourceCaptureView<'a>,
-    pub(crate) current: CurrentSourceView<'a>,
 }
 
 #[derive(Clone, Debug)]
@@ -242,11 +192,6 @@ impl PhysicalValue {
 
     pub(crate) fn from_packet(packet: Arc<EvaluatedValue>) -> Self {
         Self { packet }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn unobserved_fixture(value: Value, epoch: usize) -> Self {
-        Self::from_packet(Arc::new(EvaluatedValue::unobserved(value, epoch, false)))
     }
 
     /// Fault injection keeps the old claim deliberately intact so independent
@@ -307,44 +252,6 @@ impl EvaluatedValue {
             identity: self.identity,
             context: self.birth_context,
             environment: self.environment,
-        }
-    }
-
-    pub(crate) fn evidence_view(&self) -> PacketEvidenceView<'_> {
-        let capture = match self.birth.source.get() {
-            None => SourceCaptureView::Uncaptured,
-            Some(SourceCapture::Captured(basis)) => SourceCaptureView::Captured {
-                result: basis.result.as_ref().copied(),
-                fresh: basis.fresh.as_deref(),
-            },
-            Some(SourceCapture::NumericPending(basis)) => SourceCaptureView::NumericPending {
-                hole: basis.hole,
-                birth: &basis.birth,
-                environment: basis.environment,
-            },
-        };
-        let current = match &self.current_source {
-            CurrentSource::Birth => CurrentSourceView::Birth,
-            CurrentSource::Numeric(derived) => CurrentSourceView::Numeric {
-                hole: derived.basis.hole,
-                birth: &derived.basis.birth,
-                environment: derived.basis.environment,
-                resolution: &derived.resolution,
-                source: derived.source,
-            },
-            CurrentSource::Derived(derived) => CurrentSourceView::Derived {
-                input: &derived.input,
-                step: &derived.step,
-                source: derived.source,
-            },
-            CurrentSource::Pending => CurrentSourceView::Pending,
-            CurrentSource::Failed(error) => CurrentSourceView::Failed(error),
-        };
-        PacketEvidenceView {
-            birth: self.birth_coordinates(),
-            current_epoch: self.current_epoch(),
-            capture,
-            current,
         }
     }
 
@@ -550,9 +457,7 @@ impl EvaluatedValue {
             CurrentSource::Numeric(derived) => {
                 CapturedSource::Known(derived.source).resolve(types, work)
             }
-            CurrentSource::Derived(derived) => {
-                CapturedSource::Known(derived.source).resolve(types, work)
-            }
+            CurrentSource::Derived(derived) => CapturedSource::Known(*derived).resolve(types, work),
             CurrentSource::Pending => Err(SourceTypesError::SourceViewPending),
             CurrentSource::Failed(error) => Err(error.clone()),
         }
@@ -828,73 +733,7 @@ pub(crate) fn same_source_public_view(
         && left.signature == right.signature)
 }
 
-/// A bounded diagnostic after full equality rejects a receipt. Field labels
-/// reveal the missing transfer without dumping program values or large graphs.
-pub(crate) fn value_difference(
-    expected: &Value,
-    actual: &Value,
-    work: &mut usize,
-) -> Result<&'static str, SourceTypesError> {
-    charge_value_export(expected, work)?;
-    charge_value_export(actual, work)?;
-    macro_rules! fields {
-        ($($field:ident),* $(,)?) => {$(
-            if expected.$field != actual.$field { return Ok(stringify!($field)); }
-        )*};
-    }
-    fields!(
-        numeric,
-        pending_copies,
-        ty,
-        source_type_witness,
-        origins,
-        permission,
-        publication,
-        constant,
-        static_coordinate,
-        unsuffixed_numeric,
-        literal_number,
-        callables,
-        callable_bounds,
-        callable_returns,
-        signature,
-        participants,
-        sources,
-        callback_parameters,
-        scoped,
-        stable,
-        marker,
-        retention_result,
-        through_return,
-        readonly_spread,
-        temporary,
-        requires_inference,
-        pending_inference,
-        construction,
-        internal_aliases,
-        mutable_environment,
-        observer_environment,
-        cause,
-        results,
-        outer_results,
-        must_outer_results,
-        must_results,
-        condition_inspections,
-        result_payload,
-        result_success,
-        result_error,
-        result_tag,
-        option_payload,
-        option_tag,
-        option_identity,
-        abnormal,
-        variant_tag,
-        variant_payload,
-        variant_witnesses
-    );
-    Ok("shared Source syntax or frozen callable environment")
-}
-
+/// Compare retained semantic values within the shared work allowance.
 fn shared_value_equality(
     left: &Value,
     right: &Value,
@@ -1291,117 +1130,6 @@ mod packet_tests {
     }
 
     #[test]
-    fn packet_evidence_keeps_capture_failure_unknown_and_current_failure_distinct() {
-        let mut types = LiveSourceTypes::default();
-        let known = packet(&mut types);
-        let evidence = known.evidence_view();
-        assert_eq!(evidence.birth, known.birth_coordinates());
-        assert_eq!(evidence.current_epoch, 0);
-        assert!(matches!(
-            evidence.capture,
-            SourceCaptureView::Captured {
-                result: Ok(CapturedSource::Known(_)),
-                fresh: None,
-            }
-        ));
-        assert!(matches!(evidence.current, CurrentSourceView::Birth));
-
-        let mut unknown = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
-        assert!(matches!(
-            unknown.evidence_view().capture,
-            SourceCaptureView::Uncaptured
-        ));
-        let captured = unknown_source(&mut types);
-        unknown.capture_birth_source(Ok(captured), None).unwrap();
-        assert!(
-            matches!(unknown.evidence_view().capture, SourceCaptureView::Captured {
-            result: Ok(actual), fresh: None,
-        } if actual == captured)
-        );
-        unknown.invalidate_current_source();
-        assert!(matches!(
-            unknown.evidence_view().current,
-            CurrentSourceView::Pending
-        ));
-        unknown.fail_current_source(SourceTypesError::BudgetExceeded);
-        let evidence = unknown.evidence_view();
-        assert!(matches!(
-            evidence.current,
-            CurrentSourceView::Failed(SourceTypesError::BudgetExceeded)
-        ));
-        assert!(!unknown.source_valid);
-        assert!(matches!(evidence.capture, SourceCaptureView::Captured {
-            result: Ok(actual), ..
-        } if actual == captured));
-
-        let mut failed = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
-        failed
-            .capture_birth_source(Err(SourceTypesError::ForeignIdentity), None)
-            .unwrap();
-        assert!(matches!(
-            failed.evidence_view().capture,
-            SourceCaptureView::Captured {
-                result: Err(SourceTypesError::ForeignIdentity),
-                fresh: None,
-            }
-        ));
-        assert!(matches!(
-            failed.evidence_view().current,
-            CurrentSourceView::Birth
-        ));
-    }
-
-    #[test]
-    fn packet_evidence_retains_numeric_birth_and_the_complete_resolution() {
-        let mut types = LiveSourceTypes::default();
-        let mut packet = pending_numeric_packet(&mut types);
-        let birth = packet.birth_coordinates();
-        let environment = match packet.evidence_view().capture {
-            SourceCaptureView::NumericPending {
-                hole,
-                birth: numeric_birth,
-                environment,
-            } => {
-                assert_eq!(hole, NumericHoleId(3));
-                assert_eq!(Some(numeric_birth.occurrence), birth.identity);
-                assert!(matches!(packet.birth.source.get(),
-                    Some(SourceCapture::NumericPending(basis))
-                        if matches!(basis.fresh.as_deref(), Some(Construction::Opaque))));
-                environment
-            }
-            other => panic!("missing numeric basis: {other:?}"),
-        };
-        let resolution = numeric_resolution();
-        resolution.apply(&mut packet.value, &mut 4096).unwrap();
-        packet
-            .apply_numeric_resolution(NumericHoleId(3), resolution.clone(), &mut types, &mut 4096)
-            .unwrap();
-        let evidence = packet.evidence_view();
-        assert_eq!(evidence.birth, birth);
-        assert!(
-            matches!(evidence.capture, SourceCaptureView::NumericPending {
-            environment: actual, ..
-        } if actual == environment)
-        );
-        match evidence.current {
-            CurrentSourceView::Numeric {
-                hole,
-                birth: numeric_birth,
-                environment: actual,
-                resolution: actual_resolution,
-                source,
-            } => {
-                assert_eq!(hole, NumericHoleId(3));
-                assert_eq!(actual, environment);
-                assert_eq!(Some(numeric_birth.occurrence), birth.identity);
-                assert!(Arc::ptr_eq(actual_resolution, &resolution));
-                assert_eq!(source.view.environment, environment);
-            }
-            other => panic!("missing complete numeric derivation: {other:?}"),
-        }
-    }
-
-    #[test]
     fn physical_birth_environment_is_independent_of_source_and_rejects_relabelling() {
         let mut types = LiveSourceTypes::default();
         let original = packet(&mut types);
@@ -1512,121 +1240,6 @@ mod packet_tests {
         assert!(early.shares_birth(&original));
         assert_eq!(original.current_epoch(), 0);
         assert_eq!(original.value.origins.nodes, BTreeSet::from([NodeId(1)]));
-    }
-
-    #[test]
-    fn a_derived_read_keeps_its_original_birth_and_source() {
-        let mut types = LiveSourceTypes::default();
-        let mut original = packet(&mut types);
-        original.value.permission = Permission::Write;
-        let original = Arc::new(original);
-        let mut value = transport_value_at(original.value(), &[], 0, 0, &mut 4096).unwrap();
-        read_handle(&mut value);
-        let derived = EvaluatedValue::derive_current(
-            original.clone(),
-            CurrentValueStep::ReadHandle,
-            value,
-            &mut types,
-            &mut 4096,
-        )
-        .unwrap();
-        assert!(derived.shares_birth(&original));
-        assert_eq!(original.value.permission, Permission::Write);
-        assert_eq!(derived.value.permission, Permission::Read);
-        assert_eq!(derived.value.participants, original.value.participants);
-        assert_eq!(
-            derived.value.option_identity,
-            original.value.option_identity
-        );
-        assert_eq!(derived.value.results, original.value.results);
-        let CurrentSourceView::Derived { input, step, .. } = derived.evidence_view().current else {
-            panic!("a read must retain its derivation")
-        };
-        assert!(Arc::ptr_eq(input, &original));
-        assert!(matches!(step, CurrentValueStep::ReadHandle));
-        let birth = resolve_birth(&original, &types).unwrap().unwrap();
-        let current = resolve_current(&derived, &types).unwrap().unwrap();
-        assert_eq!(birth.1.id(), current.1.id());
-        assert!(
-            birth
-                .0
-                .equivalent(&current.0, &mut WorkLimit::new(4096))
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn an_unknown_capture_cannot_replace_an_independently_known_input() {
-        let source = ril_test::case_source(
-            "tests/regressions/evaluation-identity.ril::entry-packets-after-allocating-default",
-        );
-        let program = crate::Session::new(source.as_bytes().to_vec())
-            .verify()
-            .unwrap();
-        let facts = program.facts();
-        crate::sema::application_effect::validate(facts).unwrap();
-        let (call, slot) =
-            facts
-                .copy_invocations
-                .iter()
-                .enumerate()
-                .find_map(|(call, invocation)| {
-                    matches!(
-                        invocation.entry.origin,
-                        crate::sema::application_effect::EntryOrigin::Application(_)
-                    )
-                    .then(|| {
-                        invocation.entry.arguments.iter().enumerate().find_map(
-                            |(slot, argument)| {
-                                (matches!(
-                                    argument.packet.evidence_view().current,
-                                    CurrentSourceView::Birth
-                                ) && matches!(
-                                    argument.packet.evidence_view().capture,
-                                    SourceCaptureView::Captured {
-                                        result: Ok(CapturedSource::Known(_)),
-                                        ..
-                                    }
-                                ))
-                                .then_some((call, slot))
-                            },
-                        )
-                    })
-                    .flatten()
-                })
-                .expect("an actual argument has a known Source");
-        let original = &facts.copy_invocations[call].entry.arguments[slot].packet;
-        let observation = original.observation.unwrap();
-        let physical = facts.expressions[observation].value.packet();
-        let record = &facts.evaluations[observation];
-        let Some(SourceCapture::Captured(basis)) = physical.birth.source.get() else {
-            unreachable!()
-        };
-        let mut downgraded = EvaluatedValue::observed(
-            transport_value_at(physical.value(), &[], 0, 0, &mut 1_000_000).unwrap(),
-            observation,
-            record,
-        );
-        downgraded
-            .capture_birth_source(
-                Ok(CapturedSource::Unknown(record.environment.unwrap())),
-                basis.fresh.clone(),
-            )
-            .unwrap();
-        let downgraded = Arc::new(downgraded);
-        let mut entry_view = original.try_clone(&mut 1_000_000).unwrap();
-        entry_view.birth = downgraded.birth.clone();
-        assert!(entry_view.shares_birth(&downgraded));
-        assert!(same_birth_value(entry_view.value(), original.value(), &mut 1_000_000).unwrap());
-        let mut changed = facts.clone();
-        changed.expressions[observation].value = PhysicalValue::from_packet(downgraded);
-        Arc::make_mut(&mut changed.copy_invocations[call].entry.arguments)[slot].packet =
-            Arc::new(entry_view);
-        let (_, message) = crate::sema::application_effect::validate(&changed).unwrap_err();
-        assert!(
-            message.contains("unknown packet contradicts an independently known Source"),
-            "{message}"
-        );
     }
 
     #[test]

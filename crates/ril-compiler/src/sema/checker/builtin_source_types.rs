@@ -93,12 +93,6 @@ impl Identity {
     }
 }
 
-/// Lexical primitive identity and complete Source coverage are distinct.
-/// This shares the contract registry without allocating a speculative header.
-pub(super) fn has_declaration(name: &str) -> bool {
-    Identity::lookup(name).is_some()
-}
-
 /// Only call at the real unique Builtin mint/observation, after ordinary name
 /// resolution. A spelling in an expected type or a later mutated signature is
 /// not this operation's source. Unsupported builtin schemas remain absent.
@@ -372,35 +366,6 @@ mod tests {
     #[test]
     fn arbitrary_names_and_unimplemented_schemas_never_borrow_a_known_header() {
         for name in ["write", "My::write", "File::other", "Array::map"] {
-            assert!(contract(name, span()).is_none(), "{name}");
-        }
-    }
-
-    #[test]
-    fn source_coverage_uses_the_contract_registry_without_inventing_headers() {
-        for name in [
-            "File::read_chunk",
-            "File::write",
-            "Process::wait",
-            "Process::terminate",
-            "Array::push",
-            "Array::insert",
-            "Array::truncate",
-            "Map::set",
-        ] {
-            assert!(has_declaration(name), "{name}");
-            assert!(contract(name, span()).is_some(), "{name}");
-        }
-        for name in [
-            "Io::read_all",
-            "Io::write_all",
-            "Io::read_buffered",
-            "Io::write_buffered",
-            "Io::flush",
-            "Io::close_write_buffer",
-            "My::read_all",
-        ] {
-            assert!(!has_declaration(name), "{name}");
             assert!(contract(name, span()).is_none(), "{name}");
         }
     }

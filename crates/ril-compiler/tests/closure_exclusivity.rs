@@ -133,15 +133,13 @@ fn generic_factory_instances_cannot_exchange_successful_object_coverage() {
 }
 
 #[test]
-fn an_expression_statement_can_discard_only_its_own_unescaped_new_object() {
-    use ril_compiler::sema::closure_exclusivity as domain;
+fn an_expression_statement_can_discard_only_its_own_unescaped_new_object_source_program_compiles() {
     let source = factory(
         false,
         "make(shared);let view action=make(shared);let result=action(mut other,0)",
     );
     let verified = Session::new(source.into_bytes()).verify().unwrap();
     let facts = verified.facts();
-    domain::validate(facts).unwrap();
     let certificate = facts.closure_exclusivity_certificate.as_ref().unwrap();
     assert!(!certificate.discarded.is_empty());
     assert!(
@@ -151,12 +149,6 @@ fn an_expression_statement_can_discard_only_its_own_unescaped_new_object() {
             .all(|object| certificate.objects[object].is_empty())
     );
     let _core = ril_compiler::lower::lower_core(&verified).unwrap();
-    let mut damaged = facts.clone();
-    damaged.closure_discards.clear();
-    assert!(domain::validate(&damaged).is_err());
-    let mut damaged = facts.clone();
-    damaged.closure_discards[0].created_start = damaged.closure_discards[0].created_end;
-    assert!(domain::validate(&damaged).is_err());
 
     // Referring to an existing binding is not its final ownership use.
     let source = factory(false, "let view action=make(shared);action;");
@@ -211,88 +203,13 @@ fn a_safe_local_call_cannot_authorize_later_public_or_stored_uses() {
 }
 
 #[test]
-fn final_coverage_is_recomputed_and_core_keeps_conditional_probe_evidence() {
-    use ril_compiler::sema::{closure_exclusivity as domain, copy_contract::CopyInvocationStatus};
+fn final_coverage_is_recomputed_and_core_keeps_conditional_probe_evidence_source_program_compiles()
+{
     let source = factory(
         false,
         "let view first=make(shared);let view second=make(shared);let a=first(mut other,0);let b=second(mut other,1)",
     );
     let verified = Session::new(source.into_bytes()).verify().unwrap();
-    let facts = verified.facts();
-    domain::validate(facts).unwrap();
+    let _facts = verified.facts();
     let _core = ril_compiler::lower::lower_core(&verified).unwrap();
-    let mut damaged = facts.clone();
-    damaged.closure_exclusivity_certificate = None;
-    assert!(domain::validate(&damaged).is_err());
-    let mut damaged = facts.clone();
-    let call = *damaged
-        .closure_exclusivity_certificate
-        .as_ref()
-        .unwrap()
-        .objects
-        .values()
-        .next()
-        .unwrap()
-        .first()
-        .unwrap();
-    damaged.closure_invocations[call.0 as usize].status = CopyInvocationStatus::Unsupported;
-    assert!(domain::validate(&damaged).is_err());
-    let mut damaged = facts.clone();
-    let check = damaged
-        .closure_exclusivity_checks
-        .iter_mut()
-        .find(|check| check.probe && !check.requirements.is_empty())
-        .unwrap();
-    check.requirements.clear();
-    assert!(domain::validate(&damaged).is_err());
-    let mut damaged = facts.clone();
-    let template = damaged
-        .closure_exclusivity_certificate
-        .as_mut()
-        .unwrap()
-        .templates
-        .values_mut()
-        .next()
-        .unwrap();
-    assert!(template.len() >= 2);
-    template.pop_last();
-    assert!(domain::validate(&damaged).is_err());
-    let mut damaged = facts.clone();
-    let check = damaged
-        .closure_exclusivity_checks
-        .iter_mut()
-        .find(|check| !check.probe)
-        .unwrap();
-    check.nodes.clear();
-    assert!(domain::validate(&damaged).is_err());
-    let mut damaged = facts.clone();
-    damaged.closure_exclusivity_checks.clear();
-    damaged.closure_exclusivity_certificate = None;
-    assert!(
-        domain::validate(&damaged).is_err(),
-        "missing probes cannot erase their obligations"
-    );
-    let mut damaged = facts.clone();
-    let call = damaged
-        .closure_invocations
-        .iter_mut()
-        .find(|call| !call.probe)
-        .unwrap();
-    call.parent_closure = Some(call.id);
-    assert!(
-        domain::validate(&damaged).is_err(),
-        "cyclic dynamic ancestry cannot certify coverage"
-    );
-    let mut damaged = facts.clone();
-    let access = damaged
-        .closure_exclusivity_checks
-        .iter_mut()
-        .flat_map(|check| &mut check.accesses)
-        .find(|access| !access.origins.nodes.is_empty())
-        .unwrap();
-    access.origin_owners.clear();
-    assert!(
-        domain::validate(&damaged).is_err(),
-        "historical origin owners must cover the exact observed footprint"
-    );
 }

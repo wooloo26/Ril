@@ -1414,7 +1414,11 @@ fn select(
         return None;
     }
     let mut budget = crate::sema::source_types::WorkLimit::new(*work);
-    let result = crate::sema::source_types::substitute_key(key, selected, &mut budget);
+    let result = crate::sema::source_types::substitute_key_with(
+        key,
+        |name, _| Ok(selected.get(name).map(std::borrow::Cow::Borrowed)),
+        &mut budget,
+    );
     *work = budget.remaining();
     result.ok()
 }

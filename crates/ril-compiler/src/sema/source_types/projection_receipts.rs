@@ -2,9 +2,11 @@
 //! This borrowed query contains no producer cache, span key or erased type.
 use super::{SourceTypesError, WorkLimit};
 use crate::hir::nodes::{ExprKind, HirProgram};
+#[cfg(test)]
+use crate::sema::SemanticFacts;
 use crate::sema::model::{Constant, StaticCoordinate};
 use crate::sema::{
-    ExpressionFact, SemanticFacts,
+    ExpressionFact,
     application_effect::{
         ActivationKind, EvaluationActivation, EvaluationRecord, OccurrenceIdentity,
     },
@@ -238,6 +240,7 @@ fn require(condition: bool) -> Result<(), SourceTypesError> {
 }
 
 impl<'a> ProjectionReceipts<'a> {
+    #[cfg(test)]
     pub(crate) fn from_facts(facts: &'a SemanticFacts) -> Self {
         Self {
             activations: &facts.activations,

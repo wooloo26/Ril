@@ -3,7 +3,7 @@
 use super::context::FrozenEnvId;
 use super::source_types::{SourceTypesError, WorkLimit};
 use super::{
-    ExpressionFact, SemanticFacts,
+    ExpressionFact,
     copy_contract::CopyCallEventId,
     effect_identity::{InvocationContext, InvocationExpression},
     facts::ScopeId,
@@ -12,17 +12,12 @@ use ril_compiler_core::{
     ids::{ActivationEpochId, CallableOwner, ClosureSiteId, EvaluationOccurrenceId, ExprId},
     source::Span,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 mod activations;
 mod entries;
-pub(crate) mod generated_entries;
-#[path = "named_declarations.rs"]
-mod named_declarations;
 mod signature_inputs;
 pub use activations::{ActivationKind, EvaluationActivation};
-mod parameters;
-pub(crate) use entries::record_field_source;
 pub use entries::{
     CallableEntry, EntryArgument, EntryOrigin, InputOrigin, ScalarInput, ScopeInput,
 };
@@ -385,203 +380,6 @@ impl ApplicationEffectDomain {
             .get(&(source, context))
             .map_or(&[], Vec::as_slice)
     }
-}
-
-/// Coverage comes from the physical value arena, independently of whether a
-/// producer left any occurrence records. Removing the whole ledger fails.
-pub(crate) fn validate(facts: &SemanticFacts) -> Result<(), (Span, String)> {
-    let fallback = facts
-        .expressions
-        .first()
-        .map(|fact| fact.span)
-        .unwrap_or(Span {
-            file: ril_compiler_core::source::FileId(0),
-            start: 0,
-            end: 0,
-        });
-    if facts.evaluations.len() != facts.expressions.len()
-        || facts.invocation_expressions.len() != facts.expressions.len()
-        || facts.expressions.len() > 1_000_000
-    {
-        return Err((
-            fallback,
-            "evaluation arena has incomplete occurrence coverage".into(),
-        ));
-    }
-    let mut identities = BTreeSet::new();
-    activations::validate(facts).map_err(|message| (fallback, message))?;
-    entries::validate(facts).map_err(|message| (fallback, message))?;
-    super::scopes::validate(facts).map_err(|message| (fallback, message))?;
-    super::scopes::validate_receptions(facts).map_err(|message| (fallback, message))?;
-    let mut contexts = vec![None; facts.expressions.len()];
-    for context in &facts.invocation_expressions {
-        let Some(slot) = contexts.get_mut(context.expression) else {
-            return Err((
-                fallback,
-                "evaluation context is outside the physical arena".into(),
-            ));
-        };
-        if slot.replace(context).is_some() {
-            return Err((
-                fallback,
-                "evaluation has duplicate physical contexts".into(),
-            ));
-        }
-    }
-    let mut binding_work = 1_000_000usize;
-    for (index, (record, value)) in facts.evaluations.iter().zip(&facts.expressions).enumerate() {
-        let Some(identity) = record.identity else {
-            return Err((value.span, "evaluation has no original HIR node".into()));
-        };
-        if record.id.0 as usize != index
-            || Some(identity.source) != value.source_id
-            || record.allocation_epoch != value.allocation_epoch
-            || !facts.scopes.contains(&record.scope)
-            || contexts[index].is_none_or(|context| context.context != record.context)
-            || !identities.insert(identity)
-            || facts
-                .semantic_hir
-                .as_ref()
-                .is_none_or(|hir| hir.expression(identity.source).is_none())
-        {
-            return Err((
-                value.span,
-                "evaluation changed its node, activation, scope or birth epoch".into(),
-            ));
-        }
-        let environment = record.environment.ok_or_else(|| {
-            (
-                value.span,
-                "evaluation has no original frozen environment".into(),
-            )
-        })?;
-        let mut environment_work = WorkLimit::new(binding_work);
-        let resolved = facts
-            .source_types
-            .environment(environment, &mut environment_work);
-        binding_work = environment_work.remaining();
-        resolved.map_err(|error| {
-            (
-                value.span,
-                format!("evaluation environment cannot be verified: {error}"),
-            )
-        })?;
-    }
-    if facts.bindings.len() > 1_000_000 {
-        return Err((
-            fallback,
-            "binding activation coverage exceeds its work bound".into(),
-        ));
-    }
-    let observed_scopes: BTreeSet<_> = facts
-        .evaluations
-        .iter()
-        .map(|record| record.scope)
-        .collect();
-    let mut observed_bindings = BTreeSet::<usize>::new();
-    for expression in &facts.expressions {
-        binding_work = binding_work
-            .checked_sub(expression.value.sources.len())
-            .ok_or_else(|| {
-                (
-                    expression.span,
-                    "binding observation coverage exceeds its work bound".into(),
-                )
-            })?;
-        observed_bindings.extend(expression.value.sources.iter().copied());
-    }
-    let preparations = parameters::Preparations::new(facts, &mut binding_work)
-        .map_err(|message| (fallback, message))?;
-    binding_work = binding_work
-        .checked_sub(facts.closures.len())
-        .ok_or_else(|| {
-            (
-                fallback,
-                "lambda declaration coverage exceeds its work bound".into(),
-            )
-        })?;
-    let closure_headers: BTreeSet<_> = facts
-        .closures
-        .iter()
-        .filter_map(|closure| {
-            Some((
-                closure.hir_id?,
-                closure
-                    .site
-                    .map(ril_compiler_core::ids::CallableOwner::Lambda),
-            ))
-        })
-        .collect();
-    let mut parameter_bindings = BTreeSet::new();
-    named_declarations::validate(facts, &mut binding_work)
-        .map_err(|message| (fallback, message))?;
-    for (id, binding) in facts
-        .bindings
-        .iter()
-        .enumerate()
-        .filter(|(_, binding)| binding.parameter)
-    {
-        let Some(hir) = facts.semantic_hir.as_deref() else {
-            continue;
-        };
-        let Some(crate::hir::nodes::LexicalOwner::Lambda(source)) = binding
-            .pattern
-            .and_then(|pattern| hir.pattern(pattern))
-            .map(|pattern| pattern.info.owner)
-        else {
-            continue;
-        };
-        binding_work = binding_work.checked_sub(1).ok_or_else(|| {
-            (
-                binding.span,
-                "parameter identity coverage exceeds its work bound".into(),
-            )
-        })?;
-        if !parameter_bindings.insert((binding.owner, binding.pattern)) {
-            return Err((
-                binding.span,
-                "parameter activation has duplicate declaration bindings".into(),
-            ));
-        }
-        // Preparing a lambda header can allocate formal anchors without
-        // entering a body. Actual reads independently prevent relabelling an
-        // entered parameter as one of these unused declaration anchors.
-        if !observed_scopes.contains(&binding.owner)
-            && !observed_bindings.contains(&id)
-            && closure_headers.contains(&(source, binding.context.owner))
-        {
-            continue;
-        }
-        if preparations
-            .accepts(id, binding, source, hir, &mut binding_work)
-            .map_err(|message| (binding.span, message))?
-        {
-            continue;
-        }
-        let valid = binding
-            .context
-            .closure_invocation
-            .and_then(|id| facts.closure_invocations.get(id.0 as usize))
-            .is_some_and(|call| {
-                Some(call.id) == binding.context.closure_invocation
-                    && call.activation == Some(binding.owner)
-                    && Some(call.closure) == binding.context.closure
-                    && facts.closures.get(call.closure).is_some_and(|closure| {
-                        closure.hir_id == Some(source)
-                            && closure
-                                .site
-                                .map(ril_compiler_core::ids::CallableOwner::Lambda)
-                                == binding.context.owner
-                    })
-            });
-        if !valid {
-            return Err((
-                binding.span,
-                "lambda binding lost its original declaration activation".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -46,7 +46,7 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> SourceExpression {
-        self.expression_packet_mode(expr, frame, expected, source, None)
+        self.expression_packet_mode(expr, frame, expected, source)
     }
 
     pub(super) fn expression_source_packet(
@@ -56,7 +56,7 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> SourceExpression {
-        self.expression_packet_mode(expr, frame, expected, source, None)
+        self.expression_packet_mode(expr, frame, expected, source)
     }
 
     pub(super) fn expression_pattern_value(
@@ -64,9 +64,30 @@ impl Checker {
         expr: &Expr,
         frame: &mut Frame,
         expected: Option<&Ty>,
-        subject: Option<&EvaluatedValue>,
     ) -> Value {
-        self.expression_packet_mode(expr, frame, expected, None, subject)
+        // The pattern walker supplies the actual projected child's type.
+        // A pending numeric variable must be solved by its owning constraint
+        // store; rebuilding an original-expression proof is not inference.
+        let expected = expected.map(|ty| {
+            let mut ty = self.expanded(ty, &mut BTreeSet::new());
+            while let Ty::Immutable(inner) = ty {
+                ty = *inner;
+            }
+            if let Ty::NumericHole(id) = ty {
+                self.numeric
+                    .resolution(id)
+                    .map_or(ty.clone(), |value| value.value_type())
+            } else {
+                ty
+            }
+        });
+        if expected
+            .as_ref()
+            .is_some_and(|ty| matches!(ty, Ty::Unknown | Ty::NumericHole(_) | Ty::Generic(_)))
+        {
+            self.unsupported(expr.span, "numeric pattern subject type remains unresolved");
+        }
+        self.expression_packet_mode(expr, frame, expected.as_ref(), None)
             .value
     }
 
@@ -76,7 +97,6 @@ impl Checker {
         frame: &mut Frame,
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
-        pattern_subject: Option<&EvaluatedValue>,
     ) -> SourceExpression {
         self.cancellation_checkpoint(expr.span, frame);
         if self.analysis_depth >= 64 || self.analysis_visits >= 1_000_000 {
@@ -136,8 +156,8 @@ impl Checker {
         let mut source_call_event = None;
         let mut value = expected
             .as_ref()
-            .and_then(|ty| self.numeric_expected_literal(expr, ty, frame, pattern_subject))
-            .or_else(|| self.numeric_pending_literal(expr, frame, pattern_subject))
+            .and_then(|ty| self.numeric_expected_literal(expr, ty, frame))
+            .or_else(|| self.numeric_pending_literal(expr, frame))
             .unwrap_or_else(|| {
                 self.expression_inner(
                     expr,

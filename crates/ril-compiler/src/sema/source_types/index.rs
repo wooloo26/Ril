@@ -1,5 +1,5 @@
-//! Snapshot-owned storage view index. An ID is a cache of coordinates whose
-//! original binding/declaration/occurrence must still be independently checked.
+//! Read-only receiving bindings and type-arena snapshots. The owning analyzer
+//! checks their references when it completes the type store.
 use super::*;
 use crate::sema::context::{FrozenEnvId, FrozenEnvironment};
 use crate::sema::{effect_identity::ArgumentKey, facts::Slot};
@@ -40,6 +40,7 @@ impl Default for SourceTypeIndex {
 }
 
 impl SourceTypeIndex {
+    #[cfg(test)]
     pub(crate) fn environment(
         &self,
         id: FrozenEnvId,
@@ -57,6 +58,7 @@ impl SourceTypeIndex {
         Ok(environment.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn view_schema(
         &self,
         view: SourceView,
@@ -127,41 +129,7 @@ impl SourceTypeIndex {
     pub fn contains_binding(&self, binding: usize) -> bool {
         self.0.bindings.contains_key(&binding)
     }
-    pub(crate) fn binding_schema(
-        &self,
-        binding: usize,
-        original: Option<ril_compiler_core::ids::TypeExprId>,
-        work: &mut WorkLimit,
-    ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
-        self.binding_schema_if_known(binding, original, work)?
-            .ok_or(SourceTypesError::Unresolved)
-    }
-    /// Unknown is a recorded declaration state, not an absent or corrupt
-    /// lookup. Callers must preserve errors rather than infer unknown from one.
-    pub(crate) fn binding_schema_if_known(
-        &self,
-        binding: usize,
-        original: Option<ril_compiler_core::ids::TypeExprId>,
-        work: &mut WorkLimit,
-    ) -> Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError> {
-        work.charge(1)?;
-        let view = self
-            .0
-            .bindings
-            .get(&binding)
-            .ok_or(SourceTypesError::MissingNode)?;
-        if view.environment.is_poisoned() {
-            return Err(SourceTypesError::Unresolved);
-        }
-        let types = self.0.types.as_ref().map_err(Clone::clone)?;
-        let Some(root) = view.ty.as_ref().copied().map_err(Clone::clone)? else {
-            return Ok(None);
-        };
-        Ok(Some((
-            SourceSchema::frozen_view(types, root, original, work)?,
-            view.environment.clone(),
-        )))
-    }
+
     pub fn key(&self, id: SourceTypeId) -> Result<ArgumentKey, SourceTypesError> {
         self.0
             .types
@@ -187,32 +155,6 @@ impl SourceTypeIndex {
             .as_ref()
             .map_err(Clone::clone)?
             .project(id, path, &mut WorkLimit::new(4096))
-    }
-    pub(crate) fn validate_binding_schema(
-        &self,
-        binding: usize,
-        original: Option<&SourceSchema>,
-        environment: FrozenEnvId,
-    ) -> bool {
-        let Some(view) = self.0.bindings.get(&binding) else {
-            return false;
-        };
-        if view.environment.id() != environment || view.environment.is_poisoned() {
-            return false;
-        }
-        match (&view.ty, original) {
-            (Ok(None), None) => self.0.types.is_ok(),
-            (Ok(Some(id)), Some(original)) => {
-                let check = || -> Result<bool, SourceTypesError> {
-                    let types = self.0.types.as_ref().map_err(Clone::clone)?;
-                    let mut work = WorkLimit::new(16384);
-                    let recorded = SourceSchema::frozen_view(types, *id, None, &mut work)?;
-                    recorded.equivalent(original, &mut work)
-                };
-                check() == Ok(true)
-            }
-            _ => false,
-        }
     }
 }
 
@@ -465,59 +407,6 @@ mod tests {
     }
 
     #[test]
-    fn live_views_keep_original_roots_and_reintern_without_read_copy_growth() {
-        let source = recursive_schema();
-        let environment = FrozenEnvironment::default();
-        let mut live = LiveSourceTypes::default();
-        let view = live
-            .intern_schema(&source, environment.clone(), &mut WorkLimit::new(4096))
-            .unwrap();
-        live.record_schema(1, Some(&source), environment.clone())
-            .unwrap();
-        let before = live.builder.as_ref().unwrap().checkpoint();
-        let original = Some(TypeExprId(91));
-        let (borrowed, captured) = live
-            .view_schema(view, original, &mut WorkLimit::new(16))
-            .unwrap();
-        assert_eq!(borrowed.root_id(), view.ty);
-        assert_eq!(borrowed.original(), original);
-        assert_eq!(captured.id(), environment.id());
-        for _ in 0..128 {
-            let (read, _) = live
-                .view_schema(view, original, &mut WorkLimit::new(16))
-                .unwrap();
-            let (binding, _) = live
-                .binding_schema_if_known(1, original, &mut WorkLimit::new(16))
-                .unwrap()
-                .unwrap();
-            assert_eq!(read.root_id(), view.ty);
-            assert_eq!(binding.root_id(), view.ty);
-            assert_eq!(binding.original(), original);
-            assert_eq!(
-                live.intern_schema(&read, environment.clone(), &mut WorkLimit::new(16))
-                    .unwrap(),
-                view
-            );
-        }
-        assert_eq!(live.builder.as_ref().unwrap().checkpoint(), before);
-        let extra =
-            SourceSchema::scalar(SourceScalar::Str, None, &mut WorkLimit::new(4096)).unwrap();
-        live.intern_schema(&extra, environment, &mut WorkLimit::new(4096))
-            .unwrap();
-        assert!(
-            borrowed
-                .equivalent(&source, &mut WorkLimit::new(4096))
-                .unwrap()
-        );
-        let frozen = live.freeze();
-        let (read, _) = frozen
-            .view_schema(view, original, &mut WorkLimit::new(16))
-            .unwrap();
-        assert_eq!(read.root_id(), borrowed.root_id());
-        assert_eq!(read.original(), original);
-    }
-
-    #[test]
     fn environment_only_registration_is_checked_shared_and_does_not_invent_a_type() {
         let mut live = LiveSourceTypes::default();
         let environment = FrozenEnvironment::default();
@@ -687,258 +576,5 @@ mod tests {
         first
             .view_schema(view, None, &mut WorkLimit::new(4096))
             .unwrap();
-    }
-
-    #[test]
-    fn failed_header_ingress_cannot_create_an_unknown_binding_view() {
-        let environment = FrozenEnvironment::default();
-        let mut live = LiveSourceTypes::default();
-        let invalid = ArgumentKey::Array {
-            length: Some("not a resolved extent".into()),
-            element: Box::new(ArgumentKey::Tuple(vec![])),
-        };
-        assert_eq!(
-            SourceSchema::import(&invalid, None, &mut WorkLimit::new(4096)).unwrap_err(),
-            SourceTypesError::Unresolved
-        );
-        live.record_schema(2, None, environment.clone()).unwrap();
-        assert!(matches!(
-            live.binding_schema_if_known(1, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::MissingNode)
-        ));
-        let frozen = live.freeze();
-        assert!(matches!(
-            frozen.binding_schema_if_known(1, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::MissingNode)
-        ));
-        assert!(!frozen.validate_binding_schema(1, None, environment.id()));
-        assert!(frozen.validate_binding_schema(2, None, environment.id()));
-        frozen.validate(&mut WorkLimit::new(4096)).unwrap();
-    }
-
-    #[test]
-    fn failed_schema_copies_keep_the_old_arena_and_the_exact_admission_failure() {
-        // Construct the deliberately oversized input, including bounded label
-        // sorting. record_schema below still uses its unchanged ingress limit.
-        let mut work = WorkLimit::new(1_000_000);
-        let mut builder = SourceBuilder::new().unwrap();
-        let scalar = builder
-            .insert(SourceNode::Scalar(SourceScalar::Int), &mut work)
-            .unwrap();
-        let root = builder
-            .insert(
-                SourceNode::Record {
-                    fields: (0..5000)
-                        .map(|index| SourceField {
-                            label: format!("field_{index:04}"),
-                            mutable: false,
-                            value: scalar,
-                        })
-                        .collect(),
-                    row: None,
-                },
-                &mut work,
-            )
-            .unwrap();
-        let types = builder.freeze(&mut work).unwrap();
-        let large = SourceSchema::frozen_view(&types, root, None, &mut work).unwrap();
-        let small = SourceSchema::frozen_view(&types, scalar, None, &mut work).unwrap();
-        let environment = FrozenEnvironment::default();
-        let mut live = LiveSourceTypes::default();
-        live.record_schema(0, Some(&small), environment.clone())
-            .unwrap();
-        assert_eq!(
-            live.record_schema(1, Some(&large), environment),
-            Err(SourceTypesError::BudgetExceeded)
-        );
-        assert!(matches!(
-            live.binding_schema_if_known(1, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::BudgetExceeded)
-        ));
-        let frozen = live.freeze();
-        assert!(
-            matches!(frozen.key(frozen.binding_type(0).unwrap()), Ok(ArgumentKey::Name {name, arguments}) if name=="int" && arguments.is_empty())
-        );
-        assert_eq!(
-            frozen.validate(&mut WorkLimit::new(1_000_000)),
-            Err(SourceTypesError::BudgetExceeded)
-        );
-    }
-
-    #[test]
-    fn recorded_unknown_views_are_distinct_from_failed_lookups() {
-        let environment = FrozenEnvironment::default();
-        let mut live = LiveSourceTypes::default();
-        live.record_schema(1, None, environment.clone()).unwrap();
-        assert!(matches!(
-            live.binding_schema_if_known(1, None, &mut WorkLimit::new(4096)),
-            Ok(None)
-        ));
-        assert!(matches!(
-            live.binding_schema_if_known(2, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::MissingNode)
-        ));
-        assert!(matches!(
-            live.binding_schema_if_known(1, None, &mut WorkLimit::new(0)),
-            Err(SourceTypesError::BudgetExceeded)
-        ));
-        assert!(matches!(
-            live.record_schema(2, None, FrozenEnvironment::poisoned()),
-            Err(SourceTypesError::Unresolved)
-        ));
-        assert!(matches!(
-            live.binding_schema_if_known(2, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::Unresolved)
-        ));
-        let frozen = live.freeze();
-        assert!(matches!(
-            frozen.binding_schema_if_known(1, None, &mut WorkLimit::new(4096)),
-            Ok(None)
-        ));
-        assert!(matches!(
-            frozen.binding_schema_if_known(2, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::Unresolved)
-        ));
-        assert!(matches!(
-            frozen.binding_schema_if_known(3, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::MissingNode)
-        ));
-        assert!(matches!(
-            frozen.binding_schema_if_known(1, None, &mut WorkLimit::new(0)),
-            Err(SourceTypesError::BudgetExceeded)
-        ));
-        let failed_arena = SourceTypeIndex(Arc::new(IndexData {
-            types: Err(SourceTypesError::BudgetExceeded),
-            environments: BTreeMap::from([(environment.id(), environment.clone())]),
-            bindings: BTreeMap::from([(
-                1,
-                BindingView {
-                    ty: Ok(None),
-                    environment,
-                },
-            )]),
-        }));
-        assert!(matches!(
-            failed_arena.binding_schema_if_known(1, None, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::BudgetExceeded)
-        ));
-    }
-
-    #[test]
-    fn binding_graphs_keep_frozen_interpretations_and_unknowns_separate() {
-        let original = Some(ril_compiler_core::ids::TypeExprId(7));
-        let key = |length| ArgumentKey::Array {
-            length: Some("const(int:0)".into()),
-            element: Box::new(ArgumentKey::Array {
-                length: Some(format!("const(int:{length})")),
-                element: Box::new(ArgumentKey::Name {
-                    name: "int".into(),
-                    arguments: vec![],
-                }),
-            }),
-        };
-        let source = SourceSchema::import(&key(2), original, &mut WorkLimit::new(4096)).unwrap();
-        let other = SourceSchema::import(&key(3), original, &mut WorkLimit::new(4096)).unwrap();
-        let environment = FrozenEnvironment::default();
-        let poisoned = FrozenEnvironment::poisoned();
-        let mut live = LiveSourceTypes::default();
-        live.record_schema(1, Some(&source), environment.clone())
-            .unwrap();
-        live.record_schema(2, None, environment.clone()).unwrap();
-        assert_eq!(
-            live.record_schema(1, Some(&other), environment.clone()),
-            Err(SourceTypesError::AlreadyDefined)
-        );
-        assert_eq!(
-            live.record_schema(3, Some(&source), poisoned.clone()),
-            Err(SourceTypesError::Unresolved)
-        );
-        let index = live.freeze();
-        let (copy, captured) = index
-            .binding_schema(1, original, &mut WorkLimit::new(4096))
-            .unwrap();
-        assert_eq!(copy.original(), original);
-        assert_eq!(captured.id(), environment.id());
-        assert_eq!(
-            copy.equivalent(&source, &mut WorkLimit::new(4096)),
-            Ok(true)
-        );
-        assert_ne!(index.binding_type(1), Some(source.graph().1));
-        assert!(index.validate_binding_schema(1, Some(&source), environment.id()));
-        assert!(!index.validate_binding_schema(1, Some(&other), environment.id()));
-        assert!(!index.validate_binding_schema(1, None, environment.id()));
-        assert!(!index.validate_binding_schema(
-            1,
-            Some(&source),
-            FrozenEnvironment::default().id()
-        ));
-        assert!(index.validate_binding_schema(2, None, environment.id()));
-        assert!(!index.validate_binding_schema(2, Some(&source), environment.id()));
-        assert!(!index.validate_binding_schema(3, None, poisoned.id()));
-        assert!(matches!(
-            index.binding_schema(2, original, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::Unresolved)
-        ));
-        assert!(matches!(
-            index.binding_schema(1, original, &mut WorkLimit::new(0)),
-            Err(SourceTypesError::BudgetExceeded)
-        ));
-    }
-
-    #[test]
-    fn binding_views_are_pinned_and_cannot_borrow_another_snapshot() {
-        let key = ArgumentKey::Array {
-            length: Some("const(int:0)".into()),
-            element: Box::new(ArgumentKey::Array {
-                length: Some("const(int:2)".into()),
-                element: Box::new(ArgumentKey::Name {
-                    name: "int".into(),
-                    arguments: vec![],
-                }),
-            }),
-        };
-        let mut first = LiveSourceTypes::default();
-        let environment = FrozenEnvironment::default();
-        let schema = SourceSchema::import(&key, None, &mut WorkLimit::new(4096)).unwrap();
-        first
-            .record_schema(2, Some(&schema), environment.clone())
-            .unwrap();
-        let first = first.freeze();
-        let mut second = LiveSourceTypes::default();
-        let other_environment = FrozenEnvironment::default();
-        second
-            .record_schema(2, Some(&schema), other_environment.clone())
-            .unwrap();
-        let second = second.freeze();
-        assert!(first.validate_binding_schema(2, Some(&schema), environment.id()));
-        assert!(!first.validate_binding_schema(2, Some(&schema), other_environment.id()));
-        assert_eq!(first.binding_view(2).unwrap().environment, environment.id());
-        assert!(matches!(
-            second.project(first.binding_type(2).unwrap(), &[]),
-            Err(SourceTypesError::ForeignIdentity)
-        ));
-        let (source, _) = first
-            .view_schema(
-                first.binding_view(2).unwrap(),
-                None,
-                &mut WorkLimit::new(4096),
-            )
-            .unwrap();
-        let child = source
-            .project_steps(&[SourcePath::Element], &mut WorkLimit::new(4096))
-            .unwrap();
-        assert_eq!(
-            child
-                .array_parts(&mut WorkLimit::new(4096))
-                .unwrap()
-                .unwrap()
-                .0,
-            SourceLength::Fixed(2)
-        );
-        assert!(!SourceTypeIndex::default().validate_binding_schema(
-            2,
-            Some(&schema),
-            environment.id()
-        ));
     }
 }

@@ -16,10 +16,6 @@ pub const MAX_GUARD_TERMS: usize = 256;
 pub const MAX_GUARD_LITERALS: usize = 128;
 const MAX_GUARD_WORK: usize = 65_536;
 
-#[cfg(test)]
-#[path = "channel_guard_metrics.rs"]
-pub(super) mod metrics;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChannelMessageId(pub u32);
 
@@ -208,8 +204,6 @@ impl ChannelGuard {
     }
 
     pub fn normalized(&self) -> Option<Self> {
-        #[cfg(test)]
-        let _phase = metrics::phase("normalization");
         if !self.bounded() {
             return None;
         }
@@ -224,8 +218,7 @@ impl ChannelGuard {
         }
         // Both continuations of a plain boolean do not accumulate 2^N
         // equivalent paths before the first channel operation.
-        #[cfg(test)]
-        let _phase = metrics::phase("consensus");
+
         loop {
             let mut consensus = None;
             'pairs: for a in &terms {
@@ -253,24 +246,6 @@ impl ChannelGuard {
     }
 
     fn bounded(&self) -> bool {
-        #[cfg(test)]
-        {
-            if self.incomplete {
-                metrics::failed(Some("incomplete input"), 1, 0);
-            } else if self.terms.len() > MAX_GUARD_TERMS {
-                metrics::failed(
-                    Some("input clause count"),
-                    self.terms.len(),
-                    MAX_GUARD_TERMS,
-                );
-            } else if let Some(term) = self
-                .terms
-                .iter()
-                .find(|term| term.len() > MAX_GUARD_LITERALS)
-            {
-                metrics::failed(Some("input literal count"), term.len(), MAX_GUARD_LITERALS);
-            }
-        }
         !(self.incomplete
             || self.terms.len() > MAX_GUARD_TERMS
             || self
@@ -291,8 +266,6 @@ impl ChannelGuard {
         .normalized()
     }
     pub fn and(&self, other: &Self) -> Option<Self> {
-        #[cfg(test)]
-        let _phase = metrics::phase("and pairs");
         if !self.bounded() || !other.bounded() {
             return None;
         }
@@ -333,17 +306,12 @@ impl ChannelGuard {
         for a in &self.terms {
             for b in &other.terms {
                 work = work.checked_add(a.len().checked_add(b.len())?.checked_add(1)?)?;
-                #[cfg(test)]
-                metrics::charged(a.len() + b.len() + 1, work);
+
                 if work > MAX_GUARD_WORK {
-                    #[cfg(test)]
-                    metrics::failed(None, work, MAX_GUARD_WORK);
                     return None;
                 }
                 let term = a.union(b).copied().collect::<BTreeSet<_>>();
                 if term.len() > MAX_GUARD_LITERALS {
-                    #[cfg(test)]
-                    metrics::failed(Some("output literal count"), term.len(), MAX_GUARD_LITERALS);
                     return None;
                 }
                 if contradictory(&term, &mut work)? {
@@ -351,8 +319,6 @@ impl ChannelGuard {
                 }
                 insert_absorbed(&mut terms, term, &mut work)?;
                 if terms.len() > MAX_GUARD_TERMS {
-                    #[cfg(test)]
-                    metrics::failed(Some("output clause count"), terms.len(), MAX_GUARD_TERMS);
                     return None;
                 }
             }
@@ -365,8 +331,6 @@ impl ChannelGuard {
     }
 
     fn same_structure(&self, other: &Self, work: &mut usize) -> Option<bool> {
-        #[cfg(test)]
-        let _phase = metrics::phase("structural equality");
         charge(work, 1)?;
         if self.incomplete != other.incomplete || self.terms.len() != other.terms.len() {
             return Some(false);
@@ -390,8 +354,6 @@ impl ChannelGuard {
     }
 
     fn raw_clauses_contained_in(&self, other: &Self, work: &mut usize) -> Option<bool> {
-        #[cfg(test)]
-        let _phase = metrics::phase("raw clause subset");
         charge(work, 1)?;
         if self.incomplete || other.incomplete || self.terms.len() > other.terms.len() {
             return Some(false);
@@ -423,8 +385,6 @@ impl ChannelGuard {
     }
 
     fn terms_physically_imply(&self, other: &Self, work: &mut usize) -> Option<bool> {
-        #[cfg(test)]
-        let _phase = metrics::phase("physical term subsumption");
         charge(work, 1)?;
         if self.incomplete || other.incomplete {
             return Some(false);
@@ -450,8 +410,6 @@ impl ChannelGuard {
         Some(true)
     }
     pub fn not(&self) -> Option<Self> {
-        #[cfg(test)]
-        let _phase = metrics::phase("complement");
         if !self.bounded() {
             return None;
         }
@@ -466,8 +424,7 @@ impl ChannelGuard {
             };
             result = result.and(&opposite)?;
         }
-        #[cfg(test)]
-        metrics::complement(&result);
+
         Some(result)
     }
 }
@@ -476,10 +433,7 @@ fn charge(work: &mut usize, amount: usize) -> Option<()> {
     *work = work.checked_add(amount)?;
     #[cfg(test)]
     {
-        metrics::charged(amount, *work);
-        if *work > MAX_GUARD_WORK {
-            metrics::failed(None, *work, MAX_GUARD_WORK);
-        }
+        if *work > MAX_GUARD_WORK {}
     }
     (*work <= MAX_GUARD_WORK).then_some(())
 }
@@ -489,8 +443,6 @@ fn insert_absorbed(
     term: BTreeSet<GuardLiteral>,
     work: &mut usize,
 ) -> Option<()> {
-    #[cfg(test)]
-    let _phase = metrics::phase("absorption");
     let mut remove = Vec::new();
     for old in terms.iter() {
         charge(work, old.len().checked_add(term.len())?.checked_add(1)?)?;
@@ -509,16 +461,11 @@ fn insert_absorbed(
 }
 
 fn contradictory(term: &BTreeSet<GuardLiteral>, work: &mut usize) -> Option<bool> {
-    #[cfg(test)]
-    let _phase = metrics::phase("contradictions");
     let mut assignments = BTreeMap::new();
     for literal in term {
         *work = work.checked_add(1)?;
-        #[cfg(test)]
-        metrics::charged(1, *work);
+
         if *work > MAX_GUARD_WORK {
-            #[cfg(test)]
-            metrics::failed(None, *work, MAX_GUARD_WORK);
             return None;
         }
         if assignments

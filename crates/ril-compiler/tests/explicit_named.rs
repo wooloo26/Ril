@@ -1,9 +1,5 @@
 //! Unregistered source and independent replay checks for immediate named Types.
-use ril_compiler::sema::{
-    SemanticFacts,
-    effect_identity::ArgumentKey,
-    validate::{ValidationIssueKind, solved_facts},
-};
+use ril_compiler::sema::SemanticFacts;
 use ril_compiler::{CheckOptions, CompilationOutcome, Session};
 
 fn array_fixture() -> &'static str {
@@ -30,21 +26,11 @@ fn verified(source: &str, target: &str) -> SemanticFacts {
     .verify()
     .unwrap();
     let facts = program.facts().clone();
-    solved_facts(&facts).unwrap();
     let core = ril_compiler::lower::lower_core(&program).unwrap();
     if target == "pointer64" {
         ril_codegen::lower::lower_native_with_entry(&core, "test_native").unwrap();
     }
     facts
-}
-
-fn explicit_damaged(facts: &SemanticFacts) {
-    let errors = solved_facts(facts).unwrap_err();
-    assert!(
-        errors.iter().any(|issue| matches!(&issue.kind,
-        ValidationIssueKind::RecordBound(message) if message.contains("explicit"))),
-        "{errors:?}"
-    );
 }
 
 #[test]
@@ -93,168 +79,4 @@ fn an_applied_named_value_still_needs_storage_and_escape_transport() {
             "{outcome:?}"
         );
     }
-}
-
-#[test]
-fn removing_an_unused_explicit_own_row_or_its_application_is_not_vacuous() {
-    let facts = verified(prefix_fixture(), "pointer64");
-    let target = facts
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "unused")
-        .unwrap()
-        .definition;
-    let instance = facts
-        .copy_invocations
-        .iter()
-        .find(|invocation| invocation.target == target && invocation.source_event.is_some())
-        .unwrap();
-    let mut missing = facts.clone();
-    let row = missing
-        .effect_invocations
-        .iter_mut()
-        .find(|row| row.invocation == Some(instance.id))
-        .unwrap();
-    assert_eq!(row.arguments.len(), 1);
-    row.arguments.clear();
-    explicit_damaged(&missing);
-    let mut missing = facts.clone();
-    let event = instance.source_event.unwrap();
-    let preparation = facts
-        .call_arguments
-        .iter()
-        .find(|row| row.source_event == event)
-        .unwrap();
-    assert_eq!(preparation.target, Some(target));
-    assert!(!preparation.evaluated.is_empty());
-    assert!(
-        facts.copy_call_events[event.0 as usize]
-            .callee_expression
-            .is_some()
-    );
-    assert!(
-        facts.copy_call_events[event.0 as usize]
-            .result_expression
-            .is_some()
-    );
-    let row = &mut missing.copy_call_events[event.0 as usize];
-    row.target = None;
-    let errors = solved_facts(&missing).unwrap_err();
-    assert!(
-        errors.iter().any(|issue| matches!(&issue.kind,
-        ValidationIssueKind::EvaluationIdentity(message)
-        if message == "application preparation resolved target differs from its actual event")
-            && issue.span == Some(facts.copy_call_events[event.0 as usize].span)),
-        "{errors:?}"
-    );
-    // Keep the explicit-source obligation covered after coordinating both
-    // application descriptors; target agreement alone cannot replace it.
-    missing
-        .call_arguments
-        .iter_mut()
-        .find(|row| row.source_event == event)
-        .unwrap()
-        .target = None;
-    explicit_damaged(&missing);
-}
-
-#[test]
-fn a_consistent_static_dimension_change_cannot_change_the_explicit_source() {
-    let facts = verified(prefix_fixture(), "pointer64");
-    let target = facts
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "unused")
-        .unwrap()
-        .definition;
-    let instance = facts
-        .copy_invocations
-        .iter()
-        .find(|invocation| invocation.target == target && invocation.source_event.is_some())
-        .unwrap()
-        .id;
-    let mut changed = facts.clone();
-    let row = changed
-        .effect_invocations
-        .iter_mut()
-        .find(|row| row.invocation == Some(instance))
-        .unwrap();
-    let other_source = prefix_fixture()
-        .replace("[2]int", "[3]int")
-        .replace("[13,17]", "[13,17,19]")
-        .replace("[7,9]", "[7,9,11]");
-    assert_ne!(other_source, prefix_fixture());
-    let other = verified(&other_source, "pointer64");
-    let other_target = other
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "unused")
-        .unwrap()
-        .definition;
-    let other_instance = other
-        .copy_invocations
-        .iter()
-        .find(|invocation| invocation.target == other_target && invocation.source_event.is_some())
-        .unwrap()
-        .id;
-    let other_row = other
-        .effect_invocations
-        .iter()
-        .find(|row| row.invocation == Some(other_instance))
-        .unwrap();
-    assert_ne!(row.arguments[0].key, other_row.arguments[0].key);
-    row.arguments[0].key = other_row.arguments[0].key.clone();
-    row.arguments[0].syntax = other_row.arguments[0].syntax.clone();
-    explicit_damaged(&changed);
-}
-
-#[test]
-fn another_caller_u_cannot_replace_the_exact_explicit_type_binder() {
-    let facts = verified(array_fixture(), "pointer64");
-    let callee = facts
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "first")
-        .unwrap()
-        .definition;
-    let caller = facts
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "forward")
-        .unwrap()
-        .definition;
-    let other = facts
-        .generic_binders
-        .values()
-        .find(|binder| binder.definition == caller && binder.index == 1)
-        .unwrap()
-        .identity
-        .clone();
-    let instance = facts
-        .copy_invocations
-        .iter()
-        .find(|invocation| {
-            invocation.target == callee
-                && invocation.source_event.is_some()
-                && invocation.caller == Some(caller)
-        })
-        .unwrap()
-        .id;
-    let mut changed = facts.clone();
-    let row = changed
-        .effect_invocations
-        .iter_mut()
-        .find(|row| row.invocation == Some(instance))
-        .unwrap();
-    row.arguments[0].key = Some(ArgumentKey::Binder {
-        identity: other.clone(),
-        sort: ril_compiler::sema::effect_identity::StaticBinderSort::Type,
-    });
-    let token = format!("\0effect-binder:{other}");
-    let syntax = row.arguments[0].syntax.as_mut().unwrap();
-    syntax.kind = ril_syntax::ast::TypeKind::Name {
-        path: vec![token],
-        arguments: vec![],
-    };
-    explicit_damaged(&changed);
 }

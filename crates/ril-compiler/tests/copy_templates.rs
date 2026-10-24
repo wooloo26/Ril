@@ -31,7 +31,6 @@ fn private_direct_instances_prove_scalars_reference_data_and_environment_free_fu
         let program = accepted(&format!("{DUP}{body}"));
         let facts = program.facts();
         assert!(facts.copy_template_closure.is_some());
-        ril_compiler::sema::copy_template_closure::validate(facts).unwrap();
         let templates: Vec<_> = facts
             .copy_boundaries
             .iter()
@@ -150,7 +149,6 @@ fn resource_copy_exceptions_are_not_ordinary_template_discharge() {
             .iter()
             .all(|proof| proof.template && proof.output.is_none())
     );
-    ril_compiler::sema::copy_template_closure::validate(facts).unwrap();
 }
 
 #[test]
@@ -174,52 +172,4 @@ fn row_instantiation_keeps_independent_original_and_copy_result_duties() {
         ),
         "E0720",
     );
-}
-
-#[test]
-fn closure_certificate_cannot_omit_a_site_or_change_an_instance() {
-    use ril_compiler::sema::{
-        copy_contract::CopyInvocationStatus, copy_template_closure::validate,
-    };
-    let program = accepted(&format!(
-        "{DUP}fn example(){{assert(duplicate(1)==1);assert(duplicate(2)==2)}}"
-    ));
-    let facts = program.facts();
-    let mut missing = facts.clone();
-    missing.copy_template_closure = None;
-    assert!(validate(&missing).is_err());
-    let mut failed = facts.clone();
-    let id = *failed
-        .copy_template_closure
-        .as_ref()
-        .unwrap()
-        .certificate
-        .instances
-        .values()
-        .next()
-        .unwrap()
-        .first()
-        .unwrap();
-    failed.copy_invocations[id.0 as usize].status = CopyInvocationStatus::Unsupported;
-    assert!(validate(&failed).is_err());
-    let mut omitted = facts.clone();
-    omitted
-        .copy_template_closure
-        .as_mut()
-        .unwrap()
-        .templates
-        .values_mut()
-        .next()
-        .unwrap()
-        .sites
-        .pop_first();
-    assert!(validate(&omitted).is_err());
-    let mut invented = facts.clone();
-    let template = invented
-        .copy_boundaries
-        .iter_mut()
-        .find(|boundary| boundary.template)
-        .unwrap();
-    template.output = Some(template.source.clone());
-    assert!(validate(&invented).is_err());
 }

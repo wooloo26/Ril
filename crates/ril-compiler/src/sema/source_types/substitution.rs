@@ -6,18 +6,6 @@ use crate::sema::effect_identity::{ArgumentKey, StaticBinderSort};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) fn substitute_key(
-    key: &ArgumentKey,
-    selected: &BTreeMap<String, ArgumentKey>,
-    work: &mut WorkLimit,
-) -> Result<ArgumentKey, SourceTypesError> {
-    substitute_key_with(
-        key,
-        |identity, _| Ok(selected.get(identity).map(Cow::Borrowed)),
-        work,
-    )
-}
-
 /// Resolve only reachable selections. The callback supplies complete source
 /// coordinates from its own environment, never an erased runtime type.
 pub(crate) fn substitute_key_with<'a>(
@@ -80,14 +68,7 @@ pub(crate) trait LegacySourceExport: super::graph::SourceGraph {
     ) -> Result<ArgumentKey, SourceTypesError> {
         self.export_key(root, work, true, None)
     }
-    fn declared_key(
-        &self,
-        root: SourceTypeId,
-        declarations: &BTreeSet<SourceTypeId>,
-        work: &mut WorkLimit,
-    ) -> Result<ArgumentKey, SourceTypesError> {
-        self.export_key(root, work, false, Some(declarations))
-    }
+
     fn export_key(
         &self,
         root: SourceTypeId,
@@ -292,6 +273,17 @@ fn container_name(kind: SourceContainer) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    fn substitute_selected(
+        key: &ArgumentKey,
+        selected: &BTreeMap<String, ArgumentKey>,
+        work: &mut WorkLimit,
+    ) -> Result<ArgumentKey, SourceTypesError> {
+        substitute_key_with(
+            key,
+            |identity, _| Ok(selected.get(identity).map(Cow::Borrowed)),
+            work,
+        )
+    }
     use super::*;
     use ril_syntax::ast::ParameterMode;
 
@@ -343,7 +335,7 @@ mod tests {
                 },
             ),
         ]);
-        let actual = substitute_key(&source, &selected, &mut WorkLimit::new(8192)).unwrap();
+        let actual = substitute_selected(&source, &selected, &mut WorkLimit::new(8192)).unwrap();
         assert_eq!(
             actual,
             ArgumentKey::Record {
@@ -373,16 +365,16 @@ mod tests {
         }
         let selected = BTreeMap::from([("T".into(), named("int")), ("unused".into(), unused)]);
         assert_eq!(
-            substitute_key(&binder("T"), &selected, &mut WorkLimit::new(1024)),
+            substitute_selected(&binder("T"), &selected, &mut WorkLimit::new(1024)),
             Ok(named("int")),
         );
         let selected = BTreeMap::from([("T".into(), binder("U")), ("U".into(), binder("T"))]);
         assert_eq!(
-            substitute_key(&binder("T"), &selected, &mut WorkLimit::new(1024)),
+            substitute_selected(&binder("T"), &selected, &mut WorkLimit::new(1024)),
             Err(SourceTypesError::CyclicSubstitution),
         );
         assert_eq!(
-            substitute_key(&binder("T"), &BTreeMap::new(), &mut WorkLimit::new(1024)),
+            substitute_selected(&binder("T"), &BTreeMap::new(), &mut WorkLimit::new(1024)),
             Ok(binder("T")),
         );
     }

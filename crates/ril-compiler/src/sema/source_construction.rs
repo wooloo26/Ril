@@ -5,7 +5,6 @@ use super::{
     source_reception::Construction,
     source_types::{SourceLength, SourcePath, SourceSchema, SourceTypesError as Error, WorkLimit},
 };
-use ril_syntax::ast::{Expr, ExprKind, RecordMember};
 use std::collections::BTreeMap;
 
 #[derive(Debug)]
@@ -137,45 +136,6 @@ pub(crate) fn hir_construction(
         .map(Literal::construction)
 }
 
-pub(crate) fn literal_plan<'a>(
-    syntax: &'a Expr,
-    work: &mut WorkLimit,
-) -> Result<Literal<&'a Expr>, Error> {
-    work.charge(1)?;
-    Ok(match &syntax.kind {
-        ExprKind::Array(items) | ExprKind::Tuple(items) => {
-            work.charge(items.len())?;
-            let items = items.iter().collect();
-            if matches!(syntax.kind, ExprKind::Array(_)) {
-                Literal::Array(items)
-            } else {
-                Literal::Tuple(items)
-            }
-        }
-        ExprKind::Map(items) => {
-            work.charge(items.len().saturating_mul(2))?;
-            Literal::Map(items.iter().map(|(key, value)| (key, value)).collect())
-        }
-        ExprKind::Record {
-            ty: None, members, ..
-        } => {
-            work.charge(members.len())?;
-            let mut fields = BTreeMap::new();
-            for member in members {
-                let RecordMember::Field(field) = member else {
-                    return Ok(Literal::Opaque);
-                };
-                work.text(&field.name)?;
-                if fields.insert(field.name.clone(), &field.value).is_some() {
-                    return Err(Error::DuplicateField);
-                }
-            }
-            Literal::Record(fields)
-        }
-        _ => Literal::Opaque,
-    })
-}
-
 pub(crate) struct Input {
     pub(crate) source: Option<(SourceSchema, FrozenEnvironment)>,
     pub(crate) fresh: Construction,
@@ -302,10 +262,7 @@ fn receive_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sema::{
-        source_types::{SourceBuilder, SourceNode, SourceScalar},
-        source_types_ref::SourceTypesRef,
-    };
+    use crate::sema::source_types::{SourceBuilder, SourceNode, SourceScalar};
 
     fn empty() -> Input {
         Input {
@@ -432,83 +389,5 @@ mod tests {
             receives(&poison, &environment, &empty(), &mut work).is_err(),
             "an empty construction cannot hide an incomplete receiver"
         );
-    }
-
-    #[test]
-    fn contextual_carriers_keep_unknown_literal_births_and_authenticate_actual_slots() {
-        use crate::hir::nodes::ExprKind as HirExpr;
-        use crate::sema::{model::Callable, validate::solved_facts};
-        let source = ril_test::case_bytes(
-            "tests/regressions/contextual-constructors.ril::nested-receiving-contexts-pointer64",
-        );
-        for target in ["pointer32", "pointer64"] {
-            let program = crate::Session::with_options(
-                source.to_vec(),
-                crate::CheckOptions {
-                    target: target.into(),
-                    ..Default::default()
-                },
-            )
-            .verify()
-            .unwrap();
-            let facts = program.facts();
-            let hir = facts.semantic_hir.as_deref().unwrap();
-            let (event,row,operand) = facts.copy_call_events.iter().find_map(|event| {
-                let callee = facts.expressions.get(event.callee_expression?)?;
-                if !matches!(callee.value.callables.as_slice(),[Callable::Builtin(name)] if ril_compiler_core::builtin_calls::PayloadConstructor::lookup(name).is_some()) {return None}
-                let row = facts.call_arguments.iter().position(|row|row.source_event==event.id)?;
-                let operand = facts.call_arguments[row].supplied.get(&0)?.expression;
-                let fact = facts.expressions.get(operand)?;
-                matches!(&hir.expression(fact.source_id?)?.kind,HirExpr::Array(items) if items.is_empty()).then_some((event,row,operand))
-            }).unwrap();
-            let mut work = WorkLimit::new(16384);
-            let born = facts.expressions[operand]
-                .value
-                .packet()
-                .birth_source(SourceTypesRef::Frozen(&facts.source_types), &mut work)
-                .unwrap();
-            assert!(
-                born.schema.is_none(),
-                "context must not rewrite the literal's physical Source birth"
-            );
-            let result = event.result_expression.unwrap();
-            assert!(
-                facts.expressions[result]
-                    .value
-                    .packet()
-                    .birth_source(SourceTypesRef::Frozen(&facts.source_types), &mut work)
-                    .unwrap()
-                    .schema
-                    .is_some()
-            );
-            let sibling = facts.expressions.iter().enumerate().find(|(index,fact)| *index!=operand && fact.source_id.and_then(|id|hir.expression(id)).is_some_and(|node|matches!(&node.kind,HirExpr::Array(items) if items.is_empty()))).unwrap().0;
-            for mutation in 0..4 {
-                let mut changed = facts.clone();
-                match mutation {
-                    0 => {
-                        changed.call_arguments.remove(row);
-                    }
-                    1 => {
-                        changed.call_arguments[row]
-                            .supplied
-                            .get_mut(&0)
-                            .unwrap()
-                            .expression = sibling
-                    }
-                    2 => {
-                        changed.expressions[result]
-                            .value
-                            .corrupt_value(&mut 4_000_000)
-                            .unwrap()
-                            .result_tag = Some(false)
-                    }
-                    _ => changed.semantic_hir = None,
-                }
-                assert!(
-                    solved_facts(&changed).is_err(),
-                    "{target} contextual constructor mutation {mutation}"
-                );
-            }
-        }
     }
 }

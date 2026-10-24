@@ -271,7 +271,7 @@ impl Walk<'_> {
                     key: crate::static_eval::normalized_argument_key(&head),
                     syntax: head,
                 };
-                if !crate::sema::source_type_validation::resolved_names(&head, declarations) {
+                if !crate::sema::source_types::legacy::resolved_names(&head, declarations) {
                     return Unknown;
                 }
                 arguments.iter().fold(NotRequired, |answer, argument| {

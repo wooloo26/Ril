@@ -42,20 +42,9 @@ pub(crate) struct AuthenticatedSignatureInput<'a> {
     pub header: &'a TypeExpr,
     pub environment: &'a FrozenEnvironment,
     pub mode: ParameterMode,
-    path: &'a [SourcePath],
-    slot: usize,
-    arity: usize,
 }
 
-impl AuthenticatedSignatureInput<'_> {
-    pub(crate) fn parameter_schema(
-        &self,
-        root: &SourceSchema,
-        work: &mut WorkLimit,
-    ) -> Result<SourceSchema, Error> {
-        parameter_schema(root, self.path, self.arity, self.slot, self.mode, work)
-    }
-}
+impl AuthenticatedSignatureInput<'_> {}
 
 fn parameter_schema(
     root: &SourceSchema,
@@ -196,9 +185,6 @@ impl SignatureProbeSource {
             header: &self.header,
             environment: &self.environment,
             mode,
-            path: &self.path,
-            slot,
-            arity: self.formals.len(),
         })
     }
 }
@@ -271,31 +257,6 @@ pub(crate) fn closure_signature_assumption<'a>(
         bindings,
         work,
     )
-}
-
-pub(super) fn requires_signature_origin(
-    input: &Value,
-    scope: Option<ScopeId>,
-    context: InvocationContext,
-    bindings: &[BindingInfo],
-    work: &mut WorkLimit,
-) -> Result<bool, Error> {
-    work.charge(1 + input.sources.len())?;
-    if context.owner.is_some() {
-        return Ok(false);
-    }
-    for &source in &input.sources {
-        let binding = bindings.get(source).ok_or(Error::MissingNode)?;
-        if binding.parameter
-            && binding.pattern.is_none()
-            && binding.birth.is_none()
-            && Some(binding.owner) == scope
-            && binding.context == context
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn universal_graph(input: CopyValueView<'_>, work: &mut WorkLimit) -> Result<(), Error> {

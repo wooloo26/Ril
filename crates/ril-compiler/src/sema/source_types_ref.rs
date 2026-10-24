@@ -1,31 +1,21 @@
 //! Borrow the one live or frozen Source arena. A view and its environment are
 //! resolved together under the caller's remaining allowance.
+#[cfg(test)]
+use super::source_types::SourceTypeIndex;
 use super::{
     context::{FrozenEnvId, FrozenEnvironment},
-    source_types::{
-        LiveSourceTypes, SourceSchema, SourceTypeIndex, SourceTypesError, SourceView, WorkLimit,
-    },
+    source_types::{LiveSourceTypes, SourceSchema, SourceTypesError, SourceView, WorkLimit},
 };
 use ril_compiler_core::ids::TypeExprId;
 
 #[derive(Clone, Copy)]
 pub(crate) enum SourceTypesRef<'a> {
     Live(&'a LiveSourceTypes),
+    #[cfg(test)]
     Frozen(&'a SourceTypeIndex),
 }
 
 impl SourceTypesRef<'_> {
-    pub(crate) fn binding_schema(
-        self,
-        binding: usize,
-        work: &mut WorkLimit,
-    ) -> Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError> {
-        match self {
-            Self::Live(types) => types.binding_schema_if_known(binding, None, work),
-            Self::Frozen(types) => types.binding_schema_if_known(binding, None, work),
-        }
-    }
-
     pub(crate) fn view_schema(
         self,
         view: SourceView,
@@ -34,6 +24,7 @@ impl SourceTypesRef<'_> {
     ) -> Result<(SourceSchema, FrozenEnvironment), SourceTypesError> {
         match self {
             Self::Live(types) => types.view_schema(view, original, work),
+            #[cfg(test)]
             Self::Frozen(types) => types.view_schema(view, original, work),
         }
     }
@@ -45,6 +36,7 @@ impl SourceTypesRef<'_> {
     ) -> Result<FrozenEnvironment, SourceTypesError> {
         match self {
             Self::Live(types) => types.environment(id, work),
+            #[cfg(test)]
             Self::Frozen(types) => types.environment(id, work),
         }
     }

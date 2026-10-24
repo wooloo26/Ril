@@ -1,4 +1,4 @@
-//! Independent review tests for `source_reception`, registered after v37.
+//! Structural receiving tests over the shared Source graph.
 //! The finite oracle models
 //! source dimensions and modes; it grants no runtime/permission/row authority.
 use super::effect_identity::ArgumentKey;
@@ -16,10 +16,9 @@ fn int() -> ArgumentKey {
 #[test]
 fn projection_keeps_nested_dimensions_and_refuses_excessive_row_scans() {
     use super::facts::Slot;
-    let hir = crate::hir::nodes::HirProgram::lower(&ril_syntax::ast::Program::default()).unwrap();
     let project = |key: &ArgumentKey, slot: Slot| {
         let mut work = super::source_types::WorkLimit::new(4096);
-        let source = super::source_types::declarations::schema(key, &hir, &mut work)?;
+        let source = super::source_types::SourceSchema::import(key, None, &mut work)?;
         let path = super::source_types::steps_in(&[slot], &mut work)?;
         source.project_steps(&path, &mut work)
     };

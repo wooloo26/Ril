@@ -1,7 +1,4 @@
-use ril_compiler::{
-    CompilationOutcome, Session,
-    sema::{copy_template_closure::validate, resource_copy::CopyDischarge},
-};
+use ril_compiler::{CompilationOutcome, Session, sema::resource_copy::CopyDischarge};
 
 fn positive_fixture() -> &'static str {
     ril_test::case_source("tests/regressions/copy.ril::private-helpers")
@@ -21,7 +18,6 @@ fn private_helpers_use_the_actual_sender_contract_and_keep_ordinary_copies_separ
         .verify()
         .unwrap();
     let facts = verified.facts();
-    validate(facts).unwrap();
     let closure = facts.copy_template_closure.as_ref().unwrap();
     assert!(
         closure
@@ -100,48 +96,4 @@ fn consumed_authority_and_scope_escape_cannot_borrow_a_successful_sender_event()
         ),
         "E0606",
     );
-}
-
-#[test]
-fn final_certificate_rejects_sender_events_borrowed_from_another_instance() {
-    let verified = Session::new(positive_fixture().as_bytes().to_vec())
-        .verify()
-        .unwrap();
-    let facts = verified.facts();
-    let choices: Vec<_> = facts
-        .copy_template_closure
-        .as_ref()
-        .unwrap()
-        .discharges
-        .iter()
-        .filter_map(|(key, proof)| {
-            if let CopyDischarge::Sender(id) = proof {
-                Some((*key, *id))
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert!(choices.len() >= 2);
-    let other = choices
-        .iter()
-        .find(|(key, id)| key.0 != choices[0].0.0 && *id != choices[0].1)
-        .expect("fixture must contain a different actual Sender invocation");
-    let mut missing = facts.clone();
-    missing.resource_clones[choices[0].1.0 as usize].boundary = None;
-    assert!(validate(&missing).is_err());
-    let mut borrowed = facts.clone();
-    borrowed
-        .copy_template_closure
-        .as_mut()
-        .unwrap()
-        .discharges
-        .insert(choices[0].0, CopyDischarge::Sender(other.1));
-    assert!(validate(&borrowed).is_err());
-    let mut fabricated = facts.clone();
-    let id = fabricated.resource_clones[choices[0].1.0 as usize]
-        .source_event
-        .unwrap();
-    fabricated.copy_call_events[id.0 as usize].callee_expression = None;
-    assert!(validate(&fabricated).is_err());
 }

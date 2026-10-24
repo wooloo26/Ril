@@ -8,11 +8,6 @@ use super::{
 };
 use ril_compiler_core::ids::{ActivationEpochId, ExprId};
 use std::collections::BTreeMap;
-mod frames;
-mod receptions;
-mod signatures;
-pub(crate) use frames::{FrameIndex, validate};
-pub(crate) use receptions::validate as validate_receptions;
 
 #[derive(Debug, Clone)]
 pub enum ScopeOrigin {

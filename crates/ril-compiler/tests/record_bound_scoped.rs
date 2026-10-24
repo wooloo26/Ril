@@ -1,11 +1,6 @@
 use ril_compiler::{
     CheckOptions, CompilationOutcome, Session,
-    sema::{
-        SemanticFacts,
-        effect_identity::ArgumentKey,
-        record_bounds::BoundTypeSelectionStep,
-        validate::{ValidationIssueKind, solved_facts},
-    },
+    sema::{SemanticFacts, record_bounds::BoundTypeSelectionStep},
 };
 
 fn fixed_fixture() -> &'static str {
@@ -28,20 +23,9 @@ fn verified(source: &str) -> SemanticFacts {
         !facts.scoped_source_identities.is_empty(),
         "source did not exercise scoped identity"
     );
-    solved_facts(&facts).unwrap();
     let core = ril_compiler::lower::lower_core(&program).unwrap();
     ril_codegen::lower::lower_native_with_entry(&core, "test_native").unwrap();
     facts
-}
-
-fn damaged(facts: &SemanticFacts) {
-    let errors = solved_facts(facts).unwrap_err();
-    assert!(
-        errors
-            .iter()
-            .any(|issue| matches!(issue.kind, ValidationIssueKind::RecordBound(_))),
-        "{errors:?}"
-    );
 }
 
 #[test]
@@ -113,174 +97,4 @@ fn complete_known_field_dimension_and_callable_mode_conflicts_are_type_errors() 
             "{outcome:?}"
         );
     }
-}
-
-#[test]
-fn deleted_certificate_and_probe_flags_never_make_complete_source_coverage_vacuous() {
-    let facts = verified(fixed_fixture());
-    for flags in [false, true] {
-        let mut copy = facts.clone();
-        copy.scoped_source_identities.clear();
-        if flags {
-            for call in &mut copy.copy_invocations {
-                call.declaration_probe = true;
-            }
-        }
-        damaged(&copy);
-    }
-    let mut copy = facts;
-    copy.scoped_source_identities[0].occurrences.clear();
-    damaged(&copy);
-}
-
-#[test]
-fn original_and_current_entry_tables_require_full_arity_before_selection() {
-    let facts = verified(empty_fixture());
-    let identity = &facts.scoped_source_identities[0];
-    let current = identity.context.invocation.unwrap().0 as usize;
-    let source = identity.occurrences[0].formal.invocation.0 as usize;
-    for invocation in [current, source] {
-        let mut copy = facts.clone();
-        std::sync::Arc::make_mut(&mut copy.copy_invocations[invocation].entry.arguments).clear();
-        damaged(&copy);
-        let mut copy = facts.clone();
-        let extra = copy.copy_invocations[invocation].entry.arguments[0].clone();
-        std::sync::Arc::make_mut(&mut copy.copy_invocations[invocation].entry.arguments)
-            .push(extra);
-        damaged(&copy);
-    }
-}
-
-#[test]
-fn each_t_occurrence_requires_its_actual_original_formal_path() {
-    let facts = verified(empty_fixture());
-    let mut copy = facts.clone();
-    copy.scoped_source_identities[0].occurrences.pop();
-    damaged(&copy);
-    let mut copy = facts.clone();
-    copy.scoped_source_identities[0].occurrences[0]
-        .formal
-        .type_path = vec![BoundTypeSelectionStep::Tuple(99)];
-    damaged(&copy);
-    let mut copy = facts;
-    copy.scoped_source_identities[0].occurrences[1].formal = copy.scoped_source_identities[0]
-        .occurrences[0]
-        .formal
-        .clone();
-    damaged(&copy);
-}
-
-#[test]
-fn original_source_name_and_actual_parent_callee_tokens_cannot_be_replaced_by_metadata() {
-    let facts = verified(fixed_fixture());
-    let mut copy = facts.clone();
-    copy.scoped_source_identities[0].occurrences[0]
-        .formal
-        .root_expression = usize::MAX;
-    damaged(&copy);
-    let mut copy = facts.clone();
-    copy.invocation_expressions.clear();
-    damaged(&copy);
-    let mut copy = facts.clone();
-    let anchor = copy.scoped_source_identities[0].occurrences[0]
-        .formal
-        .clone();
-    copy.bindings[anchor.binding].name = "renamed_without_token".into();
-    for function in &mut copy.functions {
-        if function.definition == anchor.definition {
-            function.syntax.parameters[anchor.parameter_index as usize]
-                .pattern
-                .kind = ril_syntax::ast::PatternKind::Name("renamed_without_token".into());
-        }
-    }
-    damaged(&copy);
-    let mut copy = facts;
-    let invocation = copy.scoped_source_identities[0]
-        .context
-        .invocation
-        .unwrap()
-        .0 as usize;
-    copy.copy_invocations[invocation].source_event = None;
-    damaged(&copy);
-}
-
-#[test]
-fn matching_descriptor_edits_cannot_rewrite_the_original_inner_dimension() {
-    let mut facts = verified(empty_fixture());
-    let identity = &mut facts.scoped_source_identities[0];
-    let ArgumentKey::Record { fields, .. } = &mut identity.key else {
-        unreachable!()
-    };
-    let ArgumentKey::Array { element, .. } = &mut fields
-        .iter_mut()
-        .find(|field| field.0 == "items")
-        .unwrap()
-        .2
-    else {
-        unreachable!()
-    };
-    let ArgumentKey::Array { length, .. } = element.as_mut() else {
-        unreachable!()
-    };
-    *length = Some("const(int:3)".into());
-    let ril_syntax::ast::TypeKind::Record { fields, .. } = &mut identity.syntax.kind else {
-        unreachable!()
-    };
-    let ril_syntax::ast::TypeKind::Array { element, .. } = &mut fields
-        .iter_mut()
-        .find(|field| field.name == "items")
-        .unwrap()
-        .ty
-        .kind
-    else {
-        unreachable!()
-    };
-    let ril_syntax::ast::TypeKind::Array {
-        length: Some(length),
-        ..
-    } = &mut element.kind
-    else {
-        unreachable!()
-    };
-    length.kind = ril_syntax::ast::ExprKind::Literal(ril_syntax::ast::Literal::Integer("3".into()));
-    damaged(&facts);
-}
-
-#[test]
-fn scoped_identity_arena_context_and_epoch_require_real_registered_anchors() {
-    let facts = verified(fixed_fixture());
-    let mut unrelated = Session::new(b"fn example(){}".to_vec())
-        .verify()
-        .unwrap()
-        .facts()
-        .clone();
-    unrelated
-        .scoped_source_identities
-        .push(facts.scoped_source_identities[0].clone());
-    damaged(&unrelated);
-    let mut copy = facts.clone();
-    copy.scoped_source_identities[0].id.0 += 1;
-    damaged(&copy);
-    let mut copy = facts.clone();
-    copy.scoped_source_identities[0].context.invocation = None;
-    damaged(&copy);
-    let mut copy = facts.clone();
-    let original = copy.scoped_source_identities[0].typing_environment.clone();
-    let equal_contents = original.thaw().freeze();
-    assert_eq!(original, equal_contents);
-    assert_ne!(original.id(), equal_contents.id());
-    copy.scoped_source_identities[0].typing_environment = equal_contents;
-    damaged(&copy);
-    let mut copy = facts.clone();
-    let identity = &mut copy.scoped_source_identities[0];
-    let forged = identity.typing_environment.thaw().freeze();
-    identity.typing_environment = forged.clone();
-    let binding = identity.occurrences[0].formal.binding;
-    copy.bindings[binding].typing_environment = forged;
-    damaged(&copy);
-    let mut copy = facts;
-    copy.scoped_source_identities[0].occurrences[0]
-        .formal
-        .entry_allocation_epoch += 1;
-    damaged(&copy);
 }

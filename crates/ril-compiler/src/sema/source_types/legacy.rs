@@ -4,11 +4,6 @@
 use super::*;
 use crate::sema::effect_identity::ArgumentKey;
 
-pub(super) struct Imported {
-    pub(super) types: SourceTypes,
-    pub(super) root: SourceTypeId,
-}
-
 pub(super) fn scalar(name: &str) -> Option<SourceScalar> {
     use SourceScalar::*;
     Some(match name.strip_prefix("Prelude::").unwrap_or(name) {
@@ -163,18 +158,6 @@ pub(super) fn import_node(
     builder.insert(shape, work)
 }
 
-pub(super) fn import(
-    key: &ArgumentKey,
-    work: &mut WorkLimit,
-) -> Result<Imported, SourceTypesError> {
-    let mut builder = SourceBuilder::new()?;
-    let root = import_node(key, &mut builder, work, 0)?;
-    Ok(Imported {
-        types: builder.freeze(work)?,
-        root,
-    })
-}
-
 impl SourceBuilder {
     pub(crate) fn import_key(
         &mut self,
@@ -193,4 +176,84 @@ impl SourceBuilder {
             }
         }
     }
+}
+
+pub(crate) fn resolved_names(
+    witness: &crate::sema::model::SourceTypeWitness,
+    declarations: &std::collections::BTreeMap<String, ril_syntax::ast::TypeDeclaration>,
+) -> bool {
+    use ril_syntax::ast::TypeKind;
+    let mut pending = vec![&witness.syntax];
+    let mut visits = 0;
+    while let Some(syntax) = pending.pop() {
+        visits += 1;
+        if visits > 4096 {
+            return false;
+        }
+        match &syntax.kind {
+            TypeKind::Name { path, arguments } => {
+                let full = path.join("::");
+                let name = full.strip_prefix("Prelude::").unwrap_or(&full);
+                let known = matches!(
+                    name,
+                    "bool"
+                        | "str"
+                        | "bytes"
+                        | "never"
+                        | "f32"
+                        | "f64"
+                        | "int"
+                        | "i8"
+                        | "i16"
+                        | "i32"
+                        | "i64"
+                        | "i128"
+                        | "isize"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "u128"
+                        | "usize"
+                        | "bigint"
+                        | "Immut"
+                        | "Option"
+                        | "Result"
+                        | "Set"
+                        | "Range"
+                        | "Heap::Heap"
+                        | "Deque::Deque"
+                ) || (arguments.is_empty()
+                    && crate::sema::checker::is_known_builtin_source_type(&full))
+                    || declarations.get(&full).is_some_and(|declaration| {
+                        declaration.nominal
+                            || declaration.opaque
+                            || !declaration.variants.is_empty()
+                    });
+                if !known {
+                    return false;
+                }
+                pending.extend(arguments);
+            }
+            TypeKind::Optional(inner) | TypeKind::Array { element: inner, .. } => {
+                pending.push(inner)
+            }
+            TypeKind::Map { key, value } => pending.extend([&**key, &**value]),
+            TypeKind::Tuple(items) => pending.extend(items),
+            TypeKind::Record { fields, .. } => pending.extend(fields.iter().map(|field| &field.ty)),
+            TypeKind::Callable {
+                parameters, result, ..
+            } => {
+                pending.extend(
+                    parameters
+                        .iter()
+                        .filter_map(|parameter| parameter.ty.as_ref()),
+                );
+                pending.extend(result.iter().map(|result| &**result));
+            }
+            TypeKind::Computation(_) => {}
+            _ => return false,
+        }
+    }
+    true
 }

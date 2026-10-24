@@ -20,11 +20,6 @@ mod bindings;
 mod budget;
 mod builtin_source_observations;
 mod builtin_source_types;
-pub(crate) use builtin_source_observations::original_canonical_key as original_canonical_builtin_source_key;
-pub(crate) use builtin_source_observations::original_canonical_source as original_canonical_builtin_source;
-pub(crate) use builtin_source_observations::original_numeric_declaration as original_numeric_builtin_declaration;
-pub(crate) use builtin_source_observations::validate as validate_builtin_source_observations;
-pub(crate) use builtin_source_observations::{BuiltinNameIndex, CanonicalBuiltinUse};
 mod call_input_source;
 mod calls;
 mod cancellation;
@@ -39,10 +34,6 @@ mod context;
 mod contract_types;
 mod contracts;
 pub(crate) use contracts::state_group;
-mod generated_sources;
-mod symbolic_rows;
-pub(crate) use generated_sources::checked_roots as checked_generated_source_roots;
-pub(crate) use generated_sources::validate as validate_generated_sources;
 mod copy;
 mod copy_classes;
 mod copy_contracts;
@@ -58,6 +49,8 @@ mod evaluated;
 mod execution_oracle;
 mod explicit_named;
 mod formal_values;
+mod generated_sources;
+mod symbolic_rows;
 use super::evaluated::EvaluatedValue;
 mod bound_writes;
 mod expressions;
@@ -358,29 +351,26 @@ fn analyze_inner(
         operation_loan_starts: checker.operation_loan_starts,
         recursive_summaries: checker.recursive_analysis,
     };
-    let semantically_complete = checker
+    // Finalizing the owned type arena is part of primary analysis, not a
+    // replay of declarations or evaluation histories.
+    if let Err(error) = facts
+        .source_types
+        .validate(&mut super::source_types::WorkLimit::new(4_000_000))
+    {
+        checker.unsupported.push(super::UnsupportedFeature {
+            span: Span {
+                file: checker.file,
+                start: 0,
+                end: 0,
+            },
+            description: format!("type store could not be finalized: {error}"),
+        });
+    }
+    let accepted = checker
         .diagnostics
         .iter()
-        .all(|d| d.severity != Severity::Error)
+        .all(|diagnostic| diagnostic.severity != Severity::Error)
         && checker.unsupported.is_empty();
-    // This is an additional consistency boundary, not a replacement for the
-    // semantic obligations above. Inconsistent evidence cannot enter HIR.
-    if semantically_complete && let Err(issues) = super::validate::solved_facts(&facts) {
-        checker
-            .unsupported
-            .extend(issues.into_iter().map(|issue| super::UnsupportedFeature {
-                span: issue.span.unwrap_or(Span {
-                    file: checker.file,
-                    start: 0,
-                    end: 0,
-                }),
-                description: format!(
-                    "solved semantic structure is inconsistent: {:?} (cause {:?})",
-                    issue.kind, issue.cause,
-                ),
-            }));
-    }
-    let accepted = semantically_complete && checker.unsupported.is_empty();
     let facts = std::sync::Arc::new(facts);
     let program = accepted.then(|| {
         VerifiedProgram::verified(

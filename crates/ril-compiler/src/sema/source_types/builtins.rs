@@ -241,9 +241,6 @@ impl BuiltinId {
     pub(crate) fn definition(self) -> &'static Definition {
         &DEFINITIONS[self.0 as usize]
     }
-    pub(crate) fn bit(self) -> u128 {
-        1 << (16 + self.0)
-    }
 }
 
 static CONSTANTS: &[(&str, Schema)] = &[
@@ -275,9 +272,6 @@ impl ConstantId {
     }
     pub(crate) fn definition(self) -> (&'static str, Schema) {
         CONSTANTS[self.0 as usize]
-    }
-    pub(crate) fn bit(self) -> u128 {
-        1 << (96 + self.0)
     }
 }
 pub(crate) fn constant(name: &str) -> Option<Schema> {

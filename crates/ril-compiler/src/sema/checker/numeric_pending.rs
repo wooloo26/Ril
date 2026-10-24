@@ -170,7 +170,6 @@ impl Checker {
         &mut self,
         expression: &Expr,
         frame: &Frame,
-        subject: Option<&EvaluatedValue>,
     ) -> Option<Value> {
         let (literal, span, minus) = match &expression.kind {
             ExprKind::Literal(literal @ (Literal::Integer(_) | Literal::Float(_))) => {
@@ -230,7 +229,6 @@ impl Checker {
                 expression,
                 &crate::sema::numeric_selection::selected_ty(selected),
                 frame,
-                subject,
             );
         }
         let cause = self.cause(

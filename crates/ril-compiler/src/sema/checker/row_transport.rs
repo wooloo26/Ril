@@ -382,16 +382,35 @@ mod tests {
                 result.unsupported
             );
         }
-        for source in [
-            "fn copy<R>(item:[]{..R})->[]{..R}{clone(item)}",
-            "fn transport<R>(item:Result<{..R},str>)->Result<{..R},str>{item}",
-        ] {
-            let result = check(source);
-            assert!(
-                result.program.is_none(),
-                "an unknown constituent proof is required"
-            );
-        }
+        // Copy eligibility still needs an actual closed instance. This is a
+        // remaining template-analysis limit, not a reason to reject identity
+        // transport of an existing Result.
+        let copied = check("fn copy<R>(item:[]{..R})->[]{..R}{clone(item)}");
+        assert!(copied.program.is_none());
+        assert!(
+            copied
+                .unsupported
+                .iter()
+                .any(|feature| feature.description.contains("Uninstantiated"))
+        );
+    }
+
+    #[test]
+    fn row_result_identity_does_not_require_a_second_constituent_proof() {
+        let source = "fn transport<R>(item:Result<{..R},str>)->Result<{..R},str>{item}";
+        let result = check(source);
+        let program = result.program.as_ref().unwrap_or_else(|| {
+            panic!(
+                "{source}\n{:?}\n{:?}",
+                result.diagnostics, result.unsupported
+            )
+        });
+        let core = crate::lower::lower_core(program).unwrap();
+        assert!(
+            core.functions
+                .iter()
+                .any(|function| function.name == "transport")
+        );
     }
 
     #[test]

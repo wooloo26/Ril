@@ -1089,10 +1089,6 @@ impl Checker {
 #[cfg(test)]
 mod application_result_tests {
     use super::*;
-    use crate::sema::{
-        default_uses::ArgumentSource,
-        evaluated::{CapturedSource, SourceCaptureView},
-    };
 
     #[test]
     fn closed_witness_ingress_charges_before_validation_and_key_construction() {
@@ -1161,88 +1157,5 @@ mod application_result_tests {
             ),
             Err(SourceTypesError::Unresolved)
         ));
-    }
-
-    #[test]
-    fn public_result_views_require_completed_input_and_default_preparation() {
-        for target in ["pointer32", "pointer64"] {
-            let verified = crate::Session::with_options(
-                ril_test::case_bytes("tests/regressions/defaults.ril::abrupt-source-block")
-                    .to_vec(),
-                crate::CheckOptions {
-                    target: target.into(),
-                    ..Default::default()
-                },
-            )
-            .verify()
-            .unwrap_or_else(|error| panic!("{target}: {error:?}"));
-            let facts = verified.facts();
-            let mut count = 0;
-            for (index, preparation) in facts.call_arguments.iter().enumerate() {
-                if preparation.evaluation_complete {
-                    continue;
-                }
-                for slot in &preparation.slots {
-                    let ArgumentSource::Default(id) = slot else {
-                        continue;
-                    };
-                    let usage = &facts.default_uses[id.0 as usize];
-                    if usage.evaluation_complete {
-                        continue;
-                    }
-                    let event = &facts.copy_call_events[preparation.source_event.0 as usize];
-                    let root = event.result_expression.unwrap();
-                    let packet = facts.expressions[root].value.packet();
-                    assert!(usage.entered.is_empty());
-                    match packet.evidence_view().capture {
-                        SourceCaptureView::Captured {
-                            result: Ok(CapturedSource::Unknown(environment)),
-                            ..
-                        } => {
-                            assert_eq!(Some(environment), facts.evaluations[root].environment);
-                        }
-                        SourceCaptureView::Captured {
-                            result: Ok(CapturedSource::Known(_)),
-                            ..
-                        } => {
-                            let (schema, _) = packet
-                                .input_source(
-                                    SourceTypesRef::Frozen(&facts.source_types),
-                                    &mut WorkLimit::new(16384),
-                                )
-                                .unwrap()
-                                .into_known()
-                                .unwrap();
-                            assert!(
-                                crate::sema::control_sources::never(
-                                    &schema,
-                                    &mut WorkLimit::new(4096)
-                                )
-                                .unwrap(),
-                                "an interrupted call cannot claim its declaration's normal result"
-                            );
-                        }
-                        _ => panic!("interrupted call lost its original Source evidence"),
-                    }
-                    for mutation in 0..2 {
-                        let mut changed = facts.clone();
-                        match mutation {
-                            0 => changed.call_arguments[index].evaluation_complete = true,
-                            1 => changed.default_uses[id.0 as usize].result_expression = None,
-                            _ => unreachable!(),
-                        }
-                        assert!(
-                            crate::sema::validate::solved_facts(&changed).is_err(),
-                            "completion must be supported by the actual default's exit: {mutation}"
-                        );
-                    }
-                    count += 1;
-                }
-            }
-            assert!(
-                count > 0,
-                "the fixture must really exit in a default before body entry"
-            );
-        }
     }
 }

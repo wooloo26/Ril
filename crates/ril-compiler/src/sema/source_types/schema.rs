@@ -111,27 +111,6 @@ impl SourceSchema {
         Ok(Some(selected))
     }
 
-    pub(crate) fn is_builtin_instance(
-        &self,
-        declaration: ril_compiler_core::builtin_calls::GenericBuiltin,
-        work: &mut WorkLimit,
-    ) -> Result<bool, SourceTypesError> {
-        let root = self.types.unalias(self.root, work)?;
-        let node = self.types.get(root)?;
-        node.charge(work)?;
-        if let SourceNode::GenericBuiltin(actual) = node {
-            return Ok(*actual == declaration);
-        }
-        let Some(instance) = super::polymorphic::instantiate(&self.types, declaration, root, work)?
-        else {
-            return Ok(false);
-        };
-        let SourceNode::Callable { annotations, .. } = node else {
-            return Ok(false);
-        };
-        Ok(instance.fits_bounds(annotations))
-    }
-
     /// Select the primitive's complete type correlations without discharging
     /// its latent bounds. Direct callers still check the resulting obligations.
     pub(crate) fn instantiate_builtin(
@@ -164,21 +143,6 @@ impl SourceSchema {
     /// This is the retained node identity, without unaliasing or a new graph.
     pub(crate) fn root_id(&self) -> SourceTypeId {
         self.root
-    }
-
-    /// A shared arena may also contain unrelated declarations. A view can
-    /// select only a node reachable from this actual source root.
-    pub(crate) fn view_at(
-        &self,
-        root: SourceTypeId,
-        work: &mut WorkLimit,
-    ) -> Result<Self, SourceTypesError> {
-        work.charge(1)?;
-        self.types.get(root)?;
-        if !self.types.reachable([self.root], work)?.contains(&root) {
-            return Err(SourceTypesError::MissingProjection);
-        }
-        Self::frozen_view(&self.types, root, self.original, work)
     }
 
     /// An immutable snapshot can lend its existing arena without rebuilding

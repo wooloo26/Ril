@@ -21,20 +21,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod preferences;
-mod replay;
 mod solve;
 pub(crate) use preferences::{NumericPreferences, preferences};
-pub(crate) use replay::{
-    NumericReplayInputs, NumericReplaySession, checked_resolution_in_query,
-    pattern_number_type_inputs, validate, validate_literal_in_query,
-};
-#[cfg(test)]
-pub(crate) use replay::{checked_resolution_at, checked_resolution_in_session};
 pub(crate) use solve::{
     NumericInputs, arithmetic_constant, encoded_constant, evaluate, evaluate_cached, number_type,
 };
-#[cfg(test)]
-mod review_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NumericSite {
@@ -213,27 +204,6 @@ pub(crate) fn selected_ty(selected: NumberType) -> Ty {
     }
 }
 
-pub(crate) fn source_number_type(
-    scalar: crate::sema::source_types::SourceScalar,
-) -> Option<NumberType> {
-    use crate::sema::source_types::SourceScalar;
-    Some(match scalar {
-        SourceScalar::Int => NumberType::Int,
-        SourceScalar::I8 => NumberType::I8,
-        SourceScalar::I16 => NumberType::I16,
-        SourceScalar::I32 => NumberType::I32,
-        SourceScalar::I64 => NumberType::I64,
-        SourceScalar::U8 => NumberType::U8,
-        SourceScalar::U16 => NumberType::U16,
-        SourceScalar::U32 => NumberType::U32,
-        SourceScalar::U64 => NumberType::U64,
-        SourceScalar::BigInt => NumberType::BigInt,
-        SourceScalar::F32 => NumberType::F32,
-        SourceScalar::F64 => NumberType::F64,
-        _ => return None,
-    })
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationPhase {
     Collecting,
@@ -266,7 +236,6 @@ pub(crate) struct State {
     pub selections: Vec<NumericSelection>,
     pub applications: BTreeMap<CopyCallEventId, NumericPreparedApplication>,
     pub deferred_depth: usize,
-    pub replay: std::cell::RefCell<NumericReplaySession>,
 }
 
 impl State {

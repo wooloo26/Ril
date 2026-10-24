@@ -41,16 +41,6 @@ pub(crate) fn generic_reference(
     ril_compiler_core::builtin_calls::GenericBuiltin::lookup(name)
 }
 
-pub(crate) fn parameter_labels(value: &super::model::Value, fallback: usize) -> Vec<Option<&str>> {
-    if let Some(parameters) = &value.signature {
-        crate::hir::application::parameter_labels(parameters)
-    } else if let Some(id) = generic_reference(value) {
-        super::source_types::polymorphic::parameter_labels(id)
-    } else {
-        vec![None; fallback]
-    }
-}
-
 /// A closed declaration reference can retain universal variables without
 /// inventing a monomorphic TypeExpr from the later receiving context.
 #[derive(Debug, Clone, PartialEq, Eq)]

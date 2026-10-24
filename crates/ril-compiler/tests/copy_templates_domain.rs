@@ -1,6 +1,5 @@
-#[path = "../src/sema/copy_templates.rs"]
-mod domain;
 use domain::*;
+use ril_compiler::sema::copy_templates as domain;
 use ril_compiler_core::ids::DefinitionId;
 use std::collections::{BTreeMap, BTreeSet};
 

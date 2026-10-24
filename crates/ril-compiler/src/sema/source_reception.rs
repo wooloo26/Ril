@@ -207,46 +207,6 @@ fn fixed(length: &str, work: &mut usize) -> Option<u64> {
         .ok()
 }
 
-pub(crate) fn sensitive(key: &ArgumentKey, work: &mut usize) -> Option<bool> {
-    fn walk(key: &ArgumentKey, work: &mut usize, depth: usize) -> Option<bool> {
-        charge(work, depth)?;
-        Some(match key {
-            ArgumentKey::Closed(_) => return None,
-            ArgumentKey::Binder { .. } => false,
-            ArgumentKey::Array { element, .. } => {
-                walk(element, work, depth + 1)?;
-                // A dynamic outer target still has invariant element types.
-                // Its nested dimensions cannot be erased by this fast path.
-                true
-            }
-            ArgumentKey::Callable { .. } | ArgumentKey::GenericBuiltin(_) => true,
-            ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {
-                let mut any = false;
-                for key in arguments {
-                    any |= walk(key, work, depth + 1)?;
-                }
-                any
-            }
-            ArgumentKey::Map { key, value } => {
-                let key = walk(key, work, depth + 1)?;
-                let value = walk(value, work, depth + 1)?;
-                key || value
-            }
-            ArgumentKey::Record { fields, row } => {
-                let mut any = false;
-                for (_, _, key) in fields {
-                    any |= walk(key, work, depth + 1)?;
-                }
-                if let Some(row) = row {
-                    any |= walk(row, work, depth + 1)?;
-                }
-                any
-            }
-        })
-    }
-    walk(key, work, 0)
-}
-
 pub(crate) fn complete(key: &ArgumentKey, work: &mut usize) -> Option<()> {
     fn walk(key: &ArgumentKey, work: &mut usize, depth: usize) -> Option<()> {
         charge(work, depth)?;

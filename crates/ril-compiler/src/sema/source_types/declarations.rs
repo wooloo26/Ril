@@ -1,14 +1,13 @@
 //! Resolve original declaration edges into finite source graphs. Actual type
 //! occurrences keep their lexical declaration and generic parameter identities;
 //! legacy views without an occurrence retain conservative module-only lookup.
-use super::{
-    LegacySourceExport, SourceSchema, SourceSensitivity, SourceTypeQueries, graph::*, legacy,
-};
+use super::{SourceSchema, SourceSensitivity, SourceTypeQueries, graph::*, legacy};
 use crate::hir::lexical::{LexicalBindings, TypeNameBinding};
 use crate::hir::nodes::{self as hir, HirProgram};
+#[cfg(test)]
 use crate::sema::effect_identity::ArgumentKey;
 use ril_compiler_core::ids::{GenericParamId, StmtId, TypeExprId};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 #[path = "original_header.rs"]
 mod original_header;
 pub(crate) use original_header::{DeclaredConstructorInstance, constructor_instance};
@@ -60,15 +59,7 @@ pub(crate) fn type_schema(
     let lexical = LexicalBindings::new(hir, &mut remaining);
     work.charge(before - remaining)?;
     let lexical = lexical.map_err(lexical_error)?;
-    type_schema_with_lexical(id, hir, &lexical, work)
-}
 
-pub(crate) fn type_schema_with_lexical(
-    id: TypeExprId,
-    hir: &HirProgram,
-    lexical: &LexicalBindings,
-    work: &mut WorkLimit,
-) -> Result<SourceSchema, SourceTypesError> {
     work.charge(1)?;
     hir.type_expression(id)
         .ok_or(SourceTypesError::MissingNode)?;
@@ -78,7 +69,7 @@ pub(crate) fn type_schema_with_lexical(
         aliases: BTreeMap::new(),
         definitions: BTreeMap::new(),
         syntax: BTreeMap::new(),
-        lexical: Some(lexical),
+        lexical: Some(&lexical),
         substitutions: BTreeMap::new(),
         copied: BTreeMap::new(),
         builder: SourceBuilder::new()?,
@@ -91,19 +82,6 @@ pub(crate) fn type_schema_with_lexical(
 struct DeclaredGraph {
     types: SourceTypes,
     root: SourceTypeId,
-    declarations: BTreeSet<SourceTypeId>,
-}
-
-/// Resolve the original declaration graph directly into a complete schema.
-/// Recursive declaration edges are copied as graph edges, never exported to a
-/// finite legacy key merely to import the same coordinates again.
-pub(crate) fn schema(
-    key: &ArgumentKey,
-    hir: &HirProgram,
-    work: &mut WorkLimit,
-) -> Result<SourceSchema, SourceTypesError> {
-    let graph = resolve(key, hir, work)?;
-    SourceSchema::frozen_view(&graph.types, graph.root, None, work)
 }
 
 /// Resolve only original declaration edges in an already captured graph. The
@@ -119,77 +97,6 @@ pub(crate) fn resolve_schema(
     let root = resolver.copy(types, root, work, 0)?;
     let graph = resolver.freeze(root, work)?;
     SourceSchema::frozen_view(&graph.types, graph.root, source.original(), work)
-}
-
-/// Expand only actual transparent module declarations. Recursive, captured or
-/// ambiguous aliases stay unresolved; no runtime shape can fill the gap.
-pub(crate) fn expanded_key(
-    key: &ArgumentKey,
-    hir: &HirProgram,
-    work: &mut WorkLimit,
-) -> Result<ArgumentKey, SourceTypesError> {
-    let graph = resolve(key, hir, work)?;
-    let mut key = graph.types.legacy_key(graph.root, work)?;
-    let mut pending = vec![&mut key];
-    while let Some(key) = pending.pop() {
-        work.charge(1)?;
-        match key {
-            ArgumentKey::Callable {
-                parameters,
-                result,
-                annotations,
-            } => {
-                for text in annotations {
-                    work.text(text)?;
-                    *text = text.replace(' ', "");
-                }
-                pending.extend(parameters.iter_mut().map(|(_, ty)| ty));
-                pending.push(result);
-            }
-            ArgumentKey::Name { arguments, .. } | ArgumentKey::Tuple(arguments) => {
-                pending.extend(arguments)
-            }
-            ArgumentKey::Array { element, .. } => pending.push(element),
-            ArgumentKey::Map { key, value } => {
-                pending.push(key);
-                pending.push(value);
-            }
-            ArgumentKey::Record { fields, row } => {
-                pending.extend(fields.iter_mut().map(|(_, _, ty)| ty));
-                if let Some(row) = row {
-                    pending.push(row);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(key)
-}
-
-/// A typed construction chooses its source view at its own HIR annotation.
-/// Coordinate-free declaration graphs need no erased runtime shape or value
-/// witness to recover that view. Sensitive/unresolved interpretations retain
-/// their separate frozen source obligations.
-pub(crate) fn construction(
-    source: ril_compiler_core::ids::ExprId,
-    hir: &HirProgram,
-    work: &mut WorkLimit,
-) -> Result<Option<ArgumentKey>, SourceTypesError> {
-    let (graph, _) = match construction_graph(source, hir, work) {
-        Ok(Some(graph)) => graph,
-        Ok(None) | Err(SourceTypesError::NeedsStaticElaboration) => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    if !matches!(
-        graph.types.sensitivity(graph.root, work),
-        SourceSensitivity::Absent { .. }
-    ) {
-        return Ok(None);
-    }
-    graph
-        .types
-        .declared_key(graph.root, &graph.declarations, work)
-        .map(Some)
 }
 
 pub(crate) fn construction_schema(
@@ -227,17 +134,6 @@ fn construction_graph(
     let root = resolver.ty(*ty, work, 0)?;
     let graph = resolver.freeze(root, work)?;
     Ok(Some((graph, *ty)))
-}
-
-fn resolve(
-    key: &ArgumentKey,
-    hir: &HirProgram,
-    work: &mut WorkLimit,
-) -> Result<DeclaredGraph, SourceTypesError> {
-    let mut resolver = Resolve::new(hir, work)?;
-    let input = legacy::import(key, work)?;
-    let root = resolver.copy(&input.types, input.root, work, 0)?;
-    resolver.freeze(root, work)
 }
 
 impl<'a> Resolve<'a> {
@@ -311,12 +207,9 @@ impl<'a> Resolve<'a> {
         root: SourceTypeId,
         work: &mut WorkLimit,
     ) -> Result<DeclaredGraph, SourceTypesError> {
-        work.charge(self.definitions.len())?;
-        let declarations = self.definitions.values().copied().collect();
         Ok(DeclaredGraph {
             types: self.builder.freeze(work)?,
             root,
-            declarations,
         })
     }
 }
@@ -700,6 +593,15 @@ impl Resolve<'_> {
 
 #[cfg(test)]
 mod tests {
+    fn resolved_input(
+        key: &ArgumentKey,
+        hir: &HirProgram,
+        work: &mut WorkLimit,
+    ) -> Result<SourceSchema, SourceTypesError> {
+        let input = SourceSchema::import(key, None, work)?;
+        resolve_schema(&input, hir, work)
+    }
+
     use super::*;
     use ril_syntax::ast::{StmtKind, TypeExpr, TypeField, TypeKind};
 
@@ -885,7 +787,7 @@ mod tests {
         let input =
             SourceSchema::import(&key(), Some(TypeExprId(37)), &mut WorkLimit::new(4096)).unwrap();
         let selected = resolve_schema(&input, &hir, &mut WorkLimit::new(4096)).unwrap();
-        let direct = schema(&key(), &hir, &mut WorkLimit::new(4096)).unwrap();
+        let direct = resolved_input(&key(), &hir, &mut WorkLimit::new(4096)).unwrap();
         assert_eq!(selected.original(), input.original());
         assert_eq!(
             selected.equivalent(&direct, &mut WorkLimit::new(4096)),
@@ -913,122 +815,6 @@ mod tests {
         );
         assert!(matches!(
             resolve_schema(&input, &hir, &mut WorkLimit::new(0)),
-            Err(SourceTypesError::BudgetExceeded)
-        ));
-    }
-
-    #[test]
-    fn typed_extent_ingress_requests_static_elaboration_without_waiving_unknown_or_budget_errors() {
-        let source = ril_test::case_source(
-            "tests/regressions/source-observations.ril::matching-record-member-replacement",
-        );
-        let parsed = ril_syntax::parse(source);
-        assert!(parsed.is_ok());
-        let hir = HirProgram::lower(&parsed.program).unwrap();
-        let typed_literal = |hir: &HirProgram| {
-            let mut literal = None;
-            hir.walk(4096, |id, _| {
-                if let hir::NodeId::Expr(id) = id
-                    && matches!(
-                        &hir.expression(id).unwrap().kind,
-                        hir::ExprKind::Record { ty: Some(_), .. }
-                    )
-                {
-                    literal.get_or_insert(id);
-                }
-            })
-            .unwrap();
-            literal.unwrap()
-        };
-        // Query the actual typed construction, rather than recognizing a
-        // description on an unresolved graph after the static context is lost.
-        let literal = typed_literal(&hir);
-        assert!(matches!(
-            construction_graph(literal, &hir, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::NeedsStaticElaboration)
-        ));
-        assert!(
-            construction_schema(literal, &hir, &mut WorkLimit::new(4096))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            construction(literal, &hir, &mut WorkLimit::new(4096))
-                .unwrap()
-                .is_none()
-        );
-        assert!(matches!(
-            construction_schema(literal, &hir, &mut WorkLimit::new(0)),
-            Err(SourceTypesError::BudgetExceeded)
-        ));
-        assert!(matches!(
-            construction_schema(
-                ril_compiler_core::ids::ExprId(u32::MAX),
-                &hir,
-                &mut WorkLimit::new(4096)
-            ),
-            Err(SourceTypesError::MissingNode)
-        ));
-        let mut unknown = parsed.program;
-        let StmtKind::Type(declaration) = &mut unknown.statements[0].kind else {
-            panic!()
-        };
-        let TypeKind::Record { fields, .. } = &mut declaration.value.as_mut().unwrap().kind else {
-            panic!()
-        };
-        fields[0].ty.kind = TypeKind::Name {
-            path: vec!["Missing".into()],
-            arguments: vec![],
-        };
-        let hir = HirProgram::lower(&unknown).unwrap();
-        assert!(matches!(
-            construction_schema(typed_literal(&hir), &hir, &mut WorkLimit::new(4096)),
-            Err(SourceTypesError::Unresolved)
-        ));
-    }
-
-    #[test]
-    fn real_recursive_declarations_project_without_an_erased_type_or_tree_unrolling() {
-        let hir = HirProgram::lower(&original()).unwrap();
-        let mut literal = None;
-        hir.walk(4096, |id, _| {
-            if let hir::NodeId::Expr(id) = id
-                && matches!(
-                    &hir.expression(id).unwrap().kind,
-                    hir::ExprKind::Record { ty: Some(_), .. }
-                )
-            {
-                literal.get_or_insert(id);
-            }
-        })
-        .unwrap();
-        assert_eq!(
-            construction(literal.unwrap(), &hir, &mut WorkLimit::new(4096)).unwrap(),
-            Some(key())
-        );
-        assert!(matches!(
-            schema(&key(), &hir, &mut WorkLimit::new(4096))
-                .unwrap()
-                .sensitivity(&mut WorkLimit::new(4096)),
-            SourceSensitivity::Absent { .. }
-        ));
-        let source = schema(&key(), &hir, &mut WorkLimit::new(4096)).unwrap();
-        let member = source
-            .project_steps(
-                &[
-                    super::super::SourcePath::Field("left".into()),
-                    super::super::SourcePath::OptionalPayload,
-                ],
-                &mut WorkLimit::new(4096),
-            )
-            .unwrap();
-        assert!(
-            member
-                .equivalent(&source, &mut WorkLimit::new(4096))
-                .unwrap()
-        );
-        assert!(matches!(
-            schema(&key(), &hir, &mut WorkLimit::new(0)),
             Err(SourceTypesError::BudgetExceeded)
         ));
     }
@@ -1067,7 +853,7 @@ mod tests {
         });
         let hir = HirProgram::lower(&source).unwrap();
         assert!(matches!(
-            schema(&key(), &hir, &mut WorkLimit::new(4096))
+            resolved_input(&key(), &hir, &mut WorkLimit::new(4096))
                 .unwrap()
                 .sensitivity(&mut WorkLimit::new(4096)),
             SourceSensitivity::Sensitive { .. }
@@ -1083,7 +869,7 @@ mod tests {
             };
             let hir = HirProgram::lower(&source).unwrap();
             assert!(matches!(
-                schema(&key(), &hir, &mut WorkLimit::new(4096))
+                resolved_input(&key(), &hir, &mut WorkLimit::new(4096))
                     .unwrap()
                     .sensitivity(&mut WorkLimit::new(4096)),
                 SourceSensitivity::Unknown { .. }
@@ -1101,7 +887,7 @@ mod tests {
         function.body.as_mut().unwrap().where_items.push(local);
         let hir = HirProgram::lower(&source).unwrap();
         assert!(matches!(
-            schema(&key(), &hir, &mut WorkLimit::new(4096))
+            resolved_input(&key(), &hir, &mut WorkLimit::new(4096))
                 .unwrap()
                 .sensitivity(&mut WorkLimit::new(4096)),
             SourceSensitivity::Unknown { .. }

@@ -137,78 +137,6 @@ fn repeated_source_defaults_keep_their_own_call_event_and_actual_instance() {
         .map(|call| call.source_event.unwrap())
         .collect();
     assert_eq!(events.len(), calls.len());
-    ril_compiler::sema::copy_template_closure::validate(facts).unwrap();
-}
-
-#[test]
-fn final_validation_rejects_missing_or_reused_call_event_evidence() {
-    use ril_compiler::sema::copy_template_closure::validate;
-    let source = "fn duplicate<T>(source:T)->T{clone(source)}\nfn read(value:int=duplicate(7))->int{value}\nfn example(){assert(read()==7);assert(read()==7)}";
-    let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let facts = verified.facts();
-    let target = facts
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "duplicate")
-        .unwrap()
-        .definition;
-    let calls: Vec<_> = facts
-        .copy_invocations
-        .iter()
-        .filter(|call| call.target == target && !call.declaration_probe)
-        .map(|call| call.id)
-        .collect();
-    let mut reused = facts.clone();
-    reused.copy_invocations[calls[1].0 as usize].source_event =
-        reused.copy_invocations[calls[0].0 as usize].source_event;
-    assert!(validate(&reused).is_err());
-    let mut missing = facts.clone();
-    missing.copy_references.pop();
-    assert!(validate(&missing).is_err());
-    let mut extracted = facts.clone();
-    let reference = extracted
-        .copy_references
-        .iter_mut()
-        .find(|reference| reference.target == target)
-        .unwrap();
-    reference.direct_call = None;
-    assert!(validate(&extracted).is_err());
-}
-
-#[test]
-fn equal_span_tokens_cannot_be_swapped_between_dynamic_parent_instances() {
-    use ril_compiler::sema::{copy_template_closure::validate, model::Ty};
-    let source = "fn duplicate<T>(source:T)->T{clone(source)}\nfn forward<T>(source:T)->T{duplicate(source)}\nfn example(){assert(forward(1)==1);assert(forward(\"two\")==\"two\")}";
-    let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let facts = verified.facts();
-    let target = facts
-        .functions
-        .iter()
-        .find(|function| function.syntax.name == "duplicate")
-        .unwrap()
-        .definition;
-    let calls: Vec<_> = facts
-        .copy_invocations
-        .iter()
-        .filter(|call| {
-            call.target == target
-                && !call.declaration_probe
-                && matches!(call.entry.arguments[0].value().ty, Ty::Int(_) | Ty::Str)
-        })
-        .collect();
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].span, calls[1].span);
-    assert_eq!(calls[0].caller_owner, calls[1].caller_owner);
-    assert_ne!(calls[0].parent, calls[1].parent);
-    let mut exchanged = facts.clone();
-    exchanged.copy_invocations[calls[0].id.0 as usize].source_event = calls[1].source_event;
-    exchanged.copy_invocations[calls[1].id.0 as usize].source_event = calls[0].source_event;
-    assert!(
-        validate(&exchanged)
-            .unwrap_err()
-            .contains("borrowed another syntax event")
-    );
-    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
 }
 
 #[test]
@@ -249,5 +177,4 @@ fn handler_lexical_owner_and_dynamic_named_parent_remain_independent() {
     let event = &facts.copy_call_events[call.source_event.unwrap().0 as usize];
     assert_eq!(event.owner, Some(CallableOwner::Function(lexical)));
     assert_eq!(event.parent, call.parent);
-    ril_compiler::sema::copy_template_closure::validate(facts).unwrap();
 }

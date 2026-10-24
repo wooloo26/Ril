@@ -10,8 +10,6 @@ use std::sync::Arc;
 
 struct CallbackPackets {
     origin: EntryOrigin,
-    event: crate::sema::copy_contract::CopyCallEventId,
-    argument: u32,
     field: &'static str,
     operations: Arc<EvaluatedValue>,
     callee: Arc<EvaluatedValue>,
@@ -158,14 +156,12 @@ impl Checker {
             ))
         })();
         let returned = self.application_effect.return_work(lease);
-        let (origin, event, argument, field, operations, callee) = selected?;
+        let (origin, _, _, field, operations, callee) = selected?;
         returned?;
         let operations = self.application_effect.packet_at(operations)?;
         let callee = self.application_effect.packet_at(callee.0 as usize)?;
         Ok(CallbackPackets {
             origin,
-            event,
-            argument,
             field,
             operations,
             callee,
@@ -202,13 +198,11 @@ impl Checker {
             .freeze_entry_callee(Some(prepared.callee.clone()), span)?
             .ok_or(SourceTypesError::MissingNode)?;
         let field = Slot::Field(prepared.field.into());
-        let cause = callback.cause;
         let projected = self.derive_callback_current(
             input,
             CurrentValueStep::FieldProjection {
                 receiver: operations,
                 slot: field,
-                cause,
             },
             callback,
         )?;
@@ -219,16 +213,7 @@ impl Checker {
             return Err(SourceTypesError::BudgetExceeded);
         }
         value.callable_bounds.push(catalog_callable_bound(span));
-        self.derive_callback_current(
-            projected,
-            CurrentValueStep::CatalogCallableBound {
-                event: prepared.event,
-                argument: prepared.argument,
-                field: Slot::Field(prepared.field.into()),
-                span,
-            },
-            value,
-        )
+        self.derive_callback_current(projected, CurrentValueStep::CatalogCallableBound, value)
     }
 
     fn derive_callback_current(

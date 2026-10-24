@@ -669,7 +669,7 @@ impl Checker {
         }
         let witness = SourceTypeWitness { key, syntax };
         if !witness.validate_closed()
-            || !super::super::source_type_validation::resolved_names(&witness, &self.types)
+            || !super::super::source_types::legacy::resolved_names(&witness, &self.types)
         {
             return None;
         }
@@ -1446,7 +1446,7 @@ pub(crate) fn normalize_closed_source_syntax(
     if !candidate.validate_closed() {
         return None;
     }
-    if super::super::source_type_validation::resolved_names(&candidate, declarations) {
+    if super::super::source_types::legacy::resolved_names(&candidate, declarations) {
         return Some(candidate.syntax);
     }
     let syntax = candidate.syntax;
@@ -1476,7 +1476,7 @@ pub(crate) fn normalize_closed_source_syntax(
     if !witness.validate_closed() {
         return None;
     }
-    if !super::super::source_type_validation::resolved_names(&witness, declarations) {
+    if !super::super::source_types::legacy::resolved_names(&witness, declarations) {
         return None;
     }
     Some(witness.syntax)

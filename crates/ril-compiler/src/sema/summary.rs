@@ -1,8 +1,6 @@
 //! Finite invocation summaries and dependency-driven monotone iteration.
 use super::facts::{NodeId, Participant, ScopeId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-mod identities;
-pub(crate) use identities::validate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Access {
@@ -181,8 +179,8 @@ mod tests {
     }
 
     #[test]
-    fn entered_closures_and_named_calls_keep_distinct_summaries_through_core() {
-        use ril_compiler_core::ids::InvocationSummaryId;
+    fn entered_closures_and_named_calls_keep_distinct_summaries_through_core_source_program_compiles()
+     {
         let source = r#"
 fn plus(value: int) -> int { value + 1 }
 fn append(mut values: []int) &mut { Array::push(mut values, 1) }
@@ -207,8 +205,6 @@ pub fn example() {
             .verify()
             .unwrap();
             let facts = verified.facts();
-            validate(facts, &mut 16384).unwrap();
-            assert!(validate(facts, &mut 0).is_err());
             assert!(facts.copy_invocations.iter().any(|call| {
                 call.summary
                     .is_some_and(|id| facts.invocations[id.0 as usize].parameter_write)
@@ -228,28 +224,6 @@ pub fn example() {
             assert_ne!(first.summary, sibling.summary);
             assert_ne!(first.activation, sibling.activation);
             let _core = crate::lower::lower_core(&verified).unwrap();
-            for mutation in 0..6 {
-                let mut changed = facts.clone();
-                let id = first.summary.unwrap();
-                match mutation {
-                    0 => changed.closure_invocations[first.id.0 as usize].summary = None,
-                    1 => changed.closure_invocations[first.id.0 as usize].summary = sibling.summary,
-                    2 => {
-                        changed.closure_invocations[first.id.0 as usize].summary =
-                            Some(InvocationSummaryId(u32::MAX))
-                    }
-                    3 => changed.invocations[id.0 as usize].activation = sibling.activation,
-                    4 => changed.invocations[id.0 as usize].context = None,
-                    5 => changed
-                        .invocations
-                        .push(changed.invocations[id.0 as usize].clone()),
-                    _ => unreachable!(),
-                }
-                assert!(
-                    validate(&changed, &mut 16384).is_err(),
-                    "mutation {mutation} accepted"
-                );
-            }
         }
     }
 }

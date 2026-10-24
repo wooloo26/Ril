@@ -98,10 +98,10 @@ duplicate source trees and historical verification reports.
 
 ## Current work
 
-- Replace the frontend's mandatory fact/certificate replay with trusted semantic
-  analysis and ordinary IR validation. Core/native IR now carries only executable
-  metadata; it no longer duplicates frontend values, Source graphs or analysis
-  histories. The frontend replay gate and its proof-producing paths still remain.
+- Semantic acceptance now belongs to the analyzer and the owned type arena's
+  completion checks. The independent fact/certificate replay engines and their
+  Core/native proof copies have been removed. Finish replacing remaining ingress
+  witnesses and capture-time reconstruction with the common typed operations.
 - Unify complete types and constraints with resolved declaration/binder identities.
   Replace erased `Ty`, syntax witnesses and repeated environment reconstruction.
   Calls, generics, defaults, nested closures, rows and constructors must share the

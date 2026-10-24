@@ -48,43 +48,6 @@ fn primitive_public_argument_slots_preserve_names_modes_and_numeric_context() {
     }
 }
 
-#[test]
-fn primitive_bound_slots_must_follow_physical_labels_and_source_order() {
-    let source = ril_test::case_source("tests/regressions/generic-builtins.ril::named-numeric");
-    let program = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-    let event=program.facts().copy_call_events.iter().find(|event| event.callee_expression.is_some_and(|id| matches!(program.facts().expressions[id].value.callables.as_slice(),[ril_compiler::sema::model::Callable::Builtin(name)] if name=="Array::push"))).unwrap();
-    for mutation in 0..3 {
-        let mut facts = program.facts().clone();
-        let preparation = facts
-            .call_arguments
-            .iter_mut()
-            .find(|row| row.source_event == event.id)
-            .unwrap();
-        let first = preparation.supplied[&0];
-        let second = preparation.supplied[&1];
-        if mutation < 2 {
-            preparation.supplied.insert(0, second);
-            preparation.supplied.insert(1, first);
-            if mutation == 1 {
-                for row in &mut facts.invocation_expressions {
-                    if row.expression == first.expression {
-                        row.argument_of = Some((event.id, 1));
-                    }
-                    if row.expression == second.expression {
-                        row.argument_of = Some((event.id, 0));
-                    }
-                }
-            }
-        } else {
-            preparation.evaluated.swap(1, 2);
-        }
-        assert!(
-            ril_compiler::sema::validate::solved_facts(&facts).is_err(),
-            "slot/order mutation {mutation}"
-        );
-    }
-}
-
 fn accepted(source: &str) {
     let outcome = Session::new(source.as_bytes().to_vec()).check();
     assert!(
@@ -167,7 +130,6 @@ fn independent_replay_rejects_a_primitive_instance_with_a_pure_capability_bound(
             .iter()
             .any(|diagnostic| diagnostic.code == "E0534")
     );
-    assert!(ril_compiler::sema::validate::solved_facts(snapshot.facts().unwrap()).is_err());
 }
 
 #[test]

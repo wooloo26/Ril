@@ -1,6 +1,6 @@
-//! Closed direct-call template proof domain. Frontend evidence distinguishes
-//! declaration probes from every actual substitution and every escaped use;
-//! final validation reconstructs these inputs before accepting the certificate.
+//! Finite direct-call template analysis. Declaration probes, real instances
+//! and escaped uses determine which deferred copy requirements can be discharged.
+use super::copy_contract::*;
 use ril_compiler_core::ids::DefinitionId;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -111,4 +111,202 @@ pub fn close(
         instances,
         dependency_order,
     })
+}
+
+fn established(boundary: &CopyBoundary) -> bool {
+    use super::copy_eligibility::Constituent;
+    boundary
+        .output
+        .as_ref()
+        .is_some_and(|output| output.nested_copy_dependencies().is_empty())
+        && boundary.requirements.is_empty()
+        && !boundary.template
+        && boundary.template_root.is_none()
+        && boundary.constituents.iter().all(|part| {
+            matches!(
+                part.qualification,
+                Constituent::Ordinary | Constituent::EnvironmentFreeCallable
+            )
+        })
+        && boundary
+            .output_nodes
+            .iter()
+            .flat_map(|node| &node.fields)
+            .all(|(_, value)| value.nested_copy_dependencies().is_empty())
+}
+
+pub fn template_owners(
+    boundaries: &[CopyBoundary],
+    calls: &[CopyInvocation],
+) -> BTreeSet<DefinitionId> {
+    calls
+        .iter()
+        .filter(|call| {
+            call.declaration_probe
+                && call.boundaries.iter().any(|id| {
+                    boundaries
+                        .get(id.0 as usize)
+                        .is_some_and(|boundary| boundary.template)
+                })
+        })
+        .map(|call| call.target)
+        .collect()
+}
+
+pub fn ancestor(calls: &[CopyInvocation], mut child: InstanceId, parent: InstanceId) -> bool {
+    let mut seen = BTreeSet::new();
+    while seen.insert(child) {
+        if child == parent {
+            return true;
+        }
+        let Some(next) = calls.get(child.0 as usize).and_then(|call| call.parent) else {
+            return false;
+        };
+        child = next;
+    }
+    false
+}
+
+pub struct InstanceSet {
+    pub actual: Vec<Instance>,
+    pub discharges: BTreeMap<(InstanceId, CopyBoundaryId), super::resource_copy::CopyDischarge>,
+}
+
+pub fn instances(
+    templates: &BTreeMap<DefinitionId, Template>,
+    boundaries: &[CopyBoundary],
+    calls: &[CopyInvocation],
+    events: &[CopyCallEvent],
+    resources: &[super::resource_copy::ResourceCloneEvent],
+) -> Result<InstanceSet, String> {
+    use super::resource_copy::{CopyDischarge, sender_contract};
+    let mut actual = Vec::new();
+    let mut discharges = BTreeMap::new();
+    for call in calls
+        .iter()
+        .filter(|call| templates.contains_key(&call.target))
+    {
+        if call.declaration_probe {
+            if call.status != CopyInvocationStatus::Completed {
+                return Err("copy template declaration has an unfinished consumer proof".into());
+            }
+            continue;
+        }
+        if !call.direct {
+            return Err("copy template is used through an unproved indirect call".into());
+        }
+        let dependencies: Vec<_> = call
+            .boundaries
+            .iter()
+            .map(|id| {
+                boundaries
+                    .get(id.0 as usize)
+                    .ok_or_else(|| "copy invocation references a missing boundary".to_string())
+            })
+            .collect::<Result<_, _>>()?;
+        let pending: Vec<_> = dependencies
+            .iter()
+            .filter(|boundary| boundary.output.is_none())
+            .collect();
+        // Only unresolved conditions actually anchored to an ancestor's formal
+        // input can remain a declaration probe. A concrete/unknown producer or
+        // a failed instance is never removed by this rule.
+        let formal_probe = call.status == CopyInvocationStatus::Completed
+            && !pending.is_empty()
+            && call
+                .caller
+                .is_some_and(|caller| templates.contains_key(&caller))
+            && pending.iter().all(|boundary| {
+                boundary.template
+                    && boundary.template_root.is_some_and(|root| {
+                        calls.get(root.0 as usize).is_some_and(|probe| {
+                            probe.declaration_probe && templates.contains_key(&probe.target)
+                        }) && ancestor(calls, call.id, root)
+                    })
+            });
+        if formal_probe {
+            continue;
+        }
+        let coverage = boundaries
+            .iter()
+            .filter(|boundary| boundary.template && boundary.owner == Some(call.target))
+            .all(|required| {
+                let ordinary = dependencies
+                    .iter()
+                    .find(|proof| {
+                        proof.owner == required.owner
+                            && proof.span == required.span
+                            && proof.mode == required.mode
+                            && proof.invocation == Some(call.id)
+                            && established(proof)
+                            && proof
+                                .source_event
+                                .and_then(|id| events.get(id.0 as usize))
+                                .is_some_and(|event| {
+                                    event.parent == Some(call.id)
+                                        && event.copy_operation == Some(proof.mode)
+                                })
+                    })
+                    .map(|proof| CopyDischarge::Ordinary(proof.id));
+                let sender = || {
+                    use super::copy_eligibility::{AbstractMember, Constituent};
+                    // Only a generic whole input can instantiate to a Sender.
+                    // A row, callable or nested resource remains its own duty.
+                    if required.mode != CopyMode::Mutable
+                        || !required.constituents.iter().any(|part| {
+                            part.path.is_empty()
+                                && matches!(
+                                    part.qualification,
+                                    Constituent::Deferred(AbstractMember::DataBinder(_))
+                                )
+                        })
+                    {
+                        return None;
+                    }
+                    let template_event = required
+                        .source_event
+                        .and_then(|id| events.get(id.0 as usize))?;
+                    if template_event.copy_operation != Some(CopyMode::Mutable)
+                        || template_event.parent != required.invocation
+                    {
+                        return None;
+                    }
+                    call.resource_copies.iter().find_map(|id| {
+                        let event = resources
+                            .get(id.0 as usize)
+                            .filter(|event| event.id == *id)?;
+                        let syntax = event
+                            .source_event
+                            .and_then(|id| events.get(id.0 as usize))?;
+                        (event.owner == required.owner
+                            && event.span == required.span
+                            && sender_contract(event, call, syntax))
+                        .then_some(CopyDischarge::Sender(*id))
+                    })
+                };
+                if let Some(proof) = ordinary.or_else(sender) {
+                    discharges.insert((call.id, required.id), proof);
+                    true
+                } else {
+                    false
+                }
+            });
+        let qualification = if call.status == CopyInvocationStatus::Rejected {
+            Qualification::Rejected
+        } else if call.status == CopyInvocationStatus::Completed && pending.is_empty() && coverage {
+            Qualification::Established
+        } else {
+            Qualification::Pending
+        };
+        actual.push(Instance {
+            id: call.id,
+            site: Site {
+                owner: call.caller,
+                target: call.target,
+                source: (call.span.file.0, call.span.start, call.span.end),
+            },
+            qualification,
+        });
+    }
+    Ok(InstanceSet { actual, discharges })
 }

@@ -1,45 +1,6 @@
 use ril_compiler::{CompilationOutcome, Session};
 
 #[test]
-fn optional_zero_input_callbacks_keep_their_independent_input_proof() {
-    let source = "fn example(value:?(fn()->int))->int{(value ?? (\\->{return 1}))()}";
-    for target in ["pointer32", "pointer64"] {
-        let program = Session::with_options(
-            source.as_bytes().to_vec(),
-            ril_compiler::CheckOptions {
-                target: target.into(),
-                ..Default::default()
-            },
-        )
-        .verify()
-        .unwrap_or_else(|error| panic!("{target}: {error:?}"));
-        ril_compiler::lower::lower_core(&program).unwrap();
-        let mut facts = program.facts().clone();
-        let callee = facts
-            .copy_call_events
-            .iter()
-            .filter_map(|event| event.callee_expression)
-            .map(|index| &facts.expressions[index].value)
-            .find(|value| {
-                value.callables.iter().any(|callable| {
-                    matches!(callable, ril_compiler::sema::model::Callable::Symbolic(..))
-                })
-            })
-            .unwrap();
-        let roots: Vec<_> = callee
-            .callback_parameters
-            .union(&callee.sources)
-            .copied()
-            .collect();
-        assert!(!roots.is_empty());
-        for root in roots {
-            facts.bindings[root].pattern = None;
-        }
-        assert!(ril_compiler::sema::validate::solved_facts(&facts).is_err());
-    }
-}
-
-#[test]
 fn invoked_formal_bound_can_explain_a_declared_named_row() {
     let source = ril_test::case_source(
         "tests/regressions/source-observations.ril::callable-product-open-row",

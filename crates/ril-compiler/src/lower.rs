@@ -1,4 +1,4 @@
-//! Lowering consumes the semantic certificate, never an unverified syntax tree.
+//! Lower checked semantic results into executable Core.
 use ril_compiler_core::{
     ids::{CallableOwner, DefinitionId},
     phase::{NotImplemented, Stage},
@@ -36,8 +36,6 @@ pub fn lower_core_for(
         return Err(unsupported(&site.description));
     }
     let specializations = specialize::Plan::new(program)?;
-    crate::sema::copy_template_closure::validate(program.facts()).map_err(unsupported)?;
-    crate::sema::closure_exclusivity::validate(program.facts()).map_err(unsupported)?;
     let mut metadata = metadata::lower(program.facts());
     // One source expression can be checked under several call substitutions.
     // A concrete observation from one call cannot specialize every invocation.

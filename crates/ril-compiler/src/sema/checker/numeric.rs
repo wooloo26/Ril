@@ -12,55 +12,6 @@ pub(super) fn numeric_type(ty: &Ty) -> Option<NumberType> {
 }
 
 impl Checker {
-    fn numeric_pattern_type(
-        &mut self,
-        pattern: ril_compiler_core::ids::PatternId,
-        birth: NumericBirth,
-        subject: Option<&EvaluatedValue>,
-    ) -> Result<NumberType, crate::sema::source_types::SourceTypesError> {
-        use crate::sema::numeric_selection::NumericReplayInputs;
-        use crate::sema::source_types_ref::SourceTypesRef;
-        let numeric = &self.numeric;
-        let hir = &self.semantic_hir;
-        let bindings = &self.bindings;
-        let constructors = &self.constructors;
-        let source_types = self.type_source.storage.live_types();
-        let witnesses = &self.invocation_witnesses;
-        let explanations = &self.explanations;
-        let allocation_history = &self.recency_moves;
-        let target_layout = Some(self.layout);
-        let open = self.application_effect.current_activation();
-        self.application_effect.with_evaluation_work(
-            |expressions, evaluations, activations, work| {
-                crate::sema::numeric_selection::pattern_number_type_inputs(
-                    NumericReplayInputs {
-                        semantic_hir: Some(hir),
-                        target_layout,
-                        numeric_holes: &numeric.holes,
-                        numeric_uses: &numeric.uses,
-                        numeric_selections: &numeric.selections,
-                        activations,
-                        evaluations,
-                        expressions,
-                        allocation_history,
-                        bindings,
-                        constructors,
-                        source_types: SourceTypesRef::Live(source_types),
-                        witnesses,
-                        explanations,
-                        open,
-                        session: Some(&numeric.replay),
-                        subject,
-                        frozen: None,
-                        query: None,
-                    },
-                    pattern,
-                    birth,
-                    work,
-                )
-            },
-        )
-    }
     pub(super) fn numeric_birth(
         &mut self,
     ) -> Result<NumericBirth, crate::sema::source_types::SourceTypesError> {
@@ -122,7 +73,6 @@ impl Checker {
         expression: &Expr,
         expected: &Ty,
         frame: &Frame,
-        subject: Option<&EvaluatedValue>,
     ) -> Option<Value> {
         let (literal, span, minus) = match &expression.kind {
             ExprKind::Literal(literal @ (Literal::Integer(_) | Literal::Float(_))) => {
@@ -143,24 +93,7 @@ impl Checker {
             [],
         );
         let site = self.numeric_literal_site(expression)?;
-        let selected_type = match site {
-            NumericSite::Expression { .. } => numeric_type(expected)?,
-            NumericSite::Pattern(pattern) => {
-                let selected = self
-                    .numeric_birth()
-                    .and_then(|birth| self.numeric_pattern_type(pattern, birth, subject));
-                match selected {
-                    Ok(selected) => selected,
-                    Err(error) => {
-                        self.unsupported(
-                            expression.span,
-                            format!("numeric pattern requires its actual subject Source: {error}"),
-                        );
-                        return Some(Value::scalar(Ty::Unknown, None, cause));
-                    }
-                }
-            }
-        };
+        let selected_type = numeric_type(expected)?;
         let text_len = match literal {
             Literal::Integer(text) | Literal::Float(text) => text.len(),
             _ => 0,

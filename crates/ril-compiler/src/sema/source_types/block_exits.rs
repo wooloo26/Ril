@@ -452,26 +452,6 @@ mod tests {
     }
 
     #[test]
-    fn actual_block_recovery_sources_replay_the_normal_and_handler_public_views() {
-        let (facts, root, tail, exits) = fixture();
-        assert!(
-            exits
-                .iter()
-                .any(|exit| exit.observation == tail && exit.operation.is_none())
-        );
-        let source = facts.expressions[root].source_id.unwrap();
-        let sources =
-            crate::sema::record_bound_validation::OriginalOperandSources::new(&facts).unwrap();
-        assert!(
-            sources
-                .observed_with_work(source, root, &mut 65536)
-                .unwrap()
-                .0
-                .is_some()
-        );
-    }
-
-    #[test]
     fn block_recovery_cannot_borrow_a_sibling_scope_body_or_cause() {
         let (facts, root, tail, exits) = fixture();
         let recovery = exits.iter().find(|exit| exit.operation.is_some()).unwrap();
