@@ -181,6 +181,7 @@ pub struct InvocationLoanEnd {
 pub struct ClosureInvocation {
     pub entry: CallableEntry,
     pub id: ClosureInvocationId,
+    pub summary: Option<ril_compiler_core::ids::InvocationSummaryId>,
     pub source_event: Option<CopyCallEventId>,
     pub caller_activation: u32,
     pub activation: Option<u32>,
@@ -1127,6 +1128,9 @@ pub struct Invocation {
     pub copy_boundaries: Vec<CopyBoundaryId>,
     pub selected_handlers: Vec<u32>,
     pub handler_environment: bool,
+    pub parameter_write: bool,
+    pub retention: bool,
+    pub capture: bool,
     pub accesses: Vec<(OriginId, Participant, Access)>,
     pub concrete_state: Vec<(u32, Access)>,
     /// Entered formal callback occurrences; these do not grant concrete access.
@@ -1282,6 +1286,7 @@ pub struct CopyCallEvent {
 #[derive(Debug, Clone)]
 pub struct CopyInvocation {
     pub id: CopyInstanceId,
+    pub summary: Option<ril_compiler_core::ids::InvocationSummaryId>,
     pub entry: CallableEntry,
     pub parent: Option<CopyInstanceId>,
     pub caller: Option<DefinitionId>,

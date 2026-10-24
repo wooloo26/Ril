@@ -1,5 +1,14 @@
 use super::*;
+use crate::sema::summary::InvocationSummary;
 use std::sync::Arc;
+
+/// Body checks refer to the same retained record later consumed by replay.
+/// Primitive transfers have no entered source body; their contract is separate.
+#[derive(Clone)]
+pub(super) enum CompletedInvocation {
+    Recorded(ril_compiler_core::ids::InvocationSummaryId),
+    Intrinsic(Box<InvocationSummary>),
+}
 
 /// A temporary path through a real receiving header. Alias instantiation and
 /// standard interface elaboration never create another original Source root.
@@ -105,6 +114,52 @@ pub(super) struct ContractEnvironment {
     typing_environment: crate::sema::context::FrozenEnvironment,
 }
 impl Checker {
+    pub(super) fn completed_summary(&self) -> Option<&InvocationSummary> {
+        match self.completed_invocation.as_ref()? {
+            CompletedInvocation::Recorded(id) => self.invocations.get(id.0 as usize),
+            CompletedInvocation::Intrinsic(summary) => Some(summary),
+        }
+    }
+
+    pub(super) fn complete_intrinsic_summary(&mut self, frame: &Frame) {
+        self.completed_invocation = Some(CompletedInvocation::Intrinsic(Box::new(
+            InvocationSummary {
+                activation: Some(frame.owner),
+                ..InvocationSummary::from_obligations(&frame.obligations)
+            },
+        )));
+    }
+
+    pub(super) fn retain_invocation_summary(
+        &mut self,
+        summary: InvocationSummary,
+    ) -> ril_compiler_core::ids::InvocationSummaryId {
+        let id = ril_compiler_core::ids::InvocationSummaryId(self.invocations.len() as u32);
+        if let Some(context) = summary.context {
+            match context.owner {
+                Some(CallableOwner::Function(_)) => {
+                    if let Some(call) = context
+                        .invocation
+                        .and_then(|id| self.copy_invocations.get_mut(id.0 as usize))
+                    {
+                        call.summary = Some(id);
+                    }
+                }
+                Some(CallableOwner::Lambda(_)) => {
+                    if let Some(call) = context
+                        .closure_invocation
+                        .and_then(|id| self.closure_invocations.get_mut(id.0 as usize))
+                    {
+                        call.summary = Some(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.invocations.push(summary);
+        id
+    }
+
     pub(super) fn lambda_contract(&self, id: usize) -> Option<&LambdaContract> {
         self.closures
             .get(id)
@@ -646,7 +701,7 @@ impl Checker {
                     // A primitive declaration has a closed latent contract.
                     // Checking that contract creates no hypothetical heap
                     // writes, loans, fake call or borrowed application token.
-                    let obligations = Obligations {
+                    let obligations = InvocationSummary {
                         parameter_write: instance.parameter_write,
                         retention: instance.retention,
                         ..Default::default()
@@ -845,7 +900,7 @@ impl Checker {
                     {
                         self.builtin(name, arguments.clone(), syntax.span, &mut context);
                     }
-                    self.completed_invocation = Some((context.owner, context.obligations.clone()));
+                    self.complete_intrinsic_summary(&context);
                 }
                 _ => {
                     self.unsupported(syntax.span,"bounded builtin or constructor needs a complete latent invocation contract");
@@ -853,7 +908,9 @@ impl Checker {
                     continue;
                 }
             }
-            if let Some((owner, obligations)) = self.completed_invocation.clone() {
+            if let Some(obligations) = self.completed_summary().cloned()
+                && let Some(owner) = obligations.activation
+            {
                 self.check_contract(&bound, owner, &obligations, syntax.span, &captures);
             } else {
                 complete = false;
@@ -1095,7 +1152,7 @@ impl Checker {
         value: &Value,
         callable: &Callable,
         owner: ScopeId,
-        obligations: &Obligations,
+        obligations: &InvocationSummary,
         span: Span,
     ) {
         let captures = self.contract_captures(callable);
@@ -1139,14 +1196,20 @@ impl Checker {
                 span: contract.span,
             };
             let captures = self.closures[id].captures.clone();
-            self.check_contract(&bound, frame.owner, &frame.obligations, span, &captures);
+            self.check_contract(
+                &bound,
+                frame.owner,
+                &InvocationSummary::from_obligations(&frame.obligations),
+                span,
+                &captures,
+            );
         }
     }
     fn check_contract(
         &mut self,
         bound: &CallableBound,
         owner: ScopeId,
-        obligations: &Obligations,
+        obligations: &InvocationSummary,
         span: Span,
         captures: &BTreeSet<BindingId>,
     ) {
@@ -1159,7 +1222,7 @@ impl Checker {
         &mut self,
         bound: &CallableBound,
         owner: ScopeId,
-        obligations: &Obligations,
+        obligations: &InvocationSummary,
         span: Span,
         captures: &BTreeSet<BindingId>,
     ) {
@@ -1276,10 +1339,13 @@ impl Checker {
             );
         }
         if state_axis {
-            let outside = obligations.named.iter().any(|(binding, mode)| {
-                self.bindings[*binding].owner != owner
-                    && !named.get(binding).is_some_and(|allowed| allowed >= mode)
-                    && !(closure && captures.contains(binding))
+            let outside = obligations.concrete_state.iter().any(|(&binding, mode)| {
+                let binding = binding as usize;
+                self.bindings[binding].owner != owner
+                    && !named.get(&binding).is_some_and(|allowed| {
+                        crate::sema::summary::Access::from(*allowed) >= *mode
+                    })
+                    && !(closure && captures.contains(&binding))
             });
             if outside
                 || (obligations.parameter_write && !parameter_mut && !retained)
@@ -1371,7 +1437,7 @@ mod frozen_effect_scope_tests {
             typing_environment: captured,
             span,
         };
-        let mut obligations = Obligations {
+        let mut obligations = InvocationSummary {
             effects: captured_effects,
             ..Default::default()
         };

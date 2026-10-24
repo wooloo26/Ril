@@ -1,6 +1,8 @@
 //! Finite invocation summaries and dependency-driven monotone iteration.
 use super::facts::{NodeId, Participant, ScopeId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+mod identities;
+pub(crate) use identities::validate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Access {
@@ -21,7 +23,7 @@ pub struct CallbackDependency {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InvocationSummary {
-    /// The actual named activation represented by this local summary.
+    /// The actual callable activation represented by this local summary.
     /// Dependency inclusion preserves its identity and never copies a callee's.
     pub activation: Option<ScopeId>,
     pub context: Option<super::effect_identity::InvocationContext>,
@@ -30,7 +32,11 @@ pub struct InvocationSummary {
     pub performed_operations: std::collections::BTreeSet<u64>,
     pub selected_handlers: BTreeSet<usize>,
     pub handler_environment: bool,
+    pub parameter_write: bool,
+    pub retention: bool,
+    pub capture: bool,
     pub accesses: BTreeSet<Footprint>,
+    /// Named state accesses, keyed by binding identity rather than heap origin.
     pub concrete_state: BTreeMap<u32, Access>,
     /// Actual formal callback callee observations, not concrete state accesses.
     pub symbolic_uses: BTreeSet<ril_compiler_core::ids::EvaluationOccurrenceId>,
@@ -44,6 +50,38 @@ pub struct InvocationSummary {
     pub unresolved: BTreeSet<u32>,
 }
 impl InvocationSummary {
+    /// Preserve all latent contract axes from a checked frame. This projection
+    /// is a claim about that frame, not a certificate of row satisfaction.
+    pub(crate) fn from_obligations(obligations: &super::model::Obligations) -> Self {
+        let mut summary = Self {
+            copy_boundaries: obligations.copy_boundaries.clone(),
+            performed_operations: obligations.performed_operations.clone(),
+            selected_handlers: obligations.selected_handlers.clone(),
+            handler_environment: obligations.handler_environment,
+            parameter_write: obligations.parameter_write,
+            retention: obligations.retention,
+            capture: obligations.capture,
+            effects: obligations.effects.clone(),
+            symbolic_uses: obligations.symbolic_uses.clone(),
+            ..Self::default()
+        };
+        for (&binding, &mode) in &obligations.named {
+            summary.concrete_state.insert(binding as u32, mode.into());
+        }
+        for access in &obligations.accesses {
+            for &origin in &access.origins.nodes {
+                for &participant in &access.participants {
+                    summary.accesses.insert(Footprint {
+                        origin,
+                        participant,
+                        access: access.mode.into(),
+                    });
+                }
+            }
+        }
+        summary
+    }
+
     pub fn include(&mut self, other: &Self) {
         self.channel_messages.extend(&other.channel_messages);
         self.copy_boundaries.extend(&other.copy_boundaries);
@@ -51,6 +89,9 @@ impl InvocationSummary {
             .extend(&other.performed_operations);
         self.selected_handlers.extend(&other.selected_handlers);
         self.handler_environment |= other.handler_environment;
+        self.parameter_write |= other.parameter_write;
+        self.retention |= other.retention;
+        self.capture |= other.capture;
         self.accesses.extend(other.accesses.iter().cloned());
         for (&origin, &mode) in &other.concrete_state {
             self.concrete_state
@@ -66,6 +107,16 @@ impl InvocationSummary {
         self.new_environments.extend(&other.new_environments);
         self.owners.extend(&other.owners);
         self.unresolved.extend(&other.unresolved);
+    }
+}
+
+impl From<super::model::Mode> for Access {
+    fn from(mode: super::model::Mode) -> Self {
+        match mode {
+            super::model::Mode::Read => Self::Read,
+            super::model::Mode::Write => Self::Write,
+            super::model::Mode::Retain => Self::Retain,
+        }
     }
 }
 
@@ -118,10 +169,99 @@ mod tests {
     fn recursive_dependencies_retain_effects_and_unknown_callees() {
         let mut local = vec![InvocationSummary::default(); 3];
         local[1].effects.insert("Log".into());
+        local[1].parameter_write = true;
+        local[2].retention = true;
+        local[2].capture = true;
         let calls = vec![[1].into(), [0, 2].into(), [99].into()];
         let summaries = close_invocation_dependencies(&local, &calls);
         assert!(summaries[0].effects.contains("Log"));
         assert!(summaries[0].unresolved.contains(&99));
+        assert!(summaries[0].parameter_write && summaries[0].retention && summaries[0].capture);
         assert_eq!(summaries, close_invocation_dependencies(&summaries, &calls));
+    }
+
+    #[test]
+    fn entered_closures_and_named_calls_keep_distinct_summaries_through_core() {
+        use ril_compiler_core::ids::InvocationSummaryId;
+        let source = r#"
+fn plus(value: int) -> int { value + 1 }
+fn append(mut values: []int) &mut { Array::push(mut values, 1) }
+pub fn example() {
+    let call = \value: int -> plus(value)
+    assert(call(2) == 3)
+    assert(call(3) == 4)
+    let mut values: []int = []
+    let write = \mut values: []int -> { Array::push(mut values, 2) }
+    write(mut values)
+    append(mut values)
+}
+"#;
+        for target in ["pointer32", "pointer64"] {
+            let verified = crate::Session::with_options(
+                source.as_bytes().to_vec(),
+                crate::CheckOptions {
+                    target: target.into(),
+                    ..Default::default()
+                },
+            )
+            .verify()
+            .unwrap();
+            let facts = verified.facts();
+            validate(facts, &mut 16384).unwrap();
+            assert!(validate(facts, &mut 0).is_err());
+            assert!(facts.copy_invocations.iter().any(|call| {
+                call.summary
+                    .is_some_and(|id| facts.invocations[id.0 as usize].parameter_write)
+            }));
+            let calls: Vec<_> = facts
+                .closure_invocations
+                .iter()
+                .filter(|call| call.summary.is_some())
+                .collect();
+            assert!(calls.len() >= 3);
+            assert!(calls.iter().any(|call| facts.invocations[call.summary.unwrap().0 as usize].parameter_write));
+            let first = calls[0];
+            let sibling = calls
+                .iter()
+                .find(|call| call.id != first.id && call.closure == first.closure)
+                .unwrap();
+            assert_ne!(first.summary, sibling.summary);
+            assert_ne!(first.activation, sibling.activation);
+            let core = crate::lower::lower_core(&verified).unwrap();
+            for call in &facts.closure_invocations {
+                assert_eq!(
+                    core.provenance.closure_invocations[call.id.0 as usize].summary,
+                    call.summary
+                );
+            }
+            for (index, summary) in facts.invocations.iter().enumerate() {
+                let lowered = &core.provenance.invocations[index];
+                assert_eq!(lowered.parameter_write, summary.parameter_write);
+                assert_eq!(lowered.retention, summary.retention);
+                assert_eq!(lowered.capture, summary.capture);
+            }
+            for mutation in 0..6 {
+                let mut changed = facts.clone();
+                let id = first.summary.unwrap();
+                match mutation {
+                    0 => changed.closure_invocations[first.id.0 as usize].summary = None,
+                    1 => changed.closure_invocations[first.id.0 as usize].summary = sibling.summary,
+                    2 => {
+                        changed.closure_invocations[first.id.0 as usize].summary =
+                            Some(InvocationSummaryId(u32::MAX))
+                    }
+                    3 => changed.invocations[id.0 as usize].activation = sibling.activation,
+                    4 => changed.invocations[id.0 as usize].context = None,
+                    5 => changed
+                        .invocations
+                        .push(changed.invocations[id.0 as usize].clone()),
+                    _ => unreachable!(),
+                }
+                assert!(
+                    validate(&changed, &mut 16384).is_err(),
+                    "mutation {mutation} accepted"
+                );
+            }
+        }
     }
 }

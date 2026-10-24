@@ -416,14 +416,7 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
             return Err("named callable entry has duplicate original callers".into());
         }
     }
-    let mut summaries = BTreeMap::new();
-    for summary in &facts.invocations {
-        if let Some(id) = summary.context.and_then(|context| context.invocation)
-            && summaries.insert(id, summary).is_some()
-        {
-            return Err("named callable entry claimed multiple body scopes".into());
-        }
-    }
+    crate::sema::summary::validate(facts, &mut work)?;
     for (ordinal, call) in facts.copy_invocations.iter().enumerate() {
         let entry = &call.entry;
         packets.entry(
@@ -549,8 +542,9 @@ pub(super) fn validate(facts: &super::SemanticFacts) -> Result<(), String> {
                     .activations
                     .get(anchor.0 as usize)
                     .ok_or("generated named callable lost its actual anchor")?;
-                let summary = summaries
-                    .get(&call.id)
+                let summary = call
+                    .summary
+                    .and_then(|id| facts.invocations.get(id.0 as usize))
                     .ok_or("generated named callable lost its actual body scope")?;
                 if call.source_event.is_some()
                     || call.declaration_probe

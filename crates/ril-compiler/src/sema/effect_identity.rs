@@ -144,6 +144,7 @@ pub use ril_compiler_core::ids::ClosureInvocationId;
 #[derive(Debug, Clone)]
 pub struct ClosureInvocation {
     pub id: ClosureInvocationId,
+    pub summary: Option<ril_compiler_core::ids::InvocationSummaryId>,
     pub entry: super::application_effect::CallableEntry,
     pub source_event: Option<super::copy_contract::CopyCallEventId>,
     pub caller_activation: super::facts::ScopeId,

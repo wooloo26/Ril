@@ -2489,6 +2489,7 @@ mod tests {
         facts.bindings = vec![binding(0), binding(1)];
         facts.copy_invocations.push(CopyInvocation {
             id: InstanceId(0),
+            summary: None,
             entry: crate::sema::application_effect::CallableEntry {
                 parent: None,
                 caller_context: context(CallableOwner::Global),
@@ -2617,6 +2618,7 @@ mod tests {
         });
         facts.closure_invocations.push(ClosureInvocation {
             id: ClosureInvocationId(0),
+            summary: None,
             entry: crate::sema::application_effect::CallableEntry {
                 parent: None,
                 caller_context: current,

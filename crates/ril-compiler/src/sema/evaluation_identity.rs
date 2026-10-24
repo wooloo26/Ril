@@ -1685,6 +1685,7 @@ mod tests {
         let mut changed = facts.clone();
         changed.copy_invocations.push(CopyInvocation {
             id: InstanceId(0),
+            summary: None,
             entry: crate::sema::application_effect::CallableEntry {
                 parent: None,
                 caller_context: context(),
@@ -1716,6 +1717,7 @@ mod tests {
         let mut changed = facts;
         changed.closure_invocations.push(ClosureInvocation {
             id: ClosureInvocationId(0),
+            summary: None,
             entry: crate::sema::application_effect::CallableEntry {
                 parent: None,
                 caller_context: context(),

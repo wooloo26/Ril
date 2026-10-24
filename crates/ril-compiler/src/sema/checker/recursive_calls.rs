@@ -198,11 +198,11 @@ impl Checker {
                 super::calls::AnnotationCheck::Invocation
             },
         );
-        let invocation = self.named_invocation_summary(id, &frame, &returned);
+        let invocation = self.invocation_summary(id, &frame, &returned);
         self.record_effect_invocation(&info, span, &invocation, verifying, callback_epoch);
-        self.invocations.push(invocation);
+        let summary = self.retain_invocation_summary(invocation);
         self.end_invocation_loans(&mut result, &frame, &loans, span);
-        self.completed_invocation = Some((frame.owner, frame.obligations.clone()));
+        self.completed_invocation = Some(super::contracts::CompletedInvocation::Recorded(summary));
         for &binding in &frame.locals {
             self.check_authority_use(binding);
             self.bindings[binding].alive = false;

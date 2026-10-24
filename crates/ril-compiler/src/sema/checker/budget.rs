@@ -247,9 +247,8 @@ impl Checker {
         self.flush_handler_obligations(&mut protected);
         let mut coverage = self.budget_coverage.pop().unwrap();
         let actual_owner = self
-            .completed_invocation
-            .as_ref()
-            .map(|(owner, _)| *owner)
+            .completed_summary()
+            .and_then(|summary| summary.activation)
             .unwrap_or(protected.owner);
         if protected.obligations.symbolic {
             coverage.complete = false;

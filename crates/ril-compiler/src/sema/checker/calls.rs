@@ -297,8 +297,7 @@ impl Checker {
                         let value = self
                             .concurrent_builtin(callee, name, &args, span, &mut intrinsic)
                             .expect("recognized structured operation has a semantic contract");
-                        self.completed_invocation =
-                            Some((intrinsic.owner, intrinsic.obligations.clone()));
+                        self.complete_intrinsic_summary(&intrinsic);
                         if frame.callback_call {
                             intrinsic.obligations.concrete_effects.clear();
                             intrinsic.obligations.concrete.clear();
@@ -314,8 +313,7 @@ impl Checker {
                         intrinsic.returned.clear();
                         let value =
                             self.transfer_builtin(callee, name, args.clone(), span, &mut intrinsic);
-                        self.completed_invocation =
-                            Some((intrinsic.owner, intrinsic.obligations.clone()));
+                        self.complete_intrinsic_summary(&intrinsic);
                         if frame.callback_call {
                             intrinsic.obligations.concrete_effects.clear();
                             intrinsic.obligations.concrete.clear();
@@ -396,7 +394,9 @@ impl Checker {
             self.restore_foreign_exit_overlays(&overlay, foreign_exit_epoch);
             self.restore_captured_loan_overlay(overlay);
             if !callee.callable_bounds.is_empty() {
-                if let Some((owner, obligations)) = self.completed_invocation.clone() {
+                if let Some(obligations) = self.completed_summary().cloned()
+                    && let Some(owner) = obligations.activation
+                {
                     self.check_callable_bounds(callee, callable, owner, &obligations, span);
                 } else if !matches!(callable, Callable::Symbolic(..)) {
                     self.unsupported(
@@ -478,7 +478,7 @@ impl Checker {
         self.remember_constructor_carrier(callee, &value, copy_call_event, frame);
         value
     }
-    pub(super) fn named_invocation_summary(
+    pub(super) fn invocation_summary(
         &self,
         id: usize,
         frame: &Frame,
@@ -488,39 +488,8 @@ impl Checker {
             activation: Some(frame.owner),
             context: Some(self.invocation_context(frame.callable_owner)),
             channel_messages: self.channel_invocation_messages(frame.owner),
-            copy_boundaries: frame.obligations.copy_boundaries.clone(),
-            performed_operations: frame.obligations.performed_operations.clone(),
-            selected_handlers: frame.obligations.selected_handlers.clone(),
-            handler_environment: frame.obligations.handler_environment,
-            effects: frame.obligations.effects.clone(),
-            symbolic_uses: frame.obligations.symbolic_uses.clone(),
-            ..Default::default()
+            ..super::super::summary::InvocationSummary::from_obligations(&frame.obligations)
         };
-        for (&binding, &mode) in &frame.obligations.named {
-            summary.concrete_state.insert(
-                binding as u32,
-                match mode {
-                    Mode::Read => super::super::summary::Access::Read,
-                    Mode::Write => super::super::summary::Access::Write,
-                    Mode::Retain => super::super::summary::Access::Retain,
-                },
-            );
-        }
-        for access in &frame.obligations.accesses {
-            for &node in &access.origins.nodes {
-                for &participant in &access.participants {
-                    summary.accesses.insert(super::super::summary::Footprint {
-                        origin: node,
-                        participant,
-                        access: match access.mode {
-                            Mode::Read => super::super::summary::Access::Read,
-                            Mode::Write => super::super::summary::Access::Write,
-                            Mode::Retain => super::super::summary::Access::Retain,
-                        },
-                    });
-                }
-            }
-        }
         summary.escaped_origins = returned_nodes.clone();
         if frame.obligations.symbolic {
             summary.unresolved.insert(id as u32);
@@ -1332,7 +1301,7 @@ impl Checker {
                 },
             );
         }
-        let summary = self.named_invocation_summary(id, &frame, &returned_nodes);
+        let summary = self.invocation_summary(id, &frame, &returned_nodes);
         if verifying {
             let returned = self.expanded(&result.ty, &mut BTreeSet::new());
             let declared = self.expanded(
@@ -1348,14 +1317,14 @@ impl Checker {
             });
         }
         self.record_effect_invocation(&info, span, &summary, verifying, effect_callback_epoch);
-        self.invocations.push(summary);
+        let summary = self.retain_invocation_summary(summary);
         self.unwind_foreign_abort_exits(
             frame.owner,
             &frame.locals,
             &local_loans,
             foreign_exit_epoch,
         );
-        self.completed_invocation = Some((frame.owner, frame.obligations.clone()));
+        self.completed_invocation = Some(super::contracts::CompletedInvocation::Recorded(summary));
         for &binding in &frame.locals {
             self.check_authority_use(binding);
             self.bindings[binding].alive = false;
@@ -2125,7 +2094,9 @@ impl Checker {
             &local_loans,
             foreign_exit_epoch,
         );
-        self.completed_invocation = Some((frame.owner, frame.obligations.clone()));
+        let summary = self.invocation_summary(id, &frame, &returned_nodes);
+        let summary = self.retain_invocation_summary(summary);
+        self.completed_invocation = Some(super::contracts::CompletedInvocation::Recorded(summary));
         self.export_conditional_result_family(&mut result, frame.owner, span);
         self.end_invocation_loans(&mut result, &frame, &local_loans, span);
         self.transfer_results(&result, frame.owner, caller.owner);

@@ -333,6 +333,7 @@ impl Checker {
         }
         self.copy_invocations.push(CopyInvocation {
             id: instance,
+            summary: None,
             entry: CallableEntry {
                 callee,
                 parent: self.application_effect.current_activation(),

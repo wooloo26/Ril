@@ -183,6 +183,7 @@ impl CopyCallEvent {
 #[derive(Debug, Clone)]
 pub struct CopyInvocation {
     pub id: super::copy_templates::InstanceId,
+    pub summary: Option<ril_compiler_core::ids::InvocationSummaryId>,
     pub entry: super::application_effect::CallableEntry,
     pub parent: Option<super::copy_templates::InstanceId>,
     pub caller: Option<DefinitionId>,

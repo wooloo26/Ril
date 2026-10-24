@@ -456,7 +456,7 @@ struct Checker {
     functions: Vec<FunctionInfo>,
     type_contract_environments:
         BTreeMap<ril_compiler_core::ids::TypeExprId, contracts::ContractEnvironment>,
-    completed_invocation: Option<(ScopeId, Obligations)>,
+    completed_invocation: Option<contracts::CompletedInvocation>,
     definition_checks: Vec<super::DefinitionCheck>,
     resumption_steps: Vec<super::ResumptionStep>,
     completed_cleanups: BTreeSet<BindingId>,
@@ -1423,11 +1423,12 @@ impl Checker {
             for origins in &mut self.active_iterations {
                 origins.remap(recent, older);
             }
-            for obligations in self.pending_handler_obligations.values_mut().chain(
-                self.completed_invocation
-                    .iter_mut()
-                    .map(|(_, obligations)| obligations),
-            ) {
+            if let Some(contracts::CompletedInvocation::Intrinsic(summary)) =
+                &mut self.completed_invocation
+            {
+                copy::remap_summary(summary, recent, older);
+            }
+            for obligations in self.pending_handler_obligations.values_mut() {
                 for access in &mut obligations.accesses {
                     access.transport(&self.recency_moves);
                 }

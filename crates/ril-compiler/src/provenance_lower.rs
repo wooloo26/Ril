@@ -245,6 +245,7 @@ fn copy_invocation(
     use crate::sema::copy_contract::CopyInvocationStatus as S;
     Ok(p::CopyInvocation {
         id: p::CopyInstanceId(record.id.0),
+        summary: record.summary,
         parent: record.parent.map(|id| p::CopyInstanceId(id.0)),
         caller: record.caller,
         caller_owner: record.caller_owner,
@@ -936,6 +937,7 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
         .map(|call| {
             Ok(p::ClosureInvocation {
                 id: call.id,
+                summary: call.summary,
                 entry: callable_entry(&call.entry, call.site, &mut graph.types, &mut contracts)?,
                 source_event: call.source_event.map(|id| p::CopyCallEventId(id.0)),
                 caller_activation: call.caller_activation.0,
@@ -1627,6 +1629,9 @@ pub(crate) fn lower(facts: &SemanticFacts) -> Result<p::Graph, NotImplemented> {
                 .map(|id| p::CopyBoundaryId(id.0))
                 .collect(),
             handler_environment: summary.handler_environment,
+            parameter_write: summary.parameter_write,
+            retention: summary.retention,
+            capture: summary.capture,
             selected_handlers: summary
                 .selected_handlers
                 .iter()

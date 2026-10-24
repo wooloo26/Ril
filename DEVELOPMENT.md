@@ -123,6 +123,8 @@ duplicate source trees and historical verification reports.
   and generic operation input headers and typed record members.
   Complete default preparations for inferred earlier closure parameters and
   checked callable ascription views, including nested `where` captures.
+  Restore open-row Result construction and nested row-alias declaration checks
+  covered by `ordinary_result_source_contexts` and `rows`.
 - Complete shared value derivations for historical heap reads, callback results
   and generated inputs to parallel workers, channel bodies, iterators,
   variant/recovery callbacks, resources and foreign calls. Their unmigrated

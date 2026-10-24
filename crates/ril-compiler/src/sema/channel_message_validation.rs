@@ -587,8 +587,10 @@ fn metadata(facts: &SemanticFacts) -> Check {
         if expected != summary.channel_messages {
             return Err("actual invocation summary omits or borrows channel events".into());
         }
-        if context.invocation.is_none() {
-            return Err("named invocation summary lacks its actual completed call identity".into());
+        if context.invocation.is_none() && context.closure_invocation.is_none() {
+            return Err(
+                "callable invocation summary lacks its actual completed call identity".into(),
+            );
         }
     }
     for event in &facts.channel_messages {

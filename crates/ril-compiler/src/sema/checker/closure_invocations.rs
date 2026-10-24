@@ -159,6 +159,7 @@ impl Checker {
                 .is_some_and(|parent| self.closure_invocations[parent.0 as usize].probe);
         self.closure_invocations.push(ClosureInvocation {
             id,
+            summary: None,
             entry,
             source_event: (!probe)
                 .then(|| self.channel_source_event(caller))
