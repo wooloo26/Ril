@@ -107,8 +107,11 @@ duplicate source trees and historical verification reports.
   Callable interfaces retain their lexical type interpretation; signature probes
   and return contracts retain complete type graphs. Effect inputs and resume
   operands share the receiving operation. Factories retain lexical handler
-  dependencies separately from invocation answer constraints. Finish routing
-  generics, defaults, rows and constructors through the same typed operations.
+  dependencies separately from invocation answer constraints. Record construction
+  composes complete types from evaluated members and spreads; contextual `typeof`
+  reads the declared type graph, including nested queries and field projections.
+  Finish routing generics, defaults, rows and constructors through the same typed
+  operations.
 - Complete control-flow analysis for heap access, borrowing, effects, duties,
   resources and channels. Resolve generated callback inputs, use finite
   loop/recursion summaries and preserve correlated aggregates. Normal,

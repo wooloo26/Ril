@@ -243,9 +243,8 @@ impl Checker {
             // completed answer; only the latter can supply an answer Source.
             return Ok(None);
         }
-        if matches!(syntax.kind, ExprKind::Block(_))
-            && let Some(source) =
-                self.original_block_source_schema(value, syntax, frame, work, observation)?
+        if matches!(syntax.kind, ExprKind::Block(_) | ExprKind::Record { .. })
+            && let Some(source) = self.owned_expression_source_schema(syntax, work, observation)?
         {
             return Ok(Some(source));
         }
@@ -516,11 +515,9 @@ impl Checker {
         Ok(None)
     }
 
-    fn original_block_source_schema(
+    fn owned_expression_source_schema(
         &mut self,
-        _value: &Value,
         syntax: &Expr,
-        _frame: &Frame,
         work: &mut WorkLimit,
         observation: Option<usize>,
     ) -> InputSource {
@@ -804,13 +801,17 @@ impl Checker {
         let selected_environment = if !selected.requires_environment(work)? {
             environment.clone()
         } else if schema.requires_declaration_environment(work)? {
-            producing_result::result_environment(
+            crate::sema::checker::boundary_results::result_environment(
                 dependencies.into_iter().chain([(&schema, environment)]),
                 environment,
                 work,
             )?
         } else {
-            producing_result::result_environment(dependencies, environment, work)?
+            crate::sema::checker::boundary_results::result_environment(
+                dependencies,
+                environment,
+                work,
+            )?
         };
         Ok(Some((selected, selected_environment)))
     }

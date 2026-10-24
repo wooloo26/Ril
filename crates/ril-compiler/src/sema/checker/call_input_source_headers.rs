@@ -57,8 +57,11 @@ impl Checker {
         if schema.requires_declaration_environment(work)? {
             dependencies.push((&schema, &environment));
         }
-        let selected_environment =
-            super::producing_result::result_environment(dependencies, &environment, work)?;
+        let selected_environment = crate::sema::checker::boundary_results::result_environment(
+            dependencies,
+            &environment,
+            work,
+        )?;
         Ok((result, selected_environment))
     }
     pub(in crate::sema::checker) fn actual_input_source_schemas(

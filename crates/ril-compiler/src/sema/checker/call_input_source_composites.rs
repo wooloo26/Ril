@@ -1,6 +1,5 @@
 //! Fresh products and copies carry the actual operand graphs without export.
 use super::*;
-use ril_syntax::ast::RecordMember;
 
 impl Checker {
     pub(super) fn original_copy_source_schema(
@@ -187,19 +186,6 @@ impl Checker {
                     .flat_map(|(key, value)| [(None, key), (None, value)])
                     .collect()
             }
-            ExprKind::Record {
-                ty: None, members, ..
-            } => {
-                let mut children = Vec::new();
-                work.charge(members.len())?;
-                for member in members {
-                    let RecordMember::Field(field) = member else {
-                        return Ok(None);
-                    };
-                    children.push((Some(field.name.as_str()), &field.value));
-                }
-                children
-            }
             _ => return Ok(None),
         };
         let context = self.invocation_context(frame.callable_owner);
@@ -309,27 +295,7 @@ impl Checker {
                 work,
             )?
         } else {
-            let mut fields = BTreeMap::new();
-            for (label, schema) in schemas {
-                if fields
-                    .insert(
-                        label.ok_or(SourceTypesError::Unresolved)?.to_owned(),
-                        schema,
-                    )
-                    .is_some()
-                {
-                    return Err(SourceTypesError::DuplicateField);
-                }
-            }
-            SourceSchema::record(
-                &fields
-                    .into_iter()
-                    .map(|(label, schema)| (label, false, schema))
-                    .collect::<Vec<_>>(),
-                None,
-                None,
-                work,
-            )?
+            return Err(SourceTypesError::Unresolved);
         };
         let environment = environment.unwrap_or_else(|| self.capture_typing_environment());
         if environment.is_poisoned() {

@@ -430,7 +430,15 @@ fn fresh_empty_recursive_scalar_array_has_only_a_proved_construction_context() {
             .unwrap()
             .unwrap()
             .1
-            .closed_record_labels(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .record_parts(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .unwrap()
+            .map(|(fields, tail)| {
+                assert!(tail.is_none());
+                fields
+                    .into_iter()
+                    .map(|(label, _, _)| label)
+                    .collect::<BTreeSet<_>>()
+            })
             .unwrap(),
         BTreeSet::from(["value".into(), "following".into()])
     );
@@ -540,7 +548,15 @@ fn a_qualified_alias_does_not_reinterpret_a_captured_or_recursive_source() {
             .unwrap()
             .unwrap()
             .1
-            .closed_record_labels(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .record_parts(&mut crate::sema::source_types::WorkLimit::new(16384))
+            .unwrap()
+            .map(|(fields, tail)| {
+                assert!(tail.is_none());
+                fields
+                    .into_iter()
+                    .map(|(label, _, _)| label)
+                    .collect::<BTreeSet<_>>()
+            })
             .unwrap(),
         BTreeSet::from(["following".into()])
     );

@@ -87,6 +87,7 @@ impl Checker {
                     parameter,
                     identity,
                     HeaderContext {
+                        queries: Some(self),
                         declarations: &self.types,
                         program: self
                             .checked_source

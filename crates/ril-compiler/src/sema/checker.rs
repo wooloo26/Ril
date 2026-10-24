@@ -84,6 +84,7 @@ mod post_resume;
 mod post_resume_scope;
 mod propagation;
 mod record_bounds;
+mod record_types;
 mod recursive_calls;
 mod repeated;
 mod resources;

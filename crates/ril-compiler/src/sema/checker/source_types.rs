@@ -11,6 +11,78 @@ struct SourceSelection<'a> {
     cause: CauseId,
 }
 
+impl crate::sema::source_types::declarations::ContextualTypeQueries for Checker {
+    fn type_query(
+        &self,
+        syntax: &TypeExpr,
+        lexical: &crate::hir::lexical::LexicalBindings,
+        work: &mut crate::sema::source_types::WorkLimit,
+    ) -> Result<Option<crate::sema::source_types::SourceSchema>, SourceTypesError> {
+        let TypeKind::Computation(expression) = &syntax.kind else {
+            return Ok(None);
+        };
+        let ExprKind::Unary { operator, operand } = &expression.kind else {
+            return Ok(None);
+        };
+        if operator != "typeof" {
+            return Ok(None);
+        }
+        let mut base = operand.as_ref();
+        loop {
+            work.charge(1)?;
+            match &base.kind {
+                ExprKind::Field {
+                    base: parent,
+                    safe: false,
+                    ..
+                } => base = parent,
+                _ => break,
+            }
+        }
+        let ExprKind::Name(name) = &base.kind else {
+            return Ok(None);
+        };
+        work.text(name)?;
+        let environment = &self.type_source.environment;
+        let Some(binding) = environment
+            .contract_bindings()
+            .get(name)
+            .and_then(|id| self.bindings.get(*id))
+        else {
+            return Ok(None);
+        };
+        let mut remaining = work.remaining();
+        let pattern = lexical.lookup(
+            base.hir_id.ok_or(SourceTypesError::MissingNode)?,
+            &mut remaining,
+        );
+        work.charge(work.remaining() - remaining)?;
+        let pattern = pattern.map_err(|error| match error {
+            crate::hir::nodes::LowerError::Budget(_) => SourceTypesError::BudgetExceeded,
+            _ => SourceTypesError::Unresolved,
+        })?;
+        if pattern.is_none() {
+            return Ok(None);
+        }
+        if pattern != binding.pattern {
+            return Err(SourceTypesError::Unresolved);
+        }
+        let Some((schema, context)) = self.type_source.storage.declared_operand_source_schema(
+            operand,
+            environment.contract_bindings(),
+            work,
+        )?
+        else {
+            return Ok(None);
+        };
+        let (schema, context) = self.selected_input_schema(schema, context, work)?;
+        if !schema.same_interpretation_in(&context, &self.capture_typing_environment(), work)? {
+            return Err(SourceTypesError::Unresolved);
+        }
+        Ok(Some(schema))
+    }
+}
+
 impl Checker {
     pub(super) fn declared_effect_source(
         &self,
@@ -54,6 +126,7 @@ impl Checker {
                     &effect.declaration,
                     arguments,
                     HeaderContext {
+                        queries: Some(self),
                         declarations: &self.types,
                         program,
                         hir: &self.semantic_hir,
@@ -180,6 +253,7 @@ impl Checker {
         self.type_source
             .with_header_index(&self.semantic_hir, |lexical| {
                 let context = HeaderContext {
+                    queries: Some(self),
                     declarations: &self.types,
                     program: self
                         .checked_source
@@ -220,6 +294,7 @@ impl Checker {
                     origin,
                     annotations,
                     HeaderContext {
+                        queries: Some(self),
                         declarations: &self.types,
                         program: self
                             .checked_source
@@ -255,6 +330,7 @@ impl Checker {
                 constructor_instance(
                     syntax,
                     HeaderContext {
+                        queries: Some(self),
                         declarations: &self.types,
                         program: self
                             .checked_source

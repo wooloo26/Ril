@@ -310,37 +310,6 @@ impl SourceSchema {
         self.original
     }
 
-    /// The complete closed field domain of this view. A rigid, unresolved or
-    /// cyclic row cannot be lowered as an empty remainder.
-    pub(crate) fn closed_record_labels(
-        &self,
-        work: &mut WorkLimit,
-    ) -> Result<std::collections::BTreeSet<String>, SourceTypesError> {
-        use std::collections::BTreeSet;
-        let mut cursor = Some(self.root);
-        let mut seen = BTreeSet::new();
-        let mut labels = BTreeSet::new();
-        while let Some(id) = cursor {
-            work.charge(1)?;
-            let id = self.types.unalias(id, work)?;
-            if !seen.insert(id) {
-                return Err(SourceTypesError::RowCycle);
-            }
-            let SourceNode::Record { fields, row } = self.types.get(id)? else {
-                return Err(SourceTypesError::Unresolved);
-            };
-            work.charge(fields.len())?;
-            for field in fields {
-                work.text(&field.label)?;
-                if !labels.insert(field.label.clone()) {
-                    return Err(SourceTypesError::DuplicateField);
-                }
-            }
-            cursor = *row;
-        }
-        Ok(labels)
-    }
-
     /// A row selection removes declared members from the complete actual
     /// record. Retain every other member and its original rigid tail; an
     /// unavailable field or cyclic/unknown row cannot become an empty row.

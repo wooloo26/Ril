@@ -349,6 +349,46 @@ impl Checker {
     }
 }
 
+pub(super) fn result_environment<'a>(
+    parts: impl IntoIterator<
+        Item = (
+            &'a SourceSchema,
+            &'a crate::sema::context::FrozenEnvironment,
+        ),
+    >,
+    fallback: &crate::sema::context::FrozenEnvironment,
+    work: &mut crate::sema::source_types::WorkLimit,
+) -> Result<crate::sema::context::FrozenEnvironment, SourceTypesError> {
+    if fallback.is_poisoned() {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let mut parts_owned = Vec::new();
+    for (schema, environment) in parts {
+        work.charge(1)?;
+        if environment.is_poisoned() {
+            return Err(SourceTypesError::Unresolved);
+        }
+        if schema.requires_environment(work)? {
+            parts_owned.push((schema, environment));
+        }
+    }
+    for candidate in
+        std::iter::once(fallback).chain(parts_owned.iter().map(|(_, environment)| *environment))
+    {
+        let mut compatible = true;
+        for (schema, environment) in &parts_owned {
+            if !schema.same_interpretation_in(environment, candidate, work)? {
+                compatible = false;
+                break;
+            }
+        }
+        if compatible {
+            return Ok(candidate.clone());
+        }
+    }
+    Err(SourceTypesError::Unresolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

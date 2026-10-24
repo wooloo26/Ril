@@ -732,6 +732,19 @@ impl Checker {
         {
             return value.ty.clone();
         }
+        if matches!(&syntax.kind, TypeKind::Computation(value)
+            if matches!(&value.kind, ExprKind::Unary { operator, .. } if operator == "typeof"))
+        {
+            let mut work = crate::sema::source_types::WorkLimit::new(16384);
+            if let Ok(schema) = self.original_header_source_schema(syntax, &mut work) {
+                let (types, root) = schema.graph();
+                if let Ok(ty) =
+                    crate::sema::source_types::builtins::erased_type(types, root, &mut work)
+                {
+                    return ty;
+                }
+            }
+        }
         match &syntax.kind {
             TypeKind::Name { path, arguments } => {
                 let full_name = path.join("::");

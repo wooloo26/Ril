@@ -1,6 +1,7 @@
 //! Result Type selection keeps the original declaration's source coordinates.
 use super::*;
 use crate::hir::application::AstApplication;
+use crate::sema::checker::boundary_results::result_environment;
 use crate::sema::{
     effect_identity::StaticBinderSort, record_bounds::BoundScope, source_types::SourceContainer,
 };
@@ -1180,41 +1181,6 @@ impl Checker {
         self.input_header_schema(&selected, source.0.original(), environment, work)?
             .ok_or(SourceTypesError::Unresolved)
     }
-}
-
-pub(super) fn result_environment<'a>(
-    parts: impl IntoIterator<Item = (&'a SourceSchema, &'a FrozenEnvironment)>,
-    fallback: &FrozenEnvironment,
-    work: &mut WorkLimit,
-) -> Result<FrozenEnvironment, SourceTypesError> {
-    if fallback.is_poisoned() {
-        return Err(SourceTypesError::Unresolved);
-    }
-    let mut parts_owned = Vec::new();
-    for (schema, environment) in parts {
-        work.charge(1)?;
-        if environment.is_poisoned() {
-            return Err(SourceTypesError::Unresolved);
-        }
-        if schema.requires_environment(work)? {
-            parts_owned.push((schema, environment));
-        }
-    }
-    for candidate in
-        std::iter::once(fallback).chain(parts_owned.iter().map(|(_, environment)| *environment))
-    {
-        let mut compatible = true;
-        for (schema, environment) in &parts_owned {
-            if !schema.same_interpretation_in(environment, candidate, work)? {
-                compatible = false;
-                break;
-            }
-        }
-        if compatible {
-            return Ok(candidate.clone());
-        }
-    }
-    Err(SourceTypesError::Unresolved)
 }
 
 fn result_causes(checker: &Checker, root: CauseId) -> Option<BTreeSet<u32>> {

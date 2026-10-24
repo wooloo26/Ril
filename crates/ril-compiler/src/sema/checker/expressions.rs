@@ -797,31 +797,22 @@ impl Checker {
                     .map(|syntax| self.freeze_source_receiving_target(syntax));
                 let declared = ty.as_ref().map(|t| self.ty(t));
                 let receiving = declared_source.as_ref().or(source);
-                let explicit_construction = members
-                    .iter()
-                    .all(|member| matches!(member, RecordMember::Field(_)));
                 let structural_labels = receiving
                     .and_then(|target| target.schema.as_ref())
                     .and_then(|schema| {
                         schema
-                            .closed_record_labels(&mut crate::sema::source_types::WorkLimit::new(
-                                16384,
-                            ))
+                            .record_parts(&mut crate::sema::source_types::WorkLimit::new(16384))
                             .ok()
+                            .flatten()
+                            .map(|(fields, _)| {
+                                fields
+                                    .into_iter()
+                                    .map(|(label, _, _)| label)
+                                    .collect::<BTreeSet<_>>()
+                            })
                     });
                 let structural_target = receiving.filter(|_| structural_labels.is_some());
                 let mut source_valid = true;
-                if let Some(target) = declared_source.as_ref() {
-                    use super::super::source_reception::SchemaSensitivity;
-                    if target.sensitivity == SchemaSensitivity::Unknown
-                        || (target.sensitivity == SchemaSensitivity::Required
-                            && !explicit_construction)
-                    {
-                        self.unsupported(expr.span,
-                            "typed record receiving requires its complete original member schemas and observations");
-                        source_valid = false;
-                    }
-                }
                 let expected_fields = declared
                     .as_ref()
                     .or(expected)
@@ -832,6 +823,7 @@ impl Checker {
                 let mut overrides = BTreeMap::new();
                 let mut row_spreads = Vec::new();
                 let mut row_tails = Vec::new();
+                let mut type_spreads = Vec::new();
                 let explicit: BTreeSet<_> = members
                     .iter()
                     .filter_map(|member| {
@@ -870,24 +862,22 @@ impl Checker {
                                 child_source.as_ref(),
                             );
                             source_valid &= checked.source_valid;
-                            let child = checked.value;
+                            let child = &checked.value;
                             if child.ty == Ty::Never {
                                 self.preview_record_members(&members[index + 1..], frame);
-                                return child;
+                                return checked.value;
                             }
                             shape.insert(field.name.clone(), (false, child.ty.clone()));
-                            overrides.insert(
-                                field.name.clone(),
-                                EvaluatedValue::new(child, self.recency_moves.len()),
-                            );
+                            overrides.insert(field.name.clone(), checked);
                         }
                         RecordMember::Spread(expression) => {
-                            let spread = self.expression(expression, frame);
-                            if spread.ty == Ty::Never {
+                            let mut spread =
+                                self.expression_expected_source(expression, frame, None, None);
+                            source_valid &= spread.source_valid;
+                            if spread.value.ty == Ty::Never {
                                 self.preview_record_members(&members[index + 1..], frame);
-                                return spread;
+                                return spread.value;
                             }
-                            let mut spread = EvaluatedValue::new(spread, self.recency_moves.len());
                             let current_spread = spread.current(&self.recency_moves);
                             if let Some(row) = self.value_row(&current_spread.ty) {
                                 for (name, shape_field) in &row.fields {
@@ -943,9 +933,12 @@ impl Checker {
                                     EvaluatedValue::new(child, self.recency_moves.len()),
                                 );
                             }
+                            type_spreads.push(spread);
                         }
                     }
                 }
+                let record_type =
+                    self.record_result_type(&overrides, &type_spreads, receiving, expr.span);
                 values.extend(overrides);
                 let actual = if row_spreads.iter().any(|row| !row.is_closed()) {
                     use crate::sema::model::rows::Row;
@@ -1011,16 +1004,6 @@ impl Checker {
                     }
                 }
                 let node = self.allocate_owned(expr.span, 0, frame.owner);
-                let receiving_fields_complete = structural_labels
-                    .as_ref()
-                    .is_some_and(|labels| labels.iter().all(|name| values.contains_key(name)));
-                if ty.is_none()
-                    && source.is_some()
-                    && explicit_construction
-                    && receiving_fields_complete
-                {
-                    source_handled.received = Some(source_valid);
-                }
                 if !source_valid {
                     frame.return_source_valid = false;
                 }
@@ -1071,6 +1054,15 @@ impl Checker {
                     self.ascribe_signature(held.current_mut(&self.recency_moves), syntax);
                     value = held.into_current(&self.recency_moves);
                 }
+                let packet = self.finish_record_type(
+                    value,
+                    record_type,
+                    expr,
+                    declared_source.as_ref(),
+                    source_valid,
+                );
+                let value = packet.value.clone();
+                source_handled.owned = Some(packet);
                 value
             }
             ExprKind::Field { base, field, safe } => {

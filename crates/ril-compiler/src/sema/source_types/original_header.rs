@@ -20,8 +20,18 @@ mod constructor_instance;
 mod declaration_syntax;
 pub(crate) use constructor_instance::{DeclaredConstructorInstance, constructor_instance};
 
+pub(crate) trait ContextualTypeQueries {
+    fn type_query(
+        &self,
+        syntax: &TypeExpr,
+        lexical: &LexicalBindings,
+        work: &mut WorkLimit,
+    ) -> Result<Option<SourceSchema>, SourceTypesError>;
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct HeaderContext<'a> {
+    pub(crate) queries: Option<&'a dyn ContextualTypeQueries>,
     pub(crate) declarations: &'a BTreeMap<String, TypeDeclaration>,
     pub(crate) program: &'a Program,
     pub(crate) hir: &'a hir::HirProgram,
@@ -873,6 +883,11 @@ impl<'a> Header<'a> {
         if depth >= 64 {
             return Err(SourceTypesError::BudgetExceeded);
         }
+        if let Some(queries) = self.context.queries
+            && let Some(schema) = queries.type_query(syntax, self.context.lexical, work)?
+        {
+            return schema.copy_into(&mut self.builder, work);
+        }
         let node = match &syntax.kind {
             TypeKind::Name { path, arguments } => {
                 work.charge(path.len() + arguments.len())?;
@@ -1404,6 +1419,7 @@ mod tests {
             let declarations = BTreeMap::new();
             let binders = BTreeMap::new();
             let context = HeaderContext {
+                queries: None,
                 functions: &functions,
                 generic_binders: &registry,
                 ..context(&program, &hir, &lexical, &declarations, &binders)
@@ -1437,6 +1453,7 @@ mod tests {
                 original_header(
                     header,
                     HeaderContext {
+                        queries: None,
                         functions: &forged,
                         ..context
                     },
@@ -1472,6 +1489,7 @@ mod tests {
         let header = function.syntax.return_type.as_ref().unwrap();
         let declarations = BTreeMap::new();
         let context = HeaderContext {
+            queries: None,
             functions: &functions,
             generic_binders: &registry,
             ..context(&parsed.program, &hir, &lexical, &declarations, &available)
@@ -1716,6 +1734,7 @@ mod tests {
         static EMPTY: std::sync::OnceLock<BTreeMap<String, crate::sema::GenericBinder>> =
             std::sync::OnceLock::new();
         HeaderContext {
+            queries: None,
             program,
             hir,
             lexical,
@@ -1806,6 +1825,7 @@ mod tests {
         declarations: &'a BTreeMap<String, TypeDeclaration>,
     ) -> HeaderContext<'a> {
         HeaderContext {
+            queries: None,
             program,
             hir,
             lexical,
@@ -1924,6 +1944,7 @@ mod tests {
                 origin,
                 &function.syntax.annotations,
                 HeaderContext {
+                    queries: None,
                     binders: &missing,
                     ..context
                 },
@@ -2054,6 +2075,7 @@ mod tests {
             .identity
             .clone();
         let context = HeaderContext {
+            queries: None,
             functions: &functions,
             generic_binders: &registry,
             ..context(&program, &hir, &lexical, &declarations, &binders)
@@ -2135,6 +2157,7 @@ mod tests {
         let mut shadowed_names = available.clone();
         shadowed_names.insert("T".into(), sibling_identity);
         let context = HeaderContext {
+            queries: None,
             functions: &functions,
             generic_binders: &registry,
             ..context(&program, &hir, &lexical, &declarations, &shadowed_names)
@@ -2193,6 +2216,7 @@ mod tests {
         ));
         let empty = BTreeMap::new();
         let missing = HeaderContext {
+            queries: None,
             generic_binders: &empty,
             ..context
         };
@@ -2231,6 +2255,7 @@ mod tests {
         }
         let declarations = BTreeMap::new();
         let context = HeaderContext {
+            queries: None,
             functions: &functions,
             generic_binders: &registry,
             ..context(&program, &hir, &lexical, &declarations, &available)
@@ -2249,6 +2274,7 @@ mod tests {
                 let baseline = original_header(
                     syntax,
                     HeaderContext {
+                        queries: None,
                         functions: &[],
                         ..context
                     },

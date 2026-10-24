@@ -7,6 +7,9 @@ fn ordered_spreads_and_static_materialization_share_the_record_shape() {
         "tests/conformance/records.ril::ordered-record-members-pointer64",
         "tests/conformance/records.ril::abrupt-record-members-pointer64",
         "tests/conformance/records.ril::static-record-members-pointer64",
+        "tests/conformance/records.ril::row-preservation",
+        "tests/regressions/source-types.ril::type-forwarding",
+        "tests/regressions/source-types.ril::owned-record-types-pointer64",
     ] {
         for layout in ["pointer32", "pointer64"] {
             let program = Session::with_options(
@@ -19,6 +22,32 @@ fn ordered_spreads_and_static_materialization_share_the_record_shape() {
             .verify()
             .unwrap_or_else(|outcome| panic!("{case} {layout}: {outcome:?}"));
             ril_compiler::lower::lower_core(&program).unwrap();
+        }
+    }
+}
+
+#[test]
+fn composed_record_types_do_not_erase_hidden_dimensions() {
+    for name in [
+        "reject-owned-record-spread-dimension",
+        "reject-owned-record-constructor-dimension",
+        "reject-owned-record-typeof-dimension",
+    ] {
+        let case = format!("tests/regressions/source-types.ril::{name}");
+        for layout in ["pointer32", "pointer64"] {
+            let outcome = Session::with_options(
+                ril_test::case_bytes(&case).to_vec(),
+                CheckOptions {
+                    target: layout.into(),
+                    ..Default::default()
+                },
+            )
+            .check();
+            assert!(
+                matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+                if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0301")),
+                "{case} {layout}: {outcome:?}"
+            );
         }
     }
 }

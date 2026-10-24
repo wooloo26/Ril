@@ -10,11 +10,11 @@ use ril_compiler_core::ids::{GenericParamId, StmtId, TypeExprId};
 use std::collections::BTreeMap;
 #[path = "original_header.rs"]
 mod original_header;
-pub(crate) use original_header::{DeclaredConstructorInstance, constructor_instance};
 pub(crate) use original_header::{
-    EffectSource, EffectSourceError, HeaderContext, callable_row_identity, effect_source,
-    elaborate_original_header, key_carrier_source, original_header,
+    ContextualTypeQueries, EffectSource, EffectSourceError, HeaderContext, callable_row_identity,
+    effect_source, elaborate_original_header, key_carrier_source, original_header,
 };
+pub(crate) use original_header::{DeclaredConstructorInstance, constructor_instance};
 
 #[derive(Clone, Copy)]
 struct Alias {
