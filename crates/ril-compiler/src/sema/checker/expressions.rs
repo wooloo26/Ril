@@ -1390,6 +1390,7 @@ impl Checker {
                         source,
                         frame,
                         source_call_event,
+                        source_handled,
                     );
                 }
                 let tag_test = matches!(operator.as_str(), "==" | "!=")
@@ -1511,13 +1512,13 @@ impl Checker {
                         self.transport_value_since(&mut a, fallback_recency);
                         let mut success = self.result_payload(&a, true, expr.span, frame);
                         if *ok != Ty::Unknown {
-                            self.require_type(&recovered, &ok, expr.span);
+                            self.require_type(&recovered.value, &ok, expr.span);
                             success.ty = *ok;
                         }
                         return self.conditional_flow(
                             &before,
                             &success,
-                            &recovered,
+                            &recovered.value,
                             a.result_tag.map(|success| !success),
                             expr.span,
                         );
@@ -1846,9 +1847,14 @@ impl Checker {
                 }
                 value
             }
-            ExprKind::Call { .. } => {
-                self.application_expression(expr, expected, source, frame, source_call_event)
-            }
+            ExprKind::Call { .. } => self.application_expression(
+                expr,
+                expected,
+                source,
+                frame,
+                source_call_event,
+                source_handled,
+            ),
             ExprKind::IfLet {
                 pattern,
                 value,
@@ -2816,13 +2822,27 @@ impl Checker {
         source: Option<&crate::sema::source_reception::Target>,
         frame: &mut Frame,
         source_call_event: &mut Option<super::super::copy_contract::CopyCallEventId>,
+        source_handled: &mut ExpressionResult,
     ) -> Value {
         let Some(application) = crate::hir::application::AstApplication::from_ast(syntax) else {
             self.unsupported(syntax.span, "application has no bounded source structure");
             return self.unit(syntax.span);
         };
-        let (value, event) = self.evaluate_application(&application, expected, source, frame);
+        let (packet, event) = self.evaluate_application(&application, expected, source, frame);
         *source_call_event = Some(event);
+        let value = match self.read_evaluation_packet(&packet, syntax.span) {
+            Ok(value) => value,
+            Err(error) => {
+                self.unsupported(
+                    syntax.span,
+                    format!("application result transport: {error}"),
+                );
+                return Value::scalar(Ty::Unknown, None, CauseId(0));
+            }
+        };
+        if packet.has_captured_source() || !packet.source_valid {
+            source_handled.owned = Some(packet);
+        }
         value
     }
     fn loop_body(

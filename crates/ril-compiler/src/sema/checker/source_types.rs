@@ -477,7 +477,7 @@ impl Checker {
         let has_payload = info.has_payload;
         let mut generics = BTreeSet::new();
         info.owner.generic_names(&mut generics);
-        let template = !generics.is_empty();
+        let template = name == info.tag && !generics.is_empty();
         let admission = (|| {
             let mut work = WorkLimit::new(16384);
             if environment.is_poisoned() {

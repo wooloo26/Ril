@@ -481,6 +481,17 @@ impl EvaluatedValue {
         &self.value
     }
 
+    /// Transfer the value through a call exit while retaining its owned type.
+    /// The transformation supplies the epoch of its resulting heap references.
+    pub(crate) fn transform_value(self, transform: impl FnOnce(Value) -> (Value, usize)) -> Self {
+        let (value, recency) = transform(self.value);
+        Self {
+            value,
+            recency,
+            ..self
+        }
+    }
+
     pub(crate) fn set_current_type(
         &mut self,
         source: CapturedSource,

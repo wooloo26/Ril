@@ -66,6 +66,7 @@ impl Checker {
             }
         };
         self.invoke_packets_from(callee, args, span, frame, origin)
+            .into_current(&self.recency_moves)
     }
 
     pub(super) fn invoke_application_packet(
@@ -75,7 +76,7 @@ impl Checker {
         event: crate::sema::copy_contract::CopyCallEventId,
         span: Span,
         frame: &mut Frame,
-    ) -> Value {
+    ) -> EvaluatedValue {
         self.invoke_packets_from(callee, args, span, frame, EntryOrigin::Application(event))
     }
 
@@ -86,7 +87,7 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
         origin: EntryOrigin,
-    ) -> Value {
+    ) -> EvaluatedValue {
         self.invoke_target_packets_from(callee, args, span, frame, origin, None)
     }
 
@@ -98,18 +99,26 @@ impl Checker {
         frame: &mut Frame,
         origin: EntryOrigin,
         target: Option<&Callable>,
-    ) -> Value {
+    ) -> EvaluatedValue {
         let current = match self.read_evaluation_packet(&callee, span) {
             Ok(value) => value,
             Err(error) => {
                 self.unsupported(span, format!("callee packet admission: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         self.require_recorded_public_call_inputs(&current, span, frame);
         let Some(origin) = self.application_effect.enter_call(origin) else {
             self.unsupported(span, "call entry budget exhausted before invocation");
-            return Value::scalar(Ty::Unknown, None, CauseId(0));
+            return EvaluatedValue::unobserved(
+                Value::scalar(Ty::Unknown, None, CauseId(0)),
+                self.recency_moves.len(),
+                false,
+            );
         };
         let result = self.invoke_packets_unrecorded(callee, args, span, frame, &origin, target);
         self.application_effect.leave_call(&origin);
@@ -123,7 +132,7 @@ impl Checker {
         frame: &mut Frame,
         origin: &crate::sema::application_effect::EntryOrigin,
         target: Option<&Callable>,
-    ) -> Value {
+    ) -> EvaluatedValue {
         // The syntax token belongs to this invocation only. Builtin/closure
         // callbacks and signature probes must not inherit a caller's token.
         let copy_call_event = frame.copy_call_event.take();
@@ -131,14 +140,22 @@ impl Checker {
             Ok(packet) => packet,
             Err(error) => {
                 self.unsupported(span, format!("named callee packet admission: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         let resolved_callee = match self.read_evaluation_packet(&saved_callee, span) {
             Ok(value) => value,
             Err(error) => {
                 self.unsupported(span, format!("callee packet read: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         let callee = &resolved_callee;
@@ -146,7 +163,11 @@ impl Checker {
             Ok(args) => args,
             Err(error) => {
                 self.unsupported(span, format!("input packet read: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         if !callee.callback_parameters.is_empty() {
@@ -170,7 +191,7 @@ impl Checker {
                 "a nullary constructor tag is data and cannot be called",
                 [callee.cause],
             );
-            return self.unit(span);
+            return EvaluatedValue::new(self.unit(span), self.recency_moves.len());
         }
         if matches!(
             self.expanded(&callee.ty, &mut BTreeSet::new()),
@@ -182,10 +203,14 @@ impl Checker {
                 "optional callable requires a proven Some refinement before invocation",
                 [callee.cause],
             );
-            return self.unit(span);
+            return EvaluatedValue::new(self.unit(span), self.recency_moves.len());
         }
         if callee.ty == Ty::Never {
-            return callee.clone();
+            return self
+                .clone_evaluation_packet(&saved_callee, span)
+                .unwrap_or_else(|_| {
+                    EvaluatedValue::unobserved(callee.clone(), self.recency_moves.len(), false)
+                });
         }
         if !matches!(
             self.expanded_at(&callee.ty, span.file),
@@ -198,10 +223,10 @@ impl Checker {
                 "the public value type does not expose a callable representation",
                 [callee.cause],
             );
-            return self.unit(span);
+            return EvaluatedValue::new(self.unit(span), self.recency_moves.len());
         }
         if let Some((_, value, _)) = args.iter().find(|(_, value, _)| value.ty == Ty::Never) {
-            return value.clone();
+            return EvaluatedValue::new(value.clone(), self.recency_moves.len());
         }
         if target.is_none() && self.foreign_callback_depth > 0 && callee.callables.len() > 1 {
             return self.invoke_foreign_target_packets(
@@ -270,7 +295,24 @@ impl Checker {
             self.completed_invocation = None;
             let value = match callable {
                 Callable::Constructor(name) => {
-                    self.invoke_constructor(name, &args, span, copy_call_event, frame)
+                    let value = self.invoke_constructor(name, &args, span, copy_call_event, frame);
+                    let mut packet = EvaluatedValue::new(value, self.recency_moves.len());
+                    if let Some(view) = self.constructors.get(name).and_then(|info| info.source)
+                        && let Err(error) =
+                            packet.set_current_type(super::super::evaluated::CapturedSource::Known(
+                                super::super::evaluated::SourceRef {
+                                    view,
+                                    original: None,
+                                },
+                            ))
+                    {
+                        self.unsupported(
+                            span,
+                            format!("constructor result type is unavailable: {error}"),
+                        );
+                        packet.fail_current_source(error);
+                    }
+                    packet
                 }
                 Callable::Named(..) => {
                     frame.copy_call_event = copy_call_event;
@@ -285,11 +327,15 @@ impl Checker {
                         )
                     } else {
                         self.unsupported(span, "callable origin cloning exhausted its work bound");
-                        Value::scalar(Ty::Unknown, None, CauseId(0))
+                        EvaluatedValue::unobserved(
+                            Value::scalar(Ty::Unknown, None, CauseId(0)),
+                            self.recency_moves.len(),
+                            false,
+                        )
                     }
                 }
                 Callable::Builtin(name) => {
-                    if concurrent::is_builtin(name) {
+                    let value = if concurrent::is_builtin(name) {
                         let mut intrinsic = frame.clone();
                         intrinsic.obligations = Obligations::default();
                         intrinsic.locals.clear();
@@ -322,7 +368,8 @@ impl Checker {
                         value
                     } else {
                         self.transfer_builtin(callee, name, args.clone(), span, frame)
-                    }
+                    };
+                    EvaluatedValue::new(value, self.recency_moves.len())
                 }
                 Callable::Closure(id) => {
                     if let Some(origin) = self.application_effect.snapshot_origin(origin) {
@@ -336,7 +383,11 @@ impl Checker {
                         )
                     } else {
                         self.unsupported(span, "callable origin cloning exhausted its work bound");
-                        Value::scalar(Ty::Unknown, None, CauseId(0))
+                        EvaluatedValue::unobserved(
+                            Value::scalar(Ty::Unknown, None, CauseId(0)),
+                            self.recency_moves.len(),
+                            false,
+                        )
                     }
                 }
                 Callable::Symbolic(index, path) => {
@@ -391,7 +442,12 @@ impl Checker {
                         }
                     }
                     let _ = path;
-                    value
+                    self.project_evaluated_value(
+                        &saved_callee,
+                        super::super::source_types::SourcePath::CallableResult,
+                        value,
+                        span,
+                    )
                 }
             };
             self.restore_foreign_exit_overlays(&overlay, foreign_exit_epoch);
@@ -415,32 +471,49 @@ impl Checker {
                     break;
                 }
             };
-            let value = self.apply_callable_returns(&current_callee, callable, value, span, frame);
-            results.push(EvaluatedValue::new(value, self.recency_moves.len()));
+            let value = value.transform_value(|value| {
+                let value =
+                    self.apply_callable_returns(&current_callee, callable, value, span, frame);
+                (value, self.recency_moves.len())
+            });
+            results.push(value);
         }
         frame.callback_call = previous_callback;
         if results.is_empty() {
             self.error("E0338", span, "value is not callable", [callee.cause]);
-            return Value::scalar(Ty::Unknown, None, callee.cause);
+            return EvaluatedValue::unobserved(
+                Value::scalar(Ty::Unknown, None, callee.cause),
+                self.recency_moves.len(),
+                false,
+            );
         }
-        let mut value = results.remove(0).into_current(&self.recency_moves);
+        let mut result = results.remove(0);
+        if let Err(error) = self.prepare_evaluation_packet(&mut result, span) {
+            result.fail_current_source(error);
+        }
         for other in results {
-            let other = other.into_current(&self.recency_moves);
+            let mut other = other;
+            self.receive_boundary_type(&mut other, &mut result, span);
             let cause = self.cause(
                 CauseKind::BranchJoin,
                 span,
                 "possible callable targets",
-                [value.cause, other.cause],
+                [result.value.cause, other.value.cause],
             );
-            value = value.join(&other, self.choice(), cause);
+            result.value = result.value.join(&other.value, self.choice(), cause);
         }
         let args = match self.entry_values(&argument_packets) {
             Ok(args) => args,
             Err(error) => {
                 self.unsupported(span, format!("final input transport: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
+        result.transform_value(|mut value| {
         let input_pending = args
             .iter()
             .flat_map(|(_, value, _)| self.pending_result_binders(value))
@@ -479,7 +552,8 @@ impl Checker {
             }
         }
         self.remember_constructor_carrier(callee, &value, copy_call_event, frame);
-        value
+        (value, self.recency_moves.len())
+        })
     }
     pub(super) fn invocation_summary(
         &self,
@@ -507,12 +581,16 @@ impl Checker {
         span: Span,
         mut caller: Option<&mut Frame>,
         verifying: bool,
-    ) -> Value {
+    ) -> EvaluatedValue {
         let mut args = match self.entry_values(&input_packets) {
             Ok(args) => args,
             Err(error) => {
                 self.unsupported(span, format!("named formal packet admission: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         let arguments_recency = self.recency_moves.len();
@@ -533,7 +611,11 @@ impl Checker {
         let foreign_exit_epoch = self.explanations.causes.len() as u32;
         if self.call_stack.len() >= 64 {
             self.unsupported(span, "named invocation traversal resource budget exhausted");
-            return Value::scalar(Ty::Unknown, None, CauseId(0));
+            return EvaluatedValue::unobserved(
+                Value::scalar(Ty::Unknown, None, CauseId(0)),
+                self.recency_moves.len(),
+                false,
+            );
         }
         self.check_named_initialization(id);
         let info = self.functions[id].clone();
@@ -676,7 +758,7 @@ impl Checker {
                 self.universal = previous_universal;
                 self.complete_copy_invocation();
                 self.finish_default_invocation();
-                return value;
+                return EvaluatedValue::new(value, self.recency_moves.len());
             }
             self.unsupported(span, "recursive return and heap-shape summary fixed point");
             let ty = function
@@ -687,7 +769,7 @@ impl Checker {
             let value = self.formal_value(ty, id as u32, span, &mut BTreeSet::new());
             self.restore_typing_environment(previous_typing);
             self.universal = previous_universal;
-            return value;
+            return EvaluatedValue::new(value, self.recency_moves.len());
         }
         let env = info.lexical.clone();
         let mut frame = self.frame(env, false);
@@ -770,7 +852,7 @@ impl Checker {
                         self.loop_depth = previous_loop_depth;
                         self.restore_typing_environment(previous_typing);
                         self.universal = previous_universal;
-                        return failed;
+                        return EvaluatedValue::unobserved(failed, self.recency_moves.len(), false);
                     }
                 }
             };
@@ -856,7 +938,7 @@ impl Checker {
                         self.universal = previous_universal;
                         // Admission failure leaves Result duties unresolved;
                         // it supplies neither an inspection nor a return.
-                        return failed;
+                        return EvaluatedValue::unobserved(failed, self.recency_moves.len(), false);
                     }
                 };
                 if !verifying {
@@ -901,7 +983,7 @@ impl Checker {
                 self.loop_depth = previous_loop_depth;
                 self.restore_typing_environment(previous_typing);
                 self.universal = previous_universal;
-                return held.value;
+                return held;
             }
             if mode != param.mode {
                 self.error(
@@ -1136,345 +1218,355 @@ impl Checker {
             }
         }
         self.finish_retained_handlers(retained, &mut frame, &mut result, span);
-        let mut result = result.value;
-        if let Some(expected) = &function.return_type {
-            self.set_contract_environment(&frame.env);
-            if frame.return_source_valid {
-                self.ascribe_signature(&mut result, expected);
-                self.check_storage_shape(&result, expected, &mut frame);
-            }
-            let expected = self.ty(expected);
-            if frame.return_source_valid {
-                self.constrain_collection_type(&result, &expected, function.span);
-            }
-            self.require_type(&result, &expected, function.span);
-            if result.ty != Ty::Never
-                && let Some(boundary) = declared_body_boundary
-            {
-                // A zero-budget/abort path may infer only None's payload hole.
-                // The declared result constrains this function body's answer,
-                // including its retained handler definition, after ordinary
-                // return checking. Nested block answers remain independent.
-                let answer = join_type_holes(
-                    &self.expanded(&result.ty, &mut BTreeSet::new()),
-                    &self.expanded(&expected, &mut BTreeSet::new()),
-                );
-                self.record_handler_answer(boundary, &answer);
-            }
-            let mut result_generics = BTreeSet::new();
-            generic_names(&expected, &mut result_generics);
-            let mut inputs = BTreeSet::new();
-            for parameter in &function.parameters {
-                if let Some(ty) = &parameter.ty {
-                    let ty = self.ty(ty);
-                    generic_names(&ty, &mut inputs);
+        let mut output = result.transform_value(|mut result| {
+            if let Some(expected) = &function.return_type {
+                self.set_contract_environment(&frame.env);
+                if frame.return_source_valid {
+                    self.ascribe_signature(&mut result, expected);
+                    self.check_storage_shape(&result, expected, &mut frame);
                 }
-            }
-            let pending: BTreeSet<_> = missing_inference
-                .iter()
-                .cloned()
-                .chain(
-                    result_generics
-                        .iter()
-                        .filter(|name| binders.contains(*name) && !inputs.contains(*name))
-                        .cloned(),
-                )
-                .collect();
-            if result.ty == Ty::Never && !verifying && !pending.is_empty() {
-                // Abrupt control cannot determine a declaration's unselected
-                // static arguments. Preserve their actual invocation variables
-                // so a context-free receiver still diagnoses E0344.
-                for identity in &pending {
-                    let meta = format!("{identity}:invocation:{}", frame.owner.0);
-                    self.inference_metas.insert(meta.clone());
-                    result.pending_inference.insert(meta);
+                let expected = self.ty(expected);
+                if frame.return_source_valid {
+                    self.constrain_collection_type(&result, &expected, function.span);
                 }
-                result.requires_inference = true;
-            }
-            if result.ty != Ty::Never {
-                result.ty = expected.clone();
-                if !verifying && !pending.is_empty() {
-                    result.pending_inference.extend(pending.iter().cloned());
-                    let instantiated: BTreeMap<_, _> = pending
-                        .iter()
-                        .map(|identity| {
-                            (
-                                identity.clone(),
-                                Ty::Generic(format!("{identity}:invocation:{}", frame.owner.0)),
-                            )
-                        })
-                        .collect();
-                    let selected = super::types::substitute_inferred_type(&expected, &instantiated);
-                    for ty in instantiated.values() {
-                        if let Ty::Generic(identity) = ty {
-                            self.inference_metas.insert(identity.clone());
-                        }
+                self.require_type(&result, &expected, function.span);
+                if result.ty != Ty::Never
+                    && let Some(boundary) = declared_body_boundary
+                {
+                    // A zero-budget/abort path may infer only None's payload hole.
+                    // The declared result constrains this function body's answer,
+                    // including its retained handler definition, after ordinary
+                    // return checking. Nested block answers remain independent.
+                    let answer = join_type_holes(
+                        &self.expanded(&result.ty, &mut BTreeSet::new()),
+                        &self.expanded(&expected, &mut BTreeSet::new()),
+                    );
+                    self.record_handler_answer(boundary, &answer);
+                }
+                let mut result_generics = BTreeSet::new();
+                generic_names(&expected, &mut result_generics);
+                let mut inputs = BTreeSet::new();
+                for parameter in &function.parameters {
+                    if let Some(ty) = &parameter.ty {
+                        let ty = self.ty(ty);
+                        generic_names(&ty, &mut inputs);
                     }
-                    self.contextual_result_inference(&mut result, &selected, function.span);
-                    for (_, meta) in instantiated {
-                        let Ty::Generic(identity) = meta else {
-                            unreachable!()
-                        };
-                        result.pending_inference.insert(identity);
+                }
+                let pending: BTreeSet<_> = missing_inference
+                    .iter()
+                    .cloned()
+                    .chain(
+                        result_generics
+                            .iter()
+                            .filter(|name| binders.contains(*name) && !inputs.contains(*name))
+                            .cloned(),
+                    )
+                    .collect();
+                if result.ty == Ty::Never && !verifying && !pending.is_empty() {
+                    // Abrupt control cannot determine a declaration's unselected
+                    // static arguments. Preserve their actual invocation variables
+                    // so a context-free receiver still diagnoses E0344.
+                    for identity in &pending {
+                        let meta = format!("{identity}:invocation:{}", frame.owner.0);
+                        self.inference_metas.insert(meta.clone());
+                        result.pending_inference.insert(meta);
                     }
                     result.requires_inference = true;
                 }
-            }
-        } else if result.ty != Ty::Unit && result.ty != Ty::Never {
-            self.error(
-                "E0301",
-                function.span,
-                "function without result annotation must return unit",
-                [result.cause],
-            );
-        }
-        let returned_nodes = self.heap.reachable(result.origins.nodes.iter().copied());
-        for (_, argument, _) in &mut args {
-            self.transport_value_since(argument, arguments_recency);
-        }
-        if result.temporary {
-            result.permission = Permission::Read;
-            result.construction = false;
-        }
-        if self.functions.iter().any(|function| {
-            function
-                .environment
-                .is_some_and(|node| returned_nodes.contains(&node))
-                && function
-                    .captures
-                    .iter()
-                    .any(|binding| self.bindings[*binding].value.temporary)
-        }) {
-            self.unsupported(
-                function.span,
-                "escaping named callable cannot retain a temporary parameter loan",
-            );
-        }
-        if self.closures.iter().any(|closure| {
-            returned_nodes.contains(&closure.node)
-                && closure
-                    .captures
-                    .iter()
-                    .any(|binding| self.bindings[*binding].value.temporary)
-        }) {
-            self.unsupported(
-                function.span,
-                "escaping callable cannot retain a temporary parameter loan",
-            );
-        }
-        for (index, param) in function.parameters.iter().enumerate() {
-            if param.mode == ParameterMode::SharedMut
-                && let Some((_, arg, _)) = args.get(index)
-                && !returned_nodes.is_disjoint(&arg.origins.nodes)
-            {
-                frame.obligations.retention = true;
-                result.retention_result = true;
-                for source in &arg.origins.nodes {
-                    let bindings: Vec<_> = frame
-                        .locals
-                        .iter()
-                        .copied()
-                        .filter(|id| {
-                            self.bindings[*id].parameter
-                                && self.bindings[*id].value.origins.nodes.contains(source)
-                        })
-                        .collect();
-                    for binding in bindings {
-                        self.mark_write(binding);
+                if result.ty != Ty::Never {
+                    result.ty = expected.clone();
+                    if !verifying && !pending.is_empty() {
+                        result.pending_inference.extend(pending.iter().cloned());
+                        let instantiated: BTreeMap<_, _> = pending
+                            .iter()
+                            .map(|identity| {
+                                (
+                                    identity.clone(),
+                                    Ty::Generic(format!("{identity}:invocation:{}", frame.owner.0)),
+                                )
+                            })
+                            .collect();
+                        let selected =
+                            super::types::substitute_inferred_type(&expected, &instantiated);
+                        for ty in instantiated.values() {
+                            if let Ty::Generic(identity) = ty {
+                                self.inference_metas.insert(identity.clone());
+                            }
+                        }
+                        self.contextual_result_inference(&mut result, &selected, function.span);
+                        for (_, meta) in instantiated {
+                            let Ty::Generic(identity) = meta else {
+                                unreachable!()
+                            };
+                            result.pending_inference.insert(identity);
+                        }
+                        result.requires_inference = true;
                     }
                 }
-                for source in &arg.sources {
-                    self.mark_write(*source);
+            } else if result.ty != Ty::Unit && result.ty != Ty::Never {
+                self.error(
+                    "E0301",
+                    function.span,
+                    "function without result annotation must return unit",
+                    [result.cause],
+                );
+            }
+            let returned_nodes = self.heap.reachable(result.origins.nodes.iter().copied());
+            for (_, argument, _) in &mut args {
+                self.transport_value_since(argument, arguments_recency);
+            }
+            if result.temporary {
+                result.permission = Permission::Read;
+                result.construction = false;
+            }
+            if self.functions.iter().any(|function| {
+                function
+                    .environment
+                    .is_some_and(|node| returned_nodes.contains(&node))
+                    && function
+                        .captures
+                        .iter()
+                        .any(|binding| self.bindings[*binding].value.temporary)
+            }) {
+                self.unsupported(
+                    function.span,
+                    "escaping named callable cannot retain a temporary parameter loan",
+                );
+            }
+            if self.closures.iter().any(|closure| {
+                returned_nodes.contains(&closure.node)
+                    && closure
+                        .captures
+                        .iter()
+                        .any(|binding| self.bindings[*binding].value.temporary)
+            }) {
+                self.unsupported(
+                    function.span,
+                    "escaping callable cannot retain a temporary parameter loan",
+                );
+            }
+            for (index, param) in function.parameters.iter().enumerate() {
+                if param.mode == ParameterMode::SharedMut
+                    && let Some((_, arg, _)) = args.get(index)
+                    && !returned_nodes.is_disjoint(&arg.origins.nodes)
+                {
+                    frame.obligations.retention = true;
+                    result.retention_result = true;
+                    for source in &arg.origins.nodes {
+                        let bindings: Vec<_> = frame
+                            .locals
+                            .iter()
+                            .copied()
+                            .filter(|id| {
+                                self.bindings[*id].parameter
+                                    && self.bindings[*id].value.origins.nodes.contains(source)
+                            })
+                            .collect();
+                        for binding in bindings {
+                            self.mark_write(binding);
+                        }
+                    }
+                    for source in &arg.sources {
+                        self.mark_write(*source);
+                    }
                 }
             }
-        }
-        self.record_closure_exposure(
-            &result,
-            &frame,
-            super::super::closure_exclusivity::ExposureKind::Returned,
-            span,
-        );
-        self.escape_obligations(&result, &mut frame);
-        self.record_callable_local_effects(false, id, &frame, &result);
-        self.record_retained_handlers(
-            Callable::Named(id, None),
-            &info.handler_context,
-            &frame.obligations.selected_handlers,
-            &result,
-            frame.owner,
-            function.span,
-        );
-        self.record_returned_handler_context(
-            Callable::Named(id, None),
-            &info.handler_context,
-            &result,
-            &frame,
-            span,
-        );
-        frame.obligations.handler_environment |=
-            self.has_retained_handlers(&Callable::Named(id, None));
-        for access in &mut frame.obligations.accesses {
-            access.transport(&self.recency_moves);
-        }
-        self.check_exclusivity(&frame.obligations.accesses, span);
-        if function.body.is_some() {
-            self.check_annotations(
-                function,
+            self.record_closure_exposure(
+                &result,
                 &frame,
-                info.owner,
-                if verifying {
-                    AnnotationCheck::Declaration
-                } else {
-                    AnnotationCheck::Invocation
-                },
+                super::super::closure_exclusivity::ExposureKind::Returned,
+                span,
             );
-        }
-        let summary = self.invocation_summary(id, &frame, &returned_nodes);
-        if verifying {
-            let returned = self.expanded(&result.ty, &mut BTreeSet::new());
-            let declared = self.expanded(
-                frame.expected_return.as_ref().unwrap_or(&Ty::Unit),
-                &mut BTreeSet::new(),
+            self.escape_obligations(&result, &mut frame);
+            self.record_callable_local_effects(false, id, &frame, &result);
+            self.record_retained_handlers(
+                Callable::Named(id, None),
+                &info.handler_context,
+                &frame.obligations.selected_handlers,
+                &result,
+                frame.owner,
+                function.span,
             );
-            self.definition_checks.push(super::super::DefinitionCheck {
-                function: id,
-                span: function.span,
-                declared,
-                returned,
-                invocation: summary.clone(),
-            });
-        }
-        self.record_effect_invocation(&info, span, &summary, verifying, effect_callback_epoch);
-        let summary = self.retain_invocation_summary(summary);
-        self.unwind_foreign_abort_exits(
-            frame.owner,
-            &frame.locals,
-            &local_loans,
-            foreign_exit_epoch,
-        );
-        self.completed_invocation = Some(super::contracts::CompletedInvocation::Recorded(summary));
-        for &binding in &frame.locals {
-            self.check_authority_use(binding);
-            self.bindings[binding].alive = false;
-        }
-        if self.is_private_fresh(&result) {
-            result.construction = true;
-            result.publication = Publication::Unpublished;
-            result.permission = Permission::Write;
-        }
-        self.export_conditional_result_family(&mut result, frame.owner, span);
-        result.through_return = true;
-        result.unsuffixed_numeric = false;
-        result.static_coordinate = None;
-        result.sources.clear();
-        result.cause = self.cause(
-            CauseKind::Call,
-            span,
-            format!("return from {} preserves provenance", function.name),
-            [result.cause],
-        );
-        if let Some(caller) = caller.as_mut() {
-            caller
-                .obligations
-                .copy_boundaries
-                .extend(&frame.obligations.copy_boundaries);
-            caller.obligations.handler_environment |= frame.obligations.handler_environment;
-            caller
-                .obligations
-                .performed_operations
-                .extend(&frame.obligations.performed_operations);
-            caller
-                .obligations
-                .selected_handlers
-                .extend(&frame.obligations.selected_handlers);
-            self.transfer_results(&result, frame.owner, caller.owner);
-            let forwarded_callback = args.iter().any(|(_, value, _)| {
-                value
-                    .callback_parameters
-                    .iter()
-                    .any(|binding| self.bindings[*binding].owner == caller.owner)
-            });
-            for (&binding, &mode) in &frame.obligations.named {
-                if self.bindings[binding].owner == caller.owner
-                    && self.bindings[binding].parameter
-                    && mode != Mode::Read
-                {
-                    caller.obligations.parameter_write = true;
-                }
-                if self.bindings[binding].owner != caller.owner && self.bindings[binding].alive {
-                    caller
-                        .obligations
-                        .named
-                        .entry(binding)
-                        .and_modify(|m| *m = (*m).max(mode))
-                        .or_insert(mode);
-                    if !caller.callback_call
-                        && (!forwarded_callback
-                            || frame.obligations.concrete.contains_key(&binding))
+            self.record_returned_handler_context(
+                Callable::Named(id, None),
+                &info.handler_context,
+                &result,
+                &frame,
+                span,
+            );
+            frame.obligations.handler_environment |=
+                self.has_retained_handlers(&Callable::Named(id, None));
+            for access in &mut frame.obligations.accesses {
+                access.transport(&self.recency_moves);
+            }
+            self.check_exclusivity(&frame.obligations.accesses, span);
+            if function.body.is_some() {
+                self.check_annotations(
+                    function,
+                    &frame,
+                    info.owner,
+                    if verifying {
+                        AnnotationCheck::Declaration
+                    } else {
+                        AnnotationCheck::Invocation
+                    },
+                );
+            }
+            let summary = self.invocation_summary(id, &frame, &returned_nodes);
+            if verifying {
+                let returned = self.expanded(&result.ty, &mut BTreeSet::new());
+                let declared = self.expanded(
+                    frame.expected_return.as_ref().unwrap_or(&Ty::Unit),
+                    &mut BTreeSet::new(),
+                );
+                self.definition_checks.push(super::super::DefinitionCheck {
+                    function: id,
+                    span: function.span,
+                    declared,
+                    returned,
+                    invocation: summary.clone(),
+                });
+            }
+            self.record_effect_invocation(&info, span, &summary, verifying, effect_callback_epoch);
+            let summary = self.retain_invocation_summary(summary);
+            self.unwind_foreign_abort_exits(
+                frame.owner,
+                &frame.locals,
+                &local_loans,
+                foreign_exit_epoch,
+            );
+            self.completed_invocation =
+                Some(super::contracts::CompletedInvocation::Recorded(summary));
+            for &binding in &frame.locals {
+                self.check_authority_use(binding);
+                self.bindings[binding].alive = false;
+            }
+            if self.is_private_fresh(&result) {
+                result.construction = true;
+                result.publication = Publication::Unpublished;
+                result.permission = Permission::Write;
+            }
+            self.export_conditional_result_family(&mut result, frame.owner, span);
+            result.through_return = true;
+            result.unsuffixed_numeric = false;
+            result.static_coordinate = None;
+            result.sources.clear();
+            result.cause = self.cause(
+                CauseKind::Call,
+                span,
+                format!("return from {} preserves provenance", function.name),
+                [result.cause],
+            );
+            if let Some(caller) = caller.as_mut() {
+                caller
+                    .obligations
+                    .copy_boundaries
+                    .extend(&frame.obligations.copy_boundaries);
+                caller.obligations.handler_environment |= frame.obligations.handler_environment;
+                caller
+                    .obligations
+                    .performed_operations
+                    .extend(&frame.obligations.performed_operations);
+                caller
+                    .obligations
+                    .selected_handlers
+                    .extend(&frame.obligations.selected_handlers);
+                self.transfer_results(&result, frame.owner, caller.owner);
+                let forwarded_callback = args.iter().any(|(_, value, _)| {
+                    value
+                        .callback_parameters
+                        .iter()
+                        .any(|binding| self.bindings[*binding].owner == caller.owner)
+                });
+                for (&binding, &mode) in &frame.obligations.named {
+                    if self.bindings[binding].owner == caller.owner
+                        && self.bindings[binding].parameter
+                        && mode != Mode::Read
+                    {
+                        caller.obligations.parameter_write = true;
+                    }
+                    if self.bindings[binding].owner != caller.owner && self.bindings[binding].alive
                     {
                         caller
                             .obligations
-                            .concrete
+                            .named
                             .entry(binding)
                             .and_modify(|m| *m = (*m).max(mode))
                             .or_insert(mode);
+                        if !caller.callback_call
+                            && (!forwarded_callback
+                                || frame.obligations.concrete.contains_key(&binding))
+                        {
+                            caller
+                                .obligations
+                                .concrete
+                                .entry(binding)
+                                .and_modify(|m| *m = (*m).max(mode))
+                                .or_insert(mode);
+                        }
+                    }
+                }
+                caller
+                    .obligations
+                    .effects
+                    .extend(frame.obligations.effects.iter().cloned());
+                caller.obligations.symbolic |= frame.obligations.symbolic;
+                caller
+                    .obligations
+                    .symbolic_uses
+                    .extend(&frame.obligations.symbolic_uses);
+                if !caller.callback_call {
+                    caller.obligations.concrete_effects.extend(
+                        if forwarded_callback {
+                            frame.obligations.concrete_effects.iter()
+                        } else {
+                            frame.obligations.effects.iter()
+                        }
+                        .cloned(),
+                    );
+                }
+                // Access through a callee's loan is a suspended forwarding path,
+                // while ambient paths retain their own participant identities.
+                for mut access in frame.obligations.accesses.iter().cloned() {
+                    access.participants = super::recursive_calls::normalize_participants(
+                        &access.participants,
+                        &local_loans,
+                    );
+                    caller.obligations.accesses.push(access);
+                }
+                for &source in args
+                    .iter()
+                    .filter(|(mode, _, _)| *mode != ParameterMode::Read)
+                    .flat_map(|(_, v, _)| v.sources.iter())
+                {
+                    if self.bindings[source].parameter && self.bindings[source].write_used {
+                        caller.obligations.parameter_write = true;
                     }
                 }
             }
-            caller
-                .obligations
-                .effects
-                .extend(frame.obligations.effects.iter().cloned());
-            caller.obligations.symbolic |= frame.obligations.symbolic;
-            caller
-                .obligations
-                .symbolic_uses
-                .extend(&frame.obligations.symbolic_uses);
-            if !caller.callback_call {
-                caller.obligations.concrete_effects.extend(
-                    if forwarded_callback {
-                        frame.obligations.concrete_effects.iter()
-                    } else {
-                        frame.obligations.effects.iter()
-                    }
-                    .cloned(),
-                );
+            if caller.is_none() {
+                self.transfer_results(&result, frame.owner, ScopeId(u32::MAX));
             }
-            // Access through a callee's loan is a suspended forwarding path,
-            // while ambient paths retain their own participant identities.
-            for mut access in frame.obligations.accesses.iter().cloned() {
-                access.participants = super::recursive_calls::normalize_participants(
-                    &access.participants,
-                    &local_loans,
-                );
-                caller.obligations.accesses.push(access);
-            }
-            for &source in args
-                .iter()
-                .filter(|(mode, _, _)| *mode != ParameterMode::Read)
-                .flat_map(|(_, v, _)| v.sources.iter())
-            {
-                if self.bindings[source].parameter && self.bindings[source].write_used {
-                    caller.obligations.parameter_write = true;
-                }
-            }
+            self.end_invocation_loans(&mut result, &frame, &local_loans, span);
+            self.call_stack.pop();
+            result.participants =
+                super::recursive_calls::normalize_participants(&result.participants, &local_loans);
+            self.loop_depth = previous_loop_depth;
+            self.restore_typing_environment(previous_typing);
+            self.universal = previous_universal;
+            let _ = (loan_origins, verifying);
+            result.unsuffixed_numeric = false;
+            result.static_coordinate = None;
+            self.complete_copy_invocation();
+            self.finish_default_invocation();
+            (result, self.recency_moves.len())
+        });
+        if output.source_valid
+            && let Some(target) = &frozen_return_source
+        {
+            self.record_received_type(&mut output, target, span);
         }
-        if caller.is_none() {
-            self.transfer_results(&result, frame.owner, ScopeId(u32::MAX));
-        }
-        self.end_invocation_loans(&mut result, &frame, &local_loans, span);
-        self.call_stack.pop();
-        result.participants =
-            super::recursive_calls::normalize_participants(&result.participants, &local_loans);
-        self.loop_depth = previous_loop_depth;
-        self.restore_typing_environment(previous_typing);
-        self.universal = previous_universal;
-        let _ = (loan_origins, verifying);
-        result.unsuffixed_numeric = false;
-        result.static_coordinate = None;
-        self.complete_copy_invocation();
-        self.finish_default_invocation();
-        result
+        output
     }
     /// Select each binder once for the whole invocation. A later argument is
     /// checked against that selection; it cannot independently rename T.
@@ -1774,12 +1866,16 @@ impl Checker {
         span: Span,
         caller: &mut Frame,
         contextual_return_source: Option<source_reception::Target>,
-    ) -> Value {
+    ) -> EvaluatedValue {
         let args = match self.entry_values(input_packets) {
             Ok(args) => args,
             Err(error) => {
                 self.unsupported(span, format!("closure formal packet admission: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         let arguments_recency = self.recency_moves.len();
@@ -1789,7 +1885,11 @@ impl Checker {
                 span,
                 "anonymous invocation traversal resource budget exhausted",
             );
-            return Value::scalar(Ty::Unknown, None, CauseId(0));
+            return EvaluatedValue::unobserved(
+                Value::scalar(Ty::Unknown, None, CauseId(0)),
+                self.recency_moves.len(),
+                false,
+            );
         }
         let closure = self.closures[id].clone();
         let previous_typing = self.capture_typing_environment();
@@ -1859,7 +1959,7 @@ impl Checker {
                         }
                         self.loop_depth = previous_loop_depth;
                         self.restore_typing_environment(previous_typing);
-                        return failed;
+                        return EvaluatedValue::unobserved(failed, self.recency_moves.len(), false);
                     }
                 }
             };
@@ -2042,192 +2142,204 @@ impl Checker {
         let result_type = self.owned_result_type(&result, type_work.work());
         let returned_work = self.application_effect.return_work(type_work);
         let result_type = result_type.and_then(|result| returned_work.map(|()| result));
-        let mut result = result.value;
-        self.flush_handler_obligations(&mut frame);
-        if result.temporary {
-            result.permission = Permission::Read;
-            result.construction = false;
-        }
-        let returned_nodes = self.heap.reachable(result.origins.nodes.iter().copied());
-        for (parameter, (_, argument, _)) in closure.parameters.iter().zip(args) {
-            if parameter.mode != ParameterMode::SharedMut {
-                continue;
+        let mut output = result.transform_value(|mut result| {
+            self.flush_handler_obligations(&mut frame);
+            if result.temporary {
+                result.permission = Permission::Read;
+                result.construction = false;
             }
-            let moves = &self.recency_moves[arguments_recency..];
-            let cost = argument
-                .origins
-                .nodes
-                .len()
-                .checked_mul(moves.len().saturating_add(1));
-            if !cost.is_some_and(|cost| self.application_effect.admit(cost)) {
-                self.unsupported(span, "retained input transport exhausted its work bound");
-                break;
-            }
-            let mut origins = argument.origins.nodes.clone();
-            for &(recent, older) in moves {
-                if origins.remove(&recent) {
-                    origins.insert(older);
+            let returned_nodes = self.heap.reachable(result.origins.nodes.iter().copied());
+            for (parameter, (_, argument, _)) in closure.parameters.iter().zip(args) {
+                if parameter.mode != ParameterMode::SharedMut {
+                    continue;
                 }
-            }
-            if !returned_nodes.is_disjoint(&origins) {
-                result.retention_result = true;
-                frame.obligations.retention = true;
-                for binding in &frame.locals {
-                    if self.bindings[*binding].parameter
-                        && !self.bindings[*binding]
-                            .value
-                            .origins
-                            .nodes
-                            .is_disjoint(&origins)
-                    {
-                        self.mark_write(*binding);
+                let moves = &self.recency_moves[arguments_recency..];
+                let cost = argument
+                    .origins
+                    .nodes
+                    .len()
+                    .checked_mul(moves.len().saturating_add(1));
+                if !cost.is_some_and(|cost| self.application_effect.admit(cost)) {
+                    self.unsupported(span, "retained input transport exhausted its work bound");
+                    break;
+                }
+                let mut origins = argument.origins.nodes.clone();
+                for &(recent, older) in moves {
+                    if origins.remove(&recent) {
+                        origins.insert(older);
                     }
                 }
-                for source in &argument.sources {
-                    self.mark_write(*source);
+                if !returned_nodes.is_disjoint(&origins) {
+                    result.retention_result = true;
+                    frame.obligations.retention = true;
+                    for binding in &frame.locals {
+                        if self.bindings[*binding].parameter
+                            && !self.bindings[*binding]
+                                .value
+                                .origins
+                                .nodes
+                                .is_disjoint(&origins)
+                        {
+                            self.mark_write(*binding);
+                        }
+                    }
+                    for source in &argument.sources {
+                        self.mark_write(*source);
+                    }
                 }
             }
-        }
-        self.record_closure_exposure(
-            &result,
-            &frame,
-            super::super::closure_exclusivity::ExposureKind::Returned,
-            span,
-        );
-        self.escape_obligations(&result, &mut frame);
-        self.record_callable_local_effects(true, id, &frame, &result);
-        self.check_deep_uncertainty(&result, span);
-        if !immediate_scope {
-            self.record_retained_handlers(
-                Callable::Closure(id),
-                &closure.handler_context,
-                &frame.obligations.selected_handlers,
-                &result,
-                frame.owner,
-                span,
-            );
-            self.record_returned_handler_context(
-                Callable::Closure(id),
-                &closure.handler_context,
+            self.record_closure_exposure(
                 &result,
                 &frame,
+                super::super::closure_exclusivity::ExposureKind::Returned,
                 span,
             );
-        }
-        frame.obligations.handler_environment |= self.has_retained_handlers(&Callable::Closure(id));
-        self.check_lambda_contract(id, &frame, &mut result, span);
-        self.remember_closure_source(id, result_type, &frame);
-        // Check before local loans are projected back to their caller roots.
-        // Captured paths and separate parameters remain independent access
-        // participants during this invocation, as for named callables.
-        // A signature/latent probe has fresh hypothetical parameters; it keeps
-        // these accesses as obligations but has no actual argument relation.
-        let probe = self
-            .closure_invocation_stack
-            .last()
-            .is_some_and(|id| self.closure_invocations[id.0 as usize].probe);
-        self.record_closure_exclusivity(id, &frame, span, probe);
-        self.unwind_foreign_abort_exits(
-            frame.owner,
-            &frame.locals,
-            &local_loans,
-            foreign_exit_epoch,
-        );
-        let summary = self.invocation_summary(id, &frame, &returned_nodes);
-        let summary = self.retain_invocation_summary(summary);
-        self.completed_invocation = Some(super::contracts::CompletedInvocation::Recorded(summary));
-        self.export_conditional_result_family(&mut result, frame.owner, span);
-        self.end_invocation_loans(&mut result, &frame, &local_loans, span);
-        self.transfer_results(&result, frame.owner, caller.owner);
-        let formal_environment = closure.captures.iter().any(|binding| {
-            self.bindings[*binding]
-                .value
-                .callback_parameters
-                .iter()
-                .any(|parameter| self.bindings[*parameter].owner == caller.owner)
-        });
-        for (&binding, &mode) in &frame.obligations.named {
-            if self.bindings[binding].owner == caller.owner
-                && self.bindings[binding].parameter
-                && mode != Mode::Read
-            {
-                caller.obligations.parameter_write = true;
+            self.escape_obligations(&result, &mut frame);
+            self.record_callable_local_effects(true, id, &frame, &result);
+            self.check_deep_uncertainty(&result, span);
+            if !immediate_scope {
+                self.record_retained_handlers(
+                    Callable::Closure(id),
+                    &closure.handler_context,
+                    &frame.obligations.selected_handlers,
+                    &result,
+                    frame.owner,
+                    span,
+                );
+                self.record_returned_handler_context(
+                    Callable::Closure(id),
+                    &closure.handler_context,
+                    &result,
+                    &frame,
+                    span,
+                );
             }
-            if self.bindings[binding].owner != caller.owner && self.bindings[binding].alive {
-                caller
-                    .obligations
-                    .named
-                    .entry(binding)
-                    .and_modify(|m| *m = (*m).max(mode))
-                    .or_insert(mode);
-                if !caller.callback_call
-                    && (!formal_environment || frame.obligations.concrete.contains_key(&binding))
+            frame.obligations.handler_environment |=
+                self.has_retained_handlers(&Callable::Closure(id));
+            self.check_lambda_contract(id, &frame, &mut result, span);
+            self.remember_closure_source(id, result_type, &frame);
+            // Check before local loans are projected back to their caller roots.
+            // Captured paths and separate parameters remain independent access
+            // participants during this invocation, as for named callables.
+            // A signature/latent probe has fresh hypothetical parameters; it keeps
+            // these accesses as obligations but has no actual argument relation.
+            let probe = self
+                .closure_invocation_stack
+                .last()
+                .is_some_and(|id| self.closure_invocations[id.0 as usize].probe);
+            self.record_closure_exclusivity(id, &frame, span, probe);
+            self.unwind_foreign_abort_exits(
+                frame.owner,
+                &frame.locals,
+                &local_loans,
+                foreign_exit_epoch,
+            );
+            let summary = self.invocation_summary(id, &frame, &returned_nodes);
+            let summary = self.retain_invocation_summary(summary);
+            self.completed_invocation =
+                Some(super::contracts::CompletedInvocation::Recorded(summary));
+            self.export_conditional_result_family(&mut result, frame.owner, span);
+            self.end_invocation_loans(&mut result, &frame, &local_loans, span);
+            self.transfer_results(&result, frame.owner, caller.owner);
+            let formal_environment = closure.captures.iter().any(|binding| {
+                self.bindings[*binding]
+                    .value
+                    .callback_parameters
+                    .iter()
+                    .any(|parameter| self.bindings[*parameter].owner == caller.owner)
+            });
+            for (&binding, &mode) in &frame.obligations.named {
+                if self.bindings[binding].owner == caller.owner
+                    && self.bindings[binding].parameter
+                    && mode != Mode::Read
                 {
+                    caller.obligations.parameter_write = true;
+                }
+                if self.bindings[binding].owner != caller.owner && self.bindings[binding].alive {
                     caller
                         .obligations
-                        .concrete
+                        .named
                         .entry(binding)
                         .and_modify(|m| *m = (*m).max(mode))
                         .or_insert(mode);
-                    if frame.obligations.direct.contains_key(&binding) {
+                    if !caller.callback_call
+                        && (!formal_environment
+                            || frame.obligations.concrete.contains_key(&binding))
+                    {
                         caller
                             .obligations
-                            .direct
+                            .concrete
                             .entry(binding)
                             .and_modify(|m| *m = (*m).max(mode))
                             .or_insert(mode);
+                        if frame.obligations.direct.contains_key(&binding) {
+                            caller
+                                .obligations
+                                .direct
+                                .entry(binding)
+                                .and_modify(|m| *m = (*m).max(mode))
+                                .or_insert(mode);
+                        }
                     }
                 }
             }
+            if !caller.callback_call {
+                caller.obligations.concrete_effects.extend(
+                    if formal_environment {
+                        frame.obligations.concrete_effects.iter()
+                    } else {
+                        frame.obligations.effects.iter()
+                    }
+                    .cloned(),
+                );
+            }
+            caller
+                .obligations
+                .copy_boundaries
+                .extend(&frame.obligations.copy_boundaries);
+            caller.obligations.handler_environment |= frame.obligations.handler_environment;
+            caller.obligations.effects.extend(frame.obligations.effects);
+            caller
+                .obligations
+                .performed_operations
+                .extend(frame.obligations.performed_operations);
+            caller
+                .obligations
+                .selected_handlers
+                .extend(frame.obligations.selected_handlers);
+            caller.obligations.symbolic |= frame.obligations.symbolic;
+            caller
+                .obligations
+                .symbolic_uses
+                .extend(&frame.obligations.symbolic_uses);
+            for mut access in frame.obligations.accesses {
+                access.participants = super::recursive_calls::normalize_participants(
+                    &access.participants,
+                    &local_loans,
+                );
+                caller.obligations.accesses.push(access);
+            }
+            for binding in frame.locals {
+                self.check_authority_use(binding);
+                self.bindings[binding].alive = false;
+            }
+            self.loop_depth = previous_loop_depth;
+            result.sources.clear();
+            result.participants =
+                super::recursive_calls::normalize_participants(&result.participants, &local_loans);
+            result.through_return = true;
+            result.unsuffixed_numeric = false;
+            result.static_coordinate = None;
+            self.restore_typing_environment(previous_typing);
+            self.complete_closure_invocation();
+            (result, self.recency_moves.len())
+        });
+        if output.source_valid
+            && let Some(target) = &frozen_return_source
+        {
+            self.record_received_type(&mut output, target, span);
         }
-        if !caller.callback_call {
-            caller.obligations.concrete_effects.extend(
-                if formal_environment {
-                    frame.obligations.concrete_effects.iter()
-                } else {
-                    frame.obligations.effects.iter()
-                }
-                .cloned(),
-            );
-        }
-        caller
-            .obligations
-            .copy_boundaries
-            .extend(&frame.obligations.copy_boundaries);
-        caller.obligations.handler_environment |= frame.obligations.handler_environment;
-        caller.obligations.effects.extend(frame.obligations.effects);
-        caller
-            .obligations
-            .performed_operations
-            .extend(frame.obligations.performed_operations);
-        caller
-            .obligations
-            .selected_handlers
-            .extend(frame.obligations.selected_handlers);
-        caller.obligations.symbolic |= frame.obligations.symbolic;
-        caller
-            .obligations
-            .symbolic_uses
-            .extend(&frame.obligations.symbolic_uses);
-        for mut access in frame.obligations.accesses {
-            access.participants =
-                super::recursive_calls::normalize_participants(&access.participants, &local_loans);
-            caller.obligations.accesses.push(access);
-        }
-        for binding in frame.locals {
-            self.check_authority_use(binding);
-            self.bindings[binding].alive = false;
-        }
-        self.loop_depth = previous_loop_depth;
-        result.sources.clear();
-        result.participants =
-            super::recursive_calls::normalize_participants(&result.participants, &local_loans);
-        result.through_return = true;
-        result.unsuffixed_numeric = false;
-        result.static_coordinate = None;
-        self.restore_typing_environment(previous_typing);
-        self.complete_closure_invocation();
-        result
+        output
     }
     fn record_static_key_parameter(
         &mut self,

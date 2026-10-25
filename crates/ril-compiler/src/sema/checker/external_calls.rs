@@ -10,16 +10,20 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
         origin: &crate::sema::application_effect::EntryOrigin,
-    ) -> Value {
+    ) -> EvaluatedValue {
         let before = self.snapshot_flow();
-        let mut alternative: Option<(Value, flow::FlowSnapshot)> = None;
+        let mut alternative: Option<(EvaluatedValue, flow::FlowSnapshot)> = None;
         for callable in &callee.value().callables {
             self.restore_definition_state(&before);
             let Some(origin) = self.application_effect.snapshot_origin(origin) else {
                 self.unsupported(span, "foreign target origin exhausted its work bound");
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             };
-            let value = self.invoke_target_packets_from(
+            let mut value = self.invoke_target_packets_from(
                 callee.clone(),
                 args.clone(),
                 span,
@@ -27,8 +31,10 @@ impl Checker {
                 origin,
                 Some(callable),
             );
-            let value = if let Some((previous, state)) = alternative {
-                self.branch_flow(&before, &state, &previous, &value, span)
+            let value = if let Some((mut previous, state)) = alternative {
+                self.receive_boundary_type(&mut value, &mut previous, span);
+                let joined = self.branch_flow(&before, &state, &previous.value, &value.value, span);
+                previous.transform_value(|_| (joined, self.recency_moves.len()))
             } else {
                 value
             };

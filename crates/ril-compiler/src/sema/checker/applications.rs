@@ -58,7 +58,7 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&crate::sema::source_reception::Target>,
         frame: &mut Frame,
-    ) -> (Value, CopyCallEventId) {
+    ) -> (EvaluatedValue, CopyCallEventId) {
         let event = self.reserve_copy_call_event(application.root, frame);
         if !self
             .application_effect
@@ -68,7 +68,14 @@ impl Checker {
                 application.span,
                 "application scope-context admission exhausted",
             );
-            return (Value::scalar(Ty::Unknown, None, CauseId(0)), event);
+            return (
+                EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                ),
+                event,
+            );
         }
         let original_scope_arguments = self.immediate_scope_arguments.clone();
         let preparation = self.call_arguments.len();
@@ -89,7 +96,14 @@ impl Checker {
                     application.span,
                     format!("application packet could not be transported: {error}"),
                 );
-                (Value::scalar(Ty::Unknown, None, CauseId(0)), event)
+                (
+                    EvaluatedValue::unobserved(
+                        Value::scalar(Ty::Unknown, None, CauseId(0)),
+                        self.recency_moves.len(),
+                        false,
+                    ),
+                    event,
+                )
             }
         }
     }
@@ -101,7 +115,7 @@ impl Checker {
         source: Option<&crate::sema::source_reception::Target>,
         frame: &mut Frame,
         event: CopyCallEventId,
-    ) -> Result<(Value, CopyCallEventId), SourceTypesError> {
+    ) -> Result<(EvaluatedValue, CopyCallEventId), SourceTypesError> {
         let mut site = ApplicationSite {
             event,
             preparation: self.call_arguments.len(),
@@ -144,7 +158,10 @@ impl Checker {
                 application.span,
                 "application cursor has no original HIR root",
             );
-            return Ok((self.unit(application.span), event));
+            return Ok((
+                EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                event,
+            ));
         };
         let mut cursor = match self.application_effect.with_work(|work| {
             crate::hir::execution::ApplicationCursor::new(&self.semantic_hir, root, work)
@@ -152,7 +169,10 @@ impl Checker {
             Ok(cursor) => cursor,
             Err(error) => {
                 self.unsupported(application.span, format!("application cursor: {error}"));
-                return Ok((self.unit(application.span), event));
+                return Ok((
+                    EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                    event,
+                ));
             }
         };
         loop {
@@ -164,7 +184,10 @@ impl Checker {
                 Ok(None) => break,
                 Err(error) => {
                     self.unsupported(application.span, format!("application cursor: {error}"));
-                    return Ok((self.unit(application.span), event));
+                    return Ok((
+                        EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                        event,
+                    ));
                 }
             };
             let role = child.role;
@@ -176,7 +199,10 @@ impl Checker {
                     syntax.span,
                     "application AST child differs from its original HIR cursor",
                 );
-                return Ok((self.unit(application.span), event));
+                return Ok((
+                    EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                    event,
+                ));
             }
             let packet = if role == EvaluationRole::Callee {
                 nullary_none = match &syntax.kind {
@@ -414,7 +440,7 @@ impl Checker {
                         format!("application preview cursor: {error}"),
                     ),
                 }
-                return Ok((self.read_evaluation_packet(&packet, syntax.span)?, event));
+                return Ok((self.clone_evaluation_packet(&packet, syntax.span)?, event));
             }
             if let Err(error) = self
                 .application_effect
@@ -424,7 +450,10 @@ impl Checker {
                     application.span,
                     format!("application child completion: {error}"),
                 );
-                return Ok((self.unit(application.span), event));
+                return Ok((
+                    EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                    event,
+                ));
             }
         }
         self.immediate_scope_arguments = original_scope_arguments;
@@ -433,7 +462,10 @@ impl Checker {
                 application.span,
                 "application has no actual callee evaluation",
             );
-            return Ok((self.unit(application.span), event));
+            return Ok((
+                EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                event,
+            ));
         };
         let callee = self.read_evaluation_packet(&callee_packet, application.span)?;
         if let Some(id) = generic {
@@ -480,7 +512,10 @@ impl Checker {
         if !self.call_arguments[site.preparation].slots_bound {
             self.numeric.applications.remove(&event);
             self.window_future_expressions(&[], frame);
-            return Ok((self.unit(application.span), event));
+            return Ok((
+                EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                event,
+            ));
         }
         self.solve_numeric_slots(event, &mut slots)?;
         // Non-generic interfaces and builtins may have no prepared numeric row.
@@ -557,7 +592,10 @@ impl Checker {
                 "the None tag is data and cannot be called",
                 [callee.cause],
             );
-            return Ok((self.unit(application.span), event));
+            return Ok((
+                EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                event,
+            ));
         }
         let asserted = !callee.callables.is_empty() && callee.callables.iter().all(|target|
             matches!(target, Callable::Builtin(name) if matches!(name.as_str(), "assert" | "Prelude::assert")));
@@ -573,7 +611,10 @@ impl Checker {
             .with_work(|work| cursor.reduce(work))
         {
             self.unsupported(application.span, format!("application reduction: {error}"));
-            return Ok((self.unit(application.span), event));
+            return Ok((
+                EvaluatedValue::new(self.unit(application.span), self.recency_moves.len()),
+                event,
+            ));
         }
         let previous_call = frame.copy_call_event.replace(event);
         let output = self.invoke_application_packet(
@@ -584,7 +625,7 @@ impl Checker {
             frame,
         );
         frame.copy_call_event = previous_call;
-        if output.ty != Ty::Never
+        if output.value.ty != Ty::Never
             && let Some(condition) = condition
         {
             self.inspect_condition_value(&condition, true, application.span);

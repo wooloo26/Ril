@@ -22,7 +22,7 @@ impl Checker {
         span: Span,
         caller: &mut Frame,
         origin: EntryOrigin,
-    ) -> Value {
+    ) -> EvaluatedValue {
         self.invoke_recorded_closure(
             id,
             args,
@@ -62,6 +62,7 @@ impl Checker {
             },
             EntryOrigin::DeclarationProbe,
         )
+        .into_current(&self.recency_moves)
     }
 
     pub(super) fn invoke_closure_signature(
@@ -90,6 +91,7 @@ impl Checker {
             },
             EntryOrigin::SignatureProbe(source),
         )
+        .into_current(&self.recency_moves)
     }
 
     fn invoke_recorded_closure(
@@ -100,7 +102,7 @@ impl Checker {
         site: Span,
         context: ClosureCallContext<'_>,
         origin: EntryOrigin,
-    ) -> Value {
+    ) -> EvaluatedValue {
         let ClosureCallContext {
             caller,
             mut result_source,
@@ -113,20 +115,32 @@ impl Checker {
             .is_some_and(|parent| self.closure_invocations[parent.0 as usize].probe);
         if !self.application_effect.admit(1 + args.len()) {
             self.unsupported(site, "callable input recording exhausted its work bound");
-            return Value::scalar(Ty::Unknown, None, CauseId(0));
+            return EvaluatedValue::unobserved(
+                Value::scalar(Ty::Unknown, None, CauseId(0)),
+                self.recency_moves.len(),
+                false,
+            );
         }
         let arguments = match self.freeze_entry_arguments(&args, &origin) {
             Ok(arguments) => arguments,
             Err(error) => {
                 self.unsupported(site, format!("closure entry admission: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         let callee = match self.freeze_entry_callee(callee, site) {
             Ok(callee) => callee,
             Err(error) => {
                 self.unsupported(site, format!("closure entry callee admission: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         if result_source.is_none()
@@ -142,7 +156,11 @@ impl Checker {
                 Ok(target) => result_source = target,
                 Err(error) => {
                     self.unsupported(site, format!("closure callee result Source: {error}"));
-                    return Value::scalar(Ty::Unknown, None, CauseId(0));
+                    return EvaluatedValue::unobserved(
+                        Value::scalar(Ty::Unknown, None, CauseId(0)),
+                        self.recency_moves.len(),
+                        false,
+                    );
                 }
             }
         }

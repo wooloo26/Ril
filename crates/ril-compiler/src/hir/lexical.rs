@@ -18,7 +18,7 @@ pub struct LexicalBindings {
     names: BTreeMap<ExprId, NameBinding>,
     types: BTreeMap<TypeExprId, TypeNameBinding>,
     pattern_names: BTreeMap<PatternId, NameBinding>,
-    pattern_constructors: BTreeMap<PatternId, bool>,
+    pattern_constructors: BTreeMap<PatternId, TypeNameBinding>,
     generated_roots: usize,
     scopes: Vec<Scope>,
 }
@@ -67,6 +67,15 @@ impl LexicalBindings {
         pattern: PatternId,
         work: &mut usize,
     ) -> Result<bool, LowerError> {
+        self.pattern_constructor_binding(pattern, work)
+            .map(|binding| binding == TypeNameBinding::Unbound)
+    }
+
+    pub fn pattern_constructor_binding(
+        &self,
+        pattern: PatternId,
+        work: &mut usize,
+    ) -> Result<TypeNameBinding, LowerError> {
         charge(work, lookup_cost(self.pattern_constructors.len()))?;
         self.pattern_constructors
             .get(&pattern)
@@ -657,10 +666,10 @@ impl Builder<'_, '_> {
             h::PatternKind::Constructor {
                 path, arguments, ..
             } => {
-                let unshadowed = if let Some(root) = path.first() {
-                    self.type_name(scope, root)? == TypeNameBinding::Unbound
+                let binding = if let Some(root) = path.first() {
+                    self.type_name(scope, root)?
                 } else {
-                    false
+                    TypeNameBinding::Other
                 };
                 charge(
                     self.work,
@@ -669,7 +678,7 @@ impl Builder<'_, '_> {
                 if self
                     .index
                     .pattern_constructors
-                    .insert(id, unshadowed)
+                    .insert(id, binding)
                     .is_some()
                 {
                     return Err(LowerError::Correspondence);

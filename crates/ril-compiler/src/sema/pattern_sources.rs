@@ -1,7 +1,7 @@
 //! Pattern type selection is reconstructed from original syntax and lexical
 //! resolution. Runtime lengths and inferred erased shapes are not inputs.
 use crate::hir::{
-    lexical::LexicalBindings,
+    lexical::{LexicalBindings, TypeNameBinding},
     nodes::{HirProgram, PatternKind},
 };
 use crate::sema::{
@@ -118,13 +118,27 @@ fn constructor_payload(
         work.text(name)?;
     }
     let mut remaining = work.remaining();
-    let unshadowed = lexical.pattern_constructor_unshadowed(pattern, &mut remaining);
+    let binding = lexical.pattern_constructor_binding(pattern, &mut remaining);
     work.charge(work.remaining() - remaining)?;
-    let unshadowed = unshadowed.map_err(|error| match error {
+    let binding = binding.map_err(|error| match error {
         crate::hir::nodes::LowerError::Budget(_) => Error::BudgetExceeded,
         _ => Error::MissingNode,
     })?;
-    if !unshadowed {
+    let name = path.join("::");
+    if let TypeNameBinding::Declaration(declaration) = binding {
+        return match crate::sema::source_types::declarations::constructor_payload(
+            source,
+            &name,
+            declaration,
+            hir,
+            lexical,
+            work,
+        ) {
+            Err(Error::NeedsStaticElaboration) => Ok(None),
+            result => result,
+        };
+    }
+    if binding != TypeNameBinding::Unbound {
         return Ok(None);
     }
     let tag = match path.as_slice() {
@@ -143,7 +157,6 @@ fn constructor_payload(
     }
 
     work.charge(1 + constructors.len().checked_ilog2().unwrap_or(0) as usize)?;
-    let name = path.join("::");
     let Some(constructor) = constructors.get(&name) else {
         return Ok(None);
     };

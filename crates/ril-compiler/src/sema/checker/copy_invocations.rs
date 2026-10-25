@@ -282,6 +282,7 @@ impl Checker {
             caller,
             origin,
         )
+        .into_current(&self.recency_moves)
     }
 
     pub(super) fn invoke_named_packets_from(
@@ -292,11 +293,15 @@ impl Checker {
         span: Span,
         mut caller: Option<&mut Frame>,
         origin: crate::sema::application_effect::EntryOrigin,
-    ) -> Value {
+    ) -> EvaluatedValue {
         use crate::sema::application_effect::{CallableEntry, EntryOrigin};
         let Callable::Named(id, selected) = target_value else {
             self.unsupported(span, "named entry requires a named callable target");
-            return Value::scalar(Ty::Unknown, None, CauseId(0));
+            return EvaluatedValue::unobserved(
+                Value::scalar(Ty::Unknown, None, CauseId(0)),
+                self.recency_moves.len(),
+                false,
+            );
         };
         let id = *id;
         let verifying = origin == EntryOrigin::DeclarationProbe;
@@ -305,7 +310,11 @@ impl Checker {
                 span,
                 "named callable input recording exhausted its work bound",
             );
-            return Value::scalar(Ty::Unknown, None, CauseId(0));
+            return EvaluatedValue::unobserved(
+                Value::scalar(Ty::Unknown, None, CauseId(0)),
+                self.recency_moves.len(),
+                false,
+            );
         }
         let supplied_event = caller
             .as_deref_mut()
@@ -331,14 +340,22 @@ impl Checker {
             Ok(arguments) => arguments,
             Err(error) => {
                 self.unsupported(span, format!("named entry graph admission: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         let callee = match self.freeze_entry_callee(callee, span) {
             Ok(callee) => callee,
             Err(error) => {
                 self.unsupported(span, format!("named entry callee admission: {error}"));
-                return Value::scalar(Ty::Unknown, None, CauseId(0));
+                return EvaluatedValue::unobserved(
+                    Value::scalar(Ty::Unknown, None, CauseId(0)),
+                    self.recency_moves.len(),
+                    false,
+                );
             }
         };
         for argument in arguments.iter() {
@@ -376,8 +393,8 @@ impl Checker {
         let boundary_start = self.copy_boundaries.len();
         let result = self.invoke_named_unrecorded(id, arguments, span, caller, verifying);
         assert_eq!(self.copy_invocation_stack.pop(), Some(instance));
-        let returned = self.copy_value_snapshot(&result);
-        let dependencies = self.pending_copy_dependencies(&result);
+        let returned = self.copy_value_snapshot(&result.value);
+        let dependencies = self.pending_copy_dependencies(&result.value);
         let executed: Vec<_> = self.copy_boundaries[boundary_start..]
             .iter()
             .filter(|boundary| {

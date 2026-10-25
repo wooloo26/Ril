@@ -101,6 +101,82 @@ pub(crate) fn resolve_schema(
     SourceSchema::frozen_view(&graph.types, graph.root, source.original(), work)
 }
 
+/// Select a declared payload using the subject's actual argument nodes. The
+/// same resolver expands aliases and substitutes declaration-owned binders;
+/// no erased value shape or reconstructed type expression participates.
+pub(crate) fn constructor_payload(
+    source: &SourceSchema,
+    tag: &str,
+    expected: StmtId,
+    hir: &HirProgram,
+    lexical: &LexicalBindings,
+    work: &mut WorkLimit,
+) -> Result<Option<SourceSchema>, SourceTypesError> {
+    let (types, root) = source.graph();
+    let root = types.unalias(root, work)?;
+    let SourceNode::OpaqueName {
+        declaration: Some(NominalDeclaration::Hir(id)),
+        name,
+        arguments,
+    } = types.get(root)?
+    else {
+        return Ok(None);
+    };
+    if *id != expected {
+        return Err(SourceTypesError::Unresolved);
+    }
+    work.charge(1 + arguments.len())?;
+    work.text(tag)?;
+    let original = hir.statement(*id).ok_or(SourceTypesError::MissingNode)?;
+    let hir::StmtKind::Type {
+        name: declared,
+        generics,
+        value,
+        variants,
+        opaque,
+        nominal,
+        ..
+    } = &original.kind
+    else {
+        return Err(SourceTypesError::Unresolved);
+    };
+    if *opaque || name != declared {
+        return Err(SourceTypesError::Unresolved);
+    }
+    let payload = if *nominal && tag == declared {
+        *value
+    } else {
+        work.charge(variants.len())?;
+        let Some(variant) = variants
+            .iter()
+            .find(|variant| format!("{declared}::{}", variant.name) == tag)
+        else {
+            return Ok(None);
+        };
+        if !variant.generics.is_empty() || variant.result.is_some() {
+            return Ok(None);
+        }
+        variant.payload
+    };
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    let mut resolver = Resolve::new(hir, work)?;
+    resolver.lexical = Some(lexical);
+    let actual = arguments
+        .iter()
+        .map(|argument| resolver.copy(types, *argument, work, 0))
+        .collect::<Result<Vec<_>, _>>()?;
+    resolver.substitutions = resolver.declaration_arguments(*id, generics, &actual, work)?;
+    let root = resolver.ty(payload, work, 0)?;
+    let graph = resolver.freeze(root, work)?;
+    let schema = SourceSchema::frozen_view(&graph.types, graph.root, Some(payload), work)?;
+    if schema.requires_declaration_environment(work)? {
+        return Err(SourceTypesError::Unresolved);
+    }
+    Ok(Some(schema))
+}
+
 pub(crate) fn construction_schema(
     source: ril_compiler_core::ids::ExprId,
     hir: &HirProgram,
@@ -279,6 +355,52 @@ impl Resolve<'_> {
         result.map(Some).map_err(lexical_error)
     }
 
+    fn declaration_arguments(
+        &self,
+        declaration: StmtId,
+        generics: &[GenericParamId],
+        arguments: &[SourceTypeId],
+        work: &mut WorkLimit,
+    ) -> Result<BTreeMap<GenericParamId, SourceTypeId>, SourceTypesError> {
+        if generics.len() != arguments.len() {
+            return Err(SourceTypesError::NeedsStaticElaboration);
+        }
+        work.charge(self.substitutions.len() + generics.len())?;
+        let mut substitutions = self.substitutions.clone();
+        for (parameter, argument) in generics.iter().zip(arguments) {
+            let generic = self
+                .hir
+                .generic(*parameter)
+                .ok_or(SourceTypesError::MissingNode)?;
+            if generic.info.owner != hir::LexicalOwner::Declaration(declaration) {
+                return Err(SourceTypesError::Unresolved);
+            }
+            if let Some(bound) = generic.bound {
+                let kind = &self
+                    .hir
+                    .type_expression(bound)
+                    .ok_or(SourceTypesError::MissingNode)?
+                    .kind;
+                let hir::TypeKind::Name { path, arguments } = kind else {
+                    return Err(SourceTypesError::NeedsStaticElaboration);
+                };
+                work.charge(path.len() + arguments.len())?;
+                for part in path {
+                    work.text(part)?;
+                }
+                if path.len() != 1
+                    || path[0] != "Type"
+                    || !arguments.is_empty()
+                    || self.type_binding(bound, work)? != Some(TypeNameBinding::Unbound)
+                {
+                    return Err(SourceTypesError::NeedsStaticElaboration);
+                }
+            }
+            substitutions.insert(*parameter, *argument);
+        }
+        Ok(substitutions)
+    }
+
     fn declared_type(
         &mut self,
         declaration: StmtId,
@@ -319,39 +441,7 @@ impl Resolve<'_> {
             );
         }
         let value = value.ok_or(SourceTypesError::Unresolved)?;
-        work.charge(self.substitutions.len() + generics.len())?;
-        let mut substitutions = self.substitutions.clone();
-        for (parameter, argument) in generics.iter().zip(arguments) {
-            let generic = self
-                .hir
-                .generic(*parameter)
-                .ok_or(SourceTypesError::MissingNode)?;
-            if generic.info.owner != hir::LexicalOwner::Declaration(declaration) {
-                return Err(SourceTypesError::Unresolved);
-            }
-            if let Some(bound) = generic.bound {
-                let kind = &self
-                    .hir
-                    .type_expression(bound)
-                    .ok_or(SourceTypesError::MissingNode)?
-                    .kind;
-                let hir::TypeKind::Name { path, arguments } = kind else {
-                    return Err(SourceTypesError::NeedsStaticElaboration);
-                };
-                work.charge(path.len() + arguments.len())?;
-                for part in path {
-                    work.text(part)?;
-                }
-                if path.len() != 1
-                    || path[0] != "Type"
-                    || !arguments.is_empty()
-                    || self.type_binding(bound, work)? != Some(TypeNameBinding::Unbound)
-                {
-                    return Err(SourceTypesError::NeedsStaticElaboration);
-                }
-            }
-            substitutions.insert(*parameter, *argument);
-        }
+        let substitutions = self.declaration_arguments(declaration, generics, arguments, work)?;
         work.charge(substitutions.len())?;
         let scope: TypeScope = substitutions
             .iter()
