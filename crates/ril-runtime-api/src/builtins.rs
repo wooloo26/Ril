@@ -2,6 +2,10 @@
 //! availability contract, separate from the source standard-library type rules.
 
 pub const OPERATIONS: &[&str] = &[
+    "\0ril.control.parallel_run",
+    "\0ril.control.branch_rethrow",
+    "\0ril.control.branch_rank",
+    "\0ril.control.branch_with_index",
     "\0ril.storage.sqrt_f32",
     "\0ril.storage.sqrt_f64",
     "\0ril.storage.instant_parts",
@@ -106,15 +110,6 @@ pub const OPERATIONS: &[&str] = &[
     "Channel::detach",
     "Channel::attach",
     "Channel::close",
-    "Parallel::map",
-    "Parallel::map_bounded",
-    "Parallel::find",
-    "Parallel::first",
-    "Parallel::any",
-    "Parallel::fold",
-    "Parallel::join",
-    "Parallel::join3",
-    "Parallel::for_each",
 ];
 
 pub const CONSTANTS: &[&str] = &[
@@ -181,7 +176,8 @@ pub fn requires_native_step(name: &str) -> bool {
     let name = canonical_builtin(name).unwrap_or(name);
     matches!(
         name,
-        "\0ril.foreign.invoke"
+        "\0ril.control.parallel_run"
+            | "\0ril.foreign.invoke"
             | "Concurrent::scope"
             | "Concurrent::fork"
             | "Concurrent::join"
@@ -191,15 +187,6 @@ pub fn requires_native_step(name: &str) -> bool {
             | "Channel::detach"
             | "Channel::attach"
             | "Channel::close"
-            | "Parallel::map"
-            | "Parallel::map_bounded"
-            | "Parallel::find"
-            | "Parallel::first"
-            | "Parallel::any"
-            | "Parallel::fold"
-            | "Parallel::join"
-            | "Parallel::join3"
-            | "Parallel::for_each"
             | "Time::sleep"
             | "Random::entropy"
             | "Io::stdin_read"
@@ -255,15 +242,7 @@ mod tests {
             "Channel::bounded",
             "Channel::__bounded_0_1_4294967295",
             "Channel::recv",
-            "Parallel::map",
-            "Parallel::map_bounded",
-            "Parallel::find",
-            "Parallel::first",
-            "Parallel::any",
-            "Parallel::fold",
-            "Parallel::join",
-            "Parallel::join3",
-            "Parallel::for_each",
+            "\0ril.control.parallel_run",
         ] {
             assert!(requires_native_step(name));
         }
@@ -273,7 +252,6 @@ mod tests {
             "join",
             "User::Parallel::map",
             "User::Io::read_buffered",
-            "Parallel::unknown",
             "User::Concurrent::scope",
             "Channel::__bounded_1_2",
             "Channel::__bounded_1_2_3_4",
@@ -322,5 +300,20 @@ mod tests {
         ] {
             assert!(!supported(name));
         }
+    }
+    #[test]
+    fn parallel_algorithms_have_no_native_library_fallback() {
+        for name in [
+            "Parallel::map",
+            "Parallel::find",
+            "Parallel::fold",
+            "Parallel::join",
+            "Parallel::for_each",
+        ] {
+            assert!(!supported(name));
+            assert!(!requires_native_step(name));
+        }
+        assert!(supported("\0ril.control.parallel_run"));
+        assert!(requires_native_step("\0ril.control.parallel_run"));
     }
 }

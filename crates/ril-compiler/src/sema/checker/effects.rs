@@ -567,18 +567,6 @@ impl Checker {
             });
         }
     }
-    pub(super) fn selected_handler_bodies(&self, selected: &BTreeSet<usize>) -> Vec<(Env, Expr)> {
-        selected
-            .iter()
-            .flat_map(|id| {
-                let definition = &self.handler_definitions[*id];
-                definition
-                    .arms
-                    .values()
-                    .map(|arm| (definition.lexical.clone(), arm.body.clone()))
-            })
-            .collect()
-    }
     pub(super) fn selected_handler_arms(
         &self,
         selected: &BTreeSet<usize>,

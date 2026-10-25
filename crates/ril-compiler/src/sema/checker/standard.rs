@@ -18,7 +18,6 @@ mod temporal;
 
 pub(super) fn is_builtin(name: &str) -> bool {
     super::concurrent::is_builtin(name)
-        || super::parallel::is_builtin(name)
         || simple_signature(name).is_some()
         || collections::is_collection_builtin(name)
         || binary::is_binary_builtin(name)
@@ -84,12 +83,6 @@ pub(super) fn storage_callable(name: &str) -> bool {
 pub(super) fn builtin_callable_signature(name: &str, span: Span) -> Option<(Ty, Vec<Parameter>)> {
     if let Some(signature) = intrinsics::callable_signature(name, span) {
         return Some(signature);
-    }
-    if let Some(parameters) = super::parallel_signatures::parameters(name, span) {
-        return Some((
-            Ty::Callable(vec![Ty::Unknown; parameters.len()], Box::new(Ty::Unknown)),
-            parameters,
-        ));
     }
     let (inputs, result) = match name {
         "Io::read_buffered_at" => (
@@ -365,13 +358,12 @@ impl Checker {
     /// declared Source view is installed only after that implementation.
     pub(super) fn transfer_builtin(
         &mut self,
-        callee: &Value,
         name: &str,
         args: Vec<(ParameterMode, Value, Span)>,
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        let mut value = match self.standard_typed_builtin(callee, name, &args, span, frame) {
+        let mut value = match self.standard_typed_builtin(name, &args, span, frame) {
             Some(value) => value,
             None => self.builtin(name, args, span, frame),
         };
@@ -381,7 +373,6 @@ impl Checker {
 
     pub(super) fn standard_typed_builtin(
         &mut self,
-        callee: &Value,
         name: &str,
         args: &[(ParameterMode, Value, Span)],
         span: Span,
@@ -392,9 +383,6 @@ impl Checker {
         }
         if let Some(value) = self.standard_intrinsic_builtin(name, args, span, frame) {
             return Some(value);
-        }
-        if super::parallel::is_builtin(name) {
-            return Some(self.parallel_typed_builtin(callee, name, args, span, frame));
         }
         if let Some(value) = self.standard_process_builtin(name, args, span, frame) {
             return Some(value);
@@ -434,9 +422,6 @@ impl Checker {
             return;
         }
         if self.external_generic(value, arguments, span) {
-            return;
-        }
-        if self.parallel_generic(value, arguments, span) {
             return;
         }
         if self.concurrent_generic(value, arguments, span) {
@@ -498,9 +483,6 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Option<Value> {
-        if let Some(value) = self.parallel_builtin(name, args, span, frame) {
-            return Some(value);
-        }
         if let Some(value) = self.standard_intrinsic_builtin(name, args, span, frame) {
             return Some(value);
         }

@@ -6,7 +6,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use ril_runtime_api::abi::{BinaryOp, OutcomeTag};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeError {
     pub tag: OutcomeTag,
     pub message: String,
@@ -18,6 +18,15 @@ pub struct RuntimeError {
 }
 
 impl RuntimeError {
+    pub(crate) fn internal_fault(&self) -> Option<&Self> {
+        if self.tag == OutcomeTag::InternalFault {
+            return Some(self);
+        }
+        self.primary
+            .as_deref()
+            .and_then(Self::internal_fault)
+            .or_else(|| self.cleanup.as_deref().and_then(Self::internal_fault))
+    }
     pub(crate) fn cancelled() -> Self {
         Self {
             tag: OutcomeTag::Cancelled,
@@ -1008,6 +1017,7 @@ impl Runtime {
             Object::ReadPosition(_) => "<read position>".into(),
             Object::CallableIdentity(_) => "<callable identity>".into(),
             Object::ReadGuard(_) => "<read guard>".into(),
+            Object::BranchFault(_) => "<branch fault>".into(),
             Object::Array(values) | Object::Tuple(values) => {
                 let values = values
                     .iter()
@@ -1102,6 +1112,9 @@ impl Runtime {
         let name = name.strip_prefix("Prelude::").unwrap_or(name);
         let name = ril_runtime_api::builtins::canonical_builtin(name).unwrap_or(name);
         let args = self.sequence(arguments)?;
+        if name.starts_with("\0ril.control.branch_") {
+            return self.branch_primitive(name, &args);
+        }
         if name.starts_with("Process::") {
             return self.process_builtin(name, &args);
         }

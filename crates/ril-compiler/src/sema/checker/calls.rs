@@ -357,8 +357,7 @@ impl Checker {
                         intrinsic.obligations = Obligations::default();
                         intrinsic.locals.clear();
                         intrinsic.returned.clear();
-                        let value =
-                            self.transfer_builtin(callee, name, args.clone(), span, &mut intrinsic);
+                        let value = self.transfer_builtin(name, args.clone(), span, &mut intrinsic);
                         self.complete_intrinsic_summary(&intrinsic);
                         if frame.callback_call {
                             intrinsic.obligations.concrete_effects.clear();
@@ -367,7 +366,7 @@ impl Checker {
                         frame.obligations.include(&intrinsic.obligations, true);
                         value
                     } else {
-                        self.transfer_builtin(callee, name, args.clone(), span, frame)
+                        self.transfer_builtin(name, args.clone(), span, frame)
                     };
                     EvaluatedValue::new(value, self.recency_moves.len())
                 }

@@ -288,7 +288,7 @@ impl Checker {
             }
             let diagnostics = self.diagnostics.len();
             let unsupported = self.unsupported.len();
-            self.transfer_builtin(value, name, arguments, span, &mut context);
+            self.transfer_builtin(name, arguments, span, &mut context);
             if self.unsupported.len() != unsupported
                 || self.diagnostics[diagnostics..]
                     .iter()
@@ -1001,7 +1001,7 @@ impl Checker {
                         || (standard::storage_callable(name) && value.signature.is_some()) =>
                 {
                     if self
-                        .standard_typed_builtin(value, name, &arguments, syntax.span, &mut context)
+                        .standard_typed_builtin(name, &arguments, syntax.span, &mut context)
                         .is_none()
                     {
                         self.builtin(name, arguments.clone(), syntax.span, &mut context);

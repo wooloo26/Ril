@@ -401,16 +401,20 @@ pub(crate) fn choose_fault(
     earlier: Option<RuntimeError>,
     later: Option<RuntimeError>,
 ) -> Option<RuntimeError> {
-    match (earlier, later) {
+    let selected = match (earlier, later) {
         (Some(a), Some(b)) => Some(if fault_rank(&b) > fault_rank(&a) {
             b
         } else {
             a
         }),
         (a, b) => a.or(b),
-    }
+    };
+    selected.map(|error| error.internal_fault().cloned().unwrap_or(error))
 }
 pub(crate) fn fault_rank(error: &RuntimeError) -> u8 {
+    if error.internal_fault().is_some() {
+        return 4;
+    }
     match error.tag {
         OutcomeTag::InternalFault => 4,
         OutcomeTag::DoubleFault => 3,

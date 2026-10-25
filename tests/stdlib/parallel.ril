@@ -12,6 +12,77 @@ pub fn test_decisive_result_suppresses_right_fault() {
 --@ end-file
 --@ end-case
 
+--@ case: decisive-result-suppresses-right-double-fault
+--@ mode: run-pass
+--@ spec: STD#result-order-and-failures
+--@ entry: test_decisive_result_suppresses_right_double_fault
+--@ file: right-double-fault.ril
+use ril/parallel
+type Guard = { on_close: fn() -> () }
+
+pub fn test_decisive_result_suppresses_right_double_fault() {
+    let found = Parallel::find([0, 1], \index -> {
+        if index == 0 { return true }
+        let scoped resource = Guard.{ on_close: \-> panic("right cleanup") }
+        panic("right body")
+    })
+    assert(found == Some(0))
+}
+--@ end-file
+--@ end-case
+
+--@ case: fold-fault-source-index
+--@ mode: run-pass
+--@ spec: STD#fold-results
+--@ entry: test_fold_fault_source_index
+--@ file: fold-fault-source-index.ril
+use ril/parallel
+use ril/concurrent::{scope, TaskFault}
+
+pub fn test_fold_fault_source_index() @Concurrent {
+    let mut data: []int = []
+    for 0..130 as index { Array::push(mut data, index) }
+    let input = clone_immut(data)
+    let result = scope \mut tasks -> {
+        tasks.fork(\-> Parallel::fold(input, \-> 0,
+            \sum, item -> { if item == 65 { panic("fold local") }; sum + item },
+            \left, right -> left + right))
+        Ok()
+    }
+    match result {
+        Err(TaskFault::Panicked(info)) -> assert(info.index == Some(65)),
+        _ -> panic("expected indexed fold fault"),
+    }
+}
+--@ end-file
+--@ end-case
+
+--@ case: independent-fault-precedence
+--@ mode: run-pass
+--@ spec: STD#mutation-and-concurrency-limits
+--@ entry: test_independent_fault_precedence
+--@ file: independent-fault-precedence.ril
+use ril/parallel
+use ril/concurrent::{scope, TaskFault}
+type Guard = { on_close: fn() -> () }
+
+pub fn test_independent_fault_precedence() @Concurrent {
+    let result = scope \mut tasks -> {
+        tasks.fork(\-> Parallel::join3(
+            \-> panic("first panic"),
+            \-> { let scoped resource = Guard.{ on_close: \-> panic("second cleanup") }; panic("second body") },
+            \-> { let scoped resource = Guard.{ on_close: \-> panic("third cleanup") }; panic("third body") },
+        ))
+        Ok()
+    }
+    match result {
+        Err(TaskFault::DoubleFaultFatal(info)) -> assert(info.cleanup.message == "second cleanup"),
+        _ -> panic("expected earlier double fault"),
+    }
+}
+--@ end-file
+--@ end-case
+
 --@ case: disjoint-writes
 --@ mode: run-pass
 --@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives

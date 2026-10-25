@@ -154,15 +154,26 @@ duplicate source trees and historical verification reports.
   removed, along with the replaced variant/order/resource/stream checker
   simulations, static Array/Map algorithms and native array/variant callbacks,
   heap transactions, buffered transfers, codecs, hashing and path algorithms.
-  Runtime ABI is 9. Reader identity/reservation/cleanup remains a small kernel
+  Runtime ABI is 10. Reader identity/reservation/cleanup remains a small kernel
   contract; ordinary source owns all buffered byte/progress state.
   Audit remaining bodyless declarations and scalar/host boundaries together.
   Deque uses two balanced arrays for amortized constant-time ends; builder uses
   nonempty immutable chunks and constructs stable text snapshots in ordinary
   source. Environment enumeration sorting and process command/status wrappers
-  are ordinary source as well. Finish parallel branch-fault capture/arbitration
-  and explicit scoped fork/join declarations, then remove their runtime library
-  jobs and remaining catalog-only interfaces.
+  are ordinary source as well. Parallel grouping (64 items), ordered outcomes,
+  independent-fault precedence and joins are ordinary source. The runtime only
+  executes bounded independent batches and transports their original faults;
+  map/find/fold jobs and public Parallel entry points have been deleted.
+  Complete the shared primitive contracts for branch capture, parent loans,
+  no live authority escaping and callback effects/termination. Preserve pure
+  collection input immutability even for empty inputs. Finish explicit scoped
+  fork/join declarations and the remaining catalog-only interfaces.
+  The old Parallel checker simulation, synthetic signatures and callback proof
+  table are removed. `parallel_recency` integration cases currently stop at
+  E0902 for unbound primitive declarations; their acceptance and alias-rejection
+  expectations still require the common declaration/constraint/flow path.
+  Native CPS selection and managed-entry validation now use the runtime API's
+  single primitive calling-convention contract.
   A bodyless declaration is not evidence that an operation is a necessary
   primitive or is implemented. Bind genuine storage/host/scheduling primitives
   to declaration identities, complete opaque representations and native data
@@ -212,6 +223,12 @@ Run the string/Unicode corpus after regeneration.
   and effects even when a cache hit skips the operation. Enforce those interface
   requirements without fabricating callback execution, Result production or
   inspection. Runtime access permits last only for the actual scoped invocation.
+- Private independent-branch outcomes retain completed panic, cancellation and
+  double-fault data, including original locations and both unwind causes. Library
+  source selects and rethrows the existing fault; selecting a double fault still
+  fatally fails its owner as specified. Host/internal failures and transient
+  unfinished unwinds cannot become suppressible outcomes. This kernel transport
+  does not add a public catch operation or relax Parallel's admission rules.
 
 - Generic structural equality has a conditional applicability requirement. A
   declaration probe retains equality on a Type parameter without assuming that

@@ -111,19 +111,7 @@ fn concurrency_values_seed_callers_without_user_effects() {
         "Channel::detach",
         "Channel::attach",
         "Channel::close",
-        "Parallel::map",
-        "Parallel::map_bounded",
-        "Parallel::find",
-        "Parallel::first",
-        "Parallel::any",
-        "Parallel::fold",
-        "Parallel::join",
-        "Parallel::join3",
-        "Parallel::for_each",
-        "Io::read_buffered",
-        "Io::read_buffered_at",
-        "Io::write_buffered",
-        "Io::flush",
+        "\0ril.control.parallel_run",
     ] {
         let program = core::Program {
             functions: vec![

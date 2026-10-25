@@ -233,21 +233,6 @@ fn diagnostic(code: &str, span: Span, message: &str) -> Diagnostic {
 
 fn standard_termination(name: &str) -> Option<Judgment> {
     let name = name.strip_prefix("Prelude::").unwrap_or(name);
-    let parallel = match name {
-        "Parallel::map" | "Parallel::find" | "Parallel::first" | "Parallel::any"
-        | "Parallel::for_each" => Some(vec![1]),
-        "Parallel::map_bounded" => Some(vec![2]),
-        "Parallel::fold" => Some(vec![1, 2, 3]),
-        "Parallel::join" => Some(vec![0, 1]),
-        "Parallel::join3" => Some(vec![0, 1, 2]),
-        _ => None,
-    };
-    if let Some(callbacks) = parallel {
-        return Some(Judgment {
-            callable_parameters: callbacks.into_iter().collect(),
-            ..Default::default()
-        });
-    }
     let callback = match name {
         "Array::map"
         | "Array::filter"
@@ -472,54 +457,6 @@ struct Visitor<'a> {
     unsupported: Vec<crate::sema::UnsupportedFeature>,
 }
 impl Visitor<'_> {
-    fn standard_argument<'a>(
-        &self,
-        callee: &Expr,
-        arguments: &'a [crate::hir::application::Operand<'_, &Expr>],
-        index: usize,
-    ) -> Option<&'a Expr> {
-        fn name(
-            visitor: &Visitor<'_>,
-            expression: &Expr,
-            seen: &mut BTreeSet<String>,
-        ) -> Option<String> {
-            match &expression.kind {
-                ExprKind::Name(label) if !visitor.parameters.contains_key(label) => {
-                    if let Some(alias) = visitor.aliases.get(label) {
-                        if !seen.insert(label.clone()) {
-                            return None;
-                        }
-                        name(visitor, alias, seen)
-                    } else if !visitor.functions.contains_key(label) {
-                        Some(label.clone())
-                    } else {
-                        None
-                    }
-                }
-                ExprKind::Path(path) => Some(path.join("::")),
-                ExprKind::Generic { base, .. } => name(visitor, base, seen),
-                _ => None,
-            }
-        }
-        let labels = name(self, callee, &mut BTreeSet::new())
-            .and_then(|name| crate::sema::parallel_parameter_labels(&name));
-        let Some(labels) = labels else {
-            return arguments.get(index).map(|argument| argument.expression);
-        };
-        let mut ordered = vec![None; labels.len()];
-        for argument in arguments {
-            let slot = if let Some(label) = argument.label {
-                labels.iter().position(|parameter| *parameter == label)
-            } else {
-                ordered.iter().position(Option::is_none)
-            }?;
-            if ordered[slot].is_some() {
-                return None;
-            }
-            ordered[slot] = Some(argument.expression);
-        }
-        ordered.get(index).copied().flatten()
-    }
     fn standard_callable(
         &self,
         expression: &Expr,
@@ -915,7 +852,7 @@ impl Visitor<'_> {
         }
         if let Some(called) = standard {
             for index in called.callable_parameters {
-                if let Some(argument) = self.standard_argument(callee, arguments, index) {
+                if let Some(argument) = arguments.get(index).map(|argument| argument.expression) {
                     result.include(self.callable(argument, &mut BTreeSet::new()));
                 } else {
                     result.unresolved = true;

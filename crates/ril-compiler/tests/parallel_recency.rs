@@ -73,14 +73,3 @@ fn join3_keeps_prior_accesses_across_multiple_allocations_and_nested_callbacks()
         );
     }
 }
-
-#[test]
-fn verified_and_core_accesses_keep_historical_origins_after_later_allocations() {
-    let source = format!(
-        "{PREFIX}fn example(){{for [0,1] as index{{let mut shared=cell();let _=Parallel::join(\\->{{shared.value+=1}},\\->{{shared.other+=1}});let unused=cell()}}}}"
-    );
-    let verified = Session::new(source.into_bytes()).verify().unwrap();
-    let _core = ril_compiler::lower::lower_core(&verified).unwrap();
-    let facts = verified.facts();
-    assert!(!facts.parallel_boundaries.is_empty());
-}

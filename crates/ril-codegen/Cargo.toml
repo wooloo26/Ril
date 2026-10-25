@@ -11,5 +11,6 @@ workspace = true
 [dependencies]
 ril-compiler-core.workspace = true
 ril-ir.workspace = true
+ril-runtime-api.workspace = true
 serde.workspace = true
 thiserror.workspace = true

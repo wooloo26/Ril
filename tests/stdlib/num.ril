@@ -35,7 +35,7 @@ pub fn test_decimal_boundaries() {
     assert(Num::parse_f64("1e+") is Err(Num::NumError::InvalidSyntax))
     assert(Num::format_f64(100000000000000000000.0f64) == "100000000000000000000.0")
     assert(Num::format_f64(1000000000000000000000.0f64) == "1e21")
-    for [0.1f64, 0.000001f64, 0.0000001f64, 1.7976931348623157e308f64, 5e-324f64] as value {
+    for [0.1f64, 0.000001f64, 0.0000001f64, 1.7976931348623157e308f64, 5.0e-324f64] as value {
         let restored = Num::parse_f64(Num::format_f64(value)) ?? panic("round trip")
         assert(restored == value)
     }

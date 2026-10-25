@@ -1,5 +1,4 @@
 use ril/os
-use ril/path
 use ril/io
 use ril/file
 use ril/num
@@ -8,6 +7,7 @@ pub type NativeString
 pub type Path
 pub type Identity
 pub type ReadGuard
+pub type BranchFault
 
 pub fn set_new<T>() -> Set<T>
 pub fn environment_free<F>(value: F) -> F
@@ -29,7 +29,7 @@ pub fn native_units(value: NativeString) -> []u16
 pub fn native_windows(value: NativeString) -> bool
 pub fn path_from_native(value: NativeString) -> Path
 pub fn path_native(value: Path) -> NativeString
-pub fn file_read_dir(path: Path::Path) -> Result<[](Os::NativeString, File::FileKind), Io::IoError> @Fiber
+pub fn file_read_dir(path: Path) -> Result<[](Os::NativeString, File::FileKind), Io::IoError> @Fiber
 pub fn fresh_identity() -> Identity
 pub fn reference_identity<T>(value: T) -> Identity
 pub fn callable_identity<F>(value: F) -> Identity
@@ -41,3 +41,7 @@ pub fn read_guard<R>(buffer: Io::ReadBuffer, reader: R,
 pub fn read_reservation(guard: ReadGuard, pending: bool)
 pub fn numeric_convert<T, U>(value: T) -> Result<U, Num::NumError>
 pub fn environment_all() -> [](Os::NativeString, Os::NativeString) @Fiber
+pub fn parallel_run<T>(actions: [](fn() -> T), max_concurrency: int) -> []Result<T, BranchFault>
+pub fn branch_rethrow(error: BranchFault) -> never
+pub fn branch_rank(error: BranchFault) -> int
+pub fn branch_with_index(error: BranchFault, index: ?int) -> BranchFault

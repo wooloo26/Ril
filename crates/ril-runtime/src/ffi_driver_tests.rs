@@ -623,19 +623,19 @@ fn native_process_wait_leaves_one_cpu_worker_free_and_reaps_before_completion() 
     executor.shutdown_idle().unwrap();
 }
 
-extern "C" fn parallel_collecting_leaf(_: u64, arguments: u64) -> u64 {
+extern "C" fn parallel_collecting_leaf(environment: u64, _: u64) -> u64 {
     handle(|runtime| {
         runtime.collect()?;
-        let item = runtime.sequence(Handle(arguments))?[0];
-        runtime.int(runtime.as_integer(item)? + 1)
+        runtime.int(runtime.as_integer(Handle(environment))? + 1)
     })
 }
-extern "C" fn parallel_nested_map(environment: u64, arguments: u64) -> u64 {
+extern "C" fn parallel_nested_batch(environment: u64, arguments: u64) -> u64 {
     let prepared = guarded(|runtime| {
         let args = runtime.sequence(Handle(arguments))?;
-        let items = runtime.allocate(Object::Array(vec![args[0]]))?;
-        let callable = runtime.allocate(Object::Builtin("Parallel::map".into()))?;
-        let arguments = runtime.allocate(Object::Tuple(vec![items, Handle(environment)]))?;
+        let actions = runtime.allocate(Object::Array(vec![Handle(environment)]))?;
+        let callable = runtime.allocate(Object::Builtin("\0ril.control.parallel_run".into()))?;
+        let bound = runtime.int(1)?;
+        let arguments = runtime.allocate(Object::Tuple(vec![actions, bound]))?;
         Ok(Some((callable, arguments, *args.last().unwrap())))
     });
     let Some((callable, arguments, continuation)) = prepared else {
@@ -649,28 +649,33 @@ fn nested_parallel_groups_share_one_cpu_worker_without_blocking_their_children()
     let executor = crate::scheduler::Executor::new(NonZeroUsize::new(1).unwrap()).unwrap();
     RUNTIME.with_borrow_mut(|runtime| runtime.executor = Some(executor.clone()));
     let (callable, arguments) = with_runtime(|runtime| {
-        let environment = runtime.unit().unwrap();
-        let leaf = runtime
-            .allocate(Object::Closure {
-                function: parallel_collecting_leaf as *const () as usize as u64,
-                environment,
-            })
-            .unwrap();
-        let nested = runtime
-            .allocate(Object::CpsClosure {
-                function: parallel_nested_map as *const () as usize as u64,
-                environment: leaf,
-            })
-            .unwrap();
-        let items = (0..96).map(|index| runtime.int(index).unwrap()).collect();
-        let items = runtime.allocate(Object::Array(items)).unwrap();
+        let mut actions = Vec::new();
+        for index in 0..96 {
+            let environment = runtime.int(index).unwrap();
+            let leaf = runtime
+                .allocate(Object::Closure {
+                    function: parallel_collecting_leaf as *const () as usize as u64,
+                    environment,
+                })
+                .unwrap();
+            actions.push(
+                runtime
+                    .allocate(Object::CpsClosure {
+                        function: parallel_nested_batch as *const () as usize as u64,
+                        environment: leaf,
+                    })
+                    .unwrap(),
+            );
+        }
+        let actions = runtime.allocate(Object::Array(actions)).unwrap();
         let callable = runtime
-            .allocate(Object::Builtin("Parallel::map".into()))
+            .allocate(Object::Builtin("\0ril.control.parallel_run".into()))
             .unwrap();
+        let bound = runtime.int(96).unwrap();
         (
             callable,
             runtime
-                .allocate(Object::Tuple(vec![items, nested]))
+                .allocate(Object::Tuple(vec![actions, bound]))
                 .unwrap(),
         )
     });
@@ -693,8 +698,18 @@ fn nested_parallel_groups_share_one_cpu_worker_without_blocking_their_children()
                     .unwrap()
                     .into_iter()
                     .map(|item| {
-                        let leaf = runtime.sequence(item).unwrap();
-                        runtime.as_integer(leaf[0]).unwrap()
+                        let Object::Variant { tag, fields } = runtime.heap.get(item).unwrap()
+                        else {
+                            panic!("branch result")
+                        };
+                        assert_eq!(tag, "Ok");
+                        let inner = runtime.sequence(fields[0]).unwrap()[0];
+                        let Object::Variant { tag, fields } = runtime.heap.get(inner).unwrap()
+                        else {
+                            panic!("nested branch result")
+                        };
+                        assert_eq!(tag, "Ok");
+                        runtime.as_integer(fields[0]).unwrap()
                     })
                     .collect::<Vec<_>>()
             });

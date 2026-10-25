@@ -8,6 +8,7 @@ use ril_ir::{
     core::{self, Expr, ExprKind, Pattern, Statement},
     cps::{self, BlockId, Input, Terminator},
 };
+use ril_runtime_api::builtins::requires_native_step;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 mod concurrent_tests;
@@ -15,85 +16,6 @@ mod iteration;
 mod metering;
 mod parameters;
 mod rename;
-
-/// Control and host operations retain the native return continuation even when
-/// the source has no explicit perform/handler. This chooses a calling convention,
-/// not a finite-computation proof or a claim that every host adapter already parks.
-/// Keep this table aligned with runtime-api's managed-entry guard; the backend
-/// tests both contracts without adding a runtime dependency to codegen.
-pub fn native_step_builtin(name: &str) -> bool {
-    let name = name.strip_prefix("Prelude::").unwrap_or(name);
-    matches!(
-        name,
-        "\0ril.foreign.invoke"
-            | "Concurrent::scope"
-            | "Concurrent::fork"
-            | "Concurrent::join"
-            | "Channel::bounded"
-            | "Channel::send"
-            | "Channel::recv"
-            | "Channel::detach"
-            | "Channel::attach"
-            | "Channel::close"
-            | "Parallel::map"
-            | "Parallel::map_bounded"
-            | "Parallel::find"
-            | "Parallel::first"
-            | "Parallel::any"
-            | "Parallel::fold"
-            | "Parallel::join"
-            | "Parallel::join3"
-            | "Parallel::for_each"
-            | "Io::read_buffered"
-            | "Io::read_buffered_at"
-            | "Io::write_buffered"
-            | "Io::flush"
-            | "Time::sleep"
-            | "Random::entropy"
-            | "Io::stdin_read"
-            | "Io::stdout_write"
-            | "Io::stderr_write"
-            | "Io::write_stdout"
-            | "Io::write_stderr"
-            | "print"
-            | "println"
-            | "File::open"
-            | "File::open_path"
-            | "File::read"
-            | "File::read_chunk"
-            | "File::write"
-            | "File::seek"
-            | "File::sync"
-            | "File::close"
-            | "File::read_bytes"
-            | "File::read_text"
-            | "File::write_bytes"
-            | "File::write_text"
-            | "File::metadata"
-            | "File::read_dir"
-            | "File::create_dir"
-            | "File::create_dir_all"
-            | "File::remove_file"
-            | "File::remove_dir"
-            | "File::rename"
-            | "File::canonicalize"
-            | "File::temp_file"
-            | "Process::run"
-            | "Process::spawn"
-            | "Process::wait"
-            | "Process::terminate"
-    ) || name
-        .strip_prefix("Channel::__bounded_")
-        .is_some_and(|location| {
-            let parts: Vec<_> = location.split('_').collect();
-            parts.len() == 3
-                && parts.iter().all(|part| {
-                    !part.is_empty()
-                        && part.bytes().all(|byte| byte.is_ascii_digit())
-                        && part.parse::<u32>().is_ok()
-                })
-        })
-}
 
 fn unsupported(detail: impl Into<String>) -> NotImplemented {
     NotImplemented::new(Stage::Lowering, detail)
@@ -170,7 +92,7 @@ pub fn suspending_functions(program: &core::Program) -> BTreeSet<String> {
                     }
             );
             if let ExprKind::Name(name) = &expr.kind {
-                seed |= operations.contains(name) || native_step_builtin(name);
+                seed |= operations.contains(name) || requires_native_step(name);
             }
             seed |= direct_handler(expr);
             seed |= direct_scoped(expr);
@@ -398,7 +320,7 @@ pub fn lambda_suspends(
             seed |= has_handler(block);
         }
         if let ExprKind::Name(name) = &expr.kind {
-            seed |= operations.contains(name) || native_step_builtin(name);
+            seed |= operations.contains(name) || requires_native_step(name);
         }
     });
     let mut dynamic = dynamic.clone();
@@ -1992,7 +1914,7 @@ fn nested_suspends(block: &core::Block, operations: &BTreeSet<String>) -> bool {
                         }
                 );
                 if let ExprKind::Name(name) = &expr.kind {
-                    suspends |= operations.contains(name) || native_step_builtin(name);
+                    suspends |= operations.contains(name) || requires_native_step(name);
                 }
                 if let ExprKind::Block(block)
                 | ExprKind::Loop { body: block, .. }

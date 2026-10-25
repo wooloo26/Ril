@@ -9,10 +9,9 @@ pub mod allocation;
 pub mod application_effect;
 pub mod bound_writes;
 pub mod builtin_sources;
-pub(crate) mod checker;
-pub(crate) use checker::parallel_parameter_labels;
 pub mod channel_messages;
 mod channel_production;
+pub(crate) mod checker;
 pub(crate) mod clone_work;
 pub mod closure_exclusivity;
 pub mod context;
@@ -122,7 +121,6 @@ pub struct SemanticFacts {
     pub copy_call_events: Vec<copy_contract::CopyCallEvent>,
     pub resource_clones: Vec<resource_copy::ResourceCloneEvent>,
     pub copy_template_closure: Option<copy_contract::CopyTemplateClosure>,
-    pub parallel_boundaries: Vec<ParallelBoundary>,
     pub concurrent_boundaries: Vec<ConcurrentBoundary>,
     pub windows: std::collections::BTreeMap<facts::NodeId, WindowInfo>,
     pub pattern_windows: Vec<pattern_windows::PatternWindowCreation>,
@@ -202,49 +200,6 @@ pub struct ExternalInstance {
 pub struct ExternalTypeWitness {
     pub syntax: ril_syntax::ast::TypeExpr,
     pub value_type: model::Ty,
-}
-/// Evidence for the actual invocations admitted at a deterministic parallel
-/// boundary. Accesses retain conditional origins and selected handler identity.
-#[derive(Debug, Clone)]
-pub struct ParallelBoundary {
-    pub span: Span,
-    pub operation: ParallelOperation,
-    pub callbacks: Vec<ParallelCallbackProof>,
-    pub cause: ril_compiler_core::diagnostic::CauseId,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParallelOperation {
-    Map,
-    MapBounded,
-    Find,
-    First,
-    Any,
-    Fold,
-    Join,
-    Join3,
-    ForEach,
-}
-impl ParallelOperation {
-    pub fn canonical_name(self) -> &'static str {
-        match self {
-            Self::Map => "Parallel::map",
-            Self::MapBounded => "Parallel::map_bounded",
-            Self::Find => "Parallel::find",
-            Self::First => "Parallel::first",
-            Self::Any => "Parallel::any",
-            Self::Fold => "Parallel::fold",
-            Self::Join => "Parallel::join",
-            Self::Join3 => "Parallel::join3",
-            Self::ForEach => "Parallel::for_each",
-        }
-    }
-}
-#[derive(Debug, Clone)]
-pub struct ParallelCallbackProof {
-    pub cause: ril_compiler_core::diagnostic::CauseId,
-    pub accesses: Vec<model::AccessFact>,
-    pub selected_handlers: std::collections::BTreeSet<usize>,
-    pub termination: crate::termination::Judgment,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConcurrentBoundaryKind {

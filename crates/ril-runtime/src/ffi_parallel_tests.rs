@@ -52,7 +52,7 @@ fn bounded_native_workers_overlap_and_retired_results_survive_collection() {
     let jobs = with_runtime(|runtime| {
         (0..11)
             .map(|index| {
-                Ok(Job::Call {
+                Ok(Job {
                     callable: Handle(callable),
                     arguments: vec![runtime.int(index)?],
                 })
@@ -88,63 +88,30 @@ fn bounded_native_workers_overlap_and_retired_results_survive_collection() {
 }
 
 #[test]
-fn independent_completion_ranks_faults_but_preserves_index_ties() {
-    let panic = RuntimeError::panic("first");
-    let double = RuntimeError::double_fault(
-        RuntimeError::panic("second"),
-        RuntimeError::panic("cleanup"),
+fn batch_checks_its_bound_even_when_no_branches_exist() {
+    ril_rt_init();
+    let (empty, zero, one) = with_runtime(|runtime| {
+        (
+            runtime.allocate(Object::Array(vec![])).unwrap(),
+            runtime.int(0).unwrap(),
+            runtime.int(1).unwrap(),
+        )
+    });
+    assert_eq!(
+        await_test(execute_batch(&[empty, zero])).unwrap_err().tag,
+        OutcomeTag::LanguagePanic
     );
-    let selected = complete_independent(vec![
-        Err(panic),
-        Err(double.clone()),
-        Err(RuntimeError::double_fault(
-            RuntimeError::panic("third"),
-            RuntimeError::panic("later"),
-        )),
-    ])
-    .unwrap_err();
-    assert_eq!(selected.tag, OutcomeTag::DoubleFault);
-    assert_eq!(selected.message, double.message);
+    let output = await_test(execute_batch(&[empty, one])).unwrap();
+    with_runtime(|runtime| assert!(runtime.sequence(output).unwrap().is_empty()));
+    assert_eq!(
+        run_jobs(vec![], 0).unwrap_err().tag,
+        OutcomeTag::LanguagePanic
+    );
+    ril_rt_init();
 }
 
-extern "C" fn indexed_fold(_: u64, arguments: u64) -> u64 {
-    handle(|runtime| {
-        let arguments = runtime.sequence(Handle(arguments))?;
-        if runtime.as_integer(arguments[1])? == 65 {
-            return Err(RuntimeError::panic("fold-local"));
-        }
-        Ok(arguments[0])
-    })
-}
 extern "C" fn zero(_: u64, _: u64) -> u64 {
     handle(|runtime| runtime.int(0))
-}
-
-#[test]
-fn fold_local_fault_records_original_source_index() {
-    ril_rt_init();
-    let (init, local, items) = with_runtime(|runtime| {
-        let environment = runtime.allocate(Object::Unit).unwrap();
-        let init = runtime
-            .allocate(Object::Closure {
-                function: zero as *const () as usize as u64,
-                environment,
-            })
-            .unwrap();
-        let local = runtime
-            .allocate(Object::Closure {
-                function: indexed_fold as *const () as usize as u64,
-                environment,
-            })
-            .unwrap();
-        let items = (0..130).map(|index| runtime.int(index).unwrap()).collect();
-        (init, local, items)
-    });
-    RUNTIME.with_borrow_mut(crate::shared::activate);
-    let error = fold(items, init, local, local).unwrap_err();
-    assert_eq!(error.message, "fold-local");
-    assert_eq!(error.index, Some(65));
-    ril_rt_init();
 }
 
 extern "C" fn mutating_callback(_: u64, arguments: u64) -> u64 {
@@ -166,7 +133,7 @@ extern "C" fn mutating_callback(_: u64, arguments: u64) -> u64 {
 }
 
 #[test]
-fn for_each_finishes_all_independent_writes_before_selecting_double_fault() {
+fn completed_branches_preserve_all_writes_and_faults_without_arbitration() {
     ril_rt_init();
     let (items, callback) = with_runtime(|runtime| {
         let cells = (0..7)
@@ -188,51 +155,40 @@ fn for_each_finishes_all_independent_writes_before_selecting_double_fault() {
         (items, callback)
     });
     RUNTIME.with_borrow_mut(crate::shared::activate);
-    let error = execute("for_each", &[items, callback]).unwrap_err();
-    assert_eq!(error.tag, OutcomeTag::DoubleFault);
-    assert_eq!(error.primary.unwrap().message, "second");
+    let jobs = with_runtime(|runtime| runtime.sequence(items))
+        .unwrap()
+        .into_iter()
+        .map(|item| Job {
+            callable: callback,
+            arguments: vec![item],
+        })
+        .collect();
+    let outcomes = run_jobs(jobs, 2).unwrap();
+    assert_eq!(
+        outcomes[0].as_ref().unwrap_err().tag,
+        OutcomeTag::LanguagePanic
+    );
+    assert_eq!(
+        outcomes[1].as_ref().unwrap_err().tag,
+        OutcomeTag::DoubleFault
+    );
+    assert_eq!(
+        outcomes[1]
+            .as_ref()
+            .unwrap_err()
+            .primary
+            .as_ref()
+            .unwrap()
+            .message,
+        "second"
+    );
+    assert!(outcomes[2..].iter().all(Result::is_ok));
     with_runtime(|runtime| {
         for (index, cell) in runtime.sequence(items).unwrap().into_iter().enumerate() {
             let value = runtime.field(cell, "value").unwrap();
             assert_eq!(runtime.as_integer(value).unwrap(), index as i128 + 10);
         }
     });
-    ril_rt_init();
-}
-
-extern "C" fn indexed_failure(_: u64, _: u64) -> u64 {
-    handle(|_| {
-        let mut error = RuntimeError::panic("nested fold");
-        error.index = Some(17);
-        Err(error)
-    })
-}
-
-#[test]
-fn fold_initialization_and_merge_faults_have_no_source_index() {
-    ril_rt_init();
-    let (normal, failure, item) = with_runtime(|runtime| {
-        let environment = runtime.allocate(Object::Unit).unwrap();
-        let normal = runtime
-            .allocate(Object::Closure {
-                function: zero as *const () as usize as u64,
-                environment,
-            })
-            .unwrap();
-        let failure = runtime
-            .allocate(Object::Closure {
-                function: indexed_failure as *const () as usize as u64,
-                environment,
-            })
-            .unwrap();
-        let item = runtime.int(0).unwrap();
-        (normal, failure, item)
-    });
-    RUNTIME.with_borrow_mut(crate::shared::activate);
-    let init_error = fold(vec![], failure, normal, normal).unwrap_err();
-    assert_eq!(init_error.index, None);
-    let merge_error = fold(vec![item; 65], normal, normal, failure).unwrap_err();
-    assert_eq!(merge_error.index, None);
     ril_rt_init();
 }
 
@@ -253,7 +209,7 @@ fn parallel_work_called_by_mandatory_cleanup_inherits_cancellation_protection() 
     });
     RUNTIME.with_borrow_mut(crate::shared::activate);
     let protected = run_jobs(
-        vec![Job::Call {
+        vec![Job {
             callable,
             arguments: vec![],
         }],
@@ -263,7 +219,7 @@ fn parallel_work_called_by_mandatory_cleanup_inherits_cancellation_protection() 
     assert!(protected[0].is_ok());
     with_runtime(|runtime| runtime.cancellation_mask = 0);
     let cancelled = run_jobs(
-        vec![Job::Call {
+        vec![Job {
             callable,
             arguments: vec![],
         }],
@@ -288,7 +244,7 @@ extern "C" fn host_fault_after_match(_: u64, arguments: u64) -> u64 {
 }
 
 #[test]
-fn a_decisive_match_never_suppresses_an_unexpected_host_failure() {
+fn an_unexpected_host_failure_is_never_a_suppressible_branch_outcome() {
     ril_rt_init();
     let (items, callback) = with_runtime(|runtime| {
         let zero = runtime.int(0).unwrap();
@@ -304,7 +260,15 @@ fn a_decisive_match_never_suppresses_an_unexpected_host_failure() {
         (items, callback)
     });
     RUNTIME.with_borrow_mut(crate::shared::activate);
-    let error = execute("find", &[items, callback]).unwrap_err();
+    let jobs = with_runtime(|runtime| runtime.sequence(items))
+        .unwrap()
+        .into_iter()
+        .map(|item| Job {
+            callable: callback,
+            arguments: vec![item],
+        })
+        .collect();
+    let error = run_jobs(jobs, 2).unwrap_err();
     assert_eq!(error.tag, OutcomeTag::InternalFault);
     ril_rt_init();
 }

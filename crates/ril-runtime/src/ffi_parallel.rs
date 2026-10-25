@@ -23,19 +23,14 @@ pub(super) fn prepare(
         }
         _ => None,
     })?;
-    let operation = name.strip_prefix("Parallel::")?;
-    if !matches!(
-        operation,
-        "map" | "map_bounded" | "find" | "first" | "any" | "fold" | "join" | "join3" | "for_each"
-    ) {
+    if name != "\0ril.control.parallel_run" {
         return None;
     }
     RUNTIME.with_borrow_mut(crate::shared::activate);
     let arguments: Option<Vec<Handle>> = guarded(|runtime| runtime.sequence(arguments).map(Some));
     let arguments = arguments?;
-    let operation = operation.to_owned();
     Some(PendingParallel {
-        operation: Box::pin(async move { execute_async(&operation, &arguments).await }),
+        operation: Box::pin(async move { execute_batch(&arguments).await }),
         continuation,
     })
 }
@@ -51,157 +46,39 @@ pub(super) fn poll(pending: &mut PendingParallel, context: &mut Context<'_>) -> 
     })
 }
 
-async fn execute_async(operation: &str, arguments: &[Handle]) -> Result<Handle> {
-    if operation == "join" || operation == "join3" {
-        let arity = if operation == "join" { 2 } else { 3 };
-        if arguments.len() != arity {
-            return Err(RuntimeError::internal("invalid parallel join arity"));
+async fn execute_batch(arguments: &[Handle]) -> Result<Handle> {
+    let (jobs, concurrency) = with_runtime(|runtime| {
+        let [actions, bound] = arguments else {
+            return Err(RuntimeError::internal(
+                "independent branches require actions and a bound",
+            ));
+        };
+        let bound = runtime.as_integer(*bound)?;
+        if bound <= 0 {
+            return Err(RuntimeError::panic("nonpositive concurrency bound"));
         }
-        let jobs = arguments
-            .iter()
-            .map(|&callable| Job::Call {
+        let jobs = runtime
+            .sequence(*actions)?
+            .into_iter()
+            .map(|callable| Job {
                 callable,
                 arguments: vec![],
             })
             .collect();
-        let outcomes = run_jobs_async(jobs, arity).await?;
-        let values = complete_independent(outcomes)?;
-        return with_runtime(|runtime| runtime.allocate(Object::Tuple(values)));
-    }
-    let (&items, rest) = arguments
-        .split_first()
-        .ok_or_else(|| RuntimeError::internal("parallel call requires items"))?;
-    let items = with_runtime(|runtime| runtime.sequence(items))?;
-    if operation == "fold" {
-        let &[init, local, merge] = rest else {
-            return Err(RuntimeError::internal("invalid parallel fold arity"));
-        };
-        return fold_async(items, init, local, merge).await;
-    }
-    let (callback, concurrency) = if operation == "map_bounded" {
-        let &[bound, callback] = rest else {
-            return Err(RuntimeError::internal("invalid parallel map_bounded arity"));
-        };
-        let bound = with_runtime(|runtime| runtime.as_integer(bound))?;
-        if bound <= 0 {
-            return Err(RuntimeError::panic("nonpositive bound"));
-        }
-        (
-            callback,
-            usize::try_from(bound)
-                .unwrap_or(usize::MAX)
-                .min(default_concurrency()),
-        )
-    } else {
-        let &[callback] = rest else {
-            return Err(RuntimeError::internal("invalid parallel callback arity"));
-        };
-        (callback, default_concurrency())
-    };
-    let jobs = items
-        .iter()
-        .map(|&item| Job::Call {
-            callable: callback,
-            arguments: vec![item],
-        })
-        .collect();
+        let concurrency = usize::try_from(bound)
+            .unwrap_or(usize::MAX)
+            .min(default_concurrency());
+        Ok((jobs, concurrency))
+    })?;
     let outcomes = run_jobs_async(jobs, concurrency).await?;
-    if operation == "for_each" {
-        complete_independent(outcomes)?;
-        return with_runtime(|runtime| runtime.allocate(Object::Unit));
-    }
-    if operation == "map" || operation == "map_bounded" {
-        let values: Result<Vec<_>> = outcomes.into_iter().collect();
-        return with_runtime(|runtime| runtime.allocate(Object::Array(values?)));
-    }
-    for (item, outcome) in items.into_iter().zip(outcomes) {
-        let predicate = outcome?;
-        if with_runtime(|runtime| runtime.truth(predicate))? {
-            return with_runtime(|runtime| {
-                if operation == "any" {
-                    runtime.allocate(Object::Bool(true))
-                } else {
-                    runtime.variant("Some", vec![item])
-                }
-            });
-        }
-    }
     with_runtime(|runtime| {
-        if operation == "any" {
-            runtime.allocate(Object::Bool(false))
-        } else {
-            runtime.variant("None", vec![])
+        let mut values = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            values.push(runtime.branch_outcome(outcome)?);
         }
+        runtime.allocate(Object::Array(values))
     })
 }
-
-fn complete_independent(outcomes: Vec<Result<Handle>>) -> Result<Vec<Handle>> {
-    let mut fault = None;
-    let mut values = Vec::with_capacity(outcomes.len());
-    for outcome in outcomes {
-        match outcome {
-            Ok(value) => values.push(value),
-            Err(error) => fault = crate::concurrent::choose_fault(fault, Some(error)),
-        }
-    }
-    if let Some(fault) = fault {
-        Err(fault)
-    } else {
-        Ok(values)
-    }
-}
-
-async fn fold_async(
-    items: Vec<Handle>,
-    init: Handle,
-    local: Handle,
-    merge: Handle,
-) -> Result<Handle> {
-    let jobs = if items.is_empty() {
-        vec![Job::Fold {
-            init,
-            local,
-            items: vec![],
-            start: 0,
-        }]
-    } else {
-        items
-            .chunks(64)
-            .enumerate()
-            .map(|(group, items)| Job::Fold {
-                init,
-                local,
-                items: items.to_vec(),
-                start: group * 64,
-            })
-            .collect()
-    };
-    let mut values: Vec<_> = run_jobs_async(jobs, default_concurrency())
-        .await?
-        .into_iter()
-        .collect::<Result<_>>()?;
-    while values.len() > 1 {
-        let jobs = values
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| Job::Merge {
-                callable: merge,
-                arguments: pair.to_vec(),
-            })
-            .collect();
-        let mut next: Vec<_> = run_jobs_async(jobs, default_concurrency())
-            .await?
-            .into_iter()
-            .collect::<Result<_>>()?;
-        if values.len() % 2 != 0 {
-            next.push(*values.last().expect("nonempty merge level"));
-        }
-        values = next;
-    }
-    Ok(values[0])
-}
-
 fn default_concurrency() -> usize {
     std::thread::available_parallelism()
         .map_or(2, usize::from)
@@ -209,6 +86,9 @@ fn default_concurrency() -> usize {
 }
 
 async fn run_jobs_async(jobs: Vec<Job>, concurrency: usize) -> Result<Vec<Result<Handle>>> {
+    if concurrency == 0 {
+        return Err(RuntimeError::panic("nonpositive concurrency bound"));
+    }
     let workers = jobs.len().min(concurrency);
     if workers == 0 {
         return Ok(vec![]);
@@ -270,74 +150,16 @@ async fn run_jobs_async(jobs: Vec<Job>, concurrency: usize) -> Result<Vec<Result
     if let Some(error) = outcomes
         .iter()
         .filter_map(|outcome| outcome.as_ref().err())
-        .find(|error| error.tag == OutcomeTag::InternalFault)
+        .find_map(RuntimeError::internal_fault)
     {
         return Err(error.clone());
     }
     Ok(outcomes)
 }
 
-async fn evaluate_async(job: Job, mut runtime: Runtime) -> (Runtime, Result<Handle>) {
-    match job {
-        Job::Call {
-            callable,
-            arguments,
-        } => invoke_async(runtime, callable, arguments).await,
-        Job::Merge {
-            callable,
-            arguments,
-        } => {
-            let (runtime, result) = invoke_async(runtime, callable, arguments).await;
-            (
-                runtime,
-                result.map_err(|mut error| {
-                    set_index(&mut error, None);
-                    error
-                }),
-            )
-        }
-        Job::Fold {
-            init,
-            local,
-            items,
-            start,
-        } => {
-            let (initial_runtime, result) = invoke_async(runtime, init, vec![]).await;
-            runtime = initial_runtime;
-            let mut accumulator = match result {
-                Ok(value) => value,
-                Err(mut error) => {
-                    set_index(&mut error, None);
-                    return (runtime, Err(error));
-                }
-            };
-            for (offset, item) in items.into_iter().enumerate() {
-                let (next_runtime, result) =
-                    invoke_async(runtime, local, vec![accumulator, item]).await;
-                runtime = next_runtime;
-                match result {
-                    Ok(value) => accumulator = value,
-                    Err(mut error) => {
-                        set_index(&mut error, Some(start + offset));
-                        return (runtime, Err(error));
-                    }
-                }
-            }
-            (runtime, Ok(accumulator))
-        }
-    }
+async fn evaluate_async(job: Job, runtime: Runtime) -> (Runtime, Result<Handle>) {
+    invoke_async(runtime, job.callable, job.arguments).await
 }
-
-fn set_index(error: &mut RuntimeError, index: Option<usize>) {
-    error.index = index;
-    if let Some(primary) = &mut error.primary {
-        set_index(primary, index);
-    }
-    if let Some(cleanup) = &mut error.cleanup {
-        set_index(cleanup, index);
-    }
-}
-
 async fn invoke_async(
     mut runtime: Runtime,
     callable: Handle,
@@ -366,7 +188,7 @@ async fn invoke_async(
             "parallel callback returned no managed value",
         )),
         None => {
-            // Keep the fold accumulator across the next callback's allocations.
+            // Root the result until its completion is published to the group.
             let value = runtime.root(1, Handle(value))?;
             runtime.statement_end();
             Ok(value)
@@ -387,14 +209,6 @@ fn await_test<T>(future: impl Future<Output = T>) -> T {
         }
         wake.wait();
     }
-}
-#[cfg(test)]
-fn execute(operation: &str, arguments: &[Handle]) -> Result<Handle> {
-    await_test(execute_async(operation, arguments))
-}
-#[cfg(test)]
-fn fold(items: Vec<Handle>, init: Handle, local: Handle, merge: Handle) -> Result<Handle> {
-    await_test(fold_async(items, init, local, merge))
 }
 #[cfg(test)]
 fn run_jobs(jobs: Vec<Job>, concurrency: usize) -> Result<Vec<Result<Handle>>> {

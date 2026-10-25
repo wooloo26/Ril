@@ -59,6 +59,8 @@ pub enum Object {
     CallableIdentity(crate::stream_identity::CallableIdentity),
     /// A scoped, non-copyable read-ahead permission. Its key is not a GC edge.
     ReadGuard(Handle),
+    /// A completed branch's original unwind data, without resource authority.
+    BranchFault(Box<crate::value::RuntimeError>),
     Array(Vec<Handle>),
     ArrayWindow {
         backing: Handle,

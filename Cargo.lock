@@ -932,6 +932,7 @@ version = "0.1.0"
 dependencies = [
  "ril-compiler-core",
  "ril-ir",
+ "ril-runtime-api",
  "serde",
  "thiserror",
 ]

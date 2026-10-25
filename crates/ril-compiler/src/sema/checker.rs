@@ -71,8 +71,6 @@ mod narrowing;
 mod numeric;
 mod numeric_application;
 mod numeric_pending;
-mod parallel;
-mod parallel_signatures;
 mod patterns;
 mod post_resume;
 mod post_resume_scope;
@@ -98,10 +96,6 @@ mod termination_queries;
 mod type_source;
 mod types;
 mod windows;
-
-pub(crate) fn parallel_parameter_labels(name: &str) -> Option<&'static [&'static str]> {
-    parallel_signatures::labels(name)
-}
 
 #[cfg(test)]
 pub(super) fn analyze(
@@ -280,7 +274,6 @@ fn analyze_inner(
         copy_call_events: checker.copy_call_events,
         resource_clones: checker.resource_clones,
         copy_template_closure: checker.copy_template_closure,
-        parallel_boundaries: checker.parallel_boundaries,
         concurrent_boundaries: checker.concurrent_boundaries,
         windows: checker.windows,
         pattern_windows: checker.pattern_windows,
@@ -419,7 +412,6 @@ struct Checker {
     copy_call_events: Vec<super::copy_contract::CopyCallEvent>,
     resource_clones: Vec<super::resource_copy::ResourceCloneEvent>,
     descriptor_sites: BTreeMap<concurrent::DescriptorContext, SiteId>,
-    parallel_boundaries: Vec<super::ParallelBoundary>,
     concurrent_boundaries: Vec<super::ConcurrentBoundary>,
     concurrency: concurrent::State,
     channel_message_facts: Vec<super::channel_messages::ChannelMessageFact>,
@@ -614,7 +606,6 @@ impl Checker {
             copy_call_events: Vec::new(),
             resource_clones: Vec::new(),
             descriptor_sites: BTreeMap::new(),
-            parallel_boundaries: Vec::new(),
             concurrency: concurrent::State::default(),
             channel_message_facts: vec![],
             channel_exit_facts: vec![],
@@ -1420,13 +1411,6 @@ impl Checker {
             for obligations in self.pending_handler_obligations.values_mut() {
                 for access in &mut obligations.accesses {
                     access.transport(&self.recency_moves);
-                }
-            }
-            for boundary in &mut self.parallel_boundaries {
-                for callback in &mut boundary.callbacks {
-                    for access in &mut callback.accesses {
-                        access.transport(&self.recency_moves);
-                    }
                 }
             }
             for window in self.windows.values_mut() {

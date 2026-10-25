@@ -401,19 +401,7 @@ mod tests {
             "Concurrent::fork",
             "Concurrent::join",
             "Channel::recv",
-            "Parallel::map",
-            "Parallel::map_bounded",
-            "Parallel::find",
-            "Parallel::first",
-            "Parallel::any",
-            "Parallel::fold",
-            "Parallel::join",
-            "Parallel::join3",
-            "Parallel::for_each",
-            "Io::read_buffered",
-            "Io::read_buffered_at",
-            "Io::write_buffered",
-            "Io::flush",
+            "\0ril.control.parallel_run",
         ] {
             let input = NativeModule {
                 functions: vec![Function {
