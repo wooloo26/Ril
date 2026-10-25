@@ -16,8 +16,6 @@ pub(super) fn is_temporal_builtin(name: &str) -> bool {
             | "Random::next_u64"
             | "Random::below"
             | "Random::entropy"
-            | "Test::assert_eq"
-            | "Test::assert_ne"
     )
 }
 pub(super) fn temporal_constant(name: &str) -> Option<Ty> {
@@ -60,9 +58,6 @@ impl Checker {
     ) -> Option<Value> {
         if !is_temporal_builtin(name) {
             return None;
-        }
-        if name.starts_with("Test::") {
-            return Some(self.standard_test_helper(args, span, frame));
         }
         let duration = Ty::Named("Time::Duration".into());
         let instant = Ty::Named("Time::Instant".into());
@@ -174,50 +169,6 @@ impl Checker {
             [value.cause],
         );
         Some(Value::scalar(integer("i64"), None, cause))
-    }
-    fn standard_test_helper(
-        &mut self,
-        args: &[(ParameterMode, Value, Span)],
-        span: Span,
-        frame: &mut Frame,
-    ) -> Value {
-        let minimum = 2;
-        if !(minimum..=minimum + 1).contains(&args.len()) {
-            self.error("E0314", span, "wrong testing helper argument count", []);
-            return self.unit(span);
-        }
-        for (mode, value, argument_span) in args {
-            if *mode != ParameterMode::Read {
-                self.error(
-                    "E0405",
-                    *argument_span,
-                    "testing helpers borrow read-only values",
-                    [value.cause],
-                );
-            }
-        }
-        if let Some((_, message, message_span)) = args.get(minimum) {
-            self.require_type(message, &Ty::Str, *message_span);
-        }
-        self.require_type(&args[1].1, &args[0].1.ty, args[1].2);
-        for (_, value, argument_span) in &args[..2] {
-            self.deep_read(value, *argument_span, frame);
-            if self.contains_callable(value) || self.contains_resource(value) {
-                self.error(
-                    "E0327",
-                    *argument_span,
-                    "structural equality cannot contain callable values",
-                    [value.cause],
-                );
-            }
-            if unknown_type(&value.ty) || self.equality_has_generic(&value.ty) {
-                self.unsupported(
-                    *argument_span,
-                    "testing equality requires proven constituent types",
-                );
-            }
-        }
-        self.unit(span)
     }
 }
 

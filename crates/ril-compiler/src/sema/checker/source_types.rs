@@ -861,9 +861,12 @@ impl Checker {
                         return Ok(true);
                     };
                     let mut work = crate::sema::source_types::WorkLimit::new(16384);
-                    Ok(old.schema.equivalent(&source.schema, &mut work)?
-                        && (!old.schema.requires_environment(&mut work)?
-                            || old.environment.id() == source.environment.id()))
+                    old.schema.equivalent_in(
+                        &source.schema,
+                        &old.environment,
+                        &source.environment,
+                        &mut work,
+                    )
                 })(
                 );
                 let agrees = match agrees {

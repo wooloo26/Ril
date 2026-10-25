@@ -868,12 +868,14 @@ fn iteration_local_result_families_require_every_nested_producer_to_be_inspected
 }
 
 #[test]
-fn generic_value_tests_require_equality_for_every_possible_instantiation() {
-    let source = "fn compare<T>(value:T,expected:T)->bool{value is expected}";
+fn generic_value_tests_require_equality_for_the_actual_instantiation() {
+    let source = ril_test::case_source(
+        "tests/regressions/testing-declarations.ril::reject-generic-value-test-callable",
+    );
     let outcome = Session::new(source.as_bytes().to_vec()).check();
     assert!(
-        !matches!(outcome, CompilationOutcome::Accepted { .. }),
-        "unconstrained T can be a callable: {outcome:?}"
+        has_code(&outcome, "E0327"),
+        "the selected callable type cannot acquire equality: {outcome:?}"
     );
 }
 

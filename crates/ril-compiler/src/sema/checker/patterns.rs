@@ -2203,16 +2203,8 @@ impl Checker {
     ) -> PatternOutcome {
         let value = self.expression_pattern_value(expected, frame, Some(&subject.ty));
         self.require_type(&value, &subject.ty, expected.span);
-        if self.equality_has_generic(&subject.ty) || self.equality_has_generic(&value.ty) {
-            self.unsupported(
-                expected.span,
-                "value-test equality requires a proved constraint for every generic constituent",
-            );
-        }
-        if self.contains_resource(subject)
-            || self.contains_resource(&value)
-            || !self.pattern_equality(&subject.ty, &mut BTreeSet::new())
-        {
+        self.check_structural_equality(&[subject, &value], expected.span);
+        if !self.pattern_equality(&subject.ty, &mut BTreeSet::new()) {
             self.error(
                 "E0327",
                 expected.span,

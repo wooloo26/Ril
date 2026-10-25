@@ -130,7 +130,9 @@ duplicate source trees and historical verification reports.
 - Move remaining collection/iterator/order and resource/I/O algorithms into
   ordinary library sources in `crates/ril-stdlib/modules/`. Delete each replaced
   checker simulation, static implementation, late backend body generator and
-  runtime algorithm. Keep one explicit set of necessary primitive contracts.
+  runtime algorithm. All four Test helpers now use ordinary checked bodies;
+  structural equality shares eligibility checking with value tests and recursive
+  summaries. Keep one explicit set of necessary primitive contracts.
 - Eliminate remaining language and native failures, select runtime archives by
   build/ABI identity, and complete Windows/Linux, pointer32/pointer64 and applicable
   native acceptance. Preserved corpus cases define behavior; internal proof-export
@@ -152,3 +154,13 @@ cargo run --locked -p xtask --bin unicode-data -- INPUT_DIRECTORY crates/ril-run
 Run the string/Unicode corpus after regeneration.
 
 ## Specification questions
+
+- Generic structural equality has a conditional applicability requirement. A
+  declaration probe retains equality on a Type parameter without assuming that
+  every possible instance supports it. Actual input types are checked by the
+  same elaborated operations or substituted recursive summary at each invocation,
+  including aliases and higher-order calls; callable/resource constituents still
+  fail with E0327. Recursive summaries retain and compose equality input uses.
+  A symbolic operand outside declaration analysis remains incomplete. This lets
+  the STD generic testing helpers use ordinary equality without a privileged
+  checker contract or a new source-level trait.

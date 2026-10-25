@@ -1203,26 +1203,6 @@ impl Runtime {
                 }
                 self.unit()
             }
-            "assert_eq" | "Test::assert_eq" => {
-                if !self.heap.structurally_equal(arg(0)?, arg(1)?)? {
-                    return Err(RuntimeError::panic(if let Some(message) = args.get(2) {
-                        self.as_string(*message)?.to_owned()
-                    } else {
-                        "values differ".into()
-                    }));
-                }
-                self.unit()
-            }
-            "assert_ne" | "Test::assert_ne" => {
-                if self.heap.structurally_equal(arg(0)?, arg(1)?)? {
-                    return Err(RuntimeError::panic(if let Some(message) = args.get(2) {
-                        self.as_string(*message)?.to_owned()
-                    } else {
-                        "values are equal".into()
-                    }));
-                }
-                self.unit()
-            }
             "panic" => Err(RuntimeError::panic(self.format(arg(0)?)?)),
             "len" => {
                 let count = self.length(arg(0)?)?;

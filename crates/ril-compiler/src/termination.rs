@@ -362,8 +362,6 @@ fn standard_termination(name: &str) -> Option<Judgment> {
             | "Random::seeded"
             | "Random::next_u64"
             | "Random::below"
-            | "Test::assert_eq"
-            | "Test::assert_ne"
             | "String::split"
             | "String::trim"
             | "String::contains"

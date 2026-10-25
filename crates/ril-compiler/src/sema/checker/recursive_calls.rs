@@ -110,6 +110,11 @@ impl Checker {
                 frame.obligations.retention = true;
             }
         }
+        for input in &summary.equality_inputs {
+            let value = self.recursive_return(input, &inputs, span, &mut frame)?;
+            self.deep_read(&value, span, &mut frame);
+            self.check_structural_equality(&[&value], span);
+        }
         for (name, access) in &summary.named {
             let binding = if info.owner.is_some() {
                 caller.env.get(name)

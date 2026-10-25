@@ -2213,7 +2213,6 @@ fn standard_exports(path: &str) -> &'static [&'static str] {
             "join3",
             "for_each",
         ],
-        "ril/test" => &["assert_eq", "assert_ne"],
         _ => &[],
     }
 }

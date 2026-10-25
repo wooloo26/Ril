@@ -35,7 +35,7 @@ fn bundled_fallbacks_are_checked_declarations_and_ordinary_core_functions() {
             .iter()
             .filter(|function| function.syntax.span.file.0 != 0)
             .collect();
-        assert_eq!(library.len(), 5);
+        assert_eq!(library.len(), 7);
         for function in &library {
             assert!(function.hir_id.is_some() && function.syntax.body.is_some());
             assert!(

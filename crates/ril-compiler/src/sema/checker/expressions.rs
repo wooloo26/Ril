@@ -87,10 +87,10 @@ impl Checker {
                 ty
             }
         });
-        if expected
-            .as_ref()
-            .is_some_and(|ty| matches!(ty, Ty::Unknown | Ty::NumericHole(_) | Ty::Generic(_)))
-        {
+        if expected.as_ref().is_some_and(|ty| {
+            matches!(ty, Ty::Unknown | Ty::NumericHole(_))
+                || (matches!(ty, Ty::Generic(_)) && !self.checking_declaration_body())
+        }) {
             self.unsupported(expr.span, "numeric pattern subject type remains unresolved");
         }
         self.expression_packet_mode(expr, frame, expected.as_ref(), None)
@@ -1598,22 +1598,10 @@ impl Checker {
                         self.access(&b, None, Mode::Read, right.span, frame);
                     }
                 }
-                if matches!(operator.as_str(), "==" | "!=")
-                    && !tag_test
-                    && (self.contains_callable(&a)
-                        || self.contains_callable(&b)
-                        || self.contains_resource(&a)
-                        || self.contains_resource(&b))
-                {
-                    self.error(
-                        "E0327",
-                        expr.span,
-                        "structural equality cannot contain callable values at any reachable depth",
-                        [a.cause, b.cause],
-                    );
+                if matches!(operator.as_str(), "==" | "!=") && !tag_test {
+                    self.check_structural_equality(&[&a, &b], expr.span);
                 }
-                if matches!(operator.as_str(), "==" | "!=" | "in")
-                    && !tag_test
+                if operator == "in"
                     && (self.equality_has_generic(&a.ty) || self.equality_has_generic(&b.ty))
                 {
                     self.unsupported(expr.span,"structural equality eligibility requires a proved constraint for every generic constituent");
@@ -2343,6 +2331,38 @@ impl Checker {
             }
         }
         visit(self, ty, &mut BTreeSet::new())
+    }
+    pub(super) fn checking_declaration_body(&self) -> bool {
+        self.copy_invocation_stack
+            .iter()
+            .any(|id| self.copy_invocations[id.0 as usize].declaration_probe)
+    }
+    pub(super) fn check_structural_equality(&mut self, values: &[&Value], span: Span) {
+        if values
+            .iter()
+            .any(|value| self.contains_callable(value) || self.contains_resource(value))
+        {
+            self.error(
+                "E0327",
+                span,
+                "structural equality cannot contain callable or resource values",
+                values.iter().map(|value| value.cause),
+            );
+        }
+        // A declaration traversal interprets the body conditionally. Actual
+        // applications re-enter this operation with their selected types;
+        // recursive cutoffs substitute the same eligibility input uses.
+        // Only a declaration probe may keep a Type binder conditional.
+        if !self.checking_declaration_body()
+            && values
+                .iter()
+                .any(|value| self.equality_has_generic(&value.ty))
+        {
+            self.unsupported(
+                span,
+                "structural equality eligibility requires solved constituent types",
+            );
+        }
     }
     fn preview_record_members(&mut self, members: &[RecordMember], frame: &mut Frame) {
         for member in members {

@@ -361,6 +361,9 @@ pub struct Summary {
     pub return_value: ReturnValue,
     pub accesses: BTreeSet<AccessPort>,
     pub callbacks: BTreeSet<CallbackPort>,
+    /// Equality eligibility is a use of these inputs, even when a recursive
+    /// application obtains its answer from the fixed point instead of a body.
+    pub equality_inputs: BTreeSet<ReturnValue>,
     pub effects: BTreeSet<String>,
     pub named: BTreeMap<String, Access>,
     pub reason: Option<String>,
@@ -373,6 +376,7 @@ impl Default for Summary {
             return_value: ReturnValue::Bottom,
             accesses: BTreeSet::new(),
             callbacks: BTreeSet::new(),
+            equality_inputs: BTreeSet::new(),
             effects: BTreeSet::new(),
             named: BTreeMap::new(),
             reason: None,
@@ -390,6 +394,8 @@ impl Summary {
         self.complete &= other.complete;
         self.accesses.extend(other.accesses.iter().cloned());
         self.callbacks.extend(other.callbacks.iter().cloned());
+        self.equality_inputs
+            .extend(other.equality_inputs.iter().cloned());
         self.effects.extend(other.effects.iter().cloned());
         for (name, access) in &other.named {
             self.named
@@ -580,6 +586,43 @@ struct Transfer<'a, 'w> {
     default_scope: bool,
 }
 impl Transfer<'_, '_> {
+    fn equality_input(&mut self, value: &ReturnValue) {
+        let cost = match value {
+            ReturnValue::Parameter { port, .. } => 1 + port.path.len(),
+            ReturnValue::Global { name, path, .. } => 1 + name.len() + path.len(),
+            _ => 1,
+        };
+        let Some(remaining) = self.work.get().checked_sub(cost) else {
+            self.summary.incomplete("recursive equality work exhausted");
+            return;
+        };
+        self.work.set(remaining);
+        match value {
+            ReturnValue::Parameter { .. } | ReturnValue::Global { .. } => {
+                let mut input = value.clone();
+                input.restrict(Permission::Read);
+                self.summary.equality_inputs.insert(input);
+            }
+            ReturnValue::Clone { source, .. } => self.equality_input(&ReturnValue::Parameter {
+                port: source.clone(),
+                permission: Permission::Read,
+            }),
+            ReturnValue::Tuple { items, .. } | ReturnValue::Alternatives(items) => {
+                for item in items {
+                    self.equality_input(item);
+                }
+            }
+            ReturnValue::Record { fields, .. } => {
+                for item in fields.values() {
+                    self.equality_input(item);
+                }
+            }
+            ReturnValue::Unknown => self
+                .summary
+                .incomplete("recursive equality has an unresolved constituent"),
+            ReturnValue::Bottom | ReturnValue::Unit | ReturnValue::Scalar(_) => {}
+        }
+    }
     fn fail(&mut self, reason: &str) -> ReturnValue {
         self.summary.incomplete(reason);
         ReturnValue::Unknown
@@ -869,6 +912,14 @@ impl Transfer<'_, '_> {
                 self.access(&b, Access::Read);
                 if a == ReturnValue::Bottom || b == ReturnValue::Bottom {
                     return ReturnValue::Bottom;
+                }
+                let none = |value: &ReturnValue| {
+                    matches!(value, ReturnValue::Global { name, path, .. }
+                        if path.is_empty() && matches!(name.as_str(), "None" | "Prelude::None"))
+                };
+                if matches!(operator.as_str(), "==" | "!=") && !none(&a) && !none(&b) {
+                    self.equality_input(&a);
+                    self.equality_input(&b);
                 }
                 if operator == "??" {
                     return self.fail("recursive optional/result branch relation");
@@ -1247,6 +1298,9 @@ impl Transfer<'_, '_> {
                 self.summary
                     .incomplete("recursive callback target does not resolve to an interface port");
             }
+        }
+        for input in &callee_summary.equality_inputs {
+            self.equality_input(&input.substitute(&ordered));
         }
         self.summary
             .effects

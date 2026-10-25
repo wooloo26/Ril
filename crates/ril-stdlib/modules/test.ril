@@ -1,6 +1,14 @@
 use ril/option as Options
 use ril/result as Results
 
+pub fn assert_eq<T>(actual: T, expected: T, message: str = "values differ") {
+    assert(actual == expected, message)
+}
+
+pub fn assert_ne<T>(actual: T, unexpected: T, message: str = "values are equal") {
+    assert(actual != unexpected, message)
+}
+
 pub fn assert_some<T>(value: ?T, message: str = "expected Some") -> T {
     Options::expect(value, message)
 }
