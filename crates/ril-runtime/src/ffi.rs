@@ -597,34 +597,10 @@ fn dispatch_builtin(name: u64, arguments: u64) -> u64 {
         let reply = request.perform();
         return finish_host(reply, crate::file::filesystem::finish);
     }
-    if matches!(
-        name.as_str(),
-        "Options::map"
-            | "Options::and_then"
-            | "Options::unwrap_or_else"
-            | "Results::map"
-            | "Results::map_err"
-            | "Results::and_then"
-            | "Results::recover"
-    ) {
-        return variant_operation(&name, arguments);
-    }
     if matches!(name.as_str(), "Order::sorted" | "Order::binary_search")
         || name.starts_with("Heap::")
     {
         return order::invoke(&name, arguments);
-    }
-    if matches!(
-        name.as_str(),
-        "Array::map"
-            | "Array::filter"
-            | "Array::fold"
-            | "Array::find"
-            | "Array::any"
-            | "Array::all"
-            | "Array::for_each"
-    ) {
-        return array_callback(&name, arguments);
     }
     handle(|runtime| runtime.builtin(&name, Handle(arguments)))
 }
@@ -679,152 +655,6 @@ fn invoke_address(address: u64, environment: u64, arguments: u64) -> u64 {
     // No runtime borrow is held across invocation, so callbacks may re-enter.
     let function: extern "C" fn(u64, u64) -> u64 = unsafe { std::mem::transmute(address as usize) };
     function(environment, arguments)
-}
-fn variant_operation(name: &str, arguments: u64) -> u64 {
-    ril_rt_enter();
-    ril_rt_root(0, arguments);
-    let inputs: Option<(Vec<Handle>, String, Vec<Handle>)> = guarded(|runtime| {
-        let args = runtime.sequence(Handle(arguments))?;
-        let input = args
-            .first()
-            .ok_or_else(|| RuntimeError::internal("missing variant input"))?;
-        let Object::Variant { tag, fields } = runtime.heap.get(*input)? else {
-            return Err(RuntimeError::internal("expected variant input"));
-        };
-        let valid = if name.starts_with("Options::") {
-            (tag == "Some" && fields.len() == 1) || (tag == "None" && fields.is_empty())
-        } else {
-            matches!(tag.as_str(), "Ok" | "Err") && fields.len() == 1
-        };
-        if !valid || args.len() != 2 {
-            return Err(RuntimeError::internal(
-                "invalid variant operation arguments",
-            ));
-        }
-        Ok(Some((args, tag.clone(), fields.clone())))
-    });
-    let Some((args, tag, fields)) = inputs else {
-        return ril_rt_leave(0);
-    };
-    let success = matches!(tag.as_str(), "Some" | "Ok");
-    let needs_callback = match name {
-        "Options::map" | "Options::and_then" | "Results::map" | "Results::and_then" => success,
-        "Options::unwrap_or_else" | "Results::map_err" | "Results::recover" => !success,
-        _ => false,
-    };
-    let value = if needs_callback {
-        let callback_args = ril_rt_sequence(1);
-        if name != "Options::unwrap_or_else" {
-            ril_rt_push(callback_args, fields[0].0);
-        }
-        let value = invoke_callable(args[1].0, callback_args);
-        if value == 0 {
-            return ril_rt_leave(0);
-        }
-        match name {
-            "Options::map" | "Results::map" | "Results::map_err" => {
-                handle(|runtime| runtime.variant(&tag, vec![Handle(value)]))
-            }
-            _ => value,
-        }
-    } else {
-        match name {
-            "Options::unwrap_or_else" | "Results::recover" => fields[0].0,
-            _ => args[0].0,
-        }
-    };
-    ril_rt_leave(value)
-}
-fn array_callback(name: &str, arguments: u64) -> u64 {
-    let inputs: Option<(Vec<Handle>, u64)> = guarded(|runtime| {
-        let args = runtime.sequence(Handle(arguments))?;
-        let input = args
-            .first()
-            .copied()
-            .ok_or_else(|| RuntimeError::internal("missing collection argument"))?;
-        if !matches!(runtime.heap.get(input)?, Object::Array(_)) {
-            return Err(RuntimeError::internal("expected callback array"));
-        }
-        Ok(Some((args, runtime.length(input)?)))
-    });
-    let Some((args, count)) = inputs else {
-        return 0;
-    };
-    let callback_index = if name == "Array::fold" { 2 } else { 1 };
-    let Some(callback) = args.get(callback_index).copied() else {
-        return handle(|_| Err(RuntimeError::internal("missing collection callback")));
-    };
-    ril_rt_enter();
-    ril_rt_root(0, arguments);
-    let output = ril_rt_sequence(0);
-    ril_rt_root(1, output);
-    let mut accumulator = args.get(1).copied().unwrap_or(Handle::INVALID).0;
-    if name == "Array::fold" {
-        ril_rt_root(2, accumulator);
-    }
-    let mut selected = None;
-    for index in 0..count {
-        let item = handle(|runtime| match runtime.heap.get(args[0])? {
-            Object::Array(items) => items
-                .get(index as usize)
-                .copied()
-                .ok_or_else(|| RuntimeError::internal("array changed during traversal")),
-            _ => Err(RuntimeError::internal("expected callback array")),
-        });
-        if item == 0 {
-            return ril_rt_leave(0);
-        }
-        let item = Handle(item);
-        let callback_args = ril_rt_sequence(1);
-        if name == "Array::fold" {
-            ril_rt_push(callback_args, accumulator);
-        }
-        ril_rt_push(callback_args, item.0);
-        let value = invoke_callable(callback.0, callback_args);
-        if value == 0 {
-            return ril_rt_leave(0);
-        }
-        match name {
-            "Array::map" => {
-                ril_rt_push(output, value);
-            }
-            "Array::filter" => {
-                if ril_rt_truth(value) != 0 {
-                    ril_rt_push(output, item.0);
-                }
-            }
-            "Array::fold" => {
-                accumulator = value;
-                ril_rt_root(2, value);
-            }
-            "Array::find" | "Array::any" | "Array::all" => {
-                let truth = ril_rt_truth(value) != 0;
-                if truth != (name == "Array::all") {
-                    selected = Some(item);
-                    break;
-                }
-            }
-            _ => {}
-        }
-        if ril_rt_status() != 0 {
-            return ril_rt_leave(0);
-        }
-        ril_rt_statement_end();
-    }
-    let result = match name {
-        "Array::fold" => accumulator,
-        "Array::find" => handle(|runtime| {
-            runtime.variant(
-                if selected.is_some() { "Some" } else { "None" },
-                selected.into_iter().collect(),
-            )
-        }),
-        "Array::any" => ril_rt_bool(u32::from(selected.is_some())),
-        "Array::all" => ril_rt_bool(u32::from(selected.is_none())),
-        "Array::for_each" => ril_rt_unit(),
-        _ => output,
-    };
-    ril_rt_leave(result)
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn ril_rt_builtin_value(name: u64) -> u64 {
@@ -1402,18 +1232,14 @@ mod tests {
         let environment = ril_rt_unit();
         let callback = ril_rt_callable(double as *const () as usize as u64, environment);
         let arguments = ril_rt_sequence(1);
-        ril_rt_push(arguments, input);
-        ril_rt_push(arguments, callback);
-        let name = handle(|runtime| runtime.string("Array::map".into()));
-        let mapped = ril_rt_builtin(name, arguments);
-        assert_ne!(mapped, 0);
+        let index = ril_rt_int(1199, 0, 64, 1);
+        let value = ril_rt_index(input, index, 0);
+        ril_rt_push(arguments, value);
+        let result = invoke_callable(callback, arguments);
+        assert_ne!(result, 0);
         assert_eq!(ril_rt_status(), 0);
-        assert_eq!(ril_rt_len(mapped), 1200);
-        with_runtime(|runtime| {
-            let mapped = runtime.sequence(Handle(mapped)).unwrap();
-            assert_eq!(runtime.as_integer(mapped[1199]).unwrap(), 2398);
-        });
-        ril_rt_leave(mapped);
+        with_runtime(|runtime| assert_eq!(runtime.as_integer(Handle(result)).unwrap(), 2398));
+        ril_rt_leave(result);
     }
     extern "C" fn cleanup(environment: u64, _arguments: u64) -> u64 {
         ril_rt_enter();
@@ -1500,47 +1326,5 @@ mod tests {
         });
         ril_rt_leave(0);
         assert_eq!(event_values(events), [3, 2]);
-    }
-    #[test]
-    fn variant_callbacks_are_lazy_and_unvisited_payloads_keep_their_handles() {
-        ril_rt_init();
-        ril_rt_enter();
-        let callback = handle(|runtime| {
-            let environment = runtime.unit()?;
-            runtime.allocate(Object::Closure {
-                function: double as *const () as usize as u64,
-                environment,
-            })
-        });
-        let number = ril_rt_int(21, 0, 64, 1);
-        let some = handle(|runtime| runtime.variant("Some", vec![Handle(number)]));
-        let arguments = ril_rt_sequence(1);
-        ril_rt_push(arguments, some);
-        ril_rt_push(arguments, callback);
-        let name = handle(|runtime| runtime.string("Options::map".into()));
-        let result = ril_rt_builtin(name, arguments);
-        with_runtime(|runtime| {
-            let Object::Variant { tag, fields } = runtime.heap.get(Handle(result)).unwrap() else {
-                panic!("option")
-            };
-            assert_eq!(tag, "Some");
-            assert_eq!(runtime.as_integer(fields[0]).unwrap(), 42);
-        });
-        let message = handle(|runtime| runtime.string("business failure".into()));
-        let error = handle(|runtime| runtime.variant("Err", vec![Handle(message)]));
-        let arguments = ril_rt_sequence(1);
-        ril_rt_push(arguments, error);
-        ril_rt_push(arguments, callback);
-        let name = handle(|runtime| runtime.string("Results::map".into()));
-        assert_eq!(ril_rt_builtin(name, arguments), error);
-        assert_eq!(ril_rt_status(), 0);
-        let arguments = ril_rt_sequence(1);
-        ril_rt_push(arguments, some);
-        let panic = handle(|runtime| runtime.allocate(Object::Builtin("panic".into())));
-        ril_rt_push(arguments, panic);
-        let name = handle(|runtime| runtime.string("Options::unwrap_or_else".into()));
-        assert_eq!(ril_rt_builtin(name, arguments), number);
-        assert_eq!(ril_rt_status(), 0);
-        ril_rt_leave(result);
     }
 }

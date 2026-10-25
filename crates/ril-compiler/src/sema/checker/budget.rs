@@ -86,34 +86,6 @@ impl Checker {
         }
     }
 
-    pub(super) fn budget_heap_comparison_coverage(
-        &mut self,
-        span: Span,
-        parents: &[CauseId],
-        covered: bool,
-    ) {
-        let cause = self.cause(
-            if covered {
-                CauseKind::Call
-            } else {
-                CauseKind::MissingProof
-            },
-            span,
-            "heap sift requires this receiver's complete retained comparator witness",
-            parents.iter().copied(),
-        );
-        for coverage in &mut self.budget_coverage {
-            coverage.callees.push(cause);
-            coverage.complete &= covered;
-        }
-        if !covered {
-            self.unsupported(
-                span,
-                "finite-evaluation Heap comparison has no exact retained comparator coverage",
-            );
-        }
-    }
-
     pub(super) fn budget_handler(
         &mut self,
         _name: &str,

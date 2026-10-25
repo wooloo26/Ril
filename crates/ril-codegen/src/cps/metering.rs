@@ -165,33 +165,22 @@ mod tests {
 
     #[test]
     fn sequential_callback_entries_survive_cps_without_marking_internal_primitives() {
-        let source = core::Program {
-            functions: vec![function(
-                core::FunctionRole::Ordinary,
-                vec![statement(expr(ExprKind::Call {
-                    callback_entry: false,
-                    callee: Box::new(expr(ExprKind::Name("Array::map".into()))),
-                    arguments: vec![
-                        core::Argument {
-                            label: None,
-                            value: expr(ExprKind::Array(vec![expr(ExprKind::Literal(
-                                core::Literal::Unit,
-                            ))])),
-                        },
-                        core::Argument {
-                            label: None,
-                            value: expr(ExprKind::Name("action".into())),
-                        },
-                    ],
-                }))],
-            )],
-            ..Default::default()
+        let invocation = |callee: &str, callback_entry| {
+            statement(expr(ExprKind::Call {
+                callback_entry,
+                callee: Box::new(expr(ExprKind::Name(callee.into()))),
+                arguments: vec![],
+            }))
         };
-        let expanded = crate::hof::lower(&source).unwrap();
-        for graph in [
-            lower(&expanded.functions[0]).unwrap(),
-            lower_metered(&expanded.functions[0]).unwrap(),
-        ] {
+        let source = function(
+            core::FunctionRole::Ordinary,
+            vec![
+                invocation("len", false),
+                invocation("action", true),
+                invocation("storage_push", false),
+            ],
+        );
+        for graph in [lower(&source).unwrap(), lower_metered(&source).unwrap()] {
             let callbacks = graph
                 .blocks
                 .iter()
@@ -218,7 +207,7 @@ mod tests {
                     )
                 })
                 .count();
-            assert_eq!(callbacks, 1, "one actual Array::map callback entry");
+            assert_eq!(callbacks, 1, "one actual callback entry");
             assert!(primitives >= 2, "length and push remain primitive calls");
         }
     }

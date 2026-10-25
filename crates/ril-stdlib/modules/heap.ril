@@ -1,0 +1,64 @@
+use ril/_storage as Storage
+use ril/order
+
+pub type Heap<T> = Storage::Heap<T>
+
+pub fn new<T>(ops: Order::Ops<T>) -> Heap<T> {
+    let compare: fn(T, T) -> Order::Ordering @{} &{} = ops.compare
+    Storage::heap_new<T>(compare)
+}
+pub fn len<T>(heap: Heap<T>) -> int { Prelude::len(Storage::heap_items(heap)) }
+pub fn peek<T>(heap: Heap<T>) -> ?T {
+    let items = Storage::heap_items(heap)
+    if Prelude::len(items) == 0 { None } else { Some(items[0].0) }
+}
+
+fn before<T>(left: (T, bigint), right: (T, bigint), compare: fn(T, T) -> Order::Ordering @{} &{}) -> bool @{} &{} {
+    match compare(left.0, right.0) {
+        Order::Ordering::Less -> true,
+        Order::Ordering::Greater -> false,
+        Order::Ordering::Equal -> left.1 < right.1,
+    }
+}
+
+pub fn push<T>(mut heap: Heap<T>, value: T) &mut {
+    let stable = value
+    let compare = Storage::heap_compare(heap)
+    let serial = Storage::heap_serial(heap)
+    let mut items = Array::concat(Storage::heap_items(heap), [(stable, serial)])
+    var index = Prelude::len(items) - 1
+    while index > 0 {
+        let parent = (index - 1) / 2
+        if !before(items[index], items[parent], compare) { last }
+        let saved = items[parent]
+        items[parent] = items[index]
+        items[index] = saved
+        index = parent
+    }
+    Storage::heap_replace(mut heap, items, serial + 1bigint)
+}
+
+pub fn pop<T>(mut heap: Heap<T>) -> ?T &mut {
+    let source = Storage::heap_items(heap)
+    if Prelude::len(source) == 0 { return None }
+    let answer = source[0].0
+    let compare = Storage::heap_compare(heap)
+    let mut items = Array::concat(source, [])
+    let final_item = Array::pop(mut items) ?? panic("nonempty heap")
+    if Prelude::len(items) > 0 {
+        items[0] = final_item
+        var index = 0
+        while index < Prelude::len(items) / 2 {
+            let left = index * 2 + 1
+            let right = left + 1
+            let child = if right < Prelude::len(items) && before(items[right], items[left], compare) { right } else { left }
+            if !before(items[child], items[index], compare) { last }
+            let saved = items[index]
+            items[index] = items[child]
+            items[child] = saved
+            index = child
+        }
+    }
+    Storage::heap_replace(mut heap, items, Storage::heap_serial(heap))
+    Some(answer)
+}

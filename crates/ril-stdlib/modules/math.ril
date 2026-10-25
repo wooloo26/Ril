@@ -1,0 +1,39 @@
+pub let PI: f64 = 3.141592653589793238462643383279502884
+
+pub let TAU: f64 = 6.283185307179586476925286766559005768
+
+pub fn sqrt(value: f64) -> f64
+
+pub fn floor(value: f64) -> f64
+
+pub fn ceil(value: f64) -> f64
+
+pub fn round(value: f64) -> f64
+
+pub fn abs(value: f64) -> f64 { if value == 0.0 { 0.0 } else if value < 0.0 { -value } else { value } }
+
+pub fn is_nan(value: f64) -> bool { value != value }
+
+pub fn is_finite(value: f64) -> bool { !is_nan(value) && value - value == 0.0 }
+
+pub fn min(left: f64, right: f64) -> f64 { if is_nan(left) || is_nan(right) { 0.0 / 0.0 } else if left < right || (left == 0.0 && right == 0.0 && 1.0 / left < 0.0) { left } else { right } }
+
+pub fn max(left: f64, right: f64) -> f64 { if is_nan(left) || is_nan(right) { 0.0 / 0.0 } else if left > right || (left == 0.0 && right == 0.0 && 1.0 / left > 0.0) { left } else { right } }
+
+pub let PI_F32: f32 = 3.141592653589793238462643383279502884
+pub let TAU_F32: f32 = 6.283185307179586476925286766559005768
+pub fn sqrt_f32(value: f32) -> f32
+pub fn floor_f32(value: f32) -> f32
+pub fn ceil_f32(value: f32) -> f32
+pub fn round_f32(value: f32) -> f32
+pub fn abs_f32(value: f32) -> f32 { if value == 0.0f32 { 0.0f32 } else if value < 0.0f32 { -value } else { value } }
+pub fn is_nan_f32(value: f32) -> bool { value != value }
+pub fn is_finite_f32(value: f32) -> bool { !is_nan_f32(value) && value - value == 0.0f32 }
+pub fn min_f32(left: f32, right: f32) -> f32 {
+    if is_nan_f32(left) || is_nan_f32(right) { 0.0f32 / 0.0f32 }
+    else if left < right || (left == 0.0f32 && right == 0.0f32 && 1.0f32 / left < 0.0f32) { left } else { right }
+}
+pub fn max_f32(left: f32, right: f32) -> f32 {
+    if is_nan_f32(left) || is_nan_f32(right) { 0.0f32 / 0.0f32 }
+    else if left > right || (left == 0.0f32 && right == 0.0f32 && 1.0f32 / left > 0.0f32) { left } else { right }
+}

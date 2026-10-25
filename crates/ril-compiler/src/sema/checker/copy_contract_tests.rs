@@ -94,7 +94,11 @@ fn opaque_collection_members_require_a_complete_witness_and_survive_no_unknown_w
             .is_empty(),
         "an observed element and a fresh shell are not a whole-member witness"
     );
-    checker.record_opaque_collection_members(node, span());
+    checker.store_field(
+        node,
+        Slot::Field("$members".into()),
+        Value::scalar(Ty::Unit, Some(Constant::Unit), CauseId(0)),
+    );
     assert!(
         checker
             .copy_boundary(&source, span(), &frame, false)
@@ -135,7 +139,11 @@ fn opaque_membership_witness_does_not_remove_comparator_or_multiplicity_requirem
         node,
         CauseId(0),
     );
-    checker.record_opaque_collection_members(node, span());
+    checker.store_field(
+        node,
+        Slot::Field("$members".into()),
+        Value::scalar(Ty::Unit, Some(Constant::Unit), CauseId(0)),
+    );
     assert!(
         !checker
             .copy_boundary(&source, span(), &frame, false)

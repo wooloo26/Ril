@@ -18,10 +18,6 @@ use crate::sema::{
 use ril_compiler_core::ids::{NumericHoleId, TypeExprId};
 use std::sync::{Arc, OnceLock};
 
-#[path = "evaluated_current.rs"]
-mod current;
-pub(crate) use current::{CurrentValueStep, catalog_callable_bound, read_handle};
-
 pub(crate) type CheckedSource = Result<Option<(SourceSchema, FrozenEnvironment)>, SourceTypesError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1242,38 +1238,6 @@ mod packet_tests {
         assert!(early.shares_birth(&original));
         assert_eq!(original.current_epoch(), 0);
         assert_eq!(original.value.origins.nodes, BTreeSet::from([NodeId(1)]));
-    }
-
-    #[test]
-    fn a_derived_view_cannot_restart_a_failed_or_unfilled_capture() {
-        let mut types = LiveSourceTypes::default();
-        let mut original = EvaluatedValue::new(Value::scalar(Ty::Unit, None, CauseId(0)), 0);
-        let early = Arc::new(original.try_clone(&mut 4096).unwrap());
-        let result = EvaluatedValue::derive_current(
-            early.clone(),
-            CurrentValueStep::ReadHandle,
-            original.value.clone(),
-            &mut types,
-            &mut 4096,
-        );
-        assert_eq!(result.unwrap_err(), SourceTypesError::SourceNotCaptured);
-        assert!(!early.has_captured_source());
-        original
-            .capture_birth_source(Err(SourceTypesError::BudgetExceeded), None)
-            .unwrap();
-        let result = EvaluatedValue::derive_current(
-            early.clone(),
-            CurrentValueStep::ReadHandle,
-            original.value.clone(),
-            &mut types,
-            &mut 4096,
-        );
-        assert_eq!(result.unwrap_err(), SourceTypesError::BudgetExceeded);
-        assert!(early.shares_birth(&original));
-        assert_eq!(
-            resolve_birth(&early, &types).unwrap_err(),
-            SourceTypesError::BudgetExceeded
-        );
     }
 
     #[test]

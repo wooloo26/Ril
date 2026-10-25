@@ -1,0 +1,91 @@
+use ril/bytes
+use ril/num
+
+pub type ByteOrder { Little, Big }
+pub type BinaryError { UnexpectedEnd, Overflow, NonCanonical }
+pub type Cursor = { data: bytes, mut offset: int }
+
+pub fn cursor(data: bytes) -> Cursor { .{ data: data, offset: 0 } }
+pub fn remaining(cursor: Cursor) -> int { len(cursor.data) - cursor.offset }
+
+pub fn read_bytes(mut cursor: Cursor, count: int) -> Result<bytes, BinaryError> &mut {
+    if count < 0 || cursor.offset < 0 || cursor.offset > len(cursor.data)
+        || count > len(cursor.data) - cursor.offset { return Err(BinaryError::UnexpectedEnd) }
+    let result = cursor.data[cursor.offset..cursor.offset + count]
+    cursor.offset += count
+    Ok(result)
+}
+
+pub fn read_u8(mut cursor: Cursor) -> Result<u8, BinaryError> &mut {
+    let data = read_bytes(mut cursor, 1)?
+    Ok(data[0])
+}
+
+pub fn read_u32(mut cursor: Cursor, order: ByteOrder) -> Result<u32, BinaryError> &mut {
+    let data = read_bytes(mut cursor, 4)?
+    var output = 0u32
+    for 0..4 as index {
+        let at = if order is ByteOrder::Little { 3 - index } else { index }
+        output = (output << 8u32) | (Num::convert<u8, u32>(data[at]) ?? \_error -> panic("byte width"))
+    }
+    Ok(output)
+}
+
+pub fn read_u64(mut cursor: Cursor, order: ByteOrder) -> Result<u64, BinaryError> &mut {
+    let data = read_bytes(mut cursor, 8)?
+    var output = 0u64
+    for 0..8 as index {
+        let at = if order is ByteOrder::Little { 7 - index } else { index }
+        output = (output << 8u64) | (Num::convert<u8, u64>(data[at]) ?? \_error -> panic("byte width"))
+    }
+    Ok(output)
+}
+
+pub fn read_uleb128(mut cursor: Cursor) -> Result<u64, BinaryError> &mut {
+    var offset = cursor.offset
+    var value = 0u64
+    var shift = 0u64
+    loop {
+        if offset < 0 || offset >= len(cursor.data) { last Err(BinaryError::UnexpectedEnd) }
+        let byte = cursor.data[offset]
+        if shift == 63u64 && (byte & 254u8) != 0u8 { last Err(BinaryError::Overflow) }
+        let bits = Num::convert<u8, u64>(byte & 127u8) ?? \_error -> panic("byte width")
+        value = value | (bits << shift)
+        offset += 1
+        if (byte & 128u8) == 0u8 {
+            if shift > 0u64 && bits == 0u64 { last Err(BinaryError::NonCanonical) }
+            cursor.offset = offset
+            last Ok(value)
+        }
+        if shift == 63u64 { last Err(BinaryError::Overflow) }
+        shift += 7u64
+    }
+}
+
+pub fn write_u8(mut output: []u8, value: u8) &mut { output !> Array::push(value) }
+pub fn write_bytes(mut output: []u8, value: bytes) &mut {
+    for Bytes::to_array(value) as byte { output !> Array::push(byte) }
+}
+pub fn write_u32(mut output: []u8, value: u32, order: ByteOrder) &mut {
+    for 0..4 as index {
+        let at = if order is ByteOrder::Little { index } else { 3 - index }
+        let shift = Num::convert<int, u32>(at * 8) ?? \_error -> panic("word shift")
+        output !> Array::push(Num::convert<u32, u8>((value >> shift) & 255u32) ?? \_error -> panic("byte width"))
+    }
+}
+pub fn write_u64(mut output: []u8, value: u64, order: ByteOrder) &mut {
+    for 0..8 as index {
+        let at = if order is ByteOrder::Little { index } else { 7 - index }
+        let shift = Num::convert<int, u64>(at * 8) ?? \_error -> panic("word shift")
+        output !> Array::push(Num::convert<u64, u8>((value >> shift) & 255u64) ?? \_error -> panic("byte width"))
+    }
+}
+pub fn write_uleb128(mut output: []u8, value: u64) &mut {
+    var current = value
+    loop {
+        let byte = Num::convert<u64, u8>(current & 127u64) ?? \_error -> panic("byte width")
+        current = current >> 7u64
+        if current == 0u64 { output !> Array::push(byte); last }
+        output !> Array::push(byte | 128u8)
+    }
+}

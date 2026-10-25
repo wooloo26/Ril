@@ -1,0 +1,15 @@
+pub type Deque<T>
+
+pub fn new<T>() -> Deque<T>
+
+pub fn len<T>(queue: Deque<T>) -> int
+
+pub fn push_front<T>(mut queue: Deque<T>, value: T) &mut
+
+pub fn push_back<T>(mut queue: Deque<T>, value: T) &mut
+
+pub fn pop_front<T>(mut queue: Deque<T>) -> ?T &mut
+
+pub fn pop_back<T>(mut queue: Deque<T>) -> ?T &mut
+
+pub fn values<T>(queue: Deque<T>) -> []T

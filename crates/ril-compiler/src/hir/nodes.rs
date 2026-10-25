@@ -680,45 +680,6 @@ impl HirProgram {
     ) -> Result<ExprId, LowerError> {
         lower::generated(self, source, anchor, kind, owner, limits)
     }
-    /// Admit a native generated binder without manufacturing a source AST.
-    /// All fallible identity and work checks precede either arena mutation.
-    /// Expressions and patterns share the canonical generation/root sequence.
-    pub(crate) fn mint_generated_name_pattern(
-        &mut self,
-        anchor: NodeId,
-        kind: GeneratedKind,
-        name: &str,
-        limits: HirLimits,
-    ) -> Result<PatternId, LowerError> {
-        let original = self.info(anchor).ok_or(LowerError::MissingAnchor)?;
-        if limits.nodes < 2 || limits.depth == 0 {
-            return Err(LowerError::Budget("generated binding nodes"));
-        }
-        if limits.text_items == 0 || limits.text_bytes < name.len() {
-            return Err(LowerError::Budget("generated binding text"));
-        }
-        let generation =
-            u32::try_from(self.generated_roots.len()).map_err(|_| LowerError::IdentitySpace)?;
-        let id =
-            PatternId(u32::try_from(self.patterns.len()).map_err(|_| LowerError::IdentitySpace)?);
-        let info = NodeInfo {
-            span: original.span,
-            owner: original.owner,
-            origin: NodeOrigin::Generated {
-                generation,
-                anchor,
-                kind,
-            },
-            analyzed_type: None,
-        };
-        let pattern = Pattern {
-            info,
-            kind: PatternKind::Name(name.to_owned()),
-        };
-        self.patterns.push(pattern);
-        self.generated_roots.push(NodeId::Pattern(id));
-        Ok(id)
-    }
     /// Register and identify the generated AST as one transaction. The original
     /// AST is untouched if allocation or structural admission fails. Canonical
     /// record members and their controlled AST mirrors share occurrence IDs.

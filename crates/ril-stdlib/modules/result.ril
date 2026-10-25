@@ -1,3 +1,21 @@
 pub fn expect<T, E>(value: Result<T, E>, message: str) -> T {
     match value { Ok(item) -> item, Err(_) -> panic(message) }
 }
+pub fn map<T, U, E>(value: Result<T, E>, transform: fn(T) -> U) -> Result<U, E> {
+    match value { Ok(item) -> Ok(transform(item)), Err(error) -> Err(error) }
+}
+
+pub fn map_err<T, E, F>(value: Result<T, E>, transform: fn(E) -> F) -> Result<T, F> {
+    match value { Ok(item) -> Ok(item), Err(error) -> Err(transform(error)) }
+}
+
+pub fn and_then<T, U, E>(value: Result<T, E>, transform: fn(T) -> Result<U, E>) -> Result<U, E> {
+    match value { Ok(item) -> transform(item), Err(error) -> Err(error) }
+}
+
+pub fn recover<T, E>(value: Result<T, E>, handler: fn(E) -> T) -> T {
+    match value { Ok(item) -> item, Err(error) -> handler(error) }
+}
+
+
+pub type Result<T, E> = Prelude::Result<T, E>

@@ -1,0 +1,19 @@
+pub type Sender<T>
+
+pub type Receiver<T>
+
+pub type Detached<E>
+
+pub type ChannelError { Closed }
+
+pub fn bounded<T>(capacity: int) -> (Sender<T>, Receiver<T>) @Fiber
+
+pub fn send<T>(mut endpoint: Sender<T>, value: T) -> Result<(), ChannelError> @Fiber &mut
+
+pub fn recv<T>(mut endpoint: Receiver<T>) -> Result<T, ChannelError> @Fiber &mut
+
+pub fn detach<E>(mut endpoint: E) -> Detached<E> @Fiber &mut
+
+pub fn attach<E>(ticket: Detached<E>) -> E @Fiber
+
+pub fn close<E>(endpoint: E) -> () @Fiber

@@ -1,35 +1,6 @@
 //! Owned schemas preserve stream-operation callable modes and latent rows.
 use super::*;
 
-/// Reify the receiver's declared view, never its backing graph cardinality.
-/// Erased Ty is a fallback only when no array/callable identity can be lost.
-pub(super) fn receiver_type(value: &Value, ty: &Ty, span: Span) -> Option<TypeExpr> {
-    if let Some(witness) = &value.source_type_witness {
-        return witness.validate_closed().then(|| witness.syntax.clone());
-    }
-    fn complete(ty: &Ty) -> bool {
-        match ty {
-            Ty::Array(_)
-            | Ty::Callable(..)
-            | Ty::Unknown
-            | Ty::Generic(_)
-            | Ty::OpenRecord { .. }
-            | Ty::Applied { .. }
-            | Ty::Projection { .. }
-            | Ty::StaticKey(_)
-            | Ty::NumericHole(_) => false,
-            Ty::Immutable(inner) | Ty::Optional(inner) | Ty::Set(inner) | Ty::Range(inner) => {
-                complete(inner)
-            }
-            Ty::Result(a, b) | Ty::Map(a, b) => complete(a) && complete(b),
-            Ty::Tuple(items) => items.iter().all(complete),
-            Ty::Record(fields) => fields.values().all(|(_, ty)| complete(ty)),
-            _ => true,
-        }
-    }
-    complete(ty).then(|| data_type(ty, span)).flatten()
-}
-
 pub(super) fn operation_type(syntax: &TypeExpr) -> Option<TypeExpr> {
     let TypeKind::Name { path, arguments } = &syntax.kind else {
         return None;

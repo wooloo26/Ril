@@ -1,0 +1,30 @@
+pub fn get<K, V>(items: [K: V], key: K) -> ?V { items?[key] }
+pub fn contains<K, V>(items: [K: V], key: K) -> bool { items?[key] is Some(_) }
+
+pub fn keys<K, V>(items: [K: V]) -> []K {
+    let mut output: []K = []
+    for items as (key, _) { output !> Array::push(key) }
+    output
+}
+
+pub fn values<K, V>(items: [K: V]) -> []V {
+    let mut output: []V = []
+    for items as (_, value) { output !> Array::push(value) }
+    output
+}
+
+pub fn entries<K, V>(items: [K: V]) -> [](K, V) {
+    let mut output: [](K, V) = []
+    for items as entry { output !> Array::push(entry) }
+    output
+}
+
+pub fn from<K, V>(entries: [](K, V)) -> [K: V] {
+    let mut output: [K: V] = [:]
+    for entries as (key, value) { output !> Map::set(key, value) }
+    output
+}
+
+pub fn set<K, V>(mut items: [K: V], key: K, value: V) &mut
+
+pub fn remove<K, V>(mut items: [K: V], key: K) -> ?V &mut

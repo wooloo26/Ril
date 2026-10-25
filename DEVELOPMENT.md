@@ -139,23 +139,30 @@ duplicate source trees and historical verification reports.
   and callable instantiation queries. Instantiate foreign headers and defaults
   from original declarations and static choices, removing generated declaration
   ASTs. Complete nested/captured callable instance owner mappings.
-- Move remaining collection/order and resource/I/O algorithms into
-  ordinary library sources in `crates/ril-stdlib/modules/`. Delete each replaced
-  checker simulation, static implementation, late backend body generator and
-  runtime algorithm. All four Test helpers now use ordinary checked bodies;
-  structural equality shares eligibility checking with value tests and recursive
-  summaries. Iter's eight operations and Step/Source/Cursor now live in ordinary
-  library source. Its checker simulations, synthetic declarations/type factories,
-  generated syntax/facts and late Core generator have been deleted together.
-  The ordinary path currently exposes incomplete generic constructor payload
-  receiving, symbolic callable result types, captured environments, callback
-  result inference and nonordinary loop fixed points. These valid programs still
-  fail or remain incomplete; the migration does not establish Iter conformance.
-  Generic alias keys now follow their own substitutions, and constructor payload
-  normalization evaluates actual arguments in the caller's scope exactly once.
-  Unknown callbacks invalidate exposed cells and external live storage while
-  preserving private local variable cells. Keep one explicit set of necessary
-  primitive contracts.
+- Finish the standard library migration as one bulk pass, before repairing each
+  library's semantic cases. All 31 non-prelude public module interfaces and the private
+  storage interface now live in `crates/ril-stdlib/modules/`. Ordinary bodies
+  include collection/variant combinators, stable sorting/search and heap sifts,
+  explicit iteration, binary/hex encoding, string composition, integer codecs,
+  SHA-256, resource composition, parallel decomposition, time arithmetic and
+  seeded random generation. The whole late Core library generator has been
+  removed, along with the replaced variant/order/resource/stream checker
+  simulations and native array/variant callback algorithms. Runtime ABI is 8.
+  Complete the remaining ordinary bodies, including buffered streams, Unicode
+  conversion/data/casing, native path composition and exact decimal float codecs.
+  A bodyless declaration is not evidence that an operation is a necessary
+  primitive or is implemented. Bind genuine storage/host/scheduling primitives
+  to declaration identities, complete opaque representations and native data
+  exchange, and delete the remaining legacy catalogs, static special cases and
+  runtime algorithms. Do not keep the old library entry points as a fallback.
+  Move prelude re-exports and remaining closed signature families to the same
+  declarations, and keep private storage operations inaccessible to user code.
+  Static availability remains a declaration property; eligible operations must
+  execute these same elaborated bodies during static computation.
+  Then repair complete-type receiving, callable mode/row schemes, captured
+  environments, inference and finite loop/recursion summaries across the whole
+  library. Source parsing and Rust checks currently pass; language and native
+  acceptance remain incomplete. Preserve every corpus expectation throughout.
 - Eliminate remaining language and native failures, select runtime archives by
   build/ABI identity, and complete Windows/Linux, pointer32/pointer64 and applicable
   native acceptance. Preserved corpus cases define behavior; internal proof-export

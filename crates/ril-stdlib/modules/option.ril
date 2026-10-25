@@ -5,3 +5,17 @@ pub fn unwrap_or<T>(value: ?T, fallback: T) -> T {
 pub fn expect<T>(value: ?T, message: str) -> T {
     match value { Some(item) -> item, None -> panic(message) }
 }
+pub fn map<T, U>(value: ?T, transform: fn(T) -> U) -> ?U {
+    match value { Some(item) -> Some(transform(item)), None -> None }
+}
+
+pub fn and_then<T, U>(value: ?T, transform: fn(T) -> ?U) -> ?U {
+    match value { Some(item) -> transform(item), None -> None }
+}
+
+pub fn unwrap_or_else<T>(value: ?T, fallback: fn() -> T) -> T {
+    match value { Some(item) -> item, None -> fallback() }
+}
+
+
+pub type Option<T> = ?T

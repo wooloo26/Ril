@@ -1,0 +1,23 @@
+pub fn at(data: bytes, index: int) -> ?u8 {
+    if index < 0 || index >= len(data) { None } else { Some(data[index]) }
+}
+pub fn slice(data: bytes, start: int, end: int) -> ?bytes {
+    if start < 0 || start > end || end > len(data) { None }
+    else { Some(data[start..end]) }
+}
+pub fn concat(left: bytes, right: bytes) -> bytes {
+    let mut output = Bytes::to_array(left)
+    for Bytes::to_array(right) as item { output !> Array::push(item) }
+    Bytes::from_array(output)
+}
+pub fn find(data: bytes, needle: bytes) -> ?int {
+    if len(needle) > len(data) { return None }
+    for 0..=(len(data) - len(needle)) as index {
+        if data[index..index + len(needle)] == needle { return Some(index) }
+    }
+    None
+}
+
+pub fn from_array(items: []u8) -> bytes
+
+pub fn to_array(data: bytes) -> []u8

@@ -1,0 +1,108 @@
+use ril/bytes
+use ril/string_builder
+use ril/unicode
+fn width(value: u32) -> int {
+    if value < 128u32 { 1 } else if value < 2048u32 { 2 } else if value < 65536u32 { 3 } else { 4 }
+}
+fn offsets(values: []u32) -> []int {
+    let mut output = [0]
+    var offset = 0
+    for values as value { offset += width(value); output !> Array::push(offset) }
+    output
+}
+fn span_text(data: bytes, start: int, end: int) -> str {
+    Unicode::decode_utf8(data[start..end]) ?? \_error -> panic("UTF-8 scalar boundary")
+}
+fn matches_at(text: []u32, needle: []u32, start: int) -> bool {
+    if start < 0 || start > len(text) || len(needle) > len(text) - start { return false }
+    for 0..len(needle) as index { if text[start + index] != needle[index] { return false } }
+    true
+}
+pub fn find(text: str, needle: str) -> ?int {
+    let source = scalars(text)
+    let pattern = scalars(needle)
+    if len(pattern) > len(source) { return None }
+    for 0..=(len(source) - len(pattern)) as index { if matches_at(source, pattern, index) { return Some(index) } }
+    None
+}
+pub fn contains(text: str, needle: str) -> bool { find(text, needle) is Some(_) }
+pub fn starts_with(text: str, prefix: str) -> bool { matches_at(scalars(text), scalars(prefix), 0) }
+pub fn ends_with(text: str, suffix: str) -> bool {
+    let source = scalars(text)
+    let pattern = scalars(suffix)
+    matches_at(source, pattern, len(source) - len(pattern))
+}
+pub fn slice(text: str, start: int, end: int) -> ?str {
+    if start < 0 || start > end || end > len(text) { return None }
+    let boundaries = offsets(scalars(text))
+    Some(span_text(utf8(text), boundaries[start], boundaries[end]))
+}
+pub fn split(text: str, separator: str) -> []str {
+    let source = scalars(text)
+    let pattern = scalars(separator)
+    let boundaries = offsets(source)
+    let data = utf8(text)
+    let mut output: []str = []
+    if len(pattern) == 0 {
+        for 0..len(source) as index { output !> Array::push(span_text(data, boundaries[index], boundaries[index + 1])) }
+        return output
+    }
+    var start = 0
+    var index = 0
+    while index <= len(source) - len(pattern) {
+        if matches_at(source, pattern, index) {
+            output !> Array::push(span_text(data, boundaries[start], boundaries[index]))
+            index += len(pattern)
+            start = index
+        } else { index += 1 }
+    }
+    output !> Array::push(span_text(data, boundaries[start], boundaries[len(source)]))
+    output
+}
+pub fn join(parts: []str, separator: str) -> str {
+    let mut output = StringBuilder::new()
+    for 0..len(parts) as index {
+        if index > 0 { StringBuilder::append(mut output, separator) }
+        StringBuilder::append(mut output, parts[index])
+    }
+    StringBuilder::to_string(output)
+}
+pub fn concat(left: str, right: str) -> str { join([left, right], "") }
+pub fn replace(text: str, old: str, replacement: str) -> str {
+    if len(old) != 0 { return join(split(text, old), replacement) }
+    let parts = split(text, "")
+    if len(parts) == 0 { return replacement }
+    concat(replacement, concat(join(parts, replacement), replacement))
+}
+pub fn trim(text: str) -> str {
+    let source = scalars(text)
+    var start = 0
+    var end = len(source)
+    while start < end && Unicode::is_white_space(source[start]) { start += 1 }
+    while end > start && Unicode::is_white_space(source[end - 1]) { end -= 1 }
+    let boundaries = offsets(source)
+    span_text(utf8(text), boundaries[start], boundaries[end])
+}
+pub fn lines(text: str) -> []str {
+    let parts = split(text, "\n")
+    let mut output: []str = []
+    for 0..len(parts) as index {
+        if index + 1 == len(parts) {
+            if len(parts[index]) > 0 { output !> Array::push(parts[index]) }
+        } else if ends_with(parts[index], "\r") {
+            output !> Array::push(slice(parts[index], 0, len(parts[index]) - 1) ?? panic("line boundary"))
+        } else { output !> Array::push(parts[index]) }
+    }
+    output
+}
+pub fn scalar_at(text: str, index: int) -> ?u32 { Array::get(scalars(text), index) }
+pub fn byte_len(text: str) -> int { len(utf8(text)) }
+pub fn byte_offset(text: str, scalar_index: int) -> ?int { Array::get(offsets(scalars(text)), scalar_index) }
+pub fn scalar_offset(text: str, byte_index: int) -> ?int {
+    if byte_index < 0 || byte_index > byte_len(text) { return None }
+    let boundaries = offsets(scalars(text))
+    for 0..len(boundaries) as index { if boundaries[index] == byte_index { return Some(index) } }
+    None
+}
+pub fn scalars(text: str) -> []u32
+pub fn utf8(text: str) -> bytes

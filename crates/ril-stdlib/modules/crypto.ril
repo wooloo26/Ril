@@ -1,0 +1,64 @@
+use ril/bytes
+use ril/encoding/binary
+use ril/num
+meta let K: [64]u32 = [
+    0x428a2f98u32,0x71374491u32,0xb5c0fbcfu32,0xe9b5dba5u32,0x3956c25bu32,0x59f111f1u32,0x923f82a4u32,0xab1c5ed5u32,
+    0xd807aa98u32,0x12835b01u32,0x243185beu32,0x550c7dc3u32,0x72be5d74u32,0x80deb1feu32,0x9bdc06a7u32,0xc19bf174u32,
+    0xe49b69c1u32,0xefbe4786u32,0x0fc19dc6u32,0x240ca1ccu32,0x2de92c6fu32,0x4a7484aau32,0x5cb0a9dcu32,0x76f988dau32,
+    0x983e5152u32,0xa831c66du32,0xb00327c8u32,0xbf597fc7u32,0xc6e00bf3u32,0xd5a79147u32,0x06ca6351u32,0x14292967u32,
+    0x27b70a85u32,0x2e1b2138u32,0x4d2c6dfcu32,0x53380d13u32,0x650a7354u32,0x766a0abbu32,0x81c2c92eu32,0x92722c85u32,
+    0xa2bfe8a1u32,0xa81a664bu32,0xc24b8b70u32,0xc76c51a3u32,0xd192e819u32,0xd6990624u32,0xf40e3585u32,0x106aa070u32,
+    0x19a4c116u32,0x1e376c08u32,0x2748774cu32,0x34b0bcb5u32,0x391c0cb3u32,0x4ed8aa4au32,0x5b9cca4fu32,0x682e6ff3u32,
+    0x748f82eeu32,0x78a5636fu32,0x84c87814u32,0x8cc70208u32,0x90befffau32,0xa4506cebu32,0xbef9a3f7u32,0xc67178f2u32,
+]
+fn rotate(value: u32, count: u32) -> u32 { (value >> count) | (value << (32u32 - count)) }
+fn widen(value: u8) -> u32 { Num::convert<u8, u32>(value) ?? \_error -> panic("byte widening") }
+pub fn sha256(text: str) -> bytes { sha256_bytes(String::utf8(text)) }
+pub fn sha256_bytes(input: bytes) -> bytes {
+    let bits = (Num::convert<int, u64>(len(input)) ?? \_error -> panic("byte length")) *% 8u64
+    let mut data = Bytes::to_array(input)
+    data !> Array::push(128u8)
+    while len(data) % 64 != 56 { data !> Array::push(0u8) }
+    Binary::write_u64(mut data, bits, Binary::ByteOrder::Big)
+    let mut state = [0x6a09e667u32,0xbb67ae85u32,0x3c6ef372u32,0xa54ff53au32,0x510e527fu32,0x9b05688cu32,0x1f83d9abu32,0x5be0cd19u32]
+    for 0..(len(data) / 64) as block {
+        let mut words: []u32 = []
+        for 0..16 as index {
+            let offset = block * 64 + index * 4
+            words !> Array::push((widen(data[offset]) << 24u32) | (widen(data[offset + 1]) << 16u32)
+                | (widen(data[offset + 2]) << 8u32) | widen(data[offset + 3]))
+        }
+        for 16..64 as index {
+            let first = words[index - 15]
+            let second = words[index - 2]
+            let sigma_first = rotate(first, 7u32) ^ rotate(first, 18u32) ^ (first >> 3u32)
+            let sigma_second = rotate(second, 17u32) ^ rotate(second, 19u32) ^ (second >> 10u32)
+            words !> Array::push(words[index - 16] +% sigma_first +% words[index - 7] +% sigma_second)
+        }
+        var a = state[0]
+        var b = state[1]
+        var c = state[2]
+        var d = state[3]
+        var e = state[4]
+        var f = state[5]
+        var g = state[6]
+        var h = state[7]
+        for 0..64 as index {
+            let sum_e = rotate(e, 6u32) ^ rotate(e, 11u32) ^ rotate(e, 25u32)
+            let choice = (e & f) ^ ((~e) & g)
+            let first = h +% sum_e +% choice +% K[index] +% words[index]
+            let sum_a = rotate(a, 2u32) ^ rotate(a, 13u32) ^ rotate(a, 22u32)
+            let majority = (a & b) ^ (a & c) ^ (b & c)
+            let second = sum_a +% majority
+            h = g; g = f; f = e; e = d +% first
+            d = c; c = b; b = a; a = first +% second
+        }
+        state[0] = state[0] +% a; state[1] = state[1] +% b
+        state[2] = state[2] +% c; state[3] = state[3] +% d
+        state[4] = state[4] +% e; state[5] = state[5] +% f
+        state[6] = state[6] +% g; state[7] = state[7] +% h
+    }
+    let mut output: []u8 = []
+    for state as word { Binary::write_u32(mut output, word, Binary::ByteOrder::Big) }
+    Bytes::from_array(output)
+}

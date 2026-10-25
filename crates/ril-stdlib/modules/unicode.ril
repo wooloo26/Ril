@@ -1,0 +1,21 @@
+pub type DecodeError = { offset: int }
+
+pub type ScalarError = { value: u32 }
+
+pub fn decode_utf8(data: bytes) -> Result<str, DecodeError>
+
+pub fn from_scalar(value: u32) -> Result<str, ScalarError>
+
+pub fn is_white_space(value: u32) -> bool
+
+pub fn is_alphabetic(value: u32) -> bool
+
+pub fn is_decimal_digit(value: u32) -> bool
+
+pub fn is_xid_start(value: u32) -> bool
+
+pub fn is_xid_continue(value: u32) -> bool
+
+pub fn lowercase(text: str) -> str
+
+pub fn uppercase(text: str) -> str

@@ -1,0 +1,45 @@
+fn map_parts<T, U>(items: []T, workers: int, transform: fn(T) -> U) -> []U {
+    if len(items) <= 1 || workers == 1 { return Array::map(items, transform) }
+    let middle = len(items) / 2
+    let first_workers = workers / 2
+    let parts = join(
+        \ -> map_parts(items[0..middle], first_workers, transform),
+        \ -> map_parts(items[middle..len(items)], workers - first_workers, transform))
+    Array::concat(parts.0, parts.1)
+}
+pub fn map<T, U>(items: []T, transform: fn(T) -> U) -> []U {
+    let result = join(\ -> map_parts(items, if len(items) == 0 { 1 } else { len(items) }, transform), \ -> ())
+    result.0
+}
+pub fn map_bounded<T, U>(items: []T, max_concurrency: int, transform: fn(T) -> U) -> []U {
+    assert(max_concurrency > 0, "nonpositive concurrency bound")
+    let result = join(\ -> map_parts(items, max_concurrency, transform), \ -> ())
+    result.0
+}
+pub fn find<T>(items: []T, predicate: fn(T) -> bool) -> ?T {
+    let matches = map(items, predicate)
+    for 0..len(items) as index { if matches[index] { return Some(items[index]) } }
+    None
+}
+pub fn first<T>(items: []T, predicate: fn(T) -> bool) -> ?T { find(items, predicate) }
+pub fn any<T>(items: []T, predicate: fn(T) -> bool) -> bool { find(items, predicate) is Some(_) }
+pub fn fold<T, A>(items: []T, init_acc: fn() -> A,
+    fold_local: fn(A, T) -> A, merge_acc: fn(A, A) -> A) -> A {
+    if len(items) == 0 {
+        let result = join(init_acc, \ -> ())
+        return result.0
+    }
+    if len(items) == 1 {
+        let result = join(\ -> fold_local(init_acc(), items[0]), \ -> ())
+        return result.0
+    }
+    let middle = len(items) / 2
+    let parts = join(
+        \ -> fold(items[0..middle], init_acc, fold_local, merge_acc),
+        \ -> fold(items[middle..len(items)], init_acc, fold_local, merge_acc))
+    let merged = join(\ -> merge_acc(parts.0, parts.1), \ -> ())
+    merged.0
+}
+pub fn join<A, B>(left: fn() -> A, right: fn() -> B) -> (A, B)
+pub fn join3<A, B, C>(first: fn() -> A, second: fn() -> B, third: fn() -> C) -> (A, B, C)
+pub fn for_each<T>(mut items: []T, action: fn(mut T) -> ()) &mut

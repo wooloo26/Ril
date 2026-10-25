@@ -3,40 +3,17 @@ use super::*;
 pub(super) fn is_collection_builtin(name: &str) -> bool {
     matches!(
         name,
-        "Array::first"
-            | "Array::get"
-            | "Array::contains"
+        "Array::push"
             | "Array::pop"
-            | "Array::remove"
-            | "Array::reverse"
-            | "Array::concat"
-            | "Array::map"
-            | "Array::filter"
-            | "Array::fold"
-            | "Array::find"
-            | "Array::any"
-            | "Array::all"
-            | "Array::for_each"
-            | "Array::push"
             | "Array::insert"
+            | "Array::remove"
             | "Array::truncate"
-            | "Map::get"
-            | "Map::contains"
             | "Map::set"
             | "Map::remove"
-            | "Map::keys"
-            | "Map::values"
-            | "Map::entries"
-            | "Map::from"
-            | "Set::from"
-            | "Set::of"
             | "Set::contains"
             | "Set::insert"
             | "Set::remove"
             | "Set::values"
-            | "Set::union"
-            | "Set::intersect"
-            | "Set::diff"
     )
 }
 impl Checker {
@@ -60,8 +37,8 @@ impl Checker {
             return Some(self.standard_set(name, args, span, frame));
         }
         let arity = match name {
-            "Array::first" | "Array::pop" | "Array::reverse" => 1,
-            "Array::fold" | "Array::insert" => 3,
+            "Array::pop" => 1,
+            "Array::insert" => 3,
             _ => 2,
         };
         if args.len() != arity {
@@ -92,18 +69,6 @@ impl Checker {
             name,
             "Array::pop" | "Array::remove" | "Array::push" | "Array::insert" | "Array::truncate"
         );
-        let callback_index = match name {
-            "Array::map" | "Array::filter" | "Array::find" | "Array::any" | "Array::all"
-            | "Array::for_each" => Some(1),
-            "Array::fold" => Some(2),
-            _ => None,
-        };
-        if callback_index.is_some() && !source.results.is_empty() {
-            self.unsupported(
-                span,
-                "traversal requires per-element Result inspection coverage",
-            );
-        }
         for (index, (mode, value, argument_span)) in args.iter().enumerate() {
             let expected = if index == 0 && writes {
                 ParameterMode::Mut
@@ -113,19 +78,11 @@ impl Checker {
             let retained_value = matches!(name, "Array::push" | "Array::insert")
                 && index + 1 == args.len()
                 && *mode == ParameterMode::SharedMut;
-            if Some(index) != callback_index && *mode != expected && !retained_value {
+            if *mode != expected && !retained_value {
                 self.error(
                     "E0405",
                     *argument_span,
                     "array argument mode mismatch",
-                    [value.cause],
-                );
-            }
-            if Some(index) == callback_index && *mode == ParameterMode::SharedMut {
-                self.error(
-                    "E0405",
-                    *argument_span,
-                    "traversal callback is borrowed, not retained",
                     [value.cause],
                 );
             }
@@ -182,194 +139,27 @@ impl Checker {
                 }
                 self.unit(span)
             }
-            "Array::first" | "Array::get" | "Array::pop" | "Array::remove" => {
-                if writes && !source.results.is_empty() {
+            "Array::pop" | "Array::remove" => {
+                if !source.results.is_empty() {
                     self.unsupported(
                         span,
                         "removal requires exact Result membership preservation",
                     );
                 }
                 if name == "Array::remove" {
-                    self.standard_forget_positions(source);
-                }
-                if matches!(name, "Array::get" | "Array::remove") {
                     self.require_type(&args[1].1, &integer("int"), args[1].2);
-                }
-                let selected = if name == "Array::first" {
-                    Some(0)
-                } else if matches!(name, "Array::get" | "Array::remove") {
-                    if let Some(Constant::Integer(index)) = args[1].1.constant {
-                        i64::try_from(index).ok()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                if let Some(index) = selected
-                    && !empty
-                    && index >= 0
-                {
-                    child = self.project(source, Slot::Index(index), span, frame, true);
-                    self.standard_read_handle(&mut child);
-                }
-                if name == "Array::remove" {
+                    self.standard_forget_positions(source);
                     child
+                } else if empty {
+                    let mut none = self.unit(span);
+                    none.ty = Ty::Optional(element.clone());
+                    none.option_tag = Some(false);
+                    none
                 } else {
-                    let absent = empty
-                        || (name == "Array::get"
-                            && matches!(args[1].1.constant, Some(Constant::Integer(index)) if index < 0));
-                    if absent {
-                        let mut none = self.unit(span);
-                        none.ty = Ty::Optional(element.clone());
-                        none.constant = None;
-                        none.option_tag = Some(false);
-                        none
-                    } else {
-                        self.standard_option(child, None, span, frame.owner)
-                    }
+                    self.standard_option(child, None, span, frame.owner)
                 }
             }
-            "Array::contains" => {
-                self.require_type(&args[1].1, &element, args[1].2);
-                self.standard_equality_type(&element, span);
-                self.deep_read(source, span, frame);
-                self.deep_read(&args[1].1, span, frame);
-                self.standard_value(Ty::Bool, span, frame.owner, 0)
-            }
-            "Array::reverse" | "Array::concat" => {
-                let mut sources = vec![source.clone()];
-                if name == "Array::concat" {
-                    self.require_type(&args[1].1, &Ty::Array(element.clone()), args[1].2);
-                    self.access(&args[1].1, None, Mode::Read, args[1].2, frame);
-                    sources.push(args[1].1.clone());
-                }
-                self.standard_copy_array(
-                    &sources,
-                    (*element).clone(),
-                    name == "Array::reverse",
-                    span,
-                    frame,
-                )
-            }
-            _ => {
-                let index = callback_index.unwrap();
-                let (mode, callback, callback_span) = &args[index];
-                let mut callback = callback.clone();
-                if *mode == ParameterMode::Read {
-                    callback.permission = Permission::Read;
-                } else {
-                    if callback.permission != Permission::Write {
-                        self.error(
-                            "E0520",
-                            *callback_span,
-                            "mutable callback has no write authority",
-                            [callback.cause],
-                        );
-                    }
-                    self.access(&callback, None, Mode::Write, *callback_span, frame);
-                }
-                let mut invocation = vec![(ParameterMode::Read, child.clone(), span)];
-                if name == "Array::fold" {
-                    invocation.insert(0, (ParameterMode::Read, args[1].1.clone(), args[1].2));
-                }
-                let count = self.known_array_length(source);
-                let before = self.snapshot_flow();
-                let obligations = frame.obligations.clone();
-                let repeated = if count.is_none_or(|count| count > 1) {
-                    Some(self.begin_repeated_callback(&mut invocation, frame))
-                } else {
-                    None
-                };
-                self.active_iterations.push(source.origins.clone());
-                let mut returned = self.invoke_generated_values(&callback, invocation, span, frame);
-                self.active_iterations.pop();
-                if let Some(repeated) = repeated {
-                    self.finish_repeated_callback(repeated, span);
-                }
-                if count == Some(0) {
-                    self.restore_preview(&before);
-                    frame.obligations = obligations;
-                } else if count.is_none() {
-                    let skipped = self.unit(span);
-                    let executed = if returned.ty == Ty::Never {
-                        returned.clone()
-                    } else {
-                        self.unit(span)
-                    };
-                    let _ = self.conditional_flow(&before, &skipped, &executed, None, span);
-                }
-                if count.is_some_and(|count| count > 0) && returned.ty == Ty::Never {
-                    return Some(returned);
-                }
-                if count != Some(0) && !returned.results.is_empty() {
-                    self.unsupported(
-                        span,
-                        "traversal Result production/inspection multiplicity proof",
-                    );
-                }
-                if unknown_type(&returned.ty) {
-                    self.unsupported(span, "traversal callback result type is unresolved");
-                }
-                match name {
-                    "Array::map" => {
-                        if count != Some(0) && !returned.origins.nodes.is_empty() {
-                            self.unsupported(
-                                span,
-                                "mapped reference-result allocation multiplicity proof",
-                            );
-                        }
-                        self.standard_array_with_children(
-                            returned.ty.clone(),
-                            if count == Some(0) {
-                                vec![]
-                            } else {
-                                vec![returned]
-                            },
-                            span,
-                            frame.owner,
-                        )
-                    }
-                    "Array::filter" => {
-                        self.require_type(&returned, &Ty::Bool, span);
-                        let mut selected = self.standard_copy_array(
-                            std::slice::from_ref(source),
-                            (*element).clone(),
-                            false,
-                            span,
-                            frame,
-                        );
-                        // Filtering is not a proof that every input Result survives.
-                        selected.must_results.clear();
-                        selected
-                    }
-                    "Array::find" => {
-                        self.require_type(&returned, &Ty::Bool, span);
-                        self.standard_option(child, empty.then_some(false), span, frame.owner)
-                    }
-                    "Array::any" | "Array::all" => {
-                        self.require_type(&returned, &Ty::Bool, span);
-                        self.standard_value(Ty::Bool, span, frame.owner, 0)
-                    }
-                    "Array::for_each" => {
-                        self.require_type(&returned, &Ty::Unit, span);
-                        self.unit(span)
-                    }
-                    "Array::fold" => {
-                        self.require_type(&returned, &args[1].1.ty, span);
-                        if !returned.ty.scalar() {
-                            self.unsupported(span, "reference-valued fold accumulator fixed point");
-                        }
-                        if empty {
-                            args[1].1.clone()
-                        } else {
-                            returned = returned.join(&args[1].1, self.choice(), returned.cause);
-                            returned
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
+            _ => unreachable!(),
         };
         Some(output)
     }
@@ -388,7 +178,6 @@ impl Checker {
         frame: &mut Frame,
     ) -> Value {
         let arity = match name {
-            "Map::keys" | "Map::values" | "Map::entries" | "Map::from" => 1,
             "Map::set" => 3,
             _ => 2,
         };
@@ -402,56 +191,6 @@ impl Checker {
             return self.unit(span);
         }
         let (_, source, source_span) = &args[0];
-        if name == "Map::from" {
-            self.standard_arguments(name, args, std::slice::from_ref(&source.ty), 1, span);
-            let Ty::Array(element) = self.expanded(&source.ty, &mut BTreeSet::new()) else {
-                self.error(
-                    "E0301",
-                    *source_span,
-                    "Map::from requires array pairs",
-                    [source.cause],
-                );
-                return self.unit(span);
-            };
-            let Ty::Tuple(pair) = *element else {
-                self.error(
-                    "E0301",
-                    *source_span,
-                    "Map::from requires tuple pairs",
-                    [source.cause],
-                );
-                return self.unit(span);
-            };
-            if pair.len() != 2 {
-                self.error(
-                    "E0301",
-                    *source_span,
-                    "Map::from requires two-element pairs",
-                    [source.cause],
-                );
-                return self.unit(span);
-            }
-            self.standard_key_type(&pair[0], span, &mut BTreeSet::new());
-            self.access(source, None, Mode::Read, *source_span, frame);
-            let entry = self.project(source, Slot::AnyIndex, span, frame, true);
-            let key = self.project(&entry, Slot::Tuple(0), span, frame, true);
-            let mut value = self.project(&entry, Slot::Tuple(1), span, frame, true);
-            self.standard_read_handle(&mut value);
-            if !source.results.is_empty() {
-                self.unsupported(span, "Map::from duplicate overwrite Result coverage proof");
-            }
-            return self.standard_map_value(
-                pair[0].clone(),
-                pair[1].clone(),
-                key,
-                value,
-                span,
-                frame.owner,
-            );
-        }
-        if name == "Map::set" {
-            self.constrain_collection_insert(source, &args[2].1, Some(&args[1].1), args[2].2);
-        }
         let Ty::Map(key_ty, value_ty) =
             self.expanded(&self.collection_type(source), &mut BTreeSet::new())
         else {
@@ -493,16 +232,12 @@ impl Checker {
         } else {
             self.access(source, None, Mode::Read, *source_span, frame);
         }
-        if matches!(
-            name,
-            "Map::get" | "Map::contains" | "Map::set" | "Map::remove"
-        ) {
+        if matches!(name, "Map::set" | "Map::remove") {
             self.require_type(&args[1].1, &key_ty, args[1].2);
             self.deep_read(&args[1].1, args[1].2, frame);
         }
         match name {
-            "Map::contains" => self.standard_value(Ty::Bool, span, frame.owner, 0),
-            "Map::get" | "Map::remove" => {
+            "Map::remove" => {
                 let mut value = self.project(source, Slot::AnyIndex, span, frame, true);
                 self.standard_read_handle(&mut value);
                 self.standard_option(value, None, span, frame.owner)
@@ -537,68 +272,8 @@ impl Checker {
                 }
                 self.unit(span)
             }
-            "Map::keys" => {
-                let key = self.project(source, Slot::Field("key".into()), span, frame, true);
-                self.standard_array_with_children(*key_ty, vec![key], span, frame.owner)
-            }
-            "Map::values" => {
-                let mut value = self.project(source, Slot::AnyIndex, span, frame, true);
-                self.standard_read_handle(&mut value);
-                let mut output =
-                    self.standard_array_with_children(*value_ty, vec![value], span, frame.owner);
-                if !source.results.is_empty() {
-                    self.unsupported(span, "map enumeration Result membership coverage");
-                    output.must_results.clear();
-                }
-                output
-            }
-            "Map::entries" => {
-                let key = self.project(source, Slot::Field("key".into()), span, frame, true);
-                let mut value = self.project(source, Slot::AnyIndex, span, frame, true);
-                self.standard_read_handle(&mut value);
-                let node = self.allocate(span, 1, frame.owner);
-                let cause = self.heap.nodes[node.0 as usize].cause;
-                let mut pair = Value::reference(
-                    Ty::Tuple(vec![(*key_ty).clone(), (*value_ty).clone()]),
-                    node,
-                    cause,
-                );
-                pair.results = value.results.clone();
-                pair.must_results = value.must_results.clone();
-                self.store_field(node, Slot::Tuple(0), key);
-                self.store_field(node, Slot::Tuple(1), value);
-                let mut output = self.standard_array_with_children(
-                    pair.ty.clone(),
-                    vec![pair],
-                    span,
-                    frame.owner,
-                );
-                if !source.results.is_empty() {
-                    self.unsupported(span, "map enumeration Result membership coverage");
-                    output.must_results.clear();
-                }
-                output
-            }
             _ => unreachable!(),
         }
-    }
-    fn standard_map_value(
-        &mut self,
-        key_ty: Ty,
-        value_ty: Ty,
-        key: Value,
-        value: Value,
-        span: Span,
-        owner: ScopeId,
-    ) -> Value {
-        let node = self.allocate(span, 0, owner);
-        let cause = self.heap.nodes[node.0 as usize].cause;
-        let mut output =
-            Value::reference(Ty::Map(Box::new(key_ty), Box::new(value_ty)), node, cause);
-        output.results = value.results.clone();
-        self.store_field(node, Slot::Field("key".into()), key);
-        self.store_field(node, Slot::AnyIndex, value);
-        output
     }
     fn standard_receive_insert(
         &mut self,
@@ -652,11 +327,7 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        let arity = if matches!(name, "Set::from" | "Set::of" | "Set::values") {
-            1
-        } else {
-            2
-        };
+        let arity = if name == "Set::values" { 1 } else { 2 };
         if args.len() != arity {
             self.error(
                 "E0314",
@@ -671,8 +342,7 @@ impl Checker {
             self.constrain_collection_insert(source, &args[1].1, None, args[1].2);
         }
         let element = match self.expanded(&self.collection_type(source), &mut BTreeSet::new()) {
-            Ty::Array(element) if matches!(name, "Set::from" | "Set::of") => element,
-            Ty::Set(element) if !matches!(name, "Set::from" | "Set::of") => element,
+            Ty::Set(element) => element,
             _ => {
                 self.error(
                     "E0301",
@@ -721,26 +391,15 @@ impl Checker {
                 }
                 self.standard_value(Ty::Bool, span, frame.owner, 0)
             }
-            "Set::from" | "Set::of" | "Set::values" | "Set::union" | "Set::intersect"
-            | "Set::diff" => {
+            "Set::values" => {
                 let mut child = self.project(source, Slot::AnyIndex, span, frame, true);
                 self.standard_read_handle(&mut child);
-                if args.len() == 2 {
-                    self.require_type(&args[1].1, &Ty::Set(element.clone()), args[1].2);
-                    self.access(&args[1].1, None, Mode::Read, args[1].2, frame);
-                    let next = self.project(&args[1].1, Slot::AnyIndex, span, frame, true);
-                    child = child.join(&next, self.choice(), child.cause);
-                }
-                let mut output = self.standard_array_with_children(
+                self.standard_array_with_children(
                     (*element).clone(),
                     vec![child],
                     span,
                     frame.owner,
-                );
-                if name != "Set::values" {
-                    output.ty = Ty::Set(element);
-                }
-                output
+                )
             }
             _ => unreachable!(),
         }
@@ -833,71 +492,6 @@ impl Checker {
             }
         }
         self.access(target, None, Mode::Write, span, frame);
-    }
-    fn standard_equality_type(&mut self, ty: &Ty, span: Span) {
-        match self.expanded(ty, &mut BTreeSet::new()) {
-            Ty::Callable(..) => {
-                self.error("E0305", span, "callable values do not admit equality", [])
-            }
-            Ty::Unknown => self.unsupported(span, "collection equality type is unresolved"),
-            Ty::Array(inner) | Ty::Optional(inner) => self.standard_equality_type(&inner, span),
-            Ty::Map(a, b) | Ty::Result(a, b) => {
-                self.standard_equality_type(&a, span);
-                self.standard_equality_type(&b, span);
-            }
-            Ty::Tuple(items) => {
-                for item in items {
-                    self.standard_equality_type(&item, span);
-                }
-            }
-            Ty::Record(fields) => {
-                for (_, (_, item)) in fields {
-                    self.standard_equality_type(&item, span);
-                }
-            }
-            _ => {}
-        }
-    }
-    pub(super) fn standard_copy_array(
-        &mut self,
-        sources: &[Value],
-        element: Ty,
-        reverse: bool,
-        span: Span,
-        frame: &mut Frame,
-    ) -> Value {
-        let mut children = vec![];
-        for source in sources {
-            if !source.results.is_empty() {
-                self.unsupported(span, "copied collection Result membership coverage");
-            }
-            let mut source_children: Vec<_> = self
-                .fields
-                .iter()
-                .filter_map(|((node, slot), value)| {
-                    (source.origins.nodes.contains(node)
-                        && matches!(slot, Slot::Index(_) | Slot::AnyIndex))
-                    .then_some((slot.clone(), value.clone()))
-                })
-                .collect();
-            source_children.sort_by(|a, b| a.0.cmp(&b.0));
-            if reverse {
-                source_children.reverse();
-            }
-            for (slot, _) in source_children {
-                let mut child = self.project(source, slot, span, frame, true);
-                if child.construction && self.construction_can_publish(&child) {
-                    child.publication = Publication::Immutable;
-                }
-                self.standard_read_handle(&mut child);
-                children.push(child);
-            }
-        }
-        let mut output = self.standard_array_with_children(element, children, span, frame.owner);
-        if sources.iter().any(|source| !source.results.is_empty()) {
-            output.must_results.clear();
-        }
-        output
     }
     pub(in crate::sema::checker) fn standard_array_with_children(
         &mut self,

@@ -3043,15 +3043,6 @@ impl Checker {
         if self.operations.contains_key(name) {
             return self.perform_operation(name, &args, span, frame);
         }
-        if name == "File::with_file" {
-            return self.file_with_callback(&args, span, frame);
-        }
-        if name == "Process::with_child" {
-            return self.process_with_callback(&args, span, frame);
-        }
-        if matches!(name, "Io::read_all" | "Io::write_all") {
-            return self.io_all(name, &args, span, frame);
-        }
 
         if matches!(
             name,

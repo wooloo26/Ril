@@ -11,14 +11,10 @@ mod environment;
 mod file;
 #[path = "standard_intrinsics.rs"]
 mod intrinsics;
-#[path = "standard_order.rs"]
-mod order;
 #[path = "standard_process.rs"]
 mod process;
 #[path = "standard_temporal.rs"]
 mod temporal;
-#[path = "standard_variants.rs"]
-mod variants;
 
 pub(super) fn is_builtin(name: &str) -> bool {
     super::concurrent::is_builtin(name)
@@ -26,9 +22,7 @@ pub(super) fn is_builtin(name: &str) -> bool {
         || simple_signature(name).is_some()
         || collections::is_collection_builtin(name)
         || binary::is_binary_builtin(name)
-        || variants::is_variant_builtin(name)
         || temporal::is_temporal_builtin(name)
-        || order::is_order_builtin(name)
         || crate::sema::source_types::builtins::BuiltinId::lookup(name).is_some()
         || file::is_file_builtin(name)
         || environment::is_environment_builtin(name)
@@ -208,9 +202,6 @@ pub(super) fn constant_ty(name: &str) -> Option<Ty> {
         return Some(ty);
     }
     if let Some(ty) = intrinsics::constant_type(name) {
-        return Some(ty);
-    }
-    if let Some(ty) = order::order_constant(name) {
         return Some(ty);
     }
     if let Some(ty) = temporal::temporal_constant(name) {
@@ -414,7 +405,7 @@ impl Checker {
         if let Some(value) = self.standard_file_builtin(name, args, span, frame) {
             return Some(value);
         }
-        self.standard_order_typed(callee, name, args, span, frame)
+        None
     }
 
     fn attach_standard_data_result(&mut self, name: &str, value: &mut Value, span: Span) {
@@ -449,9 +440,6 @@ impl Checker {
             return;
         }
         if self.concurrent_generic(value, arguments, span) {
-            return;
-        }
-        if self.standard_order_generic(value, arguments, span) {
             return;
         }
         if !value
@@ -510,19 +498,10 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Option<Value> {
-        if matches!(
-            name,
-            "Io::read_buffered" | "Io::read_buffered_at" | "Io::write_buffered" | "Io::flush"
-        ) {
-            return Some(self.io_buffered(name, args, span, frame));
-        }
         if let Some(value) = self.parallel_builtin(name, args, span, frame) {
             return Some(value);
         }
         if let Some(value) = self.standard_intrinsic_builtin(name, args, span, frame) {
-            return Some(value);
-        }
-        if let Some(value) = self.standard_order_builtin(name, args, span, frame) {
             return Some(value);
         }
         if let Some(value) = self.standard_temporal_builtin(name, args, span, frame) {
@@ -550,9 +529,6 @@ impl Checker {
             return Some(value);
         }
         if let Some(value) = self.standard_binary_builtin(name, args, span, frame) {
-            return Some(value);
-        }
-        if let Some(value) = self.standard_variant_builtin(name, args, span, frame) {
             return Some(value);
         }
         if name == "Num::convert" {

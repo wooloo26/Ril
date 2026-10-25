@@ -23,8 +23,6 @@ mod default_tests;
 mod discovery;
 #[path = "managed/foreign.rs"]
 pub(crate) mod foreign;
-#[path = "managed/hof.rs"]
-mod hof;
 #[path = "managed/named.rs"]
 mod named;
 #[path = "managed/patterns.rs"]
@@ -845,7 +843,6 @@ pub(crate) fn prepare(input: &native::Module) -> Result<Prepared, BackendError> 
         }
     }
     cleanup::validate(&prepared)?;
-    hof::validate(&prepared)?;
     Ok(prepared)
 }
 

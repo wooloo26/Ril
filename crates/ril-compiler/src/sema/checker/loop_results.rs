@@ -170,29 +170,6 @@ impl Checker {
         }
         self.result_sites.retain(|_, id| !closed.contains(id));
     }
-
-    /// A normal read_all/write_all return has entered the operation at least
-    /// once, including an empty write. Only reached inspections of old duties
-    /// survive; a callback return or abnormal flag does not waive caller debt.
-    pub(super) fn finish_guaranteed_callback_results(
-        &mut self,
-        state: LoopResultState,
-        iteration: &mut Value,
-        frame: &mut Frame,
-        span: Span,
-        body: &Block,
-    ) {
-        let inspected: BTreeSet<_> = self.result_duties[..state.start]
-            .iter()
-            .filter_map(|duty| duty.inspected.then_some(duty.id))
-            .collect();
-        self.finish_loop_results(state, iteration, frame, span, body);
-        for id in inspected {
-            let duty = &mut self.result_duties[id as usize];
-            duty.inspected = true;
-            duty.covered = true;
-        }
-    }
 }
 
 fn strip_closed(value: &mut Value, closed: &BTreeSet<u32>) {

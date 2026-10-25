@@ -1,0 +1,21 @@
+pub type NativeString
+
+pub type NativeError { InvalidEncoding, WrongPlatform }
+
+pub type Platform { Windows, Posix }
+
+pub fn from_string(text: str) -> NativeString
+
+pub fn to_string(value: NativeString) -> Result<str, NativeError>
+
+pub fn from_posix_bytes(data: bytes) -> Result<NativeString, NativeError>
+
+pub fn posix_bytes(value: NativeString) -> Result<bytes, NativeError>
+
+pub fn from_windows_units(units: []u16) -> Result<NativeString, NativeError>
+
+pub fn windows_units(value: NativeString) -> Result<[]u16, NativeError>
+
+pub fn compare(left: NativeString, right: NativeString) -> Order::Ordering
+
+pub fn platform() -> Platform

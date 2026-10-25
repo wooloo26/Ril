@@ -73,47 +73,6 @@ pub enum ScalarInput {
     BufferedBytes(EvaluationOccurrenceId),
 }
 
-pub(crate) struct RecordCallback {
-    pub receiver: u32,
-    pub operations: u32,
-    pub field: &'static str,
-    pub scalar_source: ScalarSource,
-}
-pub(crate) enum ScalarSource {
-    PositiveInt,
-    ByteSuffix(u32),
-    BufferedBytes(u32),
-}
-pub(crate) fn record_callback(name: &str) -> Option<RecordCallback> {
-    Some(match name {
-        "Io::read_all" => RecordCallback {
-            receiver: 0,
-            operations: 1,
-            field: "read",
-            scalar_source: ScalarSource::PositiveInt,
-        },
-        "Io::write_all" => RecordCallback {
-            receiver: 0,
-            operations: 2,
-            field: "write",
-            scalar_source: ScalarSource::ByteSuffix(1),
-        },
-        "Io::read_buffered" => RecordCallback {
-            receiver: 1,
-            operations: 2,
-            field: "read",
-            scalar_source: ScalarSource::PositiveInt,
-        },
-        "Io::write_buffered" | "Io::flush" | "Io::close_write_buffer" => RecordCallback {
-            receiver: 1,
-            operations: 2,
-            field: "write",
-            scalar_source: ScalarSource::BufferedBytes(0),
-        },
-        _ => return None,
-    })
-}
-
 /// A physical field operand of a record construction, without synthesizing
 /// another evaluation of that construction or guessing by source position.
 

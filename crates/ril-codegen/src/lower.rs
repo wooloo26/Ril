@@ -38,7 +38,7 @@ pub fn lower_native_with_entry(
             "native entry requires its own copy-template substitution proof",
         ));
     }
-    let mut lowered = crate::hof::lower(program)?;
+    let mut lowered = program.clone();
     let metering = crate::cps::contains_budget(&lowered);
     if metering {
         for function in &mut lowered.functions {

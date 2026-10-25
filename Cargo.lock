@@ -1018,6 +1018,9 @@ dependencies = [
 [[package]]
 name = "ril-stdlib"
 version = "0.1.0"
+dependencies = [
+ "ril-syntax",
+]
 
 [[package]]
 name = "ril-syntax"

@@ -1,0 +1,100 @@
+use ril/bytes
+
+pub fn read_all<R>(mut reader: R, ops: Io::ReadOps<R>) -> Result<bytes, Io::IoError> &mut {
+    let mut output: []u8 = []
+    loop {
+        let chunk = ops.read(mut reader, 8192)?
+        assert(len(chunk.data) > 0 || chunk.end, "read made no progress")
+        for Bytes::to_array(chunk.data) as value { output !> Array::push(value) }
+        if chunk.end { last Ok(Bytes::from_array(output)) }
+    }
+}
+
+pub fn write_all<W>(mut writer: W, data: bytes, ops: Io::WriteOps<W>) -> Result<(), Io::IoError> &mut {
+    var offset = 0
+    while offset < len(data) {
+        let progress = ops.write(mut writer, data[offset..len(data)])
+        assert(progress.written >= 0 && progress.written <= len(data) - offset, "invalid write progress")
+        offset += progress.written
+        match progress.error { Some(error) -> return Err(error), None -> {} }
+        assert(progress.written > 0, "write made no progress")
+    }
+    Ok()
+}
+
+pub fn write_stdout(text: str) -> Result<(), Io::IoError> @Fiber {
+    let data = String::utf8(text)
+    var offset = 0
+    while offset < len(data) {
+        let progress = Io::stdout_write(data[offset..len(data)])
+        assert(progress.written >= 0 && progress.written <= len(data) - offset, "invalid write progress")
+        offset += progress.written
+        match progress.error { Some(error) -> return Err(error), None -> {} }
+        assert(progress.written > 0, "write made no progress")
+    }
+    Ok()
+}
+
+pub fn write_stderr(text: str) -> Result<(), Io::IoError> @Fiber {
+    let data = String::utf8(text)
+    var offset = 0
+    while offset < len(data) {
+        let progress = Io::stderr_write(data[offset..len(data)])
+        assert(progress.written >= 0 && progress.written <= len(data) - offset, "invalid write progress")
+        offset += progress.written
+        match progress.error { Some(error) -> return Err(error), None -> {} }
+        assert(progress.written > 0, "write made no progress")
+    }
+    Ok()
+}
+
+pub fn error_text(error: Io::IoError) -> str { error.message }
+
+pub type ErrorKind {
+    NotFound, PermissionDenied, AlreadyExists, InvalidInput, InvalidData,
+    UnexpectedEnd, BrokenPipe, Closed, Unsupported, Other,
+}
+
+pub type IoError = { kind: ErrorKind, message: str, native_code: ?i64 }
+
+pub type ReadChunk = { data: bytes, end: bool }
+
+pub type WriteProgress = { written: int, error: ?IoError }
+
+pub type ReadOps<R> = { read: fn(mut R, int) -> Result<ReadChunk, IoError> &mut }
+
+pub type WriteOps<W> = { write: fn(mut W, bytes) -> WriteProgress &mut }
+
+pub fn stdin_read(max_bytes: int) -> Result<ReadChunk, IoError> @Fiber
+
+pub fn stdout_write(data: bytes) -> WriteProgress @Fiber
+
+pub fn stderr_write(data: bytes) -> WriteProgress @Fiber
+
+pub type ReadBuffer
+
+pub type WriteBuffer
+
+pub type ReadPosition
+
+pub fn read_position() -> ReadPosition
+
+pub fn guard_read(position: ReadPosition) -> ()
+
+pub fn guard_seek(position: ReadPosition) -> ()
+
+pub fn read_buffer(capacity: int) -> ReadBuffer
+
+pub fn write_buffer(capacity: int) -> WriteBuffer
+
+pub fn read_buffered<R>(mut buffer: ReadBuffer, mut reader: R,
+    ops: ReadOps<R>, max_bytes: int) -> Result<ReadChunk, IoError> &mut
+
+pub fn read_buffered_at<R>(mut buffer: ReadBuffer, mut reader: R,
+    ops: ReadOps<R>, max_bytes: int, position: ReadPosition) -> Result<ReadChunk, IoError> &mut
+
+pub fn write_buffered<W>(mut buffer: WriteBuffer, mut writer: W,
+    ops: WriteOps<W>, data: bytes) -> WriteProgress &mut
+
+pub fn flush<W>(mut buffer: WriteBuffer, mut writer: W,
+    ops: WriteOps<W>) -> Result<(), IoError> &mut

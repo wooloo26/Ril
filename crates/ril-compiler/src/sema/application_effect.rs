@@ -21,7 +21,6 @@ pub use activations::{ActivationKind, EvaluationActivation};
 pub use entries::{
     CallableEntry, EntryArgument, EntryOrigin, InputOrigin, ScalarInput, ScopeInput,
 };
-pub(crate) use entries::{ScalarSource, record_callback};
 pub use signature_inputs::SignatureProbeSource;
 
 /// The static node and its actual evaluation activation form one occurrence.

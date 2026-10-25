@@ -1,0 +1,15 @@
+pub type Builder
+
+pub fn new() -> Builder
+
+pub fn append(mut builder: Builder, text: str) &mut
+
+pub fn append_scalar(mut builder: Builder, value: u32) -> Result<(), Unicode::ScalarError> &mut {
+    let text = Unicode::from_scalar(value)?
+    append(mut builder, text)
+    Ok()
+}
+
+pub fn clear(mut builder: Builder) &mut
+
+pub fn to_string(builder: Builder) -> str

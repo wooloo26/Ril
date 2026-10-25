@@ -9,24 +9,6 @@ struct MissingCopyScan {
 }
 
 impl Checker {
-    /// Opaque standard collections expose no public fields. Their checked
-    /// constructors establish this internal whole-member witness, transported
-    /// by the ordinary field graph through calls, branches, recency and copies.
-    /// A type name or a few observed element projections cannot create it.
-    pub(super) fn record_opaque_collection_members(&mut self, node: NodeId, span: Span) {
-        let cause = self.cause(
-            CauseKind::Source,
-            span,
-            "checked opaque collection construction starts a complete member family",
-            [],
-        );
-        self.store_field(
-            node,
-            Slot::Field("$members".into()),
-            Value::scalar(Ty::Unit, Some(Constant::Unit), cause),
-        );
-    }
-
     pub(super) fn invalidate_opaque_collection_members(&mut self, node: NodeId) {
         let slot = Slot::Field("$members".into());
         if let Some(witness) = self.fields.get_mut(&(node, slot.clone())) {

@@ -1,0 +1,80 @@
+use ril/io
+use ril/path
+use ril/unicode
+
+pub fn open(path: str) -> Result<File::Handle, Io::IoError> @Fiber {
+    File::open_path(Path::from_string(path), File::OpenMode::Read)
+}
+
+pub fn with_file<T>(path: Path::Path, mode: File::OpenMode,
+    action: fn(mut File::Handle) -> Result<T, Io::IoError>) -> Result<T, Io::IoError> @Fiber {
+    let scoped mut file = File::open_path(path, mode)?
+    let outcome = action(mut file)
+    let closed = File::close(mut file)
+    match closed {
+        Ok() -> outcome,
+        Err(close_error) -> match outcome { Err(error) -> Err(error), Ok(_) -> Err(close_error) },
+    }
+}
+
+pub fn read(path: str) -> Result<str, str> @Fiber {
+    let loaded = with_file(Path::from_string(path), File::OpenMode::Read,
+        \mut file: File::Handle -> Io::read_all(mut file, .{ read: File::read_chunk }))
+    match loaded {
+        Err(error) -> Err(Io::error_text(error)),
+        Ok(data) -> match Unicode::decode_utf8(data) {
+            Ok(text) -> Ok(text),
+            Err(error) -> Err("invalid UTF-8 at byte {error.offset}"),
+        },
+    }
+}
+
+pub type Handle
+
+pub type OpenMode { Read, WriteNew, WriteTruncate, ReadWrite, Append }
+
+pub type SeekFrom { Start(i64), Current(i64), End(i64) }
+
+pub type FileKind { Regular, Directory, Symlink, Other }
+
+pub type Metadata = { kind: FileKind, size: u64, modified: ?Time::Timestamp }
+
+pub type Entry = { path: Path::Path, name: Os::NativeString, kind: FileKind }
+
+pub fn open_path(path: Path::Path, mode: OpenMode) -> Result<Handle, Io::IoError> @Fiber
+
+pub fn read_chunk(mut file: Handle, max_bytes: int) -> Result<Io::ReadChunk, Io::IoError> @Fiber &mut
+
+pub fn write(mut file: Handle, data: bytes) -> Io::WriteProgress @Fiber &mut
+
+pub fn seek(mut file: Handle, position: SeekFrom) -> Result<u64, Io::IoError> @Fiber &mut
+
+pub fn sync(mut file: Handle) -> Result<(), Io::IoError> @Fiber &mut
+
+pub fn close(mut file: Handle) -> Result<(), Io::IoError> @Fiber &mut
+
+pub fn read_bytes(path: Path::Path) -> Result<bytes, Io::IoError> @Fiber
+
+pub fn read_text(path: Path::Path) -> Result<str, Io::IoError> @Fiber
+
+pub fn write_bytes(path: Path::Path, data: bytes) -> Result<(), Io::IoError> @Fiber
+
+pub fn write_text(path: Path::Path, text: str) -> Result<(), Io::IoError> @Fiber
+
+pub fn read_dir(path: Path::Path) -> Result<[]Entry, Io::IoError> @Fiber
+
+pub fn create_dir(path: Path::Path) -> Result<(), Io::IoError> @Fiber
+
+pub fn create_dir_all(path: Path::Path) -> Result<(), Io::IoError> @Fiber
+
+pub fn remove_file(path: Path::Path) -> Result<(), Io::IoError> @Fiber
+
+pub fn remove_dir(path: Path::Path) -> Result<(), Io::IoError> @Fiber
+
+pub fn rename(source: Path::Path, destination: Path::Path) -> Result<(), Io::IoError> @Fiber
+
+pub fn canonicalize(path: Path::Path) -> Result<Path::Path, Io::IoError> @Fiber
+
+pub fn temp_file(directory: Path::Path) -> Result<(Path::Path, Handle), Io::IoError> @Fiber
+
+pub fn metadata(path: Path::Path, follow_links: bool = true) -> Result<Metadata, Io::IoError> @Fiber

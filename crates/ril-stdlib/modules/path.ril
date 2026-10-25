@@ -1,0 +1,23 @@
+pub type Path
+
+pub fn from_string(text: str) -> Path
+
+pub fn from_native(value: Os::NativeString) -> Path
+
+pub fn native(path: Path) -> Os::NativeString
+
+pub fn to_string(path: Path) -> Result<str, Os::NativeError>
+
+pub fn join(base: Path, child: Path) -> Path
+
+pub fn parent(path: Path) -> ?Path
+
+pub fn file_name(path: Path) -> ?Os::NativeString
+
+pub fn extension(path: Path) -> ?Os::NativeString
+
+pub fn is_absolute(path: Path) -> bool
+
+pub fn normalize_lexical(path: Path) -> Path
+
+pub fn compare(left: Path, right: Path) -> Order::Ordering

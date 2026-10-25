@@ -1,0 +1,15 @@
+use ril/order
+pub type Heap<T>
+pub type Rng
+pub type Instant
+
+pub fn set_new<T>() -> Set<T>
+pub fn heap_new<T>(compare: fn(T, T) -> Order::Ordering @{} &{}) -> Heap<T>
+pub fn heap_items<T>(heap: Heap<T>) -> [](T, bigint)
+pub fn heap_compare<T>(heap: Heap<T>) -> (fn(T, T) -> Order::Ordering @{} &{})
+pub fn heap_serial<T>(heap: Heap<T>) -> bigint
+pub fn heap_replace<T>(mut heap: Heap<T>, items: [](T, bigint), serial: bigint) &mut
+pub fn rng_new(seed: u64) -> Rng
+pub fn rng_state(rng: Rng) -> u64
+pub fn rng_replace(mut rng: Rng, state: u64) &mut
+pub fn instant_parts(instant: Instant) -> (bigint, bigint)

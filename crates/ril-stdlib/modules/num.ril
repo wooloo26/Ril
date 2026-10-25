@@ -1,0 +1,47 @@
+use ril/unicode
+pub type NumError { InvalidSyntax, OutOfRange, InvalidRadix }
+fn digit(value: u32) -> ?int {
+    if value >= 48u32 && value <= 57u32 { Some(convert<u32, int>(value - 48u32) ?? \_error -> panic("digit range")) }
+    else if value >= 65u32 && value <= 90u32 { Some(convert<u32, int>(value - 55u32) ?? \_error -> panic("digit range")) }
+    else if value >= 97u32 && value <= 122u32 { Some(convert<u32, int>(value - 87u32) ?? \_error -> panic("digit range")) }
+    else { None }
+}
+pub fn parse_bigint(text: str, radix: int = 10) -> Result<bigint, NumError> {
+    if radix < 2 || radix > 36 { return Err(NumError::InvalidRadix) }
+    let scalars = String::scalars(text)
+    if len(scalars) == 0 { return Err(NumError::InvalidSyntax) }
+    let negative = scalars[0] == 45u32
+    let start = if negative || scalars[0] == 43u32 { 1 } else { 0 }
+    if start == len(scalars) { return Err(NumError::InvalidSyntax) }
+    let base = convert<int, bigint>(radix) ?? \_error -> panic("radix range")
+    var value = 0bigint
+    for start..len(scalars) as index {
+        let number = digit(scalars[index]) ?? return Err(NumError::InvalidSyntax)
+        if number >= radix { return Err(NumError::InvalidSyntax) }
+        let part = convert<int, bigint>(number) ?? \_error -> panic("digit range")
+        value = value * base + part
+    }
+    Ok(if negative { -value } else { value })
+}
+pub fn parse_int(text: str, radix: int = 10) -> Result<int, NumError> { convert<bigint, int>(parse_bigint(text, radix)?) }
+pub fn format_bigint(value: bigint, radix: int = 10) -> Result<str, NumError> {
+    if radix < 2 || radix > 36 { return Err(NumError::InvalidRadix) }
+    let base = convert<int, bigint>(radix) ?? \_error -> panic("radix range")
+    var magnitude = if value < 0bigint { -value } else { value }
+    let mut digits: []str = []
+    loop {
+        let remainder = convert<bigint, u32>(magnitude % base) ?? \_error -> panic("digit range")
+        let scalar = if remainder < 10u32 { 48u32 + remainder } else { 87u32 + remainder }
+        digits !> Array::push(Unicode::from_scalar(scalar) ?? \_error -> panic("ASCII digit"))
+        magnitude = magnitude / base
+        if magnitude == 0bigint { last }
+    }
+    let text = String::join(Array::reverse(digits), "")
+    Ok(if value < 0bigint { String::concat("-", text) } else { text })
+}
+pub fn format_int(value: int, radix: int = 10) -> Result<str, NumError> {
+    format_bigint(convert<int, bigint>(value) ?? \_error -> panic("integer widening"), radix)
+}
+pub fn parse_f64(text: str) -> Result<f64, NumError>
+pub fn format_f64(value: f64) -> str
+pub fn convert<T, U>(value: T) -> Result<U, NumError>
