@@ -5,7 +5,7 @@ use super::*;
 #[derive(Clone)]
 pub(super) struct ArmSuffix {
     pub identity: bool,
-    pub binding: Option<Binding>,
+    pub receiver: ResumeReceiver,
     pub statements: Vec<Stmt>,
     pub span: Span,
     pub body_source: Option<ril_compiler_core::ids::ExprId>,
@@ -21,17 +21,65 @@ pub(super) struct ArmSuffix {
     pub operation_receptions: Vec<super::super::resumption::OperationReception>,
 }
 
+#[derive(Clone)]
+pub(super) enum ResumeReceiver {
+    Expression(Box<Expr>),
+    Statement(Box<Stmt>),
+}
+
+pub(super) struct AnswerInput {
+    pub owner: ScopeId,
+    pub source: ril_compiler_core::ids::ExprId,
+    pub packet: Option<EvaluatedValue>,
+}
+
+/// Follow only the leading evaluation spine. No preceding operand may be
+/// evaluated a second time when the real continuation answer becomes available.
+/// Contexts with a preceding operand need their own suspended evaluation cursor.
+fn leading_resume(mut expression: &Expr) -> Option<&Expr> {
+    for _ in 0..64 {
+        expression = match &expression.kind {
+            ExprKind::Control {
+                operation: ControlOperation::Resume,
+                ..
+            } => {
+                return Some(expression);
+            }
+            ExprKind::Unary { operand, .. }
+            | ExprKind::Field { base: operand, .. }
+            | ExprKind::ComputedField { base: operand, .. }
+            | ExprKind::Index { base: operand, .. }
+            | ExprKind::Generic { base: operand, .. }
+            | ExprKind::Binary { left: operand, .. }
+            | ExprKind::Call {
+                callee: operand, ..
+            } => operand,
+            ExprKind::Tuple(items) | ExprKind::Array(items) => items.first()?,
+            ExprKind::Map(entries) => &entries.first()?.0,
+            ExprKind::Record { members, .. } => match members.first()? {
+                RecordMember::Field(field) => &field.value,
+                RecordMember::Spread(expression) => expression,
+            },
+            ExprKind::Derive {
+                base: Some(base), ..
+            } => base,
+            _ => return None,
+        };
+    }
+    None
+}
+
 pub(super) fn linear_resume(expr: &Expr) -> Option<usize> {
     let ExprKind::Block(block) = &expr.kind else {
-        return None;
+        return leading_resume(expr).map(|_| 0);
     };
     block
         .statements
         .iter()
         .position(|statement| match &statement.kind {
-            StmtKind::Expr { expression, .. } => is_resume(expression),
+            StmtKind::Expr { expression, .. } => leading_resume(expression).is_some(),
             StmtKind::Binding(binding) => {
-                is_resume(&binding.value)
+                leading_resume(&binding.value).is_some()
                     && binding.fallback.is_none()
                     && matches!(
                         binding.pattern.kind,
@@ -53,6 +101,28 @@ fn is_resume(expression: &Expr) -> bool {
 }
 
 impl Checker {
+    pub(super) fn resumed_expression_input(
+        &mut self,
+        expression: &Expr,
+        frame: &mut Frame,
+        expected: Option<&Ty>,
+        target: Option<&super::super::source_reception::Target>,
+    ) -> Option<EvaluatedValue> {
+        let source = expression.hir_id?;
+        let input = self.resumption_inputs.last_mut()?;
+        if input.owner != frame.owner || input.source != source {
+            return None;
+        }
+        let mut packet = input.packet.take()?;
+        self.transport_evaluation_packet(&mut packet, expression.span);
+        if let Some(target) = target {
+            self.receive_boundary_target(&mut packet, expected, target, expression.span);
+        } else if let Some(expected) = expected {
+            self.require_type(&packet.value, expected, expression.span);
+        }
+        Some(packet)
+    }
+
     pub(super) fn arm_prefix(
         &mut self,
         body: &Expr,
@@ -61,19 +131,25 @@ impl Checker {
         frame: &mut Frame,
     ) -> Option<(Value, ArmSuffix)> {
         let index = linear_resume(body)?;
-        let ExprKind::Block(block) = &body.kind else {
-            return None;
+        let block = if let ExprKind::Block(block) = &body.kind {
+            Some(block)
+        } else {
+            None
         };
-        if index + 1 == block.statements.len()
-            && matches!(block.statements[index].kind, StmtKind::Expr { .. })
+        if let Some(block) = block
+            && index + 1 == block.statements.len()
+            && matches!(&block.statements[index].kind,
+                StmtKind::Expr { expression, terminated: false } if is_resume(expression))
         {
             return None;
         }
-        if block.statements.iter().any(|statement| {
-            matches!(
-                statement.kind,
-                StmtKind::Handler(_) | StmtKind::HandlerApplication(_)
-            )
+        if block.is_some_and(|block| {
+            block.statements.iter().any(|statement| {
+                matches!(
+                    statement.kind,
+                    StmtKind::Handler(_) | StmtKind::HandlerApplication(_)
+                )
+            })
         }) {
             self.unsupported(body.span,"nested handler definitions across a non-tail resumption require an activation-local handler suffix");
         }
@@ -83,10 +159,12 @@ impl Checker {
         self.next_boundary += 1;
         self.block_boundaries.push(boundary);
         let handlers = self.active_handlers.len();
-        self.declarations(&block.statements, frame);
-        self.declarations(&block.where_items, frame);
+        if let Some(block) = block {
+            self.declarations(&block.statements, frame);
+            self.declarations(&block.where_items, frame);
+        }
         let mut result = self.unit(body.span);
-        for statement in &block.statements[..index] {
+        for statement in block.map_or(&[][..], |block| &block.statements[..index]) {
             if !matches!(
                 statement.kind,
                 StmtKind::Function(_) | StmtKind::Type(_) | StmtKind::Effect(_)
@@ -98,10 +176,22 @@ impl Checker {
                 }
             }
         }
-        let (resume, binding) = match &block.statements[index].kind {
-            StmtKind::Expr { expression, .. } => (expression, None),
-            StmtKind::Binding(binding) => (&binding.value, Some(binding.clone())),
-            _ => unreachable!(),
+        let (resume, receiver) = if let Some(block) = block {
+            let statement = &block.statements[index];
+            let expression = match &statement.kind {
+                StmtKind::Expr { expression, .. } => expression,
+                StmtKind::Binding(binding) => &binding.value,
+                _ => unreachable!(),
+            };
+            (
+                leading_resume(expression)?,
+                ResumeReceiver::Statement(Box::new(statement.clone())),
+            )
+        } else {
+            (
+                leading_resume(body)?,
+                ResumeReceiver::Expression(Box::new(body.clone())),
+            )
         };
         if result.ty != Ty::Never {
             // Resume is an actual HIR expression even when its operand is
@@ -115,9 +205,10 @@ impl Checker {
             result,
             ArmSuffix {
                 identity: retained_answers::identity_suffix(body),
-                binding,
-                statements: block.statements[index + 1..].to_vec(),
-                span: block.span,
+                receiver,
+                statements: block
+                    .map_or_else(Vec::new, |block| block.statements[index + 1..].to_vec()),
+                span: body.span,
                 body_source: body.hir_id,
                 definitions_start,
                 handler,
@@ -187,7 +278,21 @@ impl Checker {
         self.block_boundaries.push(suffix.boundary);
         let evaluation_context = suffix.context;
         let continuation_environment = self.physical_evaluation_environment(suffix.resume);
-        let Some(continuation_expression) = self.application_effect.observe(
+        let Some(completion_activation) = self.application_effect.enter_kind(
+            Some(resume_source),
+            frame.owner,
+            evaluation_context,
+            super::super::application_effect::ActivationKind::ControlTransfer,
+        ) else {
+            self.block_boundaries.pop();
+            self.unsupported(
+                suffix.resume,
+                "continuation completion activation is unavailable",
+            );
+            return input.clone();
+        };
+        let continuation_expression = self.application_effect.observe_in(
+            completion_activation,
             || super::super::application_effect::ObservationInput {
                 allocation_epoch: continuation_epoch,
                 source_id: Some(resume_source),
@@ -198,7 +303,9 @@ impl Checker {
             frame.owner,
             continuation_environment,
             None,
-        ) else {
+        );
+        self.application_effect.leave(completion_activation);
+        let Some(continuation_expression) = continuation_expression else {
             self.block_boundaries.pop();
             return input.clone();
         };
@@ -222,37 +329,33 @@ impl Checker {
             }
         };
         self.inherit_result_type(&mut held_answer, input, suffix.resume);
-        if let Some(binding) = &suffix.binding {
-            self.set_contract_environment(&frame.env);
-            let source_target = binding
-                .ty
-                .as_ref()
-                .map(|syntax| self.freeze_source_receiving_target(syntax));
-            if let Some(target) = &source_target {
-                let expected = binding.ty.as_ref().map(|syntax| self.ty(syntax));
-                self.receive_boundary_target(
-                    &mut held_answer,
-                    expected.as_ref(),
-                    target,
-                    binding.value.span,
-                );
+        self.resumption_inputs.push(AnswerInput {
+            owner: frame.owner,
+            source: resume_source,
+            packet: Some(held_answer.clone()),
+        });
+        let mut result_packet = match &suffix.receiver {
+            ResumeReceiver::Expression(expression) => {
+                self.expression_expected_source(expression, frame, None, None)
             }
-            let source_valid = held_answer.source_valid;
-            self.receive_binding(
-                binding,
-                held_answer.value.clone(),
-                Some(super::super::storage_sources::StorageObservation {
-                    expression: continuation_expression,
-                    allocation_epoch: continuation_epoch,
-                }),
-                source_target.as_ref(),
-                source_valid,
-                frame,
+            ResumeReceiver::Statement(statement) => {
+                self.statement_expected_source(statement, frame, None, None)
+            }
+        };
+        if self
+            .resumption_inputs
+            .pop()
+            .is_none_or(|input| input.packet.is_some())
+        {
+            self.unsupported(
+                suffix.resume,
+                "the resumed expression did not consume its actual answer",
             );
         }
-        let mut result_packet =
-            EvaluatedValue::unobserved(self.unit(suffix.span), self.recency_moves.len(), true);
         for statement in &suffix.statements {
+            if result_packet.value.ty == Ty::Never {
+                break;
+            }
             if !matches!(
                 statement.kind,
                 StmtKind::Function(_) | StmtKind::Type(_) | StmtKind::Effect(_)

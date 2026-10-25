@@ -118,7 +118,11 @@ duplicate source trees and historical verification reports.
   resources and channels. Resolve generated callback inputs, use finite
   loop/recursion summaries and preserve correlated aggregates. Normal,
   abrupt and resumed answers now carry owned type graphs; block-exit/cause replay
-  has been removed. Immutable loop closures compare finite environment summaries
+  has been removed. Resumption requests carry no normal result; leading
+  expression contexts consume the actual completion through common receiving.
+  Derivation carries its input's owned type graph through copy and publication.
+  Complete suspended operand cursors when earlier operands precede a resumption.
+  Immutable loop closures compare finite environment summaries
   while keeping object and invocation identities. Finish mutable environment
   correlations, conditional/rest-pattern receiving and contextual
   inference across defaults, callbacks and control transfers.

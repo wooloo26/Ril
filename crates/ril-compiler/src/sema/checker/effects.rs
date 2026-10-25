@@ -2064,6 +2064,12 @@ impl Checker {
         };
         let answer = answer_packet.value.clone();
         let context = self.resume_contexts.pop().unwrap();
+        if context.supplied.is_some() && !tail_resume(&arm.body) && suffix.is_none() {
+            self.unsupported(
+                arm.span,
+                "resumption suspended an expression without its continuation evaluation context",
+            );
+        }
         let exported = context.supplied.as_ref().unwrap_or(&answer);
         let delayed = if context.supplied.is_some() {
             self.suspended_cleanups
@@ -2336,7 +2342,16 @@ impl Checker {
             self.operation_loan_ends.insert(*loan, cause);
         }
         self.ended_operation_loans.extend(loans);
-        self.unit(span)
+        Value::scalar(
+            Ty::Never,
+            None,
+            self.cause(
+                CauseKind::Handler,
+                span,
+                "resumption suspends until its actual continuation answer",
+                [],
+            ),
+        )
     }
     pub(super) fn check_operation_loan(&mut self, value: &Value, span: Span) {
         if value.participants.iter().any(|participant|matches!(participant,Participant::Loan(id)if self.ended_operation_loans.contains(id))){self.error("E0540",span,"the operation loan ended when resumption started",[value.cause]);}
@@ -2663,7 +2678,7 @@ fn tail_resume(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Control { operation: ControlOperation::Resume, .. } => true,
         ExprKind::Block(block) => block.statements.last().is_some_and(|statement| {
-            matches!(&statement.kind, StmtKind::Expr { expression, .. } if tail_resume(expression))
+            matches!(&statement.kind, StmtKind::Expr { expression, terminated: false } if tail_resume(expression))
         }),
         ExprKind::If { then_branch, else_branch: Some(other), .. }
         | ExprKind::IfLet { then_branch, else_branch: Some(other), .. } => {

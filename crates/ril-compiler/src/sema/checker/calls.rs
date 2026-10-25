@@ -3408,12 +3408,14 @@ impl Checker {
     }
     pub(super) fn derive_value(
         &mut self,
-        mut source: Value,
-        source_observation: Option<usize>,
+        mut input: EvaluatedValue,
         recipe: &Expr,
         span: Span,
         frame: &mut Frame,
-    ) -> Value {
+    ) -> EvaluatedValue {
+        self.transport_evaluation_packet(&mut input, span);
+        let source_observation = input.observation;
+        let mut source = input.value.clone();
         if source.publication != Publication::Immutable
             && source.construction
             && self.construction_can_publish(&source)
@@ -3507,7 +3509,11 @@ impl Checker {
         let draft = draft.into_current(&self.recency_moves);
         self.require_type(&answer, &Ty::Unit, span);
         if answer.ty == Ty::Never {
-            return answer;
+            return EvaluatedValue::unobserved(
+                answer,
+                self.recency_moves.len(),
+                input.source_valid,
+            );
         }
         self.check_deep_uncertainty(&draft, span);
         if self.has_writer(&draft) || self.contains_resource(&draft) {
@@ -3525,7 +3531,10 @@ impl Checker {
         result.construction = false;
         result.internal_aliases = false;
         result.marker = false;
-        result
+        let mut output =
+            EvaluatedValue::unobserved(result, self.recency_moves.len(), input.source_valid);
+        self.inherit_result_type(&mut output, &input, span);
+        output
     }
     pub(super) fn construction_can_publish(&self, source: &Value) -> bool {
         if !self.pending_copy_dependencies(source).is_empty() {

@@ -104,6 +104,9 @@ impl Checker {
         expected: Option<&Ty>,
         source: Option<&super::super::source_reception::Target>,
     ) -> SourceExpression {
+        if let Some(packet) = self.resumed_expression_input(expr, frame, expected, source) {
+            return packet;
+        }
         self.cancellation_checkpoint(expr.span, frame);
         if self.analysis_depth >= 64 || self.analysis_visits >= 1_000_000 {
             self.unsupported(expr.span,"semantic traversal resource budget exhausted; no permission certificate was issued");
@@ -1370,12 +1373,15 @@ impl Checker {
             } => {
                 if operator == "!>" || operator == "|>" {
                     if let ExprKind::Derive { base: None, recipe } = &right.kind {
-                        let (value, observation) = self.expression_observed(left, frame);
-                        if value.ty == Ty::Never {
+                        let input = self.expression_source_packet(left, frame, None, None);
+                        if input.value.ty == Ty::Never {
                             self.preview_expression(recipe, frame);
-                            return value;
+                            return input.value;
                         }
-                        return self.derive_value(value, observation, recipe, expr.span, frame);
+                        let output = self.derive_value(input, recipe, expr.span, frame);
+                        let result = output.value.clone();
+                        source_handled.owned = Some(output);
+                        return result;
                     }
                     return self.application_expression(
                         expr,

@@ -41,6 +41,13 @@ pub(super) fn identity_suffix(expression: &Expr) -> bool {
         || binding.is_meta
         || binding.ty.is_some()
         || binding.fallback.is_some()
+        || !matches!(
+            binding.value.kind,
+            ExprKind::Control {
+                operation: ControlOperation::Resume,
+                ..
+            }
+        )
     {
         return false;
     }
