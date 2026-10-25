@@ -1,1 +1,2 @@
 * text=auto eol=lf
+*.ril linguist-language=Rust
