@@ -274,16 +274,25 @@ mod tests {
         assert_eq!(fs::read(directory.path().join("a")).unwrap(), b"source");
         assert_eq!(fs::read(directory.path().join("b")).unwrap(), b"old");
         let dir = path(&mut runtime, directory.path());
-        let entries = runtime.file_builtin("File::read_dir", &[dir]).unwrap();
+        let entries = runtime
+            .file_builtin("\0ril.host.file_read_dir", &[dir])
+            .unwrap();
         let entries = payload(&runtime, entries, "Ok");
         let entries = runtime.sequence(entries).unwrap();
-        let names: Vec<_> = entries
+        let mut names: Vec<_> = entries
             .into_iter()
             .map(|entry| {
-                let name = runtime.field(entry, "name").unwrap();
-                runtime.as_native(name).unwrap().text().unwrap()
+                let name = runtime.sequence(entry).unwrap()[0];
+                runtime
+                    .as_native(name)
+                    .unwrap()
+                    .to_os()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
             })
             .collect();
+        names.sort();
         assert_eq!(names, ["a", "b"]);
         runtime.file_builtin("File::remove_file", &[b]).unwrap();
         let renamed = runtime.file_builtin("File::rename", &[a, b]).unwrap();
@@ -292,20 +301,12 @@ mod tests {
         assert_eq!(fs::read(directory.path().join("b")).unwrap(), b"source");
     }
     #[test]
-    fn seek_failures_do_not_change_position_and_text_reads_are_strict() {
+    fn seek_failures_do_not_change_position() {
         let directory = tempfile::tempdir().unwrap();
         let disk_path = directory.path().join("bad.txt");
         fs::write(&disk_path, [255, b'a']).unwrap();
         let mut runtime = Runtime::default();
         let path = path(&mut runtime, &disk_path);
-        let text = runtime.file_builtin("File::read_text", &[path]).unwrap();
-        assert_eq!(
-            failure_kind(&mut runtime, text),
-            "Io::ErrorKind::InvalidData"
-        );
-        let bytes = runtime.file_builtin("File::read_bytes", &[path]).unwrap();
-        let bytes = payload(&runtime, bytes, "Ok");
-        assert_eq!(runtime.as_bytes(bytes).unwrap(), &[255, b'a']);
         let mode = runtime
             .variant("File::OpenMode::ReadWrite", vec![])
             .unwrap();
@@ -346,57 +347,18 @@ mod tests {
     }
 
     #[test]
-    fn prepared_filesystem_requests_own_inputs_after_managed_collection() {
-        let directory = tempfile::tempdir().unwrap();
-        let disk_path = directory.path().join("owned-inputs.bin");
-        let mut worker = crate::shared::Worker::new(Runtime::default());
-        let (request, source_path, source_bytes) = worker.with(|runtime| {
-            let path = path(runtime, &disk_path);
-            let bytes = runtime
-                .allocate(Object::Bytes(b"\0\xffowned".to_vec().into()))
-                .unwrap();
-            let request =
-                filesystem::prepare(runtime, "File::write_bytes", &[path, bytes]).unwrap();
-            (request, path, bytes)
-        });
-        worker.with(|runtime| {
-            runtime.statement_end();
-            runtime.collect().unwrap();
-            assert!(runtime.heap.get(source_path).is_err());
-            assert!(runtime.heap.get(source_bytes).is_err());
-        });
-        let reply = std::thread::spawn(move || request.perform())
-            .join()
-            .unwrap()
-            .unwrap();
-        worker.with(|runtime| {
-            let value = filesystem::finish(runtime, reply).unwrap();
-            payload(runtime, value, "Ok");
-        });
-        assert_eq!(fs::read(disk_path).unwrap(), b"\0\xffowned");
-    }
-
-    #[test]
-    fn prepared_reads_preserve_legacy_errors_and_defer_handle_installation() {
+    fn prepared_open_owns_its_path_and_defers_handle_installation() {
         let directory = tempfile::tempdir().unwrap();
         let disk_path = directory.path().join("invalid-utf8");
         fs::write(&disk_path, [0xff]).unwrap();
         let mut runtime = Runtime::default();
-        let legacy_path = runtime.string(disk_path.to_str().unwrap().into()).unwrap();
-        let request = filesystem::prepare(&runtime, "File::read", &[legacy_path]).unwrap();
-        runtime.statement_end();
-        runtime.collect().unwrap();
-        let value = filesystem::finish(&mut runtime, request.perform().unwrap()).unwrap();
-        assert!(
-            !runtime
-                .as_string(payload(&runtime, value, "Err"))
-                .unwrap()
-                .is_empty()
-        );
         let source_path = path(&mut runtime, &disk_path);
         let mode = runtime.variant("File::OpenMode::Read", vec![]).unwrap();
         let request =
             filesystem::prepare(&runtime, "File::open_path", &[source_path, mode]).unwrap();
+        runtime.statement_end();
+        runtime.collect().unwrap();
+        assert!(runtime.heap.get(source_path).is_err());
         let reply = request.perform().unwrap();
         assert!(runtime.files.is_empty());
         runtime.statement_end();

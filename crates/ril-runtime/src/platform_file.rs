@@ -78,31 +78,6 @@ pub(crate) fn open(path: &std::path::Path, mode: &str) -> std::io::Result<std::f
     }
 }
 
-pub(crate) fn read(file: &std::fs::File, data: &mut [u8]) -> std::io::Result<usize> {
-    #[cfg(target_os = "linux")]
-    {
-        rustix::io::read(file, data).map_err(std::io::Error::from)
-    }
-    #[cfg(windows)]
-    {
-        let mut file = file;
-        std::io::Read::read(&mut file, data)
-    }
-}
-pub(crate) fn write(file: &std::fs::File, data: &[u8]) -> std::io::Result<usize> {
-    #[cfg(target_os = "linux")]
-    {
-        crate::platform_signal::write(|| {
-            rustix::io::write(file, data).map_err(std::io::Error::from)
-        })
-    }
-    #[cfg(windows)]
-    {
-        let mut file = file;
-        std::io::Write::write(&mut file, data)
-    }
-}
-
 pub(crate) fn close(file: std::fs::File) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {

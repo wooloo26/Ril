@@ -35,7 +35,6 @@ pub enum Object {
     ChannelDetached(std::sync::Arc<crate::channel::Detached>),
     NativeString(crate::native_string::NativeString),
     Path(crate::native_string::NativeString),
-    RandomState(u64),
     MonotonicInstant {
         domain: u64,
         nanos: u128,
@@ -55,13 +54,12 @@ pub enum Object {
     },
     String(String),
     Bytes(crate::byte_string::Bytes),
-    /// Private linear-time stream accumulation, never a source-language value.
-    IoAccumulator(Vec<u8>),
     /// Immutable, non-owning position identity. This weak generation identity
     /// is deliberately not a heap edge, including when this value is copied.
     ReadPosition(Handle),
-    ReadBuffer(crate::io_buffered::ReadBuffer),
-    WriteBuffer(crate::io_buffered::WriteBuffer),
+    CallableIdentity(crate::stream_identity::CallableIdentity),
+    /// A scoped, non-copyable read-ahead permission. Its key is not a GC edge.
+    ReadGuard(Handle),
     Array(Vec<Handle>),
     ArrayWindow {
         backing: Handle,
@@ -69,9 +67,6 @@ pub enum Object {
         len: usize,
     },
     Deque(std::collections::VecDeque<Handle>),
-    PriorityHeap(crate::order::PriorityHeap),
-    /// Private continuation-owned sift state; not a Ril data value.
-    HeapMutation(Box<crate::order::HeapMutation>),
     Map(crate::map::OrderedMap),
     Set(crate::map::OrderedMap),
     Range {
@@ -151,8 +146,6 @@ impl Object {
             Self::Array(values) | Self::Tuple(values) => values.clone(),
             Self::ArrayWindow { backing, .. } => vec![*backing],
             Self::Deque(values) => values.iter().copied().collect(),
-            Self::PriorityHeap(heap) => heap.references(),
-            Self::HeapMutation(state) => state.references(),
             Self::Map(entries) | Self::Set(entries) => {
                 entries.iter().flat_map(|(k, v)| [*k, *v]).collect()
             }
@@ -211,7 +204,6 @@ impl Object {
             Self::Array(_)
             | Self::ArrayWindow { .. }
             | Self::Deque(_)
-            | Self::PriorityHeap(_)
             | Self::Map(_)
             | Self::Set(_)
             | Self::Range { .. }
@@ -241,7 +233,6 @@ impl Object {
                 len: *len,
             },
             Self::Deque(values) => Self::Deque(values.iter().copied().map(&mut map).collect()),
-            Self::PriorityHeap(heap) => Self::PriorityHeap(heap.map_references(&mut map)),
             Self::Tuple(values) => Self::Tuple(values.iter().copied().map(&mut map).collect()),
             Self::Map(entries) => Self::Map(entries.map_references(&mut map)),
             Self::Set(entries) => Self::Set(entries.map_references(&mut map)),
@@ -313,7 +304,7 @@ pub struct Heap {
     roots: BTreeMap<u64, Handle>,
     next_root: u64,
     /// Non-owning reservations follow the shared heap across native workers.
-    pub(crate) read_reservations: BTreeMap<Handle, crate::io_buffered::Binding>,
+    pub(crate) read_reservations: BTreeMap<Handle, crate::stream_identity::Binding>,
     pub(crate) read_sources: BTreeMap<Handle, BTreeSet<Handle>>,
     native_entry_aliases: BTreeMap<u64, u64>,
 }
@@ -347,11 +338,6 @@ impl Heap {
         }
     }
     pub fn allocate(&mut self, value: Object) -> Result<Handle, HeapError> {
-        let reservation = if let Object::ReadBuffer(buffer) = &value {
-            buffer.binding.clone()
-        } else {
-            None
-        };
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
             debug_assert!(slot.value.is_none());
@@ -359,7 +345,6 @@ impl Heap {
             slot.marked = false;
             self.live += 1;
             let handle = Handle::new(index, slot.generation);
-            self.set_read_reservation(handle, reservation);
             return Ok(handle);
         }
         let index = u32::try_from(self.slots.len()).map_err(|_| HeapError::Exhausted)?;
@@ -373,7 +358,6 @@ impl Heap {
         });
         self.live += 1;
         let handle = Handle::new(index, 1);
-        self.set_read_reservation(handle, reservation);
         Ok(handle)
     }
 
@@ -504,8 +488,7 @@ impl Heap {
             if matches!(
                 object,
                 Object::Iterator { .. }
-                    | Object::IoAccumulator(_)
-                    | Object::HeapMutation(_)
+                    | Object::ReadGuard(_)
                     | Object::File(_)
                     | Object::Child(_)
                     | Object::TaskScope(_)
@@ -544,8 +527,8 @@ impl Heap {
         }
         for (source, object) in originals {
             let copied = object.map_references(|handle| copies[&handle]);
-            if let Object::ReadBuffer(buffer) = &copied {
-                self.set_read_reservation(copies[&source], buffer.binding.clone());
+            if let Some(binding) = self.read_reservations.get(&source).cloned() {
+                self.set_read_reservation(copies[&source], Some(binding));
                 if let Some(sources) = self.read_sources.get(&source).cloned() {
                     self.read_sources.insert(copies[&source], sources);
                 }
@@ -557,7 +540,7 @@ impl Heap {
     pub(crate) fn set_read_reservation(
         &mut self,
         buffer: Handle,
-        binding: Option<crate::io_buffered::Binding>,
+        binding: Option<crate::stream_identity::Binding>,
     ) {
         if let Some(binding) = binding {
             self.read_reservations.insert(buffer, binding);
@@ -671,9 +654,6 @@ impl Heap {
                         return Ok(false);
                     }
                     pending.extend(a.iter().copied().zip(b.iter().copied()));
-                }
-                (Object::PriorityHeap(_), _) | (_, Object::PriorityHeap(_)) => {
-                    return Err(HeapError::NonClonable);
                 }
                 (Object::Record(a), Object::Record(b)) => {
                     if a.keys().ne(b.keys()) {

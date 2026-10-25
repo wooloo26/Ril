@@ -21,7 +21,6 @@ ril-text-format.workspace = true
 serde_json.workspace = true
 num-bigint.workspace = true
 num-traits.workspace = true
-sha2.workspace = true
 getrandom.workspace = true
 tempfile.workspace = true
 

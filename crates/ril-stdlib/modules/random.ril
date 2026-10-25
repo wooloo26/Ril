@@ -1,10 +1,11 @@
-pub type Rng = Storage::Rng
+pub type Rng
+type RngState = { mut state: u64 }
 
-pub fn seeded(seed: u64) -> Rng { Storage::rng_new(seed) }
+pub fn seeded(seed: u64) -> Rng { Rng.{ state: seed } }
 
 pub fn next_u64(mut rng: Rng) -> u64 &mut {
-    let state = Storage::rng_state(rng) +% 0x9e3779b97f4a7c15u64
-    Storage::rng_replace(mut rng, state)
+    let state = rng.state +% 0x9e3779b97f4a7c15u64
+    rng.state = state
     let first = (state ^ (state >> 30u64)) *% 0xbf58476d1ce4e5b9u64
     let second = (first ^ (first >> 27u64)) *% 0x94d049bb133111ebu64
     second ^ (second >> 31u64)
@@ -20,4 +21,3 @@ pub fn below(mut rng: Rng, upper: u64) -> u64 &mut {
 }
 
 pub fn entropy(count: int) -> Result<bytes, Io::IoError> @Fiber
-use ril/_storage as Storage

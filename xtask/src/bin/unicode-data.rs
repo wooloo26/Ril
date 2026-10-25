@@ -90,6 +90,35 @@ fn mapping(text: &str) -> io::Result<String> {
         })
         .collect()
 }
+fn render_tables(
+    indices: &[u8],
+    pages: &[u8],
+    lower: &BTreeMap<u32, String>,
+    upper: &BTreeMap<u32, String>,
+) -> String {
+    use std::fmt::Write;
+    let mut generated = "-- Generated from Unicode 17.0.0. Regenerate with xtask unicode-data.\n-- Inputs are SHA-256 pinned. See LICENSE.txt.\n".to_owned();
+    for (name, bytes) in [("INDICES", indices), ("PAGES", pages)] {
+        write!(generated, "pub meta let {name}: bytes = b\"").unwrap();
+        for byte in bytes {
+            write!(generated, "\\x{byte:02x}").unwrap();
+        }
+        generated.push_str("\"\n");
+    }
+    for (name, table) in [("LOWER", lower), ("UPPER", upper)] {
+        writeln!(generated, "pub meta let {name}: [](u32, str) = [").unwrap();
+        for (scalar, text) in table {
+            let escaped = text
+                .chars()
+                .flat_map(char::escape_unicode)
+                .collect::<String>();
+            writeln!(generated, "    (0x{scalar:x}u32, \"{escaped}\"),").unwrap();
+        }
+        generated.push_str("]\n");
+    }
+    generated
+}
+
 fn run(input: &Path, output: &Path) -> io::Result<()> {
     let manifest = pinned_inputs()?;
     let mut properties = vec![0u8; 0x110000];
@@ -183,25 +212,12 @@ fn run(input: &Path, output: &Path) -> io::Result<()> {
         };
         indices.extend(id.to_le_bytes());
     }
-    let mut generated="// Generated from Unicode 17.0.0. Run cargo run -p xtask --bin unicode-data -- INPUT OUTPUT.\n// Source files are SHA-256 pinned by the generator. See LICENSE.txt.\n".to_owned();
-    for (name, table) in [("LOWER", lower), ("UPPER", upper)] {
-        generated.push_str(&format!("pub static {name}: &[(u32, &str)] = &[\n"));
-        for (scalar, text) in table {
-            let escaped = text
-                .chars()
-                .flat_map(char::escape_unicode)
-                .collect::<String>();
-            generated.push_str(&format!("    (0x{scalar:x}, \"{escaped}\"),\n"));
-        }
-        generated.push_str("];\n");
-    }
+    let pages = pages.into_iter().flatten().collect::<Vec<_>>();
     fs::create_dir_all(output)?;
     fs::write(
-        output.join("pages.bin"),
-        pages.into_iter().flatten().collect::<Vec<_>>(),
+        output.join("data.ril"),
+        render_tables(&indices, &pages, &lower, &upper),
     )?;
-    fs::write(output.join("indices.bin"), indices)?;
-    fs::write(output.join("case.rs"), generated)?;
     fs::copy(input.join("LICENSE.txt"), output.join("LICENSE.txt"))?;
     Ok(())
 }

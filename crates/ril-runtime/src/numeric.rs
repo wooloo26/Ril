@@ -9,9 +9,7 @@ use num_traits::{FromPrimitive, ToPrimitive, Zero};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Error {
-    InvalidSyntax,
     OutOfRange,
-    InvalidRadix,
 }
 
 fn integer_format(name: &str) -> Option<(u8, bool)> {
@@ -27,91 +25,10 @@ fn integer_format(name: &str) -> Option<(u8, bool)> {
         _ => return None,
     })
 }
-fn radix(value: i128) -> std::result::Result<u32, Error> {
-    u32::try_from(value)
-        .ok()
-        .filter(|n| (2..=36).contains(n))
-        .ok_or(Error::InvalidRadix)
-}
-fn parse_integer(text: &str, base: u32) -> std::result::Result<BigInt, Error> {
-    let (negative, digits) = if let Some(t) = text.strip_prefix('-') {
-        (true, t)
-    } else {
-        (false, text.strip_prefix('+').unwrap_or(text))
-    };
-    if digits.is_empty()
-        || !digits
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() && (c as char).is_digit(base))
-    {
-        return Err(Error::InvalidSyntax);
-    }
-    let number = BigInt::parse_bytes(digits.as_bytes(), base).ok_or(Error::InvalidSyntax)?;
-    Ok(if negative { -number } else { number })
-}
-fn decimal(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let mut i = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
-    let before = i;
-    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-        i += 1;
-    }
-    let has_integer = i != before;
-    if bytes.get(i) == Some(&b'.') {
-        i += 1;
-        let after = i;
-        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-            i += 1;
-        }
-        if after == i {
-            return false;
-        }
-    } else if !has_integer {
-        return false;
-    }
-    if matches!(bytes.get(i), Some(b'e' | b'E')) {
-        i += 1;
-        if matches!(bytes.get(i), Some(b'+' | b'-')) {
-            i += 1;
-        }
-        let exponent = i;
-        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
-            i += 1;
-        }
-        if exponent == i {
-            return false;
-        }
-    }
-    i == bytes.len()
-}
-fn parse_float(text: &str, bits: u8) -> std::result::Result<f64, Error> {
-    match text {
-        "nan" => return Ok(f64::NAN),
-        "inf" | "+inf" => return Ok(f64::INFINITY),
-        "-inf" => return Ok(f64::NEG_INFINITY),
-        _ => {}
-    }
-    if !decimal(text) {
-        return Err(Error::InvalidSyntax);
-    }
-    let value = if bits == 32 {
-        f64::from(text.parse::<f32>().map_err(|_| Error::InvalidSyntax)?)
-    } else {
-        text.parse::<f64>().map_err(|_| Error::InvalidSyntax)?
-    };
-    if value.is_infinite() {
-        Err(Error::OutOfRange)
-    } else {
-        Ok(value)
-    }
-}
-
 impl Runtime {
     fn number_error(&mut self, error: Error) -> Result<Handle> {
         let tag = match error {
-            Error::InvalidSyntax => "InvalidSyntax",
             Error::OutOfRange => "OutOfRange",
-            Error::InvalidRadix => "InvalidRadix",
         };
         let error = self.variant(&format!("Num::NumError::{tag}"), vec![])?;
         self.variant("Err", vec![error])
@@ -142,8 +59,8 @@ impl Runtime {
         if matches!(destination, "f32" | "f64") {
             let bits = if destination == "f32" { 32 } else { 64 };
             let value = match source {
-                Object::Integer { value, .. } => parse_float(&value.to_string(), bits),
-                Object::BigInteger(value) => parse_float(&value.to_str_radix(10), bits),
+                Object::Integer { value, .. } => integer_float(&BigInt::from(value), bits),
+                Object::BigInteger(value) => integer_float(&value, bits),
                 Object::Float { value, .. } => {
                     let rounded = if bits == 32 {
                         f64::from(value as f32)
@@ -178,86 +95,34 @@ impl Runtime {
         };
         self.integer_result(value, destination)
     }
-    pub(crate) fn numeric_builtin(&mut self, name: &str, args: &[Handle]) -> Result<Handle> {
-        let arg = |index: usize| {
-            args.get(index)
-                .copied()
-                .ok_or_else(|| RuntimeError::internal("missing numeric argument"))
-        };
-        let operation = name
-            .strip_prefix("Num::")
-            .ok_or_else(|| RuntimeError::internal("unknown numeric namespace"))?;
-        if let Some(types) = operation.strip_prefix("__convert_") {
-            let destination = if let Some((source, destination)) = types.split_once("_to_") {
-                if integer_format(source).is_none() && !matches!(source, "bigint" | "f32" | "f64") {
-                    return Err(RuntimeError::internal("unknown conversion source type"));
-                }
-                destination
-            } else {
-                types
-            };
-            return self.numeric_convert(arg(0)?, destination);
-        }
-        if let Some(destination) = operation.strip_prefix("parse_") {
-            if matches!(destination, "f32" | "f64") {
-                let bits = if destination == "f32" { 32 } else { 64 };
-                return match parse_float(self.as_string(arg(0)?)?, bits) {
-                    Ok(value) => {
-                        let value = self.float(value, bits)?;
-                        self.variant("Ok", vec![value])
-                    }
-                    Err(error) => self.number_error(error),
-                };
-            }
-            let base = match radix(
-                args.get(1)
-                    .map(|&h| self.as_integer(h))
-                    .transpose()?
-                    .unwrap_or(10),
-            ) {
-                Ok(base) => base,
-                Err(error) => return self.number_error(error),
-            };
-            return match parse_integer(self.as_string(arg(0)?)?, base) {
-                Ok(value) => self.integer_result(value, destination),
-                Err(error) => self.number_error(error),
-            };
-        }
-        if let Some(source_type) = operation.strip_prefix("format_") {
-            if matches!(source_type, "f32" | "f64") {
-                let Object::Float { value, bits } = self.heap.get(arg(0)?)? else {
-                    return Err(RuntimeError::internal("expected float"));
-                };
-                let text = crate::formatting::default_float(*value, *bits);
-                return self.string(text);
-            }
-            let base = match radix(
-                args.get(1)
-                    .map(|&h| self.as_integer(h))
-                    .transpose()?
-                    .unwrap_or(10),
-            ) {
-                Ok(base) => base,
-                Err(error) => return self.number_error(error),
-            };
-            let text = match self.heap.get(arg(0)?)? {
-                Object::Integer { value, .. } => BigInt::from(*value).to_str_radix(base),
-                Object::BigInteger(value) => value.to_str_radix(base),
-                _ => return Err(RuntimeError::internal("expected integer")),
-            };
-            let text = self.string(text)?;
-            return self.variant("Ok", vec![text]);
-        }
-        Err(RuntimeError::internal("unknown numeric operation"))
+    pub(crate) fn numeric_primitive(&mut self, name: &str, args: &[Handle]) -> Result<Handle> {
+        let conversion = name
+            .strip_prefix("\0ril.numeric.convert_")
+            .ok_or_else(|| RuntimeError::internal("unknown numeric primitive"))?;
+        let (_, destination) = conversion
+            .split_once("_to_")
+            .ok_or_else(|| RuntimeError::internal("invalid numeric conversion contract"))?;
+        let source = args
+            .first()
+            .copied()
+            .ok_or_else(|| RuntimeError::internal("missing numeric conversion value"))?;
+        self.numeric_convert(source, destination)
     }
 }
 
+fn integer_float(value: &BigInt, bits: u8) -> std::result::Result<f64, Error> {
+    let rounded = if bits == 32 {
+        value.to_f32().map(f64::from)
+    } else {
+        value.to_f64()
+    };
+    rounded
+        .filter(|number| number.is_finite())
+        .ok_or(Error::OutOfRange)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn call(runtime: &mut Runtime, name: &str, args: &[Handle]) -> Handle {
-        runtime.numeric_builtin(name, args).unwrap()
-    }
     fn payload(runtime: &Runtime, handle: Handle, expected: &str) -> Handle {
         let Object::Variant { tag, fields } = runtime.heap.get(handle).unwrap() else {
             panic!("variant")
@@ -266,52 +131,8 @@ mod tests {
         fields[0]
     }
     #[test]
-    fn integer_parsing_validates_radix_before_syntax_and_respects_signedness() {
+    fn numeric_conversions_round_once_and_check_integrality_and_overflow() {
         let mut rt = Runtime::default();
-        let bad = rt.string(" _".into()).unwrap();
-        let base = rt.int(1).unwrap();
-        let result = call(&mut rt, "Num::parse_int", &[bad, base]);
-        let error = payload(&rt, result, "Err");
-        assert!(
-            matches!(rt.heap.get(error).unwrap(),Object::Variant{tag,..} if tag=="Num::NumError::InvalidRadix")
-        );
-        for (text, tag) in [
-            ("-0", "Ok"),
-            ("+255", "Ok"),
-            ("256", "Err"),
-            ("-1", "Err"),
-            ("0xff", "Err"),
-            ("1_0", "Err"),
-            (" 1", "Err"),
-        ] {
-            let input = rt.string(text.into()).unwrap();
-            let result = call(&mut rt, "Num::parse_u8", &[input]);
-            payload(&rt, result, tag);
-        }
-        let input = rt.string("18446744073709551616".into()).unwrap();
-        let result = call(&mut rt, "Num::parse_bigint", &[input]);
-        assert_eq!(
-            rt.heap.get(payload(&rt, result, "Ok")).unwrap(),
-            &Object::BigInteger(BigInt::from(1u128 << 64))
-        );
-    }
-    #[test]
-    fn float_syntax_rounding_overflow_and_conversions_are_explicit() {
-        let mut rt = Runtime::default();
-        for (text, tag) in [
-            (".5", "Ok"),
-            ("-1.25e-2", "Ok"),
-            ("nan", "Ok"),
-            ("+inf", "Ok"),
-            ("1.", "Err"),
-            ("NaN", "Err"),
-            ("1e", "Err"),
-            ("1e999", "Err"),
-        ] {
-            let input = rt.string(text.into()).unwrap();
-            let result = call(&mut rt, "Num::parse_f32", &[input]);
-            payload(&rt, result, tag);
-        }
         let halfway = rt
             .allocate(Object::BigInteger(BigInt::from(16_777_217)))
             .unwrap();

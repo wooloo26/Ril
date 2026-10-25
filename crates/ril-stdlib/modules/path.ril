@@ -1,23 +1,146 @@
-pub type Path
-
-pub fn from_string(text: str) -> Path
-
-pub fn from_native(value: Os::NativeString) -> Path
-
-pub fn native(path: Path) -> Os::NativeString
-
-pub fn to_string(path: Path) -> Result<str, Os::NativeError>
-
-pub fn join(base: Path, child: Path) -> Path
-
-pub fn parent(path: Path) -> ?Path
-
-pub fn file_name(path: Path) -> ?Os::NativeString
-
-pub fn extension(path: Path) -> ?Os::NativeString
-
-pub fn is_absolute(path: Path) -> bool
-
-pub fn normalize_lexical(path: Path) -> Path
-
-pub fn compare(left: Path, right: Path) -> Order::Ordering
+use ril/_storage as Storage
+use ril/os
+use ril/order
+pub type Path = Storage::Path
+type Prefix = { mut name_end: int, mut root_end: int, mut rooted: bool, mut absolute: bool, mut verbatim: bool }
+fn separator(unit: u16, windows: bool) -> bool { unit == 47u16 || windows && unit == 92u16 }
+fn letter(unit: u16) -> bool { (unit >= 65u16 && unit <= 90u16) || (unit >= 97u16 && unit <= 122u16) }
+fn prefix(units: []u16, windows: bool) -> Prefix {
+    let mut result = Prefix.{ name_end: 0, root_end: 0, rooted: false, absolute: false, verbatim: false }
+    if windows {
+        if len(units) >= 4 && units[0] == 92u16 && units[1] == 92u16
+            && (units[2] == 46u16 || units[2] == 63u16) && units[3] == 92u16 {
+            result.verbatim = true; result.absolute = true; result.rooted = true
+            result.name_end = 4; result.root_end = 4
+            if len(units) >= 6 && letter(units[4]) && units[5] == 58u16 { result.name_end = 6; result.root_end = 6 }
+            else {
+                let unc = len(units) >= 8 && units[4] == 85u16 && units[5] == 78u16 && units[6] == 67u16 && units[7] == 92u16
+                var end = if unc { 8 } else { 4 }
+                for 0..(if unc { 2 } else { 1 }) as _part {
+                    while end < len(units) && units[end] == 92u16 { end += 1 }
+                    while end < len(units) && units[end] != 92u16 { end += 1 }
+                }
+                result.name_end = end; result.root_end = end
+            }
+            while result.root_end < len(units) && units[result.root_end] == 92u16 { result.root_end += 1 }
+            return result
+        }
+        if len(units) >= 2 && letter(units[0]) && units[1] == 58u16 { result.name_end = 2; result.root_end = 2 }
+        else if len(units) >= 2 && separator(units[0], true) && separator(units[1], true) {
+            var end = 2
+            while end < len(units) && !separator(units[end], true) { end += 1 }
+            if end > 2 {
+                while end < len(units) && separator(units[end], true) { end += 1 }
+                let share = end
+                while end < len(units) && !separator(units[end], true) { end += 1 }
+                if end > share { result.name_end = end; result.root_end = end; result.rooted = true; result.absolute = true }
+            }
+        }
+    }
+    while result.root_end < len(units) && separator(units[result.root_end], windows) { result.rooted = true; result.root_end += 1 }
+    if result.rooted && (!windows || result.name_end != 0) { result.absolute = true }
+    result
+}
+pub fn from_string(text: str) -> Path { from_native(Os::from_string(text)) }
+pub fn from_native(value: Os::NativeString) -> Path { Storage::path_from_native(value) }
+pub fn native(path: Path) -> Os::NativeString { Storage::path_native(path) }
+pub fn to_string(path: Path) -> Result<str, Os::NativeError> { Os::to_string(native(path)) }
+fn path_units(units: []u16, windows: bool) -> Path { from_native(Storage::native_from_units(units, windows)) }
+pub fn join(base: Path, child: Path) -> Path {
+    let first_native = native(base)
+    let windows = Storage::native_windows(first_native)
+    let first = Storage::native_units(first_native)
+    let second = Storage::native_units(native(child))
+    if len(second) == 0 { return base }
+    if len(first) == 0 { return child }
+    let first_root = prefix(first, windows)
+    let second_root = prefix(second, windows)
+    if second_root.absolute || second_root.name_end != 0 { return child }
+    if first_root.verbatim {
+        if second_root.rooted { return child }
+        let mut output = Array::concat(first, [])
+        if first[len(first) - 1] != 92u16 { output !> Array::push(92u16) }
+        for second as unit { output !> Array::push(unit) }
+        return path_units(output, windows)
+    }
+    if second_root.rooted { return path_units(Array::concat(first[0..first_root.name_end], second), windows) }
+    let mut output = Array::concat(first, [])
+    if !separator(first[len(first) - 1], windows) && !(windows && len(first) == 2 && first_root.name_end == 2) {
+        output !> Array::push(if windows { 92u16 } else { 47u16 })
+    }
+    for second as unit { output !> Array::push(unit) }
+    path_units(output, windows)
+}
+fn component(units: []u16, windows: bool) -> ?(Prefix, int, int) {
+    let root = prefix(units, windows)
+    var end = len(units)
+    while end > root.root_end && (if root.verbatim { units[end - 1] == 92u16 } else { separator(units[end - 1], windows) }) { end -= 1 }
+    if end <= root.root_end { return None }
+    var start = end
+    while start > root.root_end && !(if root.verbatim { units[start - 1] == 92u16 } else { separator(units[start - 1], windows) }) { start -= 1 }
+    Some((root, start, end))
+}
+pub fn parent(path: Path) -> ?Path {
+    let value = native(path)
+    let windows = Storage::native_windows(value)
+    let units = Storage::native_units(value)
+    let (root, start, _end) = component(units, windows) ?? return None
+    var end = start
+    while end > root.root_end && (if root.verbatim { units[end - 1] == 92u16 } else { separator(units[end - 1], windows) }) { end -= 1 }
+    Some(path_units(units[0..end], windows))
+}
+pub fn file_name(path: Path) -> ?Os::NativeString {
+    let value = native(path)
+    let windows = Storage::native_windows(value)
+    let units = Storage::native_units(value)
+    let (_root, start, end) = component(units, windows) ?? return None
+    Some(Storage::native_from_units(units[start..end], windows))
+}
+pub fn extension(path: Path) -> ?Os::NativeString {
+    let name = file_name(path) ?? return None
+    let units = Storage::native_units(name)
+    var index = len(units)
+    while index > 0 {
+        index -= 1
+        if units[index] == 46u16 {
+            if index == 0 { return None }
+            return Some(Storage::native_from_units(units[index + 1..len(units)], Storage::native_windows(name)))
+        }
+    }
+    None
+}
+pub fn is_absolute(path: Path) -> bool {
+    let value = native(path)
+    prefix(Storage::native_units(value), Storage::native_windows(value)).absolute
+}
+pub fn normalize_lexical(path: Path) -> Path {
+    let value = native(path)
+    let windows = Storage::native_windows(value)
+    let units = Storage::native_units(value)
+    let root = prefix(units, windows)
+    if root.verbatim { return path }
+    let mut components: [][]u16 = []
+    var start = root.root_end
+    for root.root_end..=len(units) as index {
+        if index == len(units) || separator(units[index], windows) {
+            let part = units[start..index]
+            start = index + 1
+            if len(part) == 0 || part == [46u16] { next }
+            if part == [46u16, 46u16] {
+                if len(components) > 0 && components[len(components) - 1] != [46u16, 46u16] { let _ = Array::pop(mut components) }
+                else if !root.rooted { components !> Array::push(part) }
+            } else { components !> Array::push(part) }
+        }
+    }
+    let mut output: []u16 = []
+    for units[0..root.name_end] as unit { output !> Array::push(if windows && unit == 47u16 { 92u16 } else { unit }) }
+    let slash = if windows { 92u16 } else { 47u16 }
+    if root.rooted { output !> Array::push(slash) }
+    for 0..len(components) as index {
+        if index > 0 { output !> Array::push(slash) }
+        for components[index] as unit { output !> Array::push(unit) }
+    }
+    if len(components) == 0 && !root.rooted { output !> Array::push(46u16) }
+    path_units(output, windows)
+}
+pub fn compare(left: Path, right: Path) -> Order::Ordering { Os::compare(native(left), native(right)) }

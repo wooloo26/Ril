@@ -140,3 +140,23 @@ fn ordinary_library_definitions_keep_their_evaluation_family() {
         );
     }
 }
+#[test]
+fn private_standard_modules_require_an_actual_bundled_source_origin() {
+    for target in ["pointer32", "pointer64"] {
+        for case in [
+            "reject-private-standard-storage",
+            "reject-private-qualified-storage",
+        ] {
+            let outcome = session(case, target).check();
+            assert!(
+                matches!(&outcome, CompilationOutcome::Rejected { diagnostics }
+                if diagnostics.iter().any(|diagnostic| diagnostic.code == "E0201")),
+                "{case} {target}: {outcome:?}"
+            );
+        }
+        let program = session("private-namespace-user-module", target)
+            .verify()
+            .unwrap();
+        ril_compiler::lower::lower_core(&program).unwrap();
+    }
+}

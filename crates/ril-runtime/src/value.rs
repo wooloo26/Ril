@@ -252,7 +252,10 @@ impl Runtime {
         self.frames.last().unwrap().cleanups.len() as u32
     }
     pub(crate) fn register_cleanup(&mut self, resource: Handle) -> Result<Handle> {
-        if matches!(self.heap.get(resource)?, Object::File(_) | Object::Child(_)) {
+        if matches!(
+            self.heap.get(resource)?,
+            Object::File(_) | Object::Child(_) | Object::ReadGuard(_)
+        ) {
             self.frames.last_mut().unwrap().cleanups.push(resource);
             return Ok(resource);
         }
@@ -1003,10 +1006,9 @@ impl Runtime {
                     .join(", ");
                 format!("[{values}]")
             }
-            Object::IoAccumulator(_) => "<stream accumulator>".into(),
             Object::ReadPosition(_) => "<read position>".into(),
-            Object::ReadBuffer(buffer) => format!("<read buffer {}>", buffer.capacity),
-            Object::WriteBuffer(buffer) => format!("<write buffer {}>", buffer.capacity),
+            Object::CallableIdentity(_) => "<callable identity>".into(),
+            Object::ReadGuard(_) => "<read guard>".into(),
             Object::Array(values) | Object::Tuple(values) => {
                 let values = values
                     .iter()
@@ -1047,9 +1049,6 @@ impl Runtime {
             Object::Map(_) => "<map>".into(),
             Object::Set(_) => "<set>".into(),
             Object::Deque(_) => "<deque>".into(),
-            Object::PriorityHeap(_) => "<heap>".into(),
-            Object::HeapMutation(_) => "<private heap mutation>".into(),
-            Object::RandomState(_) => "<rng>".into(),
             Object::NativeString(_) => "<native-string>".into(),
             Object::Path(_) => "<path>".into(),
             Object::File(_) => "<file>".into(),
@@ -1105,56 +1104,76 @@ impl Runtime {
         let name = name.strip_prefix("Prelude::").unwrap_or(name);
         let name = ril_runtime_api::builtins::canonical_builtin(name).unwrap_or(name);
         let args = self.sequence(arguments)?;
-        if name.starts_with("\0ril.heap.") {
-            return self.heap_transaction_builtin(name, &args);
-        }
         if name.starts_with("Process::") {
             return self.process_builtin(name, &args);
         }
         if name.starts_with("Env::") {
             return self.environment_builtin(name, &args);
         }
-        if name.starts_with("File::") {
+        if name.starts_with("File::") || name == "\0ril.host.file_read_dir" {
             return self.file_builtin(name, &args);
         }
-        if name.starts_with("Io::") || name.starts_with("__io_") {
+        if name.starts_with("\0ril.identity.") {
+            return self.identity_primitive(name, &args);
+        }
+        if name == "\0ril.storage.environment_free" {
+            let value = *args
+                .first()
+                .ok_or_else(|| RuntimeError::internal("missing callable"))?;
+            let empty = match self.heap.get(value)? {
+                Object::Builtin(_) | Object::DataConstructor { .. } => true,
+                Object::Closure { environment, .. }
+                | Object::CpsClosure { environment, .. }
+                | Object::BudgetClosure { environment, .. } => match self.heap.get(*environment)? {
+                    Object::Unit => true,
+                    Object::Record(fields) => fields.is_empty(),
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !empty {
+                return Err(RuntimeError::internal(
+                    "environment-free callable contract was not checked",
+                ));
+            }
+            return Ok(value);
+        }
+        if name.starts_with("Io::") {
             return self.io_builtin(name, &args);
         }
-        if name.starts_with("Os::") {
-            return self.native_builtin(name, &args);
-        }
-        if name.starts_with("Path::") {
-            return self.path_builtin(name, &args);
+        if name.starts_with("\0ril.storage.native_")
+            || name.starts_with("\0ril.storage.path_")
+            || name == "\0ril.storage.platform_windows"
+        {
+            return self.native_storage(name, &args);
         }
         if name.starts_with("Deque::") {
             return self.deque_builtin(name, &args);
         }
-        if name.starts_with("Order::") {
-            return self.order_builtin(name, &args);
-        }
-        if name.starts_with("Time::") || name.starts_with("Clock::") {
+        if name.starts_with("Time::")
+            || name.starts_with("Clock::")
+            || name == "\0ril.storage.instant_parts"
+        {
             return self.time_builtin(name, &args);
         }
         if name.starts_with("Random::") {
             return self.random_builtin(name, &args);
         }
-        if name.starts_with("Math::") {
-            return self.math(name, &args);
+        if name.starts_with("\0ril.numeric.convert_") {
+            return self.numeric_primitive(name, &args);
         }
-        if name.starts_with("Num::") {
-            return self.numeric_builtin(name, &args);
+        if name.starts_with("\0ril.storage.string_") {
+            return self.string_storage(name, &args);
         }
-        if name.starts_with("String::") {
-            return self.string_builtin(name, &args);
-        }
-        if name.starts_with("Bytes::") || name.starts_with("Hex::") || name.starts_with("Binary::")
+        if name.starts_with("\0ril.storage.bytes_")
+            || name.starts_with("\0ril.storage.f32_")
+            || name.starts_with("\0ril.storage.f64_")
+            || name.starts_with("\0ril.storage.sqrt_")
         {
-            return self.encoding_builtin(name, &args);
+            return self.scalar_storage(name, &args);
         }
-        if name.starts_with("Unicode::") {
-            return self.unicode(name, &args);
-        }
-        if name.starts_with("Map::") || name.starts_with("Set::") {
+        if name.starts_with("Map::") || name.starts_with("Set::") || name == "\0ril.storage.set_new"
+        {
             return self.collection_builtin(name, &args);
         }
         let arg = |i: usize| {
@@ -1260,47 +1279,6 @@ impl Runtime {
                     _ => Err(RuntimeError::panic("index out of bounds")),
                 }
             }
-            "Array::reverse" => {
-                let mut values = self.sequence(arg(0)?)?;
-                values.reverse();
-                self.allocate(Object::Array(values))
-            }
-            "Array::first" => {
-                let values = self.sequence(arg(0)?)?;
-                self.variant(
-                    if values.is_empty() { "None" } else { "Some" },
-                    values.first().copied().into_iter().collect(),
-                )
-            }
-            "Array::concat" => {
-                let mut values = self.sequence(arg(0)?)?;
-                values.extend(self.sequence(arg(1)?)?);
-                self.allocate(Object::Array(values))
-            }
-            "Array::contains" => {
-                let values = self.sequence(arg(0)?)?;
-                let expected = arg(1)?;
-                let mut found = false;
-                for value in values {
-                    if self.heap.structurally_equal(value, expected)? {
-                        found = true;
-                        break;
-                    }
-                }
-                self.boolean(found)
-            }
-            "Array::clear" => {
-                match self.heap.get_mut(arg(0)?)? {
-                    Object::Array(values) => values.clear(),
-                    _ => return Err(RuntimeError::internal("expected array")),
-                };
-                self.unit()
-            }
-            "Array::get" => self.index(arg(0)?, arg(1)?, true),
-            "Array::set" => {
-                self.set_index(arg(0)?, arg(1)?, arg(2)?)?;
-                self.unit()
-            }
             "None" => self.variant(name, vec![]),
             "Some" | "Ok" | "Err" => {
                 let payload = match args.as_slice() {
@@ -1392,143 +1370,9 @@ impl Runtime {
                 let text = crate::formatting::format(value, specification)?;
                 self.string(text)
             }
-            "Crypto::sha256" | "Crypto::sha256_bytes" => {
-                use sha2::{Digest, Sha256};
-                let bytes = if name.ends_with("_bytes") {
-                    match self.heap.get(arg(0)?)? {
-                        Object::Bytes(bytes) => bytes.as_slice(),
-                        _ => return Err(RuntimeError::internal("expected bytes")),
-                    }
-                } else {
-                    self.as_string(arg(0)?)?.as_bytes()
-                };
-                let digest = Sha256::digest(bytes);
-                self.allocate(Object::Bytes(digest.to_vec().into()))
-            }
             _ => Err(RuntimeError::internal(format!(
                 "runtime builtin {name} has no implementation"
             ))),
-        }
-    }
-
-    fn math(&mut self, name: &str, args: &[Handle]) -> Result<Handle> {
-        let operation = name
-            .trim_start_matches("Math::")
-            .strip_suffix("_f32")
-            .unwrap_or(name.trim_start_matches("Math::"));
-        let bits = if name.ends_with("_f32") { 32 } else { 64 };
-        let number = |index: usize| -> Result<f64> {
-            match args
-                .get(index)
-                .and_then(|handle| self.heap.get(*handle).ok())
-            {
-                Some(Object::Float {
-                    value,
-                    bits: actual,
-                }) if *actual == bits => Ok(*value),
-                _ => Err(RuntimeError::internal("invalid Math argument")),
-            }
-        };
-        let first = number(0)?;
-        if operation == "is_nan" {
-            return self.boolean(first.is_nan());
-        }
-        if operation == "is_finite" {
-            return self.boolean(first.is_finite());
-        }
-        let value = match operation {
-            "sqrt" => {
-                if bits == 32 {
-                    f64::from((first as f32).sqrt())
-                } else {
-                    first.sqrt()
-                }
-            }
-            "floor" => first.floor(),
-            "ceil" => first.ceil(),
-            "round" => first.round_ties_even(),
-            "abs" => first.abs(),
-            "min" | "max" => {
-                let second = number(1)?;
-                if first.is_nan() || second.is_nan() {
-                    f64::NAN
-                } else if first == 0.0 && second == 0.0 {
-                    if operation == "min" {
-                        if first.is_sign_negative() || second.is_sign_negative() {
-                            -0.0
-                        } else {
-                            0.0
-                        }
-                    } else if first.is_sign_positive() || second.is_sign_positive() {
-                        0.0
-                    } else {
-                        -0.0
-                    }
-                } else if operation == "min" {
-                    first.min(second)
-                } else {
-                    first.max(second)
-                }
-            }
-            _ => return Err(RuntimeError::internal("unknown Math operation")),
-        };
-        self.float(value, bits)
-    }
-    fn unicode(&mut self, name: &str, args: &[Handle]) -> Result<Handle> {
-        let first = args
-            .first()
-            .copied()
-            .ok_or_else(|| RuntimeError::internal("missing Unicode argument"))?;
-        match name {
-            "Unicode::decode_utf8" => {
-                let bytes = match self.heap.get(first)? {
-                    Object::Bytes(bytes) => bytes,
-                    _ => return Err(RuntimeError::internal("expected UTF-8 byte input")),
-                };
-                match std::str::from_utf8(bytes) {
-                    Ok(text) => {
-                        let text = self.string(text.to_owned())?;
-                        self.variant("Ok", vec![text])
-                    }
-                    Err(error) => {
-                        let offset = self.int(error.valid_up_to() as i128)?;
-                        let error =
-                            self.allocate(Object::Record([("offset".into(), offset)].into()))?;
-                        self.variant("Err", vec![error])
-                    }
-                }
-            }
-            "Unicode::from_scalar" => {
-                let scalar = self.as_integer(first)?;
-                if let Some(value) = u32::try_from(scalar).ok().and_then(char::from_u32) {
-                    let text = self.string(value.to_string())?;
-                    self.variant("Ok", vec![text])
-                } else {
-                    let error = self.allocate(Object::Record([("value".into(), first)].into()))?;
-                    self.variant("Err", vec![error])
-                }
-            }
-            "Unicode::lowercase" | "Unicode::uppercase" => {
-                let text = self.as_string(first)?;
-                let text = if name.ends_with("lowercase") {
-                    crate::unicode::lowercase(text)
-                } else {
-                    crate::unicode::uppercase(text)
-                };
-                self.string(text)
-            }
-            _ => {
-                let scalar = u32::try_from(self.as_integer(first)?).unwrap_or(u32::MAX);
-                let property = match name {
-                    "Unicode::is_white_space" => crate::unicode::is_white_space(scalar),
-                    "Unicode::is_alphabetic" => crate::unicode::is_alphabetic(scalar),
-                    "Unicode::is_decimal_digit" => crate::unicode::is_decimal_digit(scalar),
-                    "Unicode::is_xid_start" => crate::unicode::is_xid_start(scalar),
-                    "Unicode::is_xid_continue" => crate::unicode::is_xid_continue(scalar),
-                    _ => return Err(RuntimeError::internal("unknown Unicode operation")),
-                };
-                self.boolean(property)
-            }
         }
     }
 }

@@ -297,6 +297,7 @@ enum Symbol {
 }
 #[derive(Clone, Default)]
 struct Scope {
+    origin: usize,
     names: BTreeMap<String, Symbol>,
     locals: BTreeSet<String>,
     local_variants: BTreeMap<String, Vec<String>>,
@@ -427,7 +428,6 @@ impl Resolver {
     }
     fn run(mut self) -> ResolvedProject {
         for index in 0..self.units.len() {
-            self.diagnostics.extend(validate_unit(&self.units[index]));
             let statements = self.units[index].program.statements.clone();
             for statement in &statements {
                 let (name, visibility) = match &statement.kind {
@@ -524,8 +524,10 @@ impl Resolver {
             let Some(index) = pending.pop_front() else {
                 break;
             };
+            self.diagnostics.extend(validate_unit(&self.units[index]));
             let mut statements = self.units[index].program.statements.clone();
             let mut scope = Scope {
+                origin: index,
                 local_effect_sets: BTreeSet::new(),
                 names: prelude_symbols(),
                 locals: BTreeSet::new(),
@@ -676,6 +678,9 @@ impl Resolver {
                 }
                 return vec![];
             };
+            if !self.standard_visible(namespace, index, import.span, report) {
+                return vec![];
+            }
             if let Some(&source) = self.standard_sources.get(namespace) {
                 self.required_standard_sources.insert(source);
             }
@@ -712,9 +717,10 @@ impl Resolver {
                     .iter()
                     .map(|(name, symbol)| (name.clone(), symbol.clone()))
                     .collect(),
-                Symbol::Standard(namespace) => {
-                    self.standard_symbols(&namespace).into_iter().collect()
-                }
+                Symbol::Standard(namespace) => self
+                    .standard_symbols(&namespace, index, import.span, report)
+                    .into_iter()
+                    .collect(),
                 _ => vec![],
             };
         }
@@ -725,7 +731,9 @@ impl Resolver {
                     self.member(*target, &member.name, member.span, report)
                 }
                 Symbol::Standard(namespace) => {
-                    let symbol = self.standard_symbols(namespace).remove(&member.name);
+                    let symbol = self
+                        .standard_symbols(namespace, index, member.span, report)
+                        .remove(&member.name);
                     if report && symbol.is_none() {
                         self.diagnostics.push(error_diagnostic(
                             "E0209",
@@ -749,7 +757,40 @@ impl Resolver {
     }
     /// One migration adapter for remaining catalog declarations. Source
     /// exports are ordinary resolved symbols, including aliases and re-exports.
-    fn standard_symbols(&mut self, namespace: &str) -> BTreeMap<String, Symbol> {
+    fn standard_visible(
+        &mut self,
+        namespace: &str,
+        origin: usize,
+        span: Span,
+        report: bool,
+    ) -> bool {
+        let private = ril_stdlib::MODULES
+            .iter()
+            .any(|module| module.namespace == namespace && module.private);
+        let allowed = !private
+            || self
+                .standard_sources
+                .values()
+                .any(|source| *source == origin);
+        if !allowed && report {
+            self.diagnostics.push(error_diagnostic(
+                "E0201",
+                span,
+                "standard implementation module is private",
+            ));
+        }
+        allowed
+    }
+    fn standard_symbols(
+        &mut self,
+        namespace: &str,
+        origin: usize,
+        span: Span,
+        report: bool,
+    ) -> BTreeMap<String, Symbol> {
+        if !self.standard_visible(namespace, origin, span, report) {
+            return BTreeMap::new();
+        }
         if let Some(&source) = self.standard_sources.get(namespace) {
             self.required_standard_sources.insert(source);
         }
@@ -924,7 +965,10 @@ impl Resolver {
                     let Some(name) = path.get(cursor) else {
                         break;
                     };
-                    let Some(member) = self.standard_symbols(namespace).remove(name) else {
+                    let Some(member) = self
+                        .standard_symbols(namespace, scope.origin, span, true)
+                        .remove(name)
+                    else {
                         self.diagnostics.push(error_diagnostic(
                             "E0209",
                             span,

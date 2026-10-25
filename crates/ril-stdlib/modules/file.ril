@@ -1,3 +1,5 @@
+use ril/_storage as Storage
+use ril/order
 use ril/io
 use ril/path
 use ril/unicode
@@ -53,15 +55,36 @@ pub fn sync(mut file: Handle) -> Result<(), Io::IoError> @Fiber &mut
 
 pub fn close(mut file: Handle) -> Result<(), Io::IoError> @Fiber &mut
 
-pub fn read_bytes(path: Path::Path) -> Result<bytes, Io::IoError> @Fiber
+pub fn read_bytes(path: Path::Path) -> Result<bytes, Io::IoError> @Fiber {
+    with_file(path, OpenMode::Read,
+        \mut file: Handle -> Io::read_all(mut file, .{ read: read_chunk }))
+}
 
-pub fn read_text(path: Path::Path) -> Result<str, Io::IoError> @Fiber
+pub fn read_text(path: Path::Path) -> Result<str, Io::IoError> @Fiber {
+    let data = read_bytes(path)?
+    match Unicode::decode_utf8(data) {
+        Ok(text) -> Ok(text),
+        Err(error) -> Err(.{ kind: Io::ErrorKind::InvalidData,
+            message: "invalid UTF-8 at byte {error.offset}", native_code: None }),
+    }
+}
 
-pub fn write_bytes(path: Path::Path, data: bytes) -> Result<(), Io::IoError> @Fiber
+pub fn write_bytes(path: Path::Path, data: bytes) -> Result<(), Io::IoError> @Fiber {
+    with_file(path, OpenMode::WriteTruncate,
+        \mut file: Handle -> Io::write_all(mut file, data, .{ write: write }))
+}
 
-pub fn write_text(path: Path::Path, text: str) -> Result<(), Io::IoError> @Fiber
+pub fn write_text(path: Path::Path, text: str) -> Result<(), Io::IoError> @Fiber {
+    write_bytes(path, String::utf8(text))
+}
 
-pub fn read_dir(path: Path::Path) -> Result<[]Entry, Io::IoError> @Fiber
+pub fn read_dir(path: Path::Path) -> Result<[]Entry, Io::IoError> @Fiber {
+    let raw = Storage::file_read_dir(path)?
+    let entries = Order::sorted(raw, .{ compare: \left, right -> Os::compare(left.0, right.0) })
+    let mut output: []Entry = []
+    for entries as (name, kind) { output !> Array::push(.{ name: name, kind: kind, path: Path::join(path, Path::from_native(name)) }) }
+    Ok(output)
+}
 
 pub fn create_dir(path: Path::Path) -> Result<(), Io::IoError> @Fiber
 

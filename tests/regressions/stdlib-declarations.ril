@@ -488,3 +488,36 @@ fn take<T, E>(value: Result<T, E>) -> T {
 pub fn test_explicit_error() { let _ = take<int, str>(Err("failed")) }
 --@ end-file
 --@ end-case
+--@ case: reject-private-standard-storage
+--@ mode: check-fail
+-- Error [E0201]: A private standard implementation module is inaccessible.
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: private-namespace-user-module
+--@ file: source.ril
+use ril/_storage as Storage
+fn example() {}
+--@ end-file
+--@ end-case
+
+--@ case: reject-private-qualified-storage
+--@ mode: check-fail
+-- Error [E0201]: A private standard implementation module is inaccessible.
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: private-namespace-user-module
+--@ file: source.ril
+fn example() { let _ = Storage::set_new<int>() }
+--@ end-file
+--@ end-case
+
+--@ case: private-namespace-user-module
+--@ mode: check-pass
+--@ spec: SPEC#module-imports-and-visibility
+--@ companion: reject-private-standard-storage
+--@ file: root.ril
+use storage as Storage
+pub fn example() -> int { Storage::set_new(7) }
+--@ end-file
+--@ file: storage.ril
+pub fn set_new(value: int) -> int { value }
+--@ end-file
+--@ end-case

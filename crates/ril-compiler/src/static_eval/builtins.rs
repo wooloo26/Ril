@@ -442,42 +442,6 @@ impl Evaluator {
         name: &str,
         args: Vec<StaticValue>,
     ) -> Result<StaticValue> {
-        // Read algorithms borrow the selected sequence. The published handle
-        // remains an ArrayWindow with its real backing identity.
-        let args = if matches!(
-            name,
-            "Array::first"
-                | "Array::get"
-                | "Array::contains"
-                | "Array::reverse"
-                | "Array::concat"
-                | "Array::map"
-                | "Array::filter"
-                | "Array::fold"
-                | "Map::from"
-                | "String::join"
-        ) {
-            args.into_iter()
-                .map(|value| {
-                    if let StaticValue::ArrayWindow(window) = value {
-                        self.budget.work(window.len as u64 + 1)?;
-                        let selected = window
-                            .iter()
-                            .map(|value| self.copy_static_value(value))
-                            .collect::<Result<Vec<_>>>()?;
-                        Ok(StaticValue::Array(StaticCollection {
-                            id: window.id,
-                            values: std::sync::Arc::new(selected),
-                            source_type: window.source_type.clone(),
-                        }))
-                    } else {
-                        Ok(value)
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?
-        } else {
-            args
-        };
         match (name, args.as_slice()) {
             ("assert", [StaticValue::Bool(true), ..]) => Ok(StaticValue::Unit),
             ("assert", [StaticValue::Bool(false), ..]) => Err(Failure::Diagnostic(
@@ -518,290 +482,152 @@ impl Evaluator {
                 };
                 self.produce_result(name == "Ok", payload)
             }
-            ("Array::first", [StaticValue::Array(values)]) => Ok(option(values.first().cloned())),
-            ("Array::get", [StaticValue::Array(values), StaticValue::Integer(index)]) => {
-                Ok(option(
-                    usize::try_from(*index)
-                        .ok()
-                        .and_then(|index| values.get(index).cloned()),
+            ("\0ril.storage.bytes_to_array", [StaticValue::Bytes(bytes)]) => Ok(self.array(
+                bytes
+                    .iter()
+                    .map(|value| StaticValue::TypedInteger(i128::from(*value), 8, false))
+                    .collect(),
+            )),
+            ("\0ril.storage.bytes_from_array", [input]) => {
+                let values = match input {
+                    StaticValue::Array(values) => values.iter().collect::<Vec<_>>(),
+                    StaticValue::ArrayWindow(values) => values.iter().collect::<Vec<_>>(),
+                    _ => {
+                        return Err(Failure::Diagnostic(
+                            "E0301",
+                            "byte construction requires an array".into(),
+                        ));
+                    }
+                };
+                let bytes = values
+                    .into_iter()
+                    .map(|value| match value {
+                        StaticValue::TypedInteger(value, 8, false) => {
+                            u8::try_from(*value).map_err(|_| {
+                                Failure::Diagnostic("E0301", "byte outside u8 range".into())
+                            })
+                        }
+                        _ => Err(Failure::Diagnostic(
+                            "E0301",
+                            "byte construction requires u8 elements".into(),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(StaticValue::Bytes(bytes))
+            }
+            ("\0ril.storage.sqrt_f32", [StaticValue::Float(value, true)]) => {
+                let result = (*value as f32).sqrt();
+                Ok(StaticValue::Float(
+                    f64::from(if result.is_nan() {
+                        f32::from_bits(0x7fc00000)
+                    } else {
+                        result
+                    }),
+                    true,
                 ))
             }
-            ("Array::contains", [StaticValue::Array(values), value]) => Ok(StaticValue::Bool(
-                values.iter().any(|existing| static_equal(existing, value)),
+            ("\0ril.storage.sqrt_f64", [StaticValue::Float(value, false)]) => {
+                let result = value.sqrt();
+                Ok(StaticValue::Float(
+                    if result.is_nan() {
+                        f64::from_bits(0x7ff8000000000000)
+                    } else {
+                        result
+                    },
+                    false,
+                ))
+            }
+            ("\0ril.storage.f32_bits", [StaticValue::Float(value, true)]) => {
+                Ok(StaticValue::TypedInteger(
+                    i128::from(if value.is_nan() {
+                        0x7fc00000u32
+                    } else {
+                        (*value as f32).to_bits()
+                    }),
+                    32,
+                    false,
+                ))
+            }
+            ("\0ril.storage.f64_bits", [StaticValue::Float(value, false)]) => {
+                Ok(StaticValue::TypedInteger(
+                    i128::from(if value.is_nan() {
+                        0x7ff8000000000000u64
+                    } else {
+                        value.to_bits()
+                    }),
+                    64,
+                    false,
+                ))
+            }
+            ("\0ril.storage.f32_from_bits", [StaticValue::TypedInteger(value, 32, false)]) => {
+                let raw = u32::try_from(*value)
+                    .map_err(|_| Failure::Diagnostic("E0301", "expected u32 float bits".into()))?;
+                let value = f32::from_bits(raw);
+                Ok(StaticValue::Float(
+                    f64::from(if value.is_nan() {
+                        f32::from_bits(0x7fc00000)
+                    } else {
+                        value
+                    }),
+                    true,
+                ))
+            }
+            ("\0ril.storage.f64_from_bits", [StaticValue::TypedInteger(value, 64, false)]) => {
+                let raw = u64::try_from(*value)
+                    .map_err(|_| Failure::Diagnostic("E0301", "expected u64 float bits".into()))?;
+                let value = f64::from_bits(raw);
+                Ok(StaticValue::Float(
+                    if value.is_nan() {
+                        f64::from_bits(0x7ff8000000000000)
+                    } else {
+                        value
+                    },
+                    false,
+                ))
+            }
+            ("\0ril.storage.string_scalars", [StaticValue::String(text)]) => Ok(self.array(
+                text.chars()
+                    .map(|value| StaticValue::TypedInteger(i128::from(value as u32), 32, false))
+                    .collect(),
             )),
-            ("Array::reverse", [StaticValue::Array(values)]) => {
-                Ok(self.array(values.iter().rev().cloned().collect()))
+            ("\0ril.storage.string_utf8", [StaticValue::String(text)]) => {
+                Ok(StaticValue::Bytes(text.as_bytes().to_vec()))
             }
-            ("Array::concat", [StaticValue::Array(left), StaticValue::Array(right)]) => {
-                Ok(self.array(left.iter().chain(right).cloned().collect()))
-            }
-            (
-                "Array::map" | "Array::filter" | "Array::find" | "Array::any" | "Array::all"
-                | "Array::for_each",
-                [StaticValue::Array(values), StaticValue::Callable(callable)],
-            ) => {
-                let mut output = vec![];
-                for value in values {
-                    self.budget.event(budget::Event::LoopIteration)?;
-                    let callback = self.copy_static_callable(callable)?;
-                    let argument = self.copy_static_value(value)?;
-                    let result = self.invoke_callback(callback, vec![argument])?;
-                    match name {
-                        "Array::map" => output.push(result),
-                        "Array::for_each" => {
-                            if result != StaticValue::Unit {
-                                return Err(Failure::Diagnostic(
-                                    "E0301",
-                                    "for_each callback must return unit".into(),
-                                ));
-                            }
-                        }
-                        _ => {
-                            let StaticValue::Bool(selected) = result else {
-                                return Err(Failure::Diagnostic(
-                                    "E0301",
-                                    "array predicate must return bool".into(),
-                                ));
-                            };
-                            match name {
-                                "Array::filter" if selected => output.push(value.clone()),
-                                "Array::find" if selected => {
-                                    return Ok(option(Some(value.clone())));
-                                }
-                                "Array::any" if selected => return Ok(StaticValue::Bool(true)),
-                                "Array::all" if !selected => return Ok(StaticValue::Bool(false)),
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-                self.budget.event(budget::Event::LoopIteration)?;
-                Ok(match name {
-                    "Array::map" | "Array::filter" => self.array(output),
-                    "Array::find" => option(None),
-                    "Array::any" => StaticValue::Bool(false),
-                    "Array::all" => StaticValue::Bool(true),
-                    _ => StaticValue::Unit,
-                })
-            }
-            (
-                "Array::fold",
-                [
-                    StaticValue::Array(values),
-                    initial,
-                    StaticValue::Callable(callable),
-                ],
-            ) => {
-                let mut result = self.copy_static_value(initial)?;
-                for value in values {
-                    self.budget.event(budget::Event::LoopIteration)?;
-                    let callback = self.copy_static_callable(callable)?;
-                    let argument = self.copy_static_value(value)?;
-                    result = self.invoke_callback(callback, vec![result, argument])?;
-                }
-                self.budget.event(budget::Event::LoopIteration)?;
-                Ok(result)
-            }
-            ("Map::get", [StaticValue::Map(entries), key]) => Ok(option(
-                entries
-                    .iter()
-                    .find(|(existing, _)| static_equal(existing, key))
-                    .map(|(_, value)| value.clone()),
-            )),
-            ("Map::contains", [StaticValue::Map(entries), key]) => Ok(StaticValue::Bool(
-                entries
-                    .iter()
-                    .any(|(existing, _)| static_equal(existing, key)),
-            )),
-            ("Map::keys", [StaticValue::Map(entries)]) => {
-                Ok(self.array(entries.iter().map(|(key, _)| key.clone()).collect()))
-            }
-            ("Map::values", [StaticValue::Map(entries)]) => {
-                Ok(self.array(entries.iter().map(|(_, value)| value.clone()).collect()))
-            }
-            ("Map::entries", [StaticValue::Map(entries)]) => {
-                let values = entries
-                    .iter()
-                    .map(|(key, value)| self.tuple(vec![key.clone(), value.clone()]))
-                    .collect();
-                Ok(self.array(values))
-            }
-            ("Map::from", [StaticValue::Array(entries)]) => {
-                let mut map = vec![];
-                for entry in entries {
-                    let StaticValue::Tuple(pair) = entry else {
+            ("\0ril.storage.string_from_scalars", [input]) => {
+                let values = match input {
+                    StaticValue::Array(values) => values.iter().collect::<Vec<_>>(),
+                    StaticValue::ArrayWindow(values) => values.iter().collect::<Vec<_>>(),
+                    _ => {
                         return Err(Failure::Diagnostic(
                             "E0301",
-                            "Map::from requires pairs".into(),
+                            "scalar string construction requires an array".into(),
+                        ));
+                    }
+                };
+                let mut text = String::new();
+                for value in values {
+                    let StaticValue::TypedInteger(value, 32, false) = value else {
+                        return Err(Failure::Diagnostic(
+                            "E0301",
+                            "scalar string construction requires u32 elements".into(),
                         ));
                     };
-                    if pair.len() != 2 {
-                        return Err(Failure::Diagnostic(
-                            "E0301",
-                            "Map::from requires pairs".into(),
-                        ));
-                    }
-                    if let Some((_, old)) =
-                        map.iter_mut().find(|(key, _)| static_equal(key, &pair[0]))
-                    {
-                        *old = pair[1].clone();
-                    } else {
-                        map.push((pair[0].clone(), pair[1].clone()));
-                    }
+                    let scalar = u32::try_from(*value)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .ok_or_else(|| {
+                            Failure::Diagnostic(
+                                "E0830",
+                                "string construction received a nonscalar".into(),
+                            )
+                        })?;
+                    text.push(scalar);
                 }
-                Ok(self.map(map))
+                Ok(StaticValue::String(text))
             }
-            (name, _) if name.starts_with("String::") => self.string_builtin(name, args),
             _ => Err(Failure::Diagnostic(
                 "E0314",
                 format!("invalid arguments to static builtin {name}"),
-            )),
-        }
-    }
-    fn string_builtin(&mut self, name: &str, args: Vec<StaticValue>) -> Result<StaticValue> {
-        match (name, args.as_slice()) {
-            ("String::split", [StaticValue::String(text), StaticValue::String(separator)]) => {
-                Ok(self.array(if separator.is_empty() {
-                    text.chars()
-                        .map(|c| StaticValue::String(c.to_string()))
-                        .collect()
-                } else {
-                    text.split(separator)
-                        .map(|part| StaticValue::String(part.into()))
-                        .collect()
-                }))
-            }
-            ("String::trim", [StaticValue::String(text)]) => {
-                Ok(StaticValue::String(text.trim_matches(white_space).into()))
-            }
-            (
-                "String::contains" | "String::starts_with" | "String::ends_with",
-                [StaticValue::String(text), StaticValue::String(needle)],
-            ) => Ok(StaticValue::Bool(match name {
-                "String::contains" => text.contains(needle),
-                "String::starts_with" => text.starts_with(needle),
-                _ => text.ends_with(needle),
-            })),
-            (
-                "String::replace",
-                [
-                    StaticValue::String(text),
-                    StaticValue::String(old),
-                    StaticValue::String(new),
-                ],
-            ) => Ok(StaticValue::String(text.replace(old, new))),
-            ("String::find", [StaticValue::String(text), StaticValue::String(needle)]) => {
-                Ok(option(text.find(needle).map(|offset| {
-                    StaticValue::Integer(text[..offset].chars().count() as i128)
-                })))
-            }
-            (
-                "String::slice",
-                [
-                    StaticValue::String(text),
-                    StaticValue::Integer(start),
-                    StaticValue::Integer(end),
-                ],
-            ) => {
-                let values: Vec<_> = text.chars().collect();
-                Ok(option(
-                    if *start >= 0 && end >= start && *end as usize <= values.len() {
-                        Some(StaticValue::String(
-                            values[*start as usize..*end as usize].iter().collect(),
-                        ))
-                    } else {
-                        None
-                    },
-                ))
-            }
-            ("String::concat", [StaticValue::String(a), StaticValue::String(b)]) => {
-                Ok(StaticValue::String(a.clone() + b))
-            }
-            ("String::join", [StaticValue::Array(parts), StaticValue::String(separator)]) => {
-                let parts = parts
-                    .iter()
-                    .map(|part| {
-                        if let StaticValue::String(text) = part {
-                            Ok(text.as_str())
-                        } else {
-                            Err(Failure::Diagnostic(
-                                "E0301",
-                                "String::join requires strings".into(),
-                            ))
-                        }
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(StaticValue::String(parts.join(separator)))
-            }
-            ("String::lines", [StaticValue::String(text)]) => {
-                let mut lines: Vec<_> = text.split('\n').collect();
-                if text.ends_with('\n') {
-                    lines.pop();
-                }
-                if text.is_empty() {
-                    lines.clear();
-                }
-                Ok(self.array(
-                    lines
-                        .iter()
-                        .enumerate()
-                        .map(|(index, line)| {
-                            StaticValue::String(
-                                if index + 1 < lines.len() || text.ends_with('\n') {
-                                    line.strip_suffix('\r').unwrap_or(line)
-                                } else {
-                                    line
-                                }
-                                .to_string(),
-                            )
-                        })
-                        .collect(),
-                ))
-            }
-            ("String::scalar_at", [StaticValue::String(text), StaticValue::Integer(index)]) => {
-                Ok(option(
-                    usize::try_from(*index)
-                        .ok()
-                        .and_then(|index| text.chars().nth(index))
-                        .map(|c| StaticValue::TypedInteger(i128::from(c as u32), 32, false)),
-                ))
-            }
-            ("String::scalars", [StaticValue::String(text)]) => Ok(self.array(
-                text.chars()
-                    .map(|c| StaticValue::TypedInteger(i128::from(c as u32), 32, false))
-                    .collect(),
-            )),
-            ("String::utf8", [StaticValue::String(text)]) => {
-                Ok(StaticValue::Bytes(text.as_bytes().to_vec()))
-            }
-            ("String::byte_len", [StaticValue::String(text)]) => {
-                Ok(StaticValue::Integer(text.len() as i128))
-            }
-            ("String::byte_offset", [StaticValue::String(text), StaticValue::Integer(index)]) => {
-                let index = usize::try_from(*index).ok();
-                let offset = index.and_then(|index| {
-                    if index == text.chars().count() {
-                        Some(text.len())
-                    } else {
-                        text.char_indices().nth(index).map(|(offset, _)| offset)
-                    }
-                });
-                Ok(option(
-                    offset.map(|offset| StaticValue::Integer(offset as i128)),
-                ))
-            }
-            ("String::scalar_offset", [StaticValue::String(text), StaticValue::Integer(index)]) => {
-                let offset = usize::try_from(*index)
-                    .ok()
-                    .filter(|index| text.is_char_boundary(*index))
-                    .map(|index| text[..index].chars().count());
-                Ok(option(
-                    offset.map(|offset| StaticValue::Integer(offset as i128)),
-                ))
-            }
-            _ => Err(Failure::Diagnostic(
-                "E0314",
-                format!("invalid static string arguments to {name}"),
             )),
         }
     }
@@ -819,43 +645,16 @@ pub(super) fn static_builtin(name: &str) -> bool {
         "assert"
             | "len"
             | "byte_size"
-            | "Array::first"
-            | "Array::get"
-            | "Array::contains"
-            | "Array::reverse"
-            | "Array::concat"
-            | "Array::map"
-            | "Array::filter"
-            | "Array::fold"
-            | "Array::find"
-            | "Array::any"
-            | "Array::all"
-            | "Array::for_each"
-            | "Map::get"
-            | "Map::contains"
-            | "Map::keys"
-            | "Map::values"
-            | "Map::entries"
-            | "Map::from"
-            | "String::split"
-            | "String::trim"
-            | "String::contains"
-            | "String::starts_with"
-            | "String::ends_with"
-            | "String::replace"
-            | "String::find"
-            | "String::slice"
-            | "String::concat"
-            | "String::join"
-            | "String::lines"
-            | "String::scalar_at"
-            | "String::scalars"
-            | "String::utf8"
-            | "String::byte_len"
-            | "String::byte_offset"
-            | "String::scalar_offset"
+            | "\0ril.storage.bytes_from_array"
+            | "\0ril.storage.bytes_to_array"
+            | "\0ril.storage.f32_bits"
+            | "\0ril.storage.f32_from_bits"
+            | "\0ril.storage.f64_bits"
+            | "\0ril.storage.f64_from_bits"
+            | "\0ril.storage.sqrt_f32"
+            | "\0ril.storage.sqrt_f64"
+            | "\0ril.storage.string_scalars"
+            | "\0ril.storage.string_utf8"
+            | "\0ril.storage.string_from_scalars"
     )
-}
-fn white_space(c: char) -> bool {
-    matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{0085}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}')
 }

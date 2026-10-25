@@ -17,8 +17,6 @@ mod cps;
 #[cfg(test)]
 #[path = "ffi_host_tests.rs"]
 mod host_tests;
-#[path = "ffi_order.rs"]
-mod order;
 
 thread_local! { static RUNTIME: RefCell<Runtime> = RefCell::new(Runtime::default()); static ENTRY_STARTED: RefCell<bool> = const { RefCell::new(false) }; }
 
@@ -258,6 +256,14 @@ fn run_cleanup_stack(activation: Option<Handle>, marker: u32, value: u64) {
                 break;
             }
         };
+        match with_runtime(|runtime| runtime.release_read_guard(resource)) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => {
+                primary = Some(error);
+                break;
+            }
+        }
         match with_runtime(|runtime| crate::host_cleanup::prepare(runtime, resource)).and_then(
             |action| match action {
                 Some(action) => action.perform().map(|()| true),
@@ -596,11 +602,6 @@ fn dispatch_builtin(name: u64, arguments: u64) -> u64 {
         };
         let reply = request.perform();
         return finish_host(reply, crate::file::filesystem::finish);
-    }
-    if matches!(name.as_str(), "Order::sorted" | "Order::binary_search")
-        || name.starts_with("Heap::")
-    {
-        return order::invoke(&name, arguments);
     }
     handle(|runtime| runtime.builtin(&name, Handle(arguments)))
 }

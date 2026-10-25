@@ -2,13 +2,13 @@ pub let PI: f64 = 3.141592653589793238462643383279502884
 
 pub let TAU: f64 = 6.283185307179586476925286766559005768
 
-pub fn sqrt(value: f64) -> f64
+pub fn sqrt(value: f64) -> f64 { Storage::sqrt_f64(value) }
 
-pub fn floor(value: f64) -> f64
+pub fn floor(value: f64) -> f64 { integral_f64(value, -1) }
 
-pub fn ceil(value: f64) -> f64
+pub fn ceil(value: f64) -> f64 { integral_f64(value, 1) }
 
-pub fn round(value: f64) -> f64
+pub fn round(value: f64) -> f64 { integral_f64(value, 0) }
 
 pub fn abs(value: f64) -> f64 { if value == 0.0 { 0.0 } else if value < 0.0 { -value } else { value } }
 
@@ -22,10 +22,10 @@ pub fn max(left: f64, right: f64) -> f64 { if is_nan(left) || is_nan(right) { 0.
 
 pub let PI_F32: f32 = 3.141592653589793238462643383279502884
 pub let TAU_F32: f32 = 6.283185307179586476925286766559005768
-pub fn sqrt_f32(value: f32) -> f32
-pub fn floor_f32(value: f32) -> f32
-pub fn ceil_f32(value: f32) -> f32
-pub fn round_f32(value: f32) -> f32
+pub fn sqrt_f32(value: f32) -> f32 { Storage::sqrt_f32(value) }
+pub fn floor_f32(value: f32) -> f32 { integral_f32(value, -1) }
+pub fn ceil_f32(value: f32) -> f32 { integral_f32(value, 1) }
+pub fn round_f32(value: f32) -> f32 { integral_f32(value, 0) }
 pub fn abs_f32(value: f32) -> f32 { if value == 0.0f32 { 0.0f32 } else if value < 0.0f32 { -value } else { value } }
 pub fn is_nan_f32(value: f32) -> bool { value != value }
 pub fn is_finite_f32(value: f32) -> bool { !is_nan_f32(value) && value - value == 0.0f32 }
@@ -36,4 +36,36 @@ pub fn min_f32(left: f32, right: f32) -> f32 {
 pub fn max_f32(left: f32, right: f32) -> f32 {
     if is_nan_f32(left) || is_nan_f32(right) { 0.0f32 / 0.0f32 }
     else if left > right || (left == 0.0f32 && right == 0.0f32 && 1.0f32 / left > 0.0f32) { left } else { right }
+}
+use ril/_storage as Storage
+use ril/num
+fn unsigned(value: int) -> u64 { Num::convert<int, u64>(value) ?? \_error -> panic("bit count") }
+fn integral_f64(value: f64, mode: int) -> f64 {
+    Storage::f64_from_bits(integral_bits(Storage::f64_bits(value), 64, 52, 1023, mode))
+}
+fn integral_f32(value: f32, mode: int) -> f32 {
+    let word = Num::convert<u32, u64>(Storage::f32_bits(value)) ?? \_error -> panic("bit widening")
+    let rounded = integral_bits(word, 32, 23, 127, mode)
+    Storage::f32_from_bits(Num::convert<u64, u32>(rounded) ?? \_error -> panic("f32 bits"))
+}
+fn integral_bits(word: u64, width: int, fraction: int, bias: int, mode: int) -> u64 {
+    let sign_bit = 1u64 << unsigned(width - 1)
+    let negative = word >= sign_bit
+    let magnitude = word % sign_bit
+    let sign = if negative { sign_bit } else { 0u64 }
+    let encoded = magnitude >> unsigned(fraction)
+    let exponent = (Num::convert<u64, int>(encoded) ?? \_error -> panic("float exponent")) - bias
+    if exponent >= fraction || magnitude == 0u64 { return word }
+    if exponent < 0 {
+        let half = unsigned(bias - 1) << unsigned(fraction)
+        let away = (mode < 0 && negative) || (mode > 0 && !negative) || (mode == 0 && magnitude > half)
+        return sign + if away { unsigned(bias) << unsigned(fraction) } else { 0u64 }
+    }
+    let step = 1u64 << unsigned(fraction - exponent)
+    let dropped = word % step
+    if dropped == 0u64 { return word }
+    let truncated = word - dropped
+    let away = if mode < 0 { negative } else if mode > 0 { !negative }
+        else { dropped > step / 2u64 || (dropped == step / 2u64 && (truncated / step) % 2u64 == 1u64) }
+    truncated + if away { step } else { 0u64 }
 }

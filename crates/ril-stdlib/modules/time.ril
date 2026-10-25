@@ -36,5 +36,8 @@ pub fn monotonic() -> Instant @Fiber
 
 pub fn sleep(duration: Duration) -> () @Fiber
 
-pub fn timestamp(seconds: i64, nanos: u32) -> Result<Timestamp, TimeError>
+pub fn timestamp(seconds: i64, nanos: u32) -> Result<Timestamp, TimeError> {
+    if nanos >= 1000000000u32 { Err(TimeError::OutOfRange) }
+    else { Ok(.{ seconds: seconds, nanos: nanos }) }
+}
 use ril/_storage as Storage

@@ -9,7 +9,6 @@ const WORK_ALLOWANCE: u64 = 10_000_000;
 pub(super) enum Event {
     FunctionEntry,
     TypeFunctionEntry,
-    CallbackEntry,
     LoopIteration,
 }
 
@@ -108,7 +107,7 @@ mod tests {
         let nested = budget.enter_root();
         assert!(!nested);
         assert!(matches!(
-            budget.event(Event::CallbackEntry),
+            budget.event(Event::FunctionEntry),
             Err(Failure::Diagnostic("E0811", _))
         ));
         budget.leave_root(nested);
@@ -126,7 +125,7 @@ mod tests {
         assert!(budget.event(Event::FunctionEntry).is_ok());
         assert!(matches!(budget.work(1), Err(Failure::Unsupported(_))));
         assert!(matches!(
-            budget.event(Event::CallbackEntry),
+            budget.event(Event::FunctionEntry),
             Err(Failure::Diagnostic("E0811", _))
         ));
     }

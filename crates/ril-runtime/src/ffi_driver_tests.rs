@@ -149,7 +149,10 @@ fn sleeping(
     ril_rt_init();
     let duration = handle(|runtime| {
         let nanos = runtime.integer(i128::from(nanos), 64, true)?;
-        runtime.time_builtin("Time::duration_nanos", &[nanos])
+        runtime.allocate(Object::Nominal {
+            tag: "Time::Duration".into(),
+            payload: nanos,
+        })
     });
     let callable = handle(|runtime| runtime.allocate(Object::Builtin("Time::sleep".into())));
     let arguments = handle(|runtime| runtime.allocate(Object::Tuple(vec![Handle(duration)])));

@@ -140,16 +140,23 @@ duplicate source trees and historical verification reports.
   from original declarations and static choices, removing generated declaration
   ASTs. Complete nested/captured callable instance owner mappings.
 - Finish the standard library migration as one bulk pass, before repairing each
-  library's semantic cases. All 31 non-prelude public module interfaces and the private
-  storage interface now live in `crates/ril-stdlib/modules/`. Ordinary bodies
+  library's semantic cases. All 31 non-prelude public module interfaces and two
+  private modules now live in `crates/ril-stdlib/`. Ordinary bodies
   include collection/variant combinators, stable sorting/search and heap sifts,
   explicit iteration, binary/hex encoding, string composition, integer codecs,
   SHA-256, resource composition, parallel decomposition, time arithmetic and
-  seeded random generation. The whole late Core library generator has been
+  seeded random generation, buffered streams, UTF-8 conversion and Unicode
+  properties/casing, native strings and path composition, and exact decimal
+  parsing/shortest formatting for both float widths. Pinned Unicode data is
+  ordinary Ril constants. Heap, RNG and stream state use private ordinary types;
+  heap sifts compute their path before mutation without copying every element.
+  The whole late Core library generator has been
   removed, along with the replaced variant/order/resource/stream checker
-  simulations and native array/variant callback algorithms. Runtime ABI is 8.
-  Complete the remaining ordinary bodies, including buffered streams, Unicode
-  conversion/data/casing, native path composition and exact decimal float codecs.
+  simulations, static Array/Map algorithms and native array/variant callbacks,
+  heap transactions, buffered transfers, codecs, hashing and path algorithms.
+  Runtime ABI is 9. Reader identity/reservation/cleanup remains a small kernel
+  contract; ordinary source owns all buffered byte/progress state.
+  Audit remaining bodyless declarations and scalar/host boundaries together.
   A bodyless declaration is not evidence that an operation is a necessary
   primitive or is implemented. Bind genuine storage/host/scheduling primitives
   to declaration identities, complete opaque representations and native data
@@ -161,8 +168,10 @@ duplicate source trees and historical verification reports.
   execute these same elaborated bodies during static computation.
   Then repair complete-type receiving, callable mode/row schemes, captured
   environments, inference and finite loop/recursion summaries across the whole
-  library. Source parsing and Rust checks currently pass; language and native
-  acceptance remain incomplete. Preserve every corpus expectation throughout.
+  library. Source parsing and focused Rust checks do not establish language or
+  native acceptance; both remain incomplete. Newly migrated float bodies still
+  need execution against the complete shared type/primitive/control-flow path.
+  Preserve every corpus expectation throughout.
 - Eliminate remaining language and native failures, select runtime archives by
   build/ABI identity, and complete Windows/Linux, pointer32/pointer64 and applicable
   native acceptance. Preserved corpus cases define behavior; internal proof-export
@@ -174,16 +183,29 @@ Use Unicode 17.0.0 UCD inputs: UnicodeData.txt, SpecialCasing.txt,
 DerivedCoreProperties.txt, PropList.txt and LICENSE.txt. The generator verifies
 `xtask/data/unicode-inputs.json`; refresh that manifest explicitly from trusted
 versioned inputs, never by entering checksums manually.
-Preserve `crates/ril-runtime/src/unicode_generated/LICENSE.txt`.
+Preserve `crates/ril-stdlib/unicode/LICENSE.txt`. Generated tables are ordinary
+Ril constants in `crates/ril-stdlib/unicode/data.ril`.
 
 ```text
 cargo run --locked -p xtask --bin unicode-data -- manifest INPUT_DIRECTORY xtask/data/unicode-inputs.json
-cargo run --locked -p xtask --bin unicode-data -- INPUT_DIRECTORY crates/ril-runtime/src/unicode_generated
+cargo run --locked -p xtask --bin unicode-data -- INPUT_DIRECTORY crates/ril-stdlib/unicode
 ```
 
 Run the string/Unicode corpus after regeneration.
 
 ## Specification questions
+
+- Opaque standard data keeps one declaration identity. Its ordinary private
+  representation is visible only in the defining module, including construction
+  and field access. Aliases do not expose that representation through `inner`,
+  structural projection or reflection. Trusted checking may inspect the complete
+  representation for borrowing, duties, resources, copying and equality without
+  granting source access. The module manifest links opaque/private declarations;
+  wiring those links into the unified type store remains part of the migration.
+- Buffered stream calls require the selected operation's declared permissions
+  and effects even when a cache hit skips the operation. Enforce those interface
+  requirements without fabricating callback execution, Result production or
+  inspection. Runtime access permits last only for the actual scoped invocation.
 
 - Generic structural equality has a conditional applicability requirement. A
   declaration probe retains equality on a Type parameter without assuming that

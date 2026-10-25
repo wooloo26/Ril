@@ -33,7 +33,10 @@ impl Runtime {
         activation: Handle,
         resource: Handle,
     ) -> Result<Handle> {
-        if matches!(self.heap.get(resource)?, Object::File(_) | Object::Child(_)) {
+        if matches!(
+            self.heap.get(resource)?,
+            Object::File(_) | Object::Child(_) | Object::ReadGuard(_)
+        ) {
             let Object::CpsActivation(state) = self.heap.get_mut(activation)? else {
                 return Err(RuntimeError::internal("invalid logical activation"));
             };

@@ -1,7 +1,7 @@
 //! Collection contracts over insertion-ordered hash storage.
 use crate::{
     heap::{Handle, Object},
-    map::{Key, OrderedMap},
+    map::Key,
     value::{Result, Runtime, RuntimeError},
 };
 impl Runtime {
@@ -55,70 +55,22 @@ impl Runtime {
                 .ok_or_else(|| RuntimeError::internal("missing collection argument"))
         };
         match name {
-            "Map::from" => {
-                let entries = self.sequence(arg(0)?)?;
-                let result = self.allocate(Object::Map(Default::default()))?;
-                for pair in entries {
-                    let pair = self.sequence(pair)?;
-                    if pair.len() != 2 {
-                        return Err(RuntimeError::internal("map entry is not a pair"));
-                    }
-                    self.map_set(result, pair[0], pair[1])?;
-                }
-                Ok(result)
-            }
             "Map::set" => {
                 self.map_set(arg(0)?, arg(1)?, arg(2)?)?;
                 self.unit()
             }
-            "Map::get" | "Map::contains" | "Map::remove" => {
+            "Map::remove" => {
                 let key = self.key(arg(1)?)?;
-                let value = if name == "Map::remove" {
-                    match self.heap.get_mut(arg(0)?)? {
-                        Object::Map(items) => items.remove(&key),
-                        _ => return Err(RuntimeError::internal("expected map")),
-                    }
-                } else {
-                    match self.heap.get(arg(0)?)? {
-                        Object::Map(items) => items.get(&key),
-                        _ => return Err(RuntimeError::internal("expected map")),
-                    }
-                };
-                if name == "Map::contains" {
-                    self.boolean(value.is_some())
-                } else {
-                    self.variant(
-                        if value.is_some() { "Some" } else { "None" },
-                        value.into_iter().collect(),
-                    )
-                }
-            }
-            "Map::keys" | "Map::values" | "Map::entries" => {
-                let entries = match self.heap.get(arg(0)?)? {
-                    Object::Map(items) => items
-                        .iter()
-                        .map(|(key, value)| (*key, *value))
-                        .collect::<Vec<_>>(),
+                let value = match self.heap.get_mut(arg(0)?)? {
+                    Object::Map(items) => items.remove(&key),
                     _ => return Err(RuntimeError::internal("expected map")),
                 };
-                let mut values = Vec::new();
-                for (key, value) in entries {
-                    values.push(match name {
-                        "Map::keys" => key,
-                        "Map::values" => value,
-                        _ => self.allocate(Object::Tuple(vec![key, value]))?,
-                    });
-                }
-                self.allocate(Object::Array(values))
+                self.variant(
+                    if value.is_some() { "Some" } else { "None" },
+                    value.into_iter().collect(),
+                )
             }
-            "Set::from" | "Set::of" => {
-                let values = self.sequence(arg(0)?)?;
-                let mut set = OrderedMap::default();
-                for value in values {
-                    set.set(self.key(value)?, value, value);
-                }
-                self.allocate(Object::Set(set))
-            }
+            "\0ril.storage.set_new" => self.allocate(Object::Set(Default::default())),
             "Set::contains" | "Set::insert" | "Set::remove" => {
                 let original = arg(1)?;
                 let key = self.key(original)?;
@@ -147,30 +99,6 @@ impl Runtime {
                     _ => return Err(RuntimeError::internal("expected set")),
                 };
                 self.allocate(Object::Array(values))
-            }
-            "Set::union" | "Set::intersect" | "Set::diff" => {
-                let left = match self.heap.get(arg(0)?)? {
-                    Object::Set(items) => items.clone(),
-                    _ => return Err(RuntimeError::internal("expected set")),
-                };
-                let right = match self.heap.get(arg(1)?)? {
-                    Object::Set(items) => items.clone(),
-                    _ => return Err(RuntimeError::internal("expected set")),
-                };
-                let mut result = OrderedMap::default();
-                for (key, original, value) in left.keyed() {
-                    if name == "Set::union" || right.contains(key) == (name == "Set::intersect") {
-                        result.set(key.clone(), original, value);
-                    }
-                }
-                if name == "Set::union" {
-                    for (key, original, value) in right.keyed() {
-                        if !result.contains(key) {
-                            result.set(key.clone(), original, value);
-                        }
-                    }
-                }
-                self.allocate(Object::Set(result))
             }
             _ => Err(RuntimeError::internal("unimplemented collection operation")),
         }

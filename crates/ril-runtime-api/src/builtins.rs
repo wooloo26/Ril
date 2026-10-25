@@ -2,6 +2,33 @@
 //! availability contract, separate from the source standard-library type rules.
 
 pub const OPERATIONS: &[&str] = &[
+    "\0ril.storage.sqrt_f32",
+    "\0ril.storage.sqrt_f64",
+    "\0ril.storage.instant_parts",
+    "\0ril.storage.environment_free",
+    "\0ril.storage.set_new",
+    "\0ril.identity.fresh",
+    "\0ril.identity.reference",
+    "\0ril.identity.callable",
+    "\0ril.identity.guard_read",
+    "\0ril.identity.guard_seek",
+    "\0ril.identity.read_guard",
+    "\0ril.identity.read_reservation",
+    "\0ril.storage.platform_windows",
+    "\0ril.storage.native_from_units",
+    "\0ril.storage.native_units",
+    "\0ril.storage.native_windows",
+    "\0ril.storage.path_from_native",
+    "\0ril.storage.path_native",
+    "\0ril.storage.bytes_from_array",
+    "\0ril.storage.bytes_to_array",
+    "\0ril.storage.f32_bits",
+    "\0ril.storage.f32_from_bits",
+    "\0ril.storage.f64_bits",
+    "\0ril.storage.f64_from_bits",
+    "\0ril.storage.string_scalars",
+    "\0ril.storage.string_utf8",
+    "\0ril.storage.string_from_scalars",
     "\0ril.foreign.invoke",
     "assert",
     "panic",
@@ -25,128 +52,31 @@ pub const OPERATIONS: &[&str] = &[
     "__iter_next",
     "__safe_field",
     "__computed_field",
-    "__io_read_validate",
-    "__io_write_validate",
-    "__io_acc_new",
-    "__io_acc_push",
-    "__io_acc_finish",
-    "__io_bytes_suffix",
-    "Io::read_buffer",
-    "Io::read_position",
-    "Io::guard_read",
-    "Io::guard_seek",
-    "Io::write_buffer",
-    "Io::read_buffered",
-    "Io::read_buffered_at",
-    "Io::write_buffered",
-    "Io::flush",
     "inner",
     "Array::push",
     "Array::pop",
     "Array::truncate",
     "Array::insert",
     "Array::remove",
-    "Array::reverse",
-    "Array::first",
-    "Array::concat",
-    "Array::contains",
-    "Array::clear",
-    "Array::get",
-    "Array::set",
-    "String::contains",
-    "String::starts_with",
-    "String::ends_with",
-    "String::trim",
-    "String::split",
-    "String::replace",
-    "String::find",
-    "String::slice",
-    "String::concat",
-    "String::join",
-    "String::lines",
-    "String::scalar_at",
-    "String::scalars",
-    "String::utf8",
-    "String::byte_len",
-    "String::byte_offset",
-    "String::scalar_offset",
     "StringBuilder::new",
     "StringBuilder::append",
     "StringBuilder::clear",
     "StringBuilder::to_string",
     "StringBuilder::append_scalar",
-    "Crypto::sha256",
-    "Crypto::sha256_bytes",
-    "Unicode::decode_utf8",
-    "Unicode::from_scalar",
-    "Unicode::lowercase",
-    "Unicode::uppercase",
-    "Unicode::is_white_space",
-    "Unicode::is_alphabetic",
-    "Unicode::is_decimal_digit",
-    "Unicode::is_xid_start",
-    "Unicode::is_xid_continue",
-    "Map::from",
     "Map::set",
-    "Map::get",
-    "Map::contains",
     "Map::remove",
-    "Map::keys",
-    "Map::values",
-    "Map::entries",
-    "Set::from",
-    "Set::of",
     "Set::contains",
     "Set::insert",
     "Set::remove",
     "Set::values",
-    "Set::union",
-    "Set::intersect",
-    "Set::diff",
-    "Bytes::from_array",
-    "Bytes::to_array",
-    "Bytes::slice",
-    "Bytes::concat",
-    "Bytes::find",
-    "Bytes::at",
-    "Hex::encode",
-    "Hex::decode",
-    "Binary::cursor",
-    "Binary::remaining",
-    "Time::duration_nanos",
-    "Os::platform",
-    "Os::from_string",
-    "Os::to_string",
-    "Os::from_posix_bytes",
-    "Os::posix_bytes",
-    "Os::from_windows_units",
-    "Os::windows_units",
-    "Os::compare",
-    "Path::from_string",
-    "Path::from_native",
-    "Path::native",
-    "Path::to_string",
-    "Path::join",
-    "Path::parent",
-    "Path::file_name",
-    "Path::extension",
-    "Path::is_absolute",
-    "Path::normalize_lexical",
-    "Path::compare",
-    "File::open",
     "File::open_path",
-    "File::read",
     "File::read_chunk",
     "File::write",
     "File::seek",
     "File::sync",
     "File::close",
-    "File::read_bytes",
-    "File::read_text",
-    "File::write_bytes",
-    "File::write_text",
     "File::metadata",
-    "File::read_dir",
+    "\0ril.host.file_read_dir",
     "File::create_dir",
     "File::create_dir_all",
     "File::remove_file",
@@ -160,9 +90,6 @@ pub const OPERATIONS: &[&str] = &[
     "Io::stdin_read",
     "Io::stdout_write",
     "Io::stderr_write",
-    "Io::write_stdout",
-    "Io::write_stderr",
-    "Io::error_text",
     "Env::args",
     "Env::get",
     "Env::all",
@@ -174,20 +101,10 @@ pub const OPERATIONS: &[&str] = &[
     "Process::wait",
     "Process::terminate",
     "Process::success",
-    "Time::timestamp",
-    "Time::add",
-    "Time::elapsed",
     "Time::monotonic",
     "Time::sleep",
     "Clock::now",
-    "Random::seeded",
-    "Random::next_u64",
-    "Random::below",
     "Random::entropy",
-    "Order::compare_int",
-    "Order::compare_str",
-    "Order::compare_bytes",
-    "Order::total_f64",
     "Deque::new",
     "Deque::len",
     "Deque::push_front",
@@ -195,11 +112,6 @@ pub const OPERATIONS: &[&str] = &[
     "Deque::pop_front",
     "Deque::pop_back",
     "Deque::values",
-    "Heap::new",
-    "Heap::len",
-    "Heap::push",
-    "Heap::peek",
-    "Heap::pop",
     "Concurrent::scope",
     "Concurrent::fork",
     "Concurrent::join",
@@ -240,23 +152,11 @@ pub const CONSTANTS: &[&str] = &[
     "Io::ErrorKind::Closed",
     "Io::ErrorKind::Unsupported",
     "Io::ErrorKind::Other",
-    "Os::NativeError::InvalidEncoding",
-    "Os::NativeError::WrongPlatform",
-    "Os::Platform::Windows",
-    "Os::Platform::Posix",
     "Num::NumError::InvalidSyntax",
     "Num::NumError::OutOfRange",
     "Num::NumError::InvalidRadix",
-    "Binary::ByteOrder::Little",
-    "Binary::ByteOrder::Big",
-    "Binary::BinaryError::UnexpectedEnd",
-    "Binary::BinaryError::Overflow",
-    "Binary::BinaryError::NonCanonical",
     "Time::TimeError::OutOfRange",
     "Time::TimeError::DifferentClock",
-    "Order::Ordering::Less",
-    "Order::Ordering::Equal",
-    "Order::Ordering::Greater",
 ];
 
 pub fn constant(name: &str) -> bool {
@@ -266,27 +166,12 @@ pub fn constant(name: &str) -> bool {
 const NUMERIC_TYPES: &[&str] = &[
     "int", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "bigint", "f32", "f64",
 ];
-const BINARY_TYPES: &[&str] = &[
-    "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64", "bytes", "uleb128",
-];
-const MATH_OPERATIONS: &[&str] = &[
-    "sqrt",
-    "floor",
-    "ceil",
-    "round",
-    "abs",
-    "min",
-    "max",
-    "is_nan",
-    "is_finite",
-];
 
 /// Only verified generic constructor expressions may produce these aliases.
 /// All three source-location components must be exact unsigned 32-bit numbers.
 pub fn canonical_builtin(name: &str) -> Option<&str> {
     for (prefix, canonical) in [
         ("Deque::__new_", "Deque::new"),
-        ("Heap::__new_", "Heap::new"),
         ("Channel::__bounded_", "Channel::bounded"),
     ] {
         if let Some(location) = name.strip_prefix(prefix) {
@@ -333,33 +218,21 @@ pub fn requires_native_step(name: &str) -> bool {
             | "Parallel::join"
             | "Parallel::join3"
             | "Parallel::for_each"
-            | "Io::read_buffered"
-            | "Io::read_buffered_at"
-            | "Io::write_buffered"
-            | "Io::flush"
             | "Time::sleep"
             | "Random::entropy"
             | "Io::stdin_read"
             | "Io::stdout_write"
             | "Io::stderr_write"
-            | "Io::write_stdout"
-            | "Io::write_stderr"
             | "print"
             | "println"
-            | "File::open"
             | "File::open_path"
-            | "File::read"
             | "File::read_chunk"
             | "File::write"
             | "File::seek"
             | "File::sync"
             | "File::close"
-            | "File::read_bytes"
-            | "File::read_text"
-            | "File::write_bytes"
-            | "File::write_text"
             | "File::metadata"
-            | "File::read_dir"
+            | "\0ril.host.file_read_dir"
             | "File::create_dir"
             | "File::create_dir_all"
             | "File::remove_file"
@@ -377,41 +250,13 @@ pub fn requires_native_step(name: &str) -> bool {
 pub fn supported(name: &str) -> bool {
     let name = name.strip_prefix("Prelude::").unwrap_or(name);
     let name = canonical_builtin(name).unwrap_or(name);
-    if matches!(
-        name,
-        "\0ril.heap.new"
-            | "\0ril.heap.begin_push"
-            | "\0ril.heap.begin_pop"
-            | "\0ril.heap.next"
-            | "\0ril.heap.accept"
-            | "\0ril.heap.commit"
-    ) {
-        return true;
-    }
     if OPERATIONS.contains(&name) {
         return true;
     }
-    if let Some(operation) = name.strip_prefix("Math::") {
-        return MATH_OPERATIONS.contains(&operation.strip_suffix("_f32").unwrap_or(operation));
-    }
-    if let Some(operation) = name.strip_prefix("Num::") {
-        if let Some(conversion) = operation.strip_prefix("__convert_")
-            && let Some((from, to)) = conversion.split_once("_to_")
-        {
-            return NUMERIC_TYPES.contains(&from) && NUMERIC_TYPES.contains(&to);
-        }
-        return ["parse_", "format_", "__convert_"].iter().any(|prefix| {
-            operation
-                .strip_prefix(prefix)
-                .is_some_and(|ty| NUMERIC_TYPES.contains(&ty))
-        });
-    }
-    if let Some(operation) = name.strip_prefix("Binary::") {
-        return ["read_", "write_"].iter().any(|prefix| {
-            operation
-                .strip_prefix(prefix)
-                .is_some_and(|ty| BINARY_TYPES.contains(&ty))
-        });
+    if let Some(conversion) = name.strip_prefix("\0ril.numeric.convert_")
+        && let Some((from, to)) = conversion.split_once("_to_")
+    {
+        return NUMERIC_TYPES.contains(&from) && NUMERIC_TYPES.contains(&to);
     }
     false
 }
@@ -437,10 +282,6 @@ mod tests {
             "Parallel::join",
             "Parallel::join3",
             "Parallel::for_each",
-            "Io::read_buffered",
-            "Io::read_buffered_at",
-            "Io::write_buffered",
-            "Io::flush",
         ] {
             assert!(requires_native_step(name));
         }
@@ -448,7 +289,6 @@ mod tests {
             "scope",
             "fork",
             "join",
-            "String::join",
             "User::Parallel::map",
             "User::Io::read_buffered",
             "Parallel::unknown",
@@ -473,12 +313,10 @@ mod tests {
         assert!(!constant("User::ByteOrder::Little"));
         for name in [
             "Prelude::Some",
-            "Math::sqrt_f32",
-            "Num::__convert_bigint",
-            "Binary::read_uleb128",
-            "Num::__convert_f64_to_int",
+            "\0ril.storage.sqrt_f32",
+            "\0ril.numeric.convert_int_to_bigint",
+            "\0ril.numeric.convert_f64_to_int",
             "Deque::__new_0_123_456",
-            "Heap::__new_4294967295_0_7",
         ] {
             assert!(supported(name));
         }
@@ -495,16 +333,12 @@ mod tests {
             "assert_ne",
             "Math::unknown",
             "Num::parse_unknown",
-            "Binary::read_u128",
             "__private_function",
             "Math::sqrt_f32_f32",
-            "Num::__convert_f64_to_unknown",
-            "Num::__convert_f64_to_int_to_u8",
+            "\0ril.numeric.convert_f64_to_unknown",
+            "\0ril.numeric.convert_f64_to_int_to_u8",
             "Deque::__new_1_2",
             "Deque::__new_1_2_3_4",
-            "Heap::__new_4294967296_0_1",
-            "Heap::__new_+1_2_3",
-            "Heap::__new_1__3",
             "User::Deque::__new_1_2_3",
         ] {
             assert!(!supported(name));

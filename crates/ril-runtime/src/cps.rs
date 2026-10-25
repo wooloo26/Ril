@@ -33,7 +33,6 @@ pub enum Continuation {
     ConcurrentFinish {
         scope: Handle,
     },
-    IoBuffered(Box<crate::io_buffered::Invocation>),
     ForeignCallback {
         call: u64,
         request: u64,
@@ -69,7 +68,6 @@ impl Continuation {
             } => vec![*activation, *delimiter],
             Self::BudgetFinish { boundary } => vec![*boundary],
             Self::ConcurrentFinish { scope } => vec![*scope],
-            Self::IoBuffered(invocation) => invocation.references(),
             Self::ForeignCallback { .. } => vec![],
         }
         .into_iter()

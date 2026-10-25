@@ -1,16 +1,21 @@
 use ril/bytes
 use ril/num
+use ril/_storage as Storage
 
 pub type ByteOrder { Little, Big }
 pub type BinaryError { UnexpectedEnd, Overflow, NonCanonical }
 pub type Cursor = { data: bytes, mut offset: int }
 
 pub fn cursor(data: bytes) -> Cursor { .{ data: data, offset: 0 } }
-pub fn remaining(cursor: Cursor) -> int { len(cursor.data) - cursor.offset }
+pub fn remaining(cursor: Cursor) -> int {
+    assert(cursor.offset >= 0 && cursor.offset <= len(cursor.data), "invalid cursor offset")
+    len(cursor.data) - cursor.offset
+}
 
 pub fn read_bytes(mut cursor: Cursor, count: int) -> Result<bytes, BinaryError> &mut {
-    if count < 0 || cursor.offset < 0 || cursor.offset > len(cursor.data)
-        || count > len(cursor.data) - cursor.offset { return Err(BinaryError::UnexpectedEnd) }
+    assert(cursor.offset >= 0 && cursor.offset <= len(cursor.data), "invalid cursor offset")
+    assert(count >= 0, "negative byte count")
+    if count > len(cursor.data) - cursor.offset { return Err(BinaryError::UnexpectedEnd) }
     let result = cursor.data[cursor.offset..cursor.offset + count]
     cursor.offset += count
     Ok(result)
@@ -42,11 +47,12 @@ pub fn read_u64(mut cursor: Cursor, order: ByteOrder) -> Result<u64, BinaryError
 }
 
 pub fn read_uleb128(mut cursor: Cursor) -> Result<u64, BinaryError> &mut {
+    assert(cursor.offset >= 0 && cursor.offset <= len(cursor.data), "invalid cursor offset")
     var offset = cursor.offset
     var value = 0u64
     var shift = 0u64
     loop {
-        if offset < 0 || offset >= len(cursor.data) { last Err(BinaryError::UnexpectedEnd) }
+        if offset >= len(cursor.data) { last Err(BinaryError::UnexpectedEnd) }
         let byte = cursor.data[offset]
         if shift == 63u64 && (byte & 254u8) != 0u8 { last Err(BinaryError::Overflow) }
         let bits = Num::convert<u8, u64>(byte & 127u8) ?? \_error -> panic("byte width")
@@ -88,4 +94,80 @@ pub fn write_uleb128(mut output: []u8, value: u64) &mut {
         if current == 0u64 { output !> Array::push(byte); last }
         output !> Array::push(byte | 128u8)
     }
+}
+
+pub fn read_u16(mut cursor: Cursor, order: ByteOrder) -> Result<u16, BinaryError> &mut {
+    let data = read_bytes(mut cursor, 2)?
+    let first = Num::convert<u8, u16>(data[0]) ?? \_error -> panic("byte widening")
+    let second = Num::convert<u8, u16>(data[1]) ?? \_error -> panic("byte widening")
+    Ok(if order is ByteOrder::Little { first | (second << 8u16) } else { (first << 8u16) | second })
+}
+pub fn write_u16(mut output: []u8, value: u16, order: ByteOrder) &mut {
+    let low = Num::convert<u16, u8>(value & 255u16) ?? \_error -> panic("byte width")
+    let high = Num::convert<u16, u8>(value >> 8u16) ?? \_error -> panic("byte width")
+    if order is ByteOrder::Little { output !> Array::push(low); output !> Array::push(high) }
+    else { output !> Array::push(high); output !> Array::push(low) }
+}
+pub fn read_i8(mut cursor: Cursor) -> Result<i8, BinaryError> &mut {
+    let raw = read_u8(mut cursor)?
+    let wide = Num::convert<u8, bigint>(raw) ?? \_error -> panic("integer widening")
+    let signed_value = if wide >= 128bigint { wide - 256bigint } else { wide }
+    Ok(Num::convert<bigint, i8>(signed_value) ?? \_error -> panic("signed word width"))
+}
+pub fn write_i8(mut output: []u8, value: i8) &mut {
+    let wide = Num::convert<i8, bigint>(value) ?? \_error -> panic("integer widening")
+    let unsigned_value = if wide < 0bigint { wide + 256bigint } else { wide }
+    let raw = Num::convert<bigint, u8>(unsigned_value) ?? \_error -> panic("unsigned word width")
+    write_u8(mut output, raw)
+}
+
+pub fn read_i16(mut cursor: Cursor, order: ByteOrder) -> Result<i16, BinaryError> &mut {
+    let raw = read_u16(mut cursor, order)?
+    let wide = Num::convert<u16, bigint>(raw) ?? \_error -> panic("integer widening")
+    let signed_value = if wide >= 32768bigint { wide - 65536bigint } else { wide }
+    Ok(Num::convert<bigint, i16>(signed_value) ?? \_error -> panic("signed word width"))
+}
+pub fn write_i16(mut output: []u8, value: i16, order: ByteOrder) &mut {
+    let wide = Num::convert<i16, bigint>(value) ?? \_error -> panic("integer widening")
+    let unsigned_value = if wide < 0bigint { wide + 65536bigint } else { wide }
+    let raw = Num::convert<bigint, u16>(unsigned_value) ?? \_error -> panic("unsigned word width")
+    write_u16(mut output, raw, order)
+}
+
+pub fn read_i32(mut cursor: Cursor, order: ByteOrder) -> Result<i32, BinaryError> &mut {
+    let raw = read_u32(mut cursor, order)?
+    let wide = Num::convert<u32, bigint>(raw) ?? \_error -> panic("integer widening")
+    let signed_value = if wide >= 2147483648bigint { wide - 4294967296bigint } else { wide }
+    Ok(Num::convert<bigint, i32>(signed_value) ?? \_error -> panic("signed word width"))
+}
+pub fn write_i32(mut output: []u8, value: i32, order: ByteOrder) &mut {
+    let wide = Num::convert<i32, bigint>(value) ?? \_error -> panic("integer widening")
+    let unsigned_value = if wide < 0bigint { wide + 4294967296bigint } else { wide }
+    let raw = Num::convert<bigint, u32>(unsigned_value) ?? \_error -> panic("unsigned word width")
+    write_u32(mut output, raw, order)
+}
+
+pub fn read_i64(mut cursor: Cursor, order: ByteOrder) -> Result<i64, BinaryError> &mut {
+    let raw = read_u64(mut cursor, order)?
+    let wide = Num::convert<u64, bigint>(raw) ?? \_error -> panic("integer widening")
+    let signed_value = if wide >= 9223372036854775808bigint { wide - 18446744073709551616bigint } else { wide }
+    Ok(Num::convert<bigint, i64>(signed_value) ?? \_error -> panic("signed word width"))
+}
+pub fn write_i64(mut output: []u8, value: i64, order: ByteOrder) &mut {
+    let wide = Num::convert<i64, bigint>(value) ?? \_error -> panic("integer widening")
+    let unsigned_value = if wide < 0bigint { wide + 18446744073709551616bigint } else { wide }
+    let raw = Num::convert<bigint, u64>(unsigned_value) ?? \_error -> panic("unsigned word width")
+    write_u64(mut output, raw, order)
+}
+pub fn read_f32(mut cursor: Cursor, order: ByteOrder) -> Result<f32, BinaryError> &mut {
+    Ok(Storage::f32_from_bits(read_u32(mut cursor, order)?))
+}
+pub fn write_f32(mut output: []u8, value: f32, order: ByteOrder) &mut {
+    write_u32(mut output, Storage::f32_bits(value), order)
+}
+pub fn read_f64(mut cursor: Cursor, order: ByteOrder) -> Result<f64, BinaryError> &mut {
+    Ok(Storage::f64_from_bits(read_u64(mut cursor, order)?))
+}
+pub fn write_f64(mut output: []u8, value: f64, order: ByteOrder) &mut {
+    write_u64(mut output, Storage::f64_bits(value), order)
 }

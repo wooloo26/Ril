@@ -18,6 +18,7 @@ pub fn find(data: bytes, needle: bytes) -> ?int {
     None
 }
 
-pub fn from_array(items: []u8) -> bytes
+pub fn from_array(items: []u8) -> bytes { Storage::bytes_from_array(items) }
 
-pub fn to_array(data: bytes) -> []u8
+pub fn to_array(data: bytes) -> []u8 { Storage::bytes_to_array(data) }
+use ril/_storage as Storage

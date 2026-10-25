@@ -20,27 +20,6 @@ impl Evaluator {
         callable: StaticCallable,
         arguments: Vec<application::StaticArgument>,
     ) -> Result<StaticValue> {
-        self.invoke_static_kind(callable, arguments, false)
-    }
-
-    pub(super) fn invoke_callback(
-        &mut self,
-        callable: StaticCallable,
-        arguments: Vec<StaticValue>,
-    ) -> Result<StaticValue> {
-        self.invoke_static_kind(
-            callable,
-            arguments.into_iter().map(Into::into).collect(),
-            true,
-        )
-    }
-
-    fn invoke_static_kind(
-        &mut self,
-        callable: StaticCallable,
-        arguments: Vec<application::StaticArgument>,
-        callback: bool,
-    ) -> Result<StaticValue> {
         if self.call_depth + self.type_depth >= 64 {
             return Err(Failure::Unsupported(
                 "non-tail static invocation exceeds the interpreter stack allowance".into(),
@@ -54,7 +33,7 @@ impl Evaluator {
         let saved_loops = std::mem::take(&mut self.loop_frames);
         self.tail_types = false;
         self.call_depth += 1;
-        let result = self.invoke_static_loop(callable, arguments, callback);
+        let result = self.invoke_static_loop(callable, arguments);
         self.call_depth -= 1;
         self.install_environment(saved);
         self.tail_returns = saved_returns;
@@ -75,7 +54,6 @@ impl Evaluator {
         &mut self,
         mut callable: StaticCallable,
         mut arguments: Vec<application::StaticArgument>,
-        mut callback: bool,
     ) -> Result<StaticValue> {
         let mut returns = Vec::<ReturnShape>::new();
         let mut meta_result = false;
@@ -104,11 +82,7 @@ impl Evaluator {
                     ) {
                         Err(failure) => Err(failure),
                         Ok(()) => {
-                            self.budget.event(if callback {
-                                budget::Event::CallbackEntry
-                            } else {
-                                budget::Event::FunctionEntry
-                            })?;
+                            self.budget.event(budget::Event::FunctionEntry)?;
                             let Some(body) = &function.body else {
                                 return Err(Failure::Diagnostic(
                                     "E0810",
@@ -198,9 +172,6 @@ impl Evaluator {
                                 .into(),
                         ));
                     }
-                    if callback {
-                        self.budget.event(budget::Event::CallbackEntry)?;
-                    }
                     self.static_builtin(
                         &name,
                         arguments
@@ -250,11 +221,7 @@ impl Evaluator {
                     ) {
                         Err(failure) => Err(failure),
                         Ok(()) => {
-                            self.budget.event(if callback {
-                                budget::Event::CallbackEntry
-                            } else {
-                                budget::Event::FunctionEntry
-                            })?;
+                            self.budget.event(budget::Event::FunctionEntry)?;
                             let Some(body) = &function.body else {
                                 return Err(Failure::Diagnostic(
                                     "E0810",
@@ -290,11 +257,7 @@ impl Evaluator {
                     match self.bind_parameters(&parameters, arguments) {
                         Err(failure) => Err(failure),
                         Ok(()) => {
-                            self.budget.event(if callback {
-                                budget::Event::CallbackEntry
-                            } else {
-                                budget::Event::FunctionEntry
-                            })?;
+                            self.budget.event(budget::Event::FunctionEntry)?;
                             self.tail_returns = true;
                             self.expression_expected(&body, true, return_type.as_deref())
                         }
@@ -308,7 +271,6 @@ impl Evaluator {
             match result {
                 Err(Failure::TailCall(next)) => {
                     self.result_site = Some(next.site);
-                    callback = false;
                     callable = next.callable;
                     arguments = next.arguments;
                 }

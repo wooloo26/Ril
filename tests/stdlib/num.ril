@@ -16,6 +16,33 @@ pub fn test_repeated_numeric_conversion() {
 --@ end-file
 --@ end-case
 
+--@ case: decimal-rounding-and-shortest-boundaries
+--@ mode: run-pass
+--@ spec: STD#numbers-and-mathematics
+--@ entry: test_decimal_boundaries
+--@ file: decimal-boundaries.ril
+use ril/num
+
+pub fn test_decimal_boundaries() {
+    assert(Num::parse_f32("1.000000059604644775390625") is Ok(1.0f32))
+    assert(Num::parse_f32("1.0000000596046447753906250000000000000000000000001") is Ok(1.00000011920928955078125f32))
+    assert(Num::parse_f32("1.0000000596046447753906249999999999999999999999999") is Ok(1.0f32))
+    let negative_zero = Num::parse_f64("-1e-999999999999999999999999999999") ?? panic("underflow")
+    assert(Num::format_f64(negative_zero) == "-0.0")
+    assert(Num::parse_f64("1e999999999999999999999999999999") is Err(Num::NumError::OutOfRange))
+    assert(Num::parse_f64("0e999999999999999999999999999999") is Ok(0.0f64))
+    assert(Num::parse_f64("1.") is Err(Num::NumError::InvalidSyntax))
+    assert(Num::parse_f64("1e+") is Err(Num::NumError::InvalidSyntax))
+    assert(Num::format_f64(100000000000000000000.0f64) == "100000000000000000000.0")
+    assert(Num::format_f64(1000000000000000000000.0f64) == "1e21")
+    for [0.1f64, 0.000001f64, 0.0000001f64, 1.7976931348623157e308f64, 5e-324f64] as value {
+        let restored = Num::parse_f64(Num::format_f64(value)) ?? panic("round trip")
+        assert(restored == value)
+    }
+}
+--@ end-file
+--@ end-case
+
 --@ case: numeric-callable-views
 --@ mode: run-pass
 --@ spec: STD#numbers-and-mathematics

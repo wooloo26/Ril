@@ -14,8 +14,6 @@ mod exits;
 mod foreign;
 #[path = "ffi_host.rs"]
 mod host;
-#[path = "ffi_io_buffered.rs"]
-mod io_buffered;
 #[path = "ffi_parallel.rs"]
 mod parallel;
 #[path = "ffi_retained.rs"]
@@ -1004,12 +1002,6 @@ fn drive_with_context(
                                 continue;
                             }
                             if let Some(step) =
-                                io_buffered::dispatch(callable, arguments, continuation, handlers)
-                            {
-                                current = step;
-                                continue;
-                            }
-                            if let Some(step) =
                                 concurrent::dispatch(callable, arguments, continuation, handlers)
                             {
                                 current = step;
@@ -1175,9 +1167,6 @@ fn drive_with_context(
                         }
                         Some(Continuation::ConcurrentFinish { scope }) => {
                             concurrent::finish(scope, Some(value))
-                        }
-                        Some(Continuation::IoBuffered(invocation)) => {
-                            io_buffered::resume(*invocation, value)
                         }
                         Some(Continuation::ForeignCallback { call, request }) => {
                             foreign::callback_return(call, request, value)
