@@ -62,55 +62,7 @@ pub(super) fn instantiate(
                 value: callable,
             }]
         }
-        ("Iter::Source", [state, item]) => {
-            work.charge(3)?;
-            work.text("Iter::Step")?;
-            let result = builder.insert(
-                SourceNode::OpaqueName {
-                    declaration: Some(super::graph::NominalDeclaration::Intrinsic(
-                        super::graph::IntrinsicNominal::Step,
-                    )),
-                    name: "Iter::Step".into(),
-                    arguments: vec![*state, *item],
-                },
-                work,
-            )?;
-            let callable = builder.insert(
-                SourceNode::Callable {
-                    parameters: vec![(ParameterMode::Read, *state)],
-                    result,
-                    annotations: Vec::new(),
-                    row_identity: None,
-                    interpretation: None,
-                },
-                work,
-            )?;
-            work.text("step")?;
-            vec![SourceField {
-                label: "step".into(),
-                mutable: false,
-                value: callable,
-            }]
-        }
-        ("Iter::Cursor", [state]) => {
-            work.charge(2)?;
-            work.text("state")?;
-            work.text("ended")?;
-            let ended = builder.insert(SourceNode::Scalar(SourceScalar::Bool), work)?;
-            vec![
-                SourceField {
-                    label: "state".into(),
-                    mutable: true,
-                    value: *state,
-                },
-                SourceField {
-                    label: "ended".into(),
-                    mutable: true,
-                    value: ended,
-                },
-            ]
-        }
-        ("Io::ReadOps" | "Io::WriteOps" | "Iter::Source" | "Iter::Cursor", _) => {
+        ("Io::ReadOps" | "Io::WriteOps", _) => {
             return Err(SourceTypesError::Unresolved);
         }
         _ => return Ok(None),

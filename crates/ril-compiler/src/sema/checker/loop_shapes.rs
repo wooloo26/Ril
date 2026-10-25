@@ -207,15 +207,15 @@ mod tests {
         }
     }
     #[test]
-    fn iterator_step_data_preserves_its_existing_complete_carrier_proof() {
-        let result = check(
-            "var step_calls=0\nfn step(state:int)->Iter::Step<int,int> &{mut step_calls}{step_calls+=1;if state>=5{Iter::Step::Done}else{Iter::Step::Yielded(state*10,state+1)}}\nfn collect_from(state:int)->[]int &{mut step_calls}{let source:Iter::Source<int,int>=.{step:step};Iter::collect(state,source)}\nfn filtered_from(state:int,limit:int)->[]int &{mut step_calls}{let source:Iter::Source<int,int>=.{step:step};Iter::collect(state,Iter::filter(source,\\number->number>limit))}",
-        );
+    fn iterator_step_data_keeps_ordinary_transition_effects() {
+        let source =
+            ril_test::case_source("tests/regressions/ordinary-iteration.ril::effectful-transition");
+        let result = crate::Session::new(source.as_bytes().to_vec()).analyze();
         assert!(
-            result.program.is_some(),
+            result.status() == crate::AnalysisStatus::Verified,
             "{:?} {:?}",
-            result.diagnostics,
-            result.unsupported
+            result.diagnostics(),
+            result.unresolved()
         );
     }
     #[test]

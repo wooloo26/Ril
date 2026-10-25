@@ -953,85 +953,6 @@ impl SourceSchema {
             _ => Ok(None),
         }
     }
-
-    /// Exact opaque name/arity only. This query supplies no declaration or
-    /// standard nominal identity proof; that proof belongs to the real caller.
-    pub(crate) fn opaque_arguments(
-        &self,
-        expected: &str,
-        arity: usize,
-        work: &mut WorkLimit,
-    ) -> Result<Option<Vec<Self>>, SourceTypesError> {
-        work.text(expected)?;
-        let root = self.read_root(work)?;
-        match self.types.get(root)? {
-            SourceNode::OpaqueName {
-                name, arguments, ..
-            } if name == expected => {
-                if arguments.len() != arity {
-                    return Err(SourceTypesError::InvalidContainer);
-                }
-                work.charge(arguments.len())?;
-                arguments
-                    .iter()
-                    .map(|root| Self::frozen_view(&self.types, *root, self.original, work))
-                    .collect::<Result<_, _>>()
-                    .map(Some)
-            }
-            SourceNode::Binder(_)
-            | SourceNode::KeyProjection { .. }
-            | SourceNode::OpaqueComputation(_)
-            | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
-            _ => Ok(None),
-        }
-    }
-
-    pub(crate) fn record_field(
-        &self,
-        expected: &str,
-        work: &mut WorkLimit,
-    ) -> Result<Option<(bool, Self)>, SourceTypesError> {
-        work.text(expected)?;
-        let mut cursor = self.read_root(work)?;
-        let mut seen = BTreeSet::new();
-        let mut labels = BTreeSet::new();
-        let mut selected = None;
-        loop {
-            work.charge(1)?;
-            cursor = self.types.unalias(cursor, work)?;
-            if !seen.insert(cursor) {
-                return Err(SourceTypesError::RowCycle);
-            }
-            let node = self.types.get(cursor)?;
-            node.charge(work)?;
-            let SourceNode::Record { fields, row } = node else {
-                return match node {
-                    SourceNode::Binder(_) | SourceNode::OpaqueName { .. } => {
-                        selected.ok_or(SourceTypesError::Unresolved).map(Some)
-                    }
-                    SourceNode::KeyProjection { .. }
-                    | SourceNode::OpaqueComputation(_)
-                    | SourceNode::Unresolved { .. } => Err(SourceTypesError::Unresolved),
-                    _ if seen.len() == 1 => Ok(None),
-                    _ => Err(SourceTypesError::Unresolved),
-                };
-            };
-            for field in fields {
-                work.charge(1)?;
-                if !labels.insert(field.label.as_str()) {
-                    return Err(SourceTypesError::DuplicateField);
-                }
-                if field.label == expected {
-                    selected = Some((
-                        field.mutable,
-                        Self::frozen_view(&self.types, field.value, self.original, work)?,
-                    ));
-                }
-            }
-            let Some(row) = row else { return Ok(selected) };
-            cursor = *row;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1474,11 +1395,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                record.record_field("known", &mut work).unwrap_err(),
-                SourceTypesError::Unresolved
-            );
-            assert_eq!(
-                record.record_field("missing", &mut work).unwrap_err(),
+                record.record_parts(&mut work).unwrap_err(),
                 SourceTypesError::Unresolved
             );
         }
@@ -1873,53 +1790,19 @@ mod tests {
             &mut WorkLimit::new(8192),
         )
         .unwrap();
-        assert!(
-            !record
-                .record_field("action", &mut WorkLimit::new(256))
-                .unwrap()
-                .unwrap()
-                .0
-        );
-        assert!(
-            record
-                .record_field("data", &mut WorkLimit::new(256))
-                .unwrap()
-                .unwrap()
-                .0
-        );
-        assert!(
-            record
-                .record_field("missing", &mut WorkLimit::new(256))
-                .unwrap()
-                .is_none()
-        );
-        assert!(record.record_field("data", &mut WorkLimit::new(0)).is_err());
-        let name = SourceSchema::import(
-            &ArgumentKey::Name {
-                name: "Iter::Step".into(),
-                arguments: vec![ArgumentKey::Tuple(vec![]), ArgumentKey::Tuple(vec![])],
-            },
-            None,
-            &mut WorkLimit::new(128),
-        )
-        .unwrap();
+        let (fields, row) = record
+            .record_parts(&mut WorkLimit::new(8192))
+            .unwrap()
+            .unwrap();
+        assert!(row.is_none());
         assert_eq!(
-            name.opaque_arguments("Iter::Step", 2, &mut WorkLimit::new(128))
-                .unwrap()
-                .unwrap()
-                .len(),
-            2
+            fields
+                .iter()
+                .map(|(name, mutable, _)| (name.as_str(), *mutable))
+                .collect::<Vec<_>>(),
+            [("action", false), ("data", true)]
         );
-        assert!(
-            name.opaque_arguments("Other::Step", 2, &mut WorkLimit::new(128))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            name.opaque_arguments("Iter::Step", 1, &mut WorkLimit::new(128))
-                .unwrap_err(),
-            SourceTypesError::InvalidContainer
-        );
+        assert!(record.record_parts(&mut WorkLimit::new(0)).is_err());
     }
 
     #[test]

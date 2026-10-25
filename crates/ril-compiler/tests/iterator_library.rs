@@ -1,4 +1,4 @@
-//! Generated iterator syntax must remain connected to its true creation call.
+//! Iterator adapters are ordinary declarations with latent closure bodies.
 use ril_compiler::sema::SemanticFacts;
 use ril_compiler::{CheckOptions, Session};
 
@@ -31,7 +31,7 @@ fn verified(source: &str, target: &str) -> SemanticFacts {
 }
 
 #[test]
-fn actual_adapter_recipes_keep_real_sites_and_full_call_roots() {
+fn ordinary_adapters_keep_declared_bodies_and_full_argument_types() {
     for source in [
         indexed_fixture(),
         pipeline_fixture(),
@@ -41,12 +41,15 @@ fn actual_adapter_recipes_keep_real_sites_and_full_call_roots() {
     ] {
         for layout in ["pointer32", "pointer64"] {
             let facts = verified(source, layout);
-            assert!(!facts.generated_sources.is_empty());
-            for generated in &facts.generated_sources {
-                assert_eq!(facts.closures[generated.closure].site, Some(generated.site));
-                let event = &facts.copy_call_events[generated.origin_event.0 as usize];
-                assert!(event.callee_expression.is_some() && event.result_expression.is_some());
-                assert!(event.callee_expression < event.result_expression);
+            let library = facts
+                .functions
+                .iter()
+                .filter(|function| function.syntax.span.file.0 != 0)
+                .collect::<Vec<_>>();
+            assert_eq!(library.len(), 8);
+            for function in library {
+                assert!(function.hir_id.is_some());
+                assert!(function.syntax.body.is_some());
             }
         }
     }
@@ -71,6 +74,38 @@ fn typed_adapter_creation_keeps_callbacks_latent() {
                 .iter()
                 .any(|call| call.target == tick && !call.declaration_probe),
             "creating an adapter must not add a phantom callback invocation"
+        );
+    }
+}
+
+#[test]
+fn imported_iterator_definitions_are_checked_without_specialized_calls() {
+    for target in ["pointer32", "pointer64"] {
+        verified(
+            ril_test::case_source("tests/regressions/ordinary-iteration.ril::imported-definitions"),
+            target,
+        );
+    }
+}
+
+#[test]
+fn generic_aliases_substitute_complete_argument_identities_in_their_own_scope() {
+    for target in ["pointer32", "pointer64"] {
+        verified(
+            ril_test::case_source("tests/regressions/ordinary-iteration.ril::generic-alias-scope"),
+            target,
+        );
+    }
+}
+
+#[test]
+fn opaque_callbacks_cannot_replace_private_state_without_its_cell() {
+    for target in ["pointer32", "pointer64"] {
+        verified(
+            ril_test::case_source(
+                "tests/regressions/ordinary-iteration.ril::private-callback-state",
+            ),
+            target,
         );
     }
 }

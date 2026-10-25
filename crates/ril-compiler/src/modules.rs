@@ -1758,7 +1758,6 @@ fn standard_namespace(path: &str) -> Option<&'static str> {
         "ril/order" => "Order",
         "ril/deque" => "Deque",
         "ril/heap" => "Heap",
-        "ril/iter" => "Iter",
         "ril/unicode" => "Unicode",
         "ril/string_builder" => "StringBuilder",
         "ril/num" => "Num",
@@ -1818,7 +1817,6 @@ fn standard_path(namespace: &str) -> Option<&'static str> {
         "Order" => "ril/order",
         "Deque" => "ril/deque",
         "Heap" => "ril/heap",
-        "Iter" => "ril/iter",
         "Unicode" => "ril/unicode",
         "StringBuilder" => "ril/string_builder",
         "Num" => "ril/num",
@@ -1860,8 +1858,6 @@ fn known_standard_constructor(name: &str) -> bool {
             | "Binary::BinaryError::NonCanonical"
             | "Time::TimeError::OutOfRange"
             | "Time::TimeError::DifferentClock"
-            | "Iter::Step::Done"
-            | "Iter::Step::Yielded"
     )
 }
 
@@ -1954,10 +1950,6 @@ fn standard_exports(path: &str) -> &'static [&'static str] {
             "values",
         ],
         "ril/heap" => &["Heap", "new", "len", "push", "pop", "peek"],
-        "ril/iter" => &[
-            "Step", "Source", "Cursor", "cursor", "pull", "collect", "fold", "take", "map",
-            "filter", "indexed",
-        ],
         "ril/unicode" => &[
             "DecodeError",
             "ScalarError",

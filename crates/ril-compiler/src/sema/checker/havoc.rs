@@ -210,7 +210,14 @@ mod optional_tests {
                 false,
             );
             if callback {
-                checker.invalidate_unknown_callback_refinements();
+                let captures = [changing, changed_boolean].map(|binding| {
+                    Value::reference(
+                        Ty::Unit,
+                        checker.bindings[binding].cell.unwrap(),
+                        CauseId(0),
+                    )
+                });
+                checker.invalidate_unknown_callback_refinements(&captures, frame.owner);
             } else {
                 checker.widen_definition_environment(&frame.env);
             }
@@ -234,5 +241,42 @@ mod optional_tests {
                 [17].into()
             );
         }
+    }
+
+    #[test]
+    fn unknown_callbacks_keep_private_slots_until_their_cells_are_exposed() {
+        let mut checker = Checker::new(FileId(0));
+        let span = Span {
+            file: FileId(0),
+            start: 0,
+            end: 1,
+        };
+        let mut frame = checker.frame(BTreeMap::new(), false);
+        let value = checker.formal_value(
+            Ty::Optional(Box::new(Ty::Array(Box::new(Ty::Int("int".into()))))),
+            0,
+            span,
+            &mut BTreeSet::new(),
+        );
+        let original = value.option_identity;
+        let binding =
+            checker.bind_name("selected", BindingMode::Var, value, span, &mut frame, false);
+        let cell = checker.bindings[binding].cell.unwrap();
+        checker.invalidate_unknown_callback_refinements(&[], frame.owner);
+        assert_eq!(checker.bindings[binding].value.option_identity, original);
+        assert!(
+            !checker
+                .uncertain_slots
+                .contains(&(cell, Slot::Field("value".into())))
+        );
+
+        let capture = Value::reference(Ty::Unit, cell, CauseId(0));
+        checker.invalidate_unknown_callback_refinements(&[capture], frame.owner);
+        assert_eq!(checker.bindings[binding].value.option_identity, None);
+        assert!(
+            checker
+                .uncertain_slots
+                .contains(&(cell, Slot::Field("value".into())))
+        );
     }
 }

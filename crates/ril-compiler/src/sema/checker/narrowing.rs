@@ -471,18 +471,62 @@ impl Checker {
                 Some(if unknown { "E0533" } else { "E0310" });
         }
     }
-    pub(super) fn invalidate_unknown_callback_refinements(&mut self) {
+    pub(super) fn invalidate_unknown_callback_refinements(
+        &mut self,
+        inputs: &[Value],
+        owner: ScopeId,
+    ) {
+        // An opaque callback may reach external storage, its environment and
+        // its actual inputs. It cannot replace a private local variable cell
+        // merely because the variable contains a reference to external data.
+        let roots = self
+            .heap
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                matches!(node.kind, OriginKind::Formal(_)).then_some(NodeId(index as u32))
+            })
+            .chain(
+                inputs
+                    .iter()
+                    .flat_map(|value| value.origins.nodes.iter().copied()),
+            )
+            .chain(
+                self.bindings
+                    .iter()
+                    .filter(|binding| {
+                        binding.alive && (binding.owner == ScopeId(0) || binding.owner != owner)
+                    })
+                    .flat_map(|binding| {
+                        binding
+                            .value
+                            .origins
+                            .nodes
+                            .iter()
+                            .copied()
+                            .chain(binding.cell)
+                    }),
+            )
+            .collect::<Vec<_>>();
+        let exposed = self.heap.reachable(roots);
         let live: Vec<_> = self
             .bindings
             .iter()
-            .filter(|binding| binding.alive && binding.value.publication == Publication::Live)
+            .filter(|binding| {
+                binding.alive
+                    && binding.value.publication == Publication::Live
+                    && !binding.value.origins.nodes.is_disjoint(&exposed)
+            })
             .map(|binding| binding.value.clone())
+            .chain(
+                inputs
+                    .iter()
+                    .filter(|value| value.publication == Publication::Live)
+                    .cloned(),
+            )
             .collect();
         self.mark_heap_uncertain(&live);
-        let live_nodes = self.heap.reachable(
-            live.iter()
-                .flat_map(|value| value.origins.nodes.iter().copied()),
-        );
         let cells: Vec<_> = self
             .bindings
             .iter()
@@ -490,6 +534,7 @@ impl Checker {
                 binding.alive
                     && binding.mode.is_reassignable()
                     && self.reference_bearing(&binding.value.ty)
+                    && binding.cell.is_some_and(|cell| exposed.contains(&cell))
             })
             .filter_map(|binding| binding.cell)
             .collect();
@@ -526,12 +571,14 @@ impl Checker {
             }
         }
         for binding in &mut self.bindings {
-            if binding.mode.is_reassignable() {
+            if binding.mode.is_reassignable()
+                && binding.cell.is_some_and(|cell| exposed.contains(&cell))
+            {
                 forget(&mut binding.value);
             }
         }
         for ((node, _), value) in &mut self.fields {
-            if live_nodes.contains(node) || value.publication != Publication::Immutable {
+            if exposed.contains(node) {
                 forget(value);
             }
         }

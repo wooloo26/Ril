@@ -125,13 +125,13 @@ mod tests {
     fn const_coordinates_cannot_be_used_as_types_or_synthetic_runtime_values() {
         let mut work = WorkLimit::new(4096);
         let first = nominal("const(int:1)", &mut work).unwrap();
-        let coordinates = first
-            .opaque_arguments("Token", 1, &mut work)
-            .unwrap()
-            .unwrap();
-        let coordinate = &coordinates[0];
+        let SourceNode::OpaqueName { arguments, .. } = first.types.get(first.root).unwrap() else {
+            panic!("expected the declared nominal instance")
+        };
+        let coordinate =
+            SourceSchema::frozen_view(&first.types, arguments[0], None, &mut work).unwrap();
         assert!(matches!(
-            coordinate.equivalent(coordinate, &mut work),
+            coordinate.equivalent(&coordinate, &mut work),
             Err(SourceTypesError::Unresolved)
         ));
         assert!(matches!(
@@ -161,7 +161,7 @@ mod tests {
             Err(SourceTypesError::Unresolved)
         ));
         let invalid_array =
-            SourceSchema::array(SourceLength::Dynamic, coordinate, None, &mut work).unwrap();
+            SourceSchema::array(SourceLength::Dynamic, &coordinate, None, &mut work).unwrap();
         assert!(matches!(
             invalid_array.equivalent(&invalid_array, &mut work),
             Err(SourceTypesError::Unresolved)

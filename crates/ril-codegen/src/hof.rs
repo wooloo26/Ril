@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 mod file;
 mod heap;
 mod io;
-mod iter;
 mod order;
 mod process;
 
@@ -32,7 +31,6 @@ pub(crate) fn lower(program: &core::Program) -> Result<core::Program, NotImpleme
         wrappers: BTreeMap::new(),
         next_definition: 0,
         rewriting: false,
-        constructors: BTreeMap::new(),
     };
     // Include nested declarations in the definition namespace before adding
     // wrappers, even if their source statements appear after a builtin value.
@@ -52,9 +50,6 @@ pub(crate) fn lower(program: &core::Program) -> Result<core::Program, NotImpleme
     }
     lower.block(&mut program.globals)?;
     program.functions.extend(lower.wrappers.into_values());
-    program
-        .constructors
-        .extend(lower.constructors.into_values());
     Ok(program)
 }
 struct Lower {
@@ -63,7 +58,6 @@ struct Lower {
     wrappers: BTreeMap<String, core::Function>,
     next_definition: u32,
     rewriting: bool,
-    constructors: BTreeMap<String, core::Constructor>,
 }
 fn operation(name: &str) -> Option<&str> {
     let name = name.strip_prefix("Prelude::").unwrap_or(name);
@@ -104,26 +98,12 @@ fn operation(name: &str) -> Option<&str> {
             | "Process::with_child"
             | "Io::read_all"
             | "Io::write_all"
-            | "Iter::cursor"
-            | "Iter::pull"
-            | "Iter::collect"
-            | "Iter::fold"
-            | "Iter::indexed"
-            | "Iter::map"
-            | "Iter::filter"
-            | "Iter::take"
     )
     .then_some(name)
 }
 fn arity(operation: &str) -> usize {
-    if matches!(
-        operation,
-        "Iter::cursor" | "Iter::indexed" | "Heap::new" | "Heap::pop"
-    ) {
+    if matches!(operation, "Heap::new" | "Heap::pop") {
         return 1;
-    }
-    if operation == "Iter::fold" {
-        return 4;
     }
     if matches!(
         operation,
@@ -293,8 +273,6 @@ impl Lower {
             self.process(arguments, span)
         } else if operation.starts_with("Io::") {
             self.io(operation, arguments, span)
-        } else if operation.starts_with("Iter::") {
-            self.iter(operation, arguments, span)
         } else {
             self.variant(operation, arguments, span)
         }

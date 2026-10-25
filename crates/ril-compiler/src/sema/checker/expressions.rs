@@ -2641,9 +2641,6 @@ impl Checker {
                 .cloned();
             return value;
         }
-        if let Some(value) = self.iter_private_name(name, span) {
-            return value;
-        }
         let builtin_name = name.strip_prefix("Prelude::").unwrap_or(name);
         if let Some(value) = self.constructor_name(name, span, frame) {
             return value;
@@ -2686,7 +2683,6 @@ impl Checker {
                 | "Ok"
                 | "Err"
         ) || standard::is_builtin(name)
-            || iter::builtin(name)
             || matches!(
                 name,
                 "File::with_file"

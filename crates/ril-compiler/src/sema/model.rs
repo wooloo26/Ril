@@ -3,7 +3,6 @@ use ril_compiler_core::{diagnostic::CauseId, source::Span};
 use ril_syntax::ast::{Annotation, BindingMode, Expr, Function, Parameter, TypeExpr};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-pub(crate) mod iteration;
 pub mod rows;
 
 /// Discard correlations after a may-join whose alternatives are no longer

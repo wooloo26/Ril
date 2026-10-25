@@ -26,7 +26,6 @@ pub(crate) mod evaluated;
 pub use evaluated::{EvaluatedValue, EvaluationBirth, EvaluationBirthCoordinates, PhysicalValue};
 pub(crate) mod external_instances;
 pub mod facts;
-pub mod generated_sources;
 pub mod invocation_loans;
 pub mod model;
 pub mod numeric_selection;
@@ -51,7 +50,6 @@ pub mod source_types;
 pub(crate) mod source_types_ref;
 pub mod storage_sources;
 pub mod summary;
-pub use checker::iter::{AdapterKind as IterAdapterKind, StepFact as IterStepFact};
 #[cfg(test)]
 mod tests;
 
@@ -101,7 +99,6 @@ pub struct SemanticFacts {
     pub effect_invocations: Vec<effect_identity::EffectInvocation>,
     pub invocation_expressions: Vec<effect_identity::InvocationExpression>,
     pub builtin_source_observations: Vec<builtin_sources::BuiltinSourceObservation>,
-    pub generated_sources: Vec<generated_sources::GeneratedSource>,
     pub binding_sources: Vec<storage_sources::BindingSource>,
     pub storage_writes: Vec<storage_sources::StorageWrite>,
     pub invocation_calls: Vec<effect_identity::InvocationCall>,
@@ -127,7 +124,6 @@ pub struct SemanticFacts {
     pub copy_template_closure: Option<copy_contract::CopyTemplateClosure>,
     pub parallel_boundaries: Vec<ParallelBoundary>,
     pub concurrent_boundaries: Vec<ConcurrentBoundary>,
-    pub iter_steps: Vec<IterStepFact>,
     pub windows: std::collections::BTreeMap<facts::NodeId, WindowInfo>,
     pub pattern_windows: Vec<pattern_windows::PatternWindowCreation>,
     pub budget_proofs: Vec<BudgetProof>,

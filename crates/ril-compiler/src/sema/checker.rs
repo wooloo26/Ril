@@ -50,7 +50,6 @@ mod evaluated;
 #[cfg(test)]
 mod execution_oracle;
 mod formal_values;
-mod generated_sources;
 mod symbolic_rows;
 use super::evaluated::EvaluatedValue;
 mod bound_writes;
@@ -66,8 +65,6 @@ mod invocation_loans;
 mod io_buffered;
 mod io_callback;
 mod io_types;
-pub(super) mod iter;
-mod iter_types;
 mod keys;
 mod loop_graph;
 mod loop_results;
@@ -290,7 +287,6 @@ fn analyze_inner(
         concurrent_boundaries: checker.concurrent_boundaries,
         windows: checker.windows,
         pattern_windows: checker.pattern_windows,
-        iter_steps: checker.iter_steps.into_values().collect(),
         budget_proofs: checker.budget_proofs,
         budget_termination: termination.budget_witnesses,
         inference_resolutions: checker.inference_resolutions,
@@ -333,7 +329,6 @@ fn analyze_inner(
         invocation_expressions: checker.application_effect.contexts,
         evaluations: checker.application_effect.evaluations,
         builtin_source_observations: checker.builtin_sources.into_observations(),
-        generated_sources: checker.generated_sources,
         invocation_calls: checker.invocation_calls,
         invocation_witnesses: checker.invocation_witnesses,
         closure_invocations: checker.closure_invocations,
@@ -521,7 +516,6 @@ struct Checker {
     effect_instances: Vec<super::effect_identity::EffectInstance>,
     effect_invocations: Vec<super::effect_identity::EffectInvocation>,
     builtin_sources: builtin_source_observations::State,
-    generated_sources: Vec<super::generated_sources::GeneratedSource>,
     invocation_calls: Vec<super::effect_identity::InvocationCall>,
     invocation_witnesses: Vec<super::effect_identity::InvocationWitness>,
     closure_invocations: Vec<super::effect_identity::ClosureInvocation>,
@@ -581,7 +575,7 @@ struct Checker {
     pattern_window_sites: BTreeMap<(ril_compiler_core::ids::PatternId, ScopeId), SiteId>,
     allocation_events: Vec<super::allocation::AllocationEvent>,
     allocation_poisoned: bool,
-    iter_steps: BTreeMap<String, iter::StepFact>,
+    declaring_constructor_template: bool,
     window_blocks: Vec<windows::WindowBlockUses>,
     window_expression_uses: Vec<windows::WindowExpressionUses>,
 }
@@ -640,7 +634,7 @@ impl Checker {
             pattern_window_sites: BTreeMap::new(),
             allocation_events: Vec::new(),
             allocation_poisoned: false,
-            iter_steps: BTreeMap::new(),
+            declaring_constructor_template: false,
             window_blocks: Vec::new(),
             window_expression_uses: Vec::new(),
             layout: ril_compiler_core::target::TargetLayout::POINTER64,
@@ -723,7 +717,6 @@ impl Checker {
             effect_instances: Vec::new(),
             effect_invocations: Vec::new(),
             builtin_sources: builtin_source_observations::State::default(),
-            generated_sources: Vec::new(),
             invocation_calls: Vec::new(),
             invocation_witnesses: Vec::new(),
             closure_invocations: Vec::new(),
@@ -785,7 +778,6 @@ impl Checker {
             analysis_visits: 0,
         };
         checker.register_standard_process_types();
-        checker.register_standard_iter_types();
         checker.register_standard_concurrent_types();
         checker
     }

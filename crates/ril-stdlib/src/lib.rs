@@ -9,6 +9,11 @@ pub struct Module {
 
 pub const MODULES: &[Module] = &[
     Module {
+        path: "ril/iter",
+        namespace: "Iter",
+        source: include_str!("../modules/iter.ril"),
+    },
+    Module {
         path: "ril/option",
         namespace: "Options",
         source: include_str!("../modules/option.ril"),

@@ -54,7 +54,6 @@ pub(crate) enum IntrinsicNominal {
     Sender,
     Receiver,
     Detached,
-    Step,
 }
 
 impl IntrinsicNominal {
@@ -64,7 +63,6 @@ impl IntrinsicNominal {
             "Channel::Sender" => Self::Sender,
             "Channel::Receiver" => Self::Receiver,
             "Channel::Detached" => Self::Detached,
-            "Iter::Step" => Self::Step,
             _ => return None,
         })
     }

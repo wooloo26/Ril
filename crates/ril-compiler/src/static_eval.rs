@@ -317,6 +317,7 @@ pub(crate) fn normalize_constructor_arguments_bounded(
         constants: Default::default(),
     };
     let mut normalize = || -> Result<NormalizedConstructorArguments> {
+        let caller = evaluator.capture_environment()?;
         let arguments =
             evaluator.bind_type_arguments(&declaration.generics, arguments, &declaration.name)?;
         let mut payloads = BTreeMap::new();
@@ -328,6 +329,10 @@ pub(crate) fn normalize_constructor_arguments_bounded(
                 .transpose()?;
             payloads.insert(declaration.name.clone(), payload);
         } else {
+            // Normalized arguments still belong to the caller. Projection
+            // enters the declaration itself; interpreting them in its bound
+            // scope would substitute a same-spelled outer parameter twice.
+            evaluator.install_environment(caller);
             let owner = TypeExpr {
                 hir_id: None,
                 kind: TypeKind::Name {

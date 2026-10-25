@@ -1,0 +1,98 @@
+pub type Step<S, T> { Done, Yielded(T, S) }
+pub type Source<S, T> = { step: fn(S) -> Step<S, T> }
+pub type Cursor<S> = { mut state: S, mut ended: bool }
+
+pub fn cursor<S>(state: S) -> Cursor<S> {
+    .{ state: state, ended: false }
+}
+
+pub fn pull<S, T>(mut cursor: Cursor<S>, source: Source<S, T>) -> ?T &mut {
+    if cursor.ended {
+        None
+    } else {
+        match source.step(cursor.state) {
+            Step::Done -> { cursor.ended = true; None },
+            Step::Yielded(item, successor) -> {
+                cursor.state = successor
+                Some(item)
+            },
+        }
+    }
+}
+
+pub fn collect<S, T>(state: S, source: Source<S, T>) -> []T {
+    var current = state
+    let mut output: []T = []
+    loop {
+        match source.step(current) {
+            Step::Done -> last output,
+            Step::Yielded(item, successor) -> {
+                output !> Array::push(item)
+                current = successor
+            },
+        }
+    }
+}
+
+pub fn fold<S, T, A>(state: S, source: Source<S, T>, initial: A, step: fn(A, T) -> A) -> A {
+    var current = state
+    var accumulated = initial
+    loop {
+        match source.step(current) {
+            Step::Done -> last accumulated,
+            Step::Yielded(item, successor) -> {
+                accumulated = step(accumulated, item)
+                current = successor
+            },
+        }
+    }
+}
+
+pub fn indexed<T>(items: []T) -> Source<int, T> &capture {
+    .{ step: \index: int -> {
+        if index < 0 {
+            panic("negative index")
+        } else if index < len(items) {
+            Step::Yielded<int, T>(items[index], index + 1)
+        } else {
+            Step::Done<int, T>
+        }
+    } }
+}
+
+pub fn map<S, T, U>(source: Source<S, T>, transform: fn(T) -> U) -> Source<S, U> &capture {
+    .{ step: \state: S -> match source.step(state) {
+        Step::Done -> Step::Done<S, U>,
+        Step::Yielded(item, successor) -> Step::Yielded<S, U>(transform(item), successor),
+    } }
+}
+
+pub fn filter<S, T>(source: Source<S, T>, predicate: fn(T) -> bool) -> Source<S, T> &capture {
+    .{ step: \state: S -> {
+        var current = state
+        loop {
+            match source.step(current) {
+                Step::Done -> last Step::Done<S, T>,
+                Step::Yielded(item, successor) -> {
+                    if predicate(item) { last Step::Yielded<S, T>(item, successor) }
+                    current = successor
+                },
+            }
+        }
+    } }
+}
+
+pub fn take<S, T>(source: Source<S, T>, count: int) -> Source<(S, int), T> &capture {
+    assert(count >= 0, "negative take count")
+    .{ step: \state: (S, int) -> {
+        assert(state.1 >= 0 && state.1 <= count, "invalid take state")
+        if state.1 == count {
+            Step::Done<(S, int), T>
+        } else {
+            match source.step(state.0) {
+                Step::Done -> Step::Done<(S, int), T>,
+                Step::Yielded(item, successor) -> Step::Yielded<(S, int), T>(item, (successor, state.1 + 1)),
+            }
+        }
+    } }
+}

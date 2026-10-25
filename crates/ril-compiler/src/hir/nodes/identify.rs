@@ -1016,21 +1016,6 @@ pub(super) fn validate_type_syntax(
     .ty(source, id, 0)
 }
 
-pub(super) fn validate_catalog_declaration(
-    hir: &HirProgram,
-    source: &mut ast::Stmt,
-    id: StmtId,
-    limits: HirLimits,
-) -> Result<(), LowerError> {
-    Identify {
-        hir,
-        left: limits,
-        write: false,
-        validate_ids: false,
-    }
-    .stmt(source, id, 0)
-}
-
 pub(super) fn validate_statement_syntax(
     hir: &HirProgram,
     source: &mut ast::Stmt,

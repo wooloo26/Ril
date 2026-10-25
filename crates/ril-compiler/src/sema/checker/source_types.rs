@@ -1411,7 +1411,6 @@ pub(super) fn expand_builtin_source_syntax(
             && !declarations.contains_key(&path.join("::"))
         {
             let schema = io::operation_type(syntax)
-                .or_else(|| super::iter_types::schema(syntax))
                 .or_else(|| {
                     if !arguments.is_empty() {
                         return None;

@@ -68,24 +68,6 @@ struct Operand {
 }
 
 impl Checker {
-    pub(super) fn supplied_input_source(
-        &self,
-        event: CopyCallEventId,
-        slot: usize,
-        work: &mut WorkLimit,
-    ) -> InputSource {
-        work.charge(1)?;
-        self.call_input_source
-            .supplied
-            .get(&event)
-            .and_then(|inputs| inputs.get(&slot))
-            .ok_or(SourceTypesError::MissingNode)?
-            .input_source(
-                SourceTypesRef::Live(self.type_source.storage.live_types()),
-                work,
-            )
-            .map(|source| source.into_known())
-    }
     pub(super) fn receive_application_source(
         &mut self,
         expected: &SourceSchema,

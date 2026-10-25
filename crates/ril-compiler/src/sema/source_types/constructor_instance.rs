@@ -13,45 +13,6 @@ pub(crate) struct DeclaredConstructorInstance {
     pub(crate) payloads: BTreeMap<String, Option<ConstructorPayload>>,
 }
 
-fn is_canonical_step(
-    declaration: &TypeDeclaration,
-    work: &mut WorkLimit,
-) -> Result<bool, SourceTypesError> {
-    use std::sync::OnceLock;
-    static CANONICAL: OnceLock<Result<hir::HirProgram, hir::LowerError>> = OnceLock::new();
-    // Prepay the fixed catalog factory and the candidate's shape pairing.
-    // The caller has already admitted the entire candidate declaration clone.
-    work.charge(256)?;
-    let canonical = CANONICAL
-        .get_or_init(|| {
-            let declaration = crate::sema::model::iteration::step_declaration();
-            hir::HirProgram::lower(&Program {
-                statements: vec![Stmt {
-                    span: declaration.span,
-                    hir_id: None,
-                    kind: StmtKind::Type(declaration),
-                }],
-            })
-        })
-        .as_ref()
-        .map_err(|_| SourceTypesError::Unresolved)?;
-    let id = *canonical
-        .roots()
-        .first()
-        .ok_or(SourceTypesError::MissingNode)?;
-    let mut candidate = Stmt {
-        span: declaration.span,
-        hir_id: None,
-        kind: StmtKind::Type(declaration.clone()),
-    };
-    match canonical.validate_catalog_declaration(&mut candidate, id, hir::HirLimits::default()) {
-        Ok(()) => Ok(true),
-        Err(hir::LowerError::Correspondence) => Ok(false),
-        Err(hir::LowerError::Budget(_)) => Err(SourceTypesError::BudgetExceeded),
-        Err(_) => Err(SourceTypesError::Unresolved),
-    }
-}
-
 /// The caller authenticates which actual constructor selected these instance
 /// arguments. This query authenticates its original declaration and sorts;
 /// a missing TypeExprId never waives the declaration's actual HIR identity.
@@ -70,38 +31,18 @@ pub(crate) fn constructor_instance(
     }
     let name = path.join("::");
     let mut header = Header::new(context)?;
-    let candidate = context
-        .declarations
-        .get(&name)
+    let (declaration_id, declaration) = header
+        .declaration(&name, work)?
         .ok_or(SourceTypesError::MissingNode)?;
-    header.charge_declaration(candidate, work)?;
-    // The standard Step's exact owned declaration is the pre-existing catalog
-    // identity; user declarations still require their actual module HIR node.
-    header.charge_declaration(candidate, work)?;
-    work.charge(context.program.statements.len())?;
-    let source_owned = context.program.statements.iter().any(|statement| {
-        matches!(&statement.kind, StmtKind::Type(declaration) if declaration.name == name)
-    });
-    let catalog = !source_owned && is_canonical_step(candidate, work)?;
-    let (declaration_id, declaration) = if catalog {
-        (None, candidate.clone())
-    } else {
-        let (id, declaration) = header
-            .declaration(&name, work)?
-            .ok_or(SourceTypesError::MissingNode)?;
-        (Some(id), declaration)
-    };
     if declaration.opaque || (!declaration.nominal && declaration.variants.is_empty()) {
         return Err(SourceTypesError::Unresolved);
     }
-    if !catalog {
-        if let Some(payload) = &declaration.value {
-            header.validate_syntax(payload, work)?;
-        }
-        for variant in &declaration.variants {
-            for syntax in variant.payload.iter().chain(&variant.result) {
-                header.validate_syntax(syntax, work)?;
-            }
+    if let Some(payload) = &declaration.value {
+        header.validate_syntax(payload, work)?;
+    }
+    for variant in &declaration.variants {
+        for syntax in variant.payload.iter().chain(&variant.result) {
+            header.validate_syntax(syntax, work)?;
         }
     }
     let mut remaining = work.remaining();
@@ -144,8 +85,14 @@ pub(crate) fn constructor_instance(
             }
             coordinates.push(key);
         }
-        SourceSchema::certified_const_nominal(&name, &coordinates, declaration_id, None, work)?
-            .copy_into(&mut header.builder, work)?
+        SourceSchema::certified_const_nominal(
+            &name,
+            &coordinates,
+            Some(declaration_id),
+            None,
+            work,
+        )?
+        .copy_into(&mut header.builder, work)?
     } else {
         work.charge(normalized.arguments.len())?;
         let arguments = normalized
@@ -155,9 +102,7 @@ pub(crate) fn constructor_instance(
             .collect::<Result<_, _>>()?;
         header.builder.insert(
             SourceNode::OpaqueName {
-                declaration: declaration_id
-                    .map(NominalDeclaration::Hir)
-                    .or_else(|| IntrinsicNominal::lookup(&name).map(NominalDeclaration::Intrinsic)),
+                declaration: Some(NominalDeclaration::Hir(declaration_id)),
                 name,
                 arguments,
             },

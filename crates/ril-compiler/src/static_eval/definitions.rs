@@ -16,8 +16,6 @@ pub(super) fn collect(program: &Program) -> Collected {
         all_types: BTreeMap::new(),
         all_effects: BTreeMap::new(),
     };
-    let iteration = crate::sema::model::iteration::step_declaration();
-    visitor.all_types.insert(iteration.name.clone(), iteration);
     visitor.statements(&program.statements);
     Collected {
         functions: visitor.functions,

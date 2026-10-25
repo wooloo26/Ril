@@ -784,18 +784,6 @@ impl Checker {
                 {
                     return row;
                 }
-                if matches!(full_name.as_str(), "Iter::Source" | "Iter::Cursor") {
-                    if let Some(schema) = super::iter_types::schema(syntax) {
-                        return self.ty(&schema);
-                    }
-                    self.error(
-                        "E0340",
-                        syntax.span,
-                        "iteration type has a different generic arity",
-                        [],
-                    );
-                    return Ty::Unknown;
-                }
                 if let Some(declaration) = self.types.get(&full_name).cloned() {
                     if !declaration.generics.is_empty() || !arguments.is_empty() {
                         return self.applied_type(&declaration, arguments, syntax.span);
@@ -1519,8 +1507,7 @@ impl Checker {
                     return row;
                 }
                 if !self.types.contains_key(&full_name)
-                    && let Some(schema) =
-                        io::operation_type(ty).or_else(|| super::iter_types::schema(ty))
+                    && let Some(schema) = io::operation_type(ty)
                 {
                     return substitute(&schema, seen, substitutions);
                 }
@@ -1562,8 +1549,7 @@ impl Checker {
                         .iter()
                         .zip(arguments)
                         .map(|(parameter, argument)| {
-                            if !expand_aliases
-                                && let TypeKind::Name { path, arguments } = &argument.kind
+                            if let TypeKind::Name { path, arguments } = &argument.kind
                                 && arguments.is_empty()
                                 && let Some(argument) = substitutions.get(&path.join("::"))
                             {
@@ -1587,7 +1573,7 @@ impl Checker {
                                 ))
                             } else {
                                 let ty = substitute(argument, &mut seen.clone(), substitutions);
-                                if expand_aliases {
+                                if expand_aliases && substitutions.is_empty() {
                                     self.canonical_type_argument(argument, ty)
                                 } else {
                                     self.shallow_type_argument(argument, ty, substitutions)
@@ -1735,6 +1721,11 @@ impl Checker {
         ty: Ty,
         substitutions: &BTreeMap<String, TypeArgument>,
     ) -> TypeArgument {
+        let mut generics = BTreeSet::new();
+        ty.generic_names(&mut generics);
+        if !generics.is_empty() {
+            return TypeArgument::Type(Box::new(ty));
+        }
         fn key(
             syntax: &TypeExpr,
             substitutions: &BTreeMap<String, TypeArgument>,
@@ -1865,6 +1856,39 @@ impl Checker {
     pub(super) fn compatible(&self, actual: &Ty, expected: &Ty) -> bool {
         self.compatible_recursive(actual, expected, &mut BTreeSet::new(), 0)
     }
+    pub(super) fn same_type_instance(&self, left: &Ty, right: &Ty) -> bool {
+        if left == right {
+            return true;
+        }
+        match (left, right) {
+            (
+                Ty::Applied {
+                    constructor: a,
+                    arguments: left,
+                },
+                Ty::Applied {
+                    constructor: b,
+                    arguments: right,
+                },
+            ) if a == b && left.len() == right.len() => left
+                .iter()
+                .zip(right)
+                .all(|(left, right)| self.same_type_argument(left, right)),
+            _ => false,
+        }
+    }
+    fn same_type_argument(&self, left: &TypeArgument, right: &TypeArgument) -> bool {
+        if left == right {
+            return true;
+        }
+        match (left, right) {
+            (TypeArgument::Type(plain), TypeArgument::CanonicalType { ty, key })
+            | (TypeArgument::CanonicalType { ty, key }, TypeArgument::Type(plain)) => {
+                plain == ty && self.selected_type_key(plain).as_ref() == Some(key)
+            }
+            _ => false,
+        }
+    }
     fn compatible_recursive(
         &self,
         actual: &Ty,
@@ -1918,6 +1942,7 @@ impl Checker {
                         .all(|(a, b)| self.compatible_recursive(a, b, seen, depth + 1))
                     && self.compatible_recursive(r, s, seen, depth + 1)
             }
+            (Ty::Applied { .. }, Ty::Applied { .. }) => self.same_type_instance(&a, &b),
             _ => a == b,
         }
     }
@@ -2351,9 +2376,7 @@ impl Checker {
                 self.contextual_result_inference(value, &expected, syntax.span);
             }
         }
-        if let Some(schema) =
-            io::operation_type(syntax).or_else(|| super::iter_types::schema(syntax))
-        {
+        if let Some(schema) = io::operation_type(syntax) {
             self.ascribe_signature_from(value, &schema, source);
             return;
         }

@@ -247,14 +247,12 @@ impl Walk<'_> {
                 }
                 // Expand genuine builtin operation/stream records. Treating
                 // every known builtin as a scalar would hide their Fn fields.
-                let schema = io_types::operation_type(syntax)
-                    .or_else(|| super::super::iter_types::schema(syntax))
-                    .or_else(|| {
-                        let ty = super::super::standard::file_type(&full)?;
-                        matches!(ty, Ty::Record(_))
-                            .then(|| io_types::data_type(&ty, syntax.span))
-                            .flatten()
-                    });
+                let schema = io_types::operation_type(syntax).or_else(|| {
+                    let ty = super::super::standard::file_type(&full)?;
+                    matches!(ty, Ty::Record(_))
+                        .then(|| io_types::data_type(&ty, syntax.span))
+                        .flatten()
+                });
                 if let Some(schema) = schema {
                     return self.ty(&schema, locals, caller, depth + 1);
                 }

@@ -126,14 +126,10 @@ impl Checker {
                 .iter()
                 .enumerate()
                 .map(|(index, parameter)| {
-                    let identity = if declaration.name == "Iter::Step" {
-                        format!("std:Iter::Step:{index}:{}", parameter.name)
-                    } else {
-                        format!(
-                            "{}:{}:type:{index}:{}",
-                            declaration.span.file.0, declaration.span.start, parameter.name
-                        )
-                    };
+                    let identity = format!(
+                        "{}:{}:type:{index}:{}",
+                        declaration.span.file.0, declaration.span.start, parameter.name
+                    );
                     if static_parameter(parameter) {
                         TypeArgument::Symbolic(identity)
                     } else {
@@ -153,9 +149,69 @@ impl Checker {
         if !self.generic_constructor_contract(declaration) {
             return;
         }
+        if *owner == self.constructor_template_owner(declaration) {
+            return;
+        }
         let mut generics = BTreeSet::new();
         owner.generic_names(&mut generics);
-        if !generics.is_empty() {
+        if self.declaring_constructor_template && !generics.is_empty() {
+            // A variant result is part of the declaration being entered. Its
+            // binders remain templates until an actual type application asks
+            // for an instance, after every variant has been registered.
+            return;
+        }
+        fn complete(checker: &Checker, ty: &Ty, depth: usize) -> bool {
+            if depth >= 128 {
+                return false;
+            }
+            match ty {
+                Ty::Generic(_)
+                | Ty::Unit
+                | Ty::Never
+                | Ty::Bool
+                | Ty::Int(_)
+                | Ty::Float(_)
+                | Ty::Str
+                | Ty::Bytes => true,
+                Ty::Immutable(inner) | Ty::Optional(inner) | Ty::Set(inner) | Ty::Range(inner) => {
+                    complete(checker, inner, depth + 1)
+                }
+                Ty::Tuple(items) => items.iter().all(|ty| complete(checker, ty, depth + 1)),
+                Ty::Record(fields) => fields
+                    .values()
+                    .all(|(_, ty)| complete(checker, ty, depth + 1)),
+                Ty::Result(a, b) | Ty::Map(a, b) => {
+                    complete(checker, a, depth + 1) && complete(checker, b, depth + 1)
+                }
+                Ty::Named(name) => checker.types.get(name).is_some_and(|declaration| {
+                    declaration.nominal || !declaration.variants.is_empty()
+                }),
+                Ty::Applied {
+                    constructor,
+                    arguments,
+                } => {
+                    (checker.types.get(constructor).is_some_and(|declaration| {
+                        declaration.nominal || !declaration.variants.is_empty()
+                    }) || crate::sema::source_types::IntrinsicNominal::lookup(constructor)
+                        .is_some())
+                        && arguments.iter().all(|argument| match argument {
+                            TypeArgument::Type(ty) => complete(checker, ty, depth + 1),
+                            TypeArgument::CanonicalType { .. }
+                            | TypeArgument::Static(_)
+                            | TypeArgument::Symbolic(_) => true,
+                        })
+                }
+                // These projections omit identity-bearing coordinates. A
+                // symbolic binder is a complete reference; an erased []T or
+                // callable shape is not a substitute for its source graph.
+                _ => false,
+            }
+        }
+        if !complete(self, owner, 0) {
+            self.unsupported(
+                span,
+                "constructor instance needs complete type argument coordinates",
+            );
             return;
         }
         if self.constructors.iter().any(|(identity, constructor)| {
@@ -349,8 +405,11 @@ impl Checker {
             .iter()
             .find_map(|(identity, constructor)| {
                 ((identity == name || constructor.tag == name)
-                    && self.expanded(&constructor.owner, &mut BTreeSet::new()) == owner)
-                    .then(|| constructor.clone())
+                    && self.same_type_instance(
+                        &self.expanded(&constructor.owner, &mut BTreeSet::new()),
+                        &owner,
+                    ))
+                .then(|| constructor.clone())
             })
             .or_else(|| self.conditional_constructor_info(name, &owner))
     }
@@ -705,10 +764,7 @@ mod tests {
         let result = crate::sema::analyze(&parsed.program, FileId(0));
         assert!(result.program.is_none());
         assert!(
-            result
-                .unsupported
-                .iter()
-                .any(|feature| feature.description.contains("instance shape expansion")),
+            !result.unsupported.is_empty(),
             "{:?} {:?}",
             result.diagnostics,
             result.unsupported

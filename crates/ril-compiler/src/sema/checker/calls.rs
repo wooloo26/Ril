@@ -360,7 +360,10 @@ impl Checker {
                     {
                         self.unsupported(span,"an unknown callable cannot prove confinement of scoped or derived authority");
                     }
-                    self.invalidate_unknown_callback_refinements();
+                    let exposed_inputs = std::iter::once(callee.clone())
+                        .chain(args.iter().map(|(_, value, _)| value.clone()))
+                        .collect::<Vec<_>>();
+                    self.invalidate_unknown_callback_refinements(&exposed_inputs, frame.owner);
                     frame.obligations.symbolic = true;
                     self.record_symbolic_row_use(callee, origin, frame);
                     for (mode, value, arg_span) in &args {
@@ -2922,9 +2925,6 @@ impl Checker {
         span: Span,
         frame: &mut Frame,
     ) -> Value {
-        if let Some(value) = self.iter_builtin(name, &args, span, frame) {
-            return value;
-        }
         if name == "Div::budget" {
             return self.finite_budget(&args, span, frame);
         }

@@ -53,6 +53,11 @@ impl Checker {
         }
     }
     pub(super) fn declare_constructors(&mut self, declaration: &TypeDeclaration) {
+        let previous = std::mem::replace(&mut self.declaring_constructor_template, true);
+        self.declare_constructor_template(declaration);
+        self.declaring_constructor_template = previous;
+    }
+    fn declare_constructor_template(&mut self, declaration: &TypeDeclaration) {
         if !declaration.nominal && declaration.variants.is_empty() {
             return;
         }
@@ -286,7 +291,7 @@ impl Checker {
         };
         let mut generics = BTreeSet::new();
         constructor.owner.generic_names(&mut generics);
-        if !generics.is_empty() {
+        if name == constructor.tag && !generics.is_empty() {
             self.unsupported(span,"constructor generic arguments need an explicit instance or checked expected-type inference");
             return Value::scalar(Ty::Unknown, None, CauseId(0));
         }
@@ -520,7 +525,7 @@ impl Checker {
         let mut constructors: Vec<_> = self
             .constructors
             .iter()
-            .filter(|(_, constructor)| constructor.owner == *ty)
+            .filter(|(_, constructor)| self.same_type_instance(&constructor.owner, ty))
             .map(|(name, constructor)| (name.clone(), constructor.clone()))
             .collect();
         if constructors.is_empty() {
@@ -605,7 +610,7 @@ impl Checker {
         if !self
             .constructors
             .values()
-            .any(|constructor| constructor.owner == owner)
+            .any(|constructor| self.same_type_instance(&constructor.owner, &owner))
         {
             return None;
         }

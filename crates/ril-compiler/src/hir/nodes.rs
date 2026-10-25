@@ -534,17 +534,6 @@ impl HirProgram {
         identify::validate_type_syntax(self, source, id, limits)
     }
 
-    /// Compare an owned canonical declaration's semantic structure. Catalog
-    /// declarations have no source occurrence IDs or diagnostic-span identity.
-    pub(crate) fn validate_catalog_declaration(
-        &self,
-        source: &mut ast::Stmt,
-        id: StmtId,
-        limits: HirLimits,
-    ) -> Result<(), LowerError> {
-        identify::validate_catalog_declaration(self, source, id, limits)
-    }
-
     pub(crate) fn validate_statement_syntax(
         &self,
         source: &mut ast::Stmt,

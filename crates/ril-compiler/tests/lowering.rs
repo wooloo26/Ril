@@ -22,7 +22,21 @@ fn core_compiles_iterators_after_frontend_inference() {
             .iter()
             .any(|function| function.name == "example")
     );
-    assert!(!verified.facts().iter_steps.is_empty());
+    let library = verified
+        .facts()
+        .functions
+        .iter()
+        .filter(|function| function.syntax.span.file.0 != 0)
+        .collect::<Vec<_>>();
+    assert_eq!(library.len(), 8);
+    for function in library {
+        assert!(
+            core.functions
+                .iter()
+                .any(|lowered| lowered.definition == function.definition
+                    && lowered.role == ril_ir::core::FunctionRole::Ordinary)
+        );
+    }
 }
 
 #[test]

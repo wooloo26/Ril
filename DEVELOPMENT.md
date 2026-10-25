@@ -139,12 +139,23 @@ duplicate source trees and historical verification reports.
   and callable instantiation queries. Instantiate foreign headers and defaults
   from original declarations and static choices, removing generated declaration
   ASTs. Complete nested/captured callable instance owner mappings.
-- Move remaining collection/iterator/order and resource/I/O algorithms into
+- Move remaining collection/order and resource/I/O algorithms into
   ordinary library sources in `crates/ril-stdlib/modules/`. Delete each replaced
   checker simulation, static implementation, late backend body generator and
   runtime algorithm. All four Test helpers now use ordinary checked bodies;
   structural equality shares eligibility checking with value tests and recursive
-  summaries. Keep one explicit set of necessary primitive contracts.
+  summaries. Iter's eight operations and Step/Source/Cursor now live in ordinary
+  library source. Its checker simulations, synthetic declarations/type factories,
+  generated syntax/facts and late Core generator have been deleted together.
+  The ordinary path currently exposes incomplete generic constructor payload
+  receiving, symbolic callable result types, captured environments, callback
+  result inference and nonordinary loop fixed points. These valid programs still
+  fail or remain incomplete; the migration does not establish Iter conformance.
+  Generic alias keys now follow their own substitutions, and constructor payload
+  normalization evaluates actual arguments in the caller's scope exactly once.
+  Unknown callbacks invalidate exposed cells and external live storage while
+  preserving private local variable cells. Keep one explicit set of necessary
+  primitive contracts.
 - Eliminate remaining language and native failures, select runtime archives by
   build/ABI identity, and complete Windows/Linux, pointer32/pointer64 and applicable
   native acceptance. Preserved corpus cases define behavior; internal proof-export
