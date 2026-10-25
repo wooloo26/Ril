@@ -11,7 +11,6 @@ pub mod collections;
 pub mod concurrent;
 pub mod cps;
 mod cps_exit;
-pub mod deque;
 pub mod encoding;
 pub mod environment;
 mod ffi;

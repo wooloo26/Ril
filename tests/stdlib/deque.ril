@@ -16,3 +16,40 @@ pub fn test_both_ends() {
 }
 --@ end-file
 --@ end-case
+
+--@ case: rebalance-alternating-ends
+--@ mode: run-pass
+--@ spec: STD#ordering-deques-and-heaps
+--@ entry: test_rebalance_alternating_ends
+--@ file: rebalance-alternating-ends.ril
+use ril/deque
+
+pub fn test_rebalance_alternating_ends() {
+    for 1..34 as count {
+        let mut forward = Deque::new<int>()
+        let mut backward = Deque::new<int>()
+        for 0..count as index {
+            Deque::push_back(mut forward, index)
+            Deque::push_front(mut backward, index)
+        }
+        var low = 0
+        var high = count - 1
+        for 0..count as turn {
+            if turn % 2 == 0 {
+                assert(Deque::pop_front(mut forward) == Some(low))
+                assert(Deque::pop_back(mut backward) == Some(low))
+                low += 1
+            } else {
+                assert(Deque::pop_back(mut forward) == Some(high))
+                assert(Deque::pop_front(mut backward) == Some(high))
+                high -= 1
+            }
+            assert(Deque::len(forward) == count - turn - 1)
+            assert(Deque::len(backward) == count - turn - 1)
+        }
+        assert(Deque::values(forward) == [] && Deque::values(backward) == [])
+        assert(Deque::pop_front(mut forward) == None && Deque::pop_back(mut backward) == None)
+    }
+}
+--@ end-file
+--@ end-case

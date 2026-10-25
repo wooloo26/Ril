@@ -32,4 +32,8 @@ pub fn insert<T>(mut items: Set<T>, value: T) -> bool &mut
 
 pub fn remove<T>(mut items: Set<T>, value: T) -> bool &mut
 
-pub fn values<T>(items: Set<T>) -> []T
+pub fn values<T>(items: Set<T>) -> []T {
+    let mut output: []T = []
+    for items as item { Array::push(mut output, item) }
+    output
+}

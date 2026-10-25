@@ -148,7 +148,7 @@ duplicate source trees and historical verification reports.
   seeded random generation, buffered streams, UTF-8 conversion and Unicode
   properties/casing, native strings and path composition, and exact decimal
   parsing/shortest formatting for both float widths. Pinned Unicode data is
-  ordinary Ril constants. Heap, RNG and stream state use private ordinary types;
+  ordinary Ril constants. Heap, RNG, deque, builder and stream state use private ordinary types;
   heap sifts compute their path before mutation without copying every element.
   The whole late Core library generator has been
   removed, along with the replaced variant/order/resource/stream checker
@@ -157,6 +157,12 @@ duplicate source trees and historical verification reports.
   Runtime ABI is 9. Reader identity/reservation/cleanup remains a small kernel
   contract; ordinary source owns all buffered byte/progress state.
   Audit remaining bodyless declarations and scalar/host boundaries together.
+  Deque uses two balanced arrays for amortized constant-time ends; builder uses
+  nonempty immutable chunks and constructs stable text snapshots in ordinary
+  source. Environment enumeration sorting and process command/status wrappers
+  are ordinary source as well. Finish parallel branch-fault capture/arbitration
+  and explicit scoped fork/join declarations, then remove their runtime library
+  jobs and remaining catalog-only interfaces.
   A bodyless declaration is not evidence that an operation is a necessary
   primitive or is implemented. Bind genuine storage/host/scheduling primitives
   to declaration identities, complete opaque representations and native data

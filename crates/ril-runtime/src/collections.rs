@@ -93,13 +93,6 @@ impl Runtime {
                 };
                 self.boolean(result)
             }
-            "Set::values" => {
-                let values = match self.heap.get(arg(0)?)? {
-                    Object::Set(items) => items.iter().map(|(key, _)| *key).collect(),
-                    _ => return Err(RuntimeError::internal("expected set")),
-                };
-                self.allocate(Object::Array(values))
-            }
             _ => Err(RuntimeError::internal("unimplemented collection operation")),
         }
     }

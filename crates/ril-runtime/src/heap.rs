@@ -39,7 +39,6 @@ pub enum Object {
         domain: u64,
         nanos: u128,
     },
-    StringBuilder(String),
     BigInteger(num_bigint::BigInt),
     Unit,
     Bool(bool),
@@ -66,7 +65,6 @@ pub enum Object {
         start: usize,
         len: usize,
     },
-    Deque(std::collections::VecDeque<Handle>),
     Map(crate::map::OrderedMap),
     Set(crate::map::OrderedMap),
     Range {
@@ -145,7 +143,6 @@ impl Object {
             Self::ChannelDetached(value) => value.references(),
             Self::Array(values) | Self::Tuple(values) => values.clone(),
             Self::ArrayWindow { backing, .. } => vec![*backing],
-            Self::Deque(values) => values.iter().copied().collect(),
             Self::Map(entries) | Self::Set(entries) => {
                 entries.iter().flat_map(|(k, v)| [*k, *v]).collect()
             }
@@ -203,7 +200,6 @@ impl Object {
         match self {
             Self::Array(_)
             | Self::ArrayWindow { .. }
-            | Self::Deque(_)
             | Self::Map(_)
             | Self::Set(_)
             | Self::Range { .. }
@@ -232,7 +228,6 @@ impl Object {
                 start: *start,
                 len: *len,
             },
-            Self::Deque(values) => Self::Deque(values.iter().copied().map(&mut map).collect()),
             Self::Tuple(values) => Self::Tuple(values.iter().copied().map(&mut map).collect()),
             Self::Map(entries) => Self::Map(entries.map_references(&mut map)),
             Self::Set(entries) => Self::Set(entries.map_references(&mut map)),
@@ -644,12 +639,6 @@ impl Heap {
             let (a, b) = (self.get(a)?, self.get(b)?);
             match (a, b) {
                 (Object::Array(a), Object::Array(b)) | (Object::Tuple(a), Object::Tuple(b)) => {
-                    if a.len() != b.len() {
-                        return Ok(false);
-                    }
-                    pending.extend(a.iter().copied().zip(b.iter().copied()));
-                }
-                (Object::Deque(a), Object::Deque(b)) => {
                     if a.len() != b.len() {
                         return Ok(false);
                     }

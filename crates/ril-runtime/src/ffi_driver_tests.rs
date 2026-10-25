@@ -544,9 +544,7 @@ fn native_process_wait_leaves_one_cpu_worker_free_and_reaps_before_completion() 
         })
         .collect();
         let args = runtime.allocate(Object::Array(args)).unwrap();
-        let command = runtime
-            .process_builtin("Process::command", &[program, args])
-            .unwrap();
+        let command = crate::process::tests::raw_command(runtime, program, args).unwrap();
         let mut env = Vec::new();
         for (key, value) in [
             (

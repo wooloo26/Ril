@@ -1,4 +1,23 @@
 use super::*;
+// Host tests construct the input value graph directly. Ordinary Command
+// construction and status predicates are exercised by the language corpus.
+pub(crate) fn raw_command(runtime: &mut Runtime, program: Handle, args: Handle) -> Result<Handle> {
+    let absent = runtime.variant("None", vec![])?;
+    let input = runtime.variant("Process::Input::Inherit", vec![])?;
+    let output = runtime.variant("Process::OutputMode::Inherit", vec![])?;
+    runtime.allocate(Object::Record(
+        [
+            ("program".into(), program),
+            ("args".into(), args),
+            ("cwd".into(), absent),
+            ("env".into(), absent),
+            ("input".into(), input),
+            ("stdout".into(), output),
+            ("stderr".into(), output),
+        ]
+        .into(),
+    ))
+}
 fn tag(runtime: &Runtime, value: Handle, expected: &str) -> Vec<Handle> {
     let Object::Variant { tag, fields } = runtime.heap.get(value).unwrap() else {
         panic!("expected variant");
@@ -26,9 +45,7 @@ fn command(runtime: &mut Runtime, mode: &str) -> Handle {
     })
     .collect();
     let args = runtime.allocate(Object::Array(args)).unwrap();
-    let command = runtime
-        .process_builtin("Process::command", &[path, args])
-        .unwrap();
+    let command = raw_command(runtime, path, args).unwrap();
     let key = runtime
         .allocate(Object::NativeString(NativeString::from_text(
             "RIL_PROCESS_IO_FIXTURE",
@@ -66,10 +83,6 @@ fn native_process_output_preserves_unsigned_status_and_separate_capture_bytes() 
     let status = runtime.field(output, "status").unwrap();
     let code = tag(&runtime, status, "Process::ExitStatus::Exited")[0];
     assert_eq!(runtime.as_integer(code).unwrap(), 7);
-    let success = runtime
-        .process_builtin("Process::success", &[status])
-        .unwrap();
-    assert!(!runtime.truth(success).unwrap());
     let stderr = runtime.field(output, "stderr").unwrap();
     assert_eq!(runtime.as_bytes(stderr).unwrap(), vec![b'e'; 128 * 1024]);
 }
@@ -106,9 +119,7 @@ fn invalid_commands_never_launch_and_negative_limit_precedes_validation() {
         .allocate(Object::Path(NativeString::from_text("invalid\0path")))
         .unwrap();
     let arguments = runtime.allocate(Object::Array(vec![])).unwrap();
-    let command = runtime
-        .process_builtin("Process::command", &[path, arguments])
-        .unwrap();
+    let command = raw_command(&mut runtime, path, arguments).unwrap();
     let result = runtime.process_builtin("Process::run", &[command]).unwrap();
     let error = tag(&runtime, result, "Err")[0];
     tag(&runtime, error, "Process::ProcessError::InvalidCommand");

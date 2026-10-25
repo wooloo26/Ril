@@ -40,3 +40,4 @@ pub fn read_guard<R>(buffer: Io::ReadBuffer, reader: R,
     position: ?Identity, cached: bool) -> ReadGuard
 pub fn read_reservation(guard: ReadGuard, pending: bool)
 pub fn numeric_convert<T, U>(value: T) -> Result<U, Num::NumError>
+pub fn environment_all() -> [](Os::NativeString, Os::NativeString) @Fiber

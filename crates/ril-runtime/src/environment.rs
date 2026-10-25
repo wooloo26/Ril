@@ -127,15 +127,16 @@ impl Runtime {
                 };
                 self.variant("Ok", vec![value])
             }
-            "Env::all" => {
-                let mut entries = std::env::vars_os()
+            "\0ril.host.environment_all" => {
+                let entries = std::env::vars_os()
                     .map(|(name, value)| {
                         (NativeString::from_os(&name), NativeString::from_os(&value))
                     })
                     .filter(|(name, _)| valid_environment_name(name))
                     .collect::<Vec<_>>();
                 #[cfg(windows)]
-                {
+                let entries = {
+                    let mut entries = entries;
                     entries.sort_by(|a, b| {
                         crate::platform_environment::compare_environment_names(
                             &a.0.units(),
@@ -149,8 +150,8 @@ impl Runtime {
                         )
                         .is_eq()
                     });
-                }
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                    entries
+                };
                 let mut values = Vec::with_capacity(entries.len());
                 for (name, value) in entries {
                     let name = self.allocate(Object::NativeString(name))?;

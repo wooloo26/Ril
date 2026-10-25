@@ -989,7 +989,6 @@ impl Runtime {
             Object::Bool(value) => value.to_string(),
             Object::Integer { value, .. } => value.to_string(),
             Object::BigInteger(value) => value.to_string(),
-            Object::StringBuilder(value) => value.clone(),
             Object::Float { value, bits } => crate::formatting::default_float(*value, *bits),
             Object::String(text) | Object::Builtin(text) => text.clone(),
             Object::DataConstructor { .. } => "<constructor>".into(),
@@ -1048,7 +1047,6 @@ impl Runtime {
             }
             Object::Map(_) => "<map>".into(),
             Object::Set(_) => "<set>".into(),
-            Object::Deque(_) => "<deque>".into(),
             Object::NativeString(_) => "<native-string>".into(),
             Object::Path(_) => "<path>".into(),
             Object::File(_) => "<file>".into(),
@@ -1107,7 +1105,7 @@ impl Runtime {
         if name.starts_with("Process::") {
             return self.process_builtin(name, &args);
         }
-        if name.starts_with("Env::") {
+        if name.starts_with("Env::") || name == "\0ril.host.environment_all" {
             return self.environment_builtin(name, &args);
         }
         if name.starts_with("File::") || name == "\0ril.host.file_read_dir" {
@@ -1146,9 +1144,6 @@ impl Runtime {
             || name == "\0ril.storage.platform_windows"
         {
             return self.native_storage(name, &args);
-        }
-        if name.starts_with("Deque::") {
-            return self.deque_builtin(name, &args);
         }
         if name.starts_with("Time::")
             || name.starts_with("Clock::")
@@ -1325,44 +1320,6 @@ impl Runtime {
             "__format" => {
                 let text = self.format(arg(0)?)?;
                 self.string(text)
-            }
-            "StringBuilder::new" => self.allocate(Object::StringBuilder(String::new())),
-            "StringBuilder::append" => {
-                let text = self.as_string(arg(1)?)?.to_owned();
-                match self.heap.get_mut(arg(0)?)? {
-                    Object::StringBuilder(buffer) => buffer.push_str(&text),
-                    _ => return Err(RuntimeError::internal("expected string builder")),
-                };
-                self.unit()
-            }
-            "StringBuilder::clear" => {
-                match self.heap.get_mut(arg(0)?)? {
-                    Object::StringBuilder(buffer) => buffer.clear(),
-                    _ => return Err(RuntimeError::internal("expected string builder")),
-                };
-                self.unit()
-            }
-            "StringBuilder::to_string" => {
-                let text = match self.heap.get(arg(0)?)? {
-                    Object::StringBuilder(buffer) => buffer.clone(),
-                    _ => return Err(RuntimeError::internal("expected string builder")),
-                };
-                self.string(text)
-            }
-            "StringBuilder::append_scalar" => {
-                let scalar = self.as_integer(arg(1)?)?;
-                if let Some(value) = u32::try_from(scalar).ok().and_then(char::from_u32) {
-                    match self.heap.get_mut(arg(0)?)? {
-                        Object::StringBuilder(buffer) => buffer.push(value),
-                        _ => return Err(RuntimeError::internal("expected string builder")),
-                    };
-                    let unit = self.unit()?;
-                    self.variant("Ok", vec![unit])
-                } else {
-                    let error =
-                        self.allocate(Object::Record([("value".into(), arg(1)?)].into()))?;
-                    self.variant("Err", vec![error])
-                }
             }
             "__format_spec" => {
                 let value = self.heap.get(arg(0)?)?;

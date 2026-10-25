@@ -3,7 +3,7 @@ use ril/os
 use ril/path
 
 pub fn command(program: Path::Path, args: []Os::NativeString) -> Process::Command {
-    .{ program: program, args: args, cwd: None, env: None,
+    .{ program: program, args: clone(args), cwd: None, env: None,
        input: Process::Input::Inherit, stdout: Process::OutputMode::Inherit,
        stderr: Process::OutputMode::Inherit }
 }

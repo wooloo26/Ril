@@ -78,7 +78,10 @@ pub const MODULES: &[Module] = &[
         namespace: "Deque",
         source: include_str!("../modules/deque.ril"),
         private: false,
-        representations: &[],
+        representations: &[Representation {
+            opaque: "Deque",
+            implementation: "DequeState",
+        }],
     },
     Module {
         path: "ril/encoding/binary",
@@ -240,7 +243,10 @@ pub const MODULES: &[Module] = &[
         namespace: "StringBuilder",
         source: include_str!("../modules/string_builder.ril"),
         private: false,
-        representations: &[],
+        representations: &[Representation {
+            opaque: "Builder",
+            implementation: "BuilderState",
+        }],
     },
     Module {
         path: "ril/test",

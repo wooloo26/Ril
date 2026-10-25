@@ -58,17 +58,11 @@ pub const OPERATIONS: &[&str] = &[
     "Array::truncate",
     "Array::insert",
     "Array::remove",
-    "StringBuilder::new",
-    "StringBuilder::append",
-    "StringBuilder::clear",
-    "StringBuilder::to_string",
-    "StringBuilder::append_scalar",
     "Map::set",
     "Map::remove",
     "Set::contains",
     "Set::insert",
     "Set::remove",
-    "Set::values",
     "File::open_path",
     "File::read_chunk",
     "File::write",
@@ -92,26 +86,17 @@ pub const OPERATIONS: &[&str] = &[
     "Io::stderr_write",
     "Env::args",
     "Env::get",
-    "Env::all",
+    "\0ril.host.environment_all",
     "Env::current_dir",
     "Env::temp_dir",
-    "Process::command",
     "Process::run",
     "Process::spawn",
     "Process::wait",
     "Process::terminate",
-    "Process::success",
     "Time::monotonic",
     "Time::sleep",
     "Clock::now",
     "Random::entropy",
-    "Deque::new",
-    "Deque::len",
-    "Deque::push_front",
-    "Deque::push_back",
-    "Deque::pop_front",
-    "Deque::pop_back",
-    "Deque::values",
     "Concurrent::scope",
     "Concurrent::fork",
     "Concurrent::join",
@@ -170,10 +155,7 @@ const NUMERIC_TYPES: &[&str] = &[
 /// Only verified generic constructor expressions may produce these aliases.
 /// All three source-location components must be exact unsigned 32-bit numbers.
 pub fn canonical_builtin(name: &str) -> Option<&str> {
-    for (prefix, canonical) in [
-        ("Deque::__new_", "Deque::new"),
-        ("Channel::__bounded_", "Channel::bounded"),
-    ] {
+    for (prefix, canonical) in [("Channel::__bounded_", "Channel::bounded")] {
         if let Some(location) = name.strip_prefix(prefix) {
             let mut parts = location.split('_');
             for _ in 0..3 {
@@ -316,7 +298,6 @@ mod tests {
             "\0ril.storage.sqrt_f32",
             "\0ril.numeric.convert_int_to_bigint",
             "\0ril.numeric.convert_f64_to_int",
-            "Deque::__new_0_123_456",
         ] {
             assert!(supported(name));
         }
@@ -337,8 +318,6 @@ mod tests {
             "Math::sqrt_f32_f32",
             "\0ril.numeric.convert_f64_to_unknown",
             "\0ril.numeric.convert_f64_to_int_to_u8",
-            "Deque::__new_1_2",
-            "Deque::__new_1_2_3_4",
             "User::Deque::__new_1_2_3",
         ] {
             assert!(!supported(name));

@@ -9,7 +9,7 @@ use crate::{
 };
 pub(crate) mod host;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 use std::{
     ffi::OsString,
     path::PathBuf,
@@ -319,41 +319,6 @@ impl Runtime {
             return self.variant(name, vec![arg(0)?]);
         }
         match name {
-            "Process::command" => {
-                let arguments = self.copy(arg(1)?)?;
-                let cwd = self.variant("None", vec![])?;
-                let env = self.variant("None", vec![])?;
-                let input = self.variant("Process::Input::Inherit", vec![])?;
-                let output = self.variant("Process::OutputMode::Inherit", vec![])?;
-                self.allocate(Object::Record(
-                    [
-                        ("program".into(), arg(0)?),
-                        ("args".into(), arguments),
-                        ("cwd".into(), cwd),
-                        ("env".into(), env),
-                        ("input".into(), input),
-                        ("stdout".into(), output),
-                        ("stderr".into(), output),
-                    ]
-                    .into(),
-                ))
-            }
-            "Process::success" => {
-                let success = match self.heap.get(arg(0)?)? {
-                    Object::Variant { tag, fields }
-                        if tag == "Process::ExitStatus::Exited" && fields.len() == 1 =>
-                    {
-                        self.as_integer(fields[0])? == 0
-                    }
-                    Object::Variant { tag, fields }
-                        if tag == "Process::ExitStatus::Signaled" && fields.len() == 1 =>
-                    {
-                        false
-                    }
-                    _ => return Err(RuntimeError::internal("expected exit status")),
-                };
-                self.boolean(success)
-            }
             "Process::run" | "Process::spawn" => {
                 let request = host::prepare(self, name, args)?;
                 host::finish(self, request.perform()?)
