@@ -45,24 +45,119 @@ fn main(){
 "###;
 
 fn library(dependencies: &Path, crate_name: &str) -> PathBuf {
-    let mut candidates: Vec<_> = fs::read_dir(dependencies)
+    // Cargo's fingerprint graph identifies the exact dependency build. File
+    // timestamps can mix feature/profile variants with incompatible serde traits.
+    let fingerprints = dependencies.parent().unwrap().join(".fingerprint");
+    let mut index = std::collections::BTreeMap::<(String, u64), Vec<PathBuf>>::new();
+    let directories = fs::read_dir(&fingerprints)
         .unwrap()
         .filter_map(Result::ok)
         .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    for directory in &directories {
+        for entry in fs::read_dir(directory).unwrap().filter_map(Result::ok) {
+            let path = entry.path();
+            let Some(name) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix("lib-"))
+            else {
+                continue;
+            };
+            if name.contains('.') {
+                continue;
+            }
+            let Ok(contents) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(value) = u64::from_str_radix(contents.trim(), 16) else {
+                continue;
+            };
+            index
+                .entry((name.to_owned(), value.swap_bytes()))
+                .or_default()
+                .push(path.with_extension("json"));
+        }
+    }
+    let executable = std::env::current_exe().unwrap();
+    let (_, hash) = executable
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .rsplit_once('-')
+        .unwrap();
+    let mut roots = directories
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(&format!("-{hash}"))
+        })
+        .flat_map(|path| {
+            fs::read_dir(path)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+        })
         .filter(|path| {
             path.extension()
-                .is_some_and(|extension| extension == "rlib")
-                && path
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        roots.len(),
+        1,
+        "test dependency fingerprint is ambiguous: {roots:?}"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    let mut found = std::collections::BTreeSet::new();
+    while let Some(path) = roots.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let data: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for dependency in data["deps"].as_array().unwrap() {
+            let name = dependency[1].as_str().unwrap();
+            let fingerprint = dependency[3].as_u64().unwrap();
+            let Some(candidates) = index.get(&(name.to_owned(), fingerprint)) else {
+                continue;
+            };
+            assert_eq!(
+                candidates.len(),
+                1,
+                "dependency fingerprint is ambiguous: {name}"
+            );
+            let metadata = &candidates[0];
+            if name == crate_name {
+                let (_, artifact) = metadata
+                    .parent()
+                    .unwrap()
                     .file_name()
                     .unwrap()
-                    .to_string_lossy()
-                    .starts_with(&format!("lib{crate_name}-"))
-        })
-        .collect();
-    candidates.sort_by_key(|path| path.metadata().unwrap().modified().unwrap());
-    candidates
-        .pop()
-        .unwrap_or_else(|| panic!("missing fixture dependency {crate_name}"))
+                    .to_str()
+                    .unwrap()
+                    .rsplit_once('-')
+                    .unwrap();
+                let library = dependencies.join(format!("lib{crate_name}-{artifact}.rlib"));
+                assert!(
+                    library.is_file(),
+                    "resolved dependency is missing: {}",
+                    library.display()
+                );
+                found.insert(library);
+            }
+            roots.push(metadata.clone());
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "no unique resolved fixture dependency for {crate_name}: {found:?}"
+    );
+    found.pop_first().unwrap()
 }
 
 fn provider(directory: &Path) -> PathBuf {
@@ -433,6 +528,7 @@ fn second() -> str {
     Foreign::zero<str>()
     where fn local() -> int { 2 }
 }
+
 pub fn test_native() {
     assert(first() == 0 && second() == "")
     assert(Foreign::zero<int>() == 0)
@@ -447,6 +543,31 @@ pub fn test_native() {
     assert(Foreign::mark<Callback>() == 77)
 }
 "#,
+        "returned-unit",
+    );
+}
+
+#[test]
+fn computed_foreign_instance_bases_run_once_before_written_operands() {
+    let case = ril_test::case_by_id(
+        "tests/regressions/callable-instances.ril::foreign-runtime-selection-pointer64",
+    );
+    let declaration = case
+        .files
+        .iter()
+        .find(|file| file.name == "foreign.d.ril")
+        .unwrap();
+    let source = ril_test::case_source(
+        "tests/regressions/callable-instances.ril::foreign-runtime-selection-pointer64",
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let executable = provider(directory.path());
+    execute(
+        directory.path(),
+        &executable,
+        std::str::from_utf8(&declaration.bytes).unwrap(),
+        &[("identity", "echo"), ("zero", "zero"), ("number", "number")],
+        source,
         "returned-unit",
     );
 }

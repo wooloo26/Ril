@@ -29,6 +29,11 @@ pub enum ExprKind {
     ConstRef(ConstRef),
     Literal(Literal),
     Name(String),
+    /// Evaluate the callable once, then select code while retaining its environment.
+    Instantiate {
+        base: Box<Expr>,
+        choices: Vec<(String, String)>,
+    },
     Tuple(Vec<Expr>),
     Array(Vec<Expr>),
     Map(Vec<(Expr, Expr)>),
@@ -191,6 +196,8 @@ pub enum FunctionRole {
     Ordinary,
     Handler,
     Synthetic,
+    /// A value-level generic template. It has identity but no executable body.
+    Template,
 }
 
 #[derive(Debug, Clone)]

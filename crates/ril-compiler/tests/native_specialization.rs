@@ -43,14 +43,18 @@ fn main(){
 }
 
 #[test]
-fn extracted_or_uninstantiated_symbolic_callables_do_not_borrow_a_nearby_instance() {
-    for source in [
-        "eff Read<T>{get()->T}\nfn read<T>(value:T)->T @Read<T>{Read<T>::get()}\nfn main(){}",
-        "eff Read<T>{get()->T}\nfn read<T>(value:T)->T @Read<T>{Read<T>::get()}\nfn main(){with Read<int>::get()->resume 7;assert(read(0)==7);let stored=read;assert(stored(0)==7)}",
-    ] {
-        let verified = Session::new(source.as_bytes().to_vec()).verify().unwrap();
-        let result = ril_compiler::lower::lower_core(&verified);
-        assert!(result.is_err(), "{source}: {result:?}");
+fn template_values_and_stored_calls_keep_their_own_instances() {
+    for case in ["unused-templates-pointer64", "nearby-instance-pointer64"] {
+        let source =
+            ril_test::case_source(&format!("tests/regressions/callable-instances.ril::{case}"));
+        let result = core(source);
+        assert!(
+            result
+                .functions
+                .iter()
+                .any(|f| f.role == ril_ir::core::FunctionRole::Template)
+        );
+        ril_codegen::lower::lower_native(&result).unwrap();
     }
 }
 

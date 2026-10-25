@@ -207,7 +207,9 @@ fn visit_expr<'a>(expr: &'a Expr, visit: &mut impl FnMut(&'a Expr) -> bool) {
                 }
             }
         }
-        ExprKind::Unary { operand, .. } => visit_expr(operand, visit),
+        ExprKind::Unary { operand, .. } | ExprKind::Instantiate { base: operand, .. } => {
+            visit_expr(operand, visit)
+        }
         ExprKind::Binary { left, right, .. } => {
             visit_expr(left, visit);
             visit_expr(right, visit)
@@ -418,9 +420,9 @@ fn free_names(expr: &Expr, bound: &BTreeSet<String>, free: &mut BTreeSet<String>
                 }
             }
         }
-        ExprKind::Unary { operand, .. } | ExprKind::Field { base: operand, .. } => {
-            free_names(operand, bound, free)
-        }
+        ExprKind::Unary { operand, .. }
+        | ExprKind::Field { base: operand, .. }
+        | ExprKind::Instantiate { base: operand, .. } => free_names(operand, bound, free),
         ExprKind::Binary { left, right, .. }
         | ExprKind::Index {
             base: left,
@@ -876,6 +878,20 @@ pub(crate) fn emit_managed(
     emitter.raw("ril_rt_enter", &[])?;
     emitter.root(environment)?;
     emitter.root(arguments)?;
+    if function.role == core::FunctionRole::Template {
+        let identity = emitter.i64(i64::from(function.definition.0));
+        let result = emitter.handle("ril_rt_uninstantiated_callable", &[identity])?;
+        let result = emitter
+            .raw("ril_rt_leave", &[result])?
+            .expect("leave result");
+        emitter.builder.ins().return_(&[result]);
+        emitter.switch(failure);
+        let zero = emitter.i64(0);
+        let result = emitter.raw("ril_rt_leave", &[zero])?.expect("leave result");
+        emitter.builder.ins().return_(&[result]);
+        emitter.builder.seal_all_blocks();
+        return Ok(());
+    }
     let captures = emitter
         .program
         .functions
@@ -1893,6 +1909,39 @@ impl Emitter<'_, '_> {
             )),
             ExprKind::Literal(literal) => self.literal(literal),
             ExprKind::Name(name) => self.name(name),
+            ExprKind::Instantiate { base, choices } => {
+                if choices.is_empty()
+                    || choices
+                        .iter()
+                        .map(|(source, _)| source)
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        != choices.len()
+                {
+                    return Err(BackendError::InvalidIr(
+                        "callable instantiation requires unique code choices".into(),
+                    ));
+                }
+                let base = self.expr(base)?;
+                if !self.reachable {
+                    return Ok(base);
+                }
+                let mut mappings = Vec::new();
+                for (source, target) in choices {
+                    let mut pair = Vec::new();
+                    for name in [source, target] {
+                        let function =
+                            self.program.functions.get(name).cloned().ok_or_else(|| {
+                                BackendError::InvalidIr(format!("missing callable instance {name}"))
+                            })?;
+                        let environment = self.handle("ril_rt_unit", &[])?;
+                        pair.push(self.callable_value(&function, environment)?);
+                    }
+                    mappings.push(self.sequence(1, &pair)?);
+                }
+                let mappings = self.sequence(1, &mappings)?;
+                self.handle("ril_rt_callable_instantiate", &[base, mappings])
+            }
             ExprKind::Tuple(items) | ExprKind::Array(items) => {
                 let mut values = Vec::new();
                 for item in items {
@@ -2579,6 +2628,8 @@ fn runtime_signature(name: &str) -> Result<(Vec<Type>, Option<Type>), BackendErr
         }
         "ril_rt_cps_charge" => (vec![w, i], Some(i)),
         "ril_rt_callable_with_budget" => (vec![i, i, i, w], Some(i)),
+        "ril_rt_callable_instantiate" => (vec![i, i], Some(i)),
+        "ril_rt_uninstantiated_callable" => (vec![i], Some(i)),
         "ril_rt_cps_callable"
         | "ril_rt_cps_retain"
         | "ril_rt_cps_continuation"

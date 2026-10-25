@@ -19,6 +19,7 @@ impl Checker {
             return false;
         };
         let index = *index;
+        let base = packet.value.callables[0].clone();
         let info = self.functions[index].clone();
         if info.syntax.body.is_none() {
             return false;
@@ -169,6 +170,23 @@ impl Checker {
                 )];
                 if let Err(error) = packet.set_current_type(CapturedSource::Known(source)) {
                     packet.fail_current_source(error);
+                } else if let Some(source) = syntax.hir_id
+                    && let Some(activation) = self.application_effect.current_activation()
+                {
+                    let context =
+                        self.application_effect.activations[activation.0 as usize].context;
+                    self.callable_instantiations
+                        .push(crate::sema::CallableInstantiation {
+                            source,
+                            context,
+                            base,
+                            result: packet.value.callables[0].clone(),
+                        });
+                } else {
+                    self.unsupported(
+                        syntax.span,
+                        "callable instantiation has no resolved operation identity",
+                    );
                 }
             }
             Err(error) => {

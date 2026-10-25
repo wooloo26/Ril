@@ -8,7 +8,7 @@ fn verified(source: &str) -> ril_compiler::hir::VerifiedProgram {
 }
 
 #[test]
-fn same_spelled_binders_remain_distinct_and_native_requires_specialization() {
+fn same_spelled_binders_remain_distinct_inside_nonexecutable_templates() {
     let program = verified(
         "eff Read<T>{get()->T}\nfn first<T>()->T @Read<T>{Read<T>::get()}\nfn second<T>()->T @Read<T>{Read<T>::get()}",
     );
@@ -16,11 +16,13 @@ fn same_spelled_binders_remain_distinct_and_native_requires_specialization() {
     assert_eq!(instances.len(), 2);
     assert_ne!(instances[0].key, instances[1].key);
     assert!(instances.iter().all(|instance|matches!(&instance.key.arguments[..],[ArgumentKey::Binder {identity,..}] if program.facts().generic_binders.contains_key(identity))));
+    let core = ril_compiler::lower::lower_core(&program).unwrap();
+    assert!(core.metadata.specializations.is_empty());
+    assert_eq!(core.functions.len(), 2);
     assert!(
-        ril_compiler::lower::lower_core(&program)
-            .unwrap_err()
-            .detail
-            .contains("specialization")
+        core.functions
+            .iter()
+            .all(|f| f.role == ril_ir::core::FunctionRole::Template)
     );
 }
 

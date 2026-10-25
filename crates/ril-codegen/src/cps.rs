@@ -346,7 +346,7 @@ fn lower_options(
     let event = match function.role {
         core::FunctionRole::Ordinary => Some(core::ChargeEvent::FunctionEntry),
         core::FunctionRole::Handler => Some(core::ChargeEvent::HandlerEntry),
-        core::FunctionRole::Synthetic => None,
+        core::FunctionRole::Synthetic | core::FunctionRole::Template => None,
     };
     let body = builder.charge(event, function.span, body);
     // Omitted defaults are argument evaluation, before logical body entry.
@@ -937,6 +937,21 @@ impl Builder {
                     next,
                 );
                 self.expr(operand, &value, compute)
+            }
+            ExprKind::Instantiate { base, choices } => {
+                let value = self.temporary();
+                let compute = self.assign_result(
+                    destination,
+                    expression(
+                        ExprKind::Instantiate {
+                            base: Box::new(name(&value, base.span)),
+                            choices: choices.clone(),
+                        },
+                        span,
+                    ),
+                    next,
+                );
+                self.expr(base, &value, compute)
             }
             ExprKind::Binary {
                 operator,
@@ -2069,9 +2084,9 @@ fn walk_expr(expr: &Expr, visit: &mut impl FnMut(&Expr)) {
                 }
             }
         }
-        ExprKind::Unary { operand, .. } | ExprKind::Field { base: operand, .. } => {
-            walk_expr(operand, visit)
-        }
+        ExprKind::Unary { operand, .. }
+        | ExprKind::Field { base: operand, .. }
+        | ExprKind::Instantiate { base: operand, .. } => walk_expr(operand, visit),
         ExprKind::Binary { left, right, .. }
         | ExprKind::Budget {
             limit: left,

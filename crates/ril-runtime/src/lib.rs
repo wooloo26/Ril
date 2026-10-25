@@ -4,6 +4,7 @@ pub use ril_runtime_api as api;
 mod activation;
 pub mod budget;
 pub mod byte_string;
+mod callable;
 pub mod channel;
 mod channel_runtime;
 pub mod collections;

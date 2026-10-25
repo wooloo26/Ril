@@ -1024,6 +1024,18 @@ pub extern "C" fn ril_rt_callable_environment(value: u64) -> u64 {
     ril_rt_environment(value)
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn ril_rt_callable_instantiate(value: u64, choices: u64) -> u64 {
+    handle(|runtime| runtime.instantiate_callable(Handle(value), Handle(choices)))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn ril_rt_uninstantiated_callable(template: u64) -> u64 {
+    handle(|_| {
+        Err(RuntimeError::internal(format!(
+            "uninstantiated callable template {template} was invoked"
+        )))
+    })
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn ril_rt_clone(value: u64, _immutable: u32) -> u64 {
     handle(|runtime| runtime.copy(Handle(value)))
 }

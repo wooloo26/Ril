@@ -228,3 +228,204 @@ fn id<T>(value: T) -> T { value }
 fn invalid() { let items: [3]int = [1, 2, 3]; let value = id<[2]int>(items) }
 --@ end-file
 --@ end-case
+
+--@ source: runtime-selection
+--@ file: source.ril
+eff Read<T> { get() -> T }
+eff Mark<T> { touch() -> () }
+var trace = 0
+fn read<T>() -> T @Read<T> { Read<T>::get() }
+fn second<T, U>(first: T, other: U) -> U @Mark<T> { Mark<T>::touch(); other }
+pub fn test_instances() &{mut trace} {
+    with Read<int>::get() -> resume 7
+    with Read<str>::get() -> resume "seven"
+    with Mark<int>::touch() -> resume ()
+    trace = 0
+    let generic = read
+    let integer = ({ trace = trace * 10 + 1; generic })<int>
+    let text = ({ trace = trace * 10 + 2; generic })<str>
+    assert(integer() == 7 && text() == "seven" && trace == 12)
+    let partial = second<int>
+    let alias = partial
+    assert(alias(1, "two") == "two")
+    let finished = partial<bool>
+    assert(finished(2, true))
+}
+fn main() &{mut trace} { test_instances() }
+--@ end-file
+--@ end-source
+
+--@ case: runtime-selection-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: runtime-selection-native
+--@ use-source: runtime-selection
+--@ end-case
+
+--@ case: runtime-selection-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: runtime-selection-native
+--@ use-source: runtime-selection
+--@ end-case
+
+--@ case: runtime-selection-native
+--@ mode: run-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ entry: test_instances
+--@ use-source: runtime-selection
+--@ end-case
+
+--@ source: nearby-instance
+--@ file: source.ril
+eff Read<T> { get() -> T }
+fn read<T>(value: T) -> T @Read<T> { Read<T>::get() }
+pub fn test_instances() {
+    with Read<int>::get() -> resume 7
+    with Read<str>::get() -> resume "seven"
+    assert(read(0) == 7)
+    let stored = read
+    assert(stored("") == "seven")
+}
+fn main() { test_instances() }
+--@ end-file
+--@ end-source
+
+--@ case: nearby-instance-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#effect-handlers
+--@ companion: nearby-instance-native
+--@ use-source: nearby-instance
+--@ end-case
+
+--@ case: nearby-instance-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#effect-handlers
+--@ companion: nearby-instance-native
+--@ use-source: nearby-instance
+--@ end-case
+
+--@ case: nearby-instance-native
+--@ mode: run-pass
+--@ spec: SPEC#effect-handlers
+--@ entry: test_instances
+--@ use-source: nearby-instance
+--@ end-case
+
+--@ source: unused-templates
+--@ file: source.ril
+eff Read<T> { get() -> T }
+fn first<T>() -> T @Read<T> { Read<T>::get() }
+fn second<T>() -> T @Read<T> { Read<T>::get() }
+fn read<T>(value: T) -> T @Read<T> { Read<T>::get() }
+fn discarded<T>() { let unused = first<T> }
+pub fn test_instances() { let unused = read; assert(true) }
+fn main() { test_instances() }
+--@ end-file
+--@ end-source
+
+--@ case: unused-templates-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: unused-templates-native
+--@ use-source: unused-templates
+--@ end-case
+
+--@ case: unused-templates-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: unused-templates-native
+--@ use-source: unused-templates
+--@ end-case
+
+--@ case: unused-templates-native
+--@ mode: run-pass
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ entry: test_instances
+--@ use-source: unused-templates
+--@ end-case
+
+--@ source: instantiation-budget
+--@ file: source.ril
+eff Read<T> { get() -> T }
+fn read<T>() -> T @Read<T> { Read<T>::get() }
+fn no_work<T>() -> int { let unused = read<T>; 7 }
+pub fn test_instances() {
+    let selected = no_work<int>
+    let limited = { with Div::exhausted() -> 99; Div::budget(1, selected) }
+    let stopped = { with Div::exhausted() -> 99; Div::budget(0, selected) }
+    assert(limited == 7 && stopped == 99)
+}
+fn main() { test_instances() }
+--@ end-file
+--@ end-source
+
+--@ case: instantiation-budget-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#finite-evaluation-with-div
+--@ companion: instantiation-budget-native
+--@ use-source: instantiation-budget
+--@ end-case
+
+--@ case: instantiation-budget-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#finite-evaluation-with-div
+--@ companion: instantiation-budget-native
+--@ use-source: instantiation-budget
+--@ end-case
+
+--@ case: instantiation-budget-native
+--@ mode: run-pass
+--@ spec: SPEC#finite-evaluation-with-div
+--@ entry: test_instances
+--@ use-source: instantiation-budget
+--@ end-case
+
+--@ source: foreign-runtime-selection
+--@ file: root.ril
+use foreign
+var trace = 0
+fn mark(digit: int) -> int &{mut trace} { trace = trace * 10 + digit; digit }
+pub fn test_native() &{mut trace} {
+    trace = 0
+    let generic = Foreign::identity
+    let selected = ({ mark(1); generic })<int>
+    assert(trace == 1)
+    assert(selected(mark(2)) == 2 && trace == 12)
+    let integer = ({ mark(3); Foreign::zero })<int>
+    assert(integer() == 0 && trace == 123)
+    let constant = ({ mark(4); Foreign::number })<7>
+    assert(constant() == 7 && trace == 1234)
+    let piped = mark(5) |> ({ mark(6); Foreign::identity })<int>
+    assert(piped == 5 && trace == 123456)
+}
+--@ end-file
+--@ file: foreign.d.ril
+pub fn identity<T>(value: T) -> T
+pub fn zero<T>() -> T
+pub fn number<n: int>() -> int
+--@ end-file
+--@ end-source
+
+--@ case: foreign-runtime-selection-pointer32
+--@ mode: check-pass
+--@ target: pointer32
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ companion: foreign-runtime-selection-pointer64
+--@ use-source: foreign-runtime-selection
+--@ end-case
+
+--@ case: foreign-runtime-selection-pointer64
+--@ mode: check-pass
+--@ target: pointer64
+--@ spec: SPEC#generic-parameters-defaults-and-value-sorts
+--@ use-source: foreign-runtime-selection
+--@ end-case

@@ -58,6 +58,23 @@ fn instances_survive_storage_aliases_defaults_products_and_capture() {
 }
 
 #[test]
+fn runtime_instantiation_preserves_computation_and_partial_choices() {
+    for case in [
+        "runtime-selection-pointer64",
+        "nearby-instance-pointer64",
+        "unused-templates-pointer64",
+        "instantiation-budget-pointer64",
+    ] {
+        for target in ["pointer32", "pointer64"] {
+            verified(
+                &format!("tests/regressions/callable-instances.ril::{case}"),
+                target,
+            );
+        }
+    }
+}
+
+#[test]
 fn phantom_selections_remain_distinct_without_data_parameters() {
     for target in ["pointer32", "pointer64"] {
         let facts = verified(

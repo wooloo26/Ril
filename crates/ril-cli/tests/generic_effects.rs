@@ -110,27 +110,8 @@ fn escaped_generic_nested_handlers_keep_their_metered_entries() {
 }
 
 #[test]
-fn an_unclosed_generic_closure_keeps_its_specialization_boundary() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("unclosed.ril");
-    fs::write(
-        &path,
-        ril_test::case_source("tests/regressions/closures.ril::unclosed"),
-    )
-    .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_ril"))
-        .arg("test")
-        .arg(path)
-        .args(["--entry", "test_native", "--json"])
-        .output()
-        .unwrap();
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["status"], "not-implemented", "{report}");
-    assert!(
-        report["reason"]["detail"]
-            .as_str()
-            .unwrap()
-            .contains("specialization"),
-        "{report}"
-    );
+fn an_unused_generic_closure_remains_a_nonexecuting_template() {
+    executes(ril_test::case_source(
+        "tests/regressions/closures.ril::unclosed",
+    ));
 }

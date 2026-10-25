@@ -815,11 +815,10 @@ impl Evaluator {
                             self.install_environment(saved);
                             *arguments = normalized?;
                         }
-                    } else {
-                        for argument in arguments {
-                            self.transform_type(argument, symbolic)?;
-                        }
                     }
+                    // A computed callee's declaration determines argument sorts.
+                    // Its static arguments are elaborated by instantiation after
+                    // resolving the actual callable; values are not bare types.
                 }
                 ExprKind::Block(block) | ExprKind::Loop(block) => {
                     self.transform_child_block(block, output, symbolic)?;

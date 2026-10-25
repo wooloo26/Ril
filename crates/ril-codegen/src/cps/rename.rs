@@ -322,6 +322,10 @@ impl Rename {
             },
             ExprKind::Charge(event) => ExprKind::Charge(*event),
             ExprKind::Name(name) => ExprKind::Name(env.get(name).unwrap_or(name).clone()),
+            ExprKind::Instantiate { base, choices } => ExprKind::Instantiate {
+                base: Box::new(self.expr(base, env)?),
+                choices: choices.clone(),
+            },
             ExprKind::Literal(value) => ExprKind::Literal(value.clone()),
             ExprKind::Tuple(items) => ExprKind::Tuple(self.items(items, env)?),
             ExprKind::Array(items) => ExprKind::Array(self.items(items, env)?),

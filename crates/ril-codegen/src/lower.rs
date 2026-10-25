@@ -56,7 +56,7 @@ pub fn lower_native_with_entry(
                 format!("entry function {entry} was not found"),
             )
         })?;
-    if !selected.parameters.is_empty() {
+    if selected.role == core::FunctionRole::Template || !selected.parameters.is_empty() {
         return Err(NotImplemented::new(
             Stage::Lowering,
             "native entry must take no arguments",
@@ -93,6 +93,9 @@ pub fn lower_native_with_entry(
     );
     if metering {
         for function in &program.functions {
+            if function.role == core::FunctionRole::Template {
+                continue;
+            }
             let mut graph = crate::cps::lower_metered(function)?;
             let name = native::budget_entry_name(&function.name);
             graph.name = name.clone();

@@ -20,9 +20,20 @@ fn site(span: Span) -> Site {
 #[derive(Default)]
 pub(super) struct Plan {
     pub instances: Vec<Instance>,
+    pub stubs: Vec<Stub>,
     pub templates: BTreeSet<DefinitionId>,
     calls: BTreeMap<InstanceId, usize>,
-    names: BTreeSet<String>,
+    external_code: BTreeMap<DefinitionId, String>,
+}
+#[derive(Clone, PartialEq, Eq)]
+struct CallableKey {
+    definition: DefinitionId,
+    arguments: Vec<irs::Argument>,
+}
+pub(super) struct Stub {
+    key: CallableKey,
+    pub definition: DefinitionId,
+    pub name: String,
 }
 pub(super) struct Instance {
     pub record: irs::Instance,
@@ -165,11 +176,46 @@ impl Plan {
             }
         }
         let mut plan = Self::default();
+        for function in &facts.functions {
+            if function.syntax.body.is_none() && !function.syntax.generics.is_empty() {
+                plan.templates.insert(function.definition);
+            }
+        }
+        for instance in &facts.external_instances {
+            plan.external_code.insert(
+                facts.functions[instance.callable].definition,
+                instance.syntax.name.clone(),
+            );
+        }
         for name in names {
             let binder = facts.generic_binders.get(&name).ok_or_else(|| {
                 unsupported("symbolic effect instance has no canonical binder owner")
             })?;
             plan.templates.insert(binder.definition);
+        }
+        loop {
+            let before = plan.templates.len();
+            for operation in &facts.callable_instantiations {
+                let Callable::Named(index, Some(instance)) = &operation.result else {
+                    continue;
+                };
+                if !plan.templates.contains(&facts.functions[*index].definition) {
+                    continue;
+                }
+                let mut dependencies = BTreeSet::new();
+                for selection in &instance.selections {
+                    binders(&selection.key, &mut dependencies);
+                }
+                for dependency in dependencies {
+                    let binder = facts.generic_binders.get(&dependency).ok_or_else(|| {
+                        unsupported("callable instantiation has an unresolved binder owner")
+                    })?;
+                    plan.templates.insert(binder.definition);
+                }
+            }
+            if before == plan.templates.len() {
+                break;
+            }
         }
         if plan.templates.is_empty() {
             return Ok(plan);
@@ -191,17 +237,19 @@ impl Plan {
                 .ok_or_else(|| {
                     unsupported("effect specialization template declaration is missing")
                 })?;
-            if info.syntax.body.is_none()
-                || !matches!(info.lexical_owner, None | Some(CallableOwner::Global))
-            {
+            if !matches!(info.lexical_owner, None | Some(CallableOwner::Global)) {
                 return Err(unsupported(
                     "effect specialization requires its nested declaration environment mapping",
                 ));
             }
-            plan.names.insert(info.syntax.name.clone());
         }
         for observed in &facts.effect_invocations {
             if !plan.templates.contains(&observed.function) {
+                continue;
+            }
+            if facts.functions.iter().any(|function| {
+                function.definition == observed.function && function.syntax.body.is_none()
+            }) {
                 continue;
             }
             let Some(invocation) = observed.invocation else {
@@ -309,15 +357,45 @@ impl Plan {
             }
         }
         for &definition in &plan.templates {
-            if !plan
-                .instances
+            let info = facts
+                .functions
                 .iter()
-                .any(|instance| instance.record.template == definition)
-            {
-                return Err(unsupported(
-                    "symbolic effect template has no closed native specialization",
-                ));
+                .find(|f| f.definition == definition)
+                .unwrap();
+            plan.stubs.push(Stub {
+                key: CallableKey {
+                    definition,
+                    arguments: vec![],
+                },
+                definition,
+                name: info.syntax.name.clone(),
+            });
+        }
+        let mut values = Vec::new();
+        for operation in &facts.callable_instantiations {
+            values.extend([&operation.base, &operation.result]);
+        }
+        for call in &facts.copy_invocations {
+            if let Some(callee) = &call.entry.callee {
+                values.extend(&callee.value.callables);
             }
+        }
+        for value in values {
+            let Some(key) = plan.callable_key(facts, value)? else {
+                continue;
+            };
+            if plan.code(&key).is_some() {
+                continue;
+            }
+            let definition = DefinitionId(next);
+            next = next
+                .checked_add(1)
+                .ok_or_else(|| unsupported("callable template identity exhausted"))?;
+            plan.stubs.push(Stub {
+                key,
+                definition,
+                name: format!("\0ril.template.{}", definition.0),
+            });
         }
         defaults::prepare(&mut plan, facts)?;
         closures::prepare(&mut plan, facts)?;
@@ -394,79 +472,138 @@ impl Plan {
         self.instances
             .iter()
             .map(|instance| instance.record.definition.0 + 1)
+            .chain(self.stubs.iter().map(|stub| stub.definition.0 + 1))
             .max()
             .unwrap_or(fallback)
             .max(fallback)
     }
-    pub fn is_template_name(&self, name: &str) -> bool {
-        self.names.contains(name)
+
+    fn callable_key(
+        &self,
+        facts: &SemanticFacts,
+        callable: &Callable,
+    ) -> Result<Option<CallableKey>, NotImplemented> {
+        let Callable::Named(index, instance) = callable else {
+            return Ok(None);
+        };
+        let definition = facts.functions[*index].definition;
+        if !self.templates.contains(&definition) && !self.external_code.contains_key(&definition) {
+            return Ok(None);
+        }
+        let mut arguments = Vec::new();
+        if let Some(instance) = instance {
+            for selection in &instance.selections {
+                if !selection.key.is_closed() {
+                    return Ok(None);
+                }
+                arguments.push(irs::Argument {
+                    definition,
+                    index: selection.index,
+                    key: key(&selection.key)?,
+                });
+            }
+        }
+        Ok(Some(CallableKey {
+            definition,
+            arguments,
+        }))
     }
 
-    pub fn value_target(
+    fn code(&self, key: &CallableKey) -> Option<&str> {
+        if let Some(name) = self.external_code.get(&key.definition) {
+            return Some(name);
+        }
+        self.instances
+            .iter()
+            .find(|instance| {
+                instance.record.template == key.definition
+                    && instance.record.arguments == key.arguments
+            })
+            .map(|instance| instance.record.name.as_str())
+            .or_else(|| {
+                self.stubs
+                    .iter()
+                    .find(|stub| &stub.key == key)
+                    .map(|stub| stub.name.as_str())
+            })
+    }
+
+    pub fn template_function(
+        &self,
+        facts: &SemanticFacts,
+        stub: &Stub,
+    ) -> Result<ir::Function, NotImplemented> {
+        let info = facts
+            .functions
+            .iter()
+            .find(|f| f.definition == stub.key.definition)
+            .ok_or_else(|| unsupported("callable template declaration is missing"))?;
+        Ok(ir::Function {
+            role: ir::FunctionRole::Template,
+            definition: stub.definition,
+            name: stub.name.clone(),
+            generic_parameters: vec![],
+            parameters: info
+                .syntax
+                .parameters
+                .iter()
+                .map(|_| ir::Parameter {
+                    pattern: ir::Pattern::Wildcard,
+                    default: None,
+                })
+                .collect(),
+            body: ir::Block::default(),
+            span: info.syntax.span,
+        })
+    }
+
+    pub fn value_mappings(
         &self,
         facts: &SemanticFacts,
         owner: Option<CallableOwner>,
         source: Option<ril_compiler_core::ids::ExprId>,
-    ) -> Result<Option<String>, NotImplemented> {
-        let Some(source) = source else {
-            return Ok(None);
-        };
-        let mut selected = BTreeSet::new();
-        for observation in &facts.invocation_expressions {
-            if observation.context.owner != owner {
+    ) -> Result<Vec<(String, String)>, NotImplemented> {
+        let mut mappings = BTreeMap::new();
+        for operation in &facts.callable_instantiations {
+            if Some(operation.source) != source || operation.context.owner != owner {
                 continue;
             }
-            let fact = &facts.expressions[observation.expression];
-            if fact.source_id != Some(source) {
+            let Some(base) = self.callable_key(facts, &operation.base)? else {
                 continue;
-            }
-            for callable in &fact.value.callables {
-                let Callable::Named(_, Some(instance)) = callable else {
-                    continue;
-                };
-                if !self.templates.contains(&instance.target) {
-                    continue;
-                }
-                let arguments = instance
-                    .selections
-                    .iter()
-                    .map(|s| {
-                        key(&s.key).map(|key| irs::Argument {
-                            definition: instance.target,
-                            index: s.index,
-                            key,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>();
-                let Ok(arguments) = arguments else { continue };
-                for compiled in &self.instances {
-                    if compiled.record.template == instance.target
-                        && compiled.record.arguments == arguments
-                    {
-                        selected.insert(compiled.record.name.clone());
-                    }
-                }
+            };
+            let target = self
+                .callable_key(facts, &operation.result)?
+                .ok_or_else(|| {
+                    unsupported("callable instantiation still has unselected static arguments")
+                })?;
+            let base = self
+                .code(&base)
+                .ok_or_else(|| unsupported("callable instance base has no code identity"))?;
+            let target = self
+                .code(&target)
+                .ok_or_else(|| unsupported("callable instance target has no code identity"))?;
+            if mappings
+                .insert(base.to_owned(), target.to_owned())
+                .is_some_and(|old| old != target)
+            {
+                return Err(unsupported(
+                    "one callable template has different static instances at an unspecialized operation",
+                ));
             }
         }
-        if selected.len() > 1 {
-            return Err(unsupported(
-                "one unspecialized callable value has different static instances",
-            ));
-        }
-        Ok(selected.into_iter().next())
+        Ok(mappings.into_iter().collect())
     }
 
-    pub fn call_target(
+    pub fn call_mappings(
         &self,
         facts: &SemanticFacts,
         owner: Option<CallableOwner>,
         context: Option<usize>,
         default_context: Option<u32>,
         span: Span,
-    ) -> Result<Option<(DefinitionId, String)>, NotImplemented> {
+    ) -> Result<Vec<(String, String)>, NotImplemented> {
         self.validate_default_applications(facts, owner, context, default_context, span)?;
-        let mut selected = BTreeSet::new();
-        let mut indirect = true;
+        let mut selected = BTreeMap::new();
         for observed in &facts.invocation_calls {
             if observed.caller_owner != owner {
                 continue;
@@ -518,23 +655,36 @@ impl Plan {
                     "generic effect call has no closed native instance for this invocation",
                 ));
             };
-            indirect &= call.instance.is_some();
-            selected.insert(index);
+            let source = CallableKey {
+                definition: call.target,
+                arguments: call
+                    .instance
+                    .iter()
+                    .flat_map(|v| &v.selections)
+                    .map(|s| {
+                        key(&s.key).map(|key| irs::Argument {
+                            definition: call.target,
+                            index: s.index,
+                            key,
+                        })
+                    })
+                    .collect::<Result<_, _>>()?,
+            };
+            let source = self
+                .code(&source)
+                .ok_or_else(|| unsupported("call entry has no callable code identity"))?;
+            let target = &self.instances[index].record.name;
+            if source != target
+                && selected
+                    .insert(source.to_owned(), target.clone())
+                    .is_some_and(|old| old != *target)
+            {
+                return Err(unsupported(
+                    "one input callable selects different static instances at an unspecialized call",
+                ));
+            }
         }
-        if indirect {
-            return Ok(None);
-        }
-        if selected.len() > 1 {
-            return Err(unsupported(
-                "one unspecialized call site selects different generic effect instances",
-            ));
-        }
-        Ok(selected.into_iter().next().map(|index| {
-            (
-                self.instances[index].record.template,
-                self.instances[index].record.name.clone(),
-            )
-        }))
+        Ok(selected.into_iter().collect())
     }
 
     pub fn facts(
@@ -622,6 +772,9 @@ impl Plan {
         let owner = Some(selection.owner());
         let matches = |context| selection.matches(context, facts);
         let mut selected = facts.clone();
+        selected
+            .callable_instantiations
+            .retain(|operation| matches(operation.context));
         selected.expressions = facts
             .invocation_expressions
             .iter()

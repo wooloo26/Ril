@@ -124,9 +124,9 @@ duplicate source trees and historical verification reports.
   inference across defaults, callbacks and control transfers.
 - Run static execution on the eligible elaborated operations used by compilation.
   Finish Const/Key argument and extent inference, selected numeric representation,
-  and callable instantiation without AST reconstruction. Complete foreign,
-  computed and partially selected effectful callable lowering through the same
-  instance model.
+  and callable instantiation queries. Instantiate foreign headers and defaults
+  from original declarations and static choices, removing generated declaration
+  ASTs. Complete nested/captured callable instance owner mappings.
 - Move remaining collection/iterator/order and resource/I/O algorithms into
   ordinary library sources in `crates/ril-stdlib/modules/`. Delete each replaced
   checker simulation, static implementation, late backend body generator and

@@ -413,9 +413,9 @@ impl Lower {
                     }
                 }
             }
-            ExprKind::Unary { operand, .. } | ExprKind::Field { base: operand, .. } => {
-                self.expression(operand)?
-            }
+            ExprKind::Unary { operand, .. }
+            | ExprKind::Field { base: operand, .. }
+            | ExprKind::Instantiate { base: operand, .. } => self.expression(operand)?,
             ExprKind::Binary { left, right, .. }
             | ExprKind::Index {
                 base: left,

@@ -107,19 +107,6 @@ pub fn lower_core_for(
         default_context: None,
         nonretaining_adapters: Vec::new(),
         callable_owner: Some(CallableOwner::Global),
-        external_generic_names: program
-            .syntax()
-            .statements
-            .iter()
-            .filter_map(|statement| match &statement.kind {
-                ast::StmtKind::Function(function)
-                    if function.body.is_none() && !function.generics.is_empty() =>
-                {
-                    Some(function.name.clone())
-                }
-                _ => None,
-            })
-            .collect(),
         facts: program.facts(),
         all_facts: program.facts(),
         call_signatures: vec![],
@@ -192,6 +179,9 @@ pub fn lower_core_for(
             }
         }
     }
+    for stub in &specializations.stubs {
+        functions.push(specializations.template_function(program.facts(), stub)?);
+    }
     for (index, instance) in specializations.instances.iter().enumerate() {
         let facts = specializations.facts(program.facts(), index)?;
         let syntax = program
@@ -213,7 +203,6 @@ pub fn lower_core_for(
             default_context: None,
             nonretaining_adapters: vec![],
             callable_owner: Some(CallableOwner::Global),
-            external_generic_names: lower.external_generic_names.clone(),
             facts: &facts,
             all_facts: program.facts(),
             call_signatures: vec![],
@@ -289,7 +278,6 @@ struct Lower<'a> {
     default_context: Option<u32>,
     nonretaining_adapters: Vec<ril_ir::metadata::NonRetainingAdapter>,
     callable_owner: Option<CallableOwner>,
-    external_generic_names: std::collections::BTreeSet<String>,
     facts: &'a crate::sema::SemanticFacts,
     all_facts: &'a crate::sema::SemanticFacts,
     call_signatures: Vec<ir::CallSignature>,
@@ -396,37 +384,23 @@ impl Lower<'_> {
                 arguments,
             });
         }
-        let selected = self.specializations.call_target(
+        let choices = self.specializations.call_mappings(
             self.facts,
             self.callable_owner,
             self.specialization_context,
             self.default_context,
             application.span,
         )?;
-        let callee = if let Some((definition, name)) = selected {
-            let mut base = callee;
-            while let ast::ExprKind::Generic { base: inner, .. } = &base.kind {
-                base = inner;
-            }
-            let actual = expression_name(base);
-            let declared = self
-                .facts
-                .functions
-                .iter()
-                .find(|info| info.definition == definition)
-                .map(|info| info.syntax.name.as_str());
-            if actual.as_deref() != declared {
-                return Err(unsupported(
-                    "generic effect call requires its exact direct declaration reference",
-                ));
-            }
-            ir::Expr {
+        let mut callee = self.expression(callee)?;
+        if !choices.is_empty() {
+            callee = ir::Expr {
                 span: callee.span,
-                kind: ir::ExprKind::Name(name),
-            }
-        } else {
-            self.expression(callee)?
-        };
+                kind: ir::ExprKind::Instantiate {
+                    base: Box::new(callee),
+                    choices,
+                },
+            };
+        }
         Ok(ir::ExprKind::Call {
             callback_entry: false,
             callee: Box::new(callee),
@@ -535,7 +509,6 @@ impl Lower<'_> {
             default_context: Some(parameter_index),
             nonretaining_adapters: vec![],
             callable_owner: self.callable_owner,
-            external_generic_names: self.external_generic_names.clone(),
             facts: &facts,
             all_facts: self.all_facts,
             call_signatures: vec![],
@@ -953,68 +926,27 @@ impl Lower<'_> {
             ast::ExprKind::Name(name) if self.facts.constant_pool.references.contains_key(name) => {
                 ir::ExprKind::ConstRef(self.facts.constant_pool.references[name])
             }
-            ast::ExprKind::Name(name) if self.specializations.is_template_name(name) => {
-                return Err(unsupported(
-                    "generic effect callable extraction requires a closed callable-instance certificate",
-                ));
-            }
-            ast::ExprKind::Path(path)
-                if self.specializations.is_template_name(&path.join("::")) =>
-            {
-                return Err(unsupported(
-                    "generic effect callable extraction requires a closed callable-instance certificate",
-                ));
-            }
-            ast::ExprKind::Name(name) if self.external_generic_names.contains(name) => {
-                return Err(unsupported(
-                    "foreign generic callable requires a concrete checked static instance",
-                ));
-            }
-            ast::ExprKind::Path(path) if self.external_generic_names.contains(&path.join("::")) => {
-                return Err(unsupported(
-                    "foreign generic callable requires a concrete checked static instance",
-                ));
-            }
             ast::ExprKind::Name(name) => ir::ExprKind::Name(
                 self.runtime_static_key(name, expression.span)?
                     .unwrap_or_else(|| name.clone()),
             ),
             ast::ExprKind::Path(path) => ir::ExprKind::Name(path.join("::")),
             ast::ExprKind::Generic { base, .. } => {
-                if let Some(name) = self.specializations.value_target(
+                let choices = self.specializations.value_mappings(
                     self.facts,
                     self.callable_owner,
                     expression.hir_id,
-                )? {
-                    if !matches!(base.kind, ast::ExprKind::Name(_) | ast::ExprKind::Path(_)) {
-                        return Err(unsupported(
-                            "computed generic callable instantiation must preserve its base evaluation",
-                        ));
-                    }
+                )?;
+                if !choices.is_empty() {
                     return Ok(ir::Expr {
                         span: expression.span,
-                        kind: ir::ExprKind::Name(name),
+                        kind: ir::ExprKind::Instantiate {
+                            base: Box::new(self.expression(base)?),
+                            choices,
+                        },
                     });
                 }
-                let instances: std::collections::BTreeSet<_> = self
-                    .facts
-                    .external_instances
-                    .iter()
-                    .filter(|instance| {
-                        instance.applications.iter().any(|application| {
-                            Some(application.occurrence.source) == expression.hir_id
-                        })
-                    })
-                    .map(|instance| instance.syntax.name.clone())
-                    .collect();
-                if instances.len() > 1 {
-                    return Err(unsupported(
-                        "generic foreign callable has different static instances at one unspecialized source site",
-                    ));
-                }
-                if let Some(name) = instances.into_iter().next() {
-                    ir::ExprKind::Name(name)
-                } else if let Some(name) = self.specialized_builtins.get(&(
+                if let Some(name) = self.specialized_builtins.get(&(
                     expression.span.file.0,
                     expression.span.start,
                     expression.span.end,
@@ -1413,7 +1345,6 @@ impl Lower<'_> {
                         default_context: None,
                         nonretaining_adapters: vec![],
                         callable_owner: owner,
-                        external_generic_names: self.external_generic_names.clone(),
                         facts: &facts,
                         all_facts: self.all_facts,
                         call_signatures: vec![],

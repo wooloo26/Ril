@@ -109,6 +109,7 @@ pub struct SemanticFacts {
     pub closure_invocations: Vec<effect_identity::ClosureInvocation>,
     pub default_uses: Vec<default_uses::DefaultUse>,
     pub call_arguments: Vec<default_uses::CallArguments>,
+    pub callable_instantiations: Vec<CallableInstantiation>,
     pub(crate) constant_pool: std::sync::Arc<crate::static_eval::constants::ConstantPool>,
     pub constant_values: Vec<ConstantValue>,
     pub external_instances: Vec<ExternalInstance>,
@@ -179,6 +180,13 @@ pub struct ConstantValue {
 pub struct ExternalApplication {
     pub occurrence: application_effect::OccurrenceIdentity,
     pub base: ril_compiler_core::ids::EvaluationOccurrenceId,
+}
+#[derive(Debug, Clone)]
+pub struct CallableInstantiation {
+    pub source: ril_compiler_core::ids::ExprId,
+    pub context: effect_identity::InvocationContext,
+    pub base: model::Callable,
+    pub result: model::Callable,
 }
 #[derive(Debug, Clone)]
 pub struct ExternalInstance {

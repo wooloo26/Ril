@@ -77,7 +77,13 @@ fn symbolic_effect_arguments_never_merge_same_spelled_enclosing_binders() {
         program.facts().effect_instances[0].key,
         program.facts().effect_instances[1].key
     );
-    assert!(ril_compiler::lower::lower_core(&program).is_err());
+    let core = ril_compiler::lower::lower_core(&program).unwrap();
+    assert_eq!(core.functions.len(), 2);
+    assert!(
+        core.functions
+            .iter()
+            .all(|f| f.role == ril_ir::core::FunctionRole::Template)
+    );
     let source = "fn example<T>(){let operation=Local<int>::get where eff Local<S>{get()->T}}";
     let outcome = Session::new(source.as_bytes().to_vec()).check();
     assert!(

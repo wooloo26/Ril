@@ -180,6 +180,7 @@ impl Checker {
         let [Callable::Named(id, _)] = value.callables.as_slice() else {
             return false;
         };
+        let base = value.callables[0].clone();
         let original = self.functions[*id].clone();
         let function = &original.syntax;
         if function.body.is_some() || !self.declaration_files.contains(&function.span.file.0) {
@@ -369,6 +370,7 @@ impl Checker {
                 });
             index
         };
+        let source = application.occurrence.source;
         self.external_instances[instance]
             .applications
             .push(application);
@@ -376,6 +378,15 @@ impl Checker {
         value.callables = vec![Callable::Named(instance.callable, None)];
         value.ty = instance.callable_type.clone();
         value.signature = Some(self.callable_signature(instance.syntax.parameters.clone()));
+        if let Some(activation) = self.application_effect.current_activation() {
+            self.callable_instantiations
+                .push(crate::sema::CallableInstantiation {
+                    source,
+                    context: self.application_effect.activations[activation.0 as usize].context,
+                    base,
+                    result: value.callables[0].clone(),
+                });
+        }
         true
     }
 }
