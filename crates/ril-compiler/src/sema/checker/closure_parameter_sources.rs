@@ -1,12 +1,7 @@
 //! Inferred formals retain the real entry graph in the existing Source index.
 //! Their lexical environment remains the closure declaration's environment.
 use super::*;
-use crate::sema::{
-    application_effect::EntryOrigin,
-    default_uses::{ArgumentSource, DefaultOrigin},
-    scopes::ScopeOrigin,
-    source_types::projection_receipts::{self, ProjectionOccurrence, SourceRead},
-};
+use crate::sema::{application_effect::EntryOrigin, scopes::ScopeOrigin};
 
 impl Checker {
     /// A preparation formal has a declaration type before any closure body
@@ -323,16 +318,6 @@ impl Checker {
             return None;
         };
         let call = self.closure_invocations.get(id.0 as usize)?;
-        // Arguments and signature sources are shared. Only a generated
-        // origin owns a vector which this invocation snapshot must copy.
-        let clone_work = match &call.entry.origin {
-            EntryOrigin::Generated { inputs, .. } => inputs.len() + 1,
-            _ => 1,
-        };
-        if !self.application_effect.admit(clone_work) {
-            return Some(Err(SourceTypesError::BudgetExceeded));
-        }
-        let call = call.clone();
         let closure = self.closures.get(call.closure)?;
         let site = self
             .application_effect
@@ -342,22 +327,6 @@ impl Checker {
         let crate::hir::nodes::ExprKind::Lambda { parameters, .. } = &original.kind else {
             return Some(Err(SourceTypesError::Unresolved));
         };
-        let mut admission = WorkLimit::new(16384);
-        if let Err(error) = admission.charge(parameters.len() + self.call_arguments.len()) {
-            return Some(Err(error));
-        }
-        let slots: Vec<_> = parameters.iter().enumerate().filter(|(_, parameter)| {
-            info.pattern == Some(parameter.pattern)
-                && self.semantic_hir.pattern(parameter.pattern).is_some_and(|pattern|
-                    matches!(&pattern.kind, crate::hir::nodes::PatternKind::Name(actual) if actual == name))
-        }).collect();
-        let [(slot, parameter)] = slots.as_slice() else {
-            return None;
-        };
-        if parameter.ty.is_some() {
-            return None;
-        }
-        let slot = *slot;
         if call.id != id
             || call.activation != Some(info.owner)
             || info.context.closure_invocation != Some(id)
@@ -369,141 +338,57 @@ impl Checker {
         {
             return Some(Err(SourceTypesError::Unresolved));
         }
-        Some(match &call.entry.origin {
-            EntryOrigin::Application(event) => (|| {
-                let mut rows = self
-                    .call_arguments
-                    .iter()
-                    .filter(|row| row.source_event == *event);
-                let row = rows.next().ok_or(SourceTypesError::MissingNode)?;
-                if rows.next().is_some() || !row.evaluation_complete {
-                    return Err(SourceTypesError::Unresolved);
-                }
-                let input = match row.slots.get(slot).ok_or(SourceTypesError::MissingNode)? {
-                    ArgumentSource::Supplied => {
-                        let token = row
-                            .supplied
-                            .get(&(slot as u32))
-                            .ok_or(SourceTypesError::MissingNode)?;
-                        let input = self
-                            .call_input_source
-                            .supplied
-                            .get(event)
-                            .and_then(|slots| slots.get(&slot))
-                            .ok_or(SourceTypesError::MissingNode)?;
-                        if input.observation != Some(token.expression) || input.default.is_some() {
-                            return Err(SourceTypesError::Unresolved);
-                        }
-                        input
+        let introducer = info.pattern?;
+        let mut work = WorkLimit::new(16384);
+        let mut selected = None;
+        if !self.application_effect.admit(1 + parameters.len()) {
+            return Some(Err(SourceTypesError::BudgetExceeded));
+        }
+        for (slot, parameter) in parameters.iter().enumerate() {
+            let contains = crate::sema::pattern_sources::contains_binding(
+                &self.semantic_hir,
+                parameter.pattern,
+                introducer,
+                name,
+                &mut work,
+            );
+            match contains {
+                Ok(true) => {
+                    if selected
+                        .replace((slot, parameter.pattern, parameter.ty.is_some()))
+                        .is_some()
+                    {
+                        return Some(Err(SourceTypesError::Unresolved));
                     }
-                    ArgumentSource::Default(id) => {
-                        let receipt = self
-                            .default_uses
-                            .get(id.0 as usize)
-                            .ok_or(SourceTypesError::MissingNode)?;
-                        let input = self
-                            .call_input_source
-                            .defaults
-                            .get(&(*event, slot))
-                            .ok_or(SourceTypesError::MissingNode)?;
-                        if receipt.id != *id
-                            || receipt.origin != DefaultOrigin::Call(*event)
-                            || receipt.parameter as usize != slot
-                            || input.default != Some(*id)
-                            || input.observation != receipt.result_expression
-                        {
-                            return Err(SourceTypesError::Unresolved);
-                        }
-                        input
-                    }
-                    _ => return Err(SourceTypesError::Unresolved),
-                };
-                if input.context != call.entry.caller_context
-                    || input.allocation_epoch > call.entry.allocation_epoch
-                {
-                    return Err(SourceTypesError::Unresolved);
                 }
-                input
-                    .input_source(
-                        SourceTypesRef::Live(self.type_source.storage.live_types()),
-                        &mut admission,
-                    )
-                    .map(|source| source.into_known())
-            })(),
-            EntryOrigin::Generated { .. } => {
-                self.generated_input_source_schema(&call.entry.origin, slot)
+                Ok(false) => {}
+                Err(error) => return Some(Err(error)),
             }
-            EntryOrigin::SignatureProbe(source) => (|| {
-                let mut work = WorkLimit::new(32768);
-                let input = call
-                    .entry
-                    .arguments
-                    .get(slot)
-                    .ok_or(SourceTypesError::MissingNode)?;
-                let schema = source.parameter_schema(slot, input.mode, &mut work)?;
-                self.selected_input_schema(schema, source.environment.clone(), &mut work)
-                    .map(Some)
-            })(),
-            _ => Err(SourceTypesError::Unresolved),
-        })
-    }
-
-    pub(in crate::sema::checker) fn generated_observation_source_schema(
-        &self,
-        observation: ril_compiler_core::ids::EvaluationOccurrenceId,
-        work: &mut WorkLimit,
-    ) -> Option<InputSource> {
-        let fact = self
-            .application_effect
-            .expressions
-            .get(observation.0 as usize)?;
-        let source = fact.source_id?;
-        let plan = match projection_receipts::projection_path(&self.semantic_hir, source, work) {
-            Ok(Some(plan)) => plan,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        Some((|| {
-            let record = self
-                .application_effect
-                .evaluations
-                .get(observation.0 as usize)
-                .ok_or(SourceTypesError::MissingNode)?;
-            let projection = self.source_projection_receipts().project(
-                &plan,
-                ProjectionOccurrence {
-                    identity: record.identity.ok_or(SourceTypesError::MissingNode)?,
-                    context: record.context,
-                    cause: fact.value.cause,
-                },
-                SourceRead::Received,
-                work,
+        }
+        let (slot, root, annotated) = selected?;
+        if annotated {
+            return None;
+        }
+        let packet = call.entry.arguments.get(slot)?.packet.clone();
+        let mut lease = self.application_effect.lease_work(32768);
+        let result = (|| {
+            let source = packet.input_source(
+                SourceTypesRef::Live(self.type_source.storage.live_types()),
+                lease.work(),
             )?;
-            let root = self
-                .application_effect
-                .expressions
-                .get(projection.root.0 as usize)
-                .ok_or(SourceTypesError::MissingNode)?;
-            if root.source_id != Some(plan.root()) || root.value.sources.len() != 1 {
-                return Err(SourceTypesError::Unresolved);
-            }
-            let binding = *root.value.sources.first().unwrap();
-            let info = self
-                .bindings
-                .get(binding)
-                .ok_or(SourceTypesError::MissingNode)?;
-            if info.name != plan.name() {
-                return Err(SourceTypesError::Unresolved);
-            }
-            let Some((schema, environment)) =
-                self.parameter_source_schema_if_known(binding, None, work)?
-            else {
+            let Some(schema) = source.schema else {
                 return Ok(None);
             };
-            Ok(Some((
-                schema.project_steps(&projection.steps, work)?,
-                environment,
-            )))
-        })())
+            let projected = self.project_parameter_source(
+                binding,
+                root,
+                &schema,
+                &source.environment,
+                lease.work(),
+            )?;
+            Ok(projected.map(|schema| (schema, source.environment)))
+        })();
+        let returned = self.application_effect.return_work(lease);
+        Some(result.and_then(|source| returned.map(|()| source)))
     }
 }

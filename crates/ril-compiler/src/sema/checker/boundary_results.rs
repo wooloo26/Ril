@@ -9,6 +9,50 @@ use crate::sema::{
 };
 
 impl Checker {
+    /// Projection creates a borrowed value with an owned view of the selected
+    /// type. It neither rebuilds an annotation nor copies construction rights
+    /// from the enclosing aggregate to the projected payload.
+    pub(super) fn project_evaluated_value(
+        &mut self,
+        input: &EvaluatedValue,
+        path: crate::sema::source_types::SourcePath,
+        value: Value,
+        span: Span,
+    ) -> EvaluatedValue {
+        let mut output =
+            EvaluatedValue::unobserved(value, self.recency_moves.len(), input.source_valid);
+        let mut lease = self.application_effect.lease_work(32768);
+        let projected = (|| {
+            let (schema, environment) = self
+                .owned_result_type(input, lease.work())?
+                .ok_or(SourceTypesError::Unresolved)?;
+            let (schema, environment) =
+                self.selected_input_schema(schema, environment, lease.work())?;
+            let schema = schema.project_steps(&[path], lease.work())?;
+            SourceRef::intern(
+                &schema,
+                environment,
+                self.type_source.storage.live_types_mut(),
+                lease.work(),
+            )
+        })();
+        let returned = self.application_effect.return_work(lease);
+        match projected
+            .and_then(|source| returned.map(|()| source))
+            .and_then(|source| output.set_current_type(CapturedSource::Known(source)))
+        {
+            Ok(()) => {}
+            Err(error) => {
+                self.unsupported(
+                    span,
+                    format!("projected value has no complete input type: {error}"),
+                );
+                output.fail_current_source(error);
+            }
+        }
+        output
+    }
+
     /// Exact compiler-defined types can be interned without any lost source
     /// coordinates. Arrays, callables, open rows, user names and inference
     /// variables deliberately have no such path.

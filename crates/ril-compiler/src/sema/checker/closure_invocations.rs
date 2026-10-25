@@ -115,7 +115,7 @@ impl Checker {
             self.unsupported(site, "callable input recording exhausted its work bound");
             return Value::scalar(Ty::Unknown, None, CauseId(0));
         }
-        let arguments = match self.freeze_entry_arguments(&args) {
+        let arguments = match self.freeze_entry_arguments(&args, &origin) {
             Ok(arguments) => arguments,
             Err(error) => {
                 self.unsupported(site, format!("closure entry admission: {error}"));

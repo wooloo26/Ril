@@ -935,30 +935,6 @@ impl Checker {
         Some(result)
     }
 
-    /// A recorded declaration can be unknown, but an admission failure remains
-    /// an error. The caller must establish the original read occurrence.
-    pub(super) fn recorded_binding_source_schema(
-        &self,
-        binding: BindingId,
-        work: &mut crate::sema::source_types::WorkLimit,
-    ) -> Option<
-        Result<
-            Option<(
-                crate::sema::source_types::SourceSchema,
-                crate::sema::context::FrozenEnvironment,
-            )>,
-            crate::sema::source_types::SourceTypesError,
-        >,
-    > {
-        self.type_source.storage.by_binding.get(&binding)?;
-        Some(
-            self.type_source
-                .storage
-                .types
-                .binding_schema_if_known(binding, None, work),
-        )
-    }
-
     pub(super) fn check_storage_write_source(
         &mut self,
         reception: StoreReception<'_>,

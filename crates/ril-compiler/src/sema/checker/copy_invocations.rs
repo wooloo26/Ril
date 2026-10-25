@@ -327,7 +327,7 @@ impl Checker {
             });
         let instance = InstanceId(self.copy_invocations.len() as u32);
         let mut boundaries = BTreeSet::new();
-        let arguments = match self.freeze_entry_arguments(&args) {
+        let arguments = match self.freeze_entry_arguments(&args, &origin) {
             Ok(arguments) => arguments,
             Err(error) => {
                 self.unsupported(span, format!("named entry graph admission: {error}"));

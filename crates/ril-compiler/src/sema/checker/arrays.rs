@@ -3,6 +3,33 @@
 use super::*;
 
 impl Checker {
+    pub(super) fn install_symbolic_array_lengths(
+        &mut self,
+        shapes: BTreeMap<NodeId, u64>,
+    ) -> Result<(), crate::sema::source_types::SourceTypesError> {
+        use crate::sema::source_types::SourceTypesError;
+        if !self.application_effect.admit(shapes.len()) {
+            return Err(SourceTypesError::BudgetExceeded);
+        }
+        if shapes.iter().any(|(node, length)| {
+            self.array_lengths
+                .get(node)
+                .is_some_and(|prior| prior.is_some_and(|prior| prior != *length))
+        }) {
+            return Err(SourceTypesError::InvalidEvidence(
+                "conflicting declared symbolic array dimensions".into(),
+            ));
+        }
+        for (node, length) in shapes {
+            self.array_lengths.insert(node, Some(length));
+            self.fixed_arrays.insert(node);
+            if length == 1 {
+                self.prove_single_formal_member(node);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn preview_pattern_subject(
         &mut self,
         subject: &Value,
@@ -44,27 +71,12 @@ impl Checker {
         let returned = self.application_effect.return_work(lease);
         match shapes.and_then(|shapes| returned.map(|()| shapes)) {
             Ok(shapes) => {
-                if !self.application_effect.admit(shapes.len()) {
-                    self.unsupported(span, "pattern shape installation exceeded its work bound");
-                    return formal;
-                }
-                if shapes.iter().any(|(node, length)| {
-                    self.array_lengths
-                        .get(node)
-                        .is_some_and(|prior| prior.is_some_and(|prior| prior != *length))
-                }) {
+                if let Err(error) = self.install_symbolic_array_lengths(shapes) {
                     self.unsupported(
                         span,
-                        "pattern Source shape conflicts with an existing symbolic constraint",
+                        format!("pattern symbolic shape installation failed: {error}"),
                     );
                     return formal;
-                }
-                for (node, length) in shapes {
-                    self.array_lengths.insert(node, Some(length));
-                    self.fixed_arrays.insert(node);
-                    if length == 1 {
-                        self.prove_single_formal_member(node);
-                    }
                 }
             }
             Err(error) => self.unsupported(

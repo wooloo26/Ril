@@ -45,10 +45,10 @@ pub(crate) fn assumed_array_lengths(
                             .get(node.0 as usize)
                             .is_some_and(|node| matches!(node.kind, OriginKind::Formal(_)))
                         {
-                            return Err(SourceTypesError::InvalidEvidence(
-                                "a Source assumption cannot select the length of physical storage"
-                                    .into(),
-                            ));
+                            // Physical storage already has its construction and
+                            // mutation history. A declared type refines only
+                            // symbolic inputs, never that independent history.
+                            continue;
                         }
                         if lengths
                             .insert(*node, *length)
@@ -246,8 +246,9 @@ mod tests {
             assumed_array_lengths(&schema, &value, &heap, &fields, &mut WorkLimit::new(0)).is_err()
         );
         heap.nodes[inner_node.0 as usize].kind = OriginKind::Fresh(SiteId(0));
-        assert!(
-            assumed_array_lengths(&schema, &value, &heap, &fields, &mut work).is_err(),
+        assert_eq!(
+            assumed_array_lengths(&schema, &value, &heap, &fields, &mut work).unwrap(),
+            [(outer_node, 0)].into(),
             "a hypothetical type cannot reclassify physical storage"
         );
     }

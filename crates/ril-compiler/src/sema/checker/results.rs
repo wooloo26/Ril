@@ -232,17 +232,22 @@ impl Checker {
         } else {
             let mut payload =
                 self.formal_value(expected.clone(), span.start, span, &mut BTreeSet::new());
-            payload.origins = value.origins.clone();
-            payload.results = value
-                .results
-                .difference(&value.outer_results)
-                .copied()
-                .collect();
-            payload.must_results = value
-                .must_results
-                .difference(&value.outer_results)
-                .copied()
-                .collect();
+            if value.result_tag.is_none() {
+                payload.origins = value.origins.clone();
+                payload.results = value
+                    .results
+                    .difference(&value.outer_results)
+                    .copied()
+                    .collect();
+                payload.must_results = value
+                    .must_results
+                    .difference(&value.outer_results)
+                    .copied()
+                    .collect();
+            }
+            // A known opposite tag has no actual payload. Type-check its
+            // excluded path with the declared symbolic value, without lending
+            // the present tag's storage or inspection duties to that path.
             payload
         };
         if expected != Ty::Unknown {

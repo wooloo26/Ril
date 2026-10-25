@@ -112,6 +112,14 @@ duplicate source trees and historical verification reports.
   reads the declared type graph, including nested queries and field projections.
   Named Type instances travel with function values, including phantom parameters;
   callable type graphs retain their lexical interpretation inside products.
+  Actual entry arguments now own their complete type graphs for named functions,
+  closures, signature probes and generated inputs. Parameter receiving consumes
+  those graphs directly; generated input reconstruction through call receipts,
+  syntax projections and closed witnesses has been removed. Result fallback
+  callbacks receive the projected error type from their actual subject.
+  Symbolic array dimensions follow those owned types; physical storage keeps
+  its construction and mutation history. Excluded Result paths use their own
+  symbolic payload instead of borrowing the present variant's storage/duties.
   Finish routing other static sorts, defaults, rows and constructors through the
   same typed operations.
 - Complete control-flow analysis for heap access, borrowing, effects, duties,

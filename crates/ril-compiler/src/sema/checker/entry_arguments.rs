@@ -1,7 +1,7 @@
 //! Invocation inputs keep their evaluation birth while current storage moves.
 use super::*;
 use crate::sema::{
-    application_effect::EntryArgument,
+    application_effect::{EntryArgument, EntryOrigin},
     copy_contract::{CopyHeapSnapshot, CopyNode},
     source_types::SourceTypesError,
 };
@@ -142,12 +142,13 @@ impl Checker {
     pub(super) fn freeze_entry_arguments(
         &mut self,
         args: &[EntryArgument],
+        origin: &EntryOrigin,
     ) -> Result<Arc<Vec<EntryArgument>>, SourceTypesError> {
         if !self.application_effect.admit(1 + args.len()) {
             return Err(SourceTypesError::BudgetExceeded);
         }
         let mut result = Vec::with_capacity(args.len());
-        for argument in args {
+        for (slot, argument) in args.iter().enumerate() {
             let packet = if argument.packet.current_epoch() == self.recency_moves.len() {
                 argument.packet.clone()
             } else {
@@ -155,6 +156,14 @@ impl Checker {
                 self.prepare_evaluation_packet(&mut packet, argument.span)?;
                 Arc::new(packet)
             };
+            let packet = if !packet.has_captured_source() {
+                self.capture_entry_type(packet, origin, slot, argument.mode, argument.span)?
+            } else {
+                packet
+            };
+            if packet.has_captured_source() {
+                self.derive_entry_shapes(&packet)?;
+            }
             let heap = Some(Arc::new(
                 self.entry_heap_snapshot(packet.value(), packet.current_epoch())?,
             ));
@@ -166,6 +175,100 @@ impl Checker {
             });
         }
         Ok(Arc::new(result))
+    }
+
+    fn derive_entry_shapes(&mut self, packet: &EvaluatedValue) -> Result<(), SourceTypesError> {
+        if !packet.source_valid || packet.value().origins.nodes.is_empty() {
+            return Ok(());
+        }
+        let mut lease = self.application_effect.lease_work(32768);
+        let shapes = (|| {
+            let source = packet.input_source(
+                crate::sema::source_types_ref::SourceTypesRef::Live(
+                    self.type_source.storage.live_types(),
+                ),
+                lease.work(),
+            )?;
+            let Some(schema) = source.schema else {
+                return Ok(BTreeMap::new());
+            };
+            // Layout facts are derived from already elaborated coordinates.
+            // Do not force another declaration/substitution query here: an
+            // unresolved binder remains for ordinary inference and receiving.
+            crate::sema::source_shapes::assumed_array_lengths(
+                &schema,
+                packet.value(),
+                &self.heap,
+                &self.fields,
+                lease.work(),
+            )
+        })();
+        let returned = self.application_effect.return_work(lease);
+        let shapes = shapes.and_then(|shapes| returned.map(|()| shapes))?;
+        self.install_symbolic_array_lengths(shapes)
+    }
+
+    /// Complete an entry's available types before parameter receiving checks
+    /// require them. Generated projections and signature probes select once;
+    /// a callee never reconstructs it from a caller's unrelated argument ledger.
+    fn capture_entry_type(
+        &mut self,
+        packet: Arc<EvaluatedValue>,
+        origin: &EntryOrigin,
+        slot: usize,
+        mode: ParameterMode,
+        span: Span,
+    ) -> Result<Arc<EvaluatedValue>, SourceTypesError> {
+        use crate::sema::{
+            evaluated::{CapturedSource, SourceRef},
+            source_types::SourceSchema,
+        };
+        let mut lease = self.application_effect.lease_work(32768);
+        let source = (|| {
+            lease.work().charge(1)?;
+            match origin {
+                EntryOrigin::Generated { .. } => {
+                    self.generated_input_source_schema(origin, slot, lease.work())
+                }
+                EntryOrigin::SignatureProbe(source) => {
+                    let schema = source.parameter_schema(slot, mode, lease.work())?;
+                    self.selected_input_schema(schema, source.environment.clone(), lease.work())
+                        .map(Some)
+                }
+                _ => {
+                    let Some(key) =
+                        Self::complete_builtin_type_key(&packet.value().ty, lease.work())?
+                    else {
+                        return Ok(None);
+                    };
+                    let schema = SourceSchema::import(&key, None, lease.work())?;
+                    Ok(Some((
+                        schema,
+                        crate::sema::builtin_sources::catalog_environment().clone(),
+                    )))
+                }
+            }
+        })();
+        let captured = source.and_then(|source| {
+            source
+                .map(|(schema, environment)| {
+                    SourceRef::intern(
+                        &schema,
+                        environment,
+                        self.type_source.storage.live_types_mut(),
+                        lease.work(),
+                    )
+                })
+                .transpose()
+        });
+        let returned = self.application_effect.return_work(lease);
+        let captured = captured.and_then(|source| returned.map(|()| source))?;
+        let Some(source) = captured else {
+            return Ok(packet);
+        };
+        let mut packet = self.clone_evaluation_packet(&packet, span)?;
+        packet.set_current_type(CapturedSource::Known(source))?;
+        Ok(Arc::new(packet))
     }
 
     pub(in crate::sema::checker) fn entry_heap_snapshot(

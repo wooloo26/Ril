@@ -1,5 +1,6 @@
 use super::*;
 use crate::sema::source_reception;
+use std::sync::Arc;
 
 pub(super) type SourceExpression = EvaluatedValue;
 
@@ -1439,7 +1440,9 @@ impl Checker {
                                 | ExprKind::ComputedField { .. }
                         ));
                 self.numeric.deferred_depth += usize::from(defer_left);
-                let mut a = self.expression_expected(left, frame, operand_expected);
+                let left_packet =
+                    self.expression_source_packet(left, frame, operand_expected, None);
+                let mut a = left_packet.value.clone();
                 self.numeric.deferred_depth -= usize::from(defer_left);
                 let left_recency = self.recency_moves.len();
                 if tag_test {
@@ -1470,7 +1473,9 @@ impl Checker {
                     }
                     self.fallback_boundaries
                         .push((frame.owner, self.loop_depth));
-                    let fallback = self.expression(right, frame);
+                    let fallback_packet =
+                        Arc::new(self.expression_source_packet(right, frame, None, None));
+                    let fallback = fallback_packet.value.clone();
                     self.fallback_boundaries.pop();
                     self.transport_value_since(&mut a, left_recency);
                     let fallback_recency = self.recency_moves.len();
@@ -1485,11 +1490,23 @@ impl Checker {
                             return self.unit(expr.span);
                         }
                         let error = self.result_payload(&a, false, expr.span, frame);
-                        let recovered = self.invoke_generated_values(
-                            &fallback,
-                            vec![(ParameterMode::Read, error, expr.span)],
+                        let error = self.project_evaluated_value(
+                            &left_packet,
+                            super::super::source_types::SourcePath::ResultError,
+                            error,
+                            expr.span,
+                        );
+                        let recovered = self.invoke_packets_from(
+                            fallback_packet,
+                            Arc::new(vec![super::super::application_effect::EntryArgument {
+                                mode: ParameterMode::Read,
+                                packet: Arc::new(error),
+                                span: expr.span,
+                                heap: None,
+                            }]),
                             expr.span,
                             frame,
+                            super::super::application_effect::EntryOrigin::Unresolved,
                         );
                         self.transport_value_since(&mut a, fallback_recency);
                         let mut success = self.result_payload(&a, true, expr.span, frame);

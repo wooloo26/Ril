@@ -127,7 +127,8 @@ pub enum EntryOrigin {
     },
     DeclarationProbe,
     SignatureProbe(Arc<super::SignatureProbeSource>),
-    /// An unmigrated generated entry retains an explicit source obligation.
+    /// No written application or exact generated origin. Receiving still
+    /// requires the complete types carried by the actual argument packets.
     Unresolved,
 }
 

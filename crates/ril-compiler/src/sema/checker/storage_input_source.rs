@@ -201,6 +201,7 @@ impl Checker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sema::source_reception::Construction;
 
     fn compatible(
         expected: &ArgumentKey,

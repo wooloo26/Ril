@@ -294,7 +294,6 @@ impl EvaluatedValue {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn has_captured_source(&self) -> bool {
         self.birth.source.get().is_some()
     }
