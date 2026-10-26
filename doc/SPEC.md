@@ -5485,16 +5485,21 @@ fn runtime_identity(value: int) -> int { value }
 eff Audit { write(str) -> () }
 fn logged_worker(x: int) -> int @Audit { Audit::write("work"); x }
 
-fn dispatch_worker<run: bool>(f: fn(int) -> int, val: int) -> int {
-    if run { f(val) } else { val }
+type DispatchMode { Run, Bypass }
+
+fn dispatch_worker<mode: DispatchMode>(f: fn(int) -> int, val: int) -> int {
+    match mode {
+        DispatchMode::Run    -> f(val),
+        DispatchMode::Bypass -> val,
+    }
 }
 
-fn test_specialization(runtime_flag: bool) {
-    assert(dispatch_worker<false>(logged_worker, 10) == 10) -- OK: callback is not invoked
-    -- dispatch_worker<runtime_flag>(logged_worker, 10)      -- Error [E0814]: a static value is required
+fn test_specialization(runtime_mode: DispatchMode) {
+    assert(dispatch_worker<DispatchMode::Bypass>(logged_worker, 10) == 10) -- OK: callback is not invoked
+    -- dispatch_worker<runtime_mode>(logged_worker, 10)      -- Error [E0814]: a static value is required
 }
-fn run_logged() -> int @Audit { dispatch_worker<true>(logged_worker, 10) }
--- fn hidden_log() -> int { dispatch_worker<true>(logged_worker, 10) } -- Error [E0612]
+fn run_logged() -> int @Audit { dispatch_worker<DispatchMode::Run>(logged_worker, 10) }
+-- fn hidden_log() -> int { dispatch_worker<DispatchMode::Run>(logged_worker, 10) } -- Error [E0612]
 ```
 
 | Call family | Permitted calls |
@@ -5507,8 +5512,8 @@ Static callbacks capture symbolic constants. Mutable resources, handlers, and or
 
 | Condition | Invocation effects, state, escape, authority use |
 | :--- | :--- |
-| Static boolean | Selected branch only |
-| Run-time boolean | Both branches' possible obligations |
+| Static condition (boolean or pattern arm) | Selected branch only |
+| Run-time condition | Both branches' possible obligations |
 
 Both branches still obey syntax, name resolution, and ordinary type compatibility. Type tokens expose no callable-value effects/provenance; no built-in `is_pure` exists.
 ### Unified Tripartite Introspection
