@@ -1,21 +1,17 @@
---@ case: two-written
---@ mode: run-pass
---@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
---@ entry: test_native
---@ file: source.ril
+-- [case: two-written, run-pass]
+-- spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- entry: test_native
+-- file: source.ril
 pub fn test_native() {
     let first = \-> 1
     let second = \-> 2
     assert(first() == 1 && second() == 2)
 }
---@ end-file
---@ end-case
 
---@ case: repeated-default
---@ mode: run-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ file: source.ril
+-- [case: repeated-default, run-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- file: source.ril
 type Action = fn() -> int
 fn choose(action: Action = \-> 7) -> Action { action }
 pub fn test_native() {
@@ -23,15 +19,12 @@ pub fn test_native() {
     let second = choose()
     assert(first() == 7 && second() == 7)
 }
---@ end-file
---@ end-case
 
---@ case: factory-with-handlers
---@ mode: run-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ spec: SPEC#effect-handlers
---@ entry: test_native
---@ file: source.ril
+-- [case: factory-with-handlers, run-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- spec: SPEC#effect-handlers
+-- entry: test_native
+-- file: source.ril
 eff Read { get() -> int }
 type Reader = fn() -> int &closure
 fn make(value: int) -> Reader &capture {
@@ -44,15 +37,12 @@ pub fn test_native() {
     let nine = make(9)
     assert(seven() == 7 && nine() == 9)
 }
---@ end-file
---@ end-case
 
---@ case: named-default-block
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ file: source.ril
+-- [case: named-default-block, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- file: source.ril
 type Action = fn() -> int &closure
 fn choose(action: Action = {
     \-> saved()
@@ -65,15 +55,12 @@ pub fn test_native() {
     let explicit = choose(\-> 13)
     assert(first() == 7 && second() == 7 && explicit() == 13)
 }
---@ end-file
---@ end-case
 
---@ case: default-capture
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ file: source.ril
+-- [case: default-capture, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- file: source.ril
 type Action = fn() -> int &closure
 fn choose(value: int, action: Action = \-> value) -> Action { action }
 pub fn test_native() {
@@ -82,15 +69,12 @@ pub fn test_native() {
     let explicit = choose(11, \-> 13)
     assert(seven() == 7 && nine() == 9 && explicit() == 13)
 }
---@ end-file
---@ end-case
 
---@ case: default-capture-through-call
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ file: source.ril
+-- [case: default-capture-through-call, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- file: source.ril
 type Action = fn() -> int &closure
 fn choose(value: int, action: Action = \-> (\number: int -> number)(value)) -> Action { action }
 pub fn test_native() {
@@ -99,40 +83,29 @@ pub fn test_native() {
     let explicit = choose(11, \-> 13)
     assert(seven() == 7 && nine() == 9 && explicit() == 13)
 }
---@ end-file
---@ end-case
 
---@ case: contextual-signature-preview
---@ mode: run-pass
---@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
---@ entry: test_native
---@ file: source.ril
+-- [case: contextual-signature-preview, run-pass]
+-- spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- entry: test_native
+-- file: source.ril
 pub fn test_native() {
     let increment: fn(int) -> int = \value -> value + 1
     assert(increment(41) == 42)
 }
---@ end-file
---@ end-case
 
---@ case: contextual-signature-result-mismatch
---@ mode: check-fail
---@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- [case: contextual-signature-result-mismatch, check-fail]
+-- spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
 -- Error [E0301]: reject an uncalled contextual lambda with the wrong result
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let callback: fn(int) -> int = \value -> true
 }
---@ end-file
---@ end-case
 
---@ case: contextual-signature-closure-argument-mismatch
---@ mode: check-fail
---@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- [case: contextual-signature-closure-argument-mismatch, check-fail]
+-- spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
 -- Error [E0301]: a closure's written callback parameter checks its lambda result
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let apply = \callback: fn(int) -> int -> callback(1)
     apply(\value -> true)
 }
---@ end-file
---@ end-case

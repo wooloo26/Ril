@@ -1,35 +1,23 @@
---@ case: delimiter-mismatch
---@ mode: check-fail
---@ spec: SPEC#syntactic-diagnostic-conditions
+-- [case: delimiter-mismatch, check-fail]
+-- spec: SPEC#syntactic-diagnostic-conditions
 -- Error [E0123]: delimiter mismatch
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 28 5b 31 2c 20 32 7d 29
---@ end-file
---@ end-case
 
---@ case: invalid-utf8
---@ mode: check-fail
---@ spec: SPEC#character-set-and-encoding
+-- [case: invalid-utf8, check-fail]
+-- spec: SPEC#character-set-and-encoding
 -- Error [E0104]: invalid utf8
---@ file: input.ril hex
+-- file: input.ril hex
 f5 80 80 80
---@ end-file
---@ end-case
 
---@ case: nested-comment-eof
---@ mode: check-fail
---@ spec: SPEC#comments
+-- [case: nested-comment-eof, check-fail]
+-- spec: SPEC#comments
 -- Error [E0106]: nested comment eof
---@ file: input.ril hex
+-- file: input.ril hex
 7b 2d 20 6f 6e 65 20 7b 2d 20 74 77 6f 20 2d 7d
---@ end-file
---@ end-case
 
---@ case: numeric-overflow
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
+-- [case: numeric-overflow, check-fail]
+-- spec: SPEC#numeric-literals
 -- Error [E0326]: numeric overflow
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 32 35 36 75 38
---@ end-file
---@ end-case

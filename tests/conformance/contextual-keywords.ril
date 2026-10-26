@@ -1,5 +1,5 @@
---@ source: ordinary-capture-and-closure
---@ file: source.ril
+-- [source: ordinary-capture-and-closure]
+-- file: source.ril
 type Config = { capture: bool, closure: int }
 fn capture(value: int) -> int { value + 1 }
 pub fn test_native() {
@@ -14,33 +14,25 @@ pub fn test_native() {
     }
     assert(capture && closure == 7)
 }
---@ end-file
---@ end-source
 
---@ case: ordinary-capture-and-closure-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#keywords
---@ use-source: ordinary-capture-and-closure
---@ end-case
+-- [case: ordinary-capture-and-closure-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#keywords
+-- use-source: ordinary-capture-and-closure
 
---@ case: ordinary-capture-and-closure-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#keywords
---@ companion: ordinary-capture-and-closure-native
---@ use-source: ordinary-capture-and-closure
---@ end-case
+-- [case: ordinary-capture-and-closure-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#keywords
+-- companion: ordinary-capture-and-closure-native
+-- use-source: ordinary-capture-and-closure
 
---@ case: ordinary-capture-and-closure-native
---@ mode: run-pass
---@ spec: SPEC#keywords
---@ entry: test_native
---@ use-source: ordinary-capture-and-closure
---@ end-case
+-- [case: ordinary-capture-and-closure-native, run-pass]
+-- spec: SPEC#keywords
+-- entry: test_native
+-- use-source: ordinary-capture-and-closure
 
---@ source: contextual-parameter-and-pattern
---@ file: source.ril
+-- [source: contextual-parameter-and-pattern]
+-- file: source.ril
 type Config = { capture: int, closure: int }
 fn read(capture: Config) -> int {
     let .{ capture: value, closure } = capture
@@ -52,34 +44,26 @@ pub fn test_native() {
     let closure = \capture: int -> capture * 2
     assert(read(config) == 8 && closure(capture) == 6)
 }
---@ end-file
---@ end-source
 
---@ case: contextual-parameter-and-pattern-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#keywords
---@ spec: SPEC#pattern-matching
---@ use-source: contextual-parameter-and-pattern
---@ end-case
+-- [case: contextual-parameter-and-pattern-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#keywords
+-- spec: SPEC#pattern-matching
+-- use-source: contextual-parameter-and-pattern
 
---@ case: contextual-parameter-and-pattern-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#keywords
---@ companion: contextual-parameter-and-pattern-native
---@ use-source: contextual-parameter-and-pattern
---@ end-case
+-- [case: contextual-parameter-and-pattern-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#keywords
+-- companion: contextual-parameter-and-pattern-native
+-- use-source: contextual-parameter-and-pattern
 
---@ case: contextual-parameter-and-pattern-native
---@ mode: run-pass
---@ spec: SPEC#keywords
---@ entry: test_native
---@ use-source: contextual-parameter-and-pattern
---@ end-case
+-- [case: contextual-parameter-and-pattern-native, run-pass]
+-- spec: SPEC#keywords
+-- entry: test_native
+-- use-source: contextual-parameter-and-pattern
 
---@ source: annotation-context-before-name-resolution
---@ file: source.ril
+-- [source: annotation-context-before-name-resolution]
+-- file: source.ril
 var capture = 0
 var closure = 10
 type Reader = fn() -> int &closure
@@ -95,35 +79,27 @@ pub fn test_native() &{mut capture, mut closure} {
     assert(first() == 7 && second() == 9)
     assert(read_capture() == 1 && read_closure() == 12)
 }
---@ end-file
---@ end-source
 
---@ case: annotation-context-before-name-resolution-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#keywords
---@ spec: SPEC#state-groups-and-captured-layers
---@ use-source: annotation-context-before-name-resolution
---@ end-case
+-- [case: annotation-context-before-name-resolution-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#keywords
+-- spec: SPEC#state-groups-and-captured-layers
+-- use-source: annotation-context-before-name-resolution
 
---@ case: annotation-context-before-name-resolution-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#keywords
---@ companion: annotation-context-before-name-resolution-native
---@ use-source: annotation-context-before-name-resolution
---@ end-case
+-- [case: annotation-context-before-name-resolution-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#keywords
+-- companion: annotation-context-before-name-resolution-native
+-- use-source: annotation-context-before-name-resolution
 
---@ case: annotation-context-before-name-resolution-native
---@ mode: run-pass
---@ spec: SPEC#keywords
---@ spec: SPEC#state-groups-and-captured-layers
---@ entry: test_native
---@ use-source: annotation-context-before-name-resolution
---@ end-case
+-- [case: annotation-context-before-name-resolution-native, run-pass]
+-- spec: SPEC#keywords
+-- spec: SPEC#state-groups-and-captured-layers
+-- entry: test_native
+-- use-source: annotation-context-before-name-resolution
 
---@ source: single-global-closure-group
---@ file: source.ril
+-- [source: single-global-closure-group]
+-- file: source.ril
 var closure = 1
 fn advance() &{mut closure} { closure += 1 }
 fn read() -> int &{closure} { closure }
@@ -131,56 +107,42 @@ pub fn test_native() &{mut closure} {
     advance()
     assert(read() == 2)
 }
---@ end-file
---@ end-source
 
---@ case: single-global-closure-group-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#state-groups-and-captured-layers
---@ companion: reject-global-as-capture-group
---@ use-source: single-global-closure-group
---@ end-case
+-- [case: single-global-closure-group-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#state-groups-and-captured-layers
+-- companion: reject-global-as-capture-group
+-- use-source: single-global-closure-group
 
---@ case: single-global-closure-group-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#state-groups-and-captured-layers
---@ companion: single-global-closure-group-native
---@ use-source: single-global-closure-group
---@ end-case
+-- [case: single-global-closure-group-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#state-groups-and-captured-layers
+-- companion: single-global-closure-group-native
+-- use-source: single-global-closure-group
 
---@ case: single-global-closure-group-native
---@ mode: run-pass
---@ spec: SPEC#state-groups-and-captured-layers
---@ entry: test_native
---@ use-source: single-global-closure-group
---@ end-case
+-- [case: single-global-closure-group-native, run-pass]
+-- spec: SPEC#state-groups-and-captured-layers
+-- entry: test_native
+-- use-source: single-global-closure-group
 
---@ case: reject-global-as-capture-group
---@ mode: check-fail
---@ spec: SPEC#state-groups-and-captured-layers
---@ companion: single-global-closure-group-pointer32
+-- [case: reject-global-as-capture-group, check-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- companion: single-global-closure-group-pointer32
 -- Error [E0538]: A comma fixes closure as a capture-group header before name resolution.
---@ file: source.ril
+-- file: source.ril
 var closure = 1
 var value = 2
 fn example() -> int &{closure, value} { value }
---@ end-file
---@ end-case
 
---@ case: reject-empty-contextual-capture-group
---@ mode: check-fail
---@ spec: SPEC#state-groups-and-captured-layers
---@ companion: single-global-closure-group-pointer64
+-- [case: reject-empty-contextual-capture-group, check-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- companion: single-global-closure-group-pointer64
 -- Error [E0538]: The contextual capture-group header requires an actual source item.
---@ file: source.ril
+-- file: source.ril
 fn example() -> int &{closure,} { 7 }
---@ end-file
---@ end-case
 
---@ source: global-closure-callable-bound
---@ file: source.ril
+-- [source: global-closure-callable-bound]
+-- file: source.ril
 var closure = 7
 type Reader = fn() -> int &{closure}
 fn read() -> int &{closure} { closure }
@@ -192,43 +154,32 @@ pub fn test_native() &{mut closure} {
     let action: Reader = read
     assert(action() == 9)
 }
---@ end-file
---@ end-source
 
---@ case: global-closure-callable-bound-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#state-groups-and-captured-layers
---@ companion: reject-unrelated-global-callable-bound
---@ use-source: global-closure-callable-bound
---@ end-case
+-- [case: global-closure-callable-bound-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#state-groups-and-captured-layers
+-- companion: reject-unrelated-global-callable-bound
+-- use-source: global-closure-callable-bound
 
---@ case: global-closure-callable-bound-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#state-groups-and-captured-layers
---@ companion: global-closure-callable-bound-native
---@ use-source: global-closure-callable-bound
---@ end-case
+-- [case: global-closure-callable-bound-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#state-groups-and-captured-layers
+-- companion: global-closure-callable-bound-native
+-- use-source: global-closure-callable-bound
 
---@ case: global-closure-callable-bound-native
---@ mode: run-pass
---@ spec: SPEC#state-groups-and-captured-layers
---@ entry: test_native
---@ use-source: global-closure-callable-bound
---@ end-case
+-- [case: global-closure-callable-bound-native, run-pass]
+-- spec: SPEC#state-groups-and-captured-layers
+-- entry: test_native
+-- use-source: global-closure-callable-bound
 
---@ case: reject-unrelated-global-callable-bound
---@ mode: check-fail
---@ spec: SPEC#state-groups-and-captured-layers
---@ companion: global-closure-callable-bound-pointer32
+-- [case: reject-unrelated-global-callable-bound, check-fail]
+-- spec: SPEC#state-groups-and-captured-layers
+-- companion: global-closure-callable-bound-pointer32
 -- Error [E0534]: The global closure bound cannot authorize a different module binding.
---@ file: source.ril
+-- file: source.ril
 var closure = 1
 var other = 2
 type Reader = fn() -> int &{closure}
 fn read_other() -> int &{other} { other }
 fn invoke(action: Reader) -> int &{closure} { action() }
 fn example() &{other} { let value = invoke(read_other) }
---@ end-file
---@ end-case

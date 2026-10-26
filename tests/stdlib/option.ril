@@ -1,8 +1,5 @@
---@ case: callback-laziness
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_callback_laziness
---@ file: callback-laziness.ril
+-- [case: callback-laziness, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_callback_laziness() {
     var calls = 0
     let mut fallback = \-> { calls += 1; 9 }
@@ -12,119 +9,67 @@ pub fn test_callback_laziness() {
     assert(Options::map(None, mut transform) == None && calls == 1)
     assert(Options::map(Some(1), mut transform) == Some(2) && calls == 2)
 }
---@ end-file
---@ end-case
 
---@ case: expect-none-safe
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ companion: expect-none
---@ entry: test_expect_none_safe
---@ file: expect-none-safe.ril
+-- [case: expect-none-safe, run-pass]
+-- spec: STD#optional-and-fallible-values
+-- companion: expect-none
 pub fn test_expect_none_safe() {
     assert(Options::expect(Some(1), "present") == 1)
 }
---@ end-file
---@ end-case
 
---@ case: expect-none
---@ mode: run-panic
---@ spec: STD#optional-and-fallible-values
---@ companion: expect-none-safe
---@ entry: test_expect_none
+-- [case: expect-none, run-panic]
+-- spec: STD#optional-and-fallible-values
+-- companion: expect-none-safe
 -- Panics: expect none
---@ file: expect-none.ril
 pub fn test_expect_none() {
     let value: ?int = None
     let _ = Options::expect(value, "none")
 }
---@ end-file
---@ end-case
 
---@ case: option-and-then
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_option_and_then
---@ file: option-and-then.ril
+-- [case: option-and-then, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_option_and_then() {
     assert(Options::and_then(Some(2), \n -> Some(n + 1)) == Some(3))
 }
---@ end-file
---@ end-case
 
---@ case: option-and-then-none
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_option_and_then_none
---@ file: option-and-then-none.ril
+-- [case: option-and-then-none, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_option_and_then_none() {
     assert(Options::and_then(None, \n: int -> Some(n)) == None)
 }
---@ end-file
---@ end-case
 
---@ case: option-expect
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_option_expect
---@ file: option-expect.ril
+-- [case: option-expect, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_option_expect() {
     assert(Options::expect(Some(2), "present") == 2)
 }
---@ end-file
---@ end-case
 
---@ case: option-fallback
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_option_fallback
---@ file: option-fallback.ril
+-- [case: option-fallback, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_option_fallback() {
     assert(Options::unwrap_or_else(None, \-> 9) == 9)
 }
---@ end-file
---@ end-case
 
---@ case: option-map
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_option_map
---@ file: option-map.ril
+-- [case: option-map, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_option_map() {
     assert(Options::map(Some(2), \n -> n + 1) == Some(3))
 }
---@ end-file
---@ end-case
 
---@ case: option-map-none
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_option_map_none
---@ file: option-map-none.ril
+-- [case: option-map-none, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_option_map_none() {
     assert(Options::map(None, \n: int -> n + 1) == None)
 }
---@ end-file
---@ end-case
 
---@ case: option-unwrap-or
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_option_unwrap_or
---@ file: option-unwrap-or.ril
+-- [case: option-unwrap-or, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_option_unwrap_or() {
     assert(Options::unwrap_or(Some(2), 9) == 2 && Options::unwrap_or(None, 9) == 9)
 }
---@ end-file
---@ end-case
 
---@ case: option-unwrap-or-else
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_option_unwrap_or_else
---@ file: option-unwrap-or-else.ril
+-- [case: option-unwrap-or-else, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_option_unwrap_or_else() {
     assert(Options::unwrap_or_else(Some(2), \-> panic("unused")) == 2)
 }
---@ end-file
---@ end-case

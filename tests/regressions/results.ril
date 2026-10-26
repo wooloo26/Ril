@@ -1,9 +1,8 @@
---@ case: static-result-publication-views
---@ mode: run-pass
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: static-result-publication-views, run-pass]
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 meta let FIRST: Result<int, str> = {
     let result = Ok(7)
     assert(result is Ok(7))
@@ -20,11 +19,9 @@ pub fn test_native() &{FIRST, SECOND} {
     assert(first is Ok(7))
     assert(second is Err("unavailable"))
 }
---@ end-file
---@ end-case
 
---@ source: source-repeated-host-results
---@ file: source.ril
+-- [source: source-repeated-host-results]
+-- file: source.ril
 
 use ril/io
 use ril/time
@@ -52,18 +49,12 @@ pub fn test_native() @Fiber{
     let direct=Time::sleep
     direct(Time::duration_nanos(0i64))
 }
---@ end-file
---@ end-source
 
---@ case: repeated-host-results
---@ mode: check-pass
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ use-source: source-repeated-host-results
---@ end-case
+-- [case: repeated-host-results, check-pass]
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- use-source: source-repeated-host-results
 
---@ case: repeated-host-results-test-native
---@ mode: run-pass
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ entry: test_native
---@ use-source: source-repeated-host-results
---@ end-case
+-- [case: repeated-host-results-test-native, run-pass]
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- entry: test_native
+-- use-source: source-repeated-host-results

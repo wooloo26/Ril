@@ -1,8 +1,6 @@
---@ case: accept-callback-divergence
---@ mode: check-pass
---@ spec: SPEC#termination-and-halt-contracts
---@ companion: reject-callback-divergence
---@ file: accept-callback-divergence.ril
+-- [case: accept-callback-divergence, check-pass]
+-- spec: SPEC#termination-and-halt-contracts
+-- companion: reject-callback-divergence
 halt fn invoke(action: fn() -> ()) { action() }
 fn spin() { loop {} }
 fn done() {}
@@ -10,15 +8,11 @@ fn done() {}
 fn example() {
     invoke(done)
 }
---@ end-file
---@ end-case
 
---@ case: reject-callback-divergence
---@ mode: check-fail
---@ spec: SPEC#termination-and-halt-contracts
---@ companion: accept-callback-divergence
+-- [case: reject-callback-divergence, check-fail]
+-- spec: SPEC#termination-and-halt-contracts
+-- companion: accept-callback-divergence
 -- Error [E0534]: reject callback divergence
---@ file: reject-callback-divergence.ril
 halt fn invoke(action: fn() -> ()) { action() }
 fn spin() { loop {} }
 fn done() {}
@@ -26,202 +20,132 @@ fn done() {}
 fn example() {
     invoke(spin)
 }
---@ end-file
---@ end-case
 
---@ case: accept-excluded-yield
---@ mode: check-pass
---@ spec: SPEC#finite-evaluation-with-div
---@ companion: reject-excluded-yield
---@ file: accept-excluded-yield.ril
+-- [case: accept-excluded-yield, check-pass]
+-- spec: SPEC#finite-evaluation-with-div
+-- companion: reject-excluded-yield
 fn example() {
     with Fiber::yield() -> resume ()
     Fiber::yield()
 }
---@ end-file
---@ end-case
 
---@ case: reject-excluded-yield
---@ mode: check-fail
---@ spec: SPEC#finite-evaluation-with-div
---@ companion: accept-excluded-yield
+-- [case: reject-excluded-yield, check-fail]
+-- spec: SPEC#finite-evaluation-with-div
+-- companion: accept-excluded-yield
 -- Error [E0822]: reject excluded yield
---@ file: reject-excluded-yield.ril
 fn example() {
     with Div::exhausted() -> ()
     with Fiber::yield() -> resume ()
     with Div::budget(100)
     Fiber::yield()
 }
---@ end-file
---@ end-case
 
---@ case: accept-outward-effect
---@ mode: check-pass
---@ spec: SPEC#termination-and-halt-contracts
---@ companion: reject-outward-effect
---@ file: accept-outward-effect.ril
+-- [case: accept-outward-effect, check-pass]
+-- spec: SPEC#termination-and-halt-contracts
+-- companion: reject-outward-effect
 fn example() @Fiber { Fiber::yield() }
---@ end-file
---@ end-case
 
---@ case: reject-outward-effect
---@ mode: check-fail
---@ spec: SPEC#termination-and-halt-contracts
---@ companion: accept-outward-effect
+-- [case: reject-outward-effect, check-fail]
+-- spec: SPEC#termination-and-halt-contracts
+-- companion: accept-outward-effect
 -- Error [E0821]: reject outward effect
---@ file: reject-outward-effect.ril
 halt fn example() @Fiber { Fiber::yield() }
---@ end-file
---@ end-case
 
---@ case: accept-outward-state
---@ mode: check-pass
---@ spec: SPEC#termination-and-halt-contracts
---@ companion: reject-outward-state
---@ file: accept-outward-state.ril
+-- [case: accept-outward-state, check-pass]
+-- spec: SPEC#termination-and-halt-contracts
+-- companion: reject-outward-state
 var count = 0
 fn example() &{mut count} { count += 1 }
---@ end-file
---@ end-case
 
---@ case: reject-outward-state
---@ mode: check-fail
---@ spec: SPEC#termination-and-halt-contracts
---@ companion: accept-outward-state
+-- [case: reject-outward-state, check-fail]
+-- spec: SPEC#termination-and-halt-contracts
+-- companion: accept-outward-state
 -- Error [E0821]: reject outward state
---@ file: reject-outward-state.ril
 var count = 0
 halt fn example() &{mut count} { count += 1 }
---@ end-file
---@ end-case
 
---@ case: accept-resume-exhaustion
---@ mode: check-pass
---@ spec: SPEC#finite-evaluation-with-div
---@ companion: reject-resume-exhaustion
---@ file: accept-resume-exhaustion.ril
+-- [case: accept-resume-exhaustion, check-pass]
+-- spec: SPEC#finite-evaluation-with-div
+-- companion: reject-resume-exhaustion
 fn one() -> int { 1 }
 
 fn example() {
     with Div::exhausted() -> ()
     let _ = Div::budget(0, one)
 }
---@ end-file
---@ end-case
 
---@ case: reject-resume-exhaustion
---@ mode: check-fail
---@ spec: SPEC#finite-evaluation-with-div
---@ companion: accept-resume-exhaustion
+-- [case: reject-resume-exhaustion, check-fail]
+-- spec: SPEC#finite-evaluation-with-div
+-- companion: accept-resume-exhaustion
 -- Error [E0822]: reject resume exhaustion
---@ file: reject-resume-exhaustion.ril
 fn one() -> int { 1 }
 
 fn example() {
     with Div::exhausted() -> resume ()
     let _ = Div::budget(0, one)
 }
---@ end-file
---@ end-case
 
---@ case: accept-unbounded-loop
---@ mode: check-pass
---@ spec: SPEC#termination-and-halt-contracts
---@ companion: reject-unbounded-loop
---@ file: accept-unbounded-loop.ril
+-- [case: accept-unbounded-loop, check-pass]
+-- spec: SPEC#termination-and-halt-contracts
+-- companion: reject-unbounded-loop
 fn forever() { loop {} }
---@ end-file
---@ end-case
 
---@ case: reject-unbounded-loop
---@ mode: check-fail
---@ spec: SPEC#termination-and-halt-contracts
---@ companion: accept-unbounded-loop
+-- [case: reject-unbounded-loop, check-fail]
+-- spec: SPEC#termination-and-halt-contracts
+-- companion: accept-unbounded-loop
 -- Error [E0820]: reject unbounded loop
---@ file: reject-unbounded-loop.ril
 halt fn forever() { loop {} }
---@ end-file
---@ end-case
 
---@ case: bounded-divergence
---@ mode: run-pass
---@ spec: SPEC#finite-evaluation-with-div
---@ entry: test_bounded_divergence
---@ file: bounded-divergence.ril
+-- [case: bounded-divergence, run-pass]
+-- spec: SPEC#finite-evaluation-with-div
 fn spin() -> int { loop {} }
 halt fn attempt() -> ?int { with Div::exhausted() -> None; with Div::budget(100); Some(spin()) }
 
 pub fn test_bounded_divergence() {
     assert(attempt() == None)
 }
---@ end-file
---@ end-case
 
---@ case: mutual-descent
---@ mode: run-pass
---@ spec: SPEC#termination-and-halt-contracts
---@ entry: test_mutual_descent
---@ file: mutual-descent.ril
+-- [case: mutual-descent, run-pass]
+-- spec: SPEC#termination-and-halt-contracts
 halt fn even(n: int) -> bool { if n <= 0 { true } else { odd(n - 1) } }
 fn odd(n: int) -> bool { if n <= 0 { false } else { even(n - 1) } }
 
 pub fn test_mutual_descent() {
     assert(even(8) && !even(9))
 }
---@ end-file
---@ end-case
 
---@ case: negative-budget-safe
---@ mode: run-pass
---@ spec: SPEC#finite-evaluation-with-div
---@ companion: negative-budget
---@ entry: test_negative_budget_safe
---@ file: negative-budget-safe.ril
+-- [case: negative-budget-safe, run-pass]
+-- spec: SPEC#finite-evaluation-with-div
+-- companion: negative-budget
 fn one() -> int { 1 }
 
 pub fn test_negative_budget_safe() {
     with Div::exhausted() -> ()
     let _ = Div::budget(1, one)
 }
---@ end-file
---@ end-case
 
---@ case: negative-budget
---@ mode: run-panic
---@ spec: SPEC#finite-evaluation-with-div
---@ companion: negative-budget-safe
---@ entry: test_negative_budget
+-- [case: negative-budget, run-panic]
+-- spec: SPEC#finite-evaluation-with-div
+-- companion: negative-budget-safe
 -- Panics: negative budget
---@ file: negative-budget.ril
 fn one() -> int { 1 }
 
 pub fn test_negative_budget() {
     with Div::exhausted() -> ()
     let _ = Div::budget(-1, one)
 }
---@ end-file
---@ end-case
 
---@ case: nested-budget-outer-wins
---@ mode: run-pass
---@ spec: SPEC#finite-evaluation-with-div
---@ entry: test_nested_budget_outer_wins
---@ file: nested-budget-outer-wins.ril
+-- [case: nested-budget-outer-wins, run-pass]
+-- spec: SPEC#finite-evaluation-with-div
 fn spin() -> int { loop {} }
 halt fn attempt() -> ?int { with Div::exhausted() -> None; with Div::budget(2); with Div::exhausted() -> Some(99); with Div::budget(100); Some(spin()) }
 
 pub fn test_nested_budget_outer_wins() {
     assert(attempt() == None)
 }
---@ end-file
---@ end-case
 
---@ case: zero-one-budget
---@ mode: run-pass
---@ spec: SPEC#finite-evaluation-with-div
---@ entry: test_zero_one_budget
---@ file: zero-one-budget.ril
+-- [case: zero-one-budget, run-pass]
+-- spec: SPEC#finite-evaluation-with-div
 fn one() -> int { 1 }
 fn attempt(limit: int) -> ?int { with Div::exhausted() -> None; Some(Div::budget(limit, one)) }
 
@@ -229,5 +153,3 @@ pub fn test_zero_one_budget() {
     assert(attempt(0) == None)
     assert(attempt(1) == Some(1))
 }
---@ end-file
---@ end-case

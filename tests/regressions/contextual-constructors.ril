@@ -1,5 +1,5 @@
---@ source: nested-receiving-contexts
---@ file: source.ril
+-- [source: nested-receiving-contexts]
+-- file: source.ril
 type Layer = { matrix: [2][0][3]int }
 fn option_size(value: ?[0][2]int) -> int {
     match value { Some(items) -> len(items), None -> 0 }
@@ -25,19 +25,15 @@ pub fn test_native() {
     let piped: ?[0][2]int = [] |> Some
     assert(option_size(piped) == 0)
 }
---@ end-file
---@ end-source
 
---@ case: nested-receiving-contexts-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: reject-stored-inner-dimension
---@ use-source: nested-receiving-contexts
---@ end-case
+-- [case: nested-receiving-contexts-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: reject-stored-inner-dimension
+-- use-source: nested-receiving-contexts
 
---@ source: declared-payload-contexts
---@ file: source.ril
+-- [source: declared-payload-contexts]
+-- file: source.ril
 type Record({ matrix: [2][0][3]int })
 type Pair([0][2]int, [0][3]int)
 type Choice { Value({ matrix: [2][0][3]int }), Empty }
@@ -49,81 +45,60 @@ pub fn test_declared() {
     assert(len(inner(pair).0) == 0 && len(inner(pair).1) == 0)
     match choice { Choice::Value(data) -> assert(len(data.matrix) == 2), Choice::Empty -> assert(false) }
 }
---@ end-file
---@ end-source
 
---@ case: declared-payload-contexts-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: declared-payload-contexts-pointer64
---@ use-source: declared-payload-contexts
---@ end-case
+-- [case: declared-payload-contexts-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: declared-payload-contexts-pointer64
+-- use-source: declared-payload-contexts
 
---@ case: declared-payload-contexts-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: declared-payload-contexts-native
---@ use-source: declared-payload-contexts
---@ end-case
+-- [case: declared-payload-contexts-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: declared-payload-contexts-native
+-- use-source: declared-payload-contexts
 
---@ case: declared-payload-contexts-native
---@ mode: run-pass
---@ entry: test_declared
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: declared-payload-contexts-pointer32
---@ use-source: declared-payload-contexts
---@ end-case
+-- [case: declared-payload-contexts-native, run-pass]
+-- entry: test_declared
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: declared-payload-contexts-pointer32
+-- use-source: declared-payload-contexts
 
---@ case: nested-receiving-contexts-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: nested-receiving-contexts-native
---@ use-source: nested-receiving-contexts
---@ end-case
+-- [case: nested-receiving-contexts-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: nested-receiving-contexts-native
+-- use-source: nested-receiving-contexts
 
---@ case: nested-receiving-contexts-native
---@ mode: run-pass
---@ entry: test_native
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: nested-receiving-contexts-pointer32
---@ use-source: nested-receiving-contexts
---@ end-case
+-- [case: nested-receiving-contexts-native, run-pass]
+-- entry: test_native
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: nested-receiving-contexts-pointer32
+-- use-source: nested-receiving-contexts
 
---@ case: reject-stored-inner-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: nested-receiving-contexts-pointer64
+-- [case: reject-stored-inner-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: nested-receiving-contexts-pointer64
 -- Error [E0301]: Context cannot replace an already chosen inner extent.
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let items: [0][3]int = []
     let value: ?[0][2]int = Some(items)
 }
---@ end-file
---@ end-case
 
---@ case: reject-stored-member-through-construction
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: nested-receiving-contexts-pointer32
+-- [case: reject-stored-member-through-construction, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: nested-receiving-contexts-pointer32
 -- Error [E0301]: A fresh wrapper preserves its stored member's existing view.
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let items: [0][3]int = []
     let value: Result<{ items: [0][2]int }, int> = Ok(.{ items })
 }
---@ end-file
---@ end-case
 
---@ case: reject-construction-cardinality
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: nested-receiving-contexts-pointer64
+-- [case: reject-construction-cardinality, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: nested-receiving-contexts-pointer64
 -- Error [E0301]: Context cannot remove an actual literal element.
---@ file: source.ril
+-- file: source.ril
 fn example() { let value: ?[2][0][3]int = Some([[], [], []]) }
---@ end-file
---@ end-case

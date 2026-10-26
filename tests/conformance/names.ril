@@ -1,310 +1,198 @@
---@ case: accept-acronym-casing
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-acronym-casing
---@ file: accept-acronym-casing.ril
+-- [case: accept-acronym-casing, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-acronym-casing
 type HttpServer = int
---@ end-file
---@ end-case
 
---@ case: reject-acronym-casing
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-acronym-casing
+-- [case: reject-acronym-casing, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-acronym-casing
 -- Error [E0102]: reject acronym casing
---@ file: reject-acronym-casing.ril
 type HTTPServer = int
---@ end-file
---@ end-case
 
---@ case: accept-consecutive-underscores
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-consecutive-underscores
---@ file: accept-consecutive-underscores.ril
+-- [case: accept-consecutive-underscores, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-consecutive-underscores
 fn example() {
     let user_name = "a"
 }
---@ end-file
---@ end-case
 
---@ case: reject-consecutive-underscores
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-consecutive-underscores
+-- [case: reject-consecutive-underscores, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-consecutive-underscores
 -- Error [E0102]: reject consecutive underscores
---@ file: reject-consecutive-underscores.ril
 fn example() {
     let user__name = "a"
 }
---@ end-file
---@ end-case
 
---@ case: accept-constant-casing
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-constant-casing
---@ file: accept-constant-casing.ril
+-- [case: accept-constant-casing, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-constant-casing
 let COUNT = 1
---@ end-file
---@ end-case
 
---@ case: reject-constant-casing
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-constant-casing
+-- [case: reject-constant-casing, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-constant-casing
 -- Error [E0101]: reject constant casing
---@ file: reject-constant-casing.ril
 let count = 1
---@ end-file
---@ end-case
 
---@ case: accept-constructor-abbreviation
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-constructor-abbreviation
---@ file: accept-constructor-abbreviation.ril
+-- [case: accept-constructor-abbreviation, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-constructor-abbreviation
 type First { Shared }
 type Second { Shared }
 
 fn example() {
     let item: First = First::Shared
 }
---@ end-file
---@ end-case
 
---@ case: reject-constructor-abbreviation
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-constructor-abbreviation
+-- [case: reject-constructor-abbreviation, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-constructor-abbreviation
 -- Error [E0206]: reject constructor abbreviation
---@ file: reject-constructor-abbreviation.ril
 type First { Shared }
 type Second { Shared }
 
 fn example() {
     let item: First = Shared
 }
---@ end-file
---@ end-case
 
---@ case: accept-duplicate-local
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-duplicate-local
---@ file: accept-duplicate-local.ril
+-- [case: accept-duplicate-local, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-duplicate-local
 fn example() {
     let value = 1
     { let value = 2 }
 }
---@ end-file
---@ end-case
 
---@ case: reject-duplicate-local
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-duplicate-local
+-- [case: reject-duplicate-local, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-duplicate-local
 -- Error [E0203]: reject duplicate local
---@ file: reject-duplicate-local.ril
 fn example() {
     let value = 1
     let value = 2
 }
---@ end-file
---@ end-case
 
---@ case: accept-function-casing
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-function-casing
---@ file: accept-function-casing.ril
+-- [case: accept-function-casing, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-function-casing
 fn compute() {}
---@ end-file
---@ end-case
 
---@ case: reject-function-casing
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-function-casing
+-- [case: reject-function-casing, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-function-casing
 -- Error [E0101]: reject function casing
---@ file: reject-function-casing.ril
 fn Compute() {}
---@ end-file
---@ end-case
 
---@ case: accept-global-var-casing
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-global-var-casing
---@ file: accept-global-var-casing.ril
+-- [case: accept-global-var-casing, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-global-var-casing
 var count = 1
 fn advance() &{mut count} { count += 1 }
---@ end-file
---@ end-case
 
---@ case: reject-global-var-casing
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-global-var-casing
+-- [case: reject-global-var-casing, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-global-var-casing
 -- Error [E0101]: reject global var casing
---@ file: reject-global-var-casing.ril
 var COUNT = 1
 fn advance() &{mut COUNT} { COUNT += 1 }
---@ end-file
---@ end-case
 
---@ case: accept-local-casing
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-local-casing
---@ file: accept-local-casing.ril
+-- [case: accept-local-casing, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-local-casing
 fn example() {
     let user_count = 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-local-casing
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-local-casing
+-- [case: reject-local-casing, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-local-casing
 -- Error [E0101]: reject local casing
---@ file: reject-local-casing.ril
 fn example() {
     let UserCount = 1
 }
---@ end-file
---@ end-case
 
---@ case: accept-meta-casing
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-meta-casing
---@ file: accept-meta-casing.ril
+-- [case: accept-meta-casing, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-meta-casing
 meta let COUNT = 1
---@ end-file
---@ end-case
 
---@ case: reject-meta-casing
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-meta-casing
+-- [case: reject-meta-casing, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-meta-casing
 -- Error [E0101]: reject meta casing
---@ file: reject-meta-casing.ril
 meta let count = 1
---@ end-file
---@ end-case
 
---@ case: accept-pattern-casing
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-pattern-casing
---@ file: accept-pattern-casing.ril
+-- [case: accept-pattern-casing, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-pattern-casing
 fn example() {
     let (user_id, name) = (1, "a")
 }
---@ end-file
---@ end-case
 
---@ case: reject-pattern-casing
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-pattern-casing
+-- [case: reject-pattern-casing, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-pattern-casing
 -- Error [E0103]: reject pattern casing
---@ file: reject-pattern-casing.ril
 fn example() {
     let (USER_ID, name) = (1, "a")
 }
---@ end-file
---@ end-case
 
---@ case: accept-trailing-underscore
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-trailing-underscore
---@ file: accept-trailing-underscore.ril
+-- [case: accept-trailing-underscore, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-trailing-underscore
 fn example() {
     let user = 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-trailing-underscore
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-trailing-underscore
+-- [case: reject-trailing-underscore, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-trailing-underscore
 -- Error [E0102]: reject trailing underscore
---@ file: reject-trailing-underscore.ril
 fn example() {
     let user_ = 1
 }
---@ end-file
---@ end-case
 
---@ case: accept-type-casing
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-type-casing
---@ file: accept-type-casing.ril
+-- [case: accept-type-casing, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-type-casing
 type Item = int
---@ end-file
---@ end-case
 
---@ case: reject-type-casing
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-type-casing
+-- [case: reject-type-casing, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-type-casing
 -- Error [E0101]: reject type casing
---@ file: reject-type-casing.ril
 type item = int
---@ end-file
---@ end-case
 
---@ case: accept-unresolved-local
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-unresolved-local
---@ file: accept-unresolved-local.ril
+-- [case: accept-unresolved-local, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-unresolved-local
 fn example() {
     let missing = 1
     let value = missing
 }
---@ end-file
---@ end-case
 
---@ case: reject-unresolved-local
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-unresolved-local
+-- [case: reject-unresolved-local, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-unresolved-local
 -- Error [E0204]: reject unresolved local
---@ file: reject-unresolved-local.ril
 fn example() {
     let value = missing
 }
---@ end-file
---@ end-case
 
---@ case: accept-wildcard-expression
---@ mode: check-pass
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: reject-wildcard-expression
---@ file: accept-wildcard-expression.ril
+-- [case: accept-wildcard-expression, check-pass]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: reject-wildcard-expression
 fn example() {
     let value = 1
     let _ = value
 }
---@ end-file
---@ end-case
 
---@ case: reject-wildcard-expression
---@ mode: check-fail
---@ spec: SPEC#identifiers-and-casing-invariants
---@ companion: accept-wildcard-expression
+-- [case: reject-wildcard-expression, check-fail]
+-- spec: SPEC#identifiers-and-casing-invariants
+-- companion: accept-wildcard-expression
 -- Error [E0322]: reject wildcard expression
---@ file: reject-wildcard-expression.ril
 fn example() {
     let _ = 1
     let value = _
 }
---@ end-file
---@ end-case

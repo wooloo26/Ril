@@ -1,49 +1,37 @@
---@ case: result-failure
---@ mode: run-program
---@ spec: SPEC#program-entry-point
---@ exit: 1
---@ stdout: empty
---@ stderr: expected.stderr
---@ file: root.ril
+-- [case: result-failure, run-program]
+-- spec: SPEC#program-entry-point
+-- exit: 1
+-- stdout: empty
+-- stderr: expected.stderr
+-- file: root.ril
 pub fn main() -> Result<(), str> { Err("bad input") }
---@ end-file
---@ file: expected.stderr hex
+
+-- file: expected.stderr hex
 62 61 64 20 69 6e 70 75 74 0a
---@ end-file
---@ end-case
 
---@ case: result-success
---@ mode: run-program
---@ spec: SPEC#program-entry-point
---@ exit: 0
---@ stdout: empty
---@ stderr: empty
---@ file: root.ril
+-- [case: result-success, run-program]
+-- spec: SPEC#program-entry-point
+-- exit: 0
+-- stdout: empty
+-- stderr: empty
+-- file: root.ril
 pub fn main() -> Result<(), str> { Ok() }
---@ end-file
---@ end-case
 
---@ case: unit-success
---@ mode: run-program
---@ spec: SPEC#program-entry-point
---@ exit: 0
---@ stdout: empty
---@ stderr: empty
---@ file: root.ril
+-- [case: unit-success, run-program]
+-- spec: SPEC#program-entry-point
+-- exit: 0
+-- stdout: empty
+-- stderr: empty
+-- file: root.ril
 pub fn main() {}
---@ end-file
---@ end-case
 
---@ case: utf8-output
---@ mode: run-program
---@ spec: SPEC#program-entry-point
---@ exit: 0
---@ stdout: expected.stdout
---@ stderr: empty
---@ file: root.ril
+-- [case: utf8-output, run-program]
+-- spec: SPEC#program-entry-point
+-- exit: 0
+-- stdout: expected.stdout
+-- stderr: empty
+-- file: root.ril
 pub fn main() @Fiber { print("Aé"); println("🙂") }
---@ end-file
---@ file: expected.stdout hex
+
+-- file: expected.stdout hex
 41 c3 a9 f0 9f 99 82 0a
---@ end-file
---@ end-case

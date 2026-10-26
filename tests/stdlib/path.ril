@@ -1,8 +1,5 @@
---@ case: lexical-components
---@ mode: run-pass
---@ spec: STD#native-strings-and-paths
---@ entry: test_lexical_components
---@ file: lexical-components.ril
+-- [case: lexical-components, run-pass]
+-- spec: STD#native-strings-and-paths
 use ril/os
 use ril/path
 use ril/order
@@ -17,15 +14,10 @@ pub fn test_lexical_components() {
     assert(Path::extension(Path::from_string("a.")) == Some(Os::from_string("")))
     assert(Path::extension(Path::from_string("a.tar.gz")) == Some(Os::from_string("gz")))
 }
---@ end-file
---@ end-case
 
---@ case: posix-lexical
---@ mode: run-pass
---@ spec: STD#native-strings-and-paths
---@ entry: test_posix_lexical
---@ requires: posix
---@ file: posix-lexical.ril
+-- [case: posix-lexical, run-pass]
+-- spec: STD#native-strings-and-paths
+-- requires: posix
 use ril/os
 use ril/path
 use ril/order
@@ -38,15 +30,10 @@ pub fn test_posix_lexical() {
     assert(Path::normalize_lexical(Path::from_string("a/..")) == Path::from_string("."))
     assert(Path::normalize_lexical(Path::from_string("../../a")) == Path::from_string("../../a"))
 }
---@ end-file
---@ end-case
 
---@ case: windows-lexical
---@ mode: run-pass
---@ spec: STD#native-strings-and-paths
---@ entry: test_windows_lexical
---@ requires: windows
---@ file: windows-lexical.ril
+-- [case: windows-lexical, run-pass]
+-- spec: STD#native-strings-and-paths
+-- requires: windows
 use ril/os
 use ril/path
 use ril/order
@@ -60,5 +47,3 @@ pub fn test_windows_lexical() {
     let verbatim = Path::from_string("\\\\?\\C:\\a\\..\\b")
     assert(Path::normalize_lexical(verbatim) == verbatim)
 }
---@ end-file
---@ end-case

@@ -1,8 +1,5 @@
---@ case: both-ends
---@ mode: run-pass
---@ spec: STD#ordering-deques-and-heaps
---@ entry: test_both_ends
---@ file: both-ends.ril
+-- [case: both-ends, run-pass]
+-- spec: STD#ordering-deques-and-heaps
 use ril/deque
 
 pub fn test_both_ends() {
@@ -14,14 +11,9 @@ pub fn test_both_ends() {
     assert(Deque::values(queue) == [1, 2, 3] && Deque::len(queue) == 3)
     assert(Deque::pop_back(mut queue) == Some(3) && Deque::pop_front(mut queue) == Some(1))
 }
---@ end-file
---@ end-case
 
---@ case: rebalance-alternating-ends
---@ mode: run-pass
---@ spec: STD#ordering-deques-and-heaps
---@ entry: test_rebalance_alternating_ends
---@ file: rebalance-alternating-ends.ril
+-- [case: rebalance-alternating-ends, run-pass]
+-- spec: STD#ordering-deques-and-heaps
 use ril/deque
 
 pub fn test_rebalance_alternating_ends() {
@@ -51,5 +43,3 @@ pub fn test_rebalance_alternating_ends() {
         assert(Deque::pop_front(mut forward) == None && Deque::pop_back(mut backward) == None)
     }
 }
---@ end-file
---@ end-case

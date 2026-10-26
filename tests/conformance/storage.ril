@@ -1,10 +1,7 @@
---@ case: fresh-values-array
---@ mode: run-pass
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: STD#array
---@ companion: reject-readonly-storage-wrapper
---@ entry: test_fresh_values_array
---@ file: fresh-values-array.ril
+-- [case: fresh-values-array, run-pass]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: STD#array
+-- companion: reject-readonly-storage-wrapper
 type Cell = { mut count: int }
 
 pub fn test_fresh_values_array() {
@@ -21,16 +18,11 @@ pub fn test_fresh_values_array() {
     shared.count += 1
     assert(values[2].count == 12)
 }
---@ end-file
---@ end-case
 
---@ case: fresh-factory-results
---@ mode: run-pass
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: reject-mixed-factory-result
---@ entry: test_fresh_factory_results
---@ file: fresh-factory-results.ril
+-- [case: fresh-factory-results, run-pass]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: reject-mixed-factory-result
 type Cell = { mut count: int }
 fn make(value: int) -> Cell { Cell.{ count: value } }
 fn copy_cell(cell: Cell) -> Cell { clone(cell) }
@@ -60,16 +52,12 @@ pub fn test_fresh_factory_results() {
         assert(selected[0].count == (if flag { 2 } else { 3 }))
     }
 }
---@ end-file
---@ end-case
 
---@ case: imported-factory-result
---@ mode: run-pass
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#module-imports-and-visibility
---@ companion: reject-foreign-result
---@ entry: test_imported_factory_result
---@ file: root.ril
+-- [case: imported-factory-result, run-pass]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#module-imports-and-visibility
+-- companion: reject-foreign-result
+-- file: root.ril
 use factory
 use ril/array::{push as append}
 
@@ -79,19 +67,15 @@ pub fn test_imported_factory_result() {
     values[0].count += 1
     assert(values[0].count == 2)
 }
---@ end-file
---@ file: factory.ril
+
+-- file: factory.ril
 pub type Cell = { mut count: int }
 pub fn make() -> Cell { Cell.{ count: 1 } }
---@ end-file
---@ end-case
 
---@ case: reject-readonly-var-insertion
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ companion: fresh-values-array
+-- [case: reject-readonly-var-insertion, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- companion: fresh-values-array
 -- Error [E0522]: Plain var has already selected read-only interior access
---@ file: reject-readonly-var-insertion.ril
 type Cell = { mut count: int }
 
 fn example() {
@@ -101,15 +85,11 @@ fn example() {
     copied = Cell.{ count: 2 }
     values[0].count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-readonly-identity-result
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ companion: fresh-factory-results
+-- [case: reject-readonly-identity-result, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- companion: fresh-factory-results
 -- Error [E0522]: An ordinary read-only parameter ends initialization eligibility
---@ file: reject-readonly-identity-result.ril
 type Cell = { mut count: int }
 fn identity(cell: Cell) -> Cell { cell }
 
@@ -118,15 +98,11 @@ fn example() {
     values !> Array::push(identity(clone(Cell.{ count: 1 })))
     values[0].count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-readonly-storage-wrapper
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ companion: fresh-values-array
+-- [case: reject-readonly-storage-wrapper, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- companion: fresh-values-array
 -- Error [E0522]: A wrapper's read-only parameter does not inherit the storage operation's contract
---@ file: reject-readonly-storage-wrapper.ril
 type Cell = { mut count: int }
 fn append(mut values: []Cell, cell: Cell) &mut { values !> Array::push(cell) }
 
@@ -135,15 +111,11 @@ fn example() {
     append(mut values, Cell.{ count: 1 })
     values[0].count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-immutable-factory-result
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ companion: fresh-factory-results
+-- [case: reject-immutable-factory-result, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- companion: fresh-factory-results
 -- Error [E0522]: A new allocation published through let remains immutable after return
---@ file: reject-immutable-factory-result.ril
 type Cell = { mut count: int }
 fn make() -> Cell { let cell = Cell.{ count: 1 }; cell }
 
@@ -152,16 +124,12 @@ fn example() {
     values !> Array::push(make())
     values[0].count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-mixed-factory-result
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: fresh-factory-results
+-- [case: reject-mixed-factory-result, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: fresh-factory-results
 -- Error [E0522]: A run-time alternative returning a read-only parameter prevents initial write authority
---@ file: reject-mixed-factory-result.ril
 type Cell = { mut count: int }
 fn choose(flag: bool, cell: Cell) -> Cell { if flag { clone(cell) } else { cell } }
 
@@ -171,15 +139,11 @@ fn example(flag: bool) {
     values !> Array::push(choose(flag, item))
     values[0].count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-existing-writer-insertion
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ companion: fresh-values-array
+-- [case: reject-existing-writer-insertion, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- companion: fresh-values-array
 -- Error [E0522]: An existing writable binding needs the explicit retained-argument family
---@ file: reject-existing-writer-insertion.ril
 type Cell = { mut count: int }
 
 fn example() {
@@ -189,15 +153,11 @@ fn example() {
     values !> Array::push(item)
     values[0].count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-marked-existing-writer-insertion
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ companion: fresh-values-array
+-- [case: reject-marked-existing-writer-insertion, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- companion: fresh-values-array
 -- Error [E0522]: A parenthesized sharing expression cannot make an existing writer a fresh result
---@ file: reject-marked-existing-writer-insertion.ril
 type Cell = { mut count: int }
 
 fn example() {
@@ -207,16 +167,11 @@ fn example() {
     values !> Array::push((^mut item))
     values[0].count += 1
 }
---@ end-file
---@ end-case
 
---@ case: marked-internal-sharing
---@ mode: run-pass
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#retained-mutable-sharing
---@ companion: reject-unmarked-internal-sharing
---@ entry: test_marked_internal_sharing
---@ file: marked-internal-sharing.ril
+-- [case: marked-internal-sharing, run-pass]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#retained-mutable-sharing
+-- companion: reject-unmarked-internal-sharing
 type Cell = { mut count: int }
 
 pub fn test_marked_internal_sharing() {
@@ -227,16 +182,12 @@ pub fn test_marked_internal_sharing() {
     values[0].0.count += 1
     assert(values[0].1.count == 2 && item.count == 1)
 }
---@ end-file
---@ end-case
 
---@ case: reject-unmarked-internal-sharing
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#retained-mutable-sharing
---@ companion: marked-internal-sharing
+-- [case: reject-unmarked-internal-sharing, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#retained-mutable-sharing
+-- companion: marked-internal-sharing
 -- Error [E0510]: Fresh storage reception does not waive the clone's internal-sharing marker
---@ file: reject-unmarked-internal-sharing.ril
 type Cell = { mut count: int }
 
 fn example() {
@@ -245,16 +196,12 @@ fn example() {
     values !> Array::push(clone((item, item)))
     values[0].0.count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-overlapping-internal-sharing
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
---@ companion: marked-internal-sharing
+-- [case: reject-overlapping-internal-sharing, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
+-- companion: marked-internal-sharing
 -- Error [E0523]: The two stored paths still reach the same copied writable origin
---@ file: reject-overlapping-internal-sharing.ril
 type Cell = { mut count: int }
 fn swap(mut a: Cell, mut b: Cell) &mut { let saved = a.count; a.count = b.count; b.count = saved }
 
@@ -264,16 +211,12 @@ fn example() {
     values !> Array::push((^mut clone((item, item))))
     swap(mut values[0].0, mut values[0].1)
 }
---@ end-file
---@ end-case
 
---@ case: reject-nonaddressable-retained-argument
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
---@ companion: marked-internal-sharing
+-- [case: reject-nonaddressable-retained-argument, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- companion: marked-internal-sharing
 -- Error [E0410]: A leading retained argument mode still requires an addressable target
---@ file: reject-nonaddressable-retained-argument.ril
 type Cell = { mut count: int }
 
 fn example() {
@@ -281,16 +224,11 @@ fn example() {
     let mut values: []Cell = []
     values !> Array::push(^mut clone(item))
 }
---@ end-file
---@ end-case
 
---@ case: nested-immutable-field
---@ mode: run-pass
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#deep-immutability
---@ companion: reject-nested-immutable-field-upgrade
---@ entry: test_nested_immutable_field
---@ file: nested-immutable-field.ril
+-- [case: nested-immutable-field, run-pass]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#deep-immutability
+-- companion: reject-nested-immutable-field-upgrade
 type Cell = { mut count: int }
 type Holder = { mut count: int, child: Immut<Cell> }
 
@@ -302,16 +240,12 @@ pub fn test_nested_immutable_field() {
     let child: Immut<Cell> = values[0].child
     assert(values[0].count == 1 && child.count == 7 && holder.count == 0)
 }
---@ end-file
---@ end-case
 
---@ case: reject-nested-immutable-field-upgrade
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#deep-immutability
---@ companion: nested-immutable-field
+-- [case: reject-nested-immutable-field-upgrade, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#deep-immutability
+-- companion: nested-immutable-field
 -- Error [E0520]: Receiving a fresh outer clone cannot upgrade its nested Immut field
---@ file: reject-nested-immutable-field-upgrade.ril
 type Cell = { mut count: int }
 type Holder = { mut count: int, child: Immut<Cell> }
 
@@ -322,16 +256,12 @@ fn example() {
     let mut child = ^mut values[0].child
     child.count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-shallow-construction-child-upgrade
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: nested-immutable-field
+-- [case: reject-shallow-construction-child-upgrade, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: nested-immutable-field
 -- Error [E0520]: A fresh outer construction does not make an existing immutable child writable
---@ file: reject-shallow-construction-child-upgrade.ril
 type Cell = { mut count: int }
 type Holder = { child: Cell }
 
@@ -342,16 +272,11 @@ fn example() {
     let mut child = ^mut values[0].child
     child.count += 1
 }
---@ end-file
---@ end-case
 
---@ case: fresh-values-map
---@ mode: run-pass
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: STD#map
---@ companion: reject-immutable-map-value
---@ entry: test_fresh_values_map
---@ file: fresh-values-map.ril
+-- [case: fresh-values-map, run-pass]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: STD#map
+-- companion: reject-immutable-map-value
 type Cell = { mut count: int }
 
 pub fn test_fresh_values_map() {
@@ -372,16 +297,13 @@ pub fn test_fresh_values_map() {
     assert(replacement.count == 5 && item.count == 1)
     assert(Map::keys(values) == ["a", "b"])
 }
---@ end-file
---@ end-case
 
---@ case: reject-foreign-result
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#external-interface-declarations
---@ companion: imported-factory-result
+-- [case: reject-foreign-result, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#external-interface-declarations
+-- companion: imported-factory-result
 -- Error [E0522]: A bodyless foreign return supplies ordinary immutable exchange data
---@ file: root.ril
+-- file: root.ril
 use foreign
 
 fn example() {
@@ -389,20 +311,16 @@ fn example() {
     values !> Array::push(Foreign::make())
     values[0].count += 1
 }
---@ end-file
---@ file: foreign.d.ril
+
+-- file: foreign.d.ril
 pub type Cell = { mut count: int }
 pub fn make() -> Cell
---@ end-file
---@ end-case
 
---@ case: reject-shadowed-clone-result
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: SPEC#prelude-scope
---@ companion: fresh-factory-results
+-- [case: reject-shadowed-clone-result, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: SPEC#prelude-scope
+-- companion: fresh-factory-results
 -- Error [E0522]: A function named clone does not acquire the prelude's copying contract
---@ file: reject-shadowed-clone-result.ril
 type Cell = { mut count: int }
 fn clone(cell: Cell) -> Cell { cell }
 
@@ -411,16 +329,12 @@ fn example() {
     values !> Array::push(clone(Cell.{ count: 1 }))
     values[0].count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-immutable-map-value
---@ mode: check-fail
---@ spec: SPEC#fresh-values-in-storage-calls
---@ spec: STD#map
---@ companion: fresh-values-map
+-- [case: reject-immutable-map-value, check-fail]
+-- spec: SPEC#fresh-values-in-storage-calls
+-- spec: STD#map
+-- companion: fresh-values-map
 -- Error [E0520]: An immutable snapshot never supplies initial write authority
---@ file: reject-immutable-map-value.ril
 type Cell = { mut count: int }
 
 fn example() {
@@ -429,5 +343,3 @@ fn example() {
     let mut item = ^mut (values["a"] ?? panic("missing a"))
     item.count += 1
 }
---@ end-file
---@ end-case

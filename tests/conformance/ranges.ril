@@ -1,233 +1,152 @@
---@ case: accept-live-window-structural-change
---@ mode: check-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: reject-live-window-structural-change
---@ file: accept-live-window-structural-change.ril
+-- [case: accept-live-window-structural-change, check-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: reject-live-window-structural-change
 fn example() {
     let mut items = [1, 2]
     let view window = items[..]
     assert(len(window) == 2)
     items !> Array::push(3)
 }
---@ end-file
---@ end-case
 
---@ case: reject-live-window-element-write
---@ mode: check-fail
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: window-observes-replacement
+-- [case: reject-live-window-element-write, check-fail]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: window-observes-replacement
 -- Error [E0520]: A slice window grants no element writer even when its backing has one.
---@ file: reject-live-window-element-write.ril
 fn invalid() {
     let mut items = [1, 2, 3]
     items[0] = 7
     let view window = items[1..]
     window[0] = 9
 }
---@ end-file
---@ end-case
 
---@ case: reject-live-window-structural-change
---@ mode: check-fail
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: accept-live-window-structural-change
+-- [case: reject-live-window-structural-change, check-fail]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: accept-live-window-structural-change
 -- Error [E0537]: reject live window structural change
---@ file: reject-live-window-structural-change.ril
 fn example() {
     let mut items = [1, 2]
     let view window = items[..]
     items !> Array::push(3)
     assert(len(window) == 2)
 }
---@ end-file
---@ end-case
 
---@ case: accept-mixed-range-type
---@ mode: check-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: reject-mixed-range-type
---@ file: accept-mixed-range-type.ril
+-- [case: accept-mixed-range-type, check-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: reject-mixed-range-type
 fn example() {
     let values = 0u8..1u8
 }
---@ end-file
---@ end-case
 
---@ case: reject-mixed-range-type
---@ mode: check-fail
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: accept-mixed-range-type
+-- [case: reject-mixed-range-type, check-fail]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: accept-mixed-range-type
 -- Error [E0301]: reject mixed range type
---@ file: reject-mixed-range-type.ril
 fn example() {
     let values = 0u8..1u16
 }
---@ end-file
---@ end-case
 
---@ case: accept-noninteger-range
---@ mode: check-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: reject-noninteger-range
---@ file: accept-noninteger-range.ril
+-- [case: accept-noninteger-range, check-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: reject-noninteger-range
 fn example() {
     let values = 0..1
 }
---@ end-file
---@ end-case
 
---@ case: reject-noninteger-range
---@ mode: check-fail
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: accept-noninteger-range
+-- [case: reject-noninteger-range, check-fail]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: accept-noninteger-range
 -- Error [E0327]: reject noninteger range
---@ file: reject-noninteger-range.ril
 fn example() {
     let values = 0.0..1.0
 }
---@ end-file
---@ end-case
 
---@ case: end-index-safe
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: end-index
---@ entry: test_end_index_safe
---@ file: end-index-safe.ril
+-- [case: end-index-safe, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: end-index
 pub fn test_end_index_safe() {
     let values = [10, 20, 30]
     let _ = values[2]
 }
---@ end-file
---@ end-case
 
---@ case: end-index
---@ mode: run-panic
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: end-index-safe
---@ entry: test_end_index
+-- [case: end-index, run-panic]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: end-index-safe
 -- Panics: end index
---@ file: end-index.ril
 pub fn test_end_index() {
     let values = [10, 20, 30]
     let _ = values[3]
 }
---@ end-file
---@ end-case
 
---@ case: inclusive-end-safe
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: inclusive-end
---@ entry: test_inclusive_end_safe
---@ file: inclusive-end-safe.ril
+-- [case: inclusive-end-safe, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: inclusive-end
 pub fn test_inclusive_end_safe() {
     let values = [10, 20, 30]
     let _ = values[0..=2]
 }
---@ end-file
---@ end-case
 
---@ case: inclusive-end
---@ mode: run-panic
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: inclusive-end-safe
---@ entry: test_inclusive_end
+-- [case: inclusive-end, run-panic]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: inclusive-end-safe
 -- Panics: inclusive end
---@ file: inclusive-end.ril
 pub fn test_inclusive_end() {
     let values = [10, 20, 30]
     let _ = values[0..=3]
 }
---@ end-file
---@ end-case
 
---@ case: negative-index-safe
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: negative-index
---@ entry: test_negative_index_safe
---@ file: negative-index-safe.ril
+-- [case: negative-index-safe, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: negative-index
 pub fn test_negative_index_safe() {
     let values = [10, 20, 30]
     let _ = values[0]
 }
---@ end-file
---@ end-case
 
---@ case: negative-index
---@ mode: run-panic
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: negative-index-safe
---@ entry: test_negative_index
+-- [case: negative-index, run-panic]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: negative-index-safe
 -- Panics: negative index
---@ file: negative-index.ril
 pub fn test_negative_index() {
     let values = [10, 20, 30]
     let _ = values[-1]
 }
---@ end-file
---@ end-case
 
---@ case: negative-slice-safe
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: negative-slice
---@ entry: test_negative_slice_safe
---@ file: negative-slice-safe.ril
+-- [case: negative-slice-safe, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: negative-slice
 pub fn test_negative_slice_safe() {
     let values = [10, 20, 30]
     let _ = values[0..1]
 }
---@ end-file
---@ end-case
 
---@ case: negative-slice
---@ mode: run-panic
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: negative-slice-safe
---@ entry: test_negative_slice
+-- [case: negative-slice, run-panic]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: negative-slice-safe
 -- Panics: negative slice
---@ file: negative-slice.ril
 pub fn test_negative_slice() {
     let values = [10, 20, 30]
     let _ = values[-1..1]
 }
---@ end-file
---@ end-case
 
---@ case: past-end-safe
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: past-end
---@ entry: test_past_end_safe
---@ file: past-end-safe.ril
+-- [case: past-end-safe, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: past-end
 pub fn test_past_end_safe() {
     let values = [10, 20, 30]
     let _ = values[0..3]
 }
---@ end-file
---@ end-case
 
---@ case: past-end
---@ mode: run-panic
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: past-end-safe
---@ entry: test_past_end
+-- [case: past-end, run-panic]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: past-end-safe
 -- Panics: past end
---@ file: past-end.ril
 pub fn test_past_end() {
     let values = [10, 20, 30]
     let _ = values[0..4]
 }
---@ end-file
---@ end-case
 
---@ case: range-boundaries
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ entry: test_range_boundaries
---@ file: range-boundaries.ril
+-- [case: range-boundaries, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
 pub fn test_range_boundaries() {
     var count = 0
     for 254u8..=255u8 as value { assert(value >= 254u8); count += 1 }
@@ -240,41 +159,26 @@ pub fn test_range_boundaries() {
     assert(values[1..=] == [20, 30])
     assert(values[3..3] == [])
 }
---@ end-file
---@ end-case
 
---@ case: reversed-slice-safe
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: reversed-slice
---@ entry: test_reversed_slice_safe
---@ file: reversed-slice-safe.ril
+-- [case: reversed-slice-safe, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: reversed-slice
 pub fn test_reversed_slice_safe() {
     let values = [10, 20, 30]
     let _ = values[1..2]
 }
---@ end-file
---@ end-case
 
---@ case: reversed-slice
---@ mode: run-panic
---@ spec: SPEC#range-and-slicing-expressions
---@ companion: reversed-slice-safe
---@ entry: test_reversed_slice
+-- [case: reversed-slice, run-panic]
+-- spec: SPEC#range-and-slicing-expressions
+-- companion: reversed-slice-safe
 -- Panics: reversed slice
---@ file: reversed-slice.ril
 pub fn test_reversed_slice() {
     let values = [10, 20, 30]
     let _ = values[2..1]
 }
---@ end-file
---@ end-case
 
---@ case: window-observes-replacement
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ entry: test_window_observes_replacement
---@ file: window-observes-replacement.ril
+-- [case: window-observes-replacement, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
 pub fn test_window_observes_replacement() {
     let mut items = [1, 2]
     let view window = items[..]
@@ -283,5 +187,3 @@ pub fn test_window_observes_replacement() {
     items !> Array::push(3)
     assert(len(items) == 3)
 }
---@ end-file
---@ end-case

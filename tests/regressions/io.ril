@@ -1,5 +1,5 @@
---@ source: source-io-callback-empty-write-inspection
---@ file: source.ril
+-- [source: source-io-callback-empty-write-inspection]
+-- file: source.ril
 use ril/io
 type Writer={pending:Result<int,str>,mut calls:int}
 fn write(mut writer:Writer,data:bytes)->Io::WriteProgress &mut{
@@ -12,22 +12,17 @@ fn example(){
     let mut writer=Writer.{pending:pending,calls:0}
     assert(Io::write_all(mut writer,b"",.{write:write}) is Ok(_)|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: io-callback-empty-write-inspection
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ companion: io-callback-empty-write-capture
---@ use-source: source-io-callback-empty-write-inspection
---@ end-case
+-- [case: io-callback-empty-write-inspection, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- companion: io-callback-empty-write-capture
+-- use-source: source-io-callback-empty-write-inspection
 
---@ case: io-callback-empty-write-capture
---@ mode: check-fail
---@ spec: STD#error-and-stream-contracts
---@ companion: io-callback-empty-write-inspection
+-- [case: io-callback-empty-write-capture, check-fail]
+-- spec: STD#error-and-stream-contracts
+-- companion: io-callback-empty-write-inspection
 -- Error [E0534]: An empty write still checks the operation's latent capture contract.
---@ file: source.ril
+-- file: source.ril
 use ril/io
 type Writer={mut calls:int}
 fn example(){
@@ -40,11 +35,9 @@ fn example(){
     }
     assert(Io::write_all(mut writer,b"",.{write:callback}) is Ok(_)|Err(_))
 }
---@ end-file
---@ end-case
 
---@ source: source-io-callback-result-inspection
---@ file: source.ril
+-- [source: source-io-callback-result-inspection]
+-- file: source.ril
 use ril/io
 type Reader={scratch:[2]u8,pending:Result<int,str>,mut calls:int}
 fn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
@@ -57,17 +50,13 @@ fn example(){
     let mut reader=Reader.{scratch:[1u8,2u8],pending:pending,calls:0}
     assert(Io::read_all(mut reader,.{read:read}) is Ok(_)|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: io-callback-result-inspection
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ use-source: source-io-callback-result-inspection
---@ end-case
+-- [case: io-callback-result-inspection, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- use-source: source-io-callback-result-inspection
 
---@ source: source-io-dynamic-fixed-backing
---@ file: source.ril
+-- [source: source-io-dynamic-fixed-backing]
+-- file: source.ril
 use ril/io
 type Reader={scratch:[]u8,mut calls:int}
 fn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
@@ -81,24 +70,18 @@ pub fn test_native(){
     assert(Io::read_all(mut reader,.{read:read}) is Ok(_))
     assert(backing[0]==7u8 && len(backing)==2 && reader.calls==1)
 }
---@ end-file
---@ end-source
 
---@ case: io-dynamic-fixed-backing
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ use-source: source-io-dynamic-fixed-backing
---@ end-case
+-- [case: io-dynamic-fixed-backing, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- use-source: source-io-dynamic-fixed-backing
 
---@ case: io-dynamic-fixed-backing-test-native
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_native
---@ use-source: source-io-dynamic-fixed-backing
---@ end-case
+-- [case: io-dynamic-fixed-backing-test-native, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- entry: test_native
+-- use-source: source-io-dynamic-fixed-backing
 
---@ source: source-io-dynamic-receiver-control
---@ file: source.ril
+-- [source: source-io-dynamic-receiver-control]
+-- file: source.ril
 use ril/io
 type Reader={scratch:[]u8,mut calls:int}
 fn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
@@ -111,24 +94,18 @@ pub fn test_native(){
     let result=Io::read_all(mut reader,.{read:read})
     assert(result is Ok(_)|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: io-dynamic-receiver-control
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ use-source: source-io-dynamic-receiver-control
---@ end-case
+-- [case: io-dynamic-receiver-control, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- use-source: source-io-dynamic-receiver-control
 
---@ case: io-dynamic-receiver-control-test-native
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_native
---@ use-source: source-io-dynamic-receiver-control
---@ end-case
+-- [case: io-dynamic-receiver-control-test-native, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- entry: test_native
+-- use-source: source-io-dynamic-receiver-control
 
---@ source: source-io-fixed-receiver
---@ file: source.ril
+-- [source: source-io-fixed-receiver]
+-- file: source.ril
 use ril/io
 type Reader={scratch:[2]u8,mut calls:int}
 fn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
@@ -141,24 +118,18 @@ pub fn test_native(){
     let result=Io::read_all(mut reader,.{read:read})
     assert(result is Ok(_)|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: io-fixed-receiver
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ use-source: source-io-fixed-receiver
---@ end-case
+-- [case: io-fixed-receiver, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- use-source: source-io-fixed-receiver
 
---@ case: io-fixed-receiver-test-native
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_native
---@ use-source: source-io-fixed-receiver
---@ end-case
+-- [case: io-fixed-receiver-test-native, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- entry: test_native
+-- use-source: source-io-fixed-receiver
 
---@ source: source-io-fixed-writer
---@ file: source.ril
+-- [source: source-io-fixed-writer]
+-- file: source.ril
 use ril/io
 type Writer={scratch:[2]u8,mut calls:int}
 fn write(mut writer:Writer,data:bytes)->Io::WriteProgress&mut{
@@ -172,24 +143,18 @@ pub fn test_native(){
     assert(Io::write_all(mut writer,b"",.{write:write}) is Ok())
     assert(writer.calls==2 && len(writer.scratch)==2 && writer.scratch[0]==9u8)
 }
---@ end-file
---@ end-source
 
---@ case: io-fixed-writer
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ use-source: source-io-fixed-writer
---@ end-case
+-- [case: io-fixed-writer, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- use-source: source-io-fixed-writer
 
---@ case: io-fixed-writer-test-native
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_native
---@ use-source: source-io-fixed-writer
---@ end-case
+-- [case: io-fixed-writer-test-native, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- entry: test_native
+-- use-source: source-io-fixed-writer
 
---@ source: source-io-nested-fixed-receiver
---@ file: source.ril
+-- [source: source-io-nested-fixed-receiver]
+-- file: source.ril
 use ril/io
 type Reader={scratch:([2]u8,[0][3]int),mut calls:int}
 fn read(mut reader:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
@@ -204,24 +169,18 @@ pub fn test_native(){
     match result{Ok(data)->assert(data==b""),Err(_)->panic("read")}
     assert(reader.calls==1 && reader.scratch.0[0]==9u8)
 }
---@ end-file
---@ end-source
 
---@ case: io-nested-fixed-receiver
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ use-source: source-io-nested-fixed-receiver
---@ end-case
+-- [case: io-nested-fixed-receiver, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- use-source: source-io-nested-fixed-receiver
 
---@ case: io-nested-fixed-receiver-test-native
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_native
---@ use-source: source-io-nested-fixed-receiver
---@ end-case
+-- [case: io-nested-fixed-receiver-test-native, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- entry: test_native
+-- use-source: source-io-nested-fixed-receiver
 
---@ source: source-io-readonly-capture
---@ file: source.ril
+-- [source: source-io-readonly-capture]
+-- file: source.ril
 use ril/io
 type Reader={scratch:Immut<[2]u8>,mut calls:int}
 fn read(mut current:Reader,limit:int)->Result<Io::ReadChunk,Io::IoError>&mut{
@@ -236,24 +195,18 @@ pub fn test_native(){
     assert(Io::read_all(mut reader,.{read:read}) is Ok(_))
     assert(reader.calls==1 && len(reader.scratch)==2 && backing[0]==expected)
 }
---@ end-file
---@ end-source
 
---@ case: io-readonly-capture
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ use-source: source-io-readonly-capture
---@ end-case
+-- [case: io-readonly-capture, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- use-source: source-io-readonly-capture
 
---@ case: io-readonly-capture-test-native
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_native
---@ use-source: source-io-readonly-capture
---@ end-case
+-- [case: io-readonly-capture-test-native, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- entry: test_native
+-- use-source: source-io-readonly-capture
 
---@ source: source-io-resource-fixed-receiver
---@ file: source.ril
+-- [source: source-io-resource-fixed-receiver]
+-- file: source.ril
 use ril/io
 use ril/file
 use ril/path
@@ -274,18 +227,12 @@ pub fn test_native() @Fiber{
     }
     File::remove_file(path) ?? \_error->panic("remove")
 }
---@ end-file
---@ end-source
 
---@ case: io-resource-fixed-receiver
---@ mode: check-pass
---@ spec: STD#error-and-stream-contracts
---@ use-source: source-io-resource-fixed-receiver
---@ end-case
+-- [case: io-resource-fixed-receiver, check-pass]
+-- spec: STD#error-and-stream-contracts
+-- use-source: source-io-resource-fixed-receiver
 
---@ case: io-resource-fixed-receiver-test-native
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_native
---@ use-source: source-io-resource-fixed-receiver
---@ end-case
+-- [case: io-resource-fixed-receiver-test-native, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- entry: test_native
+-- use-source: source-io-resource-fixed-receiver

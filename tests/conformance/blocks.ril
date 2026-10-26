@@ -1,145 +1,97 @@
---@ case: accept-local-effect-escape
---@ mode: check-pass
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: reject-local-effect-escape
---@ file: accept-local-effect-escape.ril
+-- [case: accept-local-effect-escape, check-pass]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: reject-local-effect-escape
 fn example() -> int { with Local::read() -> resume 1
     Local::read()
 where
     eff Local { read() -> int }
 }
---@ end-file
---@ end-case
 
---@ case: reject-local-effect-escape
---@ mode: check-fail
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: accept-local-effect-escape
+-- [case: reject-local-effect-escape, check-fail]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: accept-local-effect-escape
 -- Error [E0618]: reject local effect escape
---@ file: reject-local-effect-escape.ril
 fn example() -> int @Local { Local::read()
 where
     eff Local { read() -> int }
 }
---@ end-file
---@ end-case
 
---@ case: accept-local-nominal-escape
---@ mode: check-pass
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: reject-local-nominal-escape
---@ file: accept-local-nominal-escape.ril
+-- [case: accept-local-nominal-escape, check-pass]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: reject-local-nominal-escape
 fn example() -> Token
 where
     type Token = int
 { 1 }
---@ end-file
---@ end-case
 
---@ case: reject-local-nominal-escape
---@ mode: check-fail
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: accept-local-nominal-escape
+-- [case: reject-local-nominal-escape, check-fail]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: accept-local-nominal-escape
 -- Error [E0315]: reject local nominal escape
---@ file: reject-local-nominal-escape.ril
 fn example() -> Token
 where
     type Token(int)
 { Token(1) }
---@ end-file
---@ end-case
 
---@ case: accept-sequential-function
---@ mode: check-pass
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: reject-sequential-function
---@ file: accept-sequential-function.ril
+-- [case: accept-sequential-function, check-pass]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: reject-sequential-function
 fn example() { helper()
 where
     fn helper() {}
 }
---@ end-file
---@ end-case
 
---@ case: reject-sequential-function
---@ mode: check-fail
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: accept-sequential-function
+-- [case: reject-sequential-function, check-fail]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: accept-sequential-function
 -- Error [E0703]: reject sequential function
---@ file: reject-sequential-function.ril
 fn example() { fn helper() {} }
---@ end-file
---@ end-case
 
---@ case: accept-sequential-type
---@ mode: check-pass
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: reject-sequential-type
---@ file: accept-sequential-type.ril
+-- [case: accept-sequential-type, check-pass]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: reject-sequential-type
 fn example() { ()
 where
     type Item = int
 }
---@ end-file
---@ end-case
 
---@ case: reject-sequential-type
---@ mode: check-fail
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: accept-sequential-type
+-- [case: reject-sequential-type, check-fail]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: accept-sequential-type
 -- Error [E0703]: reject sequential type
---@ file: reject-sequential-type.ril
 fn example() { type Item = int }
---@ end-file
---@ end-case
 
---@ case: accept-uninitialized-capture
---@ mode: check-pass
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: reject-uninitialized-capture
---@ file: accept-uninitialized-capture.ril
+-- [case: accept-uninitialized-capture, check-pass]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: reject-uninitialized-capture
 fn example() -> int { let value = 1
     read()
 where
     fn read() -> int &{closure, value} { value }
 }
---@ end-file
---@ end-case
 
---@ case: reject-uninitialized-capture
---@ mode: check-fail
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: accept-uninitialized-capture
+-- [case: reject-uninitialized-capture, check-fail]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: accept-uninitialized-capture
 -- Error [E0207]: reject uninitialized capture
---@ file: reject-uninitialized-capture.ril
 fn example() -> int { read()
     let value = 1
     read()
 where
     fn read() -> int &{closure, value} { value }
 }
---@ end-file
---@ end-case
 
---@ case: accept-where-binding
---@ mode: check-pass
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: reject-where-binding
---@ file: accept-where-binding.ril
+-- [case: accept-where-binding, check-pass]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: reject-where-binding
 fn example() { let value = 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-where-binding
---@ mode: check-fail
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: accept-where-binding
+-- [case: reject-where-binding, check-fail]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: accept-where-binding
 -- Error [E0702]: reject where binding
---@ file: reject-where-binding.ril
 fn example() { ()
 where
     let value = 1
 }
---@ end-file
---@ end-case

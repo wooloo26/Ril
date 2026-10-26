@@ -1,24 +1,20 @@
---@ case: inferred-fixed-input
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
---@ entry: test_native
---@ file: source.ril
+-- [case: inferred-fixed-input, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- entry: test_native
+-- file: source.ril
 fn take(values: [2]int) -> int { values[0] }
 pub fn test_native() {
     let input: [2]int = [7, 9]
     let reader = \numbers -> take(numbers)
     assert(reader(input) == 7)
 }
---@ end-file
---@ end-case
 
---@ case: named-empty-header-scopes
---@ mode: run-pass
---@ spec: SPEC#dual-tier-where-invariants
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: named-empty-header-scopes, run-pass]
+-- spec: SPEC#dual-tier-where-invariants
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 fn first() -> fn() -> int {
     same
 where
@@ -35,15 +31,12 @@ pub fn test_native() {
     let right = second()
     assert(left() == 7 && right() == 9)
 }
---@ end-file
---@ end-case
 
---@ case: derive-named-construction
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: derive-named-construction, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 type Grid = { mut rows: [0][2]int, mut title: str }
 fn fixed(rows: [0][2]int) -> int { len(rows) }
 fn revise(mut draft: Grid) &mut {
@@ -54,14 +47,11 @@ pub fn test_native() {
     let revised = Grid.{ rows: [], title: "Guide" } |> derive revise
     assert(revised.title == "Revised")
 }
---@ end-file
---@ end-case
 
---@ case: derive-distinct-targets
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ entry: test_native
---@ file: source.ril
+-- [case: derive-distinct-targets, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- entry: test_native
+-- file: source.ril
 type Document = { mut title: str }
 fn first_title(mut draft: Document) &mut { draft.title = "First" }
 fn second_title(mut draft: Document) &mut { draft.title = "Second" }
@@ -71,15 +61,12 @@ pub fn test_native() {
     let second = source |> derive second_title
     assert(source.title == "Guide" && first.title == "First" && second.title == "Second")
 }
---@ end-file
---@ end-case
 
---@ case: derive-named-repeated-activation
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: derive-named-repeated-activation, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 type Grid = { mut rows: [0][2]int, mut title: str }
 fn fixed(rows: [0][2]int) -> int { len(rows) }
 fn revise(mut draft: Grid) &mut {
@@ -93,52 +80,40 @@ pub fn test_native() {
     let second = transform(source)
     assert(source.title == "Guide" && first.title == "Revised" && second.title == "Revised")
 }
---@ end-file
---@ end-case
 
---@ case: derive-named-dimension-mismatch
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: derive-named-construction
+-- [case: derive-named-dimension-mismatch, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: derive-named-construction
 -- Error [E0301]: generated named inputs preserve inner dimensions under an empty outer array
---@ file: source.ril
+-- file: source.ril
 type Grid = { mut rows: [0][2]int, mut title: str }
 type Other = { mut rows: [0][3]int, mut title: str }
 fn revise(mut draft: Grid) &mut { draft.title = "Revised" }
 fn example() { let revised = Other.{ rows: [], title: "Guide" } |> derive revise }
---@ end-file
---@ end-case
 
---@ case: derive-copy-cannot-reopen-construction
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: derive-named-construction
+-- [case: derive-copy-cannot-reopen-construction, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: derive-named-construction
 -- Error [E0301]: copying a dynamic array cannot infer a fixed outer dimension from its backing storage
---@ file: source.ril
+-- file: source.ril
 type Grid = { mut rows: [0][2]int, mut title: str }
 type Dynamic = { mut rows: [][2]int, mut title: str }
 fn revise(mut draft: Grid) &mut { draft.title = "Revised" }
 fn example() { let revised = Dynamic.{ rows: [], title: "Guide" } |> derive revise }
---@ end-file
---@ end-case
 
---@ case: derive-named-draft-escape
---@ mode: check-fail
---@ spec: SPEC#functional-updates-via-derive
---@ companion: derive-named-construction
+-- [case: derive-named-draft-escape, check-fail]
+-- spec: SPEC#functional-updates-via-derive
+-- companion: derive-named-construction
 -- Error [E0607]: a named recipe cannot publish its writable draft
---@ file: source.ril
+-- file: source.ril
 type Grid = { mut rows: [0][2]int, mut title: str }
 fn escape(mut draft: Grid) -> Grid { draft }
 fn example() { let revised = Grid.{ rows: [], title: "Guide" } |> derive escape }
---@ end-file
---@ end-case
 
---@ case: derive-clone-view
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ entry: test_native
---@ file: source.ril
+-- [case: derive-clone-view, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- entry: test_native
+-- file: source.ril
 type Document = { mut title: str }
 pub fn test_native() {
     let document = Document.{ title: "Guide" }
@@ -153,14 +128,11 @@ pub fn test_native() {
     let revised = snapshot |> derive \mut draft -> { draft.title = "Revised" }
     assert(snapshot.title == "Draft" && revised.title == "Revised")
 }
---@ end-file
---@ end-case
 
---@ case: derive-repeated-activation
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ entry: test_native
---@ file: source.ril
+-- [case: derive-repeated-activation, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- entry: test_native
+-- file: source.ril
 type Document = { mut title: str }
 fn revise(source: Immut<Document>) -> Immut<Document> {
     source |> derive \mut draft -> { draft.title = "Revised" }
@@ -171,28 +143,22 @@ pub fn test_native() {
     let second = revise(source)
     assert(source.title == "Guide" && first.title == "Revised" && second.title == "Revised")
 }
---@ end-file
---@ end-case
 
---@ case: derive-construction
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ entry: test_native
---@ file: source.ril
+-- [case: derive-construction, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- entry: test_native
+-- file: source.ril
 type Document = { mut title: str }
 pub fn test_native() {
     let revised = Document.{ title: "Guide" } |> derive \mut draft -> { draft.title = "Revised" }
     assert(revised.title == "Revised")
 }
---@ end-file
---@ end-case
 
---@ case: derive-nested-fixed-input
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: derive-nested-fixed-input, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 type Grid = { mut rows: [0][2]int, mut title: str }
 fn fixed(rows: [0][2]int) -> int { len(rows) }
 pub fn test_native() {
@@ -203,15 +169,12 @@ pub fn test_native() {
     }
     assert(source.title == "Guide" && revised.title == "Revised")
 }
---@ end-file
---@ end-case
 
---@ case: derive-nested-dimension-mismatch
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: derive-nested-fixed-input
+-- [case: derive-nested-dimension-mismatch, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: derive-nested-fixed-input
 -- Error [E0301]: an empty outer array preserves the original inner dimension
---@ file: source.ril
+-- file: source.ril
 type Grid = { mut rows: [0][3]int, mut title: str }
 fn fixed(rows: [0][2]int) -> int { len(rows) }
 fn example() {
@@ -221,30 +184,23 @@ fn example() {
         draft.title = "Revised"
     }
 }
---@ end-file
---@ end-case
 
---@ case: inferred-read-cannot-write
---@ mode: check-fail
---@ spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
---@ companion: inferred-fixed-input
+-- [case: inferred-read-cannot-write, check-fail]
+-- spec: SPEC#anonymous-functions-trailing-closures-and-projection-accessors
+-- companion: inferred-fixed-input
 -- Error [E0520]: inferred readonly formals cannot recover interior write authority
---@ file: source.ril
+-- file: source.ril
 type Document = { mut title: str }
 fn example() {
     let mut source = Document.{ title: "Guide" }
     let update = \item -> { item.title = "Changed" }
     update(source)
 }
---@ end-file
---@ end-case
 
---@ case: derive-resumed-answer
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ companion: derive-construction
---@ entry: test_derive_resumed_answer
---@ file: source.ril
+-- [case: derive-resumed-answer, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- companion: derive-construction
+-- file: source.ril
 type Counter = { mut value: int }
 eff Read { get() -> int }
 pub fn test_derive_resumed_answer() {
@@ -256,43 +212,34 @@ pub fn test_derive_resumed_answer() {
     }
     assert(result.value == 8)
 }
---@ end-file
---@ end-case
 
---@ case: derive-live-input
---@ mode: check-fail
---@ spec: SPEC#functional-updates-via-derive
---@ companion: derive-clone-view
+-- [case: derive-live-input, check-fail]
+-- spec: SPEC#functional-updates-via-derive
+-- companion: derive-clone-view
 -- Error [E0536]: derive requires immutable ordinary input
---@ file: source.ril
+-- file: source.ril
 type Document = { mut title: str }
 fn example() {
     let mut source = Document.{ title: "Guide" }
     let revised = source |> derive \mut draft -> { draft.title = "Changed" }
 }
---@ end-file
---@ end-case
 
---@ case: derive-draft-escape
---@ mode: check-fail
---@ spec: SPEC#functional-updates-via-derive
---@ companion: derive-clone-view
+-- [case: derive-draft-escape, check-fail]
+-- spec: SPEC#functional-updates-via-derive
+-- companion: derive-clone-view
 -- Error [E0607]: the writable draft cannot escape the recipe
---@ file: source.ril
+-- file: source.ril
 type Document = { mut title: str }
 fn example() {
     let source = Document.{ title: "Guide" }
     let revised = source |> derive \mut draft -> draft
 }
---@ end-file
---@ end-case
 
---@ case: derive-resume-completion
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ spec: SPEC#effect-handlers
---@ entry: test_native
---@ file: source.ril
+-- [case: derive-resume-completion, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- spec: SPEC#effect-handlers
+-- entry: test_native
+-- file: source.ril
 type Document = { mut title: str }
 eff Read { get() -> int }
 fn original() -> Immut<Document> @Read {
@@ -308,5 +255,3 @@ pub fn test_native() {
     }
     assert(revised.title == "Revised")
 }
---@ end-file
---@ end-case

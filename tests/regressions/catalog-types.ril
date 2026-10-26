@@ -1,9 +1,8 @@
---@ case: nested-constructor-patterns
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#pattern-matching
---@ entry: test_native
---@ file: source.ril
+-- [case: nested-constructor-patterns, run-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#pattern-matching
+-- entry: test_native
+-- file: source.ril
 use ril/process
 fn nested(value: (Process::ExitStatus, { status: Process::ExitStatus })) -> bool {
     value is (Process::ExitStatus::Signaled(-1), .{status: Process::ExitStatus::Exited(4294967295)})
@@ -14,15 +13,12 @@ pub fn test_native() {
     assert(nested(value))
     assert(!nested((Process::ExitStatus::Signaled(0), .{status: Process::ExitStatus::Exited(4294967295u32)})))
 }
---@ end-file
---@ end-case
 
---@ case: catalog-constant-patterns
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ spec: SPEC#pattern-matching
---@ entry: test_native
---@ file: source.ril
+-- [case: catalog-constant-patterns, run-pass]
+-- spec: STD#numbers-and-mathematics
+-- spec: SPEC#pattern-matching
+-- entry: test_native
+-- file: source.ril
 use ril/num
 fn invalid() -> bool {
     Num::parse_int("invalid") is Err(Num::NumError::InvalidSyntax)
@@ -34,19 +30,14 @@ pub fn test_native() {
     let expected = Num::NumError::InvalidSyntax
     assert(Num::NumError::InvalidSyntax is expected)
 }
---@ end-file
---@ end-case
 
---@ case: constructor-pattern-overflow
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#pattern-matching
---@ companion: nested-constructor-patterns
+-- [case: constructor-pattern-overflow, check-fail]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#pattern-matching
+-- companion: nested-constructor-patterns
 -- Error [E0326]: the catalog's u32 payload cannot adopt an int or u64 range.
---@ file: source.ril
+-- file: source.ril
 use ril/process
 fn matches(value: Process::ExitStatus) -> bool {
     value is Process::ExitStatus::Exited(4294967296)
 }
---@ end-file
---@ end-case

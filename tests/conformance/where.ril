@@ -1,22 +1,16 @@
---@ case: accept-downward-type
---@ mode: check-pass
---@ spec: SPEC#dual-tier-where-invariants
---@ companion: reject-downward-type
---@ file: accept-downward-type.ril
+-- [case: accept-downward-type, check-pass]
+-- spec: SPEC#dual-tier-where-invariants
+-- companion: reject-downward-type
 fn example() -> Wrapper
 where
     type Internal = int
     type Wrapper = { value: Internal }
 { .{ value: 1 } }
---@ end-file
---@ end-case
 
---@ case: reject-downward-type
---@ mode: check-fail
---@ spec: SPEC#dual-tier-where-invariants
---@ companion: accept-downward-type
+-- [case: reject-downward-type, check-fail]
+-- spec: SPEC#dual-tier-where-invariants
+-- companion: accept-downward-type
 -- Error [E0705]: reject downward type
---@ file: reject-downward-type.ril
 fn example() -> Wrapper
 where
     type Wrapper = { value: Internal }
@@ -24,55 +18,37 @@ where
 where
     type Internal = int
 }
---@ end-file
---@ end-case
 
---@ case: accept-signature-block-type
---@ mode: check-pass
---@ spec: SPEC#dual-tier-where-invariants
---@ companion: reject-signature-block-type
---@ file: accept-signature-block-type.ril
+-- [case: accept-signature-block-type, check-pass]
+-- spec: SPEC#dual-tier-where-invariants
+-- companion: reject-signature-block-type
 fn example(action: Action)
 where
     type Action = fn() -> ()
 { action() }
---@ end-file
---@ end-case
 
---@ case: reject-signature-block-type
---@ mode: check-fail
---@ spec: SPEC#dual-tier-where-invariants
---@ companion: accept-signature-block-type
+-- [case: reject-signature-block-type, check-fail]
+-- spec: SPEC#dual-tier-where-invariants
+-- companion: accept-signature-block-type
 -- Error [E0706]: reject signature block type
---@ file: reject-signature-block-type.ril
 fn example(action: Action) { action()
 where
     type Action = fn() -> ()
 }
---@ end-file
---@ end-case
 
---@ case: accept-signature-function
---@ mode: check-pass
---@ spec: SPEC#dual-tier-where-invariants
---@ companion: reject-signature-function
---@ file: accept-signature-function.ril
+-- [case: accept-signature-function, check-pass]
+-- spec: SPEC#dual-tier-where-invariants
+-- companion: reject-signature-function
 fn example() { helper()
 where
     fn helper() {}
 }
---@ end-file
---@ end-case
 
---@ case: reject-signature-function
---@ mode: check-fail
---@ spec: SPEC#dual-tier-where-invariants
---@ companion: accept-signature-function
+-- [case: reject-signature-function, check-fail]
+-- spec: SPEC#dual-tier-where-invariants
+-- companion: accept-signature-function
 -- Error [E0704]: reject signature function
---@ file: reject-signature-function.ril
 fn example()
 where
     fn helper() {}
 { helper() }
---@ end-file
---@ end-case

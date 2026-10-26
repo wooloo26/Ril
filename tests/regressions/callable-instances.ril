@@ -1,5 +1,5 @@
---@ source: transported-instances
---@ file: source.ril
+-- [source: transported-instances]
+-- file: source.ril
 fn identity<T>(value: T) -> T { value }
 fn second<T, U>(left: T, right: U) -> U { right }
 fn defaulted<T>(value: T, later: T = value) -> T { later }
@@ -30,34 +30,26 @@ pub fn test_instances() {
     let require = Options::expect<int>
     assert(require(Some(6), "missing") == 6)
 }
---@ end-file
---@ end-source
 
---@ case: transport-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: reject-stored-dimension
---@ use-source: transported-instances
---@ end-case
+-- [case: transport-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: reject-stored-dimension
+-- use-source: transported-instances
 
---@ case: transport-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: transport-native
---@ use-source: transported-instances
---@ end-case
+-- [case: transport-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: transport-native
+-- use-source: transported-instances
 
---@ case: transport-native
---@ mode: run-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ entry: test_instances
---@ use-source: transported-instances
---@ end-case
+-- [case: transport-native, run-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- entry: test_instances
+-- use-source: transported-instances
 
---@ source: phantom-instances
---@ file: source.ril
+-- [source: phantom-instances]
+-- file: source.ril
 eff Mark<T> { get() -> int }
 fn read<T>() -> int @Mark<T> { Mark<T>::get() }
 pub fn test_instances() {
@@ -68,169 +60,129 @@ pub fn test_instances() {
     let callbacks = (integer, text)
     assert(callbacks.0() == 7 && callbacks.1() == 11)
 }
---@ end-file
---@ end-source
 
---@ case: phantom-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#effect-handlers
---@ companion: phantom-native
---@ use-source: phantom-instances
---@ end-case
+-- [case: phantom-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#effect-handlers
+-- companion: phantom-native
+-- use-source: phantom-instances
 
---@ case: phantom-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#effect-handlers
---@ companion: phantom-pointer32
---@ use-source: phantom-instances
---@ end-case
+-- [case: phantom-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#effect-handlers
+-- companion: phantom-pointer32
+-- use-source: phantom-instances
 
---@ case: phantom-native
---@ mode: run-pass
---@ spec: SPEC#effect-handlers
---@ entry: test_instances
---@ use-source: phantom-instances
---@ end-case
+-- [case: phantom-native, run-pass]
+-- spec: SPEC#effect-handlers
+-- entry: test_instances
+-- use-source: phantom-instances
 
---@ source: qualified-instances
---@ file: root.ril
+-- [source: qualified-instances]
+-- file: root.ril
 use helpers as Helpers
 pub fn test_instances() {
     let take = Helpers::identity<[0][2]int>
     let output: [0][2]int = take([])
     assert(len(output) == 0)
 }
---@ end-file
---@ file: helpers.ril
+
+-- file: helpers.ril
 pub fn identity<T>(value: T) -> T { value }
---@ end-file
---@ end-source
 
---@ case: qualified-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#module-imports-and-visibility
---@ companion: qualified-native
---@ use-source: qualified-instances
---@ end-case
+-- [case: qualified-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#module-imports-and-visibility
+-- companion: qualified-native
+-- use-source: qualified-instances
 
---@ case: qualified-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#module-imports-and-visibility
---@ companion: qualified-pointer32
---@ use-source: qualified-instances
---@ end-case
+-- [case: qualified-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#module-imports-and-visibility
+-- companion: qualified-pointer32
+-- use-source: qualified-instances
 
---@ case: qualified-native
---@ mode: run-pass
---@ spec: SPEC#module-imports-and-visibility
---@ entry: test_instances
---@ use-source: qualified-instances
---@ end-case
+-- [case: qualified-native, run-pass]
+-- spec: SPEC#module-imports-and-visibility
+-- entry: test_instances
+-- use-source: qualified-instances
 
---@ case: reject-stored-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: transport-pointer64
+-- [case: reject-stored-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: transport-pointer64
 -- Error [E0301]: A stored instance keeps its selected hidden dimension.
---@ file: source.ril
+-- file: source.ril
 fn identity<T>(value: T) -> T { value }
 fn invalid() {
     let selected = identity<[0][2]int>
     let value: [0][3]int = []
     selected(value)
 }
---@ end-file
---@ end-case
 
---@ case: reject-incompatible-view
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: transport-pointer64
+-- [case: reject-incompatible-view, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: transport-pointer64
 -- Error [E0301]: Ascription cannot replace an implementation's selected type.
---@ file: source.ril
+-- file: source.ril
 fn identity<T>(value: T) -> T { value }
 fn invalid() { let wrong: fn(int) -> int = identity<bool> }
---@ end-file
---@ end-case
 
---@ case: reject-undetermined-error
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: transport-pointer32
+-- [case: reject-undetermined-error, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: transport-pointer32
 -- Error [E0344]: A partial instance retains ordinary inference requirements.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let selected = Results::expect<int>
     selected(Ok(1), "missing")
 }
---@ end-file
---@ end-case
 
---@ case: reject-excess-arguments
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: transport-pointer32
+-- [case: reject-excess-arguments, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: transport-pointer32
 -- Error [E0340]: Explicit arguments must fit the resolved declaration.
---@ file: source.ril
+-- file: source.ril
 fn identity<T>(value: T) -> T { value }
 fn invalid() { let selected = identity<int, bool> }
---@ end-file
---@ end-case
 
---@ case: reject-immediate-type
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: transport-pointer64
+-- [case: reject-immediate-type, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: transport-pointer64
 -- Error [E0301]: Value inference cannot replace an explicit type.
---@ file: source.ril
+-- file: source.ril
 fn id<T>(value: T) -> T { value }
 fn invalid() { let value = id<bool>(1) }
---@ end-file
---@ end-case
 
---@ case: reject-closed-view-generics
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: transport-pointer64
+-- [case: reject-closed-view-generics, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: transport-pointer64
 -- Error [E0340]: A monomorphic view does not expose implementation type parameters.
---@ file: source.ril
+-- file: source.ril
 fn identity<T>(value: T) -> T { value }
 fn invalid() {
     let closed: fn(int) -> int = identity<int>
     let wrong = closed<bool>
 }
---@ end-file
---@ end-case
 
---@ case: reject-phantom-effect-view
---@ mode: check-fail
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ companion: phantom-pointer64
+-- [case: reject-phantom-effect-view, check-fail]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- companion: phantom-pointer64
 -- Error [E0534]: A callable keeps its implementation's selected effect instance.
---@ file: source.ril
+-- file: source.ril
 eff Mark<T> { get() -> int }
 fn read<T>() -> int @Mark<T> { Mark<T>::get() }
 fn invalid() { let wrong: fn() -> int @Mark<int> = read<str> }
---@ end-file
---@ end-case
 
---@ case: reject-immediate-extent
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: transport-pointer64
+-- [case: reject-immediate-extent, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: transport-pointer64
 -- Error [E0301]: A stored operand is not a fresh fixed-array construction.
---@ file: source.ril
+-- file: source.ril
 fn id<T>(value: T) -> T { value }
 fn invalid() { let items: [3]int = [1, 2, 3]; let value = id<[2]int>(items) }
---@ end-file
---@ end-case
 
---@ source: runtime-selection
---@ file: source.ril
+-- [source: runtime-selection]
+-- file: source.ril
 eff Read<T> { get() -> T }
 eff Mark<T> { touch() -> () }
 var trace = 0
@@ -252,34 +204,26 @@ pub fn test_instances() &{mut trace} {
     assert(finished(2, true))
 }
 fn main() &{mut trace} { test_instances() }
---@ end-file
---@ end-source
 
---@ case: runtime-selection-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: runtime-selection-native
---@ use-source: runtime-selection
---@ end-case
+-- [case: runtime-selection-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: runtime-selection-native
+-- use-source: runtime-selection
 
---@ case: runtime-selection-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: runtime-selection-native
---@ use-source: runtime-selection
---@ end-case
+-- [case: runtime-selection-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: runtime-selection-native
+-- use-source: runtime-selection
 
---@ case: runtime-selection-native
---@ mode: run-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ entry: test_instances
---@ use-source: runtime-selection
---@ end-case
+-- [case: runtime-selection-native, run-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- entry: test_instances
+-- use-source: runtime-selection
 
---@ source: nearby-instance
---@ file: source.ril
+-- [source: nearby-instance]
+-- file: source.ril
 eff Read<T> { get() -> T }
 fn read<T>(value: T) -> T @Read<T> { Read<T>::get() }
 pub fn test_instances() {
@@ -290,34 +234,26 @@ pub fn test_instances() {
     assert(stored("") == "seven")
 }
 fn main() { test_instances() }
---@ end-file
---@ end-source
 
---@ case: nearby-instance-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#effect-handlers
---@ companion: nearby-instance-native
---@ use-source: nearby-instance
---@ end-case
+-- [case: nearby-instance-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#effect-handlers
+-- companion: nearby-instance-native
+-- use-source: nearby-instance
 
---@ case: nearby-instance-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#effect-handlers
---@ companion: nearby-instance-native
---@ use-source: nearby-instance
---@ end-case
+-- [case: nearby-instance-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#effect-handlers
+-- companion: nearby-instance-native
+-- use-source: nearby-instance
 
---@ case: nearby-instance-native
---@ mode: run-pass
---@ spec: SPEC#effect-handlers
---@ entry: test_instances
---@ use-source: nearby-instance
---@ end-case
+-- [case: nearby-instance-native, run-pass]
+-- spec: SPEC#effect-handlers
+-- entry: test_instances
+-- use-source: nearby-instance
 
---@ source: unused-templates
---@ file: source.ril
+-- [source: unused-templates]
+-- file: source.ril
 eff Read<T> { get() -> T }
 fn first<T>() -> T @Read<T> { Read<T>::get() }
 fn second<T>() -> T @Read<T> { Read<T>::get() }
@@ -325,34 +261,26 @@ fn read<T>(value: T) -> T @Read<T> { Read<T>::get() }
 fn discarded<T>() { let unused = first<T> }
 pub fn test_instances() { let unused = read; assert(true) }
 fn main() { test_instances() }
---@ end-file
---@ end-source
 
---@ case: unused-templates-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: unused-templates-native
---@ use-source: unused-templates
---@ end-case
+-- [case: unused-templates-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: unused-templates-native
+-- use-source: unused-templates
 
---@ case: unused-templates-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: unused-templates-native
---@ use-source: unused-templates
---@ end-case
+-- [case: unused-templates-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: unused-templates-native
+-- use-source: unused-templates
 
---@ case: unused-templates-native
---@ mode: run-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ entry: test_instances
---@ use-source: unused-templates
---@ end-case
+-- [case: unused-templates-native, run-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- entry: test_instances
+-- use-source: unused-templates
 
---@ source: instantiation-budget
---@ file: source.ril
+-- [source: instantiation-budget]
+-- file: source.ril
 eff Read<T> { get() -> T }
 fn read<T>() -> T @Read<T> { Read<T>::get() }
 fn no_work<T>() -> int { let unused = read<T>; 7 }
@@ -363,34 +291,26 @@ pub fn test_instances() {
     assert(limited == 7 && stopped == 99)
 }
 fn main() { test_instances() }
---@ end-file
---@ end-source
 
---@ case: instantiation-budget-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#finite-evaluation-with-div
---@ companion: instantiation-budget-native
---@ use-source: instantiation-budget
---@ end-case
+-- [case: instantiation-budget-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#finite-evaluation-with-div
+-- companion: instantiation-budget-native
+-- use-source: instantiation-budget
 
---@ case: instantiation-budget-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#finite-evaluation-with-div
---@ companion: instantiation-budget-native
---@ use-source: instantiation-budget
---@ end-case
+-- [case: instantiation-budget-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#finite-evaluation-with-div
+-- companion: instantiation-budget-native
+-- use-source: instantiation-budget
 
---@ case: instantiation-budget-native
---@ mode: run-pass
---@ spec: SPEC#finite-evaluation-with-div
---@ entry: test_instances
---@ use-source: instantiation-budget
---@ end-case
+-- [case: instantiation-budget-native, run-pass]
+-- spec: SPEC#finite-evaluation-with-div
+-- entry: test_instances
+-- use-source: instantiation-budget
 
---@ source: foreign-runtime-selection
---@ file: root.ril
+-- [source: foreign-runtime-selection]
+-- file: root.ril
 use foreign
 var trace = 0
 fn mark(digit: int) -> int &{mut trace} { trace = trace * 10 + digit; digit }
@@ -407,25 +327,19 @@ pub fn test_native() &{mut trace} {
     let piped = mark(5) |> ({ mark(6); Foreign::identity })<int>
     assert(piped == 5 && trace == 123456)
 }
---@ end-file
---@ file: foreign.d.ril
+
+-- file: foreign.d.ril
 pub fn identity<T>(value: T) -> T
 pub fn zero<T>() -> T
 pub fn number<n: int>() -> int
---@ end-file
---@ end-source
 
---@ case: foreign-runtime-selection-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: foreign-runtime-selection-pointer64
---@ use-source: foreign-runtime-selection
---@ end-case
+-- [case: foreign-runtime-selection-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: foreign-runtime-selection-pointer64
+-- use-source: foreign-runtime-selection
 
---@ case: foreign-runtime-selection-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ use-source: foreign-runtime-selection
---@ end-case
+-- [case: foreign-runtime-selection-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- use-source: foreign-runtime-selection

@@ -1,8 +1,5 @@
---@ case: snapshot-and-queries
---@ mode: run-pass
---@ spec: STD#bytes-binary-encoding-and-digests
---@ entry: test_snapshot_and_queries
---@ file: snapshot-and-queries.ril
+-- [case: snapshot-and-queries, run-pass]
+-- spec: STD#bytes-binary-encoding-and-digests
 use ril/bytes
 
 pub fn test_snapshot_and_queries() {
@@ -19,5 +16,3 @@ pub fn test_snapshot_and_queries() {
     assert(Bytes::find(b"abc", b"bc") == Some(1))
     assert(Bytes::at(frozen, 1) == Some(2u8) && Bytes::at(frozen, -1) == None)
 }
---@ end-file
---@ end-case

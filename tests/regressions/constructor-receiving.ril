@@ -1,5 +1,5 @@
---@ source: none-receiving
---@ file: source.ril
+-- [source: none-receiving]
+-- file: source.ril
 type Packet = { id: int, items: [0][2]int }
 type Holder = { mut packet: ?Packet }
 fn inspect(value: ?Packet) -> int {
@@ -38,55 +38,41 @@ pub fn test_native() {
     assert(inspect(selected) == 0)
     assert(generic<Packet>(None))
 }
---@ end-file
---@ end-source
 
---@ case: none-receiving-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: reject-stored-none-dimension
---@ use-source: none-receiving
---@ end-case
+-- [case: none-receiving-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: reject-stored-none-dimension
+-- use-source: none-receiving
 
---@ case: none-receiving-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: none-receiving-native
---@ use-source: none-receiving
---@ end-case
+-- [case: none-receiving-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: none-receiving-native
+-- use-source: none-receiving
 
---@ case: none-receiving-native
---@ mode: run-pass
---@ entry: test_native
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: none-receiving-pointer32
---@ use-source: none-receiving
---@ end-case
+-- [case: none-receiving-native, run-pass]
+-- entry: test_native
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: none-receiving-pointer32
+-- use-source: none-receiving
 
---@ case: reject-stored-none-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: none-receiving-pointer64
+-- [case: reject-stored-none-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: none-receiving-pointer64
 -- Error [E0301]: A stored absent value retains its already selected payload dimensions.
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let value: ?[0][3]int = None
     let wrong: ?[0][2]int = value
 }
---@ end-file
---@ end-case
 
---@ case: reject-shadowed-none-reinstantiation
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: none-receiving-pointer32
+-- [case: reject-shadowed-none-reinstantiation, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: none-receiving-pointer32
 -- Error [E0301]: A lookalike namespace cannot supply the canonical constructor.
---@ file: source.ril
+-- file: source.ril
 type Prelude { None }
 fn example() {
     let wrong: ?[0][2]int = Prelude::None
 }
---@ end-file
---@ end-case

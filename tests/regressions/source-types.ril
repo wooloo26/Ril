@@ -1,5 +1,5 @@
---@ source: source-carriers
---@ file: source.ril
+-- [source: source-carriers]
+-- file: source.ril
 type Token(int)
 type Box<T>(T)
 eff Mark<T>{get()->int}
@@ -20,24 +20,18 @@ pub fn test_native(){
     with {Mark<?[2]int>::get()->resume 1,Mark<Box<[2]int>>::get()->resume 2,Mark<Token>::get()->resume 3}
     assert(mark(optional)==1 && mark(selected_box)==2 && mark(selected_token)==3)
 }
---@ end-file
---@ end-source
 
---@ case: carriers
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-carriers
---@ end-case
+-- [case: carriers, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-carriers
 
---@ case: carriers-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-carriers
---@ end-case
+-- [case: carriers-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-carriers
 
---@ source: source-dynamic-view
---@ file: source.ril
+-- [source: source-dynamic-view]
+-- file: source.ril
 fn identity<T>(value:T)->T{value}
 pub fn test_native(){
     let input:[2]int=[1,2]
@@ -45,24 +39,18 @@ pub fn test_native(){
     let output=identity(dynamic)
     assert(output==[1,2])
 }
---@ end-file
---@ end-source
 
---@ case: dynamic-view
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-dynamic-view
---@ end-case
+-- [case: dynamic-view, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-dynamic-view
 
---@ case: dynamic-view-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-dynamic-view
---@ end-case
+-- [case: dynamic-view-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-dynamic-view
 
---@ source: source-effect-instance
---@ file: source.ril
+-- [source: source-effect-instance]
+-- file: source.ril
 eff Read<T>{get()->T}
 fn read<T>(witness:T)->T @Read<T>{Read<T>::get()}
 pub fn test_native(){
@@ -71,24 +59,18 @@ pub fn test_native(){
     let output:[0][2]int=read(input)
     assert(len(output)==0)
 }
---@ end-file
---@ end-source
 
---@ case: effect-instance
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-effect-instance
---@ end-case
+-- [case: effect-instance, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-effect-instance
 
---@ case: effect-instance-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-effect-instance
---@ end-case
+-- [case: effect-instance-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-effect-instance
 
---@ source: source-empty-nested
---@ file: source.ril
+-- [source: source-empty-nested]
+-- file: source.ril
 fn identity<T>(value:T)->T{value}
 fn wrap<T>(value:T)->(T,int){(value,7)}
 pub fn test_native(){
@@ -96,24 +78,18 @@ pub fn test_native(){
     let output:[0][2]int=identity(wrap(identity(input)).0)
     assert(len(output)==0)
 }
---@ end-file
---@ end-source
 
---@ case: empty-nested
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-empty-nested
---@ end-case
+-- [case: empty-nested, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-empty-nested
 
---@ case: empty-nested-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-empty-nested
---@ end-case
+-- [case: empty-nested-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-empty-nested
 
---@ source: source-forwarding
---@ file: source.ril
+-- [source: source-forwarding]
+-- file: source.ril
 fn identity<T>(value:T)->T{value}
 fn wrap<T>(value:T)->{item:T}{.{item:value}}
 fn unwrap<T>(value:{item:T})->T{value.item}
@@ -123,24 +99,18 @@ pub fn test_native(){
     let output:[2]int=identity(unwrap(wrapped))
     assert(len(output)==2 && output[0]==1)
 }
---@ end-file
---@ end-source
 
---@ case: forwarding
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-forwarding
---@ end-case
+-- [case: forwarding, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-forwarding
 
---@ case: forwarding-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-forwarding
---@ end-case
+-- [case: forwarding-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-forwarding
 
---@ source: source-interfaces
---@ file: source.ril
+-- [source: source-interfaces]
+-- file: source.ril
 fn first(left:int=1)->int{left}
 fn second(right:int=2)->int{right}
 fn wrap<T>(value:T)->{item:T}{.{item:value}}
@@ -174,24 +144,18 @@ pub fn test_native(){
     let typed:{item:fn(renamed:int)->int}=.{item:second}
     assert(typed.item(renamed:12)==12)
 }
---@ end-file
---@ end-source
 
---@ case: interfaces
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-interfaces
---@ end-case
+-- [case: interfaces, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-interfaces
 
---@ case: interfaces-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-interfaces
---@ end-case
+-- [case: interfaces-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-interfaces
 
---@ source: source-modes
---@ file: source.ril
+-- [source: source-modes]
+-- file: source.ril
 type Cell={mut value:int}
 fn bump(mut cell:Cell)&mut{cell.value+=1}
 fn identity<T>(value:T)->T{value}
@@ -204,24 +168,18 @@ pub fn test_native(){
     let supplied=identity(number)
     assert(supplied()==7)
 }
---@ end-file
---@ end-source
 
---@ case: modes
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-modes
---@ end-case
+-- [case: modes, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-modes
 
---@ case: modes-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-modes
---@ end-case
+-- [case: modes-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-modes
 
---@ source: source-returned-callable
---@ file: source.ril
+-- [source: source-returned-callable]
+-- file: source.ril
 fn make<T>(value:T)->(fn()->T &closure) &capture{\->value}
 fn identity<T>(value:T)->T{value}
 pub fn test_native(){
@@ -236,24 +194,18 @@ pub fn test_native(){
     let other_output:[3]int=other_action()
     assert(output==[1,2] && len(empty_output)==0 && other_output[2]==5)
 }
---@ end-file
---@ end-source
 
---@ case: returned-callable
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-returned-callable
---@ end-case
+-- [case: returned-callable, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-returned-callable
 
---@ case: returned-callable-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-returned-callable
---@ end-case
+-- [case: returned-callable-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-returned-callable
 
---@ source: source-type-forwarding
---@ file: source.ril
+-- [source: source-type-forwarding]
+-- file: source.ril
 type Wrapped<T>={item:T}
 fn identity<T>(value:T)->T{value}
 fn wrap<T>(value:T)->Wrapped<T>{Wrapped<T>.{item:value}}
@@ -263,24 +215,18 @@ pub fn test_native(){
     let output:typeof(input)=identity(unwrap(wrap(input)))
     assert(output==[1,2])
 }
---@ end-file
---@ end-source
 
---@ case: type-forwarding
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-type-forwarding
---@ end-case
+-- [case: type-forwarding, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-type-forwarding
 
---@ case: type-forwarding-test-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ use-source: source-type-forwarding
---@ end-case
+-- [case: type-forwarding-test-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- use-source: source-type-forwarding
 
---@ source: source-owned-record-types
---@ file: source.ril
+-- [source: source-owned-record-types]
+-- file: source.ril
 type Wrapped<T> = { item: T }
 fn wrap<T>(value: T) -> Wrapped<T> { Wrapped<T>.{ item: value } }
 fn stamp<R>(value: { ..R }) -> { stamp: int, ..R } { .{ ..value, stamp: 7 } }
@@ -295,71 +241,54 @@ pub fn test_owned_records() {
     let callbacks = stamp(wrap(first))
     assert(callbacks.item(value: 9) == 9 && callbacks.item() == 4)
 }
---@ end-file
---@ end-source
 
---@ case: owned-record-types-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: reject-owned-record-spread-dimension
---@ use-source: source-owned-record-types
---@ end-case
+-- [case: owned-record-types-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: reject-owned-record-spread-dimension
+-- use-source: source-owned-record-types
 
---@ case: owned-record-types-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: owned-record-types-native
---@ use-source: source-owned-record-types
---@ end-case
+-- [case: owned-record-types-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: owned-record-types-native
+-- use-source: source-owned-record-types
 
---@ case: owned-record-types-native
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_owned_records
---@ use-source: source-owned-record-types
---@ end-case
+-- [case: owned-record-types-native, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_owned_records
+-- use-source: source-owned-record-types
 
---@ case: reject-owned-record-spread-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: owned-record-types-pointer64
+-- [case: reject-owned-record-spread-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: owned-record-types-pointer64
 -- Error [E0301]: An empty spread field retains its hidden inner dimension.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let input: [0][3]int = []
     let record = .{ item: input }
     let wrong: { item: [0][2]int } = .{ ..record }
 }
---@ end-file
---@ end-case
 
---@ case: reject-owned-record-constructor-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: owned-record-types-pointer32
+-- [case: reject-owned-record-constructor-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: owned-record-types-pointer32
 -- Error [E0301]: A typed constructor cannot recontextualize a stored empty array.
---@ file: source.ril
+-- file: source.ril
 type Wrapped<T> = { item: T }
 fn invalid() {
     let input: [0][3]int = []
     let wrong = Wrapped<[0][2]int>.{ item: input }
 }
---@ end-file
---@ end-case
 
---@ case: reject-owned-record-typeof-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: owned-record-types-pointer64
+-- [case: reject-owned-record-typeof-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: owned-record-types-pointer64
 -- Error [E0301]: Nested typeof uses the declared complete field type.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let input: [0][2]int = []
     let other: [0][3]int = []
     let record = .{ item: input }
     let wrong: (typeof(input), typeof(record.item)) = (other, other)
 }
---@ end-file
---@ end-case

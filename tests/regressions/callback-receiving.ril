@@ -1,5 +1,5 @@
---@ source: typed-inputs
---@ file: source.ril
+-- [source: typed-inputs]
+-- file: source.ril
 use ril/parallel
 
 fn cardinality(rows: [0][3]int) -> int { len(rows) }
@@ -33,107 +33,81 @@ pub fn test_inputs() {
     assert(borrow_result(outer) == 0)
     assert(inner is Err("later"))
 }
---@ end-file
---@ end-source
 
---@ case: inputs-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#higher-order-calls
---@ companion: inputs-pointer64
---@ use-source: typed-inputs
---@ end-case
+-- [case: inputs-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#higher-order-calls
+-- companion: inputs-pointer64
+-- use-source: typed-inputs
 
---@ case: inputs-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#higher-order-calls
---@ companion: inputs-native
---@ use-source: typed-inputs
---@ end-case
+-- [case: inputs-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#higher-order-calls
+-- companion: inputs-native
+-- use-source: typed-inputs
 
---@ case: inputs-native
---@ mode: run-pass
---@ entry: test_inputs
---@ spec: SPEC#higher-order-calls
---@ companion: reject-tuple-dimension
---@ use-source: typed-inputs
---@ end-case
+-- [case: inputs-native, run-pass]
+-- entry: test_inputs
+-- spec: SPEC#higher-order-calls
+-- companion: reject-tuple-dimension
+-- use-source: typed-inputs
 
---@ case: reject-tuple-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: inputs-native
+-- [case: reject-tuple-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: inputs-native
 -- Error [E0301]: Inferred callback input graphs retain the original nested extent.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let matrix: [0][3]int = []
     let select = \pair -> { let (value, _) = pair; let wrong: [0][2]int = value }
     select((matrix, ()))
 }
---@ end-file
---@ end-case
 
---@ case: reject-fallback-dimension
---@ mode: check-fail
---@ spec: SPEC#error-and-fallback-operators
---@ companion: inputs-native
+-- [case: reject-fallback-dimension, check-fail]
+-- spec: SPEC#error-and-fallback-operators
+-- companion: inputs-native
 -- Error [E0301]: An error payload cannot be retyped by an inferred recovery callback.
---@ file: source.ril
+-- file: source.ril
 fn invalid(value: Result<int, [0][3]int>) -> int {
     value ?? \rows -> { let wrong: [0][2]int = rows; 0 }
 }
---@ end-file
---@ end-case
 
---@ case: reject-dynamic-fallback-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: inputs-native
+-- [case: reject-dynamic-fallback-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: inputs-native
 -- Error [E0301]: Physical empty contents cannot upgrade a dynamic nested error type.
---@ file: source.ril
+-- file: source.ril
 fn invalid(value: Result<int, [][]int>) -> int {
     value ?? \rows -> { let wrong: [][3]int = rows; 0 }
 }
---@ end-file
---@ end-case
 
---@ case: reject-fallback-write
---@ mode: check-fail
---@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
---@ companion: inputs-native
+-- [case: reject-fallback-write, check-fail]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- companion: inputs-native
 -- Error [E0520]: The complete error type does not grant writable authority.
---@ file: source.ril
+-- file: source.ril
 type Cell = { mut count: int }
 fn invalid(value: Result<int, Cell>) -> int {
     value ?? \cell -> { cell.count += 1; cell.count }
 }
---@ end-file
---@ end-case
 
---@ case: reject-nested-duty
---@ mode: check-fail
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ companion: inputs-native
+-- [case: reject-nested-duty, check-fail]
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- companion: inputs-native
 -- Error [E0720]: Receiving an error payload does not inspect its nested Result.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let inner: Result<int, str> = Err("uninspected")
     let outer: Result<int, Result<int, str>> = Err(inner)
     let ignored = outer ?? \nested -> 0
 }
---@ end-file
---@ end-case
 
---@ case: reject-callback-effect-erasure
---@ mode: check-fail
---@ spec: SPEC#higher-order-calls
---@ companion: inputs-native
+-- [case: reject-callback-effect-erasure, check-fail]
+-- spec: SPEC#higher-order-calls
+-- companion: inputs-native
 -- Error [E0534]: A complete callable argument type cannot erase latent effects.
---@ file: source.ril
+-- file: source.ril
 eff Read { get() -> int }
 fn effectful() -> int @Read { Read::get() }
 fn closed(action: fn() -> int @{} &{}) -> int { action() }
 fn invalid() { let forward = \action -> closed(action); let _ = forward(effectful) }
---@ end-file
---@ end-case

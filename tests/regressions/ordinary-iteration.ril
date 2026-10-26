@@ -1,20 +1,16 @@
---@ case: imported-definitions
---@ mode: check-pass
---@ target: pointer64
---@ spec: STD#explicit-iteration
---@ companion: generic-alias-scope
---@ file: source.ril
+-- [case: imported-definitions, check-pass]
+-- target: pointer64
+-- spec: STD#explicit-iteration
+-- companion: generic-alias-scope
+-- file: source.ril
 use ril/iter
 fn example() {}
---@ end-file
---@ end-case
 
---@ case: effectful-transition
---@ mode: check-pass
---@ target: pointer64
---@ spec: STD#explicit-iteration
---@ companion: imported-definitions
---@ file: source.ril
+-- [case: effectful-transition, check-pass]
+-- target: pointer64
+-- spec: STD#explicit-iteration
+-- companion: imported-definitions
+-- file: source.ril
 use ril/iter
 var step_calls = 0
 fn step(state: int) -> Iter::Step<int, int> &{mut step_calls} {
@@ -29,15 +25,12 @@ fn filtered_from(state: int, limit: int) -> []int &{mut step_calls} {
     let source: Iter::Source<int, int> = .{ step: step }
     Iter::collect(state, Iter::filter(source, \number -> number > limit))
 }
---@ end-file
---@ end-case
 
---@ case: generic-alias-scope
---@ mode: run-pass
---@ entry: test_alias_scope
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: imported-definitions
---@ file: source.ril
+-- [case: generic-alias-scope, run-pass]
+-- entry: test_alias_scope
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: imported-definitions
+-- file: source.ril
 type Step<S, T> { Done, Yielded(T, S) }
 type Source<S, T> = { step: fn(S) -> Step<S, T> }
 fn nested<S, T>(source: Source<S, T>) -> Source<(S, int), T> &capture {
@@ -53,15 +46,12 @@ pub fn test_alias_scope() {
     let source: Source<(int, int), int> = nested(.{ step: step })
     assert(source.step((0, 0)) is Step::Yielded(_, _))
 }
---@ end-file
---@ end-case
 
---@ case: private-callback-state
---@ mode: run-pass
---@ entry: test_private_state
---@ spec: SPEC#binding-permissions-and-storage-matrix
---@ companion: generic-alias-scope
---@ file: source.ril
+-- [case: private-callback-state, run-pass]
+-- entry: test_private_state
+-- spec: SPEC#binding-permissions-and-storage-matrix
+-- companion: generic-alias-scope
+-- file: source.ril
 fn preserve(action: fn() -> ()) -> int {
     var state = [1]
     action()
@@ -70,5 +60,3 @@ fn preserve(action: fn() -> ()) -> int {
     before + state[0]
 }
 pub fn test_private_state() { assert(preserve(\ -> ()) == 3) }
---@ end-file
---@ end-case

@@ -1,459 +1,281 @@
---@ case: accept-alias-cycle
---@ mode: check-pass
---@ spec: SPEC#type-declarations-and-opaque-types
---@ companion: reject-alias-cycle
---@ file: accept-alias-cycle.ril
+-- [case: accept-alias-cycle, check-pass]
+-- spec: SPEC#type-declarations-and-opaque-types
+-- companion: reject-alias-cycle
 type First = Second
 type Second = int
---@ end-file
---@ end-case
 
---@ case: reject-alias-cycle
---@ mode: check-fail
---@ spec: SPEC#type-declarations-and-opaque-types
---@ companion: accept-alias-cycle
+-- [case: reject-alias-cycle, check-fail]
+-- spec: SPEC#type-declarations-and-opaque-types
+-- companion: accept-alias-cycle
 -- Error [E0313]: reject alias cycle
---@ file: reject-alias-cycle.ril
 type First = Second
 type Second = First
---@ end-file
---@ end-case
 
---@ case: accept-bare-type-value
---@ mode: check-pass
---@ spec: SPEC#static-type-values-and-type-quotation
---@ companion: reject-bare-type-value
---@ file: accept-bare-type-value.ril
+-- [case: accept-bare-type-value, check-pass]
+-- spec: SPEC#static-type-values-and-type-quotation
+-- companion: reject-bare-type-value
 type Identity = \T -> { let value = type<int>; type<T> }
---@ end-file
---@ end-case
 
---@ case: reject-bare-type-value
---@ mode: check-fail
---@ spec: SPEC#static-type-values-and-type-quotation
---@ companion: accept-bare-type-value
+-- [case: reject-bare-type-value, check-fail]
+-- spec: SPEC#static-type-values-and-type-quotation
+-- companion: accept-bare-type-value
 -- Error [E0319]: reject bare type value
---@ file: reject-bare-type-value.ril
 type Identity = \T -> { let value = int; type<T> }
---@ end-file
---@ end-case
 
---@ case: accept-duplicate-mapped-key
---@ mode: check-pass
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: reject-duplicate-mapped-key
---@ file: accept-duplicate-mapped-key.ril
+-- [case: accept-duplicate-mapped-key, check-pass]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: reject-duplicate-mapped-key
 type Item = { [K in ["a", "b"]]: int }
---@ end-file
---@ end-case
 
---@ case: reject-duplicate-mapped-key
---@ mode: check-fail
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: accept-duplicate-mapped-key
+-- [case: reject-duplicate-mapped-key, check-fail]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: accept-duplicate-mapped-key
 -- Error [E0210]: reject duplicate mapped key
---@ file: reject-duplicate-mapped-key.ril
 type Item = { [K in ["a", "a"]]: int }
---@ end-file
---@ end-case
 
---@ case: accept-evaluation-budget
---@ mode: check-pass
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: reject-evaluation-budget
---@ file: accept-evaluation-budget.ril
+-- [case: accept-evaluation-budget, check-pass]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: reject-evaluation-budget
 type Identity = \T -> type<T>
 type Value = Identity<int>
---@ end-file
---@ end-case
 
---@ case: reject-evaluation-budget
---@ mode: check-fail
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: accept-evaluation-budget
+-- [case: reject-evaluation-budget, check-fail]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: accept-evaluation-budget
 -- Error [E0811]: reject evaluation budget
---@ file: reject-evaluation-budget.ril
 type Spin = \T -> Spin<T>
 type Value = Spin<int>
---@ end-file
---@ end-case
 
---@ case: accept-failed-assertion
---@ mode: check-pass
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: reject-failed-assertion
---@ file: accept-failed-assertion.ril
+-- [case: accept-failed-assertion, check-pass]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: reject-failed-assertion
 meta let _ = assert(true)
---@ end-file
---@ end-case
 
---@ case: reject-failed-assertion
---@ mode: check-fail
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: accept-failed-assertion
+-- [case: reject-failed-assertion, check-fail]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: accept-failed-assertion
 -- Error [E0830]: reject failed assertion
---@ file: reject-failed-assertion.ril
 meta let _ = assert(false)
---@ end-file
---@ end-case
 
---@ case: accept-higher-kinded-sort
---@ mode: check-pass
---@ spec: SPEC#static-parameter-sorts-and-adaptation-rules
---@ companion: reject-higher-kinded-sort
---@ file: accept-higher-kinded-sort.ril
+-- [case: accept-higher-kinded-sort, check-pass]
+-- spec: SPEC#static-parameter-sorts-and-adaptation-rules
+-- companion: reject-higher-kinded-sort
 type Wrapper = \M: Type -> Type, T -> type<M<T>>
 type Valid = Wrapper<Option, int>
---@ end-file
---@ end-case
 
---@ case: reject-higher-kinded-sort
---@ mode: check-fail
---@ spec: SPEC#static-parameter-sorts-and-adaptation-rules
---@ companion: accept-higher-kinded-sort
+-- [case: reject-higher-kinded-sort, check-fail]
+-- spec: SPEC#static-parameter-sorts-and-adaptation-rules
+-- companion: accept-higher-kinded-sort
 -- Error [E0306]: reject higher kinded sort
---@ file: reject-higher-kinded-sort.ril
 type Wrapper = \M: Type -> Type, T -> type<M<T>>
 type Invalid = Wrapper<int, int>
---@ end-file
---@ end-case
 
---@ case: accept-invalid-mapped-label
---@ mode: check-pass
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: reject-invalid-mapped-label
---@ file: accept-invalid-mapped-label.ril
+-- [case: accept-invalid-mapped-label, check-pass]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: reject-invalid-mapped-label
 type Item = { [K in ["good_name"]]: int }
---@ end-file
---@ end-case
 
---@ case: reject-invalid-mapped-label
---@ mode: check-fail
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: accept-invalid-mapped-label
+-- [case: reject-invalid-mapped-label, check-fail]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: accept-invalid-mapped-label
 -- Error [E0102]: reject invalid mapped label
---@ file: reject-invalid-mapped-label.ril
 type Item = { [K in ["bad__name"]]: int }
---@ end-file
---@ end-case
 
---@ case: accept-key-membership
---@ mode: check-pass
---@ spec: SPEC#static-key-parameters-and-computed-value-projection
---@ companion: reject-key-membership
---@ file: accept-key-membership.ril
+-- [case: accept-key-membership, check-pass]
+-- spec: SPEC#static-key-parameters-and-computed-value-projection
+-- companion: reject-key-membership
 fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 
 fn example() {
     let _ = get_field(.{ id: 1 }, "id")
 }
---@ end-file
---@ end-case
 
---@ case: reject-key-membership
---@ mode: check-fail
---@ spec: SPEC#static-key-parameters-and-computed-value-projection
---@ companion: accept-key-membership
+-- [case: reject-key-membership, check-fail]
+-- spec: SPEC#static-key-parameters-and-computed-value-projection
+-- companion: accept-key-membership
 -- Error [E0323]: reject key membership
---@ file: reject-key-membership.ril
 fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 
 fn example() {
     let _ = get_field(.{ id: 1 }, "missing")
 }
---@ end-file
---@ end-case
 
---@ case: accept-key-runtime
---@ mode: check-pass
---@ spec: SPEC#static-key-parameters-and-computed-value-projection
---@ companion: reject-key-runtime
---@ file: accept-key-runtime.ril
+-- [case: accept-key-runtime, check-pass]
+-- spec: SPEC#static-key-parameters-and-computed-value-projection
+-- companion: reject-key-runtime
 fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 
 fn example(key: str) {
     let _ = get_field(.{ id: 1 }, "id")
 }
---@ end-file
---@ end-case
 
---@ case: reject-key-runtime
---@ mode: check-fail
---@ spec: SPEC#static-key-parameters-and-computed-value-projection
---@ companion: accept-key-runtime
+-- [case: reject-key-runtime, check-fail]
+-- spec: SPEC#static-key-parameters-and-computed-value-projection
+-- companion: accept-key-runtime
 -- Error [E0814]: reject key runtime
---@ file: reject-key-runtime.ril
 fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 
 fn example(key: str) {
     let _ = get_field(.{ id: 1 }, key)
 }
---@ end-file
---@ end-case
 
---@ case: accept-meta-effect
---@ mode: check-pass
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: reject-meta-effect
---@ file: accept-meta-effect.ril
+-- [case: accept-meta-effect, check-pass]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: reject-meta-effect
 meta fn value() -> int { 1 }
---@ end-file
---@ end-case
 
---@ case: reject-meta-effect
---@ mode: check-fail
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: accept-meta-effect
+-- [case: reject-meta-effect, check-fail]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: accept-meta-effect
 -- Error [E0813]: reject meta effect
---@ file: reject-meta-effect.ril
 meta fn value() -> int @Fiber { 1 }
---@ end-file
---@ end-case
 
---@ case: accept-meta-state
---@ mode: check-pass
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: reject-meta-state
---@ file: accept-meta-state.ril
+-- [case: accept-meta-state, check-pass]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: reject-meta-state
 meta fn value() -> int { 1 }
---@ end-file
---@ end-case
 
---@ case: reject-meta-state
---@ mode: check-fail
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: accept-meta-state
+-- [case: reject-meta-state, check-fail]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: accept-meta-state
 -- Error [E0813]: reject meta state
---@ file: reject-meta-state.ril
 meta fn value() -> int &mut { 1 }
---@ end-file
---@ end-case
 
---@ case: accept-meta-type-return
---@ mode: check-pass
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: reject-meta-type-return
---@ file: accept-meta-type-return.ril
+-- [case: accept-meta-type-return, check-pass]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: reject-meta-type-return
 meta fn inspect() -> int { byte_size(type<int>) }
---@ end-file
---@ end-case
 
---@ case: reject-meta-type-return
---@ mode: check-fail
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: accept-meta-type-return
+-- [case: reject-meta-type-return, check-fail]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: accept-meta-type-return
 -- Error [E0812]: reject meta type return
---@ file: reject-meta-type-return.ril
 meta fn generate() -> type<int> { type<int> }
---@ end-file
---@ end-case
 
---@ case: accept-nonrigid-type-pattern
---@ mode: check-pass
---@ spec: SPEC#structural-type-pattern-matching
---@ companion: reject-nonrigid-type-pattern
---@ file: accept-nonrigid-type-pattern.ril
+-- [case: accept-nonrigid-type-pattern, check-pass]
+-- spec: SPEC#structural-type-pattern-matching
+-- companion: reject-nonrigid-type-pattern
 type Inspect = \T -> match type<T> { type<Option<let U>> -> type<U>, _ -> type<never> }
 type Value = Inspect<Option<int>>
---@ end-file
---@ end-case
 
---@ case: reject-nonrigid-type-pattern
---@ mode: check-fail
---@ spec: SPEC#structural-type-pattern-matching
---@ companion: accept-nonrigid-type-pattern
+-- [case: reject-nonrigid-type-pattern, check-fail]
+-- spec: SPEC#structural-type-pattern-matching
+-- companion: accept-nonrigid-type-pattern
 -- Error [E0306]: reject nonrigid type pattern
---@ file: reject-nonrigid-type-pattern.ril
 type Inspect = \T -> match type<T> { type<(let M)<let U>> -> type<U>, _ -> type<never> }
 type Value = Inspect<Option<int>>
---@ end-file
---@ end-case
 
---@ case: accept-record-key-sort
---@ mode: check-pass
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: reject-record-key-sort
---@ file: accept-record-key-sort.ril
+-- [case: accept-record-key-sort, check-pass]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: reject-record-key-sort
 type Item = { [K in ["a", "b"]]: int }
---@ end-file
---@ end-case
 
---@ case: reject-record-key-sort
---@ mode: check-fail
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: accept-record-key-sort
+-- [case: reject-record-key-sort, check-fail]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: accept-record-key-sort
 -- Error [E0341]: reject record key sort
---@ file: reject-record-key-sort.ril
 type Item = { [K in [0, 1]]: int }
---@ end-file
---@ end-case
 
---@ case: accept-runtime-call
---@ mode: check-pass
---@ spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
---@ companion: reject-runtime-call
---@ file: accept-runtime-call.ril
+-- [case: accept-runtime-call, check-pass]
+-- spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
+-- companion: reject-runtime-call
 meta fn identity(value: int) -> int { value }
 meta let VALUE = identity(1)
---@ end-file
---@ end-case
 
---@ case: reject-runtime-call
---@ mode: check-fail
---@ spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
---@ companion: accept-runtime-call
+-- [case: reject-runtime-call, check-fail]
+-- spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
+-- companion: accept-runtime-call
 -- Error [E0810]: reject runtime call
---@ file: reject-runtime-call.ril
 fn identity(value: int) -> int { value }
 meta let VALUE = identity(1)
---@ end-file
---@ end-case
 
---@ case: accept-runtime-only-clock
---@ mode: check-pass
---@ spec: STD#static-availability
---@ companion: reject-runtime-only-clock
---@ file: accept-runtime-only-clock.ril
+-- [case: accept-runtime-only-clock, check-pass]
+-- spec: STD#static-availability
+-- companion: reject-runtime-only-clock
 use ril/clock
 fn example() @Fiber { let value = Clock::now(); let _ = value }
---@ end-file
---@ end-case
 
---@ case: reject-runtime-only-clock
---@ mode: check-fail
---@ spec: STD#static-availability
---@ companion: accept-runtime-only-clock
+-- [case: reject-runtime-only-clock, check-fail]
+-- spec: STD#static-availability
+-- companion: accept-runtime-only-clock
 -- Error [E0810]: reject runtime only clock
---@ file: reject-runtime-only-clock.ril
 use ril/clock
 meta let VALUE = Clock::now()
---@ end-file
---@ end-case
 
---@ case: accept-runtime-only-numeric-parser
---@ mode: check-pass
---@ spec: STD#static-availability
---@ companion: reject-runtime-only-numeric-parser
---@ file: accept-runtime-only-numeric-parser.ril
+-- [case: accept-runtime-only-numeric-parser, check-pass]
+-- spec: STD#static-availability
+-- companion: reject-runtime-only-numeric-parser
 use ril/num
 fn example() { let value = Num::parse_int("1"); assert(value is Ok(1)) }
---@ end-file
---@ end-case
 
---@ case: reject-runtime-only-numeric-parser
---@ mode: check-fail
---@ spec: STD#static-availability
---@ companion: accept-runtime-only-numeric-parser
+-- [case: reject-runtime-only-numeric-parser, check-fail]
+-- spec: STD#static-availability
+-- companion: accept-runtime-only-numeric-parser
 -- Error [E0810]: reject runtime only numeric parser
---@ file: reject-runtime-only-numeric-parser.ril
 use ril/num
 meta let VALUE = Num::parse_int("1")
---@ end-file
---@ end-case
 
---@ case: accept-runtime-only-set-construction
---@ mode: check-pass
---@ spec: STD#static-availability
---@ companion: reject-runtime-only-set-construction
---@ file: accept-runtime-only-set-construction.ril
+-- [case: accept-runtime-only-set-construction, check-pass]
+-- spec: STD#static-availability
+-- companion: reject-runtime-only-set-construction
 fn example() { let value = Set::from([1]); let _ = value }
---@ end-file
---@ end-case
 
---@ case: reject-runtime-only-set-construction
---@ mode: check-fail
---@ spec: STD#static-availability
---@ companion: accept-runtime-only-set-construction
+-- [case: reject-runtime-only-set-construction, check-fail]
+-- spec: STD#static-availability
+-- companion: accept-runtime-only-set-construction
 -- Error [E0810]: reject runtime only set construction
---@ file: reject-runtime-only-set-construction.ril
 meta let VALUE = Set::from([1])
---@ end-file
---@ end-case
 
---@ case: accept-runtime-size-query
---@ mode: check-pass
---@ spec: SPEC#compile-time-execution-and-layout-cooperation
---@ companion: reject-runtime-size-query
---@ file: accept-runtime-size-query.ril
+-- [case: accept-runtime-size-query, check-pass]
+-- spec: SPEC#compile-time-execution-and-layout-cooperation
+-- companion: reject-runtime-size-query
 fn example() {
     meta let VALUE = byte_size(type<u8>)
 }
---@ end-file
---@ end-case
 
---@ case: reject-runtime-size-query
---@ mode: check-fail
---@ spec: SPEC#compile-time-execution-and-layout-cooperation
---@ companion: accept-runtime-size-query
+-- [case: reject-runtime-size-query, check-fail]
+-- spec: SPEC#compile-time-execution-and-layout-cooperation
+-- companion: accept-runtime-size-query
 -- Error [E0810]: reject runtime size query
---@ file: reject-runtime-size-query.ril
 fn example() {
     let value = byte_size(type<u8>)
 }
---@ end-file
---@ end-case
 
---@ case: accept-single-tuple
---@ mode: check-pass
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: reject-single-tuple
---@ file: accept-single-tuple.ril
+-- [case: accept-single-tuple, check-pass]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: reject-single-tuple
 type Item = ( [K in [0, 1]]: int )
---@ end-file
---@ end-case
 
---@ case: reject-single-tuple
---@ mode: check-fail
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: accept-single-tuple
+-- [case: reject-single-tuple, check-fail]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: accept-single-tuple
 -- Error [E0343]: reject single tuple
---@ file: reject-single-tuple.ril
 type Item = ( [K in [0]]: int )
---@ end-file
---@ end-case
 
---@ case: accept-static-overflow
---@ mode: check-pass
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: reject-static-overflow
---@ file: accept-static-overflow.ril
+-- [case: accept-static-overflow, check-pass]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: reject-static-overflow
 meta let VALUE = 126i8 + 1i8
---@ end-file
---@ end-case
 
---@ case: reject-static-overflow
---@ mode: check-fail
---@ spec: SPEC#pure-type-functions-and-type-return-privilege
---@ companion: accept-static-overflow
+-- [case: reject-static-overflow, check-fail]
+-- spec: SPEC#pure-type-functions-and-type-return-privilege
+-- companion: accept-static-overflow
 -- Error [E0831]: reject static overflow
---@ file: reject-static-overflow.ril
 meta let VALUE = 127i8 + 1i8
---@ end-file
---@ end-case
 
---@ case: accept-tuple-key-sort
---@ mode: check-pass
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: reject-tuple-key-sort
---@ file: accept-tuple-key-sort.ril
+-- [case: accept-tuple-key-sort, check-pass]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: reject-tuple-key-sort
 type Item = ( [K in [0, 1]]: int )
---@ end-file
---@ end-case
 
---@ case: reject-tuple-key-sort
---@ mode: check-fail
---@ spec: SPEC#symmetrical-mapped-comprehensions
---@ companion: accept-tuple-key-sort
+-- [case: reject-tuple-key-sort, check-fail]
+-- spec: SPEC#symmetrical-mapped-comprehensions
+-- companion: accept-tuple-key-sort
 -- Error [E0342]: reject tuple key sort
---@ file: reject-tuple-key-sort.ril
 type Item = ( [K in ["a", "b"]]: int )
---@ end-file
---@ end-case
 
---@ case: canonical-coordinates
---@ mode: check-pass
---@ spec: SPEC#universal-coordinate-indexing
---@ file: canonical-coordinates.ril
+-- [case: canonical-coordinates, check-pass]
+-- spec: SPEC#universal-coordinate-indexing
 type Record = { z: int, a: str }
 type Choice { Zebra, Alpha(int) }
 meta let _ = assert(keyof Record == ["a", "z"])
@@ -462,36 +284,24 @@ meta let _ = assert(keyof (int, str) == [0, 1])
 meta let _ = assert(type<Record.a> == type<str>)
 meta let _ = assert(type<Choice.Alpha> == type<int>)
 meta let _ = assert(type<Choice.Zebra> == type<()>)
---@ end-file
---@ end-case
 
---@ case: pointer-size-pointer32
---@ mode: check-pass
---@ spec: SPEC#compile-time-execution-and-layout-cooperation
---@ target: pointer32
---@ file: pointer-size-pointer32.ril
+-- [case: pointer-size-pointer32, check-pass]
+-- spec: SPEC#compile-time-execution-and-layout-cooperation
+-- target: pointer32
 meta let _ = assert(byte_size(type<int>) == 4)
 meta let _ = assert(byte_size(type<u8>) == 1)
 meta let _ = assert(byte_size(type<i64>) == 8)
---@ end-file
---@ end-case
 
---@ case: pointer-size-pointer64
---@ mode: check-pass
---@ spec: SPEC#compile-time-execution-and-layout-cooperation
---@ target: pointer64
---@ file: pointer-size-pointer64.ril
+-- [case: pointer-size-pointer64, check-pass]
+-- spec: SPEC#compile-time-execution-and-layout-cooperation
+-- target: pointer64
 meta let _ = assert(byte_size(type<int>) == 8)
 meta let _ = assert(byte_size(type<u8>) == 1)
 meta let _ = assert(byte_size(type<i64>) == 8)
---@ end-file
---@ end-case
 
---@ case: type-extractors
---@ mode: check-pass
---@ spec: STD#set
---@ spec: SPEC#unified-tripartite-introspection
---@ file: type-extractors.ril
+-- [case: type-extractors, check-pass]
+-- spec: STD#set
+-- spec: SPEC#unified-tripartite-introspection
 use ril/array::{Elem}
 use ril/map::{Key, Value}
 use ril/set as Sets
@@ -502,13 +312,9 @@ type S = Sets::Elem<Set<int>>
 meta let _ = assert(type<A> == type<u8>)
 meta let _ = assert(type<K> == type<str>)
 meta let _ = assert(type<V> == type<int> && type<S> == type<int>)
---@ end-file
---@ end-case
 
---@ case: type-pattern-rest
---@ mode: check-pass
---@ spec: SPEC#structural-type-pattern-matching
---@ file: type-pattern-rest.ril
+-- [case: type-pattern-rest, check-pass]
+-- spec: SPEC#structural-type-pattern-matching
 halt type Tail = \T -> match type<T> {
     type<(let Head, ..let Rest)> -> type<Rest>,
     _ -> type<never>,
@@ -517,41 +323,30 @@ type Long = Tail<(int, str, bool)>
 type Short = Tail<(int, str)>
 meta let _ = assert(type<Long> == type<(str, bool)>)
 meta let _ = assert(type<Short> == type<never>)
---@ end-file
---@ end-case
 
---@ case: runtime-meta-named-source
---@ mode: run-pass
---@ spec: SPEC#external-state-tracking
---@ spec: SPEC#compile-time-execution-and-layout-cooperation
---@ companion: runtime-meta-missing-source
---@ entry: test_native
---@ file: source.ril
+-- [case: runtime-meta-named-source, run-pass]
+-- spec: SPEC#external-state-tracking
+-- spec: SPEC#compile-time-execution-and-layout-cooperation
+-- companion: runtime-meta-missing-source
+-- entry: test_native
+-- file: source.ril
 meta let ANSWER=42
 fn answer()->int &{ANSWER}{ANSWER}
 pub fn test_native() &{ANSWER}{assert(answer()==42)}
---@ end-file
---@ end-case
 
---@ case: runtime-meta-missing-source
---@ mode: check-fail
---@ spec: SPEC#external-state-tracking
---@ companion: runtime-meta-named-source
+-- [case: runtime-meta-missing-source, check-fail]
+-- spec: SPEC#external-state-tracking
+-- companion: runtime-meta-named-source
 -- Error [E0510]: compile-time publication does not erase a runtime named source.
---@ file: source.ril
+-- file: source.ril
 meta let ANSWER=42
 fn hidden_answer()->int{ANSWER}
---@ end-file
---@ end-case
 
---@ case: static-meta-source-exemption
---@ mode: check-pass
---@ spec: SPEC#compile-time-execution-and-layout-cooperation
---@ file: source.ril
+-- [case: static-meta-source-exemption, check-pass]
+-- spec: SPEC#compile-time-execution-and-layout-cooperation
+-- file: source.ril
 meta let ANSWER=42
 meta let COPY=ANSWER
 meta let _=assert(COPY==42)
 fn empty(values:[ANSWER-42]int)->int{len(values)}
 fn example(){assert(empty([])==0)}
---@ end-file
---@ end-case

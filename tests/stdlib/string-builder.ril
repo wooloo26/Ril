@@ -1,8 +1,5 @@
---@ case: snapshot-and-failed-append
---@ mode: run-pass
---@ spec: STD#unicode-and-stringbuilder
---@ entry: test_snapshot_and_failed_append
---@ file: snapshot-and-failed-append.ril
+-- [case: snapshot-and-failed-append, run-pass]
+-- spec: STD#unicode-and-stringbuilder
 use ril/string_builder
 
 pub fn test_snapshot_and_failed_append() {
@@ -15,5 +12,3 @@ pub fn test_snapshot_and_failed_append() {
     StringBuilder::clear(mut builder)
     assert(StringBuilder::to_string(builder) == "")
 }
---@ end-file
---@ end-case

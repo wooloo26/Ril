@@ -1,9 +1,6 @@
---@ case: lexical-owners
---@ mode: check-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ file: source.ril
+-- [case: lexical-owners, check-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- file: source.ril
 type Wrap<T>={value:T}
 fn keep<T>(value:T)->T{value}
 fn example(){let callback=\item:int->item;let fixed:[2]int=[1,2];let record=.{value:keep(1)};assert(callback(record.value)==fixed[0])}
---@ end-file
---@ end-case

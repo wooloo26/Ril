@@ -1,13 +1,12 @@
---@ case: empty
---@ mode: run-program
---@ spec: STD#complete-usage-example
---@ requires: filesystem, process
---@ exit: 0
---@ stdout: expected.stdout
---@ stderr: empty
---@ build: child.ril -> child.exe
---@ args: ["input.txt","output.bin","./child.exe"]
---@ file: root.ril hex
+-- [case: empty, run-program]
+-- spec: STD#complete-usage-example
+-- requires: filesystem, process
+-- exit: 0
+-- stdout: expected.stdout
+-- stderr: empty
+-- build: child.ril -> child.exe
+-- args: ["input.txt","output.bin","./child.exe"]
+-- file: root.ril hex
 75 73 65 20 72 69 6c 2f 65 6e 76 0d 0a 75 73 65 20 72 69 6c 2f 6f 73 0d
 0a 75 73 65 20 72 69 6c 2f 70 61 74 68 0d 0a 75 73 65 20 72 69 6c 2f 66
 69 6c 65 0d 0a 75 73 65 20 72 69 6c 2f 69 6f 0d 0a 75 73 65 20 72 69 6c
@@ -143,28 +142,25 @@
 22 7b 6c 65 6e 28 70 6f 73 69 74 69 6f 6e 73 29 7d 20 73 63 61 6c 61 72
 73 2c 20 7b 6c 65 6e 28 63 6f 75 6e 74 73 29 7d 20 64 69 73 74 69 6e 63
 74 20 76 61 6c 75 65 73 22 29 0d 0a 20 20 20 20 4f 6b 28 29 0d 0a 7d 0a
---@ end-file
---@ file: child.ril
+
+-- file: child.ril
 pub fn main() {}
---@ end-file
---@ file: expected.stdout hex
+
+-- file: expected.stdout hex
 30 20 73 63 61 6c 61 72 73 2c 20 30 20 64 69 73 74 69 6e 63 74 20 76 61
 6c 75 65 73 0a
---@ end-file
---@ file: input.txt hex
---@ end-file
---@ end-case
 
---@ case: unicode
---@ mode: run-program
---@ spec: STD#complete-usage-example
---@ requires: filesystem, process
---@ exit: 0
---@ stdout: expected.stdout
---@ stderr: empty
---@ build: child.ril -> child.exe
---@ args: ["input.txt","output.bin","./child.exe"]
---@ file: root.ril hex
+-- file: input.txt hex
+
+-- [case: unicode, run-program]
+-- spec: STD#complete-usage-example
+-- requires: filesystem, process
+-- exit: 0
+-- stdout: expected.stdout
+-- stderr: empty
+-- build: child.ril -> child.exe
+-- args: ["input.txt","output.bin","./child.exe"]
+-- file: root.ril hex
 75 73 65 20 72 69 6c 2f 65 6e 76 0d 0a 75 73 65 20 72 69 6c 2f 6f 73 0d
 0a 75 73 65 20 72 69 6c 2f 70 61 74 68 0d 0a 75 73 65 20 72 69 6c 2f 66
 69 6c 65 0d 0a 75 73 65 20 72 69 6c 2f 69 6f 0d 0a 75 73 65 20 72 69 6c
@@ -300,15 +296,13 @@ pub fn main() {}
 22 7b 6c 65 6e 28 70 6f 73 69 74 69 6f 6e 73 29 7d 20 73 63 61 6c 61 72
 73 2c 20 7b 6c 65 6e 28 63 6f 75 6e 74 73 29 7d 20 64 69 73 74 69 6e 63
 74 20 76 61 6c 75 65 73 22 29 0d 0a 20 20 20 20 4f 6b 28 29 0d 0a 7d 0a
---@ end-file
---@ file: child.ril
+
+-- file: child.ril
 pub fn main() {}
---@ end-file
---@ file: expected.stdout hex
+
+-- file: expected.stdout hex
 34 20 73 63 61 6c 61 72 73 2c 20 33 20 64 69 73 74 69 6e 63 74 20 76 61
 6c 75 65 73 0a
---@ end-file
---@ file: input.txt hex
+
+-- file: input.txt hex
 41 c3 a9 f0 9f 99 82 41
---@ end-file
---@ end-case

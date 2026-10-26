@@ -1,8 +1,7 @@
---@ case: scope-token
---@ mode: run-pass
---@ spec: STD#structured-concurrency-and-panic-containment
---@ entry: test_native
---@ file: source.ril
+-- [case: scope-token, run-pass]
+-- spec: STD#structured-concurrency-and-panic-containment
+-- entry: test_native
+-- file: source.ril
 use ril/concurrent::{scope, TaskFault}
 
 pub fn test_native() @Concurrent {
@@ -18,15 +17,12 @@ pub fn test_native() @Concurrent {
     }
     assert(second is Ok(9))
 }
---@ end-file
---@ end-case
 
---@ case: scope-fault-declarations
---@ mode: run-pass
---@ spec: STD#structured-concurrency-and-panic-containment
---@ companion: scope-token
---@ entry: test_native
---@ file: source.ril
+-- [case: scope-fault-declarations, run-pass]
+-- spec: STD#structured-concurrency-and-panic-containment
+-- companion: scope-token
+-- entry: test_native
+-- file: source.ril
 use ril/concurrent::{TaskFault, UnwindCause}
 
 pub fn test_native() {
@@ -47,16 +43,13 @@ pub fn test_native() {
     }
     assert(TaskFault::Cancelled is TaskFault::Cancelled)
 }
---@ end-file
---@ end-case
 
---@ case: reject-shadowed-catalog-pattern-namespace
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ spec: STD#structured-concurrency-and-panic-containment
---@ companion: scope-fault-declarations
+-- [case: reject-shadowed-catalog-pattern-namespace, check-fail]
+-- spec: SPEC#pattern-matching
+-- spec: STD#structured-concurrency-and-panic-containment
+-- companion: scope-fault-declarations
 -- Error [E0204]: A local type cannot supply the canonical catalog constructor namespace.
---@ file: source.ril
+-- file: source.ril
 use ril/concurrent::{TaskFault}
 
 fn inspect(value: TaskFault)
@@ -68,15 +61,12 @@ where
         _ -> (),
     }
 }
---@ end-file
---@ end-case
 
---@ case: repeated-scope-token
---@ mode: run-pass
---@ spec: STD#structured-concurrency-and-panic-containment
---@ companion: scope-token
---@ entry: test_native
---@ file: source.ril
+-- [case: repeated-scope-token, run-pass]
+-- spec: STD#structured-concurrency-and-panic-containment
+-- companion: scope-token
+-- entry: test_native
+-- file: source.ril
 use ril/concurrent::{scope, TaskFault}
 
 fn run(value: int) -> Result<int, TaskFault> @Concurrent {
@@ -89,15 +79,12 @@ pub fn test_native() @Concurrent {
     assert(run(7) is Ok(7))
     assert(run(9) is Ok(9))
 }
---@ end-file
---@ end-case
 
---@ case: scope-token-escape
---@ mode: check-fail
---@ spec: STD#structured-concurrency-and-panic-containment
---@ companion: scope-token
+-- [case: scope-token-escape, check-fail]
+-- spec: STD#structured-concurrency-and-panic-containment
+-- companion: scope-token
 -- Error [E0606]: the generated scope token cannot escape its lifetime
---@ file: source.ril
+-- file: source.ril
 use ril/concurrent::scope
 
 fn escaped() @Concurrent {
@@ -108,5 +95,3 @@ fn escaped() @Concurrent {
     }
     assert(result is Ok(_))
 }
---@ end-file
---@ end-case

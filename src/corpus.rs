@@ -223,6 +223,211 @@ pub fn extract_case(item: &Case, output: &Path) -> Result<ExtractedCase> {
     })
 }
 
+pub fn migrate_file(text: &str) -> String {
+    if !text.contains("--@ case:") && !text.contains("--@ source:") {
+        return text.to_string();
+    }
+
+    let mut output = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+
+        if let Some(source_name) = line.strip_prefix("--@ source: ") {
+            let source_name = source_name.trim();
+            if output.last().is_some_and(|l: &String| !l.is_empty()) {
+                output.push(String::new());
+            }
+            output.push(format!("-- [source: {source_name}]"));
+            i += 1;
+            let mut s_files = Vec::new();
+            while i < lines.len() {
+                let s_line = lines[i];
+                if s_line == "--@ end-source" {
+                    i += 1;
+                    break;
+                }
+                if let Some(rest) = s_line.strip_prefix("--@ file: ") {
+                    let parts: Vec<_> = rest.split_whitespace().collect();
+                    let f_name = parts[0].to_string();
+                    let flag = parts.get(1).map(|s| s.to_string());
+                    let mut f_lines = Vec::new();
+                    i += 1;
+                    while i < lines.len() {
+                        let f_line = lines[i];
+                        if f_line == "--@ end-file" {
+                            i += 1;
+                            break;
+                        }
+                        f_lines.push(f_line.to_string());
+                        i += 1;
+                    }
+                    s_files.push((f_name, flag, f_lines));
+                    continue;
+                }
+                i += 1;
+            }
+            for (f_idx, (f_name, flag, f_lines)) in s_files.into_iter().enumerate() {
+                if f_idx > 0 {
+                    output.push(String::new());
+                }
+                let flag_suffix = flag.map(|f| format!(" {f}")).unwrap_or_default();
+                output.push(format!("-- file: {f_name}{flag_suffix}"));
+                for l in f_lines {
+                    output.push(l);
+                }
+            }
+            continue;
+        }
+
+        if let Some(case_name) = line.strip_prefix("--@ case: ") {
+            let case_name = case_name.trim();
+            i += 1;
+            let mut mode = None;
+            let mut directives = Vec::new();
+            let mut annotations = Vec::new();
+            let mut use_source = None;
+            let mut files = Vec::new();
+
+            while i < lines.len() {
+                let c_line = lines[i];
+                if c_line == "--@ end-case" {
+                    i += 1;
+                    break;
+                }
+                if let Some(m) = c_line.strip_prefix("--@ mode: ") {
+                    mode = Some(m.trim().to_string());
+                    i += 1;
+                    continue;
+                }
+                if let Some(u) = c_line.strip_prefix("--@ use-source: ") {
+                    use_source = Some(u.trim().to_string());
+                    i += 1;
+                    continue;
+                }
+                if let Some(rest) = c_line.strip_prefix("--@ file: ") {
+                    let parts: Vec<_> = rest.split_whitespace().collect();
+                    let f_name = parts[0].to_string();
+                    let flag = parts.get(1).map(|s| s.to_string());
+                    let mut f_lines = Vec::new();
+                    i += 1;
+                    while i < lines.len() {
+                        let f_line = lines[i];
+                        if f_line == "--@ end-file" {
+                            i += 1;
+                            break;
+                        }
+                        f_lines.push(f_line.to_string());
+                        i += 1;
+                    }
+                    files.push((f_name, flag, f_lines));
+                    continue;
+                }
+                if let Some(rest) = c_line.strip_prefix("--@ ") {
+                    if let Some((k, v)) = rest.split_once(": ") {
+                        directives.push((k.trim().to_string(), v.trim().to_string()));
+                    }
+                    i += 1;
+                    continue;
+                }
+                if files.is_empty() {
+                    let trimmed = c_line.trim();
+                    if !trimmed.is_empty() {
+                        annotations.push(c_line.to_string());
+                    }
+                }
+                i += 1;
+            }
+
+            if output.last().is_some_and(|l: &String| !l.is_empty()) {
+                output.push(String::new());
+            }
+
+            let mode_str = mode.as_deref().unwrap_or("check-pass");
+            output.push(format!("-- [case: {case_name}, {mode_str}]"));
+
+            for (k, v) in directives {
+                if k == "entry" && v == format!("test_{}", case_name.replace('-', "_")) {
+                    continue;
+                }
+                output.push(format!("-- {k}: {v}"));
+            }
+
+            for ann in annotations {
+                output.push(ann);
+            }
+
+            if let Some(src) = use_source {
+                output.push(format!("-- use-source: {src}"));
+            }
+
+            let is_single_default = files.len() == 1
+                && files[0].0 == format!("{case_name}.ril")
+                && files[0].1.is_none();
+
+            if is_single_default {
+                for l in &files[0].2 {
+                    output.push(l.clone());
+                }
+            } else {
+                for (f_idx, (f_name, flag, f_lines)) in files.into_iter().enumerate() {
+                    if f_idx > 0 {
+                        output.push(String::new());
+                    }
+                    let flag_suffix = flag.map(|f| format!(" {f}")).unwrap_or_default();
+                    output.push(format!("-- file: {f_name}{flag_suffix}"));
+                    for l in f_lines {
+                        output.push(l);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if line.trim().is_empty() {
+            if output.last().is_some_and(|l: &String| !l.is_empty()) {
+                output.push(String::new());
+            }
+            i += 1;
+            continue;
+        }
+
+        output.push(line.to_string());
+        i += 1;
+    }
+
+    let mut result = output.join("\n");
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+pub fn migrate_all(base: &Path) -> Result<usize> {
+    let mut count = 0;
+    fn visit(folder: &Path, count: &mut usize) -> Result<()> {
+        for entry in fs::read_dir(folder)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, count)?;
+            } else if path.extension().is_some_and(|ext| ext == "ril") {
+                let original = fs::read_to_string(&path)?;
+                let migrated = migrate_file(&original);
+                if migrated != original {
+                    fs::write(&path, migrated)?;
+                    *count += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+    visit(base, &mut count)?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +440,25 @@ mod tests {
         let stats = validate_corpus(&cases, &repo.join("doc"), true).expect("validate corpus");
         assert!(stats.bundles > 0);
         assert!(stats.cases > 0);
+    }
+
+    #[test]
+    fn test_migrate_file() {
+        let text = r#"--@ case: simple
+--@ mode: check-pass
+--@ spec: SPEC#advisory-warnings
+--@ file: simple.ril
+pub fn test_hello() {}
+--@ end-file
+--@ end-case
+"#;
+        let migrated = migrate_file(text);
+        assert_eq!(
+            migrated,
+            r#"-- [case: simple, check-pass]
+-- spec: SPEC#advisory-warnings
+pub fn test_hello() {}
+"#
+        );
     }
 }

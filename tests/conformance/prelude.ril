@@ -1,9 +1,6 @@
---@ case: names-and-identity
---@ mode: run-pass
---@ spec: SPEC#prelude-scope
---@ spec: STD#prelude-and-module-index
---@ entry: test_names_and_identity
---@ file: names-and-identity.ril
+-- [case: names-and-identity, run-pass]
+-- spec: SPEC#prelude-scope
+-- spec: STD#prelude-and-module-index
 pub fn test_names_and_identity() {
     let values: []int = [1, 2]
     let tags: Set<str> = Set::from(["a", "a"])
@@ -13,5 +10,3 @@ pub fn test_names_and_identity() {
     let clone = \n: int -> n + 1
     assert(clone(1) == 2)
 }
---@ end-file
---@ end-case

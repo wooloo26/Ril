@@ -1,9 +1,6 @@
---@ case: closed-handle
---@ mode: run-pass
---@ spec: STD#files-and-directories
---@ entry: test_closed_handle
---@ requires: filesystem
---@ file: closed-handle.ril
+-- [case: closed-handle, run-pass]
+-- spec: STD#files-and-directories
+-- requires: filesystem
 use ril/file
 use ril/path
 use ril/io
@@ -24,15 +21,10 @@ pub fn test_closed_handle() -> Result<(), Io::IoError> @Fiber {
     File::remove_file(path)?
     Ok()
 }
---@ end-file
---@ end-case
 
---@ case: invalid-utf8-and-temp-file
---@ mode: run-pass
---@ spec: STD#files-and-directories
---@ entry: test_invalid_utf8_and_temp_file
---@ requires: filesystem
---@ file: invalid-utf8-and-temp-file.ril
+-- [case: invalid-utf8-and-temp-file, run-pass]
+-- spec: STD#files-and-directories
+-- requires: filesystem
 use ril/file
 use ril/path
 use ril/io
@@ -48,15 +40,10 @@ pub fn test_invalid_utf8_and_temp_file() -> Result<(), Io::IoError> @Fiber {
     File::remove_file(path)?
     Ok()
 }
---@ end-file
---@ end-case
 
---@ case: open-modes
---@ mode: run-pass
---@ spec: STD#files-and-directories
---@ entry: test_open_modes
---@ requires: filesystem
---@ file: open-modes.ril
+-- [case: open-modes, run-pass]
+-- spec: STD#files-and-directories
+-- requires: filesystem
 use ril/file
 use ril/path
 use ril/io
@@ -84,15 +71,10 @@ pub fn test_open_modes() -> Result<(), Io::IoError> @Fiber {
     File::remove_file(path)?
     Ok()
 }
---@ end-file
---@ end-case
 
---@ case: stream-position-and-eof
---@ mode: run-pass
---@ spec: STD#files-and-directories
---@ entry: test_stream_position_and_eof
---@ requires: filesystem
---@ file: stream-position-and-eof.ril
+-- [case: stream-position-and-eof, run-pass]
+-- spec: STD#files-and-directories
+-- requires: filesystem
 use ril/file
 use ril/path
 use ril/io
@@ -124,15 +106,10 @@ pub fn test_stream_position_and_eof() -> Result<(), Io::IoError> @Fiber {
     File::remove_file(path)?
     Ok()
 }
---@ end-file
---@ end-case
 
---@ case: whole-file-and-directories
---@ mode: run-pass
---@ spec: STD#files-and-directories
---@ entry: test_whole_file_and_directories
---@ requires: filesystem
---@ file: whole-file-and-directories.ril
+-- [case: whole-file-and-directories, run-pass]
+-- spec: STD#files-and-directories
+-- requires: filesystem
 use ril/file
 use ril/path
 use ril/io
@@ -157,15 +134,10 @@ pub fn test_whole_file_and_directories() -> Result<(), Io::IoError> @Fiber {
     File::remove_dir(directory)?
     Ok()
 }
---@ end-file
---@ end-case
 
---@ case: with-file
---@ mode: run-pass
---@ spec: STD#files-and-directories
---@ entry: test_with_file
---@ requires: filesystem
---@ file: with-file.ril
+-- [case: with-file, run-pass]
+-- spec: STD#files-and-directories
+-- requires: filesystem
 use ril/file
 use ril/path
 use ril/io
@@ -179,5 +151,3 @@ pub fn test_with_file() -> Result<(), Io::IoError> @Fiber {
     File::remove_file(path)?
     Ok()
 }
---@ end-file
---@ end-case

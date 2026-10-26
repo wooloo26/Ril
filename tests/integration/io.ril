@@ -1,11 +1,10 @@
---@ case: standard-input
---@ mode: run-program
---@ spec: STD#error-and-stream-contracts
---@ exit: 0
---@ stdout: empty
---@ stderr: empty
---@ stdin: input.bin
---@ file: root.ril
+-- [case: standard-input, run-program]
+-- spec: STD#error-and-stream-contracts
+-- exit: 0
+-- stdout: empty
+-- stderr: empty
+-- stdin: input.bin
+-- file: root.ril
 use ril/io
 use ril/bytes
 pub fn main() -> Result<(), str> @Fiber {
@@ -21,19 +20,16 @@ pub fn main() -> Result<(), str> @Fiber {
     assert(Bytes::from_array(received) == b"A\x00\xFF")
     Ok()
 }
---@ end-file
---@ file: input.bin hex
-41 00 ff
---@ end-file
---@ end-case
 
---@ case: standard-streams
---@ mode: run-program
---@ spec: STD#error-and-stream-contracts
---@ exit: 0
---@ stdout: expected.stdout
---@ stderr: expected.stderr
---@ file: root.ril
+-- file: input.bin hex
+41 00 ff
+
+-- [case: standard-streams, run-program]
+-- spec: STD#error-and-stream-contracts
+-- exit: 0
+-- stdout: expected.stdout
+-- stderr: expected.stderr
+-- file: root.ril
 use ril/io
 pub fn main() @Fiber {
     let out = Io::stdout_write(b"")
@@ -43,11 +39,9 @@ pub fn main() @Fiber {
     assert(Io::write_stdout("Aé\r\n") is Ok())
     assert(Io::write_stderr("🙂\n") is Ok())
 }
---@ end-file
---@ file: expected.stderr hex
+
+-- file: expected.stderr hex
 f0 9f 99 82 0a
---@ end-file
---@ file: expected.stdout hex
+
+-- file: expected.stdout hex
 41 c3 a9 0d 0a
---@ end-file
---@ end-case

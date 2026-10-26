@@ -1,66 +1,48 @@
---@ case: accept-duplicate-handler
---@ mode: check-pass
---@ spec: SPEC#effect-handlers
---@ companion: reject-duplicate-handler
---@ file: accept-duplicate-handler.ril
+-- [case: accept-duplicate-handler, check-pass]
+-- spec: SPEC#effect-handlers
+-- companion: reject-duplicate-handler
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> resume 1
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: reject-duplicate-handler
---@ mode: check-fail
---@ spec: SPEC#effect-handlers
---@ companion: accept-duplicate-handler
+-- [case: reject-duplicate-handler, check-fail]
+-- spec: SPEC#effect-handlers
+-- companion: accept-duplicate-handler
 -- Error [E0622]: reject duplicate handler
---@ file: reject-duplicate-handler.ril
 eff Read { get() -> int }
 
 fn example() {
     with { Read::get() -> resume 1, Read::get() -> resume 2 }
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: accept-duplicate-resume
---@ mode: check-pass
---@ spec: SPEC#affine-resumption-and-delimited-early-abort
---@ companion: reject-duplicate-resume
---@ file: accept-duplicate-resume.ril
+-- [case: accept-duplicate-resume, check-pass]
+-- spec: SPEC#affine-resumption-and-delimited-early-abort
+-- companion: reject-duplicate-resume
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> resume 1
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: reject-duplicate-resume
---@ mode: check-fail
---@ spec: SPEC#affine-resumption-and-delimited-early-abort
---@ companion: accept-duplicate-resume
+-- [case: reject-duplicate-resume, check-fail]
+-- spec: SPEC#affine-resumption-and-delimited-early-abort
+-- companion: accept-duplicate-resume
 -- Error [E0610]: reject duplicate resume
---@ file: reject-duplicate-resume.ril
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> { resume 1; resume 2 }
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: accept-ended-operation-loan
---@ mode: check-pass
---@ spec: SPEC#effect-handlers
---@ companion: reject-ended-operation-loan
---@ file: accept-ended-operation-loan.ril
+-- [case: accept-ended-operation-loan, check-pass]
+-- spec: SPEC#effect-handlers
+-- companion: reject-ended-operation-loan
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
 
@@ -69,15 +51,11 @@ fn example() {
     let mut value = Cell.{ count: 0 }
     Edit::apply(mut value)
 }
---@ end-file
---@ end-case
 
---@ case: reject-ended-operation-loan
---@ mode: check-fail
---@ spec: SPEC#effect-handlers
---@ companion: accept-ended-operation-loan
+-- [case: reject-ended-operation-loan, check-fail]
+-- spec: SPEC#effect-handlers
+-- companion: accept-ended-operation-loan
 -- Error [E0540]: reject ended operation loan
---@ file: reject-ended-operation-loan.ril
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
 
@@ -86,43 +64,31 @@ fn example() {
     let mut value = Cell.{ count: 0 }
     Edit::apply(mut value)
 }
---@ end-file
---@ end-case
 
---@ case: accept-handler-answer
---@ mode: check-pass
---@ spec: SPEC#effect-handlers
---@ companion: reject-handler-answer
---@ file: accept-handler-answer.ril
+-- [case: accept-handler-answer, check-pass]
+-- spec: SPEC#effect-handlers
+-- companion: reject-handler-answer
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> ()
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: reject-handler-answer
---@ mode: check-fail
---@ spec: SPEC#effect-handlers
---@ companion: accept-handler-answer
+-- [case: reject-handler-answer, check-fail]
+-- spec: SPEC#effect-handlers
+-- companion: accept-handler-answer
 -- Error [E0625]: reject handler answer
---@ file: reject-handler-answer.ril
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> "bad"
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: accept-handler-parameter-mode
---@ mode: check-pass
---@ spec: SPEC#effect-handlers
---@ companion: reject-handler-parameter-mode
---@ file: accept-handler-parameter-mode.ril
+-- [case: accept-handler-parameter-mode, check-pass]
+-- spec: SPEC#effect-handlers
+-- companion: reject-handler-parameter-mode
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
 
@@ -131,15 +97,11 @@ fn example() {
     let mut value = Cell.{ count: 0 }
     Edit::apply(mut value)
 }
---@ end-file
---@ end-case
 
---@ case: reject-handler-parameter-mode
---@ mode: check-fail
---@ spec: SPEC#effect-handlers
---@ companion: accept-handler-parameter-mode
+-- [case: reject-handler-parameter-mode, check-fail]
+-- spec: SPEC#effect-handlers
+-- companion: accept-handler-parameter-mode
 -- Error [E0406]: reject handler parameter mode
---@ file: reject-handler-parameter-mode.ril
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
 
@@ -148,170 +110,117 @@ fn example() {
     let mut value = Cell.{ count: 0 }
     Edit::apply(mut value)
 }
---@ end-file
---@ end-case
 
---@ case: accept-invalid-handler-target
---@ mode: check-pass
---@ spec: SPEC#effect-handlers
---@ companion: reject-invalid-handler-target
---@ file: accept-invalid-handler-target.ril
+-- [case: accept-invalid-handler-target, check-pass]
+-- spec: SPEC#effect-handlers
+-- companion: reject-invalid-handler-target
 fn value() -> int { 1 }
 
 fn example() {
     let _ = value()
 }
---@ end-file
---@ end-case
 
---@ case: reject-invalid-handler-target
---@ mode: check-fail
---@ spec: SPEC#effect-handlers
---@ companion: accept-invalid-handler-target
+-- [case: reject-invalid-handler-target, check-fail]
+-- spec: SPEC#effect-handlers
+-- companion: accept-invalid-handler-target
 -- Error [E0621]: reject invalid handler target
---@ file: reject-invalid-handler-target.ril
 fn value() -> int { 1 }
 
 fn example() {
     with value() -> resume 1
     let _ = value()
 }
---@ end-file
---@ end-case
 
---@ case: accept-resume-capture
---@ mode: check-pass
---@ spec: SPEC#affine-resumption-and-delimited-early-abort
---@ companion: reject-resume-capture
---@ file: accept-resume-capture.ril
+-- [case: accept-resume-capture, check-pass]
+-- spec: SPEC#affine-resumption-and-delimited-early-abort
+-- companion: reject-resume-capture
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> resume 1
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: reject-resume-capture
---@ mode: check-fail
---@ spec: SPEC#affine-resumption-and-delimited-early-abort
---@ companion: accept-resume-capture
+-- [case: reject-resume-capture, check-fail]
+-- spec: SPEC#affine-resumption-and-delimited-early-abort
+-- companion: accept-resume-capture
 -- Error [E0611]: reject resume capture
---@ file: reject-resume-capture.ril
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> { let deferred = \-> { resume 1 }; deferred() }
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: accept-resume-outside
---@ mode: check-pass
---@ spec: SPEC#affine-resumption-and-delimited-early-abort
---@ companion: reject-resume-outside
---@ file: accept-resume-outside.ril
+-- [case: accept-resume-outside, check-pass]
+-- spec: SPEC#affine-resumption-and-delimited-early-abort
+-- companion: reject-resume-outside
 fn example() {
     ()
 }
---@ end-file
---@ end-case
 
---@ case: reject-resume-outside
---@ mode: check-fail
---@ spec: SPEC#affine-resumption-and-delimited-early-abort
---@ companion: accept-resume-outside
+-- [case: reject-resume-outside, check-fail]
+-- spec: SPEC#affine-resumption-and-delimited-early-abort
+-- companion: accept-resume-outside
 -- Error [E0623]: reject resume outside
---@ file: reject-resume-outside.ril
 fn example() {
     resume ()
 }
---@ end-file
---@ end-case
 
---@ case: accept-resume-value-type
---@ mode: check-pass
---@ spec: SPEC#effect-handlers
---@ companion: reject-resume-value-type
---@ file: accept-resume-value-type.ril
+-- [case: accept-resume-value-type, check-pass]
+-- spec: SPEC#effect-handlers
+-- companion: reject-resume-value-type
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> resume 1
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: reject-resume-value-type
---@ mode: check-fail
---@ spec: SPEC#effect-handlers
---@ companion: accept-resume-value-type
+-- [case: reject-resume-value-type, check-fail]
+-- spec: SPEC#effect-handlers
+-- companion: accept-resume-value-type
 -- Error [E0624]: reject resume value type
---@ file: reject-resume-value-type.ril
 eff Read { get() -> int }
 
 fn example() {
     with Read::get() -> resume "bad"
     let _ = Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: accept-unhandled-effect
---@ mode: check-pass
---@ spec: SPEC#callable-contracts
---@ companion: reject-unhandled-effect
---@ file: accept-unhandled-effect.ril
+-- [case: accept-unhandled-effect, check-pass]
+-- spec: SPEC#callable-contracts
+-- companion: reject-unhandled-effect
 eff Read { get() -> int }
 fn example() -> int @Read { Read::get() }
---@ end-file
---@ end-case
 
---@ case: reject-unhandled-effect
---@ mode: check-fail
---@ spec: SPEC#callable-contracts
---@ companion: accept-unhandled-effect
+-- [case: reject-unhandled-effect, check-fail]
+-- spec: SPEC#callable-contracts
+-- companion: accept-unhandled-effect
 -- Error [E0612]: reject unhandled effect
---@ file: reject-unhandled-effect.ril
 eff Read { get() -> int }
 fn example() -> int { Read::get() }
---@ end-file
---@ end-case
 
---@ case: accept-unstable-handler-answer
---@ mode: check-pass
---@ spec: SPEC#effect-handlers
---@ companion: reject-unstable-handler-answer
---@ file: accept-unstable-handler-answer.ril
+-- [case: accept-unstable-handler-answer, check-pass]
+-- spec: SPEC#effect-handlers
+-- companion: reject-unstable-handler-answer
 eff Read { get() -> int }
 type Reader = fn() -> int &closure
 fn make_reader() -> Reader &capture { with Read::get() -> resume 7; \-> Read::get() }
---@ end-file
---@ end-case
 
---@ case: reject-unstable-handler-answer
---@ mode: check-fail
---@ spec: SPEC#effect-handlers
---@ companion: accept-unstable-handler-answer
+-- [case: reject-unstable-handler-answer, check-fail]
+-- spec: SPEC#effect-handlers
+-- companion: accept-unstable-handler-answer
 -- Error [E0614]: reject unstable handler answer
---@ file: reject-unstable-handler-answer.ril
 eff Read { get() -> int }
 type Reader = fn() -> int &closure
 fn make_reader() -> Reader &capture {
     with Read::get() -> { let ignored = resume 7; \-> 0 }
     \-> Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: deep-resumption
---@ mode: run-pass
---@ spec: SPEC#effect-handlers
---@ entry: test_deep_resumption
---@ file: deep-resumption.ril
+-- [case: deep-resumption, run-pass]
+-- spec: SPEC#effect-handlers
 eff Read { get() -> int }
 
 pub fn test_deep_resumption() {
@@ -321,28 +230,18 @@ pub fn test_deep_resumption() {
     let second = Read::get()
     assert(first == 1 && second == 2 && calls == 2)
 }
---@ end-file
---@ end-case
 
---@ case: generic-instances
---@ mode: run-pass
---@ spec: SPEC#effect-declarations-and-operation-signatures
---@ entry: test_generic_instances
---@ file: generic-instances.ril
+-- [case: generic-instances, run-pass]
+-- spec: SPEC#effect-declarations-and-operation-signatures
 eff State<T> { get() -> T }
 
 pub fn test_generic_instances() {
     with { State<int>::get() -> resume 7, State<str>::get() -> resume "seven" }
     assert(State<int>::get() == 7 && State<str>::get() == "seven")
 }
---@ end-file
---@ end-case
 
---@ case: outer-handler-forwarding
---@ mode: run-pass
---@ spec: SPEC#effect-handlers
---@ entry: test_outer_handler_forwarding
---@ file: outer-handler-forwarding.ril
+-- [case: outer-handler-forwarding, run-pass]
+-- spec: SPEC#effect-handlers
 eff Read { get() -> int }
 
 pub fn test_outer_handler_forwarding() {
@@ -353,14 +252,9 @@ pub fn test_outer_handler_forwarding() {
     }
     assert(result == 8)
 }
---@ end-file
---@ end-case
 
---@ case: parameterized-handler
---@ mode: run-pass
---@ spec: SPEC#parameterized-handler-applications
---@ entry: test_parameterized_handler
---@ file: parameterized-handler.ril
+-- [case: parameterized-handler, run-pass]
+-- spec: SPEC#parameterized-handler-applications
 eff Read { get() -> int }
 fn supply(value: int, action: fn() -> int) -> int { with Read::get() -> resume value; action() }
 halt fn configured() -> int { with supply(7); Read::get() + 1 }
@@ -370,14 +264,9 @@ pub fn test_parameterized_handler() {
     assert(configured() == 8)
     assert(existing() == 3)
 }
---@ end-file
---@ end-case
 
---@ case: retained-handler-selection
---@ mode: run-pass
---@ spec: SPEC#effect-handlers
---@ entry: test_retained_handler_selection
---@ file: retained-handler-selection.ril
+-- [case: retained-handler-selection, run-pass]
+-- spec: SPEC#effect-handlers
 eff Read { get() -> int }
 type Reader = fn() -> int &closure
 fn make_reader() -> Reader &capture { with Read::get() -> resume 7; \-> Read::get() }
@@ -387,20 +276,13 @@ pub fn test_retained_handler_selection() {
     with Read::get() -> resume 99
     assert(reader() == 7 && reader() == 7)
 }
---@ end-file
---@ end-case
 
---@ case: system-yield-local-handling
---@ mode: run-pass
---@ spec: SPEC#built-in-system-effects
---@ spec: STD#execution-boundaries
---@ entry: test_system_yield_local_handling
---@ file: system-yield-local-handling.ril
+-- [case: system-yield-local-handling, run-pass]
+-- spec: SPEC#built-in-system-effects
+-- spec: STD#execution-boundaries
 pub fn test_system_yield_local_handling() {
     var yielded = 0
     with Fiber::yield() -> { yielded += 1; resume () }
     Fiber::yield()
     assert(yielded == 1)
 }
---@ end-file
---@ end-case

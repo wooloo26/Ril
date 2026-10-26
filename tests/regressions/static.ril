@@ -1,5 +1,5 @@
---@ source: source-later-projection
---@ file: source.ril
+-- [source: source-later-projection]
+-- file: source.ril
 -- Native regression: later meta projections reuse the original node.
 meta fn shared() -> ([]int, []int) { let child = [1]; (child, child) }
 meta let ROOT = shared()
@@ -10,24 +10,18 @@ pub fn test_native() &{ROOT, SELECTED} {
     assert((copied.0).1 == [1, 2] && copied.1 == [1, 2])
     assert(ROOT.0 == [1] && SELECTED == [1])
 }
---@ end-file
---@ end-source
 
---@ case: later-projection
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-later-projection
---@ end-case
+-- [case: later-projection, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-later-projection
 
---@ case: later-projection-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-later-projection
---@ end-case
+-- [case: later-projection-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-later-projection
 
---@ source: source-map-and-variant
---@ file: source.ril
+-- [source: source-map-and-variant]
+-- file: source.ril
 -- Native regression: map order and variant payload edges share one child.
 meta let ROOT = {
     let child = [3]
@@ -42,24 +36,18 @@ pub fn test_native() &{ROOT} {
     assert(copied.2 == Some([3, 4]))
     assert(ROOT.0 == [3])
 }
---@ end-file
---@ end-source
 
---@ case: map-and-variant
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-map-and-variant
---@ end-case
+-- [case: map-and-variant, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-map-and-variant
 
---@ case: map-and-variant-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-map-and-variant
---@ end-case
+-- [case: map-and-variant-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-map-and-variant
 
---@ source: source-shared-and-distinct
---@ file: source.ril
+-- [source: source-shared-and-distinct]
+-- file: source.ril
 -- Native regression: shared children and distinct equal-content allocations.
 meta fn shared() -> ([]int, []int) { let child = [1]; (child, child) }
 meta fn distinct() -> ([]int, []int) { ([1], [1]) }
@@ -74,24 +62,18 @@ pub fn test_native() &{SHARED, DISTINCT} {
     assert(distinct_copy.1 == [1])
     assert(SHARED.0 == [1] && DISTINCT.0 == [1])
 }
---@ end-file
---@ end-source
 
---@ case: shared-and-distinct
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-shared-and-distinct
---@ end-case
+-- [case: shared-and-distinct, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-shared-and-distinct
 
---@ case: shared-and-distinct-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-shared-and-distinct
---@ end-case
+-- [case: shared-and-distinct-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-shared-and-distinct
 
---@ source: source-worker-allocation-pressure
---@ file: source.ril
+-- [source: source-worker-allocation-pressure]
+-- file: source.ril
 -- Runtime.allocate collects at its initial live-object threshold of 1024.
 -- The 1200 array allocations below necessarily cross it; only GC reduces live.
 use ril/concurrent::{scope, TaskFault}
@@ -107,106 +89,78 @@ pub fn test_native() @Concurrent &{ROOT} {
     assert(result is Ok(14))
     assert(ROOT.0 == [7] && ROOT.1 == [7])
 }
---@ end-file
---@ end-source
 
---@ case: worker-allocation-pressure
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-worker-allocation-pressure
---@ end-case
+-- [case: worker-allocation-pressure, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-worker-allocation-pressure
 
---@ case: worker-allocation-pressure-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-worker-allocation-pressure
---@ end-case
+-- [case: worker-allocation-pressure-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-worker-allocation-pressure
 
---@ source: source-static-for-return
---@ file: source.ril
+-- [source: source-static-for-return]
+-- file: source.ril
 meta fn first(values:[]int)->int{
     for values as value{if value>0{return value};next}
     0
 }
 meta let VALUE=first([-1,7,9])
 meta let _=assert(VALUE==7)
---@ end-file
---@ end-source
 
---@ case: static-for-return
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-for-return
---@ end-case
+-- [case: static-for-return, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-for-return
 
---@ source: source-static-loop-last
---@ file: source.ril
+-- [source: source-static-loop-last]
+-- file: source.ril
 meta fn once()->int{loop{last 7}}
 meta let VALUE=once()
 meta let _=assert(VALUE==7)
---@ end-file
---@ end-source
 
---@ case: static-loop-last
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-loop-last
---@ end-case
+-- [case: static-loop-last, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-loop-last
 
---@ source: source-static-reference-shadowing
---@ file: source.ril
+-- [source: source-static-reference-shadowing]
+-- file: source.ril
 meta let VALUES=[1]
 pub fn test_native(){
     meta let VALUES=[2]
     assert(VALUES[0]==2)
 }
---@ end-file
---@ end-source
 
---@ case: static-reference-shadowing
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-reference-shadowing
---@ end-case
+-- [case: static-reference-shadowing, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-reference-shadowing
 
---@ case: static-reference-shadowing-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-reference-shadowing
---@ end-case
+-- [case: static-reference-shadowing-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-reference-shadowing
 
---@ source: source-static-type-loop
---@ file: source.ril
+-- [source: source-static-type-loop]
+-- file: source.ril
 type Pick=\T->{loop{last type<T>}}
 type Chosen=Pick<int>
 fn identity(value:Chosen)->Chosen{value}
---@ end-file
---@ end-source
 
---@ case: static-type-loop
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-type-loop
---@ end-case
+-- [case: static-type-loop, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-type-loop
 
---@ source: source-static-while-false
---@ file: source.ril
+-- [source: source-static-while-false]
+-- file: source.ril
 meta fn none()->int{while false{};7}
 meta let VALUE=none()
 meta let _=assert(VALUE==7)
---@ end-file
---@ end-source
 
---@ case: static-while-false
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-while-false
---@ end-case
+-- [case: static-while-false, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-while-false
 
---@ source: source-static-bound-callable-construction
---@ file: source.ril
+-- [source: source-static-bound-callable-construction]
+-- file: source.ril
 meta fn right(right:int=2)->int{right}
 meta fn pass<T:{id:i8,..R}>(value:T)->T{value}
 meta let ANSWER={
@@ -217,24 +171,18 @@ meta let ANSWER={
 }
 meta let _=assert(ANSWER==2)
 pub fn test_native() &{ANSWER}{assert(ANSWER==2)}
---@ end-file
---@ end-source
 
---@ case: static-bound-callable-construction
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-bound-callable-construction
---@ end-case
+-- [case: static-bound-callable-construction, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-bound-callable-construction
 
---@ case: static-bound-callable-construction-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-bound-callable-construction
---@ end-case
+-- [case: static-bound-callable-construction-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-bound-callable-construction
 
---@ source: source-static-bound-fresh-construction
---@ file: source.ril
+-- [source: source-static-bound-fresh-construction]
+-- file: source.ril
 meta fn read<T:{mut id:i8,..R}>(value:T)->i8{value.id}
 meta let ANSWER=read(.{id:7,tag:"direct"})
 meta let SPREAD={let stored=.{id:11i8};read(.{..stored,tag:"spread"})}
@@ -244,24 +192,18 @@ meta let _=assert(ANSWER==7i8 && SPREAD==11i8 && OVERRIDE==13i8 && BLOCK==17i8)
 pub fn test_native() &{ANSWER,SPREAD,OVERRIDE,BLOCK}{
     assert(ANSWER==7i8 && SPREAD==11i8 && OVERRIDE==13i8 && BLOCK==17i8)
 }
---@ end-file
---@ end-source
 
---@ case: static-bound-fresh-construction
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-bound-fresh-construction
---@ end-case
+-- [case: static-bound-fresh-construction, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-bound-fresh-construction
 
---@ case: static-bound-fresh-construction-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-bound-fresh-construction
---@ end-case
+-- [case: static-bound-fresh-construction-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-bound-fresh-construction
 
---@ source: source-static-bound-generic-members
---@ file: source.ril
+-- [source: source-static-bound-generic-members]
+-- file: source.ril
 meta fn member<T: { item: U, ..R }, U>(value: T) -> U {
     value.item
 }
@@ -304,24 +246,18 @@ pub fn test_native() &{ MEMBER, NESTED, ARRAY, RESIDUAL_ITEM, CALLABLE, DEFAULT 
     assert(CALLABLE == 19)
     assert(DEFAULT == 2)
 }
---@ end-file
---@ end-source
 
---@ case: static-bound-generic-members
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-bound-generic-members
---@ end-case
+-- [case: static-bound-generic-members, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-bound-generic-members
 
---@ case: static-bound-generic-members-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-bound-generic-members
---@ end-case
+-- [case: static-bound-generic-members-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-bound-generic-members
 
---@ source: source-static-bound-projection
---@ file: source.ril
+-- [source: source-static-bound-projection]
+-- file: source.ril
 meta fn read<T:{id:int,..R}>(value:T)->int{
     let pending:Result<int,str>=Ok(value.id)
     match pending{Ok(number)->number,Err(_)->0}
@@ -329,48 +265,36 @@ meta fn read<T:{id:int,..R}>(value:T)->int{
 meta let ANSWER=read(.{id:7,tag:"ok"})
 meta let _=assert(ANSWER==7)
 pub fn test_native() &{ANSWER}{assert(ANSWER==7)}
---@ end-file
---@ end-source
 
---@ case: static-bound-projection
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-bound-projection
---@ end-case
+-- [case: static-bound-projection, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-bound-projection
 
---@ case: static-bound-projection-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-bound-projection
---@ end-case
+-- [case: static-bound-projection-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-bound-projection
 
---@ source: source-static-bound-result-inspection
---@ file: source.ril
+-- [source: source-static-bound-result-inspection]
+-- file: source.ril
 meta fn inspect<T:{pending:Result<int,str>,..R}>(value:T)->int{
     match value.pending{Ok(number)->number,Err(_)->0}
 }
 meta let ANSWER={let pending:Result<int,str>=Ok(7);inspect(.{pending:pending,id:1})}
 meta let _=assert(ANSWER==7)
 pub fn test_native() &{ANSWER}{assert(ANSWER==7)}
---@ end-file
---@ end-source
 
---@ case: static-bound-result-inspection
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-bound-result-inspection
---@ end-case
+-- [case: static-bound-result-inspection, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-bound-result-inspection
 
---@ case: static-bound-result-inspection-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-bound-result-inspection
---@ end-case
+-- [case: static-bound-result-inspection-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-bound-result-inspection
 
---@ source: source-static-bound-template-inference
---@ file: source.ril
+-- [source: source-static-bound-template-inference]
+-- file: source.ril
 type Packet<X> = { value: X }
 type OtherPacket<Y> = { value: Y }
 
@@ -428,24 +352,18 @@ pub fn test_native() &{ ALIAS, MAP, CALLABLE, DEFAULT, ALIAS_CALLABLE, ALIAS_DEF
     assert(ALIAS_DEFAULT == 2)
     assert(FORWARDED == 29)
 }
---@ end-file
---@ end-source
 
---@ case: static-bound-template-inference
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-bound-template-inference
---@ end-case
+-- [case: static-bound-template-inference, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-bound-template-inference
 
---@ case: static-bound-template-inference-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-bound-template-inference
---@ end-case
+-- [case: static-bound-template-inference-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-bound-template-inference
 
---@ source: source-static-const-int
---@ file: source.ril
+-- [source: source-static-const-int]
+-- file: source.ril
 meta fn size<n:int>()->int{n}
 meta fn forward<n:int>()->int{size<n>()}
 meta fn shadow<n:int>()->int{
@@ -477,24 +395,18 @@ pub fn test_native() &{SCALAR,NEGATIVE,FORWARDED,SHADOW,CAPTURED,FIXED,MIXED}{
     assert(SCALAR==2 && NEGATIVE== -3 && FORWARDED==9)
     assert(SHADOW==7 && CAPTURED==6 && FIXED==2 && MIXED==4)
 }
---@ end-file
---@ end-source
 
---@ case: static-const-int
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-const-int
---@ end-case
+-- [case: static-const-int, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-const-int
 
---@ case: static-const-int-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-const-int
---@ end-case
+-- [case: static-const-int-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-const-int
 
---@ source: source-static-const-result-flow
---@ file: source.ril
+-- [source: source-static-const-result-flow]
+-- file: source.ril
 meta fn echo<n:int>()->Result<int,str>{Ok(n)}
 meta fn block_shadow<n:int>()->Result<int,str>{
     {let n=11;let local:Result<int,str>=Ok(n);assert(local is Ok(_)|Err(_));()}
@@ -522,24 +434,18 @@ meta let ANSWER={
 }
 meta let _=assert(ANSWER==21)
 pub fn test_native() &{ANSWER}{assert(ANSWER==21)}
---@ end-file
---@ end-source
 
---@ case: static-const-result-flow
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-const-result-flow
---@ end-case
+-- [case: static-const-result-flow, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-const-result-flow
 
---@ case: static-const-result-flow-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-const-result-flow
---@ end-case
+-- [case: static-const-result-flow-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-const-result-flow
 
---@ source: source-static-generic-callable-receiving
---@ file: source.ril
+-- [source: source-static-generic-callable-receiving]
+-- file: source.ril
 meta fn left(left:int=1)->int{left}
 meta fn right(right:int=2)->int{right}
 meta fn second<T>(first:T,second:T)->T{second}
@@ -552,24 +458,18 @@ meta let ANSWER={
 }
 meta let _=assert(ANSWER==7)
 pub fn test_native() &{ANSWER}{assert(ANSWER==7)}
---@ end-file
---@ end-source
 
---@ case: static-generic-callable-receiving
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-generic-callable-receiving
---@ end-case
+-- [case: static-generic-callable-receiving, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-generic-callable-receiving
 
---@ case: static-generic-callable-receiving-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-generic-callable-receiving
---@ end-case
+-- [case: static-generic-callable-receiving-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-generic-callable-receiving
 
---@ source: source-static-generic-callable-wrapper
---@ file: source.ril
+-- [source: source-static-generic-callable-wrapper]
+-- file: source.ril
 type Box<T>={item:T}
 meta fn left(left:int=1)->int{left}
 meta fn right(right:int=2)->int{right}
@@ -583,70 +483,52 @@ meta let ANSWER={
 }
 meta let _=assert(ANSWER==7)
 pub fn test_native() &{ANSWER}{assert(ANSWER==7)}
---@ end-file
---@ end-source
 
---@ case: static-generic-callable-wrapper
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-generic-callable-wrapper
---@ end-case
+-- [case: static-generic-callable-wrapper, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-generic-callable-wrapper
 
---@ case: static-generic-callable-wrapper-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-generic-callable-wrapper
---@ end-case
+-- [case: static-generic-callable-wrapper-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-generic-callable-wrapper
 
---@ source: source-static-optional-result-fallback
---@ file: source.ril
+-- [source: source-static-optional-result-fallback]
+-- file: source.ril
 meta fn transport(value:?Result<int,str>)->Result<int,str>{value??Err("fallback")}
 meta let ANSWER={let pending:Result<int,str>=Ok(7);let returned=transport(Some(pending));match returned{Ok(value)->value,Err(_)->0}}
 meta let FALLBACK={let returned=transport(None);match returned{Ok(_)->0,Err(error)->len(error)}}
 pub fn test_native() &{ANSWER,FALLBACK}{assert(ANSWER==7);assert(FALLBACK==8)}
---@ end-file
---@ end-source
 
---@ case: static-optional-result-fallback
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-optional-result-fallback
---@ end-case
+-- [case: static-optional-result-fallback, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-optional-result-fallback
 
---@ case: static-optional-result-fallback-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-optional-result-fallback
---@ end-case
+-- [case: static-optional-result-fallback-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-optional-result-fallback
 
---@ source: source-computed-alias
---@ file: source.ril
+-- [source: source-computed-alias]
+-- file: source.ril
 meta fn shape() -> [2]int { [1, 2] }
 type Items = [len(shape())]int
 meta fn initialize() -> [2]int { [7, 9] }
 meta let VALUES: Items = initialize()
 meta let _ = assert(VALUES[0] == 7 && VALUES[1] == 9)
 pub fn test_native() &{VALUES} { assert(VALUES[0] == 7 && VALUES[1] == 9) }
---@ end-file
---@ end-source
 
---@ case: computed-alias
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-computed-alias
---@ end-case
+-- [case: computed-alias, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-computed-alias
 
---@ case: computed-alias-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-computed-alias
---@ end-case
+-- [case: computed-alias-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-computed-alias
 
---@ source: source-positive
---@ file: source.ril
+-- [source: source-positive]
+-- file: source.ril
 meta fn empty<T>() -> []T { [] }
 meta fn forward<U>() -> []U { empty() }
 meta fn count(values: []int) -> int { len(values) }
@@ -672,24 +554,18 @@ pub fn test_native() &{ITEMS, NESTED, FORWARDED, BRANCH, LIFTED, COUNT, ANSWER} 
     assert(len(BRANCH) == 0 && COUNT == 0 && ANSWER == 7)
     assert(len(LIFTED) == 0)
 }
---@ end-file
---@ end-source
 
---@ case: positive
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-positive
---@ end-case
+-- [case: positive, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-positive
 
---@ case: positive-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-positive
---@ end-case
+-- [case: positive-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-positive
 
---@ source: source-reject-callable-mode
---@ file: source.ril
+-- [source: source-reject-callable-mode]
+-- file: source.ril
 type Cell = { mut value: int }
 meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
 -- Safety boundary: never accept by rewriting T's actual parameter mode.
@@ -698,65 +574,49 @@ meta fn wrong(action: fn(mut Cell) -> () &mut) -> (fn(Cell) -> (), []int) {
     let pair: (fn(Cell) -> (), []int) = retain(action)
     pair
 }
---@ end-file
---@ end-source
 
---@ case: reject-callable-mode
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
+-- [case: reject-callable-mode, check-fail]
+-- spec: SPEC#static-computation-and-totality
 -- Error [E0301]: normative target; retained NI guards are not conformance passes
---@ use-source: source-reject-callable-mode
---@ end-case
+-- use-source: source-reject-callable-mode
 
---@ source: source-reject-dynamic-outer
---@ file: source.ril
+-- [source: source-reject-dynamic-outer]
+-- file: source.ril
 meta fn empty<T>() -> []T { [] }
 -- The declared dynamic outer shell cannot acquire the receiver's fixed zero.
 -- Expected: E0301, despite this implementation currently returning zero items.
 meta let ITEMS: [0][2]int = empty()
---@ end-file
---@ end-source
 
---@ case: reject-dynamic-outer
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
+-- [case: reject-dynamic-outer, check-fail]
+-- spec: SPEC#static-computation-and-totality
 -- Error [E0301]: original regression expectation
---@ use-source: source-reject-dynamic-outer
---@ end-case
+-- use-source: source-reject-dynamic-outer
 
---@ source: source-reject-explicit-selection
---@ file: source.ril
+-- [source: source-reject-explicit-selection]
+-- file: source.ril
 meta fn empty<T>() -> []T { [] }
 -- Expected: E0301. Result context must not replace explicitly selected int.
 meta let ITEMS: []str = empty<int>()
---@ end-file
---@ end-source
 
---@ case: reject-explicit-selection
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
+-- [case: reject-explicit-selection, check-fail]
+-- spec: SPEC#static-computation-and-totality
 -- Error [E0301]: original regression expectation
---@ use-source: source-reject-explicit-selection
---@ end-case
+-- use-source: source-reject-explicit-selection
 
---@ source: source-reject-input-selection
---@ file: source.ril
+-- [source: source-reject-input-selection]
+-- file: source.ril
 meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
 meta let STORED: []int = []
 -- Expected: E0301. T was selected from a declared dynamic input schema.
 meta let PAIR: ([0]int, []int) = retain(STORED)
---@ end-file
---@ end-source
 
---@ case: reject-input-selection
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
+-- [case: reject-input-selection, check-fail]
+-- spec: SPEC#static-computation-and-totality
 -- Error [E0301]: original regression expectation
---@ use-source: source-reject-input-selection
---@ end-case
+-- use-source: source-reject-input-selection
 
---@ source: source-reject-result-inspection
---@ file: source.ril
+-- [source: source-reject-result-inspection]
+-- file: source.ril
 meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
 meta let _ = {
     let pending: Result<int, str> = Ok(7)
@@ -764,18 +624,14 @@ meta let _ = {
     -- Expected: E0720. Inferring U does not inspect the returned T producer.
     ()
 }
---@ end-file
---@ end-source
 
---@ case: reject-result-inspection
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
+-- [case: reject-result-inspection, check-fail]
+-- spec: SPEC#static-computation-and-totality
 -- Error [E0720]: original regression expectation
---@ use-source: source-reject-result-inspection
---@ end-case
+-- use-source: source-reject-result-inspection
 
---@ source: source-reject-universal-some
---@ file: source.ril
+-- [source: source-reject-universal-some]
+-- file: source.ril
 meta fn discard<U>(value: ?Result<int, str>) -> []U {
     match value {
         Some(item) -> { let pending: Result<int, str> = Ok(1); [] },
@@ -784,18 +640,14 @@ meta fn discard<U>(value: ?Result<int, str>) -> []U {
 }
 -- Expected: E0720. This actual None does not discharge the definition's Some path.
 meta let ITEMS: []int = discard(None)
---@ end-file
---@ end-source
 
---@ case: reject-universal-some
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
+-- [case: reject-universal-some, check-fail]
+-- spec: SPEC#static-computation-and-totality
 -- Error [E0720]: original regression expectation
---@ use-source: source-reject-universal-some
---@ end-case
+-- use-source: source-reject-universal-some
 
---@ source: source-reject-view-default
---@ file: source.ril
+-- [source: source-reject-view-default]
+-- file: source.ril
 meta fn right(right: int = 2) -> int { right }
 meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
 meta let ANSWER = {
@@ -803,18 +655,14 @@ meta let ANSWER = {
     -- Expected: E0314. The explicit receiving view erases the declaration default.
     pair.0()
 }
---@ end-file
---@ end-source
 
---@ case: reject-view-default
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
+-- [case: reject-view-default, check-fail]
+-- spec: SPEC#static-computation-and-totality
 -- Error [E0314]: original regression expectation
---@ use-source: source-reject-view-default
---@ end-case
+-- use-source: source-reject-view-default
 
---@ source: source-result-transfer
---@ file: source.ril
+-- [source: source-result-transfer]
+-- file: source.ril
 meta fn retain<T, U>(value: T) -> (T, []U) { (value, []) }
 meta let ANSWER = {
     let pending: Result<int, str> = Ok(7)
@@ -824,24 +672,18 @@ meta let ANSWER = {
 }
 meta let _ = assert(ANSWER == 7)
 pub fn test_native() &{ANSWER} { assert(ANSWER == 7) }
---@ end-file
---@ end-source
 
---@ case: result-transfer
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-result-transfer
---@ end-case
+-- [case: result-transfer, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-result-transfer
 
---@ case: result-transfer-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-result-transfer
---@ end-case
+-- [case: result-transfer-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-result-transfer
 
---@ source: source-static-result-context-containers
---@ file: source.ril
+-- [source: source-static-result-context-containers]
+-- file: source.ril
 meta fn package<T, U>(value: T) -> (T, []U) { (value, []) }
 meta fn checked() -> int {
     let pending: Result<int, str> = Ok(7)
@@ -865,24 +707,18 @@ meta let ANSWER = {
 }
 meta let _ = assert(ANSWER == 7)
 pub fn test_native() &{ANSWER, CHECKED} { assert(ANSWER == 7 && CHECKED == 7) }
---@ end-file
---@ end-source
 
---@ case: static-result-context-containers
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-result-context-containers
---@ end-case
+-- [case: static-result-context-containers, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-result-context-containers
 
---@ case: static-result-context-containers-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-result-context-containers
---@ end-case
+-- [case: static-result-context-containers-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-result-context-containers
 
---@ source: source-static-result-context-flow
---@ file: source.ril
+-- [source: source-static-result-context-flow]
+-- file: source.ril
 meta fn empty<T>() -> []T { [] }
 meta fn package<T, U>(value: T) -> (T, []U) { (value, []) }
 meta fn relay<T>(value: T) -> (T, []int) {
@@ -905,24 +741,18 @@ meta let ANSWER = {
 }
 meta let _ = assert(ANSWER == 7)
 pub fn test_native() &{ANSWER} { assert(ANSWER == 7) }
---@ end-file
---@ end-source
 
---@ case: static-result-context-flow
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-result-context-flow
---@ end-case
+-- [case: static-result-context-flow, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-result-context-flow
 
---@ case: static-result-context-flow-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-result-context-flow
---@ end-case
+-- [case: static-result-context-flow-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-result-context-flow
 
---@ source: source-static-result-context-shadow
---@ file: source.ril
+-- [source: source-static-result-context-shadow]
+-- file: source.ril
 meta fn local() -> int {
     let n = 2
     {
@@ -934,24 +764,18 @@ meta fn local() -> int {
 }
 meta let ANSWER = local()
 pub fn test_native() &{ANSWER} { assert(ANSWER == 7) }
---@ end-file
---@ end-source
 
---@ case: static-result-context-shadow
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-result-context-shadow
---@ end-case
+-- [case: static-result-context-shadow, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-result-context-shadow
 
---@ case: static-result-context-shadow-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-result-context-shadow
---@ end-case
+-- [case: static-result-context-shadow-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-result-context-shadow
 
---@ source: source-static-result-map-lookup
---@ file: source.ril
+-- [source: source-static-result-map-lookup]
+-- file: source.ril
 meta let ANSWER={
     let first:Result<int,str>=Ok(7)
     let second:Result<int,str>=Err("other")
@@ -962,18 +786,12 @@ meta let ANSWER={
     7
 }
 pub fn test_native() &{ANSWER}{assert(ANSWER==7)}
---@ end-file
---@ end-source
 
---@ case: static-result-map-lookup
---@ mode: check-pass
---@ spec: SPEC#static-computation-and-totality
---@ use-source: source-static-result-map-lookup
---@ end-case
+-- [case: static-result-map-lookup, check-pass]
+-- spec: SPEC#static-computation-and-totality
+-- use-source: source-static-result-map-lookup
 
---@ case: static-result-map-lookup-test-native
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ entry: test_native
---@ use-source: source-static-result-map-lookup
---@ end-case
+-- [case: static-result-map-lookup-test-native, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- entry: test_native
+-- use-source: source-static-result-map-lookup

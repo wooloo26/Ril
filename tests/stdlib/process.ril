@@ -1,9 +1,6 @@
---@ case: invalid-command-before-launch
---@ mode: run-pass
---@ spec: STD#environment-and-processes
---@ entry: test_invalid_command_before_launch
---@ requires: process
---@ file: invalid-command-before-launch.ril
+-- [case: invalid-command-before-launch, run-pass]
+-- spec: STD#environment-and-processes
+-- requires: process
 use ril/process
 use ril/path
 use ril/os
@@ -14,5 +11,3 @@ pub fn test_invalid_command_before_launch() @Fiber {
     let captured = Process::command(Path::from_string("./absent"), []) |> derive \mut draft -> { draft.stdout = Process::OutputMode::Capture }
     assert(Process::spawn(captured) is Err(Process::ProcessError::InvalidCommand(_)))
 }
---@ end-file
---@ end-case

@@ -1,9 +1,6 @@
---@ case: posix-bytes
---@ mode: run-pass
---@ spec: STD#native-strings-and-paths
---@ entry: test_posix_bytes
---@ requires: posix
---@ file: posix-bytes.ril
+-- [case: posix-bytes, run-pass]
+-- spec: STD#native-strings-and-paths
+-- requires: posix
 use ril/os
 use ril/path
 use ril/order
@@ -16,14 +13,9 @@ pub fn test_posix_bytes() {
     assert(Os::from_windows_units([65u16]) is Err(Os::NativeError::WrongPlatform))
     assert(Os::windows_units(Os::from_string("a")) is Err(Os::NativeError::WrongPlatform))
 }
---@ end-file
---@ end-case
 
---@ case: unicode-round-trip
---@ mode: run-pass
---@ spec: STD#native-strings-and-paths
---@ entry: test_unicode_round_trip
---@ file: unicode-round-trip.ril
+-- [case: unicode-round-trip, run-pass]
+-- spec: STD#native-strings-and-paths
 use ril/os
 use ril/path
 use ril/order
@@ -36,15 +28,10 @@ pub fn test_unicode_round_trip() {
     assert(Path::to_string(Path::from_string("a")) is Ok("a"))
     assert(Path::compare(Path::from_string("a"), Path::from_string("A")) != Order::Ordering::Equal)
 }
---@ end-file
---@ end-case
 
---@ case: windows-units
---@ mode: run-pass
---@ spec: STD#native-strings-and-paths
---@ entry: test_windows_units
---@ requires: windows
---@ file: windows-units.ril
+-- [case: windows-units, run-pass]
+-- spec: STD#native-strings-and-paths
+-- requires: windows
 use ril/os
 use ril/path
 use ril/order
@@ -57,5 +44,3 @@ pub fn test_windows_units() {
     assert(Os::from_posix_bytes(b"a") is Err(Os::NativeError::WrongPlatform))
     assert(Os::posix_bytes(Os::from_string("a")) is Err(Os::NativeError::WrongPlatform))
 }
---@ end-file
---@ end-case

@@ -1,8 +1,5 @@
---@ case: known-vectors
---@ mode: run-pass
---@ spec: STD#bytes-binary-encoding-and-digests
---@ entry: test_known_vectors
---@ file: known-vectors.ril
+-- [case: known-vectors, run-pass]
+-- spec: STD#bytes-binary-encoding-and-digests
 use ril/encoding/hex
 
 pub fn test_known_vectors() {
@@ -13,5 +10,3 @@ pub fn test_known_vectors() {
     assert(Hex::decode("a0g0") is Err(.{ offset: 2 }))
     assert(Hex::decode("00 ") is Err(.{ offset: 2 }))
 }
---@ end-file
---@ end-case

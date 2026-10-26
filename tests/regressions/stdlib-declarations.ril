@@ -1,5 +1,5 @@
---@ source: ordinary-fallbacks
---@ file: source.ril
+-- [source: ordinary-fallbacks]
+-- file: source.ril
 pub fn test_fallbacks() {
     assert(Options::unwrap_or(Some(7), 9) == 7)
     assert(Options::unwrap_or(None, 9) == 9)
@@ -10,39 +10,30 @@ pub fn test_fallbacks() {
     let tested: Result<int, str> = Ok(7)
     assert(Test::assert_ok(tested) == 7)
 }
---@ end-file
---@ end-source
 
---@ case: ordinary-fallbacks-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: STD#optional-and-fallible-values
---@ companion: ordinary-fallbacks-pointer64
---@ use-source: ordinary-fallbacks
---@ end-case
+-- [case: ordinary-fallbacks-pointer32, check-pass]
+-- target: pointer32
+-- spec: STD#optional-and-fallible-values
+-- companion: ordinary-fallbacks-pointer64
+-- use-source: ordinary-fallbacks
 
---@ case: ordinary-fallbacks-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: STD#optional-and-fallible-values
---@ companion: ordinary-fallbacks-native
---@ use-source: ordinary-fallbacks
---@ end-case
+-- [case: ordinary-fallbacks-pointer64, check-pass]
+-- target: pointer64
+-- spec: STD#optional-and-fallible-values
+-- companion: ordinary-fallbacks-native
+-- use-source: ordinary-fallbacks
 
---@ case: ordinary-fallbacks-native
---@ mode: run-pass
---@ entry: test_fallbacks
---@ spec: STD#optional-and-fallible-values
---@ companion: ordinary-fallbacks-pointer32
---@ use-source: ordinary-fallbacks
---@ end-case
+-- [case: ordinary-fallbacks-native, run-pass]
+-- entry: test_fallbacks
+-- spec: STD#optional-and-fallible-values
+-- companion: ordinary-fallbacks-pointer32
+-- use-source: ordinary-fallbacks
 
---@ case: aliases-and-reexports
---@ mode: run-pass
---@ entry: test_aliases
---@ spec: SPEC#module-imports-and-visibility
---@ companion: ordinary-fallbacks-native
---@ file: root.ril
+-- [case: aliases-and-reexports, run-pass]
+-- entry: test_aliases
+-- spec: SPEC#module-imports-and-visibility
+-- companion: ordinary-fallbacks-native
+-- file: root.ril
 use facade::{choose, require, check_some, check_ok}
 use ril/option as Optional
 use ril/option::*
@@ -57,19 +48,16 @@ pub fn test_aliases() {
     assert(unwrap_or(None, 4) == 4)
     assert(P::Options::expect(Some(3), "missing") == 3)
 }
---@ end-file
---@ file: facade.ril
+
+-- file: facade.ril
 pub use ril/option::{unwrap_or as choose, expect as require}
 pub use ril/test::{assert_some as check_some, assert_ok as check_ok}
---@ end-file
---@ end-case
 
---@ case: first-class-and-named
---@ mode: run-pass
---@ entry: test_first_class
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: ordinary-fallbacks-native
---@ file: source.ril
+-- [case: first-class-and-named, run-pass]
+-- entry: test_first_class
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: ordinary-fallbacks-native
+-- file: source.ril
 pub fn test_first_class() {
     let choose = Options::unwrap_or
     assert(choose(Some(3), 4) == 3)
@@ -80,15 +68,12 @@ pub fn test_first_class() {
     assert(Options::expect<int>(Some(6), "missing") == 6)
     assert(Test::assert_some(message: "missing", value: Some(7)) == 7)
 }
---@ end-file
---@ end-case
 
---@ case: composite-payloads
---@ mode: run-pass
---@ entry: test_composites
---@ spec: STD#optional-and-fallible-values
---@ companion: reject-stored-payload-dimension
---@ file: source.ril
+-- [case: composite-payloads, run-pass]
+-- entry: test_composites
+-- spec: STD#optional-and-fallible-values
+-- companion: reject-stored-payload-dimension
+-- file: source.ril
 fn increment(value: int) -> int { value + 1 }
 pub fn test_composites() {
     let matrix: [0][3]int = []
@@ -104,52 +89,41 @@ pub fn test_composites() {
     let restored = Options::expect(Some(nested), "missing")
     match restored { Ok(value) -> assert(value == 9), Err(_) -> assert(false) }
 }
---@ end-file
---@ end-case
 
---@ case: standalone-explicit-callable
---@ mode: check-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: first-class-and-named
---@ file: source.ril
+-- [case: standalone-explicit-callable, check-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: first-class-and-named
+-- file: source.ril
 fn example() {
     let require = Options::expect<int>
     assert(require(Some(6), "missing") == 6)
 }
---@ end-file
---@ end-case
 
---@ case: reject-stored-payload-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: composite-payloads
+-- [case: reject-stored-payload-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: composite-payloads
 -- Error [E0301]: A generic library return preserves a stored inner dimension.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let matrix: [0][3]int = []
     let required: [0][2]int = Options::expect(Some(matrix), "missing")
 }
---@ end-file
---@ end-case
 
---@ case: user-module-lookalike
---@ mode: run-pass
---@ entry: test_lookalike
---@ spec: SPEC#module-imports-and-visibility
---@ companion: aliases-and-reexports
---@ file: root.ril
+-- [case: user-module-lookalike, run-pass]
+-- entry: test_lookalike
+-- spec: SPEC#module-imports-and-visibility
+-- companion: aliases-and-reexports
+-- file: root.ril
 use option as Options
 pub fn test_lookalike() {
     assert(Options::unwrap_or(2, 9) == 11)
 }
---@ end-file
---@ file: option.ril
-pub fn unwrap_or(left: int, right: int) -> int { left + right }
---@ end-file
---@ end-case
 
---@ source: generic-control-results
---@ file: source.ril
+-- file: option.ril
+pub fn unwrap_or(left: int, right: int) -> int { left + right }
+
+-- [source: generic-control-results]
+-- file: source.ril
 fn conditional<T>(flag: bool, left: T, right: T) -> T {
     if flag { left } else { right }
 }
@@ -168,39 +142,30 @@ pub fn test_control_results() {
     let matrix: [0][3]int = conditional(false, left, right)
     assert(len(matrix) == 0)
 }
---@ end-file
---@ end-source
 
---@ case: generic-control-results-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: generic-control-results-pointer64
---@ use-source: generic-control-results
---@ end-case
+-- [case: generic-control-results-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: generic-control-results-pointer64
+-- use-source: generic-control-results
 
---@ case: generic-control-results-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: generic-control-results-native
---@ use-source: generic-control-results
---@ end-case
+-- [case: generic-control-results-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: generic-control-results-native
+-- use-source: generic-control-results
 
---@ case: generic-control-results-native
---@ mode: run-pass
---@ entry: test_control_results
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: generic-control-results-pointer32
---@ use-source: generic-control-results
---@ end-case
+-- [case: generic-control-results-native, run-pass]
+-- entry: test_control_results
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: generic-control-results-pointer32
+-- use-source: generic-control-results
 
---@ case: eager-fallback-order
---@ mode: run-pass
---@ entry: test_eager_order
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: eager-fallback-panic
---@ file: source.ril
+-- [case: eager-fallback-order, run-pass]
+-- entry: test_eager_order
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: eager-fallback-panic
+-- file: source.ril
 fn mark(mut log: []int, value: int) -> int &mut {
     log !> Array::push(value)
     value
@@ -214,100 +179,77 @@ pub fn test_eager_order() {
     assert(Options::unwrap_or(fallback: mark(mut reversed, 2), value: present(mut reversed)) == 1)
     assert(reversed == [2, 1])
 }
---@ end-file
---@ end-case
 
---@ case: eager-fallback-panic
---@ mode: run-panic
---@ entry: test_eager_panic
---@ spec: STD#optional-and-fallible-values
---@ companion: eager-fallback-order
+-- [case: eager-fallback-panic, run-panic]
+-- entry: test_eager_panic
+-- spec: STD#optional-and-fallible-values
+-- companion: eager-fallback-order
 -- Panics: Fallback arguments are evaluated before an ordinary function enters.
---@ file: source.ril
+-- file: source.ril
 pub fn test_eager_panic() {
     let _ = Options::unwrap_or(Some(1), panic("eager fallback"))
 }
---@ end-file
---@ end-case
 
---@ case: reject-meta-call
---@ mode: check-fail
---@ spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
---@ companion: ordinary-fallbacks-pointer64
+-- [case: reject-meta-call, check-fail]
+-- spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
+-- companion: ordinary-fallbacks-pointer64
 -- Error [E0810]: Ordinary library functions retain their runtime evaluation family.
---@ file: source.ril
+-- file: source.ril
 meta let VALUE = Options::unwrap_or(Some(1), 2)
---@ end-file
---@ end-case
 
---@ case: reject-restored-write-authority
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: composite-payloads
+-- [case: reject-restored-write-authority, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: composite-payloads
 -- Error [E0520]: A read-only generic return cannot restore write authority.
---@ file: source.ril
+-- file: source.ril
 type Cell = { mut value: int }
 fn invalid(cell: Cell) {
     let selected = Options::expect(Some(cell), "missing")
     selected.value = 9
 }
---@ end-file
---@ end-case
 
---@ case: reject-uninspected-nested-result
---@ mode: check-fail
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ companion: composite-payloads
+-- [case: reject-uninspected-nested-result, check-fail]
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- companion: composite-payloads
 -- Error [E0720]: Inspecting Some leaves its inner Result duty intact.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let nested: Result<int, str> = Err("inner")
     let _ = Test::assert_some(Some(nested))
 }
---@ end-file
---@ end-case
 
---@ case: bottom-cleanup
---@ mode: run-panic
---@ entry: test_cleanup
---@ spec: SPEC#scoped-resource-bindings
---@ companion: reject-nonunit-cleanup
+-- [case: bottom-cleanup, run-panic]
+-- entry: test_cleanup
+-- spec: SPEC#scoped-resource-bindings
+-- companion: reject-nonunit-cleanup
 -- Panics: A finite panic-only cleanup is compatible with a unit callback.
---@ file: source.ril
+-- file: source.ril
 pub fn test_cleanup() {
     let scoped guard = .{ on_close: \-> panic("cleanup") }
 }
---@ end-file
---@ end-case
 
---@ case: reject-nonunit-cleanup
---@ mode: check-fail
---@ spec: SPEC#scoped-resource-bindings
---@ companion: bottom-cleanup
+-- [case: reject-nonunit-cleanup, check-fail]
+-- spec: SPEC#scoped-resource-bindings
+-- companion: bottom-cleanup
 -- Error [E0541]: A normally returning integer is not a unit cleanup.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let scoped guard = .{ on_close: \-> 1 }
 }
---@ end-file
---@ end-case
 
---@ case: typed-bottom-cleanup
---@ mode: run-panic
---@ entry: test_cleanup
---@ spec: SPEC#scoped-resource-bindings
---@ companion: bottom-cleanup
+-- [case: typed-bottom-cleanup, run-panic]
+-- entry: test_cleanup
+-- spec: SPEC#scoped-resource-bindings
+-- companion: bottom-cleanup
 -- Panics: A declared unit callback admits a finite panic-only implementation.
---@ file: source.ril
+-- file: source.ril
 type Guard = { on_close: fn() -> () }
 pub fn test_cleanup() {
     let scoped guard = Guard.{ on_close: \-> panic("cleanup") }
 }
---@ end-file
---@ end-case
 
---@ source: result-inference
---@ file: source.ril
+-- [source: result-inference]
+-- file: source.ril
 pub fn test_result_inference() {
     let value: Result<int, str> = Ok(9)
     assert(Results::expect(value, "missing") == 9)
@@ -325,39 +267,30 @@ pub fn test_result_inference() {
     let restored = Test::assert_ok(outer)
     assert(restored is Err("inner"))
 }
---@ end-file
---@ end-source
 
---@ case: result-inference-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: result-inference-pointer64
---@ use-source: result-inference
---@ end-case
+-- [case: result-inference-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: result-inference-pointer64
+-- use-source: result-inference
 
---@ case: result-inference-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: result-inference-native
---@ use-source: result-inference
---@ end-case
+-- [case: result-inference-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: result-inference-native
+-- use-source: result-inference
 
---@ case: result-inference-native
---@ mode: run-pass
---@ entry: test_result_inference
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: result-inference-pointer32
---@ use-source: result-inference
---@ end-case
+-- [case: result-inference-native, run-pass]
+-- entry: test_result_inference
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: result-inference-pointer32
+-- use-source: result-inference
 
---@ case: typed-testing-helpers
---@ mode: run-pass
---@ entry: test_library
---@ spec: STD#testing
---@ companion: reject-uninspected-nested-result-via-ok
---@ file: source.ril
+-- [case: typed-testing-helpers, run-pass]
+-- entry: test_library
+-- spec: STD#testing
+-- companion: reject-uninspected-nested-result-via-ok
+-- file: source.ril
 use ril/test
 pub fn test_library() {
     Test::assert_eq([1, 2], [1, 2], "equal")
@@ -371,153 +304,116 @@ pub fn test_library() {
     assert(nested is Err("inner"))
     assert(b"a" < b"b" && b"a" <= b"a" && b"b" >= b"a")
 }
---@ end-file
---@ end-case
 
---@ case: reject-unselected-error-type
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: result-inference-pointer64
+-- [case: reject-unselected-error-type, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: result-inference-pointer64
 -- Error [E0344]: An int result context chooses T but cannot choose the inactive E.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let value: int = Results::expect(Ok(1), "missing")
 }
---@ end-file
---@ end-case
 
---@ case: reject-unselected-test-error-type
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: typed-testing-helpers
+-- [case: reject-unselected-test-error-type, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: typed-testing-helpers
 -- Error [E0344]: A Test wrapper does not supply an unspecified error type.
---@ file: source.ril
+-- file: source.ril
 fn invalid() { let value: int = Test::assert_ok(Ok(1)) }
---@ end-file
---@ end-case
 
---@ case: reject-unselected-success-type
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: result-inference-pointer32
+-- [case: reject-unselected-success-type, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: result-inference-pointer32
 -- Error [E0344]: An Err argument alone does not choose the success type.
---@ file: source.ril
+-- file: source.ril
 fn invalid() { let _ = Results::expect(Err("failed"), "missing") }
---@ end-file
---@ end-case
 
---@ case: reject-uninspected-nested-result-via-ok
---@ mode: check-fail
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ companion: typed-testing-helpers
+-- [case: reject-uninspected-nested-result-via-ok, check-fail]
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- companion: typed-testing-helpers
 -- Error [E0720]: Inspecting the outer Ok does not inspect its Result payload.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let inner: Result<int, str> = Err("inner")
     let outer: Result<Result<int, str>, str> = Ok(inner)
     let _ = Test::assert_ok(outer)
 }
---@ end-file
---@ end-case
 
---@ case: reject-result-payload-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: composite-payloads
+-- [case: reject-result-payload-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: composite-payloads
 -- Error [E0301]: A Result expectation preserves the selected payload dimensions.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let matrix: [0][3]int = []
     let value: Result<[0][3]int, str> = Ok(matrix)
     let wrong: [0][2]int = Results::expect(value, "missing")
 }
---@ end-file
---@ end-case
 
---@ case: reject-result-write-authority
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: composite-payloads
+-- [case: reject-result-write-authority, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: composite-payloads
 -- Error [E0520]: Inspecting Ok cannot restore write authority to a read-only input.
---@ file: source.ril
+-- file: source.ril
 type Cell = { mut value: int }
 fn invalid(cell: Cell) {
     let value: Result<Cell, str> = Ok(cell)
     let selected = Test::assert_ok(value)
     selected.value = 9
 }
---@ end-file
---@ end-case
 
---@ case: reject-unselected-user-success-type
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: explicit-user-error-type
+-- [case: reject-unselected-user-success-type, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: explicit-user-error-type
 -- Error [E0344]: Ordinary generic functions retain inference obligations across panic.
---@ file: source.ril
+-- file: source.ril
 fn take<T, E>(value: Result<T, E>) -> T {
     match value { Ok(item) -> item, Err(_) -> panic("failed") }
 }
 fn invalid() { let _ = take(Err("failed")) }
---@ end-file
---@ end-case
 
---@ case: reject-discarded-user-success-type
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: explicit-user-error-type
+-- [case: reject-discarded-user-success-type, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: explicit-user-error-type
 -- Error [E0344]: Discarding an abrupt expression cannot discard its static arguments.
---@ file: source.ril
+-- file: source.ril
 fn take<T, E>(value: Result<T, E>) -> T {
     match value { Ok(item) -> item, Err(_) -> panic("failed") }
 }
 fn invalid() { take(Err("failed")); }
---@ end-file
---@ end-case
 
---@ case: explicit-user-error-type
---@ mode: run-panic
---@ entry: test_explicit_error
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: reject-unselected-user-success-type
+-- [case: explicit-user-error-type, run-panic]
+-- entry: test_explicit_error
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: reject-unselected-user-success-type
 -- Panics: Explicit static arguments make the call well typed before its panic.
---@ file: source.ril
+-- file: source.ril
 fn take<T, E>(value: Result<T, E>) -> T {
     match value { Ok(item) -> item, Err(_) -> panic("failed") }
 }
 pub fn test_explicit_error() { let _ = take<int, str>(Err("failed")) }
---@ end-file
---@ end-case
---@ case: reject-private-standard-storage
---@ mode: check-fail
+
+-- [case: reject-private-standard-storage, check-fail]
+-- spec: SPEC#module-imports-and-visibility
+-- companion: private-namespace-user-module
 -- Error [E0201]: A private standard implementation module is inaccessible.
---@ spec: SPEC#module-imports-and-visibility
---@ companion: private-namespace-user-module
---@ file: source.ril
+-- file: source.ril
 use ril/_storage as Storage
 fn example() {}
---@ end-file
---@ end-case
 
---@ case: reject-private-qualified-storage
---@ mode: check-fail
+-- [case: reject-private-qualified-storage, check-fail]
+-- spec: SPEC#module-imports-and-visibility
+-- companion: private-namespace-user-module
 -- Error [E0201]: A private standard implementation module is inaccessible.
---@ spec: SPEC#module-imports-and-visibility
---@ companion: private-namespace-user-module
---@ file: source.ril
+-- file: source.ril
 fn example() { let _ = Storage::set_new<int>() }
---@ end-file
---@ end-case
 
---@ case: private-namespace-user-module
---@ mode: check-pass
---@ spec: SPEC#module-imports-and-visibility
---@ companion: reject-private-standard-storage
---@ file: root.ril
+-- [case: private-namespace-user-module, check-pass]
+-- spec: SPEC#module-imports-and-visibility
+-- companion: reject-private-standard-storage
+-- file: root.ril
 use storage as Storage
 pub fn example() -> int { Storage::set_new(7) }
---@ end-file
---@ file: storage.ril
+
+-- file: storage.ril
 pub fn set_new(value: int) -> int { value }
---@ end-file
---@ end-case

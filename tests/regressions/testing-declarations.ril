@@ -1,5 +1,5 @@
---@ source: equality-helpers
---@ file: root.ril
+-- [source: equality-helpers]
+-- file: root.ril
 use facade::{same, different}
 use ril/test as Checks
 
@@ -43,79 +43,61 @@ where
     fn increment() -> int &{closure, mut order} { order += 1; order }
     fn message() -> str &{closure, mut order} { assert(order == 2); order += 1; "ordered" }
 }
---@ end-file
---@ file: facade.ril
+
+-- file: facade.ril
 pub use ril/test::{assert_eq as same, assert_ne as different}
---@ end-file
---@ end-source
 
---@ case: helpers-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: STD#testing
---@ companion: helpers-pointer64
---@ use-source: equality-helpers
---@ end-case
+-- [case: helpers-pointer32, check-pass]
+-- target: pointer32
+-- spec: STD#testing
+-- companion: helpers-pointer64
+-- use-source: equality-helpers
 
---@ case: helpers-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: STD#testing
---@ companion: helpers-native
---@ use-source: equality-helpers
---@ end-case
+-- [case: helpers-pointer64, check-pass]
+-- target: pointer64
+-- spec: STD#testing
+-- companion: helpers-native
+-- use-source: equality-helpers
 
---@ case: helpers-native
---@ mode: run-pass
---@ entry: test_equality_helpers
---@ spec: STD#testing
---@ companion: helpers-pointer32
---@ use-source: equality-helpers
---@ end-case
+-- [case: helpers-native, run-pass]
+-- entry: test_equality_helpers
+-- spec: STD#testing
+-- companion: helpers-pointer32
+-- use-source: equality-helpers
 
---@ case: reject-callable
---@ mode: check-fail
---@ spec: SPEC#relational-equality-and-containment-operators
---@ companion: helpers-native
+-- [case: reject-callable, check-fail]
+-- spec: SPEC#relational-equality-and-containment-operators
+-- companion: helpers-native
 -- Error [E0327]: Generic testing functions preserve equality eligibility.
---@ file: source.ril
+-- file: source.ril
 use ril/test
 fn action() {}
 fn invalid() { Test::assert_eq(action, action) }
---@ end-file
---@ end-case
 
---@ case: reject-nested-callable
---@ mode: check-fail
---@ spec: SPEC#relational-equality-and-containment-operators
---@ companion: helpers-native
+-- [case: reject-nested-callable, check-fail]
+-- spec: SPEC#relational-equality-and-containment-operators
+-- companion: helpers-native
 -- Error [E0327]: A nested callable cannot acquire equality through a generic alias.
---@ file: source.ril
+-- file: source.ril
 use ril/test::{assert_ne as different}
 fn action() {}
 fn invalid() { let check = different; check([Some(action)], [Some(action)]) }
---@ end-file
---@ end-case
 
---@ case: reject-forwarded-callable
---@ mode: check-fail
---@ spec: SPEC#relational-equality-and-containment-operators
---@ companion: helpers-native
+-- [case: reject-forwarded-callable, check-fail]
+-- spec: SPEC#relational-equality-and-containment-operators
+-- companion: helpers-native
 -- Error [E0327]: Generic forwarding rechecks the actual operand types.
---@ file: source.ril
+-- file: source.ril
 fn equal<T>(left: T, right: T) -> bool { left == right }
 fn forwarded<T>(left: T, right: T) -> bool { equal(left, right) }
 fn action() {}
 fn invalid() { let _ = forwarded(action, action) }
---@ end-file
---@ end-case
 
---@ case: reject-higher-order-callable
---@ mode: check-fail
---@ spec: SPEC#relational-equality-and-containment-operators
---@ companion: helpers-native
+-- [case: reject-higher-order-callable, check-fail]
+-- spec: SPEC#relational-equality-and-containment-operators
+-- companion: helpers-native
 -- Error [E0327]: A callback invocation checks the generic body's equality condition.
---@ file: source.ril
+-- file: source.ril
 fn equal<T>(left: T, right: T) -> bool { left == right }
 type Action = fn() -> ()
 fn invoke(compare: fn(fn() -> (), fn() -> ()) -> bool) {
@@ -123,115 +105,86 @@ fn invoke(compare: fn(fn() -> (), fn() -> ()) -> bool) {
     let _ = compare(action, action)
 }
 fn invalid() { invoke(equal<Action>) }
---@ end-file
---@ end-case
 
---@ case: reject-recursive-callable
---@ mode: check-fail
---@ spec: SPEC#relational-equality-and-containment-operators
---@ companion: helpers-native
+-- [case: reject-recursive-callable, check-fail]
+-- spec: SPEC#relational-equality-and-containment-operators
+-- companion: helpers-native
 -- Error [E0327]: A recursive instance cannot bypass the equality condition.
---@ file: source.ril
+-- file: source.ril
 fn action() {}
 fn rotated<T, U>(count: int, left: T, other: U) -> bool {
     if count > 0 { rotated(count - 1, other, left) } else { left == left }
 }
 fn invalid() { let _ = rotated(3, 1, action) }
---@ end-file
---@ end-case
 
---@ case: reject-nested-resource
---@ mode: check-fail
---@ spec: SPEC#relational-equality-and-containment-operators
---@ companion: helpers-native
+-- [case: reject-nested-resource, check-fail]
+-- spec: SPEC#relational-equality-and-containment-operators
+-- companion: helpers-native
 -- Error [E0327]: Resource constituents cannot acquire equality through a generic helper.
---@ file: source.ril
+-- file: source.ril
 use ril/file
 use ril/test
 fn invalid(handle: File::Handle) { Test::assert_eq((handle,), (handle,)) }
---@ end-file
---@ end-case
 
---@ case: reject-mismatched-types
---@ mode: check-fail
---@ spec: STD#testing
---@ companion: helpers-native
+-- [case: reject-mismatched-types, check-fail]
+-- spec: STD#testing
+-- companion: helpers-native
 -- Error [E0301]: The common generic parameter retains one type.
---@ file: source.ril
+-- file: source.ril
 use ril/test
 fn invalid() { Test::assert_eq(1, "1") }
---@ end-file
---@ end-case
 
---@ case: reject-generic-value-test-callable
---@ mode: check-fail
---@ spec: SPEC#value-tests-with-is
---@ companion: helpers-native
+-- [case: reject-generic-value-test-callable, check-fail]
+-- spec: SPEC#value-tests-with-is
+-- companion: helpers-native
 -- Error [E0327]: Value-test equality checks the actual generic instance.
---@ file: source.ril
+-- file: source.ril
 fn compare<T>(value: T, expected: T) -> bool { value is expected }
 fn action() {}
 fn invalid() { let _ = compare(action, action) }
---@ end-file
---@ end-case
 
---@ case: reject-mismatched-dimensions
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: helpers-native
+-- [case: reject-mismatched-dimensions, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: helpers-native
 -- Error [E0301]: A stored inner array extent is preserved by ordinary receiving.
---@ file: source.ril
+-- file: source.ril
 use ril/test
 fn invalid() {
     let left: [0][2]int = []
     let right: [0][3]int = []
     Test::assert_eq(left, right)
 }
---@ end-file
---@ end-case
 
---@ case: reject-uninspected-result
---@ mode: check-fail
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ companion: helpers-native
+-- [case: reject-uninspected-result, check-fail]
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- companion: helpers-native
 -- Error [E0720]: Structural equality does not discharge Result inspection.
---@ file: source.ril
+-- file: source.ril
 use ril/test
 fn invalid() {
     let left: Result<int, str> = Ok(1)
     let right: Result<int, str> = Ok(1)
     Test::assert_eq(left, right)
 }
---@ end-file
---@ end-case
 
---@ case: reject-mutable-argument
---@ mode: check-fail
---@ spec: SPEC#parameter-modes-caller-obligations-and-defaults
---@ companion: helpers-native
+-- [case: reject-mutable-argument, check-fail]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- companion: helpers-native
 -- Error [E0405]: Testing arguments remain ordinary read-only inputs.
---@ file: source.ril
+-- file: source.ril
 use ril/test
 fn invalid() { let mut value = [1]; Test::assert_eq(mut value, [1]) }
---@ end-file
---@ end-case
 
---@ case: reject-static-helper
---@ mode: check-fail
---@ spec: STD#static-availability
---@ companion: helpers-native
+-- [case: reject-static-helper, check-fail]
+-- spec: STD#static-availability
+-- companion: helpers-native
 -- Error [E0810]: The ordinary pure testing helper is runtime-only.
---@ file: source.ril
+-- file: source.ril
 use ril/test
 meta let _ = Test::assert_eq(1, 1)
---@ end-file
---@ end-case
 
---@ case: unused-conditional-equality
---@ mode: check-pass
---@ spec: SPEC#relational-equality-and-containment-operators
---@ companion: reject-forwarded-callable
---@ file: source.ril
+-- [case: unused-conditional-equality, check-pass]
+-- spec: SPEC#relational-equality-and-containment-operators
+-- companion: reject-forwarded-callable
+-- file: source.ril
 pub fn equal<T>(left: T, right: T) -> bool { left == right }
---@ end-file
---@ end-case

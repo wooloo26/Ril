@@ -1,134 +1,79 @@
---@ case: and-then
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_and_then
---@ file: and-then.ril
+-- [case: and-then, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_and_then() {
     let value: Result<int, str> = Ok(2)
     assert(Results::and_then(value, \n -> { let next_result: Result<int, str> = Ok(n + 1); next_result }) is Ok(3))
 }
---@ end-file
---@ end-case
 
---@ case: and-then-preserves-error
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_and_then_preserves_error
---@ file: and-then-preserves-error.ril
+-- [case: and-then-preserves-error, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_and_then_preserves_error() {
     let value: Result<int, str> = Err("bad")
     assert(Results::and_then(value, \n -> { let next_result: Result<int, str> = Ok(n); next_result }) is Err("bad"))
 }
---@ end-file
---@ end-case
 
---@ case: expect
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_expect
---@ file: expect.ril
+-- [case: expect, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_expect() {
     let value: Result<int, str> = Ok(2)
     assert(Results::expect(value, "present") == 2)
 }
---@ end-file
---@ end-case
 
---@ case: expect-error-safe
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ companion: expect-error
---@ entry: test_expect_error_safe
---@ file: expect-error-safe.ril
+-- [case: expect-error-safe, run-pass]
+-- spec: STD#optional-and-fallible-values
+-- companion: expect-error
 pub fn test_expect_error_safe() {
     let value: Result<int, str> = Ok(1)
     assert(Results::expect(value, "present") == 1)
 }
---@ end-file
---@ end-case
 
---@ case: expect-error
---@ mode: run-panic
---@ spec: STD#optional-and-fallible-values
---@ companion: expect-error-safe
---@ entry: test_expect_error
+-- [case: expect-error, run-panic]
+-- spec: STD#optional-and-fallible-values
+-- companion: expect-error-safe
 -- Panics: expect error
---@ file: expect-error.ril
 pub fn test_expect_error() {
     let value: Result<int, str> = Err("bad")
     let _ = Results::expect(value, "error")
 }
---@ end-file
---@ end-case
 
---@ case: map-err
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_map_err
---@ file: map-err.ril
+-- [case: map-err, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_map_err() {
     let value: Result<int, str> = Ok(2)
     assert(Results::map_err(value, \text -> len(text)) is Ok(2))
 }
---@ end-file
---@ end-case
 
---@ case: map-error-value
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_map_error_value
---@ file: map-error-value.ril
+-- [case: map-error-value, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_map_error_value() {
     let value: Result<int, str> = Err("bad")
     assert(Results::map_err(value, \text -> len(text)) is Err(3))
 }
---@ end-file
---@ end-case
 
---@ case: map-ok
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_map_ok
---@ file: map-ok.ril
+-- [case: map-ok, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_map_ok() {
     let value: Result<int, str> = Ok(2)
     assert(Results::map(value, \n -> n + 1) is Ok(3))
 }
---@ end-file
---@ end-case
 
---@ case: map-preserves-error
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_map_preserves_error
---@ file: map-preserves-error.ril
+-- [case: map-preserves-error, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_map_preserves_error() {
     let value: Result<int, str> = Err("bad")
     assert(Results::map(value, \n -> n + 1) is Err("bad"))
 }
---@ end-file
---@ end-case
 
---@ case: recover
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_recover
---@ file: recover.ril
+-- [case: recover, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_recover() {
     let value: Result<int, str> = Ok(2)
     assert(Results::recover(value, \_error -> 0) == 2)
 }
---@ end-file
---@ end-case
 
---@ case: recover-error
---@ mode: run-pass
---@ spec: STD#optional-and-fallible-values
---@ entry: test_recover_error
---@ file: recover-error.ril
+-- [case: recover-error, run-pass]
+-- spec: STD#optional-and-fallible-values
 pub fn test_recover_error() {
     let value: Result<int, str> = Err("bad")
     assert(Results::recover(value, \text -> len(text)) == 3)
 }
---@ end-file
---@ end-case

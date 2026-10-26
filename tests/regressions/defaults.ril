@@ -1,8 +1,7 @@
---@ case: abrupt-source-block
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ spec: SPEC#effect-handlers
---@ file: source.ril
+-- [case: abrupt-source-block, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- spec: SPEC#effect-handlers
+-- file: source.ril
 eff Mark<T> { touch() }
 fn selected<T>(witness: T, stop: bool, value: int = if stop { panic("default") } else { 7 }) -> int @Mark<T> {
     Mark<T>::touch()
@@ -14,84 +13,64 @@ fn main() {
     assert(call(false) == 7)
     call(true)
 }
---@ end-file
---@ end-case
 
---@ source: source-entry-budget-order
---@ file: source.ril
+-- [source: source-entry-budget-order]
+-- file: source.ril
 fn doomed(value:int=panic("default runs before body entry"))->int{value}
 pub fn test_native(){
     with Div::exhausted()->()
     Div::budget(1,\->{doomed();()})
 }
---@ end-file
---@ end-source
 
---@ case: entry-budget-order
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-entry-budget-order
---@ end-case
+-- [case: entry-budget-order, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-entry-budget-order
 
---@ case: entry-budget-order-test-native
---@ mode: run-panic
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
+-- [case: entry-budget-order-test-native, run-panic]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
 -- Panics: original default-entry budget ordering
---@ use-source: source-entry-budget-order
---@ end-case
+-- use-source: source-entry-budget-order
 
---@ source: source-helper-entry-budget-order
---@ file: source.ril
+-- [source: source-helper-entry-budget-order]
+-- file: source.ril
 halt fn helper()->int{panic("helper default runs before callee body entry")}
 fn doomed(value:int=helper())->int{value}
 pub fn test_native(){
     with Div::exhausted()->()
     Div::budget(2,\->{doomed();()})
 }
---@ end-file
---@ end-source
 
---@ case: helper-entry-budget-order
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-helper-entry-budget-order
---@ end-case
+-- [case: helper-entry-budget-order, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-helper-entry-budget-order
 
---@ case: helper-entry-budget-order-test-native
---@ mode: run-panic
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
+-- [case: helper-entry-budget-order-test-native, run-panic]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
 -- Panics: original default-entry budget ordering
---@ use-source: source-helper-entry-budget-order
---@ end-case
+-- use-source: source-helper-entry-budget-order
 
---@ source: source-lambda-entry-budget-order
---@ file: source.ril
+-- [source: source-lambda-entry-budget-order]
+-- file: source.ril
 let ACTION=\value:int=panic("lambda default runs before body entry")->value
 pub fn test_native() &{ACTION}{
     with Div::exhausted()->()
     Div::budget(1,\->{ACTION();()})
 }
---@ end-file
---@ end-source
 
---@ case: lambda-entry-budget-order
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-lambda-entry-budget-order
---@ end-case
+-- [case: lambda-entry-budget-order, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-lambda-entry-budget-order
 
---@ case: lambda-entry-budget-order-test-native
---@ mode: run-panic
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
+-- [case: lambda-entry-budget-order-test-native, run-panic]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
 -- Panics: original default-entry budget ordering
---@ use-source: source-lambda-entry-budget-order
---@ end-case
+-- use-source: source-lambda-entry-budget-order
 
---@ source: source-local-budget
---@ file: source.ril
+-- [source: source-local-budget]
+-- file: source.ril
 eff Mark<T>{touch()}
 halt fn answer()->int{7}
 fn measured<T>(witness:T,value:int={with Div::exhausted()->0;Div::budget(1,answer)})->int @Mark<T>{Mark<T>::touch();value}
@@ -99,48 +78,36 @@ pub fn test_native(){
     with {Mark<int>::touch()->resume(),Mark<str>::touch()->resume()}
     assert(measured(0)==7 && measured("")==7 && measured(0,9)==9)
 }
---@ end-file
---@ end-source
 
---@ case: local-budget
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-local-budget
---@ end-case
+-- [case: local-budget, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-local-budget
 
---@ case: local-budget-test-native
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
---@ use-source: source-local-budget
---@ end-case
+-- [case: local-budget-test-native, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
+-- use-source: source-local-budget
 
---@ source: source-local-handler
---@ file: source.ril
+-- [source: source-local-handler]
+-- file: source.ril
 eff Read<T>{get()->T}
 fn selected<T>(witness:T,value:T={with Read<T>::get()->resume witness;Read<T>::get()})->T{value}
 pub fn test_native(){
     assert(selected(7)==7 && selected("seven")=="seven")
     assert(selected(9)==9 && selected(7,11)==11)
 }
---@ end-file
---@ end-source
 
---@ case: local-handler
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-local-handler
---@ end-case
+-- [case: local-handler, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-local-handler
 
---@ case: local-handler-test-native
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
---@ use-source: source-local-handler
---@ end-case
+-- [case: local-handler-test-native, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
+-- use-source: source-local-handler
 
---@ source: source-retained-closure
---@ file: source.ril
+-- [source: source-retained-closure]
+-- file: source.ril
 eff Mark<T>{touch()}
 eff Read{get()->int}
 type Reader=fn()->int &closure
@@ -158,24 +125,18 @@ pub fn test_native(){
     let measured={with Div::exhausted()->None;Some(Div::budget(100,nine))}
     assert(measured==Some(9) && text_instance()==11)
 }
---@ end-file
---@ end-source
 
---@ case: retained-closure
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-retained-closure
---@ end-case
+-- [case: retained-closure, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-retained-closure
 
---@ case: retained-closure-test-native
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
---@ use-source: source-retained-closure
---@ end-case
+-- [case: retained-closure-test-native, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
+-- use-source: source-retained-closure
 
---@ source: source-scalars-and-order
---@ file: source.ril
+-- [source: source-scalars-and-order]
+-- file: source.ril
 eff Read<T>{get()->T}
 var trace=0
 fn pair<T>(witness:T,base:int=3,value:int=base+1)->(T,int) @Read<T>{(Read<T>::get(),value)}
@@ -186,24 +147,18 @@ pub fn test_native() &{mut trace}{
     let result=pair(value:{trace=trace*10+1;90},witness:{trace=trace*10+2;0})
     assert(result==(7,90) && trace==12)
 }
---@ end-file
---@ end-source
 
---@ case: scalars-and-order
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-scalars-and-order
---@ end-case
+-- [case: scalars-and-order, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-scalars-and-order
 
---@ case: scalars-and-order-test-native
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
---@ use-source: source-scalars-and-order
---@ end-case
+-- [case: scalars-and-order-test-native, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
+-- use-source: source-scalars-and-order
 
---@ source: source-supplied-only
---@ file: source.ril
+-- [source: source-supplied-only]
+-- file: source.ril
 eff Mark<T>{touch()}
 type Reader=fn()->int &closure
 fn make<T>(witness:T,reader:Reader=\->7)->Reader @Mark<T>{Mark<T>::touch();reader}
@@ -213,48 +168,36 @@ pub fn test_native(){
     let omitted=make("")
     assert(explicit()==9 && omitted()==7)
 }
---@ end-file
---@ end-source
 
---@ case: supplied-only
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-supplied-only
---@ end-case
+-- [case: supplied-only, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-supplied-only
 
---@ case: supplied-only-test-native
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
---@ use-source: source-supplied-only
---@ end-case
+-- [case: supplied-only-test-native, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
+-- use-source: source-supplied-only
 
---@ source: source-transitive
---@ file: source.ril
+-- [source: source-transitive]
+-- file: source.ril
 eff Read<T>{get()->T}
 fn read<T>(witness:T)->T @Read<T>{Read<T>::get()}
 fn selected<T>(witness:T,value:T={with Read<T>::get()->resume witness;read(witness)})->T{value}
 pub fn test_native(){
     assert(selected(7)==7 && selected("seven")=="seven" && selected(9)==9)
 }
---@ end-file
---@ end-source
 
---@ case: transitive
---@ mode: check-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ use-source: source-transitive
---@ end-case
+-- [case: transitive, check-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- use-source: source-transitive
 
---@ case: transitive-test-native
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ entry: test_native
---@ use-source: source-transitive
---@ end-case
+-- [case: transitive-test-native, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- entry: test_native
+-- use-source: source-transitive
 
---@ source: contextual-default-values
---@ file: source.ril
+-- [source: contextual-default-values]
+-- file: source.ril
 fn bytes(value: [0][2]u8 = []) -> [0][2]u8 { value }
 fn optional(value: ?u8 = Some(255)) -> ?u8 { value }
 fn identity(value: u8) -> u8 { value }
@@ -264,51 +207,37 @@ pub fn test_defaults() {
     assert(optional() == Some(255u8))
     assert(callback() == 255u8)
 }
---@ end-file
---@ end-source
 
---@ case: contextual-values-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: contextual-values-pointer64
---@ use-source: contextual-default-values
---@ end-case
+-- [case: contextual-values-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: contextual-values-pointer64
+-- use-source: contextual-default-values
 
---@ case: contextual-values-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: contextual-values-native
---@ use-source: contextual-default-values
---@ end-case
+-- [case: contextual-values-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: contextual-values-native
+-- use-source: contextual-default-values
 
---@ case: contextual-values-native
---@ mode: run-pass
---@ entry: test_defaults
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: contextual-values-pointer32
---@ use-source: contextual-default-values
---@ end-case
+-- [case: contextual-values-native, run-pass]
+-- entry: test_defaults
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: contextual-values-pointer32
+-- use-source: contextual-default-values
 
---@ case: unused-default-keeps-inner-dimension
---@ mode: check-fail
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: contextual-values-pointer64
+-- [case: unused-default-keeps-inner-dimension, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: contextual-values-pointer64
 -- Error [E0301]: An unused default cannot replace a stored inner dimension.
---@ file: source.ril
+-- file: source.ril
 fn old() -> [0][3]u8 { [] }
 fn unused(value: [0][2]u8 = old()) {}
---@ end-file
---@ end-case
 
---@ case: unused-default-keeps-callback-input
---@ mode: check-fail
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: contextual-values-pointer64
+-- [case: unused-default-keeps-callback-input, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: contextual-values-pointer64
 -- Error [E0301]: A default callback retains its actual input dimensions.
---@ file: source.ril
+-- file: source.ril
 fn triple(value: [3]u8) -> int { 0 }
 fn unused(action: fn([2]u8) -> int = triple) {}
---@ end-file
---@ end-case

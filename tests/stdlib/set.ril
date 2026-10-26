@@ -1,8 +1,5 @@
---@ case: algebra-and-order
---@ mode: run-pass
---@ spec: STD#set
---@ entry: test_algebra_and_order
---@ file: algebra-and-order.ril
+-- [case: algebra-and-order, run-pass]
+-- spec: STD#set
 pub fn test_algebra_and_order() {
     let left = Set::of([3, 1, 3])
     let right = Set::from([1, 2])
@@ -17,5 +14,3 @@ pub fn test_algebra_and_order() {
     assert(Set::insert(mut changed, 3))
     assert(Set::values(changed) == [1, 3])
 }
---@ end-file
---@ end-case

@@ -1,8 +1,5 @@
---@ case: sha256-abc
---@ mode: run-pass
---@ spec: STD#bytes-binary-encoding-and-digests
---@ entry: test_sha256_abc
---@ file: sha256-abc.ril
+-- [case: sha256-abc, run-pass]
+-- spec: STD#bytes-binary-encoding-and-digests
 use ril/crypto
 use ril/encoding/hex
 
@@ -12,14 +9,9 @@ pub fn test_sha256_abc() {
     assert(Crypto::sha256_bytes(String::utf8(text)) == Crypto::sha256(text))
     assert(len(Crypto::sha256(text)) == 32)
 }
---@ end-file
---@ end-case
 
---@ case: sha256-empty
---@ mode: run-pass
---@ spec: STD#bytes-binary-encoding-and-digests
---@ entry: test_sha256_empty
---@ file: sha256-empty.ril
+-- [case: sha256-empty, run-pass]
+-- spec: STD#bytes-binary-encoding-and-digests
 use ril/crypto
 use ril/encoding/hex
 
@@ -29,5 +21,3 @@ pub fn test_sha256_empty() {
     assert(Crypto::sha256_bytes(String::utf8(text)) == Crypto::sha256(text))
     assert(len(Crypto::sha256(text)) == 32)
 }
---@ end-file
---@ end-case

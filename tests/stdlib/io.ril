@@ -1,5 +1,5 @@
---@ source: guarded-read-positions
---@ file: source.ril
+-- [source: guarded-read-positions]
+-- file: source.ril
 use ril/io
 type Reader={position:Io::ReadPosition,mut calls:int}
 fn reading(mut reader:Reader,maximum:int)->Result<Io::ReadChunk,Io::IoError> &mut{
@@ -93,104 +93,79 @@ pub fn test_abort(){
     Io::guard_read(position)
     Io::guard_seek(position)
 }
---@ end-file
---@ end-source
 
---@ case: position-identity-copy
---@ mode: run-pass
---@ spec: STD#buffered-streams
---@ entry: test_identity
---@ use-source: guarded-read-positions
---@ end-case
+-- [case: position-identity-copy, run-pass]
+-- spec: STD#buffered-streams
+-- entry: test_identity
+-- use-source: guarded-read-positions
 
---@ case: position-cache-and-zero
---@ mode: run-pass
---@ spec: STD#buffered-streams
---@ entry: test_cache
---@ use-source: guarded-read-positions
---@ end-case
+-- [case: position-cache-and-zero, run-pass]
+-- spec: STD#buffered-streams
+-- entry: test_cache
+-- use-source: guarded-read-positions
 
---@ case: position-other-identity
---@ mode: run-pass
---@ spec: STD#buffered-streams
---@ companion: position-shared-identity
---@ entry: test_other_position
---@ use-source: guarded-read-positions
---@ end-case
+-- [case: position-other-identity, run-pass]
+-- spec: STD#buffered-streams
+-- companion: position-shared-identity
+-- entry: test_other_position
+-- use-source: guarded-read-positions
 
---@ case: position-different-callback
---@ mode: run-panic
---@ spec: STD#buffered-streams
---@ companion: position-cache-and-zero
---@ entry: test_alternate
+-- [case: position-different-callback, run-panic]
+-- spec: STD#buffered-streams
+-- companion: position-cache-and-zero
+-- entry: test_alternate
 -- Panics: reader position is reserved by unread buffered input
---@ use-source: guarded-read-positions
---@ end-case
+-- use-source: guarded-read-positions
 
---@ case: position-buffer-switch
---@ mode: run-panic
---@ spec: STD#buffered-streams
---@ companion: position-cache-and-zero
---@ entry: test_switch
+-- [case: position-buffer-switch, run-panic]
+-- spec: STD#buffered-streams
+-- companion: position-cache-and-zero
+-- entry: test_switch
 -- Panics: buffer has pending data for another receiver, position or operation
---@ use-source: guarded-read-positions
---@ end-case
+-- use-source: guarded-read-positions
 
---@ case: position-seek-reserved
---@ mode: run-panic
---@ spec: STD#buffered-streams
---@ companion: position-cache-and-zero
---@ entry: test_seek
+-- [case: position-seek-reserved, run-panic]
+-- spec: STD#buffered-streams
+-- companion: position-cache-and-zero
+-- entry: test_seek
 -- Panics: reader position is reserved by unread buffered input
---@ use-source: guarded-read-positions
---@ end-case
+-- use-source: guarded-read-positions
 
---@ case: position-shared-identity
---@ mode: run-panic
---@ spec: STD#buffered-streams
---@ companion: position-other-identity
---@ entry: test_shared_position
+-- [case: position-shared-identity, run-panic]
+-- spec: STD#buffered-streams
+-- companion: position-other-identity
+-- entry: test_shared_position
 -- Panics: reader position is reserved by unread buffered input
---@ use-source: guarded-read-positions
---@ end-case
+-- use-source: guarded-read-positions
 
---@ case: position-requires-identity
---@ mode: check-fail
---@ spec: STD#buffered-streams
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: position-identity-copy
+-- [case: position-requires-identity, check-fail]
+-- spec: STD#buffered-streams
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: position-identity-copy
 -- Error [E0301]: A numeric value cannot stand in for an opaque position identity.
---@ file: source.ril
+-- file: source.ril
 use ril/io
 fn example(){Io::guard_read(1)}
---@ end-file
---@ end-case
 
---@ case: position-budget-abort
---@ mode: run-pass
---@ spec: STD#buffered-streams
---@ spec: SPEC#termination-and-halt-contracts
---@ entry: test_abort
---@ use-source: guarded-read-positions
---@ end-case
+-- [case: position-budget-abort, run-pass]
+-- spec: STD#buffered-streams
+-- spec: SPEC#termination-and-halt-contracts
+-- entry: test_abort
+-- use-source: guarded-read-positions
 
---@ case: position-no-type-arguments
---@ mode: check-fail
---@ spec: STD#buffered-streams
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: position-identity-copy
+-- [case: position-no-type-arguments, check-fail]
+-- spec: STD#buffered-streams
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: position-identity-copy
 -- Error [E0340]: The intrinsic position identity has no type arguments.
---@ file: source.ril
+-- file: source.ril
 use ril/io
 fn example(position:Io::ReadPosition<int>){}
---@ end-file
---@ end-case
 
---@ case: position-static-reflection
---@ mode: check-pass
---@ spec: STD#buffered-streams
---@ spec: STD#prelude-and-module-index
---@ file: source.ril
+-- [case: position-static-reflection, check-pass]
+-- spec: STD#buffered-streams
+-- spec: STD#prelude-and-module-index
+-- file: source.ril
 use ril/io
 type Position=Io::ReadPosition
 meta fn identity(value:Io::ReadPosition)->Io::ReadPosition{value}
@@ -198,41 +173,32 @@ meta let _=assert(byte_size(type<Position>)==byte_size(type<int>))
 meta let _=assert(byte_size(type<Io::ReadPosition>)==byte_size(type<int>))
 meta let _=assert(type<Position>==type<Io::ReadPosition>)
 meta let _=assert(type<Io::ReadPosition>!=type<int>)
---@ end-file
---@ end-case
 
---@ case: position-static-no-type-arguments
---@ mode: check-fail
---@ spec: STD#buffered-streams
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: position-static-reflection
+-- [case: position-static-no-type-arguments, check-fail]
+-- spec: STD#buffered-streams
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: position-static-reflection
 -- Error [E0340]: Quoting an intrinsic type does not make it a constructor.
---@ file: source.ril
+-- file: source.ril
 use ril/io
 meta let _=type<Io::ReadPosition<int>>==type<Io::ReadPosition>
---@ end-file
---@ end-case
 
---@ case: position-runtime-only-factory
---@ mode: check-fail
---@ spec: STD#buffered-streams
---@ spec: SPEC#compile-time-computation-and-totality
---@ companion: position-identity-copy
+-- [case: position-runtime-only-factory, check-fail]
+-- spec: STD#buffered-streams
+-- spec: SPEC#compile-time-computation-and-totality
+-- companion: position-identity-copy
 -- Error [E0810]: Position identity creation is an ordinary runtime operation.
---@ file: source.ril
+-- file: source.ril
 use ril/io
 meta let POSITION=Io::read_position()
---@ end-file
---@ end-case
 
---@ case: buffered-seek-released
---@ mode: run-pass
---@ spec: STD#buffered-streams
---@ spec: STD#files-and-directories
---@ companion: buffered-seek-reserved
---@ entry: test_native
---@ requires: filesystem
---@ file: source.ril
+-- [case: buffered-seek-released, run-pass]
+-- spec: STD#buffered-streams
+-- spec: STD#files-and-directories
+-- companion: buffered-seek-reserved
+-- entry: test_native
+-- requires: filesystem
+-- file: source.ril
 use ril/io
 use ril/file
 fn wrapped(mut file:File::Handle,maximum:int)->Result<Io::ReadChunk,Io::IoError> @Fiber &mut{
@@ -249,21 +215,18 @@ pub fn test_native() @Fiber{
     let reread=File::read_chunk(mut file,1) ?? \_error->panic("reread")
     assert(reread.data==b"a")
 }
---@ end-file
---@ file: buffered-seek.bin
-abc
---@ end-file
---@ end-case
 
---@ case: buffered-seek-reserved
---@ mode: run-panic
---@ spec: STD#buffered-streams
---@ spec: STD#files-and-directories
---@ companion: buffered-seek-released
---@ entry: test_native
---@ requires: filesystem
+-- file: buffered-seek.bin
+abc
+
+-- [case: buffered-seek-reserved, run-panic]
+-- spec: STD#buffered-streams
+-- spec: STD#files-and-directories
+-- companion: buffered-seek-released
+-- entry: test_native
+-- requires: filesystem
 -- Panics: reader position is reserved by unread buffered input
---@ file: source.ril
+-- file: source.ril
 use ril/io
 use ril/file
 fn wrapped(mut file:File::Handle,maximum:int)->Result<Io::ReadChunk,Io::IoError> @Fiber &mut{
@@ -276,17 +239,12 @@ pub fn test_native() @Fiber{
     assert(first.data==b"a")
     assert(File::seek(mut file,File::SeekFrom::Start(0i64)) is Ok(_))
 }
---@ end-file
---@ file: buffered-seek.bin
-abc
---@ end-file
---@ end-case
 
---@ case: buffered-round-trip
---@ mode: run-pass
---@ spec: STD#buffered-streams
---@ entry: test_buffered_round_trip
---@ file: buffered-round-trip.ril
+-- file: buffered-seek.bin
+abc
+
+-- [case: buffered-round-trip, run-pass]
+-- spec: STD#buffered-streams
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -317,15 +275,10 @@ pub fn test_buffered_round_trip() {
     assert(Io::flush(mut output, mut sink, .{ write: write_memory }) is Ok())
     assert(Bytes::from_array(sink.data) == b"abc")
 }
---@ end-file
---@ end-case
 
---@ case: empty-read-without-eof-safe
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ companion: empty-read-without-eof
---@ entry: test_empty_read_without_eof_safe
---@ file: empty-read-without-eof-safe.ril
+-- [case: empty-read-without-eof-safe, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- companion: empty-read-without-eof
 use ril/io
 type Reader = { mut attempts: int }
 fn invalid(mut reader: Reader, maximum: int) -> Result<Io::ReadChunk, Io::IoError> &mut {
@@ -342,16 +295,11 @@ pub fn test_empty_read_without_eof_safe() {
     assert(Io::read_all(mut reader, .{ read: valid }) is Ok(b""))
     assert(reader.attempts == 1)
 }
---@ end-file
---@ end-case
 
---@ case: empty-read-without-eof
---@ mode: run-panic
---@ spec: STD#error-and-stream-contracts
---@ companion: empty-read-without-eof-safe
---@ entry: test_empty_read_without_eof
+-- [case: empty-read-without-eof, run-panic]
+-- spec: STD#error-and-stream-contracts
+-- companion: empty-read-without-eof-safe
 -- Panics: empty read without eof
---@ file: empty-read-without-eof.ril
 use ril/io
 type Reader = { mut attempts: int }
 fn invalid(mut reader: Reader, maximum: int) -> Result<Io::ReadChunk, Io::IoError> &mut {
@@ -367,15 +315,10 @@ pub fn test_empty_read_without_eof() {
     let mut reader = Reader.{ attempts: 0 }
     let _ = Io::read_all(mut reader, .{ read: invalid }) ?? \_error -> b""
 }
---@ end-file
---@ end-case
 
---@ case: excess-progress-safe
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ companion: excess-progress
---@ entry: test_excess_progress_safe
---@ file: excess-progress-safe.ril
+-- [case: excess-progress-safe, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- companion: excess-progress
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -402,16 +345,11 @@ pub fn test_excess_progress_safe() {
     let mut sink = Sink.{ data: [] }
     assert(Io::write_all(mut sink, b"x", .{ write: write_memory }) is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: excess-progress
---@ mode: run-panic
---@ spec: STD#error-and-stream-contracts
---@ companion: excess-progress-safe
---@ entry: test_excess_progress
+-- [case: excess-progress, run-panic]
+-- spec: STD#error-and-stream-contracts
+-- companion: excess-progress-safe
 -- Panics: excess progress
---@ file: excess-progress.ril
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -438,14 +376,9 @@ pub fn test_excess_progress() {
     let mut sink = Sink.{ data: [] }
     let _ = Io::write_all(mut sink, b"x", .{ write: invalid }) ?? \_error -> ()
 }
---@ end-file
---@ end-case
 
---@ case: memory-read-write
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_memory_read_write
---@ file: memory-read-write.ril
+-- [case: memory-read-write, run-pass]
+-- spec: STD#error-and-stream-contracts
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -474,15 +407,10 @@ pub fn test_memory_read_write() {
     assert(Io::write_all(mut sink, b"", .{ write: write_memory }) is Ok())
     assert(Io::error_text(.{ kind: Io::ErrorKind::Other, message: "detail", native_code: None }) == "detail")
 }
---@ end-file
---@ end-case
 
---@ case: negative-progress-safe
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ companion: negative-progress
---@ entry: test_negative_progress_safe
---@ file: negative-progress-safe.ril
+-- [case: negative-progress-safe, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- companion: negative-progress
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -509,16 +437,11 @@ pub fn test_negative_progress_safe() {
     let mut sink = Sink.{ data: [] }
     assert(Io::write_all(mut sink, b"x", .{ write: write_memory }) is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: negative-progress
---@ mode: run-panic
---@ spec: STD#error-and-stream-contracts
---@ companion: negative-progress-safe
---@ entry: test_negative_progress
+-- [case: negative-progress, run-panic]
+-- spec: STD#error-and-stream-contracts
+-- companion: negative-progress-safe
 -- Panics: negative progress
---@ file: negative-progress.ril
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -545,15 +468,10 @@ pub fn test_negative_progress() {
     let mut sink = Sink.{ data: [] }
     let _ = Io::write_all(mut sink, b"x", .{ write: invalid }) ?? \_error -> ()
 }
---@ end-file
---@ end-case
 
---@ case: no-progress-safe
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ companion: no-progress
---@ entry: test_no_progress_safe
---@ file: no-progress-safe.ril
+-- [case: no-progress-safe, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- companion: no-progress
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -580,16 +498,11 @@ pub fn test_no_progress_safe() {
     let mut sink = Sink.{ data: [] }
     assert(Io::write_all(mut sink, b"x", .{ write: write_memory }) is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: no-progress
---@ mode: run-panic
---@ spec: STD#error-and-stream-contracts
---@ companion: no-progress-safe
---@ entry: test_no_progress
+-- [case: no-progress, run-panic]
+-- spec: STD#error-and-stream-contracts
+-- companion: no-progress-safe
 -- Panics: no progress
---@ file: no-progress.ril
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -616,14 +529,9 @@ pub fn test_no_progress() {
     let mut sink = Sink.{ data: [] }
     let _ = Io::write_all(mut sink, b"x", .{ write: invalid }) ?? \_error -> ()
 }
---@ end-file
---@ end-case
 
---@ case: partial-progress-error
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_partial_progress_error
---@ file: partial-progress-error.ril
+-- [case: partial-progress-error, run-pass]
+-- spec: STD#error-and-stream-contracts
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -653,72 +561,47 @@ pub fn test_partial_progress_error() {
     match result { Err(error) -> assert(error.kind == Io::ErrorKind::BrokenPipe), Ok() -> panic("expected failure") }
     assert(Bytes::from_array(sink.data) == b"ab")
 }
---@ end-file
---@ end-case
 
---@ case: read-buffer-capacity-safe
---@ mode: run-pass
---@ spec: STD#buffered-streams
---@ companion: read-buffer-capacity
---@ entry: test_read_buffer_capacity_safe
---@ file: read-buffer-capacity-safe.ril
+-- [case: read-buffer-capacity-safe, run-pass]
+-- spec: STD#buffered-streams
+-- companion: read-buffer-capacity
 use ril/io
 
 pub fn test_read_buffer_capacity_safe() {
     let _ = Io::read_buffer(1)
 }
---@ end-file
---@ end-case
 
---@ case: read-buffer-capacity
---@ mode: run-panic
---@ spec: STD#buffered-streams
---@ companion: read-buffer-capacity-safe
---@ entry: test_read_buffer_capacity
+-- [case: read-buffer-capacity, run-panic]
+-- spec: STD#buffered-streams
+-- companion: read-buffer-capacity-safe
 -- Panics: read buffer capacity
---@ file: read-buffer-capacity.ril
 use ril/io
 
 pub fn test_read_buffer_capacity() {
     let _ = Io::read_buffer(0)
 }
---@ end-file
---@ end-case
 
---@ case: write-buffer-capacity-safe
---@ mode: run-pass
---@ spec: STD#buffered-streams
---@ companion: write-buffer-capacity
---@ entry: test_write_buffer_capacity_safe
---@ file: write-buffer-capacity-safe.ril
+-- [case: write-buffer-capacity-safe, run-pass]
+-- spec: STD#buffered-streams
+-- companion: write-buffer-capacity
 use ril/io
 
 pub fn test_write_buffer_capacity_safe() {
     let _ = Io::write_buffer(1)
 }
---@ end-file
---@ end-case
 
---@ case: write-buffer-capacity
---@ mode: run-panic
---@ spec: STD#buffered-streams
---@ companion: write-buffer-capacity-safe
---@ entry: test_write_buffer_capacity
+-- [case: write-buffer-capacity, run-panic]
+-- spec: STD#buffered-streams
+-- companion: write-buffer-capacity-safe
 -- Panics: write buffer capacity
---@ file: write-buffer-capacity.ril
 use ril/io
 
 pub fn test_write_buffer_capacity() {
     let _ = Io::write_buffer(0)
 }
---@ end-file
---@ end-case
 
---@ case: write-retries-suffix
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ entry: test_write_retries_suffix
---@ file: write-retries-suffix.ril
+-- [case: write-retries-suffix, run-pass]
+-- spec: STD#error-and-stream-contracts
 use ril/io
 use ril/bytes
 type Reader = { data: bytes, mut offset: int }
@@ -747,16 +630,13 @@ pub fn test_write_retries_suffix() {
     assert(Io::write_all(mut sink, b"abc", .{ write: one_byte }) is Ok())
     assert(Bytes::from_array(sink.data) == b"abc")
 }
---@ end-file
---@ end-case
 
---@ case: io-all-alias-chunks
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ spec: SPEC#effect-handlers
---@ companion: io-all-alias-handler
---@ entry: test_native
---@ file: source.ril
+-- [case: io-all-alias-chunks, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- spec: SPEC#effect-handlers
+-- companion: io-all-alias-handler
+-- entry: test_native
+-- file: source.ril
 
 use ril/io
 use ril/bytes
@@ -788,16 +668,13 @@ pub fn test_native(){
     assert(write_all(mut writer,b"",.{write:write}) is Ok())
     assert(writer.calls==4 && writer.data==b"abc")
 }
---@ end-file
---@ end-case
 
---@ case: io-all-alias-handler
---@ mode: run-pass
---@ spec: STD#error-and-stream-contracts
---@ spec: SPEC#effect-handlers
---@ companion: io-all-alias-chunks
---@ entry: test_native
---@ file: source.ril
+-- [case: io-all-alias-handler, run-pass]
+-- spec: STD#error-and-stream-contracts
+-- spec: SPEC#effect-handlers
+-- companion: io-all-alias-chunks
+-- entry: test_native
+-- file: source.ril
 
 use ril/io
 use ril/bytes
@@ -826,5 +703,3 @@ pub fn test_native(){
     assert(write_all(mut writer,b"abc",.{write:write}) is Ok())
     assert(ticks==5 && writer.calls==3)
 }
---@ end-file
---@ end-case

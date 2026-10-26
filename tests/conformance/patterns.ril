@@ -1,324 +1,212 @@
---@ case: accept-alternative-binders
---@ mode: check-pass
---@ spec: SPEC#pattern-matching
---@ companion: reject-alternative-binders
---@ file: accept-alternative-binders.ril
+-- [case: accept-alternative-binders, check-pass]
+-- spec: SPEC#pattern-matching
+-- companion: reject-alternative-binders
 type Choice { Left(int), Right(int) }
 
 fn example(item: Choice) {
     match item { Left(x) | Right(x) -> () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-alternative-binders
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: accept-alternative-binders
+-- [case: reject-alternative-binders, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: accept-alternative-binders
 -- Error [E0346]: reject alternative binders
---@ file: reject-alternative-binders.ril
 type Choice { Left(int), Right(int) }
 
 fn example(item: Choice) {
     match item { Left(x) | Right(y) -> () }
 }
---@ end-file
---@ end-case
 
---@ case: accept-computed-pattern
---@ mode: check-pass
---@ spec: SPEC#pattern-matching
---@ companion: reject-computed-pattern
---@ file: accept-computed-pattern.ril
+-- [case: accept-computed-pattern, check-pass]
+-- spec: SPEC#pattern-matching
+-- companion: reject-computed-pattern
 fn example(item: int) {
     match item { 3 -> (), _ -> () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-computed-pattern
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: accept-computed-pattern
+-- [case: reject-computed-pattern, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: accept-computed-pattern
 -- Error [E0349]: reject computed pattern
---@ file: reject-computed-pattern.ril
 fn example(item: int) {
     match item { (1 + 2) -> (), _ -> () }
 }
---@ end-file
---@ end-case
 
---@ case: accept-duplicate-binder
---@ mode: check-pass
---@ spec: SPEC#pattern-matching
---@ companion: reject-duplicate-binder
---@ file: accept-duplicate-binder.ril
+-- [case: accept-duplicate-binder, check-pass]
+-- spec: SPEC#pattern-matching
+-- companion: reject-duplicate-binder
 fn example() {
     let (first, second) = (1, 2)
 }
---@ end-file
---@ end-case
 
---@ case: reject-duplicate-binder
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: accept-duplicate-binder
+-- [case: reject-duplicate-binder, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: accept-duplicate-binder
 -- Error [E0347]: reject duplicate binder
---@ file: reject-duplicate-binder.ril
 fn example() {
     let (same, same) = (1, 2)
 }
---@ end-file
---@ end-case
 
---@ case: accept-guard-not-exhaustive
---@ mode: check-pass
---@ spec: SPEC#pattern-syntax-or-patterns-and-exhaustiveness
---@ companion: reject-guard-not-exhaustive
---@ file: accept-guard-not-exhaustive.ril
+-- [case: accept-guard-not-exhaustive, check-pass]
+-- spec: SPEC#pattern-syntax-or-patterns-and-exhaustiveness
+-- companion: reject-guard-not-exhaustive
 fn example(item: int) {
     match item { value if value >= 0 -> (), _ -> () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-guard-not-exhaustive
---@ mode: check-fail
---@ spec: SPEC#pattern-syntax-or-patterns-and-exhaustiveness
---@ companion: accept-guard-not-exhaustive
+-- [case: reject-guard-not-exhaustive, check-fail]
+-- spec: SPEC#pattern-syntax-or-patterns-and-exhaustiveness
+-- companion: accept-guard-not-exhaustive
 -- Error [E0303]: reject guard not exhaustive
---@ file: reject-guard-not-exhaustive.ril
 fn example(item: int) {
     match item { value if value >= 0 -> (), value if value < 0 -> () }
 }
---@ end-file
---@ end-case
 
---@ case: accept-match-branch-type
---@ mode: check-pass
---@ spec: SPEC#pattern-matching
---@ companion: reject-match-branch-type
---@ file: accept-match-branch-type.ril
+-- [case: accept-match-branch-type, check-pass]
+-- spec: SPEC#pattern-matching
+-- companion: reject-match-branch-type
 fn example(item: bool) {
     let value = match item { true -> 1, false -> 2 }
 }
---@ end-file
---@ end-case
 
---@ case: reject-match-branch-type
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: accept-match-branch-type
+-- [case: reject-match-branch-type, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: accept-match-branch-type
 -- Error [E0351]: reject match branch type
---@ file: reject-match-branch-type.ril
 fn example(item: bool) {
     let value = match item { true -> 1, false -> "a" }
 }
---@ end-file
---@ end-case
 
---@ case: accept-nondivergent-else
---@ mode: check-pass
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ companion: reject-nondivergent-else
---@ file: accept-nondivergent-else.ril
+-- [case: accept-nondivergent-else, check-pass]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+-- companion: reject-nondivergent-else
 fn example(item: ?int) {
     let Some(value) = item else { return }
 }
---@ end-file
---@ end-case
 
---@ case: reject-nondivergent-else
---@ mode: check-fail
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ companion: accept-nondivergent-else
+-- [case: reject-nondivergent-else, check-fail]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+-- companion: accept-nondivergent-else
 -- Error [E0321]: reject nondivergent else
---@ file: reject-nondivergent-else.ril
 fn example(item: ?int) {
     let Some(value) = item else { () }
 }
---@ end-file
---@ end-case
 
---@ case: accept-nonexhaustive-match
---@ mode: check-pass
---@ spec: SPEC#pattern-matching
---@ companion: reject-nonexhaustive-match
---@ file: accept-nonexhaustive-match.ril
+-- [case: accept-nonexhaustive-match, check-pass]
+-- spec: SPEC#pattern-matching
+-- companion: reject-nonexhaustive-match
 fn example(item: ?int) {
     match item { Some(value) -> (), None -> () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-nonexhaustive-match
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: accept-nonexhaustive-match
+-- [case: reject-nonexhaustive-match, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: accept-nonexhaustive-match
 -- Error [E0303]: reject nonexhaustive match
---@ file: reject-nonexhaustive-match.ril
 fn example(item: ?int) {
     match item { Some(value) -> () }
 }
---@ end-file
---@ end-case
 
---@ case: accept-refutable-binding
---@ mode: check-pass
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ companion: reject-refutable-binding
---@ file: accept-refutable-binding.ril
+-- [case: accept-refutable-binding, check-pass]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+-- companion: reject-refutable-binding
 fn example(item: ?int) {
     let Some(value) = item else { return }
 }
---@ end-file
---@ end-case
 
---@ case: reject-refutable-binding
---@ mode: check-fail
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ companion: accept-refutable-binding
+-- [case: reject-refutable-binding, check-fail]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+-- companion: accept-refutable-binding
 -- Error [E0345]: reject refutable binding
---@ file: reject-refutable-binding.ril
 fn example(item: ?int) {
     let Some(value) = item
 }
---@ end-file
---@ end-case
 
---@ case: accept-refutable-for-pattern
---@ mode: check-pass
---@ spec: SPEC#pattern-matching
---@ companion: reject-refutable-for-pattern
---@ file: accept-refutable-for-pattern.ril
+-- [case: accept-refutable-for-pattern, check-pass]
+-- spec: SPEC#pattern-matching
+-- companion: reject-refutable-for-pattern
 fn example(items: []?int) {
     for items as value {}
 }
---@ end-file
---@ end-case
 
---@ case: reject-refutable-for-pattern
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: accept-refutable-for-pattern
+-- [case: reject-refutable-for-pattern, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: accept-refutable-for-pattern
 -- Error [E0345]: reject refutable for pattern
---@ file: reject-refutable-for-pattern.ril
 fn example(items: []?int) {
     for items as Some(value) {}
 }
---@ end-file
---@ end-case
 
---@ case: accept-reversed-range
---@ mode: check-pass
---@ spec: SPEC#pattern-matching
---@ companion: reject-reversed-range
---@ file: accept-reversed-range.ril
+-- [case: accept-reversed-range, check-pass]
+-- spec: SPEC#pattern-matching
+-- companion: reject-reversed-range
 fn example(item: int) {
     match item { 1..=5 -> (), _ -> () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-reversed-range
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: accept-reversed-range
+-- [case: reject-reversed-range, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: accept-reversed-range
 -- Error [E0348]: reject reversed range
---@ file: reject-reversed-range.ril
 fn example(item: int) {
     match item { 5..=1 -> (), _ -> () }
 }
---@ end-file
---@ end-case
 
---@ case: accept-unreachable-arm
---@ mode: check-pass
---@ spec: SPEC#pattern-matching
---@ companion: reject-unreachable-arm
---@ file: accept-unreachable-arm.ril
+-- [case: accept-unreachable-arm, check-pass]
+-- spec: SPEC#pattern-matching
+-- companion: reject-unreachable-arm
 fn example(item: ?int) {
     match item { Some(value) -> (), None -> () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-unreachable-arm
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: accept-unreachable-arm
+-- [case: reject-unreachable-arm, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: accept-unreachable-arm
 -- Error [E0304]: reject unreachable arm
---@ file: reject-unreachable-arm.ril
 fn example(item: ?int) {
     match item { _ -> (), Some(value) -> () }
 }
---@ end-file
---@ end-case
 
---@ case: accept-vacuous-guarded-discard
---@ mode: check-pass
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ companion: reject-vacuous-guarded-discard
---@ file: accept-vacuous-guarded-discard.ril
+-- [case: accept-vacuous-guarded-discard, check-pass]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+-- companion: reject-vacuous-guarded-discard
 fn example(item: int) {
     let value = item
 }
---@ end-file
---@ end-case
 
---@ case: reject-vacuous-guarded-discard
---@ mode: check-fail
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ companion: accept-vacuous-guarded-discard
+-- [case: reject-vacuous-guarded-discard, check-fail]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+-- companion: accept-vacuous-guarded-discard
 -- Error [E0309]: reject vacuous guarded discard
---@ file: reject-vacuous-guarded-discard.ril
 fn example(item: int) {
     let _ = item else { return }
 }
---@ end-file
---@ end-case
 
---@ case: accept-vacuous-unit
---@ mode: check-pass
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ companion: reject-vacuous-unit
---@ file: accept-vacuous-unit.ril
+-- [case: accept-vacuous-unit, check-pass]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+-- companion: reject-vacuous-unit
 fn example() {
     let _ = ()
 }
---@ end-file
---@ end-case
 
---@ case: reject-vacuous-unit
---@ mode: check-fail
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ companion: accept-vacuous-unit
+-- [case: reject-vacuous-unit, check-fail]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
+-- companion: accept-vacuous-unit
 -- Error [E0309]: reject vacuous unit
---@ file: reject-vacuous-unit.ril
 fn example() {
     let () = ()
 }
---@ end-file
---@ end-case
 
---@ case: guarded-binding
---@ mode: run-pass
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ entry: test_guarded_binding
---@ file: guarded-binding.ril
+-- [case: guarded-binding, run-pass]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
 fn read(item: ?int) -> int { let Some(value) = item else { return 0 }; value }
 
 pub fn test_guarded_binding() {
     assert(read(Some(7)) == 7 && read(None) == 0)
 }
---@ end-file
---@ end-case
 
---@ case: guarded-binding-shadowed-receivers
---@ mode: run-pass
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ entry: test_guarded_binding_shadowed_receivers
---@ file: guarded-binding-shadowed-receivers.ril
+-- [case: guarded-binding-shadowed-receivers, run-pass]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
 fn read_shadowed(item: ?int, first: bool) -> int {
     let value = 100
     match Some(1) { Some(value) -> assert(value == 1), None -> () }
@@ -344,14 +232,9 @@ pub fn test_guarded_binding_shadowed_receivers() {
     assert(read_shadowed(None, true) == 1)
     assert(read_shadowed(None, false) == 2)
 }
---@ end-file
---@ end-case
 
---@ case: guarded-binding-alternative-receivers
---@ mode: run-pass
---@ spec: SPEC#guarded-bindings-and-non-vacuous-invariant
---@ entry: test_guarded_binding_alternative_receivers
---@ file: guarded-binding-alternative-receivers.ril
+-- [case: guarded-binding-alternative-receivers, run-pass]
+-- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
 type GuardedChoice { Left(int), Right(int), Empty }
 
 fn read_alternative(item: GuardedChoice) -> int {
@@ -364,5 +247,3 @@ pub fn test_guarded_binding_alternative_receivers() {
     assert(read_alternative(Right(9)) == 9)
     assert(read_alternative(Empty) == 0)
 }
---@ end-file
---@ end-case

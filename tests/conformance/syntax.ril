@@ -1,21 +1,13 @@
---@ case: nested-comments
---@ mode: run-pass
---@ spec: SPEC#comments
---@ entry: test_nested_comments
---@ file: nested-comments.ril
+-- [case: nested-comments, run-pass]
+-- spec: SPEC#comments
 pub fn test_nested_comments() {
     {- outer {- nested -} still outer -}
     let value = 1 -- end of line
     assert(value == 1)
 }
---@ end-file
---@ end-case
 
---@ case: newline-continuation
---@ mode: run-pass
---@ spec: SPEC#whitespace-and-layout-rules
---@ entry: test_newline_continuation
---@ file: newline-continuation.ril
+-- [case: newline-continuation, run-pass]
+-- spec: SPEC#whitespace-and-layout-rules
 pub fn test_newline_continuation() {
     let a = 1; let b = 2
     let sum = a +
@@ -30,5 +22,3 @@ pub fn test_newline_continuation() {
     let discarded = { 5; }
     assert(value == 5 && discarded == ())
 }
---@ end-file
---@ end-case

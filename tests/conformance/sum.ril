@@ -1,54 +1,36 @@
---@ case: accept-function-auto-tuple
---@ mode: check-pass
---@ spec: SPEC#constructor-tuple-equivalence-invariant
---@ companion: reject-function-auto-tuple
---@ file: accept-function-auto-tuple.ril
+-- [case: accept-function-auto-tuple, check-pass]
+-- spec: SPEC#constructor-tuple-equivalence-invariant
+-- companion: reject-function-auto-tuple
 fn add(a: int, b: int) -> int { a + b }
 
 fn example() {
     let value = add(1, 2)
 }
---@ end-file
---@ end-case
 
---@ case: reject-function-auto-tuple
---@ mode: check-fail
---@ spec: SPEC#constructor-tuple-equivalence-invariant
---@ companion: accept-function-auto-tuple
+-- [case: reject-function-auto-tuple, check-fail]
+-- spec: SPEC#constructor-tuple-equivalence-invariant
+-- companion: accept-function-auto-tuple
 -- Error [E0314]: reject function auto tuple
---@ file: reject-function-auto-tuple.ril
 fn add(a: int, b: int) -> int { a + b }
 
 fn example() {
     let value = add((1, 2))
 }
---@ end-file
---@ end-case
 
---@ case: accept-hidden-existential
---@ mode: check-pass
---@ spec: SPEC#sum-types-and-gadts
---@ companion: reject-hidden-existential
---@ file: accept-hidden-existential.ril
+-- [case: accept-hidden-existential, check-pass]
+-- spec: SPEC#sum-types-and-gadts
+-- companion: reject-hidden-existential
 type Packed<T> { Item<U>(U) -> Packed<U> }
---@ end-file
---@ end-case
 
---@ case: reject-hidden-existential
---@ mode: check-fail
---@ spec: SPEC#sum-types-and-gadts
---@ companion: accept-hidden-existential
+-- [case: reject-hidden-existential, check-fail]
+-- spec: SPEC#sum-types-and-gadts
+-- companion: accept-hidden-existential
 -- Error [E0354]: reject hidden existential
---@ file: reject-hidden-existential.ril
 type Packed { Item<U>(U) }
---@ end-file
---@ end-case
 
---@ case: accept-impossible-gadt-arm
---@ mode: check-pass
---@ spec: SPEC#sum-types-and-gadts
---@ companion: reject-impossible-gadt-arm
---@ file: accept-impossible-gadt-arm.ril
+-- [case: accept-impossible-gadt-arm, check-pass]
+-- spec: SPEC#sum-types-and-gadts
+-- companion: reject-impossible-gadt-arm
 type Expr<T> { LitInt(int) -> Expr<int>, LitBool(bool) -> Expr<bool> }
 fn eval<T>(expr: Expr<T>) -> T {
     match expr { LitInt(n) -> n, LitBool(b) -> b }
@@ -57,15 +39,11 @@ fn eval<T>(expr: Expr<T>) -> T {
 fn example(expr: Expr<int>) {
     match expr { LitInt(n) -> () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-impossible-gadt-arm
---@ mode: check-fail
---@ spec: SPEC#sum-types-and-gadts
---@ companion: accept-impossible-gadt-arm
+-- [case: reject-impossible-gadt-arm, check-fail]
+-- spec: SPEC#sum-types-and-gadts
+-- companion: accept-impossible-gadt-arm
 -- Error [E0304]: reject impossible gadt arm
---@ file: reject-impossible-gadt-arm.ril
 type Expr<T> { LitInt(int) -> Expr<int>, LitBool(bool) -> Expr<bool> }
 fn eval<T>(expr: Expr<T>) -> T {
     match expr { LitInt(n) -> n, LitBool(b) -> b }
@@ -74,83 +52,54 @@ fn eval<T>(expr: Expr<T>) -> T {
 fn example(expr: Expr<int>) {
     match expr { LitInt(n) -> (), LitBool(b) -> () }
 }
---@ end-file
---@ end-case
 
---@ case: accept-nested-constructor-flattening
---@ mode: check-pass
---@ spec: SPEC#constructor-tuple-equivalence-invariant
---@ companion: reject-nested-constructor-flattening
---@ file: accept-nested-constructor-flattening.ril
+-- [case: accept-nested-constructor-flattening, check-pass]
+-- spec: SPEC#constructor-tuple-equivalence-invariant
+-- companion: reject-nested-constructor-flattening
 type Node { Branch((int, int), str) }
 
 fn example() {
     let value = Branch((1, 2), "a")
 }
---@ end-file
---@ end-case
 
---@ case: reject-nested-constructor-flattening
---@ mode: check-fail
---@ spec: SPEC#constructor-tuple-equivalence-invariant
---@ companion: accept-nested-constructor-flattening
+-- [case: reject-nested-constructor-flattening, check-fail]
+-- spec: SPEC#constructor-tuple-equivalence-invariant
+-- companion: accept-nested-constructor-flattening
 -- Error [E0314]: reject nested constructor flattening
---@ file: reject-nested-constructor-flattening.ril
 type Node { Branch((int, int), str) }
 
 fn example() {
     let value = Branch(1, 2, "a")
 }
---@ end-file
---@ end-case
 
---@ case: accept-nullary-call
---@ mode: check-pass
---@ spec: SPEC#constructor-tuple-equivalence-invariant
---@ companion: reject-nullary-call
---@ file: accept-nullary-call.ril
+-- [case: accept-nullary-call, check-pass]
+-- spec: SPEC#constructor-tuple-equivalence-invariant
+-- companion: reject-nullary-call
 fn example() {
     let value: ?int = None
 }
---@ end-file
---@ end-case
 
---@ case: reject-nullary-call
---@ mode: check-fail
---@ spec: SPEC#constructor-tuple-equivalence-invariant
---@ companion: accept-nullary-call
+-- [case: reject-nullary-call, check-fail]
+-- spec: SPEC#constructor-tuple-equivalence-invariant
+-- companion: accept-nullary-call
 -- Error [E0353]: reject nullary call
---@ file: reject-nullary-call.ril
 fn example() {
     let value: ?int = None()
 }
---@ end-file
---@ end-case
 
---@ case: accept-wrong-result-declaration
---@ mode: check-pass
---@ spec: SPEC#sum-types-and-gadts
---@ companion: reject-wrong-result-declaration
---@ file: accept-wrong-result-declaration.ril
+-- [case: accept-wrong-result-declaration, check-pass]
+-- spec: SPEC#sum-types-and-gadts
+-- companion: reject-wrong-result-declaration
 type Packed<T> { Item(T) -> Packed<T> }
---@ end-file
---@ end-case
 
---@ case: reject-wrong-result-declaration
---@ mode: check-fail
---@ spec: SPEC#sum-types-and-gadts
---@ companion: accept-wrong-result-declaration
+-- [case: reject-wrong-result-declaration, check-fail]
+-- spec: SPEC#sum-types-and-gadts
+-- companion: accept-wrong-result-declaration
 -- Error [E0354]: reject wrong result declaration
---@ file: reject-wrong-result-declaration.ril
 type Packed<T> { Item(T) -> bool }
---@ end-file
---@ end-case
 
---@ case: constructor-canonical-callable
---@ mode: run-pass
---@ spec: SPEC#constructor-tuple-equivalence-invariant
---@ entry: test_constructor_canonical_callable
---@ file: constructor-canonical-callable.ril
+-- [case: constructor-canonical-callable, run-pass]
+-- spec: SPEC#constructor-tuple-equivalence-invariant
 type Pair { Item(int, str) }
 
 pub fn test_constructor_canonical_callable() {
@@ -161,14 +110,9 @@ pub fn test_constructor_canonical_callable() {
     let result: Result<(), str> = Ok()
     assert(result is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: gadt-refinement
---@ mode: run-pass
---@ spec: SPEC#sum-types-and-gadts
---@ entry: test_gadt_refinement
---@ file: gadt-refinement.ril
+-- [case: gadt-refinement, run-pass]
+-- spec: SPEC#sum-types-and-gadts
 type Expr<T> { LitInt(int) -> Expr<int>, LitBool(bool) -> Expr<bool> }
 fn eval<T>(expr: Expr<T>) -> T {
     match expr { LitInt(n) -> n, LitBool(b) -> b }
@@ -178,5 +122,3 @@ pub fn test_gadt_refinement() {
     assert(eval(LitInt(3)) == 3)
     assert(eval(LitBool(true)))
 }
---@ end-file
---@ end-case

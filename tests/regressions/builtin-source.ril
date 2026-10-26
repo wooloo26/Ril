@@ -1,8 +1,5 @@
---@ case: declared-boundaries
---@ mode: run-pass
---@ spec: STD#native-strings-and-paths
---@ entry: test_declared_boundaries
---@ file: declared-boundaries.ril
+-- [case: declared-boundaries, run-pass]
+-- spec: STD#native-strings-and-paths
 use ril/os
 use ril/path
 
@@ -27,14 +24,10 @@ pub fn test_declared_boundaries() {
     assert((optional ?? panic("missing path")) == path)
     assert(Os::to_string(pair.1) is Ok("first"))
 }
---@ end-file
---@ end-case
 
---@ case: callable-pipeline-and-labels
---@ mode: run-pass
---@ spec: STD#native-strings-and-paths
---@ entry: test_callable_pipeline
---@ file: callable-pipeline-and-labels.ril
+-- [case: callable-pipeline-and-labels, run-pass]
+-- spec: STD#native-strings-and-paths
+-- entry: test_callable_pipeline
 use ril/os
 use ril/path
 
@@ -52,14 +45,10 @@ pub fn test_callable_pipeline() {
     let parent = Path::parent(joined) ?? panic("missing parent")
     assert(parent == path)
 }
---@ end-file
---@ end-case
 
---@ case: handler-and-resumption
---@ mode: run-pass
---@ spec: SPEC#effect-handlers
---@ entry: test_handler_path
---@ file: handler-and-resumption.ril
+-- [case: handler-and-resumption, run-pass]
+-- spec: SPEC#effect-handlers
+-- entry: test_handler_path
 use ril/path
 
 eff Pick { path() -> Path::Path }
@@ -72,14 +61,10 @@ fn selected() -> Path::Path {
     Pick::path()
 }
 pub fn test_handler_path() { assert(selected() == Path::from_string("resumed")) }
---@ end-file
---@ end-case
 
---@ case: channel-transport
---@ mode: run-pass
---@ spec: STD#structured-concurrency-channels
---@ entry: test_channel_path
---@ file: channel-transport.ril
+-- [case: channel-transport, run-pass]
+-- spec: STD#structured-concurrency-channels
+-- entry: test_channel_path
 use ril/path
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
@@ -97,28 +82,20 @@ pub fn test_channel_path() @Async {
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: shadowed-effect-declaration
---@ mode: run-pass
---@ spec: SPEC#effect-handlers
---@ entry: test_shadowed_effect
---@ file: shadowed-effect-declaration.ril
+-- [case: shadowed-effect-declaration, run-pass]
+-- spec: SPEC#effect-handlers
+-- entry: test_shadowed_effect
 eff Path { from_string(text: str) -> int }
 fn selected() -> int {
     with Path::from_string(text) -> resume len(text)
     Path::from_string("abc")
 }
 pub fn test_shadowed_effect() { assert(selected() == 3) }
---@ end-file
---@ end-case
 
---@ case: atomic-static-reflection
---@ mode: run-pass
---@ spec: SPEC#static-type-values-and-type-quotation
---@ entry: test_atomic_reflection
---@ file: atomic-static-reflection.ril
+-- [case: atomic-static-reflection, run-pass]
+-- spec: SPEC#static-type-values-and-type-quotation
+-- entry: test_atomic_reflection
 use ril/os
 use ril/path
 use ril/order
@@ -131,31 +108,21 @@ meta let _ = assert(byte_size(type<Os::Platform>) == byte_size(type<Path::Path>)
 meta let _ = assert(byte_size(type<Order::Ordering>) == byte_size(type<Path::Path>))
 meta let _ = assert(byte_size(type<Io::ReadPosition>) == byte_size(type<Path::Path>))
 pub fn test_atomic_reflection() {}
---@ end-file
---@ end-case
 
---@ case: dynamic-array-is-not-fixed
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: callable-pipeline-and-labels
+-- [case: dynamic-array-is-not-fixed, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: callable-pipeline-and-labels
 -- Error [E0301]: dynamic native units do not establish a fixed dimension
---@ file: dynamic-array-is-not-fixed.ril
 use ril/os
 fn fixed(value: [2]u16) { assert(len(value) == 2) }
 fn example() {
     let units = Os::windows_units(Os::from_string("ab")) ?? \_error -> panic("platform")
     fixed(units)
 }
---@ end-file
---@ end-case
 
---@ case: closed-declaration-no-generics
---@ mode: check-fail
---@ spec: STD#native-strings-and-paths
---@ companion: callable-pipeline-and-labels
+-- [case: closed-declaration-no-generics, check-fail]
+-- spec: STD#native-strings-and-paths
+-- companion: callable-pipeline-and-labels
 -- Error [E0340]: a closed declaration has no generic binders
---@ file: closed-declaration-no-generics.ril
 use ril/path
 fn example() { let value = Path::from_string<int>("a") }
---@ end-file
---@ end-case

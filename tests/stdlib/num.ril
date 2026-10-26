@@ -1,9 +1,6 @@
---@ case: repeated-numeric-conversion
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ entry: test_repeated_numeric_conversion
---@ file: repeated-numeric-conversion.ril
+-- [case: repeated-numeric-conversion, run-pass]
+-- spec: STD#numbers-and-mathematics
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
 use ril/num
 pub fn test_repeated_numeric_conversion() {
     var count = 0
@@ -13,14 +10,11 @@ pub fn test_repeated_numeric_conversion() {
     }
     assert(count == 2)
 }
---@ end-file
---@ end-case
 
---@ case: decimal-rounding-and-shortest-boundaries
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_decimal_boundaries
---@ file: decimal-boundaries.ril
+-- [case: decimal-rounding-and-shortest-boundaries, run-pass]
+-- spec: STD#numbers-and-mathematics
+-- entry: test_decimal_boundaries
+-- file: decimal-boundaries.ril
 use ril/num
 
 pub fn test_decimal_boundaries() {
@@ -40,16 +34,11 @@ pub fn test_decimal_boundaries() {
         assert(restored == value)
     }
 }
---@ end-file
---@ end-case
 
---@ case: numeric-callable-views
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: numeric-callable-arity-mismatch
---@ entry: test_numeric_callable_views
---@ file: numeric-callable-views.ril
+-- [case: numeric-callable-views, run-pass]
+-- spec: STD#numbers-and-mathematics
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: numeric-callable-arity-mismatch
 use ril/num
 pub fn test_numeric_callable_views() {
     let parse = Num::parse_int
@@ -62,43 +51,30 @@ pub fn test_numeric_callable_views() {
     let explicit_format: fn(int, int) -> Result<str, Num::NumError> = Num::format_int
     assert(explicit_format(42, 16) is Ok("2a"))
 }
---@ end-file
---@ end-case
 
---@ case: numeric-callable-arity-mismatch
---@ mode: check-fail
---@ spec: STD#numbers-and-mathematics
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: numeric-callable-views
+-- [case: numeric-callable-arity-mismatch, check-fail]
+-- spec: STD#numbers-and-mathematics
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: numeric-callable-views
 -- Error [E0301]: A default does not remove a parameter from a callable type.
---@ file: numeric-callable-arity-mismatch.ril
 use ril/num
 fn example() {
     let parse: fn(str) -> Result<int, Num::NumError> = Num::parse_int
 }
---@ end-file
---@ end-case
 
---@ case: numeric-callable-ascribed-default
---@ mode: check-fail
---@ spec: STD#numbers-and-mathematics
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: numeric-callable-views
+-- [case: numeric-callable-ascribed-default, check-fail]
+-- spec: STD#numbers-and-mathematics
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: numeric-callable-views
 -- Error [E0314]: A typed callable receives the destination's signature without defaults.
---@ file: numeric-callable-ascribed-default.ril
 use ril/num
 fn example() {
     let parse: fn(str, int) -> Result<int, Num::NumError> = Num::parse_int
     let _ = parse("42")
 }
---@ end-file
---@ end-case
 
---@ case: bigint-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_bigint_parse_format
---@ file: bigint-parse-format.ril
+-- [case: bigint-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_bigint_parse_format() {
@@ -107,14 +83,9 @@ pub fn test_bigint_parse_format() {
     assert(Num::parse_bigint("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_bigint(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: conversion-boundaries
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_conversion_boundaries
---@ file: conversion-boundaries.ril
+-- [case: conversion-boundaries, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_conversion_boundaries() {
@@ -127,14 +98,9 @@ pub fn test_conversion_boundaries() {
     assert(Num::format_f64(0.000001) == "0.000001")
     assert(Num::format_f64(0.0000001) == "1e-7")
 }
---@ end-file
---@ end-case
 
---@ case: f32-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_f32_parse_format
---@ file: f32-parse-format.ril
+-- [case: f32-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_f32_parse_format() {
@@ -143,14 +109,9 @@ pub fn test_f32_parse_format() {
     assert(Num::format_f32(-0.0f32) == "-0.0")
     assert(Num::parse_f32("1e9999") is Err(Num::NumError::OutOfRange))
 }
---@ end-file
---@ end-case
 
---@ case: f64-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_f64_parse_format
---@ file: f64-parse-format.ril
+-- [case: f64-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_f64_parse_format() {
@@ -159,14 +120,9 @@ pub fn test_f64_parse_format() {
     assert(Num::format_f64(-0.0f64) == "-0.0")
     assert(Num::parse_f64("1e9999") is Err(Num::NumError::OutOfRange))
 }
---@ end-file
---@ end-case
 
---@ case: i16-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_i16_parse_format
---@ file: i16-parse-format.ril
+-- [case: i16-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_i16_parse_format() {
@@ -175,14 +131,9 @@ pub fn test_i16_parse_format() {
     assert(Num::parse_i16("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_i16(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: i32-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_i32_parse_format
---@ file: i32-parse-format.ril
+-- [case: i32-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_i32_parse_format() {
@@ -191,14 +142,9 @@ pub fn test_i32_parse_format() {
     assert(Num::parse_i32("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_i32(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: i64-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_i64_parse_format
---@ file: i64-parse-format.ril
+-- [case: i64-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_i64_parse_format() {
@@ -207,14 +153,9 @@ pub fn test_i64_parse_format() {
     assert(Num::parse_i64("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_i64(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: i8-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_i8_parse_format
---@ file: i8-parse-format.ril
+-- [case: i8-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_i8_parse_format() {
@@ -223,14 +164,9 @@ pub fn test_i8_parse_format() {
     assert(Num::parse_i8("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_i8(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: int-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_int_parse_format
---@ file: int-parse-format.ril
+-- [case: int-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_int_parse_format() {
@@ -239,14 +175,9 @@ pub fn test_int_parse_format() {
     assert(Num::parse_int("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_int(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: u16-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_u16_parse_format
---@ file: u16-parse-format.ril
+-- [case: u16-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_u16_parse_format() {
@@ -255,14 +186,9 @@ pub fn test_u16_parse_format() {
     assert(Num::parse_u16("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_u16(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: u32-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_u32_parse_format
---@ file: u32-parse-format.ril
+-- [case: u32-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_u32_parse_format() {
@@ -271,14 +197,9 @@ pub fn test_u32_parse_format() {
     assert(Num::parse_u32("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_u32(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: u64-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_u64_parse_format
---@ file: u64-parse-format.ril
+-- [case: u64-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_u64_parse_format() {
@@ -287,14 +208,9 @@ pub fn test_u64_parse_format() {
     assert(Num::parse_u64("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_u64(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case
 
---@ case: u8-parse-format
---@ mode: run-pass
---@ spec: STD#numbers-and-mathematics
---@ entry: test_u8_parse_format
---@ file: u8-parse-format.ril
+-- [case: u8-parse-format, run-pass]
+-- spec: STD#numbers-and-mathematics
 use ril/num
 
 pub fn test_u8_parse_format() {
@@ -303,5 +219,3 @@ pub fn test_u8_parse_format() {
     assert(Num::parse_u8("", 1) is Err(Num::NumError::InvalidRadix))
     assert(Num::parse_u8(" 1") is Err(Num::NumError::InvalidSyntax))
 }
---@ end-file
---@ end-case

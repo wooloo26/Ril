@@ -1,8 +1,7 @@
---@ case: command-derive
---@ mode: run-pass
---@ spec: SPEC#functional-updates-via-derive
---@ entry: test_native
---@ file: source.ril
+-- [case: command-derive, run-pass]
+-- spec: SPEC#functional-updates-via-derive
+-- entry: test_native
+-- file: source.ril
 use ril/process
 use ril/path
 use ril/os
@@ -13,14 +12,11 @@ pub fn test_native() {
     assert(captured.stdout == Process::OutputMode::Capture)
     assert(len(captured.args) == 1)
 }
---@ end-file
---@ end-case
 
---@ case: closed-constructors
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: closed-constructors, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 use ril/process
 pub fn test_native() {
     let status = Process::ExitStatus::Exited(7u32)
@@ -28,14 +24,11 @@ pub fn test_native() {
     let input = Process::Input::Data(b"input")
     assert(input is Process::Input::Data(b"input"))
 }
---@ end-file
---@ end-case
 
---@ case: buffered-callback-source
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: buffered-callback-source, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 use ril/io
 use ril/bytes
 type Sink = { mut data: []u8 }
@@ -51,14 +44,11 @@ pub fn test_native() {
     assert(Io::flush(mut buffer, mut sink, .{write: write}) is Ok())
     assert(Bytes::from_array(sink.data) == b"abc")
 }
---@ end-file
---@ end-case
 
---@ case: repeated-reader
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: repeated-reader, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 use ril/io
 type Reader = { scratch: [0][2]int, mut calls: int }
 fn read(mut reader: Reader, maximum: int) -> Result<Io::ReadChunk, Io::IoError> &mut {
@@ -73,15 +63,12 @@ pub fn test_native() {
     assert(Io::read_all(mut reader, .{read: read}) is Ok(b""))
     assert(reader.calls == 2)
 }
---@ end-file
---@ end-case
 
---@ case: repeated-reader-mismatch
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: repeated-reader
+-- [case: repeated-reader-mismatch, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: repeated-reader
 -- Error [E0301]: generated callback reception cannot change hidden inner dimensions
---@ file: source.ril
+-- file: source.ril
 use ril/io
 type Reader = { scratch: [0][2]int, mut calls: int }
 type Other = { scratch: [0][3]int, mut calls: int }
@@ -93,29 +80,23 @@ fn example() {
     let mut reader = Reader.{scratch: [], calls: 0}
     assert(Io::read_all(mut reader, .{read: read}) is Ok(b""))
 }
---@ end-file
---@ end-case
 
---@ case: byte-array-fresh
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: byte-array-fresh, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 use ril/bytes
 pub fn test_native() {
     let mut values = Bytes::to_array(b"ab")
     values[0] = 122u8
     assert(Bytes::from_array(values) == b"zb")
 }
---@ end-file
---@ end-case
 
---@ case: command-args-not-fixed
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: command-derive
+-- [case: command-args-not-fixed, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: command-derive
 -- Error [E0301]: the public command stores a dynamic argument view regardless of input cardinality
---@ file: source.ril
+-- file: source.ril
 use ril/process
 use ril/path
 use ril/os
@@ -124,31 +105,25 @@ fn example() {
     let command = Process::command(Path::from_string("./unused"), [Os::from_string("argument")])
     assert(fixed(command.args) == 1)
 }
---@ end-file
---@ end-case
 
---@ case: command-mode-type
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: command-derive
+-- [case: command-mode-type, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: command-derive
 -- Error [E0301]: distinct closed nominal declarations do not become interchangeable
---@ file: source.ril
+-- file: source.ril
 use ril/process
 use ril/path
 fn example() {
     let command = Process::command(Path::from_string("./unused"), [])
     let changed = command |> derive \mut draft -> { draft.stdout = Process::Input::Null }
 }
---@ end-file
---@ end-case
 
---@ case: primitive-alias-read-chain
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: repeated-reader
---@ entry: test_native
---@ file: source.ril
+-- [case: primitive-alias-read-chain, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: repeated-reader
+-- entry: test_native
+-- file: source.ril
 use ril/io
 type Reader={mut calls:int}
 fn read(mut reader:Reader,maximum:int)->Result<Io::ReadChunk,Io::IoError> &mut{
@@ -164,15 +139,12 @@ fn apply(){
     assert(reader.calls==1)
 }
 pub fn test_native(){apply();apply()}
---@ end-file
---@ end-case
 
---@ case: applied-effect-reader
---@ mode: run-pass
---@ spec: SPEC#named-function-declarations-and-contrast-matrix
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: applied-effect-reader, run-pass]
+-- spec: SPEC#named-function-declarations-and-contrast-matrix
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 use ril/io
 eff Visit<T>{touch()}
 type Reader={mut calls:int}
@@ -189,13 +161,8 @@ fn apply(){
     assert(reader.calls==1)
 }
 pub fn test_native(){apply();apply()}
---@ end-file
---@ end-case
 
---@ case: empty-array-original-receiving
---@ mode: check-pass
---@ spec: SPEC#array-map-and-tuple-types
---@ file: source.ril
+-- [case: empty-array-original-receiving, check-pass]
+-- spec: SPEC#array-map-and-tuple-types
+-- file: source.ril
 fn example(){let values=[]}
---@ end-file
---@ end-case

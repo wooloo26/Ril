@@ -1,5 +1,5 @@
---@ source: optional-child-views
---@ file: source.ril
+-- [source: optional-child-views]
+-- file: source.ril
 type Packet = { id: int, items: [0][2]int }
 type Envelope = { packet: ?Packet }
 type Pair = (?Packet, bool)
@@ -31,41 +31,30 @@ pub fn test_native() {
     assert(array_view([Some(packet)]) == 7)
     assert(frozen_view(clone_immut(.{ packet: Some(packet) })) == 7)
 }
---@ end-file
---@ end-source
 
---@ case: optional-child-views-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-child-views-pointer64
---@ use-source: optional-child-views
---@ end-case
+-- [case: optional-child-views-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-child-views-pointer64
+-- use-source: optional-child-views
 
---@ case: reject-projected-optional-inner-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-child-views-pointer64
+-- [case: reject-projected-optional-inner-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-child-views-pointer64
 -- Error [E0301]: Projection preserves the optional payload's declared inner dimension.
---@ file: source.ril
+-- file: source.ril
 type Packet = { id: int, items: [0][3]int }
 fn exact(value: ?{ id: int, items: [0][2]int }) { let _ = value }
 fn example(input: (?Packet, bool)) { exact(input.0) }
---@ end-file
---@ end-case
 
---@ case: optional-child-views-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-child-views-native
---@ use-source: optional-child-views
---@ end-case
+-- [case: optional-child-views-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-child-views-native
+-- use-source: optional-child-views
 
---@ case: optional-child-views-native
---@ mode: run-pass
---@ entry: test_native
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-child-views-pointer32
---@ use-source: optional-child-views
---@ end-case
+-- [case: optional-child-views-native, run-pass]
+-- entry: test_native
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-child-views-pointer32
+-- use-source: optional-child-views

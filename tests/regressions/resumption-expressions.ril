@@ -1,5 +1,5 @@
---@ source: scalar-answers
---@ file: source.ril
+-- [source: scalar-answers]
+-- file: source.ril
 eff Read { get() -> int }
 fn incremented() -> int {
     with Read::get() -> (resume 4) + 1
@@ -39,39 +39,29 @@ pub fn test_scalar_answers() {
     assert(truth())
     assert(budgeted(2) == None && budgeted(3) == Some(5))
 }
---@ end-file
---@ end-source
 
---@ case: scalar-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#effect-handlers
---@ companion: scalar-pointer64
---@ use-source: scalar-answers
---@ end-case
+-- [case: scalar-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#effect-handlers
+-- companion: scalar-pointer64
+-- use-source: scalar-answers
 
---@ case: scalar-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#effect-handlers
---@ companion: scalar-native
---@ use-source: scalar-answers
---@ end-case
+-- [case: scalar-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#effect-handlers
+-- companion: scalar-native
+-- use-source: scalar-answers
 
---@ case: scalar-native
---@ mode: run-pass
---@ entry: test_scalar_answers
---@ spec: SPEC#effect-handlers
---@ companion: scalar-pointer32
---@ use-source: scalar-answers
---@ end-case
+-- [case: scalar-native, run-pass]
+-- entry: test_scalar_answers
+-- spec: SPEC#effect-handlers
+-- companion: scalar-pointer32
+-- use-source: scalar-answers
 
---@ case: suffix-order
---@ mode: run-pass
---@ entry: test_suffix_order
---@ spec: SPEC#effect-handlers
---@ companion: scalar-native
---@ file: source.ril
+-- [case: suffix-order, run-pass]
+-- spec: SPEC#effect-handlers
+-- companion: scalar-native
+-- file: source.ril
 type Guard = { mut on_close: fn() -> () }
 eff Read { get() -> int }
 pub fn test_suffix_order() {
@@ -96,11 +86,9 @@ where
         1
     }
 }
---@ end-file
---@ end-case
 
---@ source: derived-answer
---@ file: source.ril
+-- [source: derived-answer]
+-- file: source.ril
 type Matrix = { mut values: [0][3]int, mut count: int }
 eff Read { get() -> int }
 fn original() -> Immut<Matrix> @Read {
@@ -115,39 +103,30 @@ pub fn test_derived_answer() {
     let values: [0][3]int = revised.values
     assert(revised.count == 8 && len(values) == 0)
 }
---@ end-file
---@ end-source
 
---@ case: derived-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#functional-updates-via-derive
---@ companion: derived-pointer64
---@ use-source: derived-answer
---@ end-case
+-- [case: derived-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#functional-updates-via-derive
+-- companion: derived-pointer64
+-- use-source: derived-answer
 
---@ case: derived-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#functional-updates-via-derive
---@ companion: derived-native
---@ use-source: derived-answer
---@ end-case
+-- [case: derived-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#functional-updates-via-derive
+-- companion: derived-native
+-- use-source: derived-answer
 
---@ case: derived-native
---@ mode: run-pass
---@ entry: test_derived_answer
---@ spec: SPEC#functional-updates-via-derive
---@ companion: reject-derived-dimension
---@ use-source: derived-answer
---@ end-case
+-- [case: derived-native, run-pass]
+-- entry: test_derived_answer
+-- spec: SPEC#functional-updates-via-derive
+-- companion: reject-derived-dimension
+-- use-source: derived-answer
 
---@ case: reject-derived-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: derived-native
+-- [case: reject-derived-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: derived-native
 -- Error [E0301]: The actual resumed and derived answer retains its inner extent.
---@ file: source.ril
+-- file: source.ril
 type Matrix = { mut values: [0][3]int }
 eff Read { get() -> int }
 fn invalid() {
@@ -158,16 +137,13 @@ fn invalid() {
     }
     let values: [0][2]int = revised.values
 }
---@ end-file
---@ end-case
 
---@ case: reject-readonly-answer
---@ mode: check-fail
---@ spec: SPEC#declarations-and-bindings
---@ spec: SPEC#effect-handlers
---@ companion: derived-native
+-- [case: reject-readonly-answer, check-fail]
+-- spec: SPEC#declarations-and-bindings
+-- spec: SPEC#effect-handlers
+-- companion: derived-native
 -- Error [E0520]: Receiving the actual answer in a let binding cannot grant writes.
---@ file: source.ril
+-- file: source.ril
 type Cell = { mut value: int }
 eff Read { get() -> int }
 fn invalid() {
@@ -180,15 +156,12 @@ fn invalid() {
         Cell.{ value: Read::get() }
     }
 }
---@ end-file
---@ end-case
 
---@ case: reject-ended-operation-loan
---@ mode: check-fail
---@ spec: SPEC#effect-handlers
---@ companion: suffix-order
+-- [case: reject-ended-operation-loan, check-fail]
+-- spec: SPEC#effect-handlers
+-- companion: suffix-order
 -- Error [E0540]: An expression after resume cannot use its ended operation loan.
---@ file: source.ril
+-- file: source.ril
 type Cell = { mut value: int }
 eff Edit { apply(mut Cell) -> () &mut }
 fn invalid(mut cell: Cell) -> int &mut {
@@ -199,30 +172,24 @@ fn invalid(mut cell: Cell) -> int &mut {
     Edit::apply(mut cell)
     cell.value
 }
---@ end-file
---@ end-case
 
---@ case: reject-terminated-answer
---@ mode: check-fail
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ spec: SPEC#effect-handlers
---@ companion: scalar-native
+-- [case: reject-terminated-answer, check-fail]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- spec: SPEC#effect-handlers
+-- companion: scalar-native
 -- Error [E0625]: A terminated resumption is followed by a real unit answer.
---@ file: source.ril
+-- file: source.ril
 eff Read { get() -> int }
 fn invalid() -> int {
     with Read::get() -> { resume 7; }
     Read::get()
 }
---@ end-file
---@ end-case
 
---@ case: reject-affine-resumption
---@ mode: check-fail
---@ spec: SPEC#affine-resumption-and-delimited-early-abort
---@ companion: scalar-native
+-- [case: reject-affine-resumption, check-fail]
+-- spec: SPEC#affine-resumption-and-delimited-early-abort
+-- companion: scalar-native
 -- Error [E0610]: Receiving the first answer does not create a second resumption.
---@ file: source.ril
+-- file: source.ril
 eff Read { get() -> int }
 fn invalid() -> int {
     with Read::get() -> {
@@ -232,5 +199,3 @@ fn invalid() -> int {
     }
     Read::get()
 }
---@ end-file
---@ end-case

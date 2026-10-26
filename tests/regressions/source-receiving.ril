@@ -1,5 +1,5 @@
---@ source: source-source-receiving-native
---@ file: source.ril
+-- [source: source-source-receiving-native]
+-- file: source.ril
 -- Fixed dimensions and callable schemas survive each receiving boundary.
 type Holder={empty:[0][2]int,pair:([2]int,[0][2]int)}
 
@@ -57,141 +57,101 @@ pub fn test_explicit_generic(){
     let returned:[2]int=identity<[2]int>(fixed)
     assert(first<int>(fixed)==103 && returned==[103,107])
 }
---@ end-file
---@ end-source
 
---@ case: source-receiving-native
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ use-source: source-source-receiving-native
---@ end-case
+-- [case: source-receiving-native, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- use-source: source-source-receiving-native
 
---@ case: source-receiving-native-test-fresh-fixed
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_fresh_fixed
---@ use-source: source-source-receiving-native
---@ end-case
+-- [case: source-receiving-native-test-fresh-fixed, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_fresh_fixed
+-- use-source: source-source-receiving-native
 
---@ case: source-receiving-native-test-empty-composites
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_empty_composites
---@ use-source: source-source-receiving-native
---@ end-case
+-- [case: source-receiving-native-test-empty-composites, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_empty_composites
+-- use-source: source-source-receiving-native
 
---@ case: source-receiving-native-test-callback
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_callback
---@ use-source: source-source-receiving-native
---@ end-case
+-- [case: source-receiving-native-test-callback, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_callback
+-- use-source: source-source-receiving-native
 
---@ case: source-receiving-native-test-return-branches
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_return_branches
---@ use-source: source-source-receiving-native
---@ end-case
+-- [case: source-receiving-native-test-return-branches, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_return_branches
+-- use-source: source-source-receiving-native
 
---@ case: source-receiving-native-test-ordinary
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_ordinary
---@ use-source: source-source-receiving-native
---@ end-case
+-- [case: source-receiving-native-test-ordinary, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_ordinary
+-- use-source: source-source-receiving-native
 
---@ case: source-receiving-native-test-default
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_default
---@ use-source: source-source-receiving-native
---@ end-case
+-- [case: source-receiving-native-test-default, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_default
+-- use-source: source-source-receiving-native
 
---@ case: source-receiving-native-test-explicit-generic
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_explicit_generic
---@ use-source: source-source-receiving-native
---@ end-case
+-- [case: source-receiving-native-test-explicit-generic, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_explicit_generic
+-- use-source: source-source-receiving-native
 
---@ source: source-storage-receiving-element
---@ file: source.ril no-final-newline
+-- [source: source-storage-receiving-element]
+-- file: source.ril no-final-newline
 fn bad(){let mut values:[1][0][2]int=[[]];let old:[0][3]int=[];values[0]=old}
---@ end-file
---@ end-source
 
---@ case: storage-receiving-element
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
+-- [case: storage-receiving-element, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
 -- Error [E0301]: original regression expectation
---@ use-source: source-storage-receiving-element
---@ end-case
+-- use-source: source-storage-receiving-element
 
---@ source: source-storage-receiving-field
---@ file: source.ril no-final-newline
+-- [source: source-storage-receiving-field]
+-- file: source.ril no-final-newline
 type Box={mut item:[0][2]int}
 fn bad(){let mut holder=Box.{item:[]};let old:[0][3]int=[];holder.item=old}
---@ end-file
---@ end-source
 
---@ case: storage-receiving-field
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
+-- [case: storage-receiving-field, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
 -- Error [E0301]: original regression expectation
---@ use-source: source-storage-receiving-field
---@ end-case
+-- use-source: source-storage-receiving-field
 
---@ source: source-storage-receiving-push
---@ file: source.ril no-final-newline
+-- [source: source-storage-receiving-push]
+-- file: source.ril no-final-newline
 fn bad(){let mut values:[][0][2]int=[];let old:[0][3]int=[];Array::push(mut values,old)}
---@ end-file
---@ end-source
 
---@ case: storage-receiving-push
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
+-- [case: storage-receiving-push, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
 -- Error [E0301]: original regression expectation
---@ use-source: source-storage-receiving-push
---@ end-case
+-- use-source: source-storage-receiving-push
 
---@ source: source-storage-receiving-variable
---@ file: source.ril no-final-newline
+-- [source: source-storage-receiving-variable]
+-- file: source.ril no-final-newline
 fn bad(){var target:[0][2]int=[];let old:[0][3]int=[];target=old}
---@ end-file
---@ end-source
 
---@ case: storage-receiving-variable
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
+-- [case: storage-receiving-variable, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
 -- Error [E0301]: original regression expectation
---@ use-source: source-storage-receiving-variable
---@ end-case
+-- use-source: source-storage-receiving-variable
 
---@ case: returned-alias-dimension-conflict
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
+-- [case: returned-alias-dimension-conflict, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
 -- Error [E0301]: A returned alias retains its declared nested array dimension.
---@ file: source.ril
+-- file: source.ril
 type Box={items:[0][2]int}
 type Other={items:[0][3]int}
 fn make()->Box{Box.{items:[]}}
 fn example(){var target=make();let replacement=Other.{items:[]};target=replacement}
---@ end-file
---@ end-case
 
---@ case: returned-alias-matching-dimension
---@ mode: check-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ file: source.ril
+-- [case: returned-alias-matching-dimension, check-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- file: source.ril
 type Box={items:[0][2]int}
 fn make()->Box{Box.{items:[]}}
 fn example(){var target=make();let replacement=Box.{items:[]};target=replacement}
---@ end-file
---@ end-case
 
---@ source: storage-callable-contracts
---@ file: source.ril
+-- [source: storage-callable-contracts]
+-- file: source.ril
 type Reader = fn() -> int &closure
 fn make(value: int) -> Reader &capture { \-> value }
 pub fn test_native() {
@@ -210,38 +170,29 @@ pub fn test_native() {
         None -> panic("missing stored reader"),
     }
 }
---@ end-file
---@ end-source
 
---@ case: storage-callable-contracts-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ companion: reject-stored-callable-effect
---@ use-source: storage-callable-contracts
---@ end-case
+-- [case: storage-callable-contracts-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- companion: reject-stored-callable-effect
+-- use-source: storage-callable-contracts
 
---@ case: storage-callable-contracts-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ companion: reject-nested-stored-callable-effect
---@ use-source: storage-callable-contracts
---@ end-case
+-- [case: storage-callable-contracts-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- companion: reject-nested-stored-callable-effect
+-- use-source: storage-callable-contracts
 
---@ case: storage-callable-contracts-native
---@ mode: run-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ use-source: storage-callable-contracts
---@ end-case
+-- [case: storage-callable-contracts-native, run-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- use-source: storage-callable-contracts
 
---@ case: reject-stored-callable-effect
---@ mode: check-fail
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ companion: storage-callable-contracts-pointer32
+-- [case: reject-stored-callable-effect, check-fail]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- companion: storage-callable-contracts-pointer32
 -- Error [E0534]: Insertion checks actual effects against the stored callable contract.
---@ file: source.ril
+-- file: source.ril
 eff Read { get() -> int }
 eff Write { get() -> int }
 type Reader = fn() -> int @Read
@@ -249,15 +200,12 @@ fn invalid() {
     let mut readers: []Reader = []
     Array::push(mut readers, \-> Write::get())
 }
---@ end-file
---@ end-case
 
---@ case: reject-nested-stored-callable-effect
---@ mode: check-fail
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ companion: storage-callable-contracts-pointer64
+-- [case: reject-nested-stored-callable-effect, check-fail]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- companion: storage-callable-contracts-pointer64
 -- Error [E0534]: A record wrapper cannot hide a callback's incompatible effect.
---@ file: source.ril
+-- file: source.ril
 eff Read { get() -> int }
 eff Write { get() -> int }
 type Reader = fn() -> int @Read
@@ -265,19 +213,14 @@ fn invalid() {
     let mut readers: []{ read: Reader } = []
     Array::push(mut readers, .{ read: \-> Write::get() })
 }
---@ end-file
---@ end-case
 
---@ case: reject-unreachable-loop-writer
---@ mode: check-fail
---@ spec: SPEC#binding-permissions-and-storage-matrix
---@ companion: storage-callable-contracts-pointer32
+-- [case: reject-unreachable-loop-writer, check-fail]
+-- spec: SPEC#binding-permissions-and-storage-matrix
+-- companion: storage-callable-contracts-pointer32
 -- Error [E0527]: A definitely unmatched loop does not exercise writable authority.
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let absent: ?int = None
     let mut values: []int = []
     while let Some(value) = absent { Array::push(mut values, value) }
 }
---@ end-file
---@ end-case

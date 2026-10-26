@@ -1,8 +1,5 @@
---@ case: minimum-and-empty
---@ mode: run-pass
---@ spec: STD#ordering-deques-and-heaps
---@ entry: test_minimum_and_empty
---@ file: minimum-and-empty.ril
+-- [case: minimum-and-empty, run-pass]
+-- spec: STD#ordering-deques-and-heaps
 use ril/heap
 use ril/order
 
@@ -15,14 +12,9 @@ pub fn test_minimum_and_empty() {
     assert(Heap::pop(mut heap) == Some(2))
     assert(Heap::pop(mut heap) == Some(3))
 }
---@ end-file
---@ end-case
 
---@ case: stable-equal-priority
---@ mode: run-pass
---@ spec: STD#ordering-deques-and-heaps
---@ entry: test_stable_equal_priority
---@ file: stable-equal-priority.ril
+-- [case: stable-equal-priority, run-pass]
+-- spec: STD#ordering-deques-and-heaps
 use ril/heap
 use ril/order
 type Entry = { rank: int, label: str }
@@ -34,5 +26,3 @@ pub fn test_stable_equal_priority() {
     assert(Heap::pop(mut heap) == Some(Entry.{ rank: 1, label: "a" }))
     assert(Heap::pop(mut heap) == Some(Entry.{ rank: 1, label: "b" }))
 }
---@ end-file
---@ end-case

@@ -1,8 +1,6 @@
---@ case: accept-child-live-view
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-and-panic-containment
---@ companion: reject-child-live-view
---@ file: accept-child-live-view.ril
+-- [case: accept-child-live-view, check-pass]
+-- spec: SPEC#structured-concurrency-and-panic-containment
+-- companion: reject-child-live-view
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 type Cell = { mut count: int }
@@ -14,15 +12,11 @@ fn example() @Concurrent {
     assert(result is Ok(_))
     value.count += 1
 }
---@ end-file
---@ end-case
 
---@ case: reject-child-live-view
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-and-panic-containment
---@ companion: accept-child-live-view
+-- [case: reject-child-live-view, check-fail]
+-- spec: SPEC#structured-concurrency-and-panic-containment
+-- companion: accept-child-live-view
 -- Error [E0601]: reject child live view
---@ file: reject-child-live-view.ril
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 type Cell = { mut count: int }
@@ -34,14 +28,10 @@ fn example() @Concurrent {
     assert(result is Ok(_))
     value.count += 1
 }
---@ end-file
---@ end-case
 
---@ case: accept-child-user-effect
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-and-panic-containment
---@ companion: reject-child-user-effect
---@ file: accept-child-user-effect.ril
+-- [case: accept-child-user-effect, check-pass]
+-- spec: SPEC#structured-concurrency-and-panic-containment
+-- companion: reject-child-user-effect
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 eff Read { get() -> int }
@@ -50,15 +40,11 @@ fn example() @Concurrent {
     let result = scope \mut s -> { let task = s.fork(\-> { with Read::get() -> resume 1; Read::get() }); task.join() }
     assert(result is Ok(_))
 }
---@ end-file
---@ end-case
 
---@ case: reject-child-user-effect
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-and-panic-containment
---@ companion: accept-child-user-effect
+-- [case: reject-child-user-effect, check-fail]
+-- spec: SPEC#structured-concurrency-and-panic-containment
+-- companion: accept-child-user-effect
 -- Error [E0615]: reject child user effect
---@ file: reject-child-user-effect.ril
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 eff Read { get() -> int }
@@ -68,14 +54,10 @@ fn example() @Concurrent {
     let result = scope \mut s -> { let task = s.fork(\-> Read::get()); task.join() }
     assert(result is Ok(_))
 }
---@ end-file
---@ end-case
 
---@ case: accept-task-escape
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-and-panic-containment
---@ companion: reject-task-escape
---@ file: accept-task-escape.ril
+-- [case: accept-task-escape, check-pass]
+-- spec: SPEC#structured-concurrency-and-panic-containment
+-- companion: reject-task-escape
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -83,15 +65,11 @@ fn example() @Concurrent {
     let result = scope \mut s -> { let task = s.fork(\-> 1); task.join() }
     assert(result is Ok(1))
 }
---@ end-file
---@ end-case
 
---@ case: reject-task-escape
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-and-panic-containment
---@ companion: accept-task-escape
+-- [case: reject-task-escape, check-fail]
+-- spec: SPEC#structured-concurrency-and-panic-containment
+-- companion: accept-task-escape
 -- Error [E0606]: reject task escape
---@ file: reject-task-escape.ril
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -99,5 +77,3 @@ fn example() @Concurrent {
     let result = scope \mut s -> { let task = s.fork(\-> 1); Ok(task) }
     assert(result is Ok(_))
 }
---@ end-file
---@ end-case

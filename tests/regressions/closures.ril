@@ -1,47 +1,37 @@
---@ source: source-immediate-instances
---@ file: source.ril
+-- [source: source-immediate-instances]
+-- file: source.ril
 eff Read<T>{get()->T}
 fn immediate<T>(value:T)->T{
     with Read<T>::get()->resume value
     (\->{(\->Read<T>::get())()})()
 }
 pub fn test_native(){assert(immediate(7)==7 && immediate("seven")=="seven" && immediate(9)==9)}
---@ end-file
---@ end-source
 
---@ case: immediate-instances
---@ mode: check-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ use-source: source-immediate-instances
---@ end-case
+-- [case: immediate-instances, check-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- use-source: source-immediate-instances
 
---@ case: immediate-instances-test-native
---@ mode: run-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ use-source: source-immediate-instances
---@ end-case
+-- [case: immediate-instances-test-native, run-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- use-source: source-immediate-instances
 
---@ source: source-invalid-immutable-capture
---@ file: source.ril
+-- [source: source-invalid-immutable-capture]
+-- file: source.ril
 eff Read<T>{get()->T}
 fn immediate<T>(value:T)->T{
     with Read<T>::get()->resume value
     (\->{let inner=\->Read<T>::get();inner()})()
 }
 pub fn test_native(){assert(immediate(7)==7 && immediate("seven")=="seven" && immediate(9)==9)}
---@ end-file
---@ end-source
 
---@ case: invalid-immutable-capture
---@ mode: check-fail
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- [case: invalid-immutable-capture, check-fail]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
 -- Error [E0535]: original regression expectation
---@ use-source: source-invalid-immutable-capture
---@ end-case
+-- use-source: source-invalid-immutable-capture
 
---@ source: source-nested-and-budget
---@ file: source.ril
+-- [source: source-nested-and-budget]
+-- file: source.ril
 eff Read<T>{get()->T}
 type Reader<T>=fn()->T &closure
 fn make<T>(value:T)->Reader<T> &capture{
@@ -60,24 +50,18 @@ pub fn test_native(){
     assert(exhausted==None && first==Some(7) && second==Some(9))
     assert(seven()==7 && word()=="seven")
 }
---@ end-file
---@ end-source
 
---@ case: nested-and-budget
---@ mode: check-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ use-source: source-nested-and-budget
---@ end-case
+-- [case: nested-and-budget, check-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- use-source: source-nested-and-budget
 
---@ case: nested-and-budget-test-native
---@ mode: run-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ use-source: source-nested-and-budget
---@ end-case
+-- [case: nested-and-budget-test-native, run-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- use-source: source-nested-and-budget
 
---@ source: source-retained-instances
---@ file: source.ril
+-- [source: source-retained-instances]
+-- file: source.ril
 eff Read<T>{get()->T}
 type Reader<T>=fn()->T &closure
 fn make<T>(value:T)->Reader<T> &capture{
@@ -92,42 +76,30 @@ pub fn test_native(){
     assert(seven()==7 && nine()==9 && word()=="seven")
     assert(seven()==7 && word()=="seven" && nine()==9)
 }
---@ end-file
---@ end-source
 
---@ case: retained-instances
---@ mode: check-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ use-source: source-retained-instances
---@ end-case
+-- [case: retained-instances, check-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- use-source: source-retained-instances
 
---@ case: retained-instances-test-native
---@ mode: run-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ use-source: source-retained-instances
---@ end-case
+-- [case: retained-instances-test-native, run-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- use-source: source-retained-instances
 
---@ source: source-unclosed
---@ file: source.ril
+-- [source: source-unclosed]
+-- file: source.ril
 eff Read<T>{get()->T}
 fn unclosed<T>(value:T)->T{
     with Read<T>::get()->resume value
     (\->Read<T>::get())()
 }
 pub fn test_native(){}
---@ end-file
---@ end-source
 
---@ case: unclosed
---@ mode: check-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ use-source: source-unclosed
---@ end-case
+-- [case: unclosed, check-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- use-source: source-unclosed
 
---@ case: unclosed-test-native
---@ mode: run-pass
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ entry: test_native
---@ use-source: source-unclosed
---@ end-case
+-- [case: unclosed-test-native, run-pass]
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- entry: test_native
+-- use-source: source-unclosed

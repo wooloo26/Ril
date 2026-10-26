@@ -1,38 +1,30 @@
---@ case: import-alias-and-reexport
---@ mode: run-pass
---@ spec: SPEC#module-imports-and-visibility
---@ entry: test_import_alias_and_reexport
---@ file: root.ril
+-- [case: import-alias-and-reexport, run-pass]
+-- spec: SPEC#module-imports-and-visibility
+-- file: root.ril
 use public
 use public::{answer as renamed}
 
 pub fn test_import_alias_and_reexport() {
     assert(Public::answer() == 7 && renamed() == 7)
 }
---@ end-file
---@ file: helper.ril
-pub fn answer() -> int { 7 }
---@ end-file
---@ file: public.ril
-pub use helper::{answer}
---@ end-file
---@ end-case
 
---@ case: opaque-exported-operations
---@ mode: run-pass
---@ spec: SPEC#type-declarations-and-opaque-types
---@ entry: test_opaque_exported_operations
---@ file: root.ril
+-- file: helper.ril
+pub fn answer() -> int { 7 }
+
+-- file: public.ril
+pub use helper::{answer}
+
+-- [case: opaque-exported-operations, run-pass]
+-- spec: SPEC#type-declarations-and-opaque-types
+-- file: root.ril
 use token
 
 pub fn test_opaque_exported_operations() {
     let value = Token::make(7)
     assert(Token::reveal(value) == 7 && value == value)
 }
---@ end-file
---@ file: token.ril
+
+-- file: token.ril
 pub opaque type Value = int
 pub fn make(value: int) -> Value { value }
 pub fn reveal(value: Value) -> int { value }
---@ end-file
---@ end-case

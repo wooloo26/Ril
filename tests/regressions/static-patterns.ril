@@ -1,10 +1,9 @@
---@ case: conditional-control
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#conditional-expressions
---@ spec: SPEC#loop-expressions
---@ entry: test_native
---@ file: source.ril
+-- [case: conditional-control, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#conditional-expressions
+-- spec: SPEC#loop-expressions
+-- entry: test_native
+-- file: source.ril
 meta fn select(item: ?int) -> int {
     if let Some(value) = item { value + 1 } else { 3 }
 }
@@ -23,16 +22,13 @@ meta let _ = assert(FOUND == 8 && ABSENT == 3 && ONCE == 9 && EMPTY == 9)
 pub fn test_native() &{FOUND, ABSENT, ONCE, EMPTY} {
     assert(FOUND == 8 && ABSENT == 3 && ONCE == 9 && EMPTY == 9)
 }
---@ end-file
---@ end-case
 
---@ case: array-window-graph
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#pattern-matching
---@ spec: SPEC#range-and-slicing-expressions
---@ entry: test_native
---@ file: source.ril
+-- [case: array-window-graph, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#pattern-matching
+-- spec: SPEC#range-and-slicing-expressions
+-- entry: test_native
+-- file: source.ril
 meta fn tail(values: [3]int) -> [2]int {
     let [_, ..rest] = values
     rest
@@ -46,16 +42,13 @@ pub fn test_native() &{SOURCE, TAIL, BOTH} {
     copied[0] = 7
     assert(copied[0] == 7 && SOURCE[1] == 2 && BOTH.1[0] == 2)
 }
---@ end-file
---@ end-case
 
---@ case: window-backing-joint-clone
---@ mode: run-pass
---@ spec: SPEC#range-and-slicing-expressions
---@ spec: SPEC#static-computation-and-totality
---@ companion: array-window-graph
---@ entry: test_native
---@ file: source.ril
+-- [case: window-backing-joint-clone, run-pass]
+-- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#static-computation-and-totality
+-- companion: array-window-graph
+-- entry: test_native
+-- file: source.ril
 meta fn tail(values: [3]int) -> [2]int { let [_, ..rest] = values; rest }
 meta let SOURCE: [3]int = [1, 2, 3]
 meta let BOTH = (SOURCE, tail(SOURCE))
@@ -64,31 +57,25 @@ pub fn test_native() &{SOURCE, BOTH} {
     copied.0[1] = 7
     assert(copied.1[0] == 7 && SOURCE[1] == 2 && BOTH.1[0] == 2)
 }
---@ end-file
---@ end-case
 
---@ case: reject-repeating-condition-budget
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#loop-expressions
---@ companion: conditional-control
+-- [case: reject-repeating-condition-budget, check-fail]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#loop-expressions
+-- companion: conditional-control
 -- Error [E0811]: every repeated pattern condition retains the static event budget
---@ file: source.ril
+-- file: source.ril
 meta fn repeat() -> int {
     while let Some(value) = Some(7) { assert(value == 7); next }
     0
 }
 meta let VALUE = repeat()
---@ end-file
---@ end-case
 
---@ case: unselected-conditional-events
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#conditional-expressions
---@ spec: SPEC#loop-expressions
---@ entry: test_native
---@ file: source.ril
+-- [case: unselected-conditional-events, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#conditional-expressions
+-- spec: SPEC#loop-expressions
+-- entry: test_native
+-- file: source.ril
 meta fn absent(item: ?int) -> int {
     if let Some(value) = item { assert(false); value } else { 17 }
 }
@@ -110,30 +97,24 @@ meta let OUTER = outer_target()
 pub fn test_native() &{ABSENT, SKIPPED, OUTER} {
     assert(ABSENT == 17 && SKIPPED == 19 && OUTER == 23)
 }
---@ end-file
---@ end-case
 
---@ case: reject-unselected-conditional-type-error
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#conditional-expressions
---@ companion: unselected-conditional-events
+-- [case: reject-unselected-conditional-type-error, check-fail]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#conditional-expressions
+-- companion: unselected-conditional-events
 -- Error [E0301]: an unselected conditional branch is still checked
---@ file: source.ril
+-- file: source.ril
 meta fn absent(item: ?int) -> int {
     if let Some(value) = item { let wrong: int = "bad"; value } else { 17 }
 }
 meta let ANSWER = absent(None)
---@ end-file
---@ end-case
 
---@ case: nested-rest-window-sources
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#pattern-matching
---@ spec: SPEC#range-and-slicing-expressions
---@ entry: test_native
---@ file: source.ril
+-- [case: nested-rest-window-sources, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#pattern-matching
+-- spec: SPEC#range-and-slicing-expressions
+-- entry: test_native
+-- file: source.ril
 meta fn exact(values: [0][2]int) -> int { len(values) }
 meta fn nested(values: [4][0][2]int) -> [2][0][2]int {
     let [_, ..middle, _] = values
@@ -152,16 +133,13 @@ meta let RECORD = record_tail(.{ id: 7, values: [] })
 pub fn test_native() &{MIDDLE, RECORD} {
     assert(len(MIDDLE) == 2 && len(MIDDLE[0]) == 0 && len(RECORD) == 0)
 }
---@ end-file
---@ end-case
 
---@ case: for-nested-irrefutable-rest
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#pattern-matching
---@ spec: SPEC#loop-expressions
---@ entry: test_native
---@ file: source.ril
+-- [case: for-nested-irrefutable-rest, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#pattern-matching
+-- spec: SPEC#loop-expressions
+-- entry: test_native
+-- file: source.ril
 meta fn inspect(values: [2]([3]int, int)) -> int {
     for values as ([front, ..tail], ..) {
         let exact: [2]int = tail
@@ -172,31 +150,25 @@ meta fn inspect(values: [2]([3]int, int)) -> int {
 }
 meta let ANSWER = inspect([([1, 2, 3], 7), ([4, 5, 6], 8)])
 pub fn test_native() &{ANSWER} { assert(ANSWER == 29) }
---@ end-file
---@ end-case
 
---@ case: reject-dynamic-rest-fixed-dimension
---@ mode: check-fail
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#pattern-matching
---@ companion: nested-rest-window-sources
+-- [case: reject-dynamic-rest-fixed-dimension, check-fail]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#pattern-matching
+-- companion: nested-rest-window-sources
 -- Error [E0301]: a dynamic source does not gain a fixed extent from its values
---@ file: source.ril
+-- file: source.ril
 meta fn invalid(values: []int) -> [2]int {
     let [..tail] = values
     tail
 }
 meta let VALUES = invalid([1, 2])
---@ end-file
---@ end-case
 
---@ case: default-source-schema-scope
---@ mode: run-pass
---@ spec: SPEC#static-computation-and-totality
---@ spec: SPEC#pattern-matching
---@ spec: SPEC#default-parameters-and-named-arguments
---@ entry: test_native
---@ file: source.ril
+-- [case: default-source-schema-scope, run-pass]
+-- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#pattern-matching
+-- spec: SPEC#default-parameters-and-named-arguments
+-- entry: test_native
+-- file: source.ril
 meta fn remaining(values: [3]int, selected: [2]int = {
     let [_, ..tail] = values
     tail
@@ -210,5 +182,3 @@ pub fn test_native() &{DEFAULT, EXPLICIT} {
     assert(DEFAULT[0] == 2 && DEFAULT[1] == 3)
     assert(EXPLICIT[0] == 8 && EXPLICIT[1] == 9)
 }
---@ end-file
---@ end-case

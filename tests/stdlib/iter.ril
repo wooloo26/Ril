@@ -1,8 +1,5 @@
---@ case: adapters-and-cursor
---@ mode: run-pass
---@ spec: STD#explicit-iteration
---@ entry: test_adapters_and_cursor
---@ file: adapters-and-cursor.ril
+-- [case: adapters-and-cursor, run-pass]
+-- spec: STD#explicit-iteration
 use ril/iter
 
 pub fn test_adapters_and_cursor() {
@@ -19,63 +16,41 @@ pub fn test_adapters_and_cursor() {
     assert(Iter::pull(mut cursor, source) == None)
     assert(Iter::pull(mut cursor, source) == None && cursor.ended)
 }
---@ end-file
---@ end-case
 
---@ case: negative-index-safe
---@ mode: run-pass
---@ spec: STD#explicit-iteration
---@ companion: negative-index
---@ entry: test_negative_index_safe
---@ file: negative-index-safe.ril
+-- [case: negative-index-safe, run-pass]
+-- spec: STD#explicit-iteration
+-- companion: negative-index
 use ril/iter
 
 pub fn test_negative_index_safe() {
     assert(Iter::collect(0, Iter::indexed([1])) == [1])
 }
---@ end-file
---@ end-case
 
---@ case: negative-index
---@ mode: run-panic
---@ spec: STD#explicit-iteration
---@ companion: negative-index-safe
---@ entry: test_negative_index
+-- [case: negative-index, run-panic]
+-- spec: STD#explicit-iteration
+-- companion: negative-index-safe
 -- Panics: negative index
---@ file: negative-index.ril
 use ril/iter
 
 pub fn test_negative_index() {
     let _ = Iter::collect(-1, Iter::indexed([1]))
 }
---@ end-file
---@ end-case
 
---@ case: negative-take-safe
---@ mode: run-pass
---@ spec: STD#explicit-iteration
---@ companion: negative-take
---@ entry: test_negative_take_safe
---@ file: negative-take-safe.ril
+-- [case: negative-take-safe, run-pass]
+-- spec: STD#explicit-iteration
+-- companion: negative-take
 use ril/iter
 
 pub fn test_negative_take_safe() {
     assert(Iter::collect((0, 0), Iter::take(Iter::indexed([1]), 0)) == [])
 }
---@ end-file
---@ end-case
 
---@ case: negative-take
---@ mode: run-panic
---@ spec: STD#explicit-iteration
---@ companion: negative-take-safe
---@ entry: test_negative_take
+-- [case: negative-take, run-panic]
+-- spec: STD#explicit-iteration
+-- companion: negative-take-safe
 -- Panics: negative take
---@ file: negative-take.ril
 use ril/iter
 
 pub fn test_negative_take() {
     let _ = Iter::take(Iter::indexed([1]), -1)
 }
---@ end-file
---@ end-case

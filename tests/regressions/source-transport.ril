@@ -1,16 +1,13 @@
---@ case: explicit-empty-inner-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: fresh-tuple-construction
+-- [case: explicit-empty-inner-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: fresh-tuple-construction
 -- Error [E0301]: Explicit element selection does not replace a stored inner extent.
---@ file: source.ril
+-- file: source.ril
 fn exact<T>(value:[0][2]T)->int{0}
 fn example()->int{let values:[0][3]int=[];exact<int>(values)}
---@ end-file
---@ end-case
 
---@ source: const-nominal-formal-source-graph
---@ file: source.ril
+-- [source: const-nominal-formal-source-graph]
+-- file: source.ril
 type Token<size:int>(int)
 fn identity(value:Token<1>)->Token<1>{value}
 pub fn test_native(){
@@ -18,50 +15,38 @@ pub fn test_native(){
     let received:Token<1>=identity(original)
     assert(inner(received)==7)
 }
---@ end-file
---@ end-source
 
---@ case: const-nominal-formal-source-graph
---@ mode: check-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: const-nominal-formal-source-graph-native
---@ use-source: const-nominal-formal-source-graph
---@ end-case
+-- [case: const-nominal-formal-source-graph, check-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: const-nominal-formal-source-graph-native
+-- use-source: const-nominal-formal-source-graph
 
---@ case: const-nominal-formal-source-graph-native
---@ mode: run-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: const-nominal-formal-source-graph
---@ entry: test_native
---@ use-source: const-nominal-formal-source-graph
---@ end-case
+-- [case: const-nominal-formal-source-graph-native, run-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: const-nominal-formal-source-graph
+-- entry: test_native
+-- use-source: const-nominal-formal-source-graph
 
---@ case: const-nominal-formal-value-conflict
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: const-nominal-formal-source-graph
+-- [case: const-nominal-formal-value-conflict, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: const-nominal-formal-source-graph
 -- Error [E0301]: A nominal formal preserves the actual normalized Const value.
---@ file: source.ril
+-- file: source.ril
 type Token<size:int>(int)
 fn identity(value:Token<1>)->Token<1>{value}
 fn example(){let other:Token<2>=Token<2>(7);let received=identity(other)}
---@ end-file
---@ end-case
 
---@ case: const-nominal-formal-sort-conflict
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: const-nominal-formal-source-graph
+-- [case: const-nominal-formal-sort-conflict, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: const-nominal-formal-source-graph
 -- Error [E0323]: A genuine Const argument still obeys its declared static sort.
---@ file: source.ril
+-- file: source.ril
 type Token<size:int>(int)
 fn identity(value:Token<1>)->Token<1>{value}
 fn example(){let other=Token<"wrong">(7);let received=identity(other)}
---@ end-file
---@ end-case
 
---@ source: nested-const-original-headers
---@ file: source.ril
+-- [source: nested-const-original-headers]
+-- file: source.ril
 type Token<size:int>(int)
 type Packet={items:[0]Token<1>,callback:fn(Token<1>)->Token<1>}
 type ConstNode={value:Token<1>,following:?ConstNode}
@@ -73,96 +58,71 @@ fn keep_record(value:Packet)->Packet{value}
 fn keep_node(value:ConstNode)->ConstNode{value}
 fn keep_generic<U>(value:{item:U,token:Token<1>})->{item:U,token:Token<1>}{value}
 pub fn test_native(){let original:Token<1>=Token<1>(7);assert(inner(token_one(original))==7)}
---@ end-file
---@ end-source
 
---@ case: nested-const-original-headers
---@ mode: check-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: nested-const-original-headers-native
---@ use-source: nested-const-original-headers
---@ end-case
+-- [case: nested-const-original-headers, check-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: nested-const-original-headers-native
+-- use-source: nested-const-original-headers
 
---@ case: nested-const-original-headers-native
---@ mode: run-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: nested-const-original-headers
---@ entry: test_native
---@ use-source: nested-const-original-headers
---@ end-case
+-- [case: nested-const-original-headers-native, run-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: nested-const-original-headers
+-- entry: test_native
+-- use-source: nested-const-original-headers
 
---@ case: nested-const-callback-value-conflict
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: nested-const-original-headers
+-- [case: nested-const-callback-value-conflict, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: nested-const-original-headers
 -- Error [E0301]: A callback preserves the Const coordinates in its parameter and result.
---@ file: source.ril
+-- file: source.ril
 type Token<size:int>(int)
 fn other(value:Token<2>)->Token<2>{value}
 fn example(){let callback:fn(Token<1>)->Token<1>=other}
---@ end-file
---@ end-case
 
---@ case: nested-const-header-sort-conflict
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: nested-const-original-headers
+-- [case: nested-const-header-sort-conflict, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: nested-const-original-headers
 -- Error [E0323]: A Const slot inside a callable retains its declaration's value sort.
---@ file: source.ril
+-- file: source.ril
 type Token<size:int>(int)
 fn example(value:fn(Token<"wrong">)->Token<1>){ }
---@ end-file
---@ end-case
 
---@ case: explicit-record-field-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: fresh-record-construction
+-- [case: explicit-record-field-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: fresh-record-construction
 -- Error [E0301]: A record wrapper preserves the stored dynamic array schema.
---@ file: source.ril
+-- file: source.ril
 fn exact<T>(value:{items:[2]T})->int{0}
 fn example()->int{
     let values:[]int=[7,9]
     let holder=.{items:values}
     exact<int>(holder)
 }
---@ end-file
---@ end-case
 
---@ case: fresh-record-construction
---@ mode: check-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: explicit-record-field-dimension
---@ file: source.ril
+-- [case: fresh-record-construction, check-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: explicit-record-field-dimension
+-- file: source.ril
 type Holder={items:[2]int}
 fn example(){let holder:Holder=.{items:[7,9]};assert(holder.items[0]==7)}
---@ end-file
---@ end-case
 
---@ case: fresh-tuple-construction
---@ mode: check-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: explicit-empty-inner-dimension
---@ file: source.ril
+-- [case: fresh-tuple-construction, check-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: explicit-empty-inner-dimension
+-- file: source.ril
 fn example(){let pair:([2]int,int)=([7,9],0);assert(pair.0[0]==7)}
---@ end-file
---@ end-case
 
---@ case: partial-static-argument-inference
---@ mode: check-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: excess-static-arguments
---@ file: source.ril
+-- [case: partial-static-argument-inference, check-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: excess-static-arguments
+-- file: source.ril
 fn second<T,U>(first:T,second:U)->U{second}
 fn example(){assert(second<str>("x",7)==7)}
---@ end-file
---@ end-case
 
---@ case: callable-view-cannot-regain-default
---@ mode: check-fail
---@ spec: SPEC#default-parameters-and-named-arguments
+-- [case: callable-view-cannot-regain-default, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
 -- Error [E0314]: Generic forwarding retains the exposed view without a default.
---@ file: source.ril
+-- file: source.ril
 fn right(right:int=2)->int{right}
 fn pass<T>(value:T)->T{value}
 fn example(){
@@ -170,69 +130,52 @@ fn example(){
     let received=pass<(fn(other:int)->int)>(exposed)
     received()
 }
---@ end-file
---@ end-case
 
---@ case: excess-static-arguments
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: partial-static-argument-inference
+-- [case: excess-static-arguments, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: partial-static-argument-inference
 -- Error [E0340]: Static argument arity has its own diagnostic.
---@ file: source.ril
+-- file: source.ril
 fn empty<T>(){}
 fn example(){empty<int,str>()}
---@ end-file
---@ end-case
 
---@ case: generic-array-return
---@ mode: check-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: unrelated-generic-return
---@ file: source.ril
+-- [case: generic-array-return, check-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: unrelated-generic-return
+-- file: source.ril
 fn id<T>(value:T)->T{value}
 fn forward<U>(value:U)->U{id<U>(value)}
 fn example(){let values:[2]int=[7,9];let received:[2]int=forward(values)}
---@ end-file
---@ end-case
 
---@ source: bounded-record-tuple-return
---@ file: source.ril
+-- [source: bounded-record-tuple-return]
+-- file: source.ril
 fn first<U,T:{items:[2]U,..R}>(value:(T,int))->U{value.0.items[0]}
 fn forward<U,S>(value:({items:[2]U,tag:str,..S},int))->U{first<U>(value)}
 pub fn test_native(){
     let values:[2]int=[7,9]
     assert(forward((.{items:values,tag:"same"},0))==7)
 }
---@ end-file
---@ end-source
 
---@ case: bounded-record-tuple-return
---@ mode: check-pass
---@ spec: SPEC#record-types-and-row-polymorphism
---@ companion: bounded-record-tuple-native
---@ use-source: bounded-record-tuple-return
---@ end-case
+-- [case: bounded-record-tuple-return, check-pass]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- companion: bounded-record-tuple-native
+-- use-source: bounded-record-tuple-return
 
---@ case: bounded-record-tuple-native
---@ mode: run-pass
---@ spec: SPEC#record-types-and-row-polymorphism
---@ companion: bounded-record-tuple-return
---@ entry: test_native
---@ use-source: bounded-record-tuple-return
---@ end-case
+-- [case: bounded-record-tuple-native, run-pass]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- companion: bounded-record-tuple-return
+-- entry: test_native
+-- use-source: bounded-record-tuple-return
 
---@ case: unrelated-generic-return
---@ mode: check-fail
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: generic-array-return
+-- [case: unrelated-generic-return, check-fail]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: generic-array-return
 -- Error [E0301]: An unrelated generic binder cannot supply the return Source.
---@ file: source.ril
+-- file: source.ril
 fn wrong<U,V>(value:U)->V{value}
---@ end-file
---@ end-case
 
---@ source: symbolic-type-through-three-frames
---@ file: source.ril
+-- [source: symbolic-type-through-three-frames]
+-- file: source.ril
 fn identity<T>(value:T)->T{value}
 fn forward<U>(value:U)->U{identity<U>(value)}
 fn outer<V>(value:V)->V{forward<V>(value)}
@@ -244,26 +187,20 @@ pub fn test_native(){
     let received:[0][3]int=outer(empty)
     assert(output==[7,9] && len(received)==0)
 }
---@ end-file
---@ end-source
 
---@ case: symbolic-type-through-three-frames
---@ mode: check-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: unrelated-generic-return
---@ use-source: symbolic-type-through-three-frames
---@ end-case
+-- [case: symbolic-type-through-three-frames, check-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: unrelated-generic-return
+-- use-source: symbolic-type-through-three-frames
 
---@ case: symbolic-type-through-three-frames-native
---@ mode: run-pass
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: symbolic-type-through-three-frames
---@ entry: test_native
---@ use-source: symbolic-type-through-three-frames
---@ end-case
+-- [case: symbolic-type-through-three-frames-native, run-pass]
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: symbolic-type-through-three-frames
+-- entry: test_native
+-- use-source: symbolic-type-through-three-frames
 
---@ source: composed-row-with-array-and-callback
---@ file: source.ril
+-- [source: composed-row-with-array-and-callback]
+-- file: source.ril
 fn same(value:int)->int{value}
 fn pass<U,T:{items:[2]U,..R}>(value:T)->T{value}
 fn forward<U,S>(value:{items:[2]U,tag:str,..S})->{items:[2]U,tag:str,..S}{pass<U>(value)}
@@ -275,30 +212,23 @@ fn example(){
     assert(received.action(received.items[0])==7)
 }
 pub fn test_native(){example()}
---@ end-file
---@ end-source
 
---@ case: composed-row-with-array-and-callback
---@ mode: check-pass
---@ spec: SPEC#record-types-and-row-polymorphism
---@ companion: composed-row-with-array-and-callback-native
---@ use-source: composed-row-with-array-and-callback
---@ end-case
+-- [case: composed-row-with-array-and-callback, check-pass]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- companion: composed-row-with-array-and-callback-native
+-- use-source: composed-row-with-array-and-callback
 
---@ case: composed-row-with-array-and-callback-native
---@ mode: run-pass
---@ spec: SPEC#record-types-and-row-polymorphism
---@ companion: composed-row-with-array-and-callback
---@ entry: test_native
---@ use-source: composed-row-with-array-and-callback
---@ end-case
+-- [case: composed-row-with-array-and-callback-native, run-pass]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- companion: composed-row-with-array-and-callback
+-- entry: test_native
+-- use-source: composed-row-with-array-and-callback
 
---@ case: row-remainder-empty-inner-dimension-conflict
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: composed-row-with-array-and-callback
+-- [case: row-remainder-empty-inner-dimension-conflict, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: composed-row-with-array-and-callback
 -- Error [E0301]: Equal erased record shapes cannot unify different hidden row extents.
---@ file: source.ril
+-- file: source.ril
 fn pair<U,S>(left:{items:[2]U,..S},right:{items:[2]U,..S}){}
 fn example(){
     let items:[2]int=[7,9]
@@ -306,26 +236,21 @@ fn example(){
     let second:[0][4]int=[]
     pair(.{items:items,empty:first},.{items:items,empty:second})
 }
---@ end-file
---@ end-case
 
---@ case: explicit-row-remainder-dimension-conflict
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: composed-row-with-array-and-callback
+-- [case: explicit-row-remainder-dimension-conflict, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: composed-row-with-array-and-callback
 -- Error [E0301]: An explicit row Type cannot override the actual hidden extent.
---@ file: source.ril
+-- file: source.ril
 fn accept<U,S>(value:{items:[2]U,..S}){}
 fn example(){
     let items:[2]int=[7,9]
     let extra:[0][3]int=[]
     accept<int,{extra:[0][2]int}>(.{items:items,extra:extra})
 }
---@ end-file
---@ end-case
 
---@ source: open-record-through-generic-identity
---@ file: source.ril
+-- [source: open-record-through-generic-identity]
+-- file: source.ril
 fn identity<T>(value:T)->T{value}
 fn forward<U,R>(value:{items:[2]U,..R})->{items:[2]U,..R}{identity(value)}
 pub fn test_native(){
@@ -333,26 +258,20 @@ pub fn test_native(){
     let received=forward(.{items:values,tag:"same"})
     assert(received.items[0]==7 && received.tag=="same")
 }
---@ end-file
---@ end-source
 
---@ case: open-record-through-generic-identity
---@ mode: check-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: open-record-through-generic-identity-native
---@ use-source: open-record-through-generic-identity
---@ end-case
+-- [case: open-record-through-generic-identity, check-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: open-record-through-generic-identity-native
+-- use-source: open-record-through-generic-identity
 
---@ case: open-record-through-generic-identity-native
---@ mode: run-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: open-record-through-generic-identity
---@ entry: test_native
---@ use-source: open-record-through-generic-identity
---@ end-case
+-- [case: open-record-through-generic-identity-native, run-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: open-record-through-generic-identity
+-- entry: test_native
+-- use-source: open-record-through-generic-identity
 
---@ source: generic-literal-collection-source-graphs
---@ file: source.ril
+-- [source: generic-literal-collection-source-graphs]
+-- file: source.ril
 fn singleton<T>(value:T)->[1]T{[value]}
 fn mapping<T>(value:T)->[str:T]{["one":value]}
 fn first(items:[2]int)->int{items[0]}
@@ -368,48 +287,36 @@ fn example(){
     assert(callbacks[0](items)==7)
 }
 pub fn test_native(){example()}
---@ end-file
---@ end-source
 
---@ case: generic-literal-collection-source-graphs
---@ mode: check-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: inferred-literal-array-remains-dynamic
---@ use-source: generic-literal-collection-source-graphs
---@ end-case
+-- [case: generic-literal-collection-source-graphs, check-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: inferred-literal-array-remains-dynamic
+-- use-source: generic-literal-collection-source-graphs
 
---@ case: generic-literal-collection-source-graphs-native
---@ mode: run-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: generic-literal-collection-source-graphs
---@ entry: test_native
---@ use-source: generic-literal-collection-source-graphs
---@ end-case
+-- [case: generic-literal-collection-source-graphs-native, run-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: generic-literal-collection-source-graphs
+-- entry: test_native
+-- use-source: generic-literal-collection-source-graphs
 
---@ case: inferred-literal-array-remains-dynamic
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: generic-literal-collection-source-graphs
+-- [case: inferred-literal-array-remains-dynamic, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: generic-literal-collection-source-graphs
 -- Error [E0301]: An inferred array keeps its dynamic shell after storing it.
---@ file: source.ril
+-- file: source.ril
 fn exact(items:[1][0][3]int){}
 fn example(){let empty:[0][3]int=[];let values=[empty];exact(values)}
---@ end-file
---@ end-case
 
---@ case: literal-map-keeps-stored-inner-dimensions
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: generic-literal-collection-source-graphs
+-- [case: literal-map-keeps-stored-inner-dimensions, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: generic-literal-collection-source-graphs
 -- Error [E0301]: A map wrapper preserves its actual stored value's hidden extent.
---@ file: source.ril
+-- file: source.ril
 fn exact(items:[str:[0][2]int]){}
 fn example(){let empty:[0][3]int=[];let values=["one":empty];exact(values)}
---@ end-file
---@ end-case
 
---@ source: recursive-static-input-receipts
---@ file: source.ril
+-- [source: recursive-static-input-receipts]
+-- file: source.ril
 halt fn down(count:int)->int{if count>0{down(count-1)}else{0}}
 halt fn recur<T>(count:int,value:T)->T{if count>0{recur<T>(count-1,value)}else{value}}
 halt fn sibling<U>(count:int,value:U)->U{if count>0{sibling<U>(count-1,value)}else{value}}
@@ -417,20 +324,14 @@ pub fn test_native(){
     assert(down(3)==0)
     assert(recur<int>(3,7)==7 && sibling<int>(3,7)==7)
 }
---@ end-file
---@ end-source
 
---@ case: recursive-static-input-receipts
---@ mode: check-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: recursive-static-input-receipts-native
---@ use-source: recursive-static-input-receipts
---@ end-case
+-- [case: recursive-static-input-receipts, check-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: recursive-static-input-receipts-native
+-- use-source: recursive-static-input-receipts
 
---@ case: recursive-static-input-receipts-native
---@ mode: run-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: recursive-static-input-receipts
---@ entry: test_native
---@ use-source: recursive-static-input-receipts
---@ end-case
+-- [case: recursive-static-input-receipts-native, run-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: recursive-static-input-receipts
+-- entry: test_native
+-- use-source: recursive-static-input-receipts

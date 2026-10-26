@@ -1,8 +1,7 @@
---@ case: distinct-source-instances
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: distinct-source-instances, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 pub fn test_native() {
     let raw = Array::push
     let two: fn(mut [][0][2]int, [0][2]int) -> () &mut = raw
@@ -13,14 +12,11 @@ pub fn test_native() {
     three(mut right, [])
     assert(len(left) == 1 && len(right) == 1)
 }
---@ end-file
---@ end-case
 
---@ case: named-numeric
---@ mode: run-pass
---@ spec: SPEC#default-parameters-and-named-arguments
---@ entry: test_native
---@ file: source.ril
+-- [case: named-numeric, run-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- entry: test_native
+-- file: source.ril
 type Holder = { mut values: []f64 }
 fn append_block(mut values: []f64) &mut { Array::push(value: { 5 }, mut items: values) }
 fn append_field(mut holder: Holder) &mut { Array::push(value: { 6 }, mut items: holder.values) }
@@ -38,14 +34,11 @@ pub fn test_native() {
     Array::truncate(length: 1, mut items: values)
     assert(len(values) == 1)
 }
---@ end-file
---@ end-case
 
---@ case: named-retention
---@ mode: run-pass
---@ spec: SPEC#default-parameters-and-named-arguments
---@ entry: test_native
---@ file: source.ril
+-- [case: named-retention, run-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- entry: test_native
+-- file: source.ril
 type Cell = { mut count: int }
 pub fn test_native() {
     let append = Array::push
@@ -56,41 +49,32 @@ pub fn test_native() {
     cell.count += 1
     assert(cell.count == 3)
 }
---@ end-file
---@ end-case
 
---@ case: named-map-empty
---@ mode: run-pass
---@ spec: SPEC#default-parameters-and-named-arguments
---@ entry: test_native
---@ file: source.ril
+-- [case: named-map-empty, run-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- entry: test_native
+-- file: source.ril
 pub fn test_native() {
     let mut values: [str:[0][2]int] = [:]
     Map::set(value: [], key: "x", mut items: values)
     assert(Map::contains(values, "x"))
 }
---@ end-file
---@ end-case
 
---@ case: view-interface
---@ mode: run-pass
---@ spec: SPEC#default-parameters-and-named-arguments
---@ entry: test_native
---@ file: source.ril
+-- [case: view-interface, run-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- entry: test_native
+-- file: source.ril
 pub fn test_native() {
     let append: fn(mut target: []int, item: int) -> () &mut = Array::push
     let mut values: []int = []
     append(item: 7, mut target: values)
     assert(values[0] == 7)
 }
---@ end-file
---@ end-case
 
---@ case: pipeline-order
---@ mode: run-pass
---@ spec: SPEC#default-parameters-and-named-arguments
---@ entry: test_native
---@ file: source.ril
+-- [case: pipeline-order, run-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- entry: test_native
+-- file: source.ril
 type Put = fn(mut items: []f64, value: f64) -> () &mut
 fn index(mut order: []int) -> int &mut { order !> Array::push(1); 0 }
 fn choose(mut order: []int) -> Put &mut { order !> Array::push(2); Array::push }
@@ -102,14 +86,11 @@ pub fn test_native() {
     assert(len(order) == 3 && order[0] == 1 && order[1] == 2 && order[2] == 3)
     assert(values[0][0] == 1.0)
 }
---@ end-file
---@ end-case
 
---@ case: map-order
---@ mode: run-pass
---@ spec: SPEC#default-parameters-and-named-arguments
---@ entry: test_native
---@ file: source.ril
+-- [case: map-order, run-pass]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- entry: test_native
+-- file: source.ril
 fn key(mut order: []int) -> str &mut { order !> Array::push(2); "x" }
 fn value(mut order: []int) -> f64 &mut { order !> Array::push(1); 2.5 }
 pub fn test_native() {
@@ -119,71 +100,56 @@ pub fn test_native() {
     assert(len(order) == 2 && order[0] == 1 && order[1] == 2)
     assert(Map::get(values, "x") == Some(2.5))
 }
---@ end-file
---@ end-case
 
---@ case: unknown-label
---@ mode: check-fail
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: named-numeric
+-- [case: unknown-label, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: named-numeric
 -- Error [E0339]: a raw primitive exposes exactly its declared public labels
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let mut values: []int = []
     Array::push(mut itmes: values, value: 1)
     values !> Array::push(0)
 }
---@ end-file
---@ end-case
 
---@ case: duplicate-label
---@ mode: check-fail
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: named-numeric
+-- [case: duplicate-label, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: named-numeric
 -- Error [E0325]: named and positional selection cannot bind the same parameter twice
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let mut values: []int = []
     Array::push(value: 1, mut items: values, value: 2)
     values !> Array::push(0)
 }
---@ end-file
---@ end-case
 
---@ case: erased-labels
---@ mode: check-fail
---@ spec: SPEC#default-parameters-and-named-arguments
---@ companion: view-interface
+-- [case: erased-labels, check-fail]
+-- spec: SPEC#default-parameters-and-named-arguments
+-- companion: view-interface
 -- Error [E0339]: an explicit callable view retains its chosen interface
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let append: fn(mut target: []int, item: int) -> () &mut = Array::push
     let mut values: []int = []
     append(mut items: values, value: 1)
     append(mut target: values, item: 0)
 }
---@ end-file
---@ end-case
 
---@ case: stored-map-view
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: named-map-empty
+-- [case: stored-map-view, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: named-map-empty
 -- Error [E0301]: a stored empty map cannot reopen the fixed dimensions of its values
---@ file: source.ril
+-- file: source.ril
 fn take(values: [str:[0][2]int]) { assert(len(values) == 0) }
 fn example() {
     let original: [str:[0][3]int] = [:]
     take(original)
 }
---@ end-file
---@ end-case
 
---@ case: raw-dispatch
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: raw-dispatch, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 pub fn invoke_append(append: fn(mut []f64, f64) -> () &mut, mut values: []f64) &mut {
     append(mut values, 2.5)
 }
@@ -200,81 +166,61 @@ pub fn test_native() {
     assert(fractions[0] == 1.25)
     assert(fractions[1] == 2.5)
 }
---@ end-file
---@ end-case
 
---@ case: truncate
---@ mode: run-pass
---@ spec: SPEC#type-identity-and-subtyping
---@ entry: test_native
---@ file: source.ril
+-- [case: truncate, run-pass]
+-- spec: SPEC#type-identity-and-subtyping
+-- entry: test_native
+-- file: source.ril
 pub fn test_native() {
     let truncate: fn(mut [][2]int, int) -> () &mut = Array::truncate
     let mut values: [][2]int = [[1, 2]]
     truncate(mut values, 0)
     assert(len(values) == 0)
 }
---@ end-file
---@ end-case
 
---@ case: hidden-element-mismatch
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: distinct-source-instances
+-- [case: hidden-element-mismatch, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: distinct-source-instances
 -- Error [E0301]: a quantified element must retain the same complete inner dimensions
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let append: fn(mut [][0][2]int, [0][3]int) -> () &mut = Array::push
 }
---@ end-file
---@ end-case
 
---@ case: hidden-map-value-mismatch
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: distinct-source-instances
+-- [case: hidden-map-value-mismatch, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: distinct-source-instances
 -- Error [E0301]: key and value variables belong to the same original map scheme
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let set: fn(mut [str:[0][2]int], str, [0][3]int) -> () &mut = Map::set
 }
---@ end-file
---@ end-case
 
---@ case: fixed-receiver
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: truncate
+-- [case: fixed-receiver, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: truncate
 -- Error [E0301]: a resizable primitive cannot acquire a fixed receiver interface
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let append: fn(mut [1]int, int) -> () &mut = Array::push
 }
---@ end-file
---@ end-case
 
---@ case: pure-bound
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: raw-dispatch
+-- [case: pure-bound, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: raw-dispatch
 -- Error [E0534]: a primitive's closed mutation requirement survives its public view
---@ file: source.ril
+-- file: source.ril
 fn example() {
     let raw = Array::push
     let append: fn(mut []int, int) -> () &{} = raw
 }
---@ end-file
---@ end-case
 
---@ case: retention-bound
---@ mode: check-fail
---@ spec: SPEC#type-identity-and-subtyping
---@ companion: raw-dispatch
+-- [case: retention-bound, check-fail]
+-- spec: SPEC#type-identity-and-subtyping
+-- companion: raw-dispatch
 -- Error [E0534]: the retaining mode cannot be covered by mutation alone
---@ file: source.ril
+-- file: source.ril
 type Cell = { mut value: int }
 fn example() {
     let append: fn(mut []Cell, ^mut Cell) -> () &mut = Array::push
 }
---@ end-file
---@ end-case

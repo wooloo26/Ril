@@ -1,427 +1,288 @@
---@ case: accept-bad-byte-hex
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-bad-byte-hex
---@ file: input.ril hex
+-- [case: accept-bad-byte-hex, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-bad-byte-hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 62 22 5c 78 46 30 22
---@ end-file
---@ end-case
 
---@ case: reject-bad-byte-hex
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-bad-byte-hex
+-- [case: reject-bad-byte-hex, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-bad-byte-hex
 -- Error [E0110]: reject bad byte hex
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 62 22 5c 78 47 30 22
---@ end-file
---@ end-case
 
---@ case: accept-bad-format
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-bad-format
---@ file: input.ril hex
+-- [case: accept-bad-format, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-bad-format
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 7b 31 3a 30 34 78 7d 22
---@ end-file
---@ end-case
 
---@ case: reject-bad-format
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-bad-format
+-- [case: reject-bad-format, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-bad-format
 -- Error [E0112]: reject bad format
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 7b 31 3a 30 34 71 7d 22
---@ end-file
---@ end-case
 
---@ case: accept-empty-interpolation
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-empty-interpolation
---@ file: input.ril hex
+-- [case: accept-empty-interpolation, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-empty-interpolation
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 7b 31 7d 22
---@ end-file
---@ end-case
 
---@ case: reject-empty-interpolation
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-empty-interpolation
+-- [case: reject-empty-interpolation, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-empty-interpolation
 -- Error [E0112]: reject empty interpolation
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 7b 7d 22
---@ end-file
---@ end-case
 
---@ case: accept-format-type
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-format-type
---@ file: input.ril hex
+-- [case: accept-format-type, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-format-type
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 7b 34 32 3a 78 7d 22
---@ end-file
---@ end-case
 
---@ case: reject-format-type
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-format-type
+-- [case: reject-format-type, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-format-type
 -- Error [E0329]: reject format type
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 7b 22 77 6f 72 64 22 3a 78 7d 22
---@ end-file
---@ end-case
 
---@ case: accept-invalid-binary-digit
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-invalid-binary-digit
---@ file: input.ril hex
+-- [case: accept-invalid-binary-digit, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-invalid-binary-digit
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 30 62 31 30
---@ end-file
---@ end-case
 
---@ case: reject-invalid-binary-digit
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-invalid-binary-digit
+-- [case: reject-invalid-binary-digit, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-invalid-binary-digit
 -- Error [E0111]: reject invalid binary digit
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 30 62 31 30 32
---@ end-file
---@ end-case
 
---@ case: accept-invalid-hex-digit
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-invalid-hex-digit
---@ file: input.ril hex
+-- [case: accept-invalid-hex-digit, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-invalid-hex-digit
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 30 78 46
---@ end-file
---@ end-case
 
---@ case: reject-invalid-hex-digit
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-invalid-hex-digit
+-- [case: reject-invalid-hex-digit, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-invalid-hex-digit
 -- Error [E0111]: reject invalid hex digit
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 30 78 47
---@ end-file
---@ end-case
 
---@ case: accept-invalid-octal-digit
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-invalid-octal-digit
---@ file: input.ril hex
+-- [case: accept-invalid-octal-digit, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-invalid-octal-digit
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 30 6f 37
---@ end-file
---@ end-case
 
---@ case: reject-invalid-octal-digit
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-invalid-octal-digit
+-- [case: reject-invalid-octal-digit, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-invalid-octal-digit
 -- Error [E0111]: reject invalid octal digit
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 30 6f 38
---@ end-file
---@ end-case
 
---@ case: accept-missing-base-digits
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-missing-base-digits
---@ file: input.ril hex
+-- [case: accept-missing-base-digits, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-missing-base-digits
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 30 78 30
---@ end-file
---@ end-case
 
---@ case: reject-missing-base-digits
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-missing-base-digits
+-- [case: reject-missing-base-digits, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-missing-base-digits
 -- Error [E0111]: reject missing base digits
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 30 78
---@ end-file
---@ end-case
 
---@ case: accept-missing-exponent-digits
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-missing-exponent-digits
---@ file: input.ril hex
+-- [case: accept-missing-exponent-digits, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-missing-exponent-digits
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 31 2e 30 65 2b 32
---@ end-file
---@ end-case
 
---@ case: reject-missing-exponent-digits
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-missing-exponent-digits
+-- [case: reject-missing-exponent-digits, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-missing-exponent-digits
 -- Error [E0111]: reject missing exponent digits
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 31 2e 30 65 2b
---@ end-file
---@ end-case
 
---@ case: accept-non-ascii-byte
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-non-ascii-byte
---@ file: input.ril hex
+-- [case: accept-non-ascii-byte, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-non-ascii-byte
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 62 22 65 22
---@ end-file
---@ end-case
 
---@ case: reject-non-ascii-byte
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-non-ascii-byte
+-- [case: reject-non-ascii-byte, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-non-ascii-byte
 -- Error [E0110]: reject non ascii byte
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 62 22 c3 a9 22
---@ end-file
---@ end-case
 
---@ case: accept-numeric-promotion
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-numeric-promotion
---@ file: accept-numeric-promotion.ril
+-- [case: accept-numeric-promotion, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-numeric-promotion
 fn example() {
     let value = 1u8 + 1u8
 }
---@ end-file
---@ end-case
 
---@ case: reject-numeric-promotion
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-numeric-promotion
+-- [case: reject-numeric-promotion, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-numeric-promotion
 -- Error [E0301]: reject numeric promotion
---@ file: reject-numeric-promotion.ril
 fn example() {
     let value = 1u8 + 1u16
 }
---@ end-file
---@ end-case
 
---@ case: accept-open-interpolation
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-open-interpolation
---@ file: input.ril hex
+-- [case: accept-open-interpolation, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-open-interpolation
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 7b 31 7d 22
---@ end-file
---@ end-case
 
---@ case: reject-open-interpolation
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-open-interpolation
+-- [case: reject-open-interpolation, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-open-interpolation
 -- Error [E0112]: reject open interpolation
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 7b 31 22
---@ end-file
---@ end-case
 
---@ case: accept-repeated-separator
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-repeated-separator
---@ file: input.ril hex
+-- [case: accept-repeated-separator, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-repeated-separator
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 31 5f 30
---@ end-file
---@ end-case
 
---@ case: reject-repeated-separator
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-repeated-separator
+-- [case: reject-repeated-separator, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-repeated-separator
 -- Error [E0111]: reject repeated separator
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 31 5f 5f 30
---@ end-file
---@ end-case
 
---@ case: accept-signed-max
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-signed-max
---@ file: accept-signed-max.ril
+-- [case: accept-signed-max, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-signed-max
 fn example() {
     let value = 127i8
 }
---@ end-file
---@ end-case
 
---@ case: reject-signed-max
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-signed-max
+-- [case: reject-signed-max, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-signed-max
 -- Error [E0326]: reject signed max
---@ file: reject-signed-max.ril
 fn example() {
     let value = 128i8
 }
---@ end-file
---@ end-case
 
---@ case: accept-signed-min
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-signed-min
---@ file: accept-signed-min.ril
+-- [case: accept-signed-min, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-signed-min
 fn example() {
     let value = -128i8
 }
---@ end-file
---@ end-case
 
---@ case: reject-signed-min
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-signed-min
+-- [case: reject-signed-min, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-signed-min
 -- Error [E0326]: reject signed min
---@ file: reject-signed-min.ril
 fn example() {
     let value = -129i8
 }
---@ end-file
---@ end-case
 
---@ case: accept-unicode-out-of-range
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-unicode-out-of-range
---@ file: input.ril hex
+-- [case: accept-unicode-out-of-range, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-unicode-out-of-range
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 5c 75 7b 31 30 46 46 46 46 7d 22
---@ end-file
---@ end-case
 
---@ case: reject-unicode-out-of-range
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-unicode-out-of-range
+-- [case: reject-unicode-out-of-range, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-unicode-out-of-range
 -- Error [E0109]: reject unicode out of range
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 5c 75 7b 31 31 30 30 30 30 7d 22
---@ end-file
---@ end-case
 
---@ case: accept-unicode-surrogate
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-unicode-surrogate
---@ file: input.ril hex
+-- [case: accept-unicode-surrogate, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-unicode-surrogate
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 5c 75 7b 44 37 46 46 7d 22
---@ end-file
---@ end-case
 
---@ case: reject-unicode-surrogate
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-unicode-surrogate
+-- [case: reject-unicode-surrogate, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-unicode-surrogate
 -- Error [E0109]: reject unicode surrogate
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 5c 75 7b 44 38 30 30 7d 22
---@ end-file
---@ end-case
 
---@ case: accept-unknown-escape
---@ mode: check-pass
---@ spec: SPEC#text-and-byte-literals
---@ companion: reject-unknown-escape
---@ file: input.ril hex
+-- [case: accept-unknown-escape, check-pass]
+-- spec: SPEC#text-and-byte-literals
+-- companion: reject-unknown-escape
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 5c 6e 22
---@ end-file
---@ end-case
 
---@ case: reject-unknown-escape
---@ mode: check-fail
---@ spec: SPEC#text-and-byte-literals
---@ companion: accept-unknown-escape
+-- [case: reject-unknown-escape, check-fail]
+-- spec: SPEC#text-and-byte-literals
+-- companion: accept-unknown-escape
 -- Error [E0108]: reject unknown escape
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 22 5c 71 22
---@ end-file
---@ end-case
 
---@ case: accept-unknown-suffix
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-unknown-suffix
---@ file: input.ril hex
+-- [case: accept-unknown-suffix, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-unknown-suffix
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 31 32 75 38
---@ end-file
---@ end-case
 
---@ case: reject-unknown-suffix
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-unknown-suffix
+-- [case: reject-unknown-suffix, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-unknown-suffix
 -- Error [E0111]: reject unknown suffix
---@ file: input.ril hex
+-- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 31 32 75 37
---@ end-file
---@ end-case
 
---@ case: accept-unsigned-max
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-unsigned-max
---@ file: accept-unsigned-max.ril
+-- [case: accept-unsigned-max, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-unsigned-max
 fn example() {
     let value = 255u8
 }
---@ end-file
---@ end-case
 
---@ case: reject-unsigned-max
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-unsigned-max
+-- [case: reject-unsigned-max, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-unsigned-max
 -- Error [E0326]: reject unsigned max
---@ file: reject-unsigned-max.ril
 fn example() {
     let value = 256u8
 }
---@ end-file
---@ end-case
 
---@ case: accept-unsigned-negative
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ companion: reject-unsigned-negative
---@ file: accept-unsigned-negative.ril
+-- [case: accept-unsigned-negative, check-pass]
+-- spec: SPEC#numeric-literals
+-- companion: reject-unsigned-negative
 fn example() {
     let value = 0u8
 }
---@ end-file
---@ end-case
 
---@ case: reject-unsigned-negative
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: accept-unsigned-negative
+-- [case: reject-unsigned-negative, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: accept-unsigned-negative
 -- Error [E0326]: reject unsigned negative
---@ file: reject-unsigned-negative.ril
 fn example() {
     let value = -1u8
 }
---@ end-file
---@ end-case
 
---@ case: literal-values
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ entry: test_literal_values
---@ file: literal-values.ril
+-- [case: literal-values, run-pass]
+-- spec: SPEC#numeric-literals
 pub fn test_literal_values() {
     assert(0xFF == 255)
     assert(0o755 == 493)
@@ -433,14 +294,9 @@ pub fn test_literal_values() {
     assert(1.25e-4 == 0.000125)
     assert(12345678901234567890bigint > 0bigint)
 }
---@ end-file
---@ end-case
 
---@ case: text-and-byte-values
---@ mode: run-pass
---@ spec: SPEC#text-and-byte-literals
---@ entry: test_text_and_byte_values
---@ file: text-and-byte-values.ril
+-- [case: text-and-byte-values, run-pass]
+-- spec: SPEC#text-and-byte-literals
 pub fn test_text_and_byte_values() {
     assert(len("aé😀") == 3)
     assert(len(b"\x00\xFF") == 2)
@@ -448,5 +304,3 @@ pub fn test_text_and_byte_values() {
     assert("{42:04x}" == "002a")
     assert("\u{1F642}" == "🙂")
 }
---@ end-file
---@ end-case

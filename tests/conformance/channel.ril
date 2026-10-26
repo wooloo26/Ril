@@ -1,8 +1,6 @@
---@ case: accept-live-payload
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ companion: reject-live-payload
---@ file: accept-live-payload.ril
+-- [case: accept-live-payload, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- companion: reject-live-payload
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 type Cell = { mut count: int }
@@ -20,15 +18,11 @@ fn example() @Async {
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: reject-live-payload
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
---@ companion: accept-live-payload
+-- [case: reject-live-payload, check-fail]
+-- spec: SPEC#structured-concurrency-channels
+-- companion: accept-live-payload
 -- Error [E0602]: reject live payload
---@ file: reject-live-payload.ril
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 type Cell = { mut count: int }
@@ -46,14 +40,10 @@ fn example() @Async {
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: accept-use-after-detach
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ companion: reject-use-after-detach
---@ file: accept-use-after-detach.ril
+-- [case: accept-use-after-detach, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- companion: reject-use-after-detach
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -69,15 +59,11 @@ fn example() @Async {
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: reject-use-after-detach
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
---@ companion: accept-use-after-detach
+-- [case: reject-use-after-detach, check-fail]
+-- spec: SPEC#structured-concurrency-channels
+-- companion: accept-use-after-detach
 -- Error [E0603]: reject use after detach
---@ file: reject-use-after-detach.ril
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -94,5 +80,3 @@ fn example() @Async {
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-case

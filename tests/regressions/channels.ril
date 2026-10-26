@@ -1,5 +1,5 @@
---@ source: source-channel-condition-receipts-checked
---@ file: source.ril
+-- [source: source-channel-condition-receipts-checked]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -40,38 +40,28 @@ pub fn test_none() @Async{
     let value:Option<Result<int,str>>=None
     assert(consume(value) is Ok())
 }
---@ end-file
---@ end-source
 
---@ case: channel-condition-receipts-checked
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-condition-receipts-checked
---@ end-case
+-- [case: channel-condition-receipts-checked, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-condition-receipts-checked
 
---@ case: channel-condition-receipts-checked-test-some-ok
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_some_ok
---@ use-source: source-channel-condition-receipts-checked
---@ end-case
+-- [case: channel-condition-receipts-checked-test-some-ok, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_some_ok
+-- use-source: source-channel-condition-receipts-checked
 
---@ case: channel-condition-receipts-checked-test-some-err
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_some_err
---@ use-source: source-channel-condition-receipts-checked
---@ end-case
+-- [case: channel-condition-receipts-checked-test-some-err, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_some_err
+-- use-source: source-channel-condition-receipts-checked
 
---@ case: channel-condition-receipts-checked-test-none
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_none
---@ use-source: source-channel-condition-receipts-checked
---@ end-case
+-- [case: channel-condition-receipts-checked-test-none, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_none
+-- use-source: source-channel-condition-receipts-checked
 
---@ source: source-channel-condition-receipts-checked-original
---@ file: source.ril
+-- [source: source-channel-condition-receipts-checked-original]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -109,38 +99,28 @@ pub fn test_none() @Async{
     let value:Option<Result<int,str>>=None
     assert(consume(value) is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-condition-receipts-checked-original
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-condition-receipts-checked-original
---@ end-case
+-- [case: channel-condition-receipts-checked-original, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-condition-receipts-checked-original
 
---@ case: channel-condition-receipts-checked-original-test-some-ok
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_some_ok
---@ use-source: source-channel-condition-receipts-checked-original
---@ end-case
+-- [case: channel-condition-receipts-checked-original-test-some-ok, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_some_ok
+-- use-source: source-channel-condition-receipts-checked-original
 
---@ case: channel-condition-receipts-checked-original-test-some-err
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_some_err
---@ use-source: source-channel-condition-receipts-checked-original
---@ end-case
+-- [case: channel-condition-receipts-checked-original-test-some-err, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_some_err
+-- use-source: source-channel-condition-receipts-checked-original
 
---@ case: channel-condition-receipts-checked-original-test-none
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_none
---@ use-source: source-channel-condition-receipts-checked-original
---@ end-case
+-- [case: channel-condition-receipts-checked-original-test-none, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_none
+-- use-source: source-channel-condition-receipts-checked-original
 
---@ source: source-channel-condition-receipts-clone-unpaid
---@ file: source.ril
+-- [source: source-channel-condition-receipts-clone-unpaid]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -163,18 +143,14 @@ fn unpaid(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Asyn
         Ok()
     }
 }
---@ end-file
---@ end-source
 
---@ case: channel-condition-receipts-clone-unpaid
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-condition-receipts-clone-unpaid, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: original regression expectation
---@ use-source: source-channel-condition-receipts-clone-unpaid
---@ end-case
+-- use-source: source-channel-condition-receipts-clone-unpaid
 
---@ source: source-channel-condition-receipts-nested-unpaid
---@ file: source.ril
+-- [source: source-channel-condition-receipts-nested-unpaid]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -196,18 +172,14 @@ fn unpaid(value:Option<Result<int,str>>)->Result<(),Concurrent::TaskFault> @Asyn
         Ok()
     }
 }
---@ end-file
---@ end-source
 
---@ case: channel-condition-receipts-nested-unpaid
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-condition-receipts-nested-unpaid, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: original regression expectation
---@ use-source: source-channel-condition-receipts-nested-unpaid
---@ end-case
+-- use-source: source-channel-condition-receipts-nested-unpaid
 
---@ source: source-channel-formal-result
---@ file: source.ril
+-- [source: source-channel-formal-result]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 fn publish(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
@@ -230,24 +202,18 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-formal-result
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-formal-result
---@ end-case
+-- [case: channel-formal-result, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-formal-result
 
---@ case: channel-formal-result-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-formal-result
---@ end-case
+-- [case: channel-formal-result-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-formal-result
 
---@ source: source-channel-message-captured-formal
---@ file: source.ril hex
+-- [source: source-channel-message-captured-formal]
+-- file: source.ril hex
 75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
 68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
@@ -276,24 +242,18 @@ pub fn test_native() @Async{
 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0a 20 20 20 20 20 20 20 20 4f 6b 28 29 0a 20 20
 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20 4f 6b 28 29 7c 45 72
 72 28 5f 29 29 0a 7d 0a
---@ end-file
---@ end-source
 
---@ case: channel-message-captured-formal
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-captured-formal
---@ end-case
+-- [case: channel-message-captured-formal, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-captured-formal
 
---@ case: channel-message-captured-formal-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-captured-formal
---@ end-case
+-- [case: channel-message-captured-formal-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-captured-formal
 
---@ source: source-channel-message-conditional-returns
---@ file: source.ril hex
+-- [source: source-channel-message-conditional-returns]
+-- file: source.ril hex
 75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
 68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
@@ -328,24 +288,18 @@ pub fn test_native() @Async{
 3a 3a 63 6c 6f 73 65 28 72 65 73 74 6f 72 65 64 29 0a 20 20 20 20 20 20 20 20 4f 6b 28 29 0a 20
 20 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20 4f 6b 28 29 7c 45
 72 72 28 5f 29 29 0a 7d 0a
---@ end-file
---@ end-source
 
---@ case: channel-message-conditional-returns
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-conditional-returns
---@ end-case
+-- [case: channel-message-conditional-returns, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-conditional-returns
 
---@ case: channel-message-conditional-returns-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-conditional-returns
---@ end-case
+-- [case: channel-message-conditional-returns-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-conditional-returns
 
---@ source: source-channel-message-fallback
---@ file: source.ril hex
+-- [source: source-channel-message-fallback]
+-- file: source.ril hex
 75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
 68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
@@ -374,24 +328,18 @@ pub fn test_native() @Async{
 20 20 20 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0a 20 20 20 20 20 20 20 20
 4f 6b 28 29 0a 20 20 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20
 4f 6b 28 29 7c 45 72 72 28 5f 29 29 0a 7d 0a
---@ end-file
---@ end-source
 
---@ case: channel-message-fallback
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-fallback
---@ end-case
+-- [case: channel-message-fallback, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-fallback
 
---@ case: channel-message-fallback-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-fallback
---@ end-case
+-- [case: channel-message-fallback-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-fallback
 
---@ source: source-channel-message-finite-graphs
---@ file: source.ril
+-- [source: source-channel-message-finite-graphs]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 pub fn test_native() @Async{
@@ -427,24 +375,18 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-finite-graphs
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-finite-graphs
---@ end-case
+-- [case: channel-message-finite-graphs, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-finite-graphs
 
---@ case: channel-message-finite-graphs-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-finite-graphs
---@ end-case
+-- [case: channel-message-finite-graphs-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-finite-graphs
 
---@ source: source-channel-message-formal-array-graph-gap
---@ file: source.ril
+-- [source: source-channel-message-formal-array-graph-gap]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 fn consume(value:Immut<[]Result<int,str>>)->Result<(),Concurrent::TaskFault> @Async{
@@ -460,18 +402,14 @@ fn consume(value:Immut<[]Result<int,str>>)->Result<(),Concurrent::TaskFault> @As
     }
 }
 pub fn test_native(){}
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-array-graph-gap
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-formal-array-graph-gap, check-pass]
+-- spec: SPEC#structured-concurrency-channels
 -- Original formal Result producers remain owned by their caller; this definition is valid.
---@ use-source: source-channel-message-formal-array-graph-gap
---@ end-case
+-- use-source: source-channel-message-formal-array-graph-gap
 
---@ source: source-channel-message-formal-failed-send-loses-original
---@ file: source.ril
+-- [source: source-channel-message-formal-failed-send-loses-original]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 fn publish(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
@@ -494,18 +432,14 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-failed-send-loses-original
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-formal-failed-send-loses-original, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: original regression expectation
---@ use-source: source-channel-message-formal-failed-send-loses-original
---@ end-case
+-- use-source: source-channel-message-formal-failed-send-loses-original
 
---@ source: source-channel-message-formal-map-graph-gap
---@ file: source.ril
+-- [source: source-channel-message-formal-map-graph-gap]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 fn consume(value:Immut<[str:Result<int,str>]>)->Result<(),Concurrent::TaskFault> @Async{
@@ -521,18 +455,14 @@ fn consume(value:Immut<[str:Result<int,str>]>)->Result<(),Concurrent::TaskFault>
     }
 }
 pub fn test_native(){}
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-map-graph-gap
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-formal-map-graph-gap, check-pass]
+-- spec: SPEC#structured-concurrency-channels
 -- Original formal Result producers remain owned by their caller; this definition is valid.
---@ use-source: source-channel-message-formal-map-graph-gap
---@ end-case
+-- use-source: source-channel-message-formal-map-graph-gap
 
---@ source: source-channel-message-formal-nested-checked
---@ file: source.ril
+-- [source: source-channel-message-formal-nested-checked]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -563,24 +493,18 @@ pub fn test_native() @Async{
     assert(consume(second) is Ok()|Err(_))
     assert(consume(third) is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-nested-checked
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-formal-nested-checked
---@ end-case
+-- [case: channel-message-formal-nested-checked, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-formal-nested-checked
 
---@ case: channel-message-formal-nested-checked-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-formal-nested-checked
---@ end-case
+-- [case: channel-message-formal-nested-checked-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-formal-nested-checked
 
---@ source: source-channel-message-formal-nested-graph-gap
---@ file: source.ril
+-- [source: source-channel-message-formal-nested-graph-gap]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 fn consume(value:Result<Result<int,str>,str>)->Result<(),Concurrent::TaskFault> @Async{
@@ -596,18 +520,14 @@ fn consume(value:Result<Result<int,str>,str>)->Result<(),Concurrent::TaskFault> 
     }
 }
 pub fn test_native(){}
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-nested-graph-gap
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-formal-nested-graph-gap, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: original regression expectation
---@ use-source: source-channel-message-formal-nested-graph-gap
---@ end-case
+-- use-source: source-channel-message-formal-nested-graph-gap
 
---@ source: source-channel-message-formal-optional-checked
---@ file: source.ril
+-- [source: source-channel-message-formal-optional-checked]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -638,24 +558,18 @@ pub fn test_native() @Async{
     assert(consume(second) is Ok()|Err(_))
     assert(consume(third) is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-optional-checked
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-formal-optional-checked
---@ end-case
+-- [case: channel-message-formal-optional-checked, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-formal-optional-checked
 
---@ case: channel-message-formal-optional-checked-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-formal-optional-checked
---@ end-case
+-- [case: channel-message-formal-optional-checked-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-formal-optional-checked
 
---@ source: source-channel-message-formal-optional-clone-checked
---@ file: source.ril
+-- [source: source-channel-message-formal-optional-clone-checked]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -688,24 +602,18 @@ pub fn test_native() @Async{
     assert(consume(second) is Ok()|Err(_))
     assert(consume(third) is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-optional-clone-checked
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-formal-optional-clone-checked
---@ end-case
+-- [case: channel-message-formal-optional-clone-checked, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-formal-optional-clone-checked
 
---@ case: channel-message-formal-optional-clone-checked-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-formal-optional-clone-checked
---@ end-case
+-- [case: channel-message-formal-optional-clone-checked-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-formal-optional-clone-checked
 
---@ source: source-channel-message-formal-two-branches-checked
---@ file: source.ril
+-- [source: source-channel-message-formal-two-branches-checked]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -738,24 +646,18 @@ pub fn test_native() @Async{
     assert(consume(third) is Ok()|Err(_))
     assert(consume(fourth) is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-two-branches-checked
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-formal-two-branches-checked
---@ end-case
+-- [case: channel-message-formal-two-branches-checked, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-formal-two-branches-checked
 
---@ case: channel-message-formal-two-branches-checked-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-formal-two-branches-checked
---@ end-case
+-- [case: channel-message-formal-two-branches-checked-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-formal-two-branches-checked
 
---@ source: source-channel-message-formal-two-optionals-checked
---@ file: source.ril
+-- [source: source-channel-message-formal-two-optionals-checked]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -787,24 +689,18 @@ pub fn test_native() @Async{
     assert(consume(second,first) is Ok()|Err(_))
     assert(consume(third,second) is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-formal-two-optionals-checked
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-formal-two-optionals-checked
---@ end-case
+-- [case: channel-message-formal-two-optionals-checked, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-formal-two-optionals-checked
 
---@ case: channel-message-formal-two-optionals-checked-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-formal-two-optionals-checked
---@ end-case
+-- [case: channel-message-formal-two-optionals-checked-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-formal-two-optionals-checked
 
---@ source: source-channel-message-inline-closed-send-loses-original
---@ file: source.ril hex
+-- [source: source-channel-message-inline-closed-send-loses-original]
+-- file: source.ril hex
 75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 70 75 62 20 66 6e 20 74 65
 73 74 5f 6e 61 74 69 76 65 28 29 20 40 41 73 79 6e 63 7b 0a 20 20 20 20 6c 65 74 20 72 65 73 75
@@ -822,18 +718,14 @@ pub fn test_native() @Async{
 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 74 78 29 0a 0a 20 20 20 20 20 20 20 20 4f 6b
 28 29 0a 20 20 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20 4f 6b
 28 29 7c 45 72 72 28 5f 29 29 0a 7d 0a
---@ end-file
---@ end-source
 
---@ case: channel-message-inline-closed-send-loses-original
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-inline-closed-send-loses-original, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: original regression expectation
---@ use-source: source-channel-message-inline-closed-send-loses-original
---@ end-case
+-- use-source: source-channel-message-inline-closed-send-loses-original
 
---@ source: source-channel-message-inline-control
---@ file: source.ril
+-- [source: source-channel-message-inline-control]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 pub fn test_native() @Async{
@@ -853,24 +745,18 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-inline-control
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-inline-control
---@ end-case
+-- [case: channel-message-inline-control, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-inline-control
 
---@ case: channel-message-inline-control-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-inline-control
---@ end-case
+-- [case: channel-message-inline-control-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-inline-control
 
---@ source: source-channel-message-inline-outer-only
---@ file: source.ril
+-- [source: source-channel-message-inline-outer-only]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 pub fn test_native() @Async{
@@ -890,18 +776,14 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-inline-outer-only
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-inline-outer-only, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: original regression expectation
---@ use-source: source-channel-message-inline-outer-only
---@ end-case
+-- use-source: source-channel-message-inline-outer-only
 
---@ source: source-channel-message-inline-unread-close
---@ file: source.ril
+-- [source: source-channel-message-inline-unread-close]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 pub fn test_native() @Async{
@@ -921,18 +803,14 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-inline-unread-close
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-inline-unread-close, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: original regression expectation
---@ use-source: source-channel-message-inline-unread-close
---@ end-case
+-- use-source: source-channel-message-inline-unread-close
 
---@ source: source-channel-message-loop-cardinality-gap
---@ file: source.ril
+-- [source: source-channel-message-loop-cardinality-gap]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 pub fn test_native() @Async{
@@ -964,18 +842,14 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-loop-cardinality-gap
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-loop-cardinality-gap, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: normative target; retained NI guards are not conformance passes
---@ use-source: source-channel-message-loop-cardinality-gap
---@ end-case
+-- use-source: source-channel-message-loop-cardinality-gap
 
---@ source: source-channel-message-nested-formal
---@ file: source.ril hex
+-- [source: source-channel-message-nested-formal]
+-- file: source.ril hex
 75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
 68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
@@ -1008,24 +882,18 @@ pub fn test_native() @Async{
 6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0a 20 20 20 20 20 20 20 20 4f 6b 28 29 0a 20 20 20 20
 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73 75 6c 74 20 69 73 20 4f 6b 28 29 7c 45 72 72 28
 5f 29 29 0a 7d 0a
---@ end-file
---@ end-source
 
---@ case: channel-message-nested-formal
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-nested-formal
---@ end-case
+-- [case: channel-message-nested-formal, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-nested-formal
 
---@ case: channel-message-nested-formal-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-nested-formal
---@ end-case
+-- [case: channel-message-nested-formal-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-nested-formal
 
---@ source: source-channel-message-optional-callback-scope-budget
---@ file: source.ril
+-- [source: source-channel-message-optional-callback-scope-budget]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -1076,24 +944,18 @@ pub fn test_native() @Async{
     through_single_optional_callback(second)
     through_single_optional_callback(third)
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-optional-callback-scope-budget
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-optional-callback-scope-budget
---@ end-case
+-- [case: channel-message-optional-callback-scope-budget, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-optional-callback-scope-budget
 
---@ case: channel-message-optional-callback-scope-budget-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-optional-callback-scope-budget
---@ end-case
+-- [case: channel-message-optional-callback-scope-budget-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-optional-callback-scope-budget
 
---@ source: source-channel-message-optional-callback-source-controls
---@ file: source.ril
+-- [source: source-channel-message-optional-callback-source-controls]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -1150,38 +1012,28 @@ pub fn test_single_map_native() @Async{
     through_single_optional_callback(second)
     through_single_optional_callback(third)
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-optional-callback-source-controls
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-optional-callback-source-controls
---@ end-case
+-- [case: channel-message-optional-callback-source-controls, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-optional-callback-source-controls
 
---@ case: channel-message-optional-callback-source-controls-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-optional-callback-source-controls
---@ end-case
+-- [case: channel-message-optional-callback-source-controls-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-optional-callback-source-controls
 
---@ case: channel-message-optional-callback-source-controls-test-named-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_named_native
---@ use-source: source-channel-message-optional-callback-source-controls
---@ end-case
+-- [case: channel-message-optional-callback-source-controls-test-named-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_named_native
+-- use-source: source-channel-message-optional-callback-source-controls
 
---@ case: channel-message-optional-callback-source-controls-test-single-map-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_single_map_native
---@ use-source: source-channel-message-optional-callback-source-controls
---@ end-case
+-- [case: channel-message-optional-callback-source-controls-test-single-map-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_single_map_native
+-- use-source: source-channel-message-optional-callback-source-controls
 
---@ source: source-channel-message-optional-callback-source-index-checked
---@ file: source.ril
+-- [source: source-channel-message-optional-callback-source-index-checked]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -1244,38 +1096,28 @@ pub fn test_single_map_native() @Async{
     through_single_optional_callback(second)
     through_single_optional_callback(third)
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-optional-callback-source-index-checked
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-optional-callback-source-index-checked
---@ end-case
+-- [case: channel-message-optional-callback-source-index-checked, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-optional-callback-source-index-checked
 
---@ case: channel-message-optional-callback-source-index-checked-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-optional-callback-source-index-checked
---@ end-case
+-- [case: channel-message-optional-callback-source-index-checked-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-optional-callback-source-index-checked
 
---@ case: channel-message-optional-callback-source-index-checked-test-named-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_named_native
---@ use-source: source-channel-message-optional-callback-source-index-checked
---@ end-case
+-- [case: channel-message-optional-callback-source-index-checked-test-named-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_named_native
+-- use-source: source-channel-message-optional-callback-source-index-checked
 
---@ case: channel-message-optional-callback-source-index-checked-test-single-map-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_single_map_native
---@ use-source: source-channel-message-optional-callback-source-index-checked
---@ end-case
+-- [case: channel-message-optional-callback-source-index-checked-test-single-map-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_single_map_native
+-- use-source: source-channel-message-optional-callback-source-index-checked
 
---@ source: source-channel-message-optional-scalar
---@ file: source.ril
+-- [source: source-channel-message-optional-scalar]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -1296,24 +1138,18 @@ pub fn test_native() @Async{
     assert(consume(Some(7)) is Ok()|Err(_))
     assert(consume(None) is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-optional-scalar
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-optional-scalar
---@ end-case
+-- [case: channel-message-optional-scalar, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-optional-scalar
 
---@ case: channel-message-optional-scalar-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-optional-scalar
---@ end-case
+-- [case: channel-message-optional-scalar-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-optional-scalar
 
---@ source: source-channel-message-optional-scalar-source-controls
---@ file: source.ril
+-- [source: source-channel-message-optional-scalar-source-controls]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 
@@ -1347,24 +1183,18 @@ pub fn test_native() @Async &{STORED}{
     assert(consume(Some(7)) is Ok()|Err(_))
     assert(consume(None) is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-optional-scalar-source-controls
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-optional-scalar-source-controls
---@ end-case
+-- [case: channel-message-optional-scalar-source-controls, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-optional-scalar-source-controls
 
---@ case: channel-message-optional-scalar-source-controls-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-optional-scalar-source-controls
---@ end-case
+-- [case: channel-message-optional-scalar-source-controls-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-optional-scalar-source-controls
 
---@ source: source-channel-message-question-checked
---@ file: source.ril hex
+-- [source: source-channel-message-question-checked]
+-- file: source.ril hex
 75 73 65 20 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 3a 3a 7b 73 63 6f 70 65 7d 0a 75 73 65 20
 72 69 6c 2f 63 6f 6e 63 75 72 72 65 6e 74 2f 63 68 61 6e 6e 65 6c 0a 66 6e 20 70 75 62 6c 69 73
 68 28 6d 75 74 20 65 6e 64 70 6f 69 6e 74 3a 43 68 61 6e 6e 65 6c 3a 3a 53 65 6e 64 65 72 3c 52
@@ -1393,24 +1223,18 @@ pub fn test_native() @Async &{STORED}{
 74 78 29 0a 20 20 20 20 20 20 20 20 43 68 61 6e 6e 65 6c 3a 3a 63 6c 6f 73 65 28 72 78 29 0a 20
 20 20 20 20 20 20 20 4f 6b 28 29 0a 20 20 20 20 7d 0a 20 20 20 20 61 73 73 65 72 74 28 72 65 73
 75 6c 74 20 69 73 20 4f 6b 28 29 7c 45 72 72 28 5f 29 29 0a 7d 0a
---@ end-file
---@ end-source
 
---@ case: channel-message-question-checked
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-question-checked
---@ end-case
+-- [case: channel-message-question-checked, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-question-checked
 
---@ case: channel-message-question-checked-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-question-checked
---@ end-case
+-- [case: channel-message-question-checked-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-question-checked
 
---@ source: source-channel-message-repeated-cardinality-gap
---@ file: source.ril
+-- [source: source-channel-message-repeated-cardinality-gap]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 pub fn test_native() @Async{
@@ -1442,18 +1266,14 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-repeated-cardinality-gap
---@ mode: check-fail
---@ spec: SPEC#structured-concurrency-channels
+-- [case: channel-message-repeated-cardinality-gap, check-fail]
+-- spec: SPEC#structured-concurrency-channels
 -- Error [E0720]: normative target; retained NI guards are not conformance passes
---@ use-source: source-channel-message-repeated-cardinality-gap
---@ end-case
+-- use-source: source-channel-message-repeated-cardinality-gap
 
---@ source: source-channel-message-same-sender
---@ file: source.ril
+-- [source: source-channel-message-same-sender]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 fn publish(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
@@ -1476,24 +1296,18 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-same-sender
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-same-sender
---@ end-case
+-- [case: channel-message-same-sender, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-same-sender
 
---@ case: channel-message-same-sender-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-same-sender
---@ end-case
+-- [case: channel-message-same-sender-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-same-sender
 
---@ source: source-channel-message-two-senders
---@ file: source.ril
+-- [source: source-channel-message-two-senders]
+-- file: source.ril
 use ril/concurrent::{scope}
 use ril/concurrent/channel
 fn publish(mut endpoint:Channel::Sender<Result<int,str>>,value:Result<int,str>)->Result<(),Channel::ChannelError> @Fiber &mut{
@@ -1527,24 +1341,18 @@ pub fn test_native() @Async{
     }
     assert(result is Ok()|Err(_))
 }
---@ end-file
---@ end-source
 
---@ case: channel-message-two-senders
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-channel-message-two-senders
---@ end-case
+-- [case: channel-message-two-senders, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-channel-message-two-senders
 
---@ case: channel-message-two-senders-test-native
---@ mode: run-pass
---@ spec: SPEC#structured-concurrency-channels
---@ entry: test_native
---@ use-source: source-channel-message-two-senders
---@ end-case
+-- [case: channel-message-two-senders-test-native, run-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- entry: test_native
+-- use-source: source-channel-message-two-senders
 
---@ source: source-nested-result-channel
---@ file: source.ril
+-- [source: source-nested-result-channel]
+-- file: source.ril
 use ril/concurrent::{scope,TaskFault}
 use ril/concurrent/channel
 fn duplicate(tx:Channel::Sender<Result<int,str>>)->Channel::Sender<Result<int,str>> @Fiber{clone(tx)}
@@ -1572,11 +1380,7 @@ fn example() @Async{
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-source
 
---@ case: nested-result-channel
---@ mode: check-pass
---@ spec: SPEC#structured-concurrency-channels
---@ use-source: source-nested-result-channel
---@ end-case
+-- [case: nested-result-channel, check-pass]
+-- spec: SPEC#structured-concurrency-channels
+-- use-source: source-nested-result-channel

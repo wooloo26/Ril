@@ -1,8 +1,7 @@
---@ case: empty-block-contexts
---@ mode: run-pass
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ entry: test_native
---@ file: source.ril
+-- [case: empty-block-contexts, run-pass]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- entry: test_native
+-- file: source.ril
 fn classify(value: ?int) {
     if value is Some(1) {} else if value is Some(2) {} else {}
 }
@@ -16,23 +15,18 @@ pub fn test_native() {
     let empty = \-> {}
     empty()
 }
---@ end-file
---@ end-case
 
---@ case: empty-block-type-mismatch
---@ mode: check-fail
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ companion: empty-block-contexts
+-- [case: empty-block-type-mismatch, check-fail]
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
+-- companion: empty-block-contexts
 -- Error [E0301]: the empty block returns unit, not int
---@ file: source.ril
+-- file: source.ril
 fn invalid() {
     let value: int = {}
 }
---@ end-file
---@ end-case
 
---@ source: owned-boundary-arrays
---@ file: source.ril
+-- [source: owned-boundary-arrays]
+-- file: source.ril
 eff Interrupt { choose() -> int }
 fn aborted() -> [0][2]int {
     let early: [0][2]int = []
@@ -50,38 +44,29 @@ fn resumed() -> [0][2]int {
 pub fn test_native() {
     assert(len(aborted()) == 0 && len(resumed()) == 0)
 }
---@ end-file
---@ end-source
 
---@ case: owned-boundary-arrays-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#effect-handlers
---@ companion: reject-abort-hidden-dimension
---@ use-source: owned-boundary-arrays
---@ end-case
+-- [case: owned-boundary-arrays-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#effect-handlers
+-- companion: reject-abort-hidden-dimension
+-- use-source: owned-boundary-arrays
 
---@ case: owned-boundary-arrays-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#effect-handlers
---@ companion: owned-boundary-arrays-native
---@ use-source: owned-boundary-arrays
---@ end-case
+-- [case: owned-boundary-arrays-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#effect-handlers
+-- companion: owned-boundary-arrays-native
+-- use-source: owned-boundary-arrays
 
---@ case: owned-boundary-arrays-native
---@ mode: run-pass
---@ spec: SPEC#effect-handlers
---@ entry: test_native
---@ use-source: owned-boundary-arrays
---@ end-case
+-- [case: owned-boundary-arrays-native, run-pass]
+-- spec: SPEC#effect-handlers
+-- entry: test_native
+-- use-source: owned-boundary-arrays
 
---@ case: reject-abort-hidden-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: owned-boundary-arrays-pointer32
+-- [case: reject-abort-hidden-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: owned-boundary-arrays-pointer32
 -- Error [E0301]: An abort answer retains its hidden inner array dimension.
---@ file: source.ril
+-- file: source.ril
 eff Interrupt { choose() -> int }
 fn invalid() -> [0][2]int {
     let early: [0][3]int = []
@@ -90,15 +75,12 @@ fn invalid() -> [0][2]int {
     let normal: [0][2]int = []
     normal
 }
---@ end-file
---@ end-case
 
---@ case: reject-resume-answer-hidden-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: owned-boundary-arrays-pointer64
+-- [case: reject-resume-answer-hidden-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: owned-boundary-arrays-pointer64
 -- Error [E0301]: A resumption binder receives the actual protected array type.
---@ file: source.ril
+-- file: source.ril
 eff Interrupt { choose() -> int }
 fn invalid() -> [0][2]int {
     with Interrupt::choose() -> { let continued: [0][3]int = resume 7; continued }
@@ -106,5 +88,3 @@ fn invalid() -> [0][2]int {
     let normal: [0][2]int = []
     normal
 }
---@ end-file
---@ end-case

@@ -1,5 +1,5 @@
---@ source: if-let-branches
---@ file: source.ril
+-- [source: if-let-branches]
+-- file: source.ril
 type Event { Pair(int, str), Again(int, str), Stop }
 type Counter = { mut count: int }
 
@@ -27,34 +27,26 @@ pub fn test_native() {
     assert(code(Pair(3, "a")) == 3 && code(Again(5, "b")) == 5 && code(Stop) == 0)
     if let Some(unit) = Some(()) { assert(unit == ()) }
 }
---@ end-file
---@ end-source
 
---@ case: if-let-branches-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#conditional-expressions
---@ companion: reject-if-let-binder-in-else
---@ use-source: if-let-branches
---@ end-case
+-- [case: if-let-branches-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#conditional-expressions
+-- companion: reject-if-let-binder-in-else
+-- use-source: if-let-branches
 
---@ case: if-let-branches-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#conditional-expressions
---@ companion: if-let-branches-native
---@ use-source: if-let-branches
---@ end-case
+-- [case: if-let-branches-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#conditional-expressions
+-- companion: if-let-branches-native
+-- use-source: if-let-branches
 
---@ case: if-let-branches-native
---@ mode: run-pass
---@ spec: SPEC#conditional-expressions
---@ entry: test_native
---@ use-source: if-let-branches
---@ end-case
+-- [case: if-let-branches-native, run-pass]
+-- spec: SPEC#conditional-expressions
+-- entry: test_native
+-- use-source: if-let-branches
 
---@ source: if-let-result-tuples
---@ file: source.ril
+-- [source: if-let-result-tuples]
+-- file: source.ril
 fn sum(item: Result<(int, int), str>) -> int {
     if let Ok(left, right) = item { left + right } else { -1 }
 }
@@ -64,36 +56,28 @@ pub fn test_native() {
     let total = if let Some((left, Some(right))) = item { left + right } else { 0 }
     assert(total == 9)
 }
---@ end-file
---@ end-source
 
---@ case: if-let-result-tuples-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#conditional-expressions
---@ spec: SPEC#constructor-tuple-equivalence-invariant
---@ companion: reject-if-let-subject-type
---@ use-source: if-let-result-tuples
---@ end-case
+-- [case: if-let-result-tuples-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#conditional-expressions
+-- spec: SPEC#constructor-tuple-equivalence-invariant
+-- companion: reject-if-let-subject-type
+-- use-source: if-let-result-tuples
 
---@ case: if-let-result-tuples-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#conditional-expressions
---@ companion: if-let-result-tuples-native
---@ use-source: if-let-result-tuples
---@ end-case
+-- [case: if-let-result-tuples-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#conditional-expressions
+-- companion: if-let-result-tuples-native
+-- use-source: if-let-result-tuples
 
---@ case: if-let-result-tuples-native
---@ mode: run-pass
---@ spec: SPEC#conditional-expressions
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ entry: test_native
---@ use-source: if-let-result-tuples
---@ end-case
+-- [case: if-let-result-tuples-native, run-pass]
+-- spec: SPEC#conditional-expressions
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- entry: test_native
+-- use-source: if-let-result-tuples
 
---@ source: if-let-fallible-propagation
---@ file: source.ril
+-- [source: if-let-fallible-propagation]
+-- file: source.ril
 type Cache = { mut counter: int }
 
 fn fetch(mut cache: Cache, id: int) -> Result<?str, str> &mut {
@@ -123,38 +107,30 @@ pub fn test_native() {
     assert(query(mut cache, -1) is Err("negative id"))
     assert(cache.counter == 3)
 }
---@ end-file
---@ end-source
 
---@ case: if-let-fallible-propagation-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#conditional-expressions
---@ spec: SPEC#error-and-fallback-operators
---@ companion: reject-if-let-unpropagated-result
---@ use-source: if-let-fallible-propagation
---@ end-case
+-- [case: if-let-fallible-propagation-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#conditional-expressions
+-- spec: SPEC#error-and-fallback-operators
+-- companion: reject-if-let-unpropagated-result
+-- use-source: if-let-fallible-propagation
 
---@ case: if-let-fallible-propagation-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#conditional-expressions
---@ spec: SPEC#error-and-fallback-operators
---@ companion: if-let-fallible-propagation-native
---@ use-source: if-let-fallible-propagation
---@ end-case
+-- [case: if-let-fallible-propagation-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#conditional-expressions
+-- spec: SPEC#error-and-fallback-operators
+-- companion: if-let-fallible-propagation-native
+-- use-source: if-let-fallible-propagation
 
---@ case: if-let-fallible-propagation-native
---@ mode: run-pass
---@ spec: SPEC#conditional-expressions
---@ spec: SPEC#error-and-fallback-operators
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ entry: test_native
---@ use-source: if-let-fallible-propagation
---@ end-case
+-- [case: if-let-fallible-propagation-native, run-pass]
+-- spec: SPEC#conditional-expressions
+-- spec: SPEC#error-and-fallback-operators
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- entry: test_native
+-- use-source: if-let-fallible-propagation
 
---@ source: while-let-control
---@ file: source.ril
+-- [source: while-let-control]
+-- file: source.ril
 type Counter = { mut count: int }
 fn pull(mut values: []int, mut counter: Counter) -> ?int &mut {
     counter.count += 1
@@ -177,35 +153,27 @@ pub fn test_native() {
     }
     assert(counter.count == 7)
 }
---@ end-file
---@ end-source
 
---@ case: while-let-control-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#loop-expressions
---@ companion: reject-while-let-binder-after-loop
---@ use-source: while-let-control
---@ end-case
+-- [case: while-let-control-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#loop-expressions
+-- companion: reject-while-let-binder-after-loop
+-- use-source: while-let-control
 
---@ case: while-let-control-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#loop-expressions
---@ companion: while-let-control-native
---@ use-source: while-let-control
---@ end-case
+-- [case: while-let-control-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#loop-expressions
+-- companion: while-let-control-native
+-- use-source: while-let-control
 
---@ case: while-let-control-native
---@ mode: run-pass
---@ spec: SPEC#loop-expressions
---@ spec: SPEC#control-transfers
---@ entry: test_native
---@ use-source: while-let-control
---@ end-case
+-- [case: while-let-control-native, run-pass]
+-- spec: SPEC#loop-expressions
+-- spec: SPEC#control-transfers
+-- entry: test_native
+-- use-source: while-let-control
 
---@ source: while-let-capture-occurrences
---@ file: source.ril
+-- [source: while-let-capture-occurrences]
+-- file: source.ril
 type Reader = fn() -> int &closure
 pub fn test_native() {
     let mut values = [1, 2, 3]
@@ -216,34 +184,26 @@ pub fn test_native() {
     assert(readers[0]() == 3 && readers[1]() == 2 && readers[2]() == 1)
     assert(readers[0]() == 3 && readers[2]() == 1)
 }
---@ end-file
---@ end-source
 
---@ case: while-let-capture-occurrences-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#loop-expressions
---@ spec: SPEC#closures-factory-signatures-and-lexical-environments
---@ use-source: while-let-capture-occurrences
---@ end-case
+-- [case: while-let-capture-occurrences-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#loop-expressions
+-- spec: SPEC#closures-factory-signatures-and-lexical-environments
+-- use-source: while-let-capture-occurrences
 
---@ case: while-let-capture-occurrences-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#loop-expressions
---@ companion: while-let-capture-occurrences-native
---@ use-source: while-let-capture-occurrences
---@ end-case
+-- [case: while-let-capture-occurrences-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#loop-expressions
+-- companion: while-let-capture-occurrences-native
+-- use-source: while-let-capture-occurrences
 
---@ case: while-let-capture-occurrences-native
---@ mode: run-pass
---@ spec: SPEC#loop-expressions
---@ entry: test_native
---@ use-source: while-let-capture-occurrences
---@ end-case
+-- [case: while-let-capture-occurrences-native, run-pass]
+-- spec: SPEC#loop-expressions
+-- entry: test_native
+-- use-source: while-let-capture-occurrences
 
---@ source: while-let-fallible-propagation
---@ file: source.ril
+-- [source: while-let-fallible-propagation]
+-- file: source.ril
 type Stream = { mut step: int, fail_at: int }
 
 fn next_item(mut stream: Stream) -> Result<?int, str> &mut {
@@ -271,159 +231,121 @@ pub fn test_native() {
     assert(drain(1) is Err("stream error"))
     assert(drain(3) is Err("stream error"))
 }
---@ end-file
---@ end-source
 
---@ case: while-let-fallible-propagation-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#loop-expressions
---@ spec: SPEC#error-and-fallback-operators
---@ companion: reject-while-let-unpropagated-result
---@ use-source: while-let-fallible-propagation
---@ end-case
+-- [case: while-let-fallible-propagation-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#loop-expressions
+-- spec: SPEC#error-and-fallback-operators
+-- companion: reject-while-let-unpropagated-result
+-- use-source: while-let-fallible-propagation
 
---@ case: while-let-fallible-propagation-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#loop-expressions
---@ spec: SPEC#error-and-fallback-operators
---@ companion: while-let-fallible-propagation-native
---@ use-source: while-let-fallible-propagation
---@ end-case
+-- [case: while-let-fallible-propagation-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#loop-expressions
+-- spec: SPEC#error-and-fallback-operators
+-- companion: while-let-fallible-propagation-native
+-- use-source: while-let-fallible-propagation
 
---@ case: while-let-fallible-propagation-native
---@ mode: run-pass
---@ spec: SPEC#loop-expressions
---@ spec: SPEC#error-and-fallback-operators
---@ spec: SPEC#mandatory-inspection-of-fallible-results
---@ entry: test_native
---@ use-source: while-let-fallible-propagation
---@ end-case
+-- [case: while-let-fallible-propagation-native, run-pass]
+-- spec: SPEC#loop-expressions
+-- spec: SPEC#error-and-fallback-operators
+-- spec: SPEC#mandatory-inspection-of-fallible-results
+-- entry: test_native
+-- use-source: while-let-fallible-propagation
 
---@ case: reject-if-let-binder-in-else
---@ mode: check-fail
---@ spec: SPEC#conditional-expressions
---@ companion: if-let-branches-pointer32
+-- [case: reject-if-let-binder-in-else, check-fail]
+-- spec: SPEC#conditional-expressions
+-- companion: if-let-branches-pointer32
 -- Error [E0204]: A then binder is unavailable in the else branch.
---@ file: source.ril
+-- file: source.ril
 fn example(item: ?int) -> int {
     if let Some(value) = item { value } else { value }
 }
---@ end-file
---@ end-case
 
---@ case: reject-if-let-binder-after-branch
---@ mode: check-fail
---@ spec: SPEC#conditional-expressions
---@ companion: if-let-branches-pointer64
+-- [case: reject-if-let-binder-after-branch, check-fail]
+-- spec: SPEC#conditional-expressions
+-- companion: if-let-branches-pointer64
 -- Error [E0204]: A conditional binder cannot escape the then block.
---@ file: source.ril
+-- file: source.ril
 fn example(item: ?int) {
     if let Some(value) = item { assert(value == value) }
     let outside = value
 }
---@ end-file
---@ end-case
 
---@ case: reject-if-let-subject-type
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: if-let-result-tuples-pointer32
+-- [case: reject-if-let-subject-type, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: if-let-result-tuples-pointer32
 -- Error [E0301]: A constructor pattern must match its subject's type.
---@ file: source.ril
+-- file: source.ril
 fn example(item: int) {
     if let Some(value) = item { assert(value == value) }
 }
---@ end-file
---@ end-case
 
---@ case: reject-if-let-branch-type
---@ mode: check-fail
---@ spec: SPEC#conditional-expressions
---@ companion: if-let-branches-pointer64
+-- [case: reject-if-let-branch-type, check-fail]
+-- spec: SPEC#conditional-expressions
+-- companion: if-let-branches-pointer64
 -- Error [E0351]: Pattern conditions retain the ordinary branch type rule.
---@ file: source.ril
+-- file: source.ril
 fn example(item: ?int) {
     let value = if let Some(found) = item { found } else { "missing" }
 }
---@ end-file
---@ end-case
 
---@ case: reject-if-let-alternative-binders
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: if-let-branches-pointer64
+-- [case: reject-if-let-alternative-binders, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: if-let-branches-pointer64
 -- Error [E0346]: Each alternative binds the same identifiers.
---@ file: source.ril
+-- file: source.ril
 type Event { Left(int), Right(int) }
 fn example(item: Event) {
     if let Left(left) | Right(right) = item { () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-if-let-duplicate-binder
---@ mode: check-fail
---@ spec: SPEC#pattern-matching
---@ companion: if-let-result-tuples-pointer64
+-- [case: reject-if-let-duplicate-binder, check-fail]
+-- spec: SPEC#pattern-matching
+-- companion: if-let-result-tuples-pointer64
 -- Error [E0347]: One matching alternative cannot bind an identifier twice.
---@ file: source.ril
+-- file: source.ril
 fn example(item: ?(int, int)) {
     if let Some((same, same)) = item { () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-while-let-binder-after-loop
---@ mode: check-fail
---@ spec: SPEC#loop-expressions
---@ companion: while-let-control-pointer32
+-- [case: reject-while-let-binder-after-loop, check-fail]
+-- spec: SPEC#loop-expressions
+-- companion: while-let-control-pointer32
 -- Error [E0204]: A while-let binder belongs only to the body.
---@ file: source.ril
+-- file: source.ril
 fn example(mut items: []int) &mut {
     while let Some(value) = Array::pop(mut items) { assert(value == value) }
     let outside = value
 }
---@ end-file
---@ end-case
 
---@ case: reject-while-let-valued-last
---@ mode: check-fail
---@ spec: SPEC#loop-expressions
---@ companion: while-let-control-pointer64
+-- [case: reject-while-let-valued-last, check-fail]
+-- spec: SPEC#loop-expressions
+-- companion: while-let-control-pointer64
 -- Error [E0301]: While-let retains the unit-valued last constraint.
---@ file: source.ril
+-- file: source.ril
 fn example(mut items: []int) &mut {
     while let Some(value) = Array::pop(mut items) { last value }
 }
---@ end-file
---@ end-case
 
---@ case: reject-while-let-unpropagated-result
---@ mode: check-fail
---@ spec: SPEC#loop-expressions
---@ spec: SPEC#pattern-matching
---@ companion: while-let-fallible-propagation-pointer32
+-- [case: reject-while-let-unpropagated-result, check-fail]
+-- spec: SPEC#loop-expressions
+-- spec: SPEC#pattern-matching
+-- companion: while-let-fallible-propagation-pointer32
 -- Error [E0301]: A constructor pattern must match its subject's type without omitted propagation.
---@ file: source.ril
+-- file: source.ril
 fn next_item() -> Result<?int, str> { Ok(Some(1)) }
 fn example() {
     while let Some(value) = next_item() { () }
 }
---@ end-file
---@ end-case
 
---@ case: reject-if-let-unpropagated-result
---@ mode: check-fail
---@ spec: SPEC#conditional-expressions
---@ spec: SPEC#pattern-matching
---@ companion: if-let-fallible-propagation-pointer32
+-- [case: reject-if-let-unpropagated-result, check-fail]
+-- spec: SPEC#conditional-expressions
+-- spec: SPEC#pattern-matching
+-- companion: if-let-fallible-propagation-pointer32
 -- Error [E0301]: A constructor pattern must match its subject's type without omitted propagation.
---@ file: source.ril
+-- file: source.ril
 fn lookup() -> Result<?str, str> { Ok(Some("data")) }
 fn example() {
     if let Some(text) = lookup() { assert(text == text) }
 }
---@ end-file
---@ end-case

@@ -1,8 +1,5 @@
---@ case: byte-decoder-seeds
---@ mode: run-pass
---@ spec: STD#unicode-and-stringbuilder
---@ entry: test_byte_decoder_seeds
---@ file: byte-decoder-seeds.ril
+-- [case: byte-decoder-seeds, run-pass]
+-- spec: STD#unicode-and-stringbuilder
 use ril/unicode
 
 pub fn test_byte_decoder_seeds() {
@@ -13,5 +10,3 @@ pub fn test_byte_decoder_seeds() {
         }
     }
 }
---@ end-file
---@ end-case

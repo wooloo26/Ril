@@ -1,22 +1,15 @@
---@ case: decisive-result-suppresses-right-fault
---@ mode: run-pass
---@ spec: STD#result-order-and-failures
---@ entry: test_decisive_result_suppresses_right_fault
---@ file: decisive-result-suppresses-right-fault.ril
+-- [case: decisive-result-suppresses-right-fault, run-pass]
+-- spec: STD#result-order-and-failures
 use ril/parallel
 
 pub fn test_decisive_result_suppresses_right_fault() {
     let found = Parallel::find([0, 1], \n -> { if n == 0 { true } else { panic("right") } })
     assert(found == Some(0))
 }
---@ end-file
---@ end-case
 
---@ case: decisive-result-suppresses-right-double-fault
---@ mode: run-pass
---@ spec: STD#result-order-and-failures
---@ entry: test_decisive_result_suppresses_right_double_fault
---@ file: right-double-fault.ril
+-- [case: decisive-result-suppresses-right-double-fault, run-pass]
+-- spec: STD#result-order-and-failures
+-- file: right-double-fault.ril
 use ril/parallel
 type Guard = { on_close: fn() -> () }
 
@@ -28,14 +21,9 @@ pub fn test_decisive_result_suppresses_right_double_fault() {
     })
     assert(found == Some(0))
 }
---@ end-file
---@ end-case
 
---@ case: fold-fault-source-index
---@ mode: run-pass
---@ spec: STD#fold-results
---@ entry: test_fold_fault_source_index
---@ file: fold-fault-source-index.ril
+-- [case: fold-fault-source-index, run-pass]
+-- spec: STD#fold-results
 use ril/parallel
 use ril/concurrent::{scope, TaskFault}
 
@@ -54,14 +42,9 @@ pub fn test_fold_fault_source_index() @Concurrent {
         _ -> panic("expected indexed fold fault"),
     }
 }
---@ end-file
---@ end-case
 
---@ case: independent-fault-precedence
---@ mode: run-pass
---@ spec: STD#mutation-and-concurrency-limits
---@ entry: test_independent_fault_precedence
---@ file: independent-fault-precedence.ril
+-- [case: independent-fault-precedence, run-pass]
+-- spec: STD#mutation-and-concurrency-limits
 use ril/parallel
 use ril/concurrent::{scope, TaskFault}
 type Guard = { on_close: fn() -> () }
@@ -80,14 +63,9 @@ pub fn test_independent_fault_precedence() @Concurrent {
         _ -> panic("expected earlier double fault"),
     }
 }
---@ end-file
---@ end-case
 
---@ case: disjoint-writes
---@ mode: run-pass
---@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
---@ entry: test_disjoint_writes
---@ file: disjoint-writes.ril
+-- [case: disjoint-writes, run-pass]
+-- spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
 use ril/parallel
 type Cell = { mut count: int }
 
@@ -96,14 +74,9 @@ pub fn test_disjoint_writes() {
     cells !> Parallel::for_each(\mut cell -> { cell.count *= 2 })
     assert(cells[0].count == 2 && cells[1].count == 4)
 }
---@ end-file
---@ end-case
 
---@ case: empty-combinators
---@ mode: run-pass
---@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
---@ entry: test_empty_combinators
---@ file: empty-combinators.ril
+-- [case: empty-combinators, run-pass]
+-- spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
 use ril/parallel
 
 pub fn test_empty_combinators() {
@@ -113,14 +86,9 @@ pub fn test_empty_combinators() {
     assert(Parallel::first(empty, \n -> true) == None)
     assert(!Parallel::any(empty, \n -> true))
 }
---@ end-file
---@ end-case
 
---@ case: fold-group-boundaries
---@ mode: run-pass
---@ spec: STD#fold-results
---@ entry: test_fold_group_boundaries
---@ file: fold-group-boundaries.ril
+-- [case: fold-group-boundaries, run-pass]
+-- spec: STD#fold-results
 use ril/parallel
 
 pub fn test_fold_group_boundaries() {
@@ -132,43 +100,28 @@ pub fn test_fold_group_boundaries() {
         assert(value == groups * 10)
     }
 }
---@ end-file
---@ end-case
 
---@ case: nonpositive-bound-safe
---@ mode: run-pass
---@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
---@ companion: nonpositive-bound
---@ entry: test_nonpositive_bound_safe
---@ file: nonpositive-bound-safe.ril
+-- [case: nonpositive-bound-safe, run-pass]
+-- spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+-- companion: nonpositive-bound
 use ril/parallel
 
 pub fn test_nonpositive_bound_safe() {
     assert(Parallel::map_bounded([1], 1, \n -> n) == [1])
 }
---@ end-file
---@ end-case
 
---@ case: nonpositive-bound
---@ mode: run-panic
---@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
---@ companion: nonpositive-bound-safe
---@ entry: test_nonpositive_bound
+-- [case: nonpositive-bound, run-panic]
+-- spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
+-- companion: nonpositive-bound-safe
 -- Panics: nonpositive bound
---@ file: nonpositive-bound.ril
 use ril/parallel
 
 pub fn test_nonpositive_bound() {
     let _ = Parallel::map_bounded([1], 0, \n -> n)
 }
---@ end-file
---@ end-case
 
---@ case: pure-combinators
---@ mode: run-pass
---@ spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
---@ entry: test_pure_combinators
---@ file: pure-combinators.ril
+-- [case: pure-combinators, run-pass]
+-- spec: STD#deterministic-data-parallelism-and-divide-and-conquer-primitives
 use ril/parallel
 
 pub fn test_pure_combinators() {
@@ -180,5 +133,3 @@ pub fn test_pure_combinators() {
     assert(Parallel::join(\-> 1, \-> "a") == (1, "a"))
     assert(Parallel::join3(\-> 1, \-> 2, \-> 3) == (1, 2, 3))
 }
---@ end-file
---@ end-case

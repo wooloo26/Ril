@@ -1,8 +1,5 @@
---@ case: child-panic
---@ mode: run-pass
---@ spec: STD#structured-concurrency-and-panic-containment
---@ entry: test_child_panic
---@ file: child-panic.ril
+-- [case: child-panic, run-pass]
+-- spec: STD#structured-concurrency-and-panic-containment
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -10,14 +7,9 @@ pub fn test_child_panic() @Concurrent {
     let result = scope \mut s -> { s.fork(\-> panic("child")); Ok() }
     assert(result is Err(TaskFault::Panicked(_)))
 }
---@ end-file
---@ end-case
 
---@ case: double-fault
---@ mode: run-pass
---@ spec: STD#structured-concurrency-and-panic-containment
---@ entry: test_double_fault
---@ file: double-fault.ril
+-- [case: double-fault, run-pass]
+-- spec: STD#structured-concurrency-and-panic-containment
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 type Guard = { on_close: fn() -> () }
@@ -29,14 +21,9 @@ pub fn test_double_fault() @Concurrent {
     }
     assert(result is Err(TaskFault::DoubleFaultFatal(_)))
 }
---@ end-file
---@ end-case
 
---@ case: fork-join
---@ mode: run-pass
---@ spec: STD#structured-concurrency-and-panic-containment
---@ entry: test_fork_join
---@ file: fork-join.ril
+-- [case: fork-join, run-pass]
+-- spec: STD#structured-concurrency-and-panic-containment
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -44,14 +31,9 @@ pub fn test_fork_join() @Concurrent {
     let result = scope \mut s -> { let task = s.fork(\-> 42); task.join() }
     assert(result is Ok(42))
 }
---@ end-file
---@ end-case
 
---@ case: nested-business-result
---@ mode: run-pass
---@ spec: STD#structured-concurrency-and-panic-containment
---@ entry: test_nested_business_result
---@ file: nested-business-result.ril
+-- [case: nested-business-result, run-pass]
+-- spec: STD#structured-concurrency-and-panic-containment
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -63,5 +45,3 @@ pub fn test_nested_business_result() @Concurrent {
     }
     match result { Ok(business) -> assert(business is Err("business")), Err(_fault) -> panic("unexpected fault") }
 }
---@ end-file
---@ end-case

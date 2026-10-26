@@ -1,8 +1,5 @@
---@ case: float-total-order
---@ mode: run-pass
---@ spec: STD#ordering-deques-and-heaps
---@ entry: test_float_total_order
---@ file: float-total-order.ril
+-- [case: float-total-order, run-pass]
+-- spec: STD#ordering-deques-and-heaps
 use ril/order
 
 pub fn test_float_total_order() {
@@ -11,14 +8,9 @@ pub fn test_float_total_order() {
     assert(Order::total_f64(nan, nan) == Order::Ordering::Equal)
     assert(Order::total_f64(1.0 / 0.0, nan) == Order::Ordering::Less)
 }
---@ end-file
---@ end-case
 
---@ case: sorting-and-search
---@ mode: run-pass
---@ spec: STD#ordering-deques-and-heaps
---@ entry: test_sorting_and_search
---@ file: sorting-and-search.ril
+-- [case: sorting-and-search, run-pass]
+-- spec: STD#ordering-deques-and-heaps
 use ril/order
 
 pub fn test_sorting_and_search() {
@@ -31,14 +23,9 @@ pub fn test_sorting_and_search() {
     assert(Order::compare_str("a", "b") == Order::Ordering::Less)
     assert(Order::compare_bytes(b"b", b"a") == Order::Ordering::Greater)
 }
---@ end-file
---@ end-case
 
---@ case: stable-ties
---@ mode: run-pass
---@ spec: STD#ordering-deques-and-heaps
---@ entry: test_stable_ties
---@ file: stable-ties.ril
+-- [case: stable-ties, run-pass]
+-- spec: STD#ordering-deques-and-heaps
 use ril/order
 type Entry = { rank: int, name: str }
 
@@ -47,5 +34,3 @@ pub fn test_stable_ties() {
     let sorted = Order::sorted(values, .{ compare: \a, b -> Order::compare_int(a.rank, b.rank) })
     assert(Array::map(sorted, \.name) == ["a", "b"])
 }
---@ end-file
---@ end-case

@@ -1,8 +1,5 @@
---@ case: child-clone-source
---@ mode: run-pass
---@ spec: STD#structured-concurrency-channels
---@ entry: test_child_clone_source
---@ file: child-clone-source.ril
+-- [case: child-clone-source, run-pass]
+-- spec: STD#structured-concurrency-channels
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -18,14 +15,9 @@ pub fn test_child_clone_source() @Async {
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: detach-attach
---@ mode: run-pass
---@ spec: STD#structured-concurrency-channels
---@ entry: test_detach_attach
---@ file: detach-attach.ril
+-- [case: detach-attach, run-pass]
+-- spec: STD#structured-concurrency-channels
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -40,14 +32,9 @@ pub fn test_detach_attach() @Async {
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-case
 
---@ case: failed-producer-cancels-wait
---@ mode: run-pass
---@ spec: STD#structured-concurrency-channels
---@ entry: test_failed_producer_cancels_wait
---@ file: failed-producer-cancels-wait.ril
+-- [case: failed-producer-cancels-wait, run-pass]
+-- spec: STD#structured-concurrency-channels
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -60,14 +47,9 @@ pub fn test_failed_producer_cancels_wait() @Async {
     }
     assert(result is Err(TaskFault::Panicked(_)))
 }
---@ end-file
---@ end-case
 
---@ case: fifo-and-closed
---@ mode: run-pass
---@ spec: STD#structured-concurrency-channels
---@ entry: test_fifo_and_closed
---@ file: fifo-and-closed.ril
+-- [case: fifo-and-closed, run-pass]
+-- spec: STD#structured-concurrency-channels
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -86,5 +68,3 @@ pub fn test_fifo_and_closed() @Async {
     }
     assert(result is Ok())
 }
---@ end-file
---@ end-case

@@ -1,23 +1,15 @@
---@ case: i16-boundaries
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ entry: test_i16_boundaries
---@ file: i16-boundaries.ril
+-- [case: i16-boundaries, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
 pub fn test_i16_boundaries() {
     assert(32767i16 +% 1i16 == -32768i16)
     assert(-32768i16 -% 1i16 == 32767i16)
     assert(32767i16 / 1i16 == 32767i16)
 }
---@ end-file
---@ end-case
 
---@ case: static-floating-receipts
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ companion: static-floating-widening
---@ entry: test_static_floating_receipts
---@ file: static-floating-receipts.ril
+-- [case: static-floating-receipts, run-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- companion: static-floating-widening
 meta let ROUNDED: f32 = 16777217
 meta let NEGATIVE_ZERO: f32 = -0.0f32
 meta let NEGATIVE: f64 = -1.5f64
@@ -38,14 +30,11 @@ pub fn test_static_floating_receipts() &{ROUNDED, NEGATIVE_ZERO, NEGATIVE, NOT_A
     let nan = fixed_wide<(0.0f64 / 0.0f64)>()
     assert(nan != nan)
 }
---@ end-file
---@ end-case
 
---@ case: external-const-floating-defaults
---@ mode: check-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#generic-parameters-defaults-and-value-sorts
---@ file: main.ril
+-- [case: external-const-floating-defaults, check-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#generic-parameters-defaults-and-value-sorts
+-- file: main.ril
 use api
 fn example() {
     let rounded: f32 = Api::fixed<16777217.0f32>()
@@ -56,326 +45,202 @@ fn example() {
     let negated_wide_nan: f64 = Api::negated_wide<(0.0f64 / 0.0f64)>()
     let flipped: f32 = -negative_zero
 }
---@ end-file
---@ file: api.d.ril
+
+-- file: api.d.ril
 pub fn fixed<value: f32>(number: f32 = value) -> f32
 pub fn wide<value: f64>(number: f64 = value) -> f64
 pub fn negated<value: f32>(number: f32 = -value) -> f32
 pub fn negated_wide<value: f64>(number: f64 = -value) -> f64
---@ end-file
---@ end-case
 
---@ case: static-floating-widening
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ companion: static-floating-receipts
+-- [case: static-floating-widening, check-fail]
+-- spec: SPEC#numeric-literals
+-- companion: static-floating-receipts
 -- Error [E0301]: a committed f32 value cannot be implicitly selected as f64.
---@ file: static-floating-widening.ril
 meta let ROUNDED: f32 = 16777217
 fn example() &{ROUNDED} {
     let widened: f64 = ROUNDED
 }
---@ end-file
---@ end-case
 
---@ case: i16-overflow-safe
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: i16-overflow
---@ entry: test_i16_overflow_safe
---@ file: i16-overflow-safe.ril
+-- [case: i16-overflow-safe, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: i16-overflow
 pub fn test_i16_overflow_safe() {
     assert(32766i16 + 1i16 == 32767i16)
 }
---@ end-file
---@ end-case
 
---@ case: i16-overflow
---@ mode: run-panic
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: i16-overflow-safe
---@ entry: test_i16_overflow
+-- [case: i16-overflow, run-panic]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: i16-overflow-safe
 -- Panics: i16 overflow
---@ file: i16-overflow.ril
 pub fn test_i16_overflow() {
     let _ = 32767i16 + 1i16
 }
---@ end-file
---@ end-case
 
---@ case: i32-boundaries
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ entry: test_i32_boundaries
---@ file: i32-boundaries.ril
+-- [case: i32-boundaries, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
 pub fn test_i32_boundaries() {
     assert(2147483647i32 +% 1i32 == -2147483648i32)
     assert(-2147483648i32 -% 1i32 == 2147483647i32)
     assert(2147483647i32 / 1i32 == 2147483647i32)
 }
---@ end-file
---@ end-case
 
---@ case: i32-overflow-safe
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: i32-overflow
---@ entry: test_i32_overflow_safe
---@ file: i32-overflow-safe.ril
+-- [case: i32-overflow-safe, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: i32-overflow
 pub fn test_i32_overflow_safe() {
     assert(2147483646i32 + 1i32 == 2147483647i32)
 }
---@ end-file
---@ end-case
 
---@ case: i32-overflow
---@ mode: run-panic
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: i32-overflow-safe
---@ entry: test_i32_overflow
+-- [case: i32-overflow, run-panic]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: i32-overflow-safe
 -- Panics: i32 overflow
---@ file: i32-overflow.ril
 pub fn test_i32_overflow() {
     let _ = 2147483647i32 + 1i32
 }
---@ end-file
---@ end-case
 
---@ case: i64-boundaries
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ entry: test_i64_boundaries
---@ file: i64-boundaries.ril
+-- [case: i64-boundaries, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
 pub fn test_i64_boundaries() {
     assert(9223372036854775807i64 +% 1i64 == -9223372036854775808i64)
     assert(-9223372036854775808i64 -% 1i64 == 9223372036854775807i64)
     assert(9223372036854775807i64 / 1i64 == 9223372036854775807i64)
 }
---@ end-file
---@ end-case
 
---@ case: i64-overflow-safe
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: i64-overflow
---@ entry: test_i64_overflow_safe
---@ file: i64-overflow-safe.ril
+-- [case: i64-overflow-safe, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: i64-overflow
 pub fn test_i64_overflow_safe() {
     assert(9223372036854775806i64 + 1i64 == 9223372036854775807i64)
 }
---@ end-file
---@ end-case
 
---@ case: i64-overflow
---@ mode: run-panic
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: i64-overflow-safe
---@ entry: test_i64_overflow
+-- [case: i64-overflow, run-panic]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: i64-overflow-safe
 -- Panics: i64 overflow
---@ file: i64-overflow.ril
 pub fn test_i64_overflow() {
     let _ = 9223372036854775807i64 + 1i64
 }
---@ end-file
---@ end-case
 
---@ case: i8-boundaries
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ entry: test_i8_boundaries
---@ file: i8-boundaries.ril
+-- [case: i8-boundaries, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
 pub fn test_i8_boundaries() {
     assert(127i8 +% 1i8 == -128i8)
     assert(-128i8 -% 1i8 == 127i8)
     assert(127i8 / 1i8 == 127i8)
 }
---@ end-file
---@ end-case
 
---@ case: i8-overflow-safe
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: i8-overflow
---@ entry: test_i8_overflow_safe
---@ file: i8-overflow-safe.ril
+-- [case: i8-overflow-safe, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: i8-overflow
 pub fn test_i8_overflow_safe() {
     assert(126i8 + 1i8 == 127i8)
 }
---@ end-file
---@ end-case
 
---@ case: i8-overflow
---@ mode: run-panic
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: i8-overflow-safe
---@ entry: test_i8_overflow
+-- [case: i8-overflow, run-panic]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: i8-overflow-safe
 -- Panics: i8 overflow
---@ file: i8-overflow.ril
 pub fn test_i8_overflow() {
     let _ = 127i8 + 1i8
 }
---@ end-file
---@ end-case
 
---@ case: u16-boundaries
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ entry: test_u16_boundaries
---@ file: u16-boundaries.ril
+-- [case: u16-boundaries, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
 pub fn test_u16_boundaries() {
     assert(65535u16 +% 1u16 == 0u16)
     assert(0u16 -% 1u16 == 65535u16)
     assert(65535u16 / 1u16 == 65535u16)
 }
---@ end-file
---@ end-case
 
---@ case: u16-overflow-safe
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: u16-overflow
---@ entry: test_u16_overflow_safe
---@ file: u16-overflow-safe.ril
+-- [case: u16-overflow-safe, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: u16-overflow
 pub fn test_u16_overflow_safe() {
     assert(65534u16 + 1u16 == 65535u16)
 }
---@ end-file
---@ end-case
 
---@ case: u16-overflow
---@ mode: run-panic
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: u16-overflow-safe
---@ entry: test_u16_overflow
+-- [case: u16-overflow, run-panic]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: u16-overflow-safe
 -- Panics: u16 overflow
---@ file: u16-overflow.ril
 pub fn test_u16_overflow() {
     let _ = 65535u16 + 1u16
 }
---@ end-file
---@ end-case
 
---@ case: u32-boundaries
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ entry: test_u32_boundaries
---@ file: u32-boundaries.ril
+-- [case: u32-boundaries, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
 pub fn test_u32_boundaries() {
     assert(4294967295u32 +% 1u32 == 0u32)
     assert(0u32 -% 1u32 == 4294967295u32)
     assert(4294967295u32 / 1u32 == 4294967295u32)
 }
---@ end-file
---@ end-case
 
---@ case: u32-overflow-safe
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: u32-overflow
---@ entry: test_u32_overflow_safe
---@ file: u32-overflow-safe.ril
+-- [case: u32-overflow-safe, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: u32-overflow
 pub fn test_u32_overflow_safe() {
     assert(4294967294u32 + 1u32 == 4294967295u32)
 }
---@ end-file
---@ end-case
 
---@ case: u32-overflow
---@ mode: run-panic
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: u32-overflow-safe
---@ entry: test_u32_overflow
+-- [case: u32-overflow, run-panic]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: u32-overflow-safe
 -- Panics: u32 overflow
---@ file: u32-overflow.ril
 pub fn test_u32_overflow() {
     let _ = 4294967295u32 + 1u32
 }
---@ end-file
---@ end-case
 
---@ case: u64-boundaries
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ entry: test_u64_boundaries
---@ file: u64-boundaries.ril
+-- [case: u64-boundaries, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
 pub fn test_u64_boundaries() {
     assert(18446744073709551615u64 +% 1u64 == 0u64)
     assert(0u64 -% 1u64 == 18446744073709551615u64)
     assert(18446744073709551615u64 / 1u64 == 18446744073709551615u64)
 }
---@ end-file
---@ end-case
 
---@ case: u64-overflow-safe
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: u64-overflow
---@ entry: test_u64_overflow_safe
---@ file: u64-overflow-safe.ril
+-- [case: u64-overflow-safe, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: u64-overflow
 pub fn test_u64_overflow_safe() {
     assert(18446744073709551614u64 + 1u64 == 18446744073709551615u64)
 }
---@ end-file
---@ end-case
 
---@ case: u64-overflow
---@ mode: run-panic
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: u64-overflow-safe
---@ entry: test_u64_overflow
+-- [case: u64-overflow, run-panic]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: u64-overflow-safe
 -- Panics: u64 overflow
---@ file: u64-overflow.ril
 pub fn test_u64_overflow() {
     let _ = 18446744073709551615u64 + 1u64
 }
---@ end-file
---@ end-case
 
---@ case: u8-boundaries
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ entry: test_u8_boundaries
---@ file: u8-boundaries.ril
+-- [case: u8-boundaries, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
 pub fn test_u8_boundaries() {
     assert(255u8 +% 1u8 == 0u8)
     assert(0u8 -% 1u8 == 255u8)
     assert(255u8 / 1u8 == 255u8)
 }
---@ end-file
---@ end-case
 
---@ case: u8-overflow-safe
---@ mode: run-pass
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: u8-overflow
---@ entry: test_u8_overflow_safe
---@ file: u8-overflow-safe.ril
+-- [case: u8-overflow-safe, run-pass]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: u8-overflow
 pub fn test_u8_overflow_safe() {
     assert(254u8 + 1u8 == 255u8)
 }
---@ end-file
---@ end-case
 
---@ case: u8-overflow
---@ mode: run-panic
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: u8-overflow-safe
---@ entry: test_u8_overflow
+-- [case: u8-overflow, run-panic]
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: u8-overflow-safe
 -- Panics: u8 overflow
---@ file: u8-overflow.ril
 pub fn test_u8_overflow() {
     let _ = 255u8 + 1u8
 }
---@ end-file
---@ end-case
 
---@ case: deferred-arithmetic-safe
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: deferred-arithmetic-overflow
---@ entry: test_deferred_arithmetic_safe
---@ file: deferred-arithmetic-safe.ril
+-- [case: deferred-arithmetic-safe, run-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: deferred-arithmetic-overflow
 fn identity<T>(value: T) -> T { value }
 fn choose<T>(left: T, right: T) -> T { left }
 pub fn test_deferred_arithmetic_safe() {
@@ -383,58 +248,38 @@ pub fn test_deferred_arithmetic_safe() {
     let result = choose(126 + 1, operations.get(3i8))
     assert(result == 127i8)
 }
---@ end-file
---@ end-case
 
---@ case: deferred-arithmetic-overflow
---@ mode: run-panic
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#arithmetic-and-wrapping-operators
---@ companion: deferred-arithmetic-safe
---@ entry: test_deferred_arithmetic_overflow
+-- [case: deferred-arithmetic-overflow, run-panic]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#arithmetic-and-wrapping-operators
+-- companion: deferred-arithmetic-safe
 -- Panics: arithmetic selected as i8 still overflows before choose enters.
---@ file: deferred-arithmetic-overflow.ril
 fn identity<T>(value: T) -> T { value }
 fn choose<T>(left: T, right: T) -> T { left }
 pub fn test_deferred_arithmetic_overflow() {
     let operations = .{get: \value -> value}
     let _ = choose(127 + 1, operations.get(3i8))
 }
---@ end-file
---@ end-case
 
---@ case: sibling-literal-occurrences
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ entry: test_sibling_literal_occurrences
---@ file: sibling-literal-occurrences.ril
+-- [case: sibling-literal-occurrences, run-pass]
+-- spec: SPEC#numeric-literals
 pub fn test_sibling_literal_occurrences() {
     let pair: (f32, f32) = (16777217, 16777217)
     assert(pair.0 == 16777216.0f32)
     assert(pair.1 == 16777216.0f32)
 }
---@ end-file
---@ end-case
 
---@ case: default-literal-occurrences
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ entry: test_default_literal_occurrences
---@ file: default-literal-occurrences.ril
+-- [case: default-literal-occurrences, run-pass]
+-- spec: SPEC#numeric-literals
 fn rounded(value: f32 = 16777217) -> f32 { value }
 fn nested() -> f32 { rounded() }
 pub fn test_default_literal_occurrences() {
     assert(rounded() == 16777216.0f32)
     assert(nested() == 16777216.0f32)
 }
---@ end-file
---@ end-case
 
---@ case: pattern-literal-occurrences
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ entry: test_pattern_literal_occurrences
---@ file: pattern-literal-occurrences.ril
+-- [case: pattern-literal-occurrences, run-pass]
+-- spec: SPEC#numeric-literals
 fn classify(value: i8) -> int {
     match value { 7 -> 1, 8 -> 2, _ -> 3 }
 }
@@ -443,14 +288,9 @@ pub fn test_pattern_literal_occurrences() {
     assert(classify(8i8) == 2)
     assert(classify(-128i8) == 3)
 }
---@ end-file
---@ end-case
 
---@ case: lexical-numeric-shadow
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ entry: test_lexical_numeric_shadow
---@ file: lexical-numeric-shadow.ril
+-- [case: lexical-numeric-shadow, run-pass]
+-- spec: SPEC#numeric-literals
 pub fn test_lexical_numeric_shadow() {
     let number = 1
     let before = number
@@ -462,30 +302,20 @@ pub fn test_lexical_numeric_shadow() {
     assert(nested == 2)
     assert(number == 1)
 }
---@ end-file
---@ end-case
 
---@ case: hoisted-numeric-capture
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
---@ entry: test_hoisted_numeric_capture
---@ file: hoisted-numeric-capture.ril
+-- [case: hoisted-numeric-capture, run-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
 pub fn test_hoisted_numeric_capture() {
     let number = 3
     assert(read_number() == 3)
 where
     fn read_number() -> int &{closure, number} { number }
 }
---@ end-file
---@ end-case
 
---@ case: floating-alias-patterns
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#pattern-matching
---@ entry: test_floating_alias_patterns
---@ file: floating-alias-patterns.ril
+-- [case: floating-alias-patterns, run-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#pattern-matching
 type Rounded = f32
 fn matches_rounded(value: Rounded) -> bool {
     match value { 16777217 -> true, _ -> false }
@@ -494,15 +324,10 @@ pub fn test_floating_alias_patterns() {
     assert(matches_rounded(16777216.0f32))
     assert(!matches_rounded(16777218.0f32))
 }
---@ end-file
---@ end-case
 
---@ case: nested-alias-patterns
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#pattern-matching
---@ entry: test_nested_alias_patterns
---@ file: nested-alias-patterns.ril
+-- [case: nested-alias-patterns, run-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#pattern-matching
 type Narrow = i8
 type Frozen = Immut<Narrow>
 fn classify_nested(value: (Frozen, Narrow)) -> int {
@@ -513,16 +338,11 @@ pub fn test_nested_alias_patterns() {
     assert(classify_nested((0i8, 7i8)) == 2)
     assert(classify_nested((0i8, 8i8)) == 3)
 }
---@ end-file
---@ end-case
 
---@ case: alias-pattern-range-safe
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#pattern-matching
---@ companion: alias-pattern-range-overflow
---@ entry: test_alias_pattern_range_safe
---@ file: alias-pattern-range-safe.ril
+-- [case: alias-pattern-range-safe, run-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#pattern-matching
+-- companion: alias-pattern-range-overflow
 type Narrow = i8
 fn matches_narrow(value: Narrow) -> bool {
     match value { 127 -> true, _ -> false }
@@ -531,30 +351,21 @@ pub fn test_alias_pattern_range_safe() {
     assert(matches_narrow(127i8))
     assert(!matches_narrow(0i8))
 }
---@ end-file
---@ end-case
 
---@ case: alias-pattern-range-overflow
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#pattern-matching
---@ companion: alias-pattern-range-safe
+-- [case: alias-pattern-range-overflow, check-fail]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#pattern-matching
+-- companion: alias-pattern-range-safe
 -- Error [E0326]: 128 is outside the numeric pattern's actual i8 view.
---@ file: alias-pattern-range-overflow.ril
 type Narrow = i8
 fn matches_narrow(value: Narrow) -> bool {
     match value { 128 -> true, _ -> false }
 }
---@ end-file
---@ end-case
 
---@ case: shadowed-alias-pattern-safe
---@ mode: run-pass
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#pattern-matching
---@ companion: shadowed-alias-pattern-overflow
---@ entry: test_shadowed_alias_pattern_safe
---@ file: shadowed-alias-pattern-safe.ril
+-- [case: shadowed-alias-pattern-safe, run-pass]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#pattern-matching
+-- companion: shadowed-alias-pattern-overflow
 type Narrow = i64
 fn matches_local(value: Narrow) -> bool
 where
@@ -566,16 +377,12 @@ pub fn test_shadowed_alias_pattern_safe() {
     assert(matches_local(127i8))
     assert(!matches_local(0i8))
 }
---@ end-file
---@ end-case
 
---@ case: shadowed-alias-pattern-overflow
---@ mode: check-fail
---@ spec: SPEC#numeric-literals
---@ spec: SPEC#pattern-matching
---@ companion: shadowed-alias-pattern-safe
+-- [case: shadowed-alias-pattern-overflow, check-fail]
+-- spec: SPEC#numeric-literals
+-- spec: SPEC#pattern-matching
+-- companion: shadowed-alias-pattern-safe
 -- Error [E0326]: the inner i8 alias cannot borrow the outer i64 range.
---@ file: shadowed-alias-pattern-overflow.ril
 type Narrow = i64
 fn matches_local(value: Narrow) -> bool
 where
@@ -583,5 +390,3 @@ where
 {
     match value { 128 -> true, _ -> false }
 }
---@ end-file
---@ end-case

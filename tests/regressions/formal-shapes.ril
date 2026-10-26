@@ -1,5 +1,5 @@
---@ source: optional-array-shapes
---@ file: source.ril
+-- [source: optional-array-shapes]
+-- file: source.ril
 type Packet = { id: int, items: [0][2]int }
 type Wrapped = { payload: Result<[0][2]int, int> }
 fn size(values: [0][2]int) -> int { len(values) }
@@ -29,23 +29,18 @@ pub fn test_native() {
     assert(nested_result(Ok(Wrapped.{ payload: Ok(packet.items) })) == 0)
     assert(nested_result(Err(1)) == 0)
 }
---@ end-file
---@ end-source
 
---@ case: optional-array-shapes-pointer32
---@ mode: check-pass
---@ target: pointer32
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: reject-unselected-array-dimension
---@ use-source: optional-array-shapes
---@ end-case
+-- [case: optional-array-shapes-pointer32, check-pass]
+-- target: pointer32
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: reject-unselected-array-dimension
+-- use-source: optional-array-shapes
 
---@ case: reject-uninspected-result-in-payload
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-array-shapes-pointer64
+-- [case: reject-uninspected-result-in-payload, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-array-shapes-pointer64
 -- Error [E0720]: Inspecting an outer constructor does not inspect its record's Result.
---@ file: source.ril
+-- file: source.ril
 type Wrapped = { payload: Result<[0][2]int, int> }
 fn outer_only(value: Result<Wrapped, int>) -> int {
     match value { Ok(wrapped) -> { let _ = wrapped; 0 }, Err(_) -> 0 }
@@ -56,14 +51,11 @@ fn example() {
     let outer: Result<Wrapped, int> = Ok(Wrapped.{ payload: inner })
     let _ = outer_only(outer)
 }
---@ end-file
---@ end-case
 
---@ case: nested-constructor-context
---@ mode: check-pass
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-array-shapes-pointer64
---@ file: source.ril
+-- [case: nested-constructor-context, check-pass]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-array-shapes-pointer64
+-- file: source.ril
 type Wrapped = { payload: Result<[0][2]int, int> }
 fn example() -> int {
     let value: Result<Wrapped, int> = Ok(Wrapped.{ payload: Ok([]) })
@@ -72,50 +64,38 @@ fn example() -> int {
         Err(_) -> 0,
     }
 }
---@ end-file
---@ end-case
 
---@ case: reject-unselected-writer-restoration
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-array-shapes-pointer64
+-- [case: reject-unselected-writer-restoration, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-array-shapes-pointer64
 -- Error [E0520]: A hypothetical payload cannot restore writable access through a readonly binding.
---@ file: source.ril
+-- file: source.ril
 type Cell = { mut count: int }
 fn example() -> int {
     let value: ?Cell = None
     match value { Some(mut cell) -> { cell.count += 1; 1 }, None -> 0 }
 }
---@ end-file
---@ end-case
 
---@ case: optional-array-shapes-pointer64
---@ mode: check-pass
---@ target: pointer64
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-array-shapes-native
---@ use-source: optional-array-shapes
---@ end-case
+-- [case: optional-array-shapes-pointer64, check-pass]
+-- target: pointer64
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-array-shapes-native
+-- use-source: optional-array-shapes
 
---@ case: optional-array-shapes-native
---@ mode: run-pass
---@ entry: test_native
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-array-shapes-pointer32
---@ use-source: optional-array-shapes
---@ end-case
+-- [case: optional-array-shapes-native, run-pass]
+-- entry: test_native
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-array-shapes-pointer32
+-- use-source: optional-array-shapes
 
---@ case: reject-unselected-array-dimension
---@ mode: check-fail
---@ spec: SPEC#complete-provenance-and-optional-annotations
---@ companion: optional-array-shapes-pointer64
+-- [case: reject-unselected-array-dimension, check-fail]
+-- spec: SPEC#complete-provenance-and-optional-annotations
+-- companion: optional-array-shapes-pointer64
 -- Error [E0301]: An excluded constructor branch still checks the declared payload type.
---@ file: source.ril
+-- file: source.ril
 type Packet = { items: [0][3]int }
 fn size(values: [0][2]int) -> int { len(values) }
 fn example() -> int {
     let value: ?Packet = None
     match value { Some(packet) -> size(packet.items), None -> 0 }
 }
---@ end-file
---@ end-case
