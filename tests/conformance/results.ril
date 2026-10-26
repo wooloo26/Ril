@@ -1,24 +1,24 @@
--- [case: accept-alias-no-inspection, check-pass]
+-- [pair: alias-no-inspection]
 -- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: reject-alias-no-inspection
+
+-- accept
 fn example() {
     let result: Result<int, str> = Err("bad")
     let alias = result
     assert(alias is Err(_))
 }
 
--- [case: reject-alias-no-inspection, check-fail]
--- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: accept-alias-no-inspection
+-- reject
 -- Error [E0720]: reject alias no inspection
 fn example() {
     let result: Result<int, str> = Err("bad")
     let alias = result
 }
 
--- [case: accept-copy-no-inspection, check-pass]
+-- [pair: copy-no-inspection]
 -- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: reject-copy-no-inspection
+
+-- accept
 fn example() {
     let result: Result<int, str> = Err("bad")
     let copied = clone(result)
@@ -26,81 +26,76 @@ fn example() {
     assert(copied is Err(_))
 }
 
--- [case: reject-copy-no-inspection, check-fail]
--- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: accept-copy-no-inspection
+-- reject
 -- Error [E0720]: reject copy no inspection
 fn example() {
     let result: Result<int, str> = Err("bad")
     let copied = clone(result)
 }
 
--- [case: accept-invalid-fallback-family, check-pass]
+-- [pair: invalid-fallback-family]
 -- spec: SPEC#error-and-fallback-operators
--- companion: reject-invalid-fallback-family
+
+-- accept
 fn example() {
     let value = Some(42) ?? 0
 }
 
--- [case: reject-invalid-fallback-family, check-fail]
--- spec: SPEC#error-and-fallback-operators
--- companion: accept-invalid-fallback-family
+-- reject
 -- Error [E0714]: reject invalid fallback family
 fn example() {
     let value = 42 ?? 0
 }
 
--- [case: accept-nested-outer-only, check-pass]
+-- [pair: nested-outer-only]
 -- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: reject-nested-outer-only
+
+-- accept
 fn example() {
     let result: Result<Result<int, str>, str> = Ok(Err("bad"))
     match result { Ok(inner) -> assert(inner is Err(_)), Err(_) -> () }
 }
 
--- [case: reject-nested-outer-only, check-fail]
--- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: accept-nested-outer-only
+-- reject
 -- Error [E0720]: reject nested outer only
 fn example() {
     let result: Result<Result<int, str>, str> = Ok(Err("bad"))
     assert(result is Ok(_))
 }
 
--- [case: accept-nonoptional-safe-field, check-pass]
+-- [pair: nonoptional-safe-field]
 -- spec: SPEC#error-and-fallback-operators
--- companion: reject-nonoptional-safe-field
+
+-- accept
 fn example() {
     let item: ?{ name: str } = Some(.{ name: "Ada" })
     let name = item?.name
 }
 
--- [case: reject-nonoptional-safe-field, check-fail]
--- spec: SPEC#error-and-fallback-operators
--- companion: accept-nonoptional-safe-field
+-- reject
 -- Error [E0715]: reject nonoptional safe field
 fn example() {
     let name = (.{ name: "Ada" })?.name
 }
 
--- [case: accept-outward-fallback-return, check-pass]
+-- [pair: outward-fallback-return]
 -- spec: SPEC#error-and-fallback-operators
--- companion: reject-outward-fallback-return
+
+-- accept
 fn example(item: ?int) {
     let value = item ?? 0
 }
 
--- [case: reject-outward-fallback-return, check-fail]
--- spec: SPEC#error-and-fallback-operators
--- companion: accept-outward-fallback-return
+-- reject
 -- Error [E0710]: reject outward fallback return
 fn example(item: ?int) {
     let value = item ?? return
 }
 
--- [case: accept-overwritten-result, check-pass]
+-- [pair: overwritten-result]
 -- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: reject-overwritten-result
+
+-- accept
 fn example() {
     var result: Result<int, str> = Err("lost")
     assert(result is Err(_))
@@ -108,9 +103,7 @@ fn example() {
     assert(result is Ok(_))
 }
 
--- [case: reject-overwritten-result, check-fail]
--- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: accept-overwritten-result
+-- reject
 -- Error [E0720]: reject overwritten result
 fn example() {
     var result: Result<int, str> = Err("lost")
@@ -118,57 +111,54 @@ fn example() {
     assert(result is Ok(_))
 }
 
--- [case: accept-propagation-error-type, check-pass]
+-- [pair: propagation-error-type]
 -- spec: SPEC#error-and-fallback-operators
--- companion: reject-propagation-error-type
+
+-- accept
 fn example(value: Result<int, str>) -> Result<int, str> { Ok(value?) }
 
--- [case: reject-propagation-error-type, check-fail]
--- spec: SPEC#error-and-fallback-operators
--- companion: accept-propagation-error-type
+-- reject
 -- Error [E0713]: reject propagation error type
 fn example(value: Result<int, str>) -> Result<int, int> { Ok(value?) }
 
--- [case: accept-propagation-operand, check-pass]
+-- [pair: propagation-operand]
 -- spec: SPEC#error-and-fallback-operators
--- companion: reject-propagation-operand
+
+-- accept
 fn example() -> ?int { let value = Some(42)?; Some(value) }
 
--- [case: reject-propagation-operand, check-fail]
--- spec: SPEC#error-and-fallback-operators
--- companion: accept-propagation-operand
+-- reject
 -- Error [E0712]: reject propagation operand
 fn example() -> ?int { let value = 42?; Some(value) }
 
--- [case: accept-propagation-target, check-pass]
+-- [pair: propagation-target]
 -- spec: SPEC#error-and-fallback-operators
--- companion: reject-propagation-target
+
+-- accept
 fn example(value: ?int) -> ?int { Some(value?) }
 
--- [case: reject-propagation-target, check-fail]
--- spec: SPEC#error-and-fallback-operators
--- companion: accept-propagation-target
+-- reject
 -- Error [E0713]: reject propagation target
 fn example(value: ?int) -> int { value? }
 
--- [case: accept-raw-result-fallback, check-pass]
+-- [pair: raw-result-fallback]
 -- spec: SPEC#error-and-fallback-operators
--- companion: reject-raw-result-fallback
+
+-- accept
 fn example(result: Result<int, str>) {
     let value = result ?? \_error -> 0
 }
 
--- [case: reject-raw-result-fallback, check-fail]
--- spec: SPEC#error-and-fallback-operators
--- companion: accept-raw-result-fallback
+-- reject
 -- Error [E0711]: reject raw result fallback
 fn example(result: Result<int, str>) {
     let value = result ?? 0
 }
 
--- [case: accept-task-result-uninspected, check-pass]
+-- [pair: task-result-uninspected]
 -- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: reject-task-result-uninspected
+
+-- accept
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -177,9 +167,7 @@ fn example() @Concurrent {
     assert(result is Ok())
 }
 
--- [case: reject-task-result-uninspected, check-fail]
--- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: accept-task-result-uninspected
+-- reject
 -- Error [E0720]: reject task result uninspected
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
@@ -189,30 +177,28 @@ fn example() @Concurrent {
     assert(result is Ok())
 }
 
--- [case: accept-top-level-propagation, check-pass]
+-- [pair: top-level-propagation]
 -- spec: SPEC#error-and-fallback-operators
--- companion: reject-top-level-propagation
+
+-- accept
 fn value() -> ?int { Some(1) }
 fn read() -> ?int { Some(value()?) }
 
--- [case: reject-top-level-propagation, check-fail]
--- spec: SPEC#error-and-fallback-operators
--- companion: accept-top-level-propagation
+-- reject
 -- Error [E0205]: reject top level propagation
 fn value() -> ?int { Some(1) }
 let VALUE = value()?
 
--- [case: accept-wildcard-discard, check-pass]
+-- [pair: wildcard-discard]
 -- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: reject-wildcard-discard
+
+-- accept
 fn example() {
     let result: Result<int, str> = Err("bad")
     assert(result is Err(_))
 }
 
--- [case: reject-wildcard-discard, check-fail]
--- spec: SPEC#mandatory-inspection-of-fallible-results
--- companion: accept-wildcard-discard
+-- reject
 -- Error [E0720]: reject wildcard discard
 fn example() {
     let result: Result<int, str> = Err("bad")

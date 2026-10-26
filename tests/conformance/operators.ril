@@ -1,30 +1,28 @@
--- [case: accept-bigint-wrap, check-pass]
+-- [pair: bigint-wrap]
 -- spec: SPEC#bitwise-and-shift-operators
--- companion: reject-bigint-wrap
+
+-- accept
 fn example() {
     let value = 1bigint + 2bigint
 }
 
--- [case: reject-bigint-wrap, check-fail]
--- spec: SPEC#bitwise-and-shift-operators
--- companion: accept-bigint-wrap
+-- reject
 -- Error [E0327]: reject bigint wrap
 fn example() {
     let value = 1bigint +% 2bigint
 }
 
--- [case: accept-callable-equality, check-pass]
+-- [pair: callable-equality]
 -- spec: SPEC#relational-equality-and-containment-operators
--- companion: reject-callable-equality
+
+-- accept
 fn action() -> int { 1 }
 
 fn example() {
     let same = action() == action()
 }
 
--- [case: reject-callable-equality, check-fail]
--- spec: SPEC#relational-equality-and-containment-operators
--- companion: accept-callable-equality
+-- reject
 -- Error [E0327]: reject callable equality
 fn action() -> int { 1 }
 
@@ -32,31 +30,29 @@ fn example() {
     let same = action == action
 }
 
--- [case: accept-float-wrap, check-pass]
+-- [pair: float-wrap]
 -- spec: SPEC#bitwise-and-shift-operators
--- companion: reject-float-wrap
+
+-- accept
 fn example() {
     let value = 1.0 + 2.0
 }
 
--- [case: reject-float-wrap, check-fail]
--- spec: SPEC#bitwise-and-shift-operators
--- companion: accept-float-wrap
+-- reject
 -- Error [E0327]: reject float wrap
 fn example() {
     let value = 1.0 +% 2.0
 }
 
--- [case: accept-string-add, check-pass]
+-- [pair: string-add]
 -- spec: SPEC#bitwise-and-shift-operators
--- companion: reject-string-add
+
+-- accept
 fn example() {
     let value = String::concat("a", "b")
 }
 
--- [case: reject-string-add, check-fail]
--- spec: SPEC#bitwise-and-shift-operators
--- companion: accept-string-add
+-- reject
 -- Error [E0327]: reject string add
 fn example() {
     let value = "a" + "b"

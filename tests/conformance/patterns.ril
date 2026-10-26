@@ -1,15 +1,14 @@
--- [case: accept-alternative-binders, check-pass]
+-- [pair: alternative-binders]
 -- spec: SPEC#pattern-matching
--- companion: reject-alternative-binders
+
+-- accept
 type Choice { Left(int), Right(int) }
 
 fn example(item: Choice) {
     match item { Left(x) | Right(x) -> () }
 }
 
--- [case: reject-alternative-binders, check-fail]
--- spec: SPEC#pattern-matching
--- companion: accept-alternative-binders
+-- reject
 -- Error [E0346]: reject alternative binders
 type Choice { Left(int), Right(int) }
 
@@ -17,181 +16,169 @@ fn example(item: Choice) {
     match item { Left(x) | Right(y) -> () }
 }
 
--- [case: accept-computed-pattern, check-pass]
+-- [pair: computed-pattern]
 -- spec: SPEC#pattern-matching
--- companion: reject-computed-pattern
+
+-- accept
 fn example(item: int) {
     match item { 3 -> (), _ -> () }
 }
 
--- [case: reject-computed-pattern, check-fail]
--- spec: SPEC#pattern-matching
--- companion: accept-computed-pattern
+-- reject
 -- Error [E0349]: reject computed pattern
 fn example(item: int) {
     match item { (1 + 2) -> (), _ -> () }
 }
 
--- [case: accept-duplicate-binder, check-pass]
+-- [pair: duplicate-binder]
 -- spec: SPEC#pattern-matching
--- companion: reject-duplicate-binder
+
+-- accept
 fn example() {
     let (first, second) = (1, 2)
 }
 
--- [case: reject-duplicate-binder, check-fail]
--- spec: SPEC#pattern-matching
--- companion: accept-duplicate-binder
+-- reject
 -- Error [E0347]: reject duplicate binder
 fn example() {
     let (same, same) = (1, 2)
 }
 
--- [case: accept-guard-not-exhaustive, check-pass]
+-- [pair: guard-not-exhaustive]
 -- spec: SPEC#pattern-syntax-or-patterns-and-exhaustiveness
--- companion: reject-guard-not-exhaustive
+
+-- accept
 fn example(item: int) {
     match item { value if value >= 0 -> (), _ -> () }
 }
 
--- [case: reject-guard-not-exhaustive, check-fail]
--- spec: SPEC#pattern-syntax-or-patterns-and-exhaustiveness
--- companion: accept-guard-not-exhaustive
+-- reject
 -- Error [E0303]: reject guard not exhaustive
 fn example(item: int) {
     match item { value if value >= 0 -> (), value if value < 0 -> () }
 }
 
--- [case: accept-match-branch-type, check-pass]
+-- [pair: match-branch-type]
 -- spec: SPEC#pattern-matching
--- companion: reject-match-branch-type
+
+-- accept
 fn example(item: bool) {
     let value = match item { true -> 1, false -> 2 }
 }
 
--- [case: reject-match-branch-type, check-fail]
--- spec: SPEC#pattern-matching
--- companion: accept-match-branch-type
+-- reject
 -- Error [E0351]: reject match branch type
 fn example(item: bool) {
     let value = match item { true -> 1, false -> "a" }
 }
 
--- [case: accept-nondivergent-else, check-pass]
+-- [pair: nondivergent-else]
 -- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
--- companion: reject-nondivergent-else
+
+-- accept
 fn example(item: ?int) {
     let Some(value) = item else { return }
 }
 
--- [case: reject-nondivergent-else, check-fail]
--- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
--- companion: accept-nondivergent-else
+-- reject
 -- Error [E0321]: reject nondivergent else
 fn example(item: ?int) {
     let Some(value) = item else { () }
 }
 
--- [case: accept-nonexhaustive-match, check-pass]
+-- [pair: nonexhaustive-match]
 -- spec: SPEC#pattern-matching
--- companion: reject-nonexhaustive-match
+
+-- accept
 fn example(item: ?int) {
     match item { Some(value) -> (), None -> () }
 }
 
--- [case: reject-nonexhaustive-match, check-fail]
--- spec: SPEC#pattern-matching
--- companion: accept-nonexhaustive-match
+-- reject
 -- Error [E0303]: reject nonexhaustive match
 fn example(item: ?int) {
     match item { Some(value) -> () }
 }
 
--- [case: accept-refutable-binding, check-pass]
+-- [pair: refutable-binding]
 -- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
--- companion: reject-refutable-binding
+
+-- accept
 fn example(item: ?int) {
     let Some(value) = item else { return }
 }
 
--- [case: reject-refutable-binding, check-fail]
--- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
--- companion: accept-refutable-binding
+-- reject
 -- Error [E0345]: reject refutable binding
 fn example(item: ?int) {
     let Some(value) = item
 }
 
--- [case: accept-refutable-for-pattern, check-pass]
+-- [pair: refutable-for-pattern]
 -- spec: SPEC#pattern-matching
--- companion: reject-refutable-for-pattern
+
+-- accept
 fn example(items: []?int) {
     for items as value {}
 }
 
--- [case: reject-refutable-for-pattern, check-fail]
--- spec: SPEC#pattern-matching
--- companion: accept-refutable-for-pattern
+-- reject
 -- Error [E0345]: reject refutable for pattern
 fn example(items: []?int) {
     for items as Some(value) {}
 }
 
--- [case: accept-reversed-range, check-pass]
+-- [pair: reversed-range]
 -- spec: SPEC#pattern-matching
--- companion: reject-reversed-range
+
+-- accept
 fn example(item: int) {
     match item { 1..=5 -> (), _ -> () }
 }
 
--- [case: reject-reversed-range, check-fail]
--- spec: SPEC#pattern-matching
--- companion: accept-reversed-range
+-- reject
 -- Error [E0348]: reject reversed range
 fn example(item: int) {
     match item { 5..=1 -> (), _ -> () }
 }
 
--- [case: accept-unreachable-arm, check-pass]
+-- [pair: unreachable-arm]
 -- spec: SPEC#pattern-matching
--- companion: reject-unreachable-arm
+
+-- accept
 fn example(item: ?int) {
     match item { Some(value) -> (), None -> () }
 }
 
--- [case: reject-unreachable-arm, check-fail]
--- spec: SPEC#pattern-matching
--- companion: accept-unreachable-arm
+-- reject
 -- Error [E0304]: reject unreachable arm
 fn example(item: ?int) {
     match item { _ -> (), Some(value) -> () }
 }
 
--- [case: accept-vacuous-guarded-discard, check-pass]
+-- [pair: vacuous-guarded-discard]
 -- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
--- companion: reject-vacuous-guarded-discard
+
+-- accept
 fn example(item: int) {
     let value = item
 }
 
--- [case: reject-vacuous-guarded-discard, check-fail]
--- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
--- companion: accept-vacuous-guarded-discard
+-- reject
 -- Error [E0309]: reject vacuous guarded discard
 fn example(item: int) {
     let _ = item else { return }
 }
 
--- [case: accept-vacuous-unit, check-pass]
+-- [pair: vacuous-unit]
 -- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
--- companion: reject-vacuous-unit
+
+-- accept
 fn example() {
     let _ = ()
 }
 
--- [case: reject-vacuous-unit, check-fail]
--- spec: SPEC#guarded-bindings-and-non-vacuous-invariant
--- companion: accept-vacuous-unit
+-- reject
 -- Error [E0309]: reject vacuous unit
 fn example() {
     let () = ()

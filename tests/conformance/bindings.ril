@@ -1,22 +1,22 @@
--- [case: accept-assignment-target, check-pass]
+-- [pair: assignment-target]
 -- spec: SPEC#assignments-and-compound-assignments
--- companion: reject-assignment-target
+
+-- accept
 fn example() {
     var value = 1
     value = 3
 }
 
--- [case: reject-assignment-target, check-fail]
--- spec: SPEC#assignments-and-compound-assignments
--- companion: accept-assignment-target
+-- reject
 -- Error [E0503]: reject assignment target
 fn example() {
     (1 + 2) = 3
 }
 
--- [case: accept-chained-assignment, check-pass]
+-- [pair: chained-assignment]
 -- spec: SPEC#assignments-and-compound-assignments
--- companion: reject-chained-assignment
+
+-- accept
 fn example() {
     var first = 0
     var second = 0
@@ -24,9 +24,7 @@ fn example() {
     first = second
 }
 
--- [case: reject-chained-assignment, check-fail]
--- spec: SPEC#assignments-and-compound-assignments
--- companion: accept-chained-assignment
+-- reject
 -- Error [E0701]: reject chained assignment
 fn example() {
     var first = 0
@@ -34,17 +32,16 @@ fn example() {
     first = second = 1
 }
 
--- [case: accept-immutable-reassignment, check-pass]
+-- [pair: immutable-reassignment]
 -- spec: SPEC#immutable-bindings
--- companion: reject-immutable-reassignment
+
+-- accept
 fn example() {
     var value = 1
     value = 2
 }
 
--- [case: reject-immutable-reassignment, check-fail]
--- spec: SPEC#immutable-bindings
--- companion: accept-immutable-reassignment
+-- reject
 -- Error [E0501]: reject immutable reassignment
 fn example() {
     let value = 1

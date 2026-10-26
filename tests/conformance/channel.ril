@@ -1,6 +1,7 @@
--- [case: accept-live-payload, check-pass]
+-- [pair: live-payload]
 -- spec: SPEC#structured-concurrency-channels
--- companion: reject-live-payload
+
+-- accept
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 type Cell = { mut count: int }
@@ -19,9 +20,7 @@ fn example() @Async {
     assert(result is Ok())
 }
 
--- [case: reject-live-payload, check-fail]
--- spec: SPEC#structured-concurrency-channels
--- companion: accept-live-payload
+-- reject
 -- Error [E0602]: reject live payload
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
@@ -41,9 +40,10 @@ fn example() @Async {
     assert(result is Ok())
 }
 
--- [case: accept-use-after-detach, check-pass]
+-- [pair: use-after-detach]
 -- spec: SPEC#structured-concurrency-channels
--- companion: reject-use-after-detach
+
+-- accept
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel
 
@@ -60,9 +60,7 @@ fn example() @Async {
     assert(result is Ok())
 }
 
--- [case: reject-use-after-detach, check-fail]
--- spec: SPEC#structured-concurrency-channels
--- companion: accept-use-after-detach
+-- reject
 -- Error [E0603]: reject use after detach
 use ril/concurrent::{scope, TaskFault}
 use ril/concurrent/channel

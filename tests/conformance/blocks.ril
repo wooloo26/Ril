@@ -1,78 +1,73 @@
--- [case: accept-local-effect-escape, check-pass]
+-- [pair: local-effect-escape]
 -- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: reject-local-effect-escape
+
+-- accept
 fn example() -> int { with Local::read() -> resume 1
     Local::read()
 where
     eff Local { read() -> int }
 }
 
--- [case: reject-local-effect-escape, check-fail]
--- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: accept-local-effect-escape
+-- reject
 -- Error [E0618]: reject local effect escape
 fn example() -> int @Local { Local::read()
 where
     eff Local { read() -> int }
 }
 
--- [case: accept-local-nominal-escape, check-pass]
+-- [pair: local-nominal-escape]
 -- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: reject-local-nominal-escape
+
+-- accept
 fn example() -> Token
 where
     type Token = int
 { 1 }
 
--- [case: reject-local-nominal-escape, check-fail]
--- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: accept-local-nominal-escape
+-- reject
 -- Error [E0315]: reject local nominal escape
 fn example() -> Token
 where
     type Token(int)
 { Token(1) }
 
--- [case: accept-sequential-function, check-pass]
+-- [pair: sequential-function]
 -- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: reject-sequential-function
+
+-- accept
 fn example() { helper()
 where
     fn helper() {}
 }
 
--- [case: reject-sequential-function, check-fail]
--- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: accept-sequential-function
+-- reject
 -- Error [E0703]: reject sequential function
 fn example() { fn helper() {} }
 
--- [case: accept-sequential-type, check-pass]
+-- [pair: sequential-type]
 -- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: reject-sequential-type
+
+-- accept
 fn example() { ()
 where
     type Item = int
 }
 
--- [case: reject-sequential-type, check-fail]
--- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: accept-sequential-type
+-- reject
 -- Error [E0703]: reject sequential type
 fn example() { type Item = int }
 
--- [case: accept-uninitialized-capture, check-pass]
+-- [pair: uninitialized-capture]
 -- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: reject-uninitialized-capture
+
+-- accept
 fn example() -> int { let value = 1
     read()
 where
     fn read() -> int &{closure, value} { value }
 }
 
--- [case: reject-uninitialized-capture, check-fail]
--- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: accept-uninitialized-capture
+-- reject
 -- Error [E0207]: reject uninitialized capture
 fn example() -> int { read()
     let value = 1
@@ -81,15 +76,14 @@ where
     fn read() -> int &{closure, value} { value }
 }
 
--- [case: accept-where-binding, check-pass]
+-- [pair: where-binding]
 -- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: reject-where-binding
+
+-- accept
 fn example() { let value = 1
 }
 
--- [case: reject-where-binding, check-fail]
--- spec: SPEC#block-expressions-tail-values-and-hoisted-declarations
--- companion: accept-where-binding
+-- reject
 -- Error [E0702]: reject where binding
 fn example() { ()
 where

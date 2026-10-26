@@ -1,15 +1,14 @@
--- [case: accept-boolean-precision, check-pass]
+-- [pair: boolean-precision]
 -- spec: SPEC#text-and-byte-literals
--- companion: reject-boolean-precision
+
+-- accept
 type Token(int)
 
 fn example() {
     let value = "{1}"
 }
 
--- [case: reject-boolean-precision, check-fail]
--- spec: SPEC#text-and-byte-literals
--- companion: accept-boolean-precision
+-- reject
 -- Error [E0329]: reject boolean precision
 type Token(int)
 
@@ -17,18 +16,17 @@ fn example() {
     let value = "{true:.2}"
 }
 
--- [case: accept-integer-precision, check-pass]
+-- [pair: integer-precision]
 -- spec: SPEC#text-and-byte-literals
--- companion: reject-integer-precision
+
+-- accept
 type Token(int)
 
 fn example() {
     let value = "{1}"
 }
 
--- [case: reject-integer-precision, check-fail]
--- spec: SPEC#text-and-byte-literals
--- companion: accept-integer-precision
+-- reject
 -- Error [E0329]: reject integer precision
 type Token(int)
 
@@ -36,18 +34,17 @@ fn example() {
     let value = "{1:.2}"
 }
 
--- [case: accept-wrapper-format, check-pass]
+-- [pair: wrapper-format]
 -- spec: SPEC#text-and-byte-literals
--- companion: reject-wrapper-format
+
+-- accept
 type Token(int)
 
 fn example() {
     let value = "{1}"
 }
 
--- [case: reject-wrapper-format, check-fail]
--- spec: SPEC#text-and-byte-literals
--- companion: accept-wrapper-format
+-- reject
 -- Error [E0329]: reject wrapper format
 type Token(int)
 

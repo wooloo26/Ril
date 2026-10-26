@@ -1,13 +1,12 @@
--- [case: accept-conflicting-spreads, check-pass]
+-- [pair: conflicting-spreads]
 -- spec: SPEC#record-construction-and-functional-update
--- companion: reject-conflicting-spreads
+
+-- accept
 fn example(left: { id: int }, right: { id: int }) {
     let value = .{ ..left, ..right, id: 3 }
 }
 
--- [case: reject-conflicting-spreads, check-fail]
--- spec: SPEC#record-construction-and-functional-update
--- companion: accept-conflicting-spreads
+-- reject
 -- Error [E0211]: reject conflicting spreads
 fn example(left: { id: int }, right: { id: int }) {
     let value = .{ ..left, ..right }
@@ -108,44 +107,41 @@ pub fn test_static_order() &{RECORD} { assert(RECORD.id == 1 && RECORD.tail == 3
 -- entry: test_static_order
 -- use-source: static-record-member-order
 
--- [case: accept-duplicate-type-field, check-pass]
+-- [pair: duplicate-type-field]
 -- spec: SPEC#record-types-and-row-polymorphism
--- companion: reject-duplicate-type-field
+
+-- accept
 type Item = { id: int, other: int }
 
--- [case: reject-duplicate-type-field, check-fail]
--- spec: SPEC#record-types-and-row-polymorphism
--- companion: accept-duplicate-type-field
+-- reject
 -- Error [E0210]: reject duplicate type field
 type Item = { id: int, id: int }
 
--- [case: accept-duplicate-value-field, check-pass]
+-- [pair: duplicate-value-field]
 -- spec: SPEC#record-construction-and-functional-update
--- companion: reject-duplicate-value-field
+
+-- accept
 fn example() {
     let value = .{ id: 1, other: 2 }
 }
 
--- [case: reject-duplicate-value-field, check-fail]
--- spec: SPEC#record-construction-and-functional-update
--- companion: accept-duplicate-value-field
+-- reject
 -- Error [E0210]: reject duplicate value field
 fn example() {
     let value = .{ id: 1, id: 2 }
 }
 
--- [case: accept-extra-field, check-pass]
+-- [pair: extra-field]
 -- spec: SPEC#record-types-and-row-polymorphism
--- companion: reject-extra-field
+
+-- accept
 type User = { id: int, name: str }
 
 fn example(item: User, key: str) {
     let value: User = .{ id: 1, name: "Ada" }
 }
 
--- [case: reject-extra-field, check-fail]
--- spec: SPEC#record-types-and-row-polymorphism
--- companion: accept-extra-field
+-- reject
 -- Error [E0302]: reject extra field
 type User = { id: int, name: str }
 
@@ -153,18 +149,17 @@ fn example(item: User, key: str) {
     let value: User = .{ id: 1, name: "Ada", age: 3 }
 }
 
--- [case: accept-missing-field, check-pass]
+-- [pair: missing-field]
 -- spec: SPEC#record-types-and-row-polymorphism
--- companion: reject-missing-field
+
+-- accept
 type User = { id: int, name: str }
 
 fn example(item: User, key: str) {
     let value: User = .{ id: 1, name: "Ada" }
 }
 
--- [case: reject-missing-field, check-fail]
--- spec: SPEC#record-types-and-row-polymorphism
--- companion: accept-missing-field
+-- reject
 -- Error [E0307]: reject missing field
 type User = { id: int, name: str }
 
@@ -172,31 +167,29 @@ fn example(item: User, key: str) {
     let value: User = .{ id: 1 }
 }
 
--- [case: accept-overlapping-row, check-pass]
+-- [pair: overlapping-row]
 -- spec: SPEC#record-types-and-row-polymorphism
--- companion: reject-overlapping-row
+
+-- accept
 type WithId<R> = { id: int, ..R }
 type Item = WithId<{ name: str }>
 
--- [case: reject-overlapping-row, check-fail]
--- spec: SPEC#record-types-and-row-polymorphism
--- companion: accept-overlapping-row
+-- reject
 -- Error [E0212]: reject overlapping row
 type WithId<R> = { id: int, ..R }
 type Item = WithId<{ id: int }>
 
--- [case: accept-record-bracket, check-pass]
+-- [pair: record-bracket]
 -- spec: SPEC#record-types-and-row-polymorphism
--- companion: reject-record-bracket
+
+-- accept
 type User = { id: int, name: str }
 
 fn example(item: User, key: str) {
     let value = item.("name")
 }
 
--- [case: reject-record-bracket, check-fail]
--- spec: SPEC#record-types-and-row-polymorphism
--- companion: accept-record-bracket
+-- reject
 -- Error [E0324]: reject record bracket
 type User = { id: int, name: str }
 
@@ -204,18 +197,17 @@ fn example(item: User, key: str) {
     let value = item["name"]
 }
 
--- [case: accept-runtime-record-key, check-pass]
+-- [pair: runtime-record-key]
 -- spec: SPEC#record-types-and-row-polymorphism
--- companion: reject-runtime-record-key
+
+-- accept
 type User = { id: int, name: str }
 
 fn example(item: User, key: str) {
     let value = item.("name")
 }
 
--- [case: reject-runtime-record-key, check-fail]
--- spec: SPEC#record-types-and-row-polymorphism
--- companion: accept-runtime-record-key
+-- reject
 -- Error [E0324]: reject runtime record key
 type User = { id: int, name: str }
 
@@ -223,18 +215,17 @@ fn example(item: User, key: str) {
     let value = item.(key)
 }
 
--- [case: accept-unknown-field, check-pass]
+-- [pair: unknown-field]
 -- spec: SPEC#record-types-and-row-polymorphism
--- companion: reject-unknown-field
+
+-- accept
 type User = { id: int, name: str }
 
 fn example(item: User, key: str) {
     let value = item.name
 }
 
--- [case: reject-unknown-field, check-fail]
--- spec: SPEC#record-types-and-row-polymorphism
--- companion: accept-unknown-field
+-- reject
 -- Error [E0336]: reject unknown field
 type User = { id: int, name: str }
 

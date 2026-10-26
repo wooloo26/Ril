@@ -1,15 +1,14 @@
--- [case: accept-last-use-does-not-freeze, check-pass]
+-- [pair: last-use-does-not-freeze]
 -- spec: SPEC#complete-provenance-and-optional-annotations
--- companion: reject-last-use-does-not-freeze
+
+-- accept
 type Cell = { mut value: int }
 
 fn example() {
     let frozen = { let mut value = Cell.{ value: 0 }; value.value += 1; value }
 }
 
--- [case: reject-last-use-does-not-freeze, check-fail]
--- spec: SPEC#complete-provenance-and-optional-annotations
--- companion: accept-last-use-does-not-freeze
+-- reject
 -- Error [E0535]: reject last use does not freeze
 type Cell = { mut value: int }
 
@@ -19,9 +18,10 @@ fn example() {
     let frozen = value
 }
 
--- [case: accept-runtime-index-overlap, check-pass]
+-- [pair: runtime-index-overlap]
 -- spec: SPEC#complete-provenance-and-optional-annotations
--- companion: reject-runtime-index-overlap
+
+-- accept
 type Cell = { mut value: int }
 fn swap(mut a: Cell, mut b: Cell) &mut { let value = a.value; a.value = b.value; b.value = value }
 
@@ -30,9 +30,7 @@ fn example(i: int, j: int) {
     swap(mut cells[0], mut cells[1])
 }
 
--- [case: reject-runtime-index-overlap, check-fail]
--- spec: SPEC#complete-provenance-and-optional-annotations
--- companion: accept-runtime-index-overlap
+-- reject
 -- Error [E0523]: reject runtime index overlap
 type Cell = { mut value: int }
 fn swap(mut a: Cell, mut b: Cell) &mut { let value = a.value; a.value = b.value; b.value = value }

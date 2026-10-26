@@ -1,6 +1,7 @@
--- [case: accept-clone-environment, check-pass]
+-- [pair: clone-environment]
 -- spec: SPEC#deep-immutability
--- companion: reject-clone-environment
+
+-- accept
 type Step = fn() -> int &closure
 fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
 
@@ -10,9 +11,7 @@ fn example() {
     let _ = clone(value)
 }
 
--- [case: reject-clone-environment, check-fail]
--- spec: SPEC#deep-immutability
--- companion: accept-clone-environment
+-- reject
 -- Error [E0530]: reject clone environment
 type Step = fn() -> int &closure
 fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
@@ -23,9 +22,10 @@ fn example() {
     let _ = clone(step)
 }
 
--- [case: accept-immutable-environment, check-pass]
+-- [pair: immutable-environment]
 -- spec: SPEC#closures-factory-signatures-and-lexical-environments
--- companion: reject-immutable-environment
+
+-- accept
 type Step = fn() -> int &closure
 fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
 
@@ -34,9 +34,7 @@ fn example() {
     let _ = step()
 }
 
--- [case: reject-immutable-environment, check-fail]
--- spec: SPEC#closures-factory-signatures-and-lexical-environments
--- companion: accept-immutable-environment
+-- reject
 -- Error [E0535]: reject immutable environment
 type Step = fn() -> int &closure
 fn make_step() -> Step &capture { var count = 0; \-> { count += 1; count } }
@@ -45,22 +43,22 @@ fn example() {
     let step = make_step()
 }
 
--- [case: accept-missing-capture, check-pass]
+-- [pair: missing-capture]
 -- spec: SPEC#closures-factory-signatures-and-lexical-environments
--- companion: reject-missing-capture
+
+-- accept
 type Adder = fn(int) -> int &closure
 fn make(base: int) -> Adder &capture { \value -> base + value }
 
--- [case: reject-missing-capture, check-fail]
--- spec: SPEC#closures-factory-signatures-and-lexical-environments
--- companion: accept-missing-capture
+-- reject
 -- Error [E0510]: reject missing capture
 type Adder = fn(int) -> int &closure
 fn make(base: int) -> Adder { \value -> base + value }
 
--- [case: accept-readonly-environment-handle, check-pass]
+-- [pair: readonly-environment-handle]
 -- spec: SPEC#closure-capabilities-and-handle-permissions
--- companion: reject-readonly-environment-handle
+
+-- accept
 type Step = fn() -> int &closure
 fn make() -> Step &capture { var count = 0; \-> { count += 1; count } }
 
@@ -70,9 +68,7 @@ fn example() {
     let _ = step()
 }
 
--- [case: reject-readonly-environment-handle, check-fail]
--- spec: SPEC#closure-capabilities-and-handle-permissions
--- companion: accept-readonly-environment-handle
+-- reject
 -- Error [E0520]: reject readonly environment handle
 type Step = fn() -> int &closure
 fn make() -> Step &capture { var count = 0; \-> { count += 1; count } }

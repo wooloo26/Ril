@@ -1,38 +1,35 @@
--- [case: accept-declaration-unit-shape, check-pass]
+-- [pair: declaration-unit-shape]
 -- spec: SPEC#modules-and-compilation-units
--- companion: reject-declaration-unit-shape
+
+-- accept
 pub fn answer() -> int { 7 }
 
--- [case: reject-declaration-unit-shape, check-fail]
--- spec: SPEC#modules-and-compilation-units
--- companion: accept-declaration-unit-shape
+-- reject
 -- Error [E0902]: reject declaration unit shape
 pub fn answer() -> int
 
--- [case: accept-effectful-initializer, check-pass]
+-- [pair: effectful-initializer]
 -- spec: SPEC#top-level-initialization-and-purity
--- companion: reject-effectful-initializer
+
+-- accept
 let VALUE = 1
 
--- [case: reject-effectful-initializer, check-fail]
--- spec: SPEC#top-level-initialization-and-purity
--- companion: accept-effectful-initializer
+-- reject
 -- Error [E0202]: reject effectful initializer
 use ril/clock
 let VALUE = Clock::now()
 
--- [case: accept-missing-member, check-pass]
+-- [pair: missing-member]
 -- spec: SPEC#module-imports-and-visibility
--- companion: reject-missing-member
+
+-- accept
 -- file: root.ril
 use helper::{answer}
 
 -- file: helper.ril
 pub fn answer() -> int { 7 }
 
--- [case: reject-missing-member, check-fail]
--- spec: SPEC#module-imports-and-visibility
--- companion: accept-missing-member
+-- reject
 -- Error [E0209]: reject missing member
 -- file: root.ril
 use helper::{missing}
@@ -40,18 +37,17 @@ use helper::{missing}
 -- file: helper.ril
 pub fn answer() -> int { 7 }
 
--- [case: accept-missing-module, check-pass]
+-- [pair: missing-module]
 -- spec: SPEC#module-imports-and-visibility
--- companion: reject-missing-module
+
+-- accept
 -- file: root.ril
 use helper
 
 -- file: helper.ril
 pub fn answer() -> int { 7 }
 
--- [case: reject-missing-module, check-fail]
--- spec: SPEC#module-imports-and-visibility
--- companion: accept-missing-module
+-- reject
 -- Error [E0208]: reject missing module
 -- file: root.ril
 use absent
@@ -59,9 +55,10 @@ use absent
 -- file: helper.ril
 pub fn answer() -> int { 7 }
 
--- [case: accept-opaque-unwrapping, check-pass]
+-- [pair: opaque-unwrapping]
 -- spec: SPEC#type-declarations-and-opaque-types
--- companion: reject-opaque-unwrapping
+
+-- accept
 -- file: root.ril
 use token
 fn example(value: Token::Value) { let _ = Token::reveal(value) }
@@ -70,9 +67,7 @@ fn example(value: Token::Value) { let _ = Token::reveal(value) }
 pub opaque type Value = int
 pub fn reveal(value: Value) -> int { value }
 
--- [case: reject-opaque-unwrapping, check-fail]
--- spec: SPEC#type-declarations-and-opaque-types
--- companion: accept-opaque-unwrapping
+-- reject
 -- Error [E0308]: reject opaque unwrapping
 -- file: root.ril
 use token
@@ -82,18 +77,17 @@ fn example(value: Token::Value) { let _ = inner(value) }
 pub opaque type Value = int
 pub fn reveal(value: Value) -> int { value }
 
--- [case: accept-private-member, check-pass]
+-- [pair: private-member]
 -- spec: SPEC#module-imports-and-visibility
--- companion: reject-private-member
+
+-- accept
 -- file: root.ril
 use helper::{answer}
 
 -- file: helper.ril
 pub fn answer() -> int { 7 }
 
--- [case: reject-private-member, check-fail]
--- spec: SPEC#module-imports-and-visibility
--- companion: accept-private-member
+-- reject
 -- Error [E0201]: reject private member
 -- file: root.ril
 use helper::{answer}
@@ -101,9 +95,10 @@ use helper::{answer}
 -- file: helper.ril
 fn answer() -> int { 7 }
 
--- [case: accept-state-reference, check-pass]
+-- [pair: state-reference]
 -- spec: SPEC#named-function-state-contract-references
--- companion: reject-state-reference
+
+-- accept
 -- file: root.ril
 use counter
 fn example() &Counter::advance { Counter::advance() }
@@ -112,9 +107,7 @@ fn example() &Counter::advance { Counter::advance() }
 var count = 0
 pub fn advance() &{mut count} { count += 1 }
 
--- [case: reject-state-reference, check-fail]
--- spec: SPEC#named-function-state-contract-references
--- companion: accept-state-reference
+-- reject
 -- Error [E0510]: reject state reference
 -- file: root.ril
 use counter

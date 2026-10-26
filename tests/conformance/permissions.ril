@@ -1,6 +1,7 @@
--- [case: accept-clone-internal-sharing-marker, check-pass]
+-- [pair: clone-internal-sharing-marker]
 -- spec: SPEC#retained-mutable-sharing
--- companion: reject-clone-internal-sharing-marker
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -9,9 +10,7 @@ fn example() {
     copied.0.count += 1
 }
 
--- [case: reject-clone-internal-sharing-marker, check-fail]
--- spec: SPEC#retained-mutable-sharing
--- companion: accept-clone-internal-sharing-marker
+-- reject
 -- Error [E0510]: reject clone internal sharing marker
 type Cell = { mut count: int }
 
@@ -21,10 +20,11 @@ fn example() {
     copied.0.count += 1
 }
 
--- [case: accept-container-upgrade, check-pass]
+-- [pair: container-upgrade]
 -- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
+
+-- accept
 -- spec: SPEC#fresh-values-in-storage-calls
--- companion: reject-container-upgrade
 type Cell = { mut count: int }
 
 fn example() {
@@ -34,9 +34,7 @@ fn example() {
     values[0].count += 1
 }
 
--- [case: reject-container-upgrade, check-fail]
--- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: accept-container-upgrade
+-- reject
 -- Error [E0522]: reject container upgrade
 type Cell = { mut count: int }
 
@@ -63,26 +61,26 @@ fn example() {
     values[0].count += 1
 }
 
--- [case: accept-dead-write, check-pass]
+-- [pair: dead-write]
 -- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: reject-dead-write
+
+-- accept
 fn example(choose: bool) {
     var value = 1
     if choose { value += 1 }
 }
 
--- [case: reject-dead-write, check-fail]
--- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: accept-dead-write
+-- reject
 -- Error [E0527]: reject dead write
 fn example(choose: bool) {
     var value = 1
     if false { value += 1 }
 }
 
--- [case: accept-derive-draft-escape, check-pass]
+-- [pair: derive-draft-escape]
 -- spec: SPEC#functional-updates-via-derive
--- companion: reject-derive-draft-escape
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -91,9 +89,7 @@ fn example() {
     let result = base |> derive \mut draft -> { draft.count += 1; saved = clone_immut(draft) }
 }
 
--- [case: reject-derive-draft-escape, check-fail]
--- spec: SPEC#functional-updates-via-derive
--- companion: accept-derive-draft-escape
+-- reject
 -- Error [E0607]: reject derive draft escape
 type Cell = { mut count: int }
 
@@ -103,9 +99,10 @@ fn example() {
     let result = base |> derive \mut draft -> { draft.count += 1; saved = draft }
 }
 
--- [case: accept-derive-live-input, check-pass]
+-- [pair: derive-live-input]
 -- spec: SPEC#functional-updates-via-derive
--- companion: reject-derive-live-input
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -115,9 +112,7 @@ fn example() {
     item.count += 1
 }
 
--- [case: reject-derive-live-input, check-fail]
--- spec: SPEC#functional-updates-via-derive
--- companion: accept-derive-live-input
+-- reject
 -- Error [E0536]: reject derive live input
 type Cell = { mut count: int }
 
@@ -128,9 +123,10 @@ fn example() {
     item.count += 1
 }
 
--- [case: accept-destructure-upgrade, check-pass]
+-- [pair: destructure-upgrade]
 -- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: reject-destructure-upgrade
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -139,9 +135,7 @@ fn example() {
     child.count += 1
 }
 
--- [case: reject-destructure-upgrade, check-fail]
--- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: accept-destructure-upgrade
+-- reject
 -- Error [E0521]: reject destructure upgrade
 type Cell = { mut count: int }
 
@@ -151,9 +145,10 @@ fn example() {
     child.count += 1
 }
 
--- [case: accept-immutable-upgrade, check-pass]
+-- [pair: immutable-upgrade]
 -- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: reject-immutable-upgrade
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -162,9 +157,7 @@ fn example() {
     value.count += 1
 }
 
--- [case: reject-immutable-upgrade, check-fail]
--- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: accept-immutable-upgrade
+-- reject
 -- Error [E0520]: reject immutable upgrade
 type Cell = { mut count: int }
 
@@ -174,9 +167,10 @@ fn example() {
     value.count += 1
 }
 
--- [case: accept-live-immutable-publication, check-pass]
+-- [pair: live-immutable-publication]
 -- spec: SPEC#immutable-bindings
--- companion: reject-live-immutable-publication
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -185,9 +179,7 @@ fn example() {
     value.count += 1
 }
 
--- [case: reject-live-immutable-publication, check-fail]
--- spec: SPEC#immutable-bindings
--- companion: accept-live-immutable-publication
+-- reject
 -- Error [E0535]: reject live immutable publication
 type Cell = { mut count: int }
 
@@ -197,9 +189,10 @@ fn example() {
     value.count += 1
 }
 
--- [case: accept-local-sharing-marker, check-pass]
+-- [pair: local-sharing-marker]
 -- spec: SPEC#retained-mutable-sharing
--- companion: reject-local-sharing-marker
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -209,9 +202,7 @@ fn example() {
     original.count += 1
 }
 
--- [case: reject-local-sharing-marker, check-fail]
--- spec: SPEC#retained-mutable-sharing
--- companion: accept-local-sharing-marker
+-- reject
 -- Error [E0510]: reject local sharing marker
 type Cell = { mut count: int }
 
@@ -222,26 +213,26 @@ fn example() {
     original.count += 1
 }
 
--- [case: accept-mutation-during-iteration, check-pass]
+-- [pair: mutation-during-iteration]
 -- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: reject-mutation-during-iteration
+
+-- accept
 fn example() {
     let mut items = [1, 2]
     for clone_immut(items) as item { items !> Array::push(item) }
 }
 
--- [case: reject-mutation-during-iteration, check-fail]
--- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: accept-mutation-during-iteration
+-- reject
 -- Error [E0526]: reject mutation during iteration
 fn example() {
     let mut items = [1, 2]
     for items as item { items !> Array::push(item) }
 }
 
--- [case: accept-pinned-reassignment, check-pass]
+-- [pair: pinned-reassignment]
 -- spec: SPEC#pinned-mutable-handles
--- companion: reject-pinned-reassignment
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -250,9 +241,7 @@ fn example() {
     value = Cell.{ count: 2 }
 }
 
--- [case: reject-pinned-reassignment, check-fail]
--- spec: SPEC#pinned-mutable-handles
--- companion: accept-pinned-reassignment
+-- reject
 -- Error [E0502]: reject pinned reassignment
 type Cell = { mut count: int }
 
@@ -262,9 +251,10 @@ fn example() {
     value = Cell.{ count: 2 }
 }
 
--- [case: accept-plain-var-write, check-pass]
+-- [pair: plain-var-write]
 -- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: reject-plain-var-write
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -273,9 +263,7 @@ fn example() {
     value.count += 1
 }
 
--- [case: reject-plain-var-write, check-fail]
--- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: accept-plain-var-write
+-- reject
 -- Error [E0520]: reject plain var write
 type Cell = { mut count: int }
 
@@ -285,9 +273,10 @@ fn example() {
     value.count += 1
 }
 
--- [case: accept-read-write-origin, check-pass]
+-- [pair: read-write-origin]
 -- spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
--- companion: reject-read-write-origin
+
+-- accept
 type Cell = { mut count: int }
 fn copy_count(source: Cell, mut target: Cell) &mut { target.count = source.count }
 
@@ -297,9 +286,7 @@ fn example() {
     copy_count(source, mut value)
 }
 
--- [case: reject-read-write-origin, check-fail]
--- spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
--- companion: accept-read-write-origin
+-- reject
 -- Error [E0524]: reject read write origin
 type Cell = { mut count: int }
 fn copy_count(source: Cell, mut target: Cell) &mut { target.count = source.count }
@@ -309,9 +296,10 @@ fn example() {
     copy_count(value, mut value)
 }
 
--- [case: accept-readonly-return, check-pass]
+-- [pair: readonly-return]
 -- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: reject-readonly-return
+
+-- accept
 type Cell = { mut count: int }
 fn identity(cell: Cell) -> Cell { cell }
 
@@ -321,9 +309,7 @@ fn example() {
     value.count += 1
 }
 
--- [case: reject-readonly-return, check-fail]
--- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: accept-readonly-return
+-- reject
 -- Error [E0528]: reject readonly return
 type Cell = { mut count: int }
 fn identity(cell: Cell) -> Cell { cell }
@@ -334,9 +320,10 @@ fn example() {
     value.count += 1
 }
 
--- [case: accept-same-write-origin, check-pass]
+-- [pair: same-write-origin]
 -- spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
--- companion: reject-same-write-origin
+
+-- accept
 type Cell = { mut count: int }
 fn swap(mut a: Cell, mut b: Cell) &mut { let saved = a.count; a.count = b.count; b.count = saved }
 
@@ -345,9 +332,7 @@ fn example() {
     swap(mut values[0], mut values[1])
 }
 
--- [case: reject-same-write-origin, check-fail]
--- spec: SPEC#law-of-exclusivity-and-cross-argument-disjointness
--- companion: accept-same-write-origin
+-- reject
 -- Error [E0523]: reject same write origin
 type Cell = { mut count: int }
 fn swap(mut a: Cell, mut b: Cell) &mut { let saved = a.count; a.count = b.count; b.count = saved }
@@ -357,9 +342,10 @@ fn example() {
     swap(mut values[0], mut values[0])
 }
 
--- [case: accept-spread-upgrade, check-pass]
+-- [pair: spread-upgrade]
 -- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: reject-spread-upgrade
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -368,9 +354,7 @@ fn example() {
     value.child.count += 1
 }
 
--- [case: reject-spread-upgrade, check-fail]
--- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: accept-spread-upgrade
+-- reject
 -- Error [E0525]: reject spread upgrade
 type Cell = { mut count: int }
 
@@ -380,77 +364,74 @@ fn example() {
     value.child.count += 1
 }
 
--- [case: accept-unused-mut, check-pass]
+-- [pair: unused-mut]
 -- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: reject-unused-mut
+
+-- accept
 fn example(choose: bool) {
     let mut value = [1]
     value !> Array::push(2)
 }
 
--- [case: reject-unused-mut, check-fail]
--- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: accept-unused-mut
+-- reject
 -- Error [E0527]: reject unused mut
 fn example(choose: bool) {
     let mut value = [1]
 }
 
--- [case: accept-unused-var, check-pass]
+-- [pair: unused-var]
 -- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: reject-unused-var
+
+-- accept
 fn example(choose: bool) {
     var value = 1
     value += 1
 }
 
--- [case: reject-unused-var, check-fail]
--- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: accept-unused-var
+-- reject
 -- Error [E0527]: reject unused var
 fn example(choose: bool) {
     var value = 1
 }
 
--- [case: accept-var-mut-interior-unused, check-pass]
+-- [pair: var-mut-interior-unused]
 -- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: reject-var-mut-interior-unused
+
+-- accept
 fn example(choose: bool) {
     var mut value = [1]
     value = [2]
     value !> Array::push(3)
 }
 
--- [case: reject-var-mut-interior-unused, check-fail]
--- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: accept-var-mut-interior-unused
+-- reject
 -- Error [E0527]: reject var mut interior unused
 fn example(choose: bool) {
     var mut value = [1]
     value = [2]
 }
 
--- [case: accept-var-mut-slot-unused, check-pass]
+-- [pair: var-mut-slot-unused]
 -- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: reject-var-mut-slot-unused
+
+-- accept
 fn example(choose: bool) {
     var mut value = [1]
     value !> Array::push(2)
     value = [3]
 }
 
--- [case: reject-var-mut-slot-unused, check-fail]
--- spec: SPEC#binding-permissions-and-storage-matrix
--- companion: accept-var-mut-slot-unused
+-- reject
 -- Error [E0527]: reject var mut slot unused
 fn example(choose: bool) {
     var mut value = [1]
     value !> Array::push(2)
 }
 
--- [case: accept-view-of-immutable, check-pass]
+-- [pair: view-of-immutable]
 -- spec: SPEC#live-view-bindings
--- companion: reject-view-of-immutable
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -459,9 +440,7 @@ fn example() {
     value.count += 1
 }
 
--- [case: reject-view-of-immutable, check-fail]
--- spec: SPEC#live-view-bindings
--- companion: accept-view-of-immutable
+-- reject
 -- Error [E0531]: reject view of immutable
 type Cell = { mut count: int }
 
@@ -470,9 +449,10 @@ fn example() {
     let view seen = value
 }
 
--- [case: accept-view-of-reassignable, check-pass]
+-- [pair: view-of-reassignable]
 -- spec: SPEC#live-view-bindings
--- companion: reject-view-of-reassignable
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -481,9 +461,7 @@ fn example() {
     value.count += 1
 }
 
--- [case: reject-view-of-reassignable, check-fail]
--- spec: SPEC#live-view-bindings
--- companion: accept-view-of-reassignable
+-- reject
 -- Error [E0531]: reject view of reassignable
 type Cell = { mut count: int }
 
@@ -494,9 +472,10 @@ fn example() {
     value = Cell.{ count: 2 }
 }
 
--- [case: accept-view-upgrade, check-pass]
+-- [pair: view-upgrade]
 -- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: reject-view-upgrade
+
+-- accept
 type Cell = { mut count: int }
 
 fn example() {
@@ -507,9 +486,7 @@ fn example() {
     source.count += 1
 }
 
--- [case: reject-view-upgrade, check-fail]
--- spec: SPEC#monotonic-permission-degradation-and-anti-laundering-matrix
--- companion: accept-view-upgrade
+-- reject
 -- Error [E0520]: reject view upgrade
 type Cell = { mut count: int }
 

@@ -1,15 +1,14 @@
--- [case: accept-function-auto-tuple, check-pass]
+-- [pair: function-auto-tuple]
 -- spec: SPEC#constructor-tuple-equivalence-invariant
--- companion: reject-function-auto-tuple
+
+-- accept
 fn add(a: int, b: int) -> int { a + b }
 
 fn example() {
     let value = add(1, 2)
 }
 
--- [case: reject-function-auto-tuple, check-fail]
--- spec: SPEC#constructor-tuple-equivalence-invariant
--- companion: accept-function-auto-tuple
+-- reject
 -- Error [E0314]: reject function auto tuple
 fn add(a: int, b: int) -> int { a + b }
 
@@ -17,20 +16,20 @@ fn example() {
     let value = add((1, 2))
 }
 
--- [case: accept-hidden-existential, check-pass]
+-- [pair: hidden-existential]
 -- spec: SPEC#sum-types-and-gadts
--- companion: reject-hidden-existential
+
+-- accept
 type Packed<T> { Item<U>(U) -> Packed<U> }
 
--- [case: reject-hidden-existential, check-fail]
--- spec: SPEC#sum-types-and-gadts
--- companion: accept-hidden-existential
+-- reject
 -- Error [E0354]: reject hidden existential
 type Packed { Item<U>(U) }
 
--- [case: accept-impossible-gadt-arm, check-pass]
+-- [pair: impossible-gadt-arm]
 -- spec: SPEC#sum-types-and-gadts
--- companion: reject-impossible-gadt-arm
+
+-- accept
 type Expr<T> { LitInt(int) -> Expr<int>, LitBool(bool) -> Expr<bool> }
 fn eval<T>(expr: Expr<T>) -> T {
     match expr { LitInt(n) -> n, LitBool(b) -> b }
@@ -40,9 +39,7 @@ fn example(expr: Expr<int>) {
     match expr { LitInt(n) -> () }
 }
 
--- [case: reject-impossible-gadt-arm, check-fail]
--- spec: SPEC#sum-types-and-gadts
--- companion: accept-impossible-gadt-arm
+-- reject
 -- Error [E0304]: reject impossible gadt arm
 type Expr<T> { LitInt(int) -> Expr<int>, LitBool(bool) -> Expr<bool> }
 fn eval<T>(expr: Expr<T>) -> T {
@@ -53,18 +50,17 @@ fn example(expr: Expr<int>) {
     match expr { LitInt(n) -> (), LitBool(b) -> () }
 }
 
--- [case: accept-nested-constructor-flattening, check-pass]
+-- [pair: nested-constructor-flattening]
 -- spec: SPEC#constructor-tuple-equivalence-invariant
--- companion: reject-nested-constructor-flattening
+
+-- accept
 type Node { Branch((int, int), str) }
 
 fn example() {
     let value = Branch((1, 2), "a")
 }
 
--- [case: reject-nested-constructor-flattening, check-fail]
--- spec: SPEC#constructor-tuple-equivalence-invariant
--- companion: accept-nested-constructor-flattening
+-- reject
 -- Error [E0314]: reject nested constructor flattening
 type Node { Branch((int, int), str) }
 
@@ -72,29 +68,27 @@ fn example() {
     let value = Branch(1, 2, "a")
 }
 
--- [case: accept-nullary-call, check-pass]
+-- [pair: nullary-call]
 -- spec: SPEC#constructor-tuple-equivalence-invariant
--- companion: reject-nullary-call
+
+-- accept
 fn example() {
     let value: ?int = None
 }
 
--- [case: reject-nullary-call, check-fail]
--- spec: SPEC#constructor-tuple-equivalence-invariant
--- companion: accept-nullary-call
+-- reject
 -- Error [E0353]: reject nullary call
 fn example() {
     let value: ?int = None()
 }
 
--- [case: accept-wrong-result-declaration, check-pass]
+-- [pair: wrong-result-declaration]
 -- spec: SPEC#sum-types-and-gadts
--- companion: reject-wrong-result-declaration
+
+-- accept
 type Packed<T> { Item(T) -> Packed<T> }
 
--- [case: reject-wrong-result-declaration, check-fail]
--- spec: SPEC#sum-types-and-gadts
--- companion: accept-wrong-result-declaration
+-- reject
 -- Error [E0354]: reject wrong result declaration
 type Packed<T> { Item(T) -> bool }
 

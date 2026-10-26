@@ -1,184 +1,171 @@
--- [case: accept-callable-type-contract-reference, check-pass]
+-- [pair: callable-type-contract-reference]
 -- spec: SPEC#named-function-state-contract-references
--- companion: reject-callable-type-contract-reference
+
+-- accept
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 type Action = fn() -> () &{mut count}
 
--- [case: reject-callable-type-contract-reference, check-fail]
--- spec: SPEC#named-function-state-contract-references
--- companion: accept-callable-type-contract-reference
+-- reject
 -- Error [E0539]: reject callable type contract reference
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 type Action = fn() -> () &advance
 
--- [case: accept-closed-row-hazard, check-pass]
+-- [pair: closed-row-hazard]
 -- spec: SPEC#callable-contracts
--- companion: reject-closed-row-hazard
+
+-- accept
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example(action: fn() -> ()) &{mut count} { advance(); action() }
 
--- [case: reject-closed-row-hazard, check-fail]
--- spec: SPEC#callable-contracts
--- companion: accept-closed-row-hazard
+-- reject
 -- Error [E0534]: reject closed row hazard
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example(action: fn() -> ()) &{} { advance(); action() }
 
--- [case: accept-empty-capture-group, check-pass]
+-- [pair: empty-capture-group]
 -- spec: SPEC#state-groups-and-captured-layers
--- companion: reject-empty-capture-group
+
+-- accept
 fn example() {}
 
--- [case: reject-empty-capture-group, check-fail]
--- spec: SPEC#state-groups-and-captured-layers
--- companion: accept-empty-capture-group
+-- reject
 -- Error [E0538]: reject empty capture group
 fn example() &{closure,} {}
 
--- [case: accept-empty-provider-reference, check-pass]
+-- [pair: empty-provider-reference]
 -- spec: SPEC#named-function-state-contract-references
--- companion: reject-empty-provider-reference
+
+-- accept
 fn nothing() {}
 fn example() { nothing() }
 
--- [case: reject-empty-provider-reference, check-fail]
--- spec: SPEC#named-function-state-contract-references
--- companion: accept-empty-provider-reference
+-- reject
 -- Error [E0529]: reject empty provider reference
 fn nothing() {}
 fn example() &nothing { nothing() }
 
--- [case: accept-excess-capability, check-pass]
+-- [pair: excess-capability]
 -- spec: SPEC#retained-mutable-sharing
--- companion: reject-excess-capability
+
+-- accept
 fn example() {}
 
--- [case: reject-excess-capability, check-fail]
--- spec: SPEC#retained-mutable-sharing
--- companion: accept-excess-capability
+-- reject
 -- Error [E0529]: reject excess capability
 fn example() &mut {}
 
--- [case: accept-first-order-empty-both, check-pass]
+-- [pair: first-order-empty-both]
 -- spec: SPEC#empty-rows-on-higher-order-signatures
--- companion: reject-first-order-empty-both
+
+-- accept
 fn example(action: fn() -> ()) @{} &{} { action() }
 
--- [case: reject-first-order-empty-both, check-fail]
--- spec: SPEC#empty-rows-on-higher-order-signatures
--- companion: accept-first-order-empty-both
+-- reject
 -- Error [E0542]: reject first order empty both
 fn example() @{} &{} {}
 
--- [case: accept-first-order-empty-effect, check-pass]
+-- [pair: first-order-empty-effect]
 -- spec: SPEC#empty-rows-on-higher-order-signatures
--- companion: reject-first-order-empty-effect
+
+-- accept
 fn example(action: fn() -> ()) @{} { action() }
 
--- [case: reject-first-order-empty-effect, check-fail]
--- spec: SPEC#empty-rows-on-higher-order-signatures
--- companion: accept-first-order-empty-effect
+-- reject
 -- Error [E0542]: reject first order empty effect
 fn example() @{} {}
 
--- [case: accept-first-order-empty-state, check-pass]
+-- [pair: first-order-empty-state]
 -- spec: SPEC#empty-rows-on-higher-order-signatures
--- companion: reject-first-order-empty-state
+
+-- accept
 fn example(action: fn() -> ()) &{} { action() }
 
--- [case: reject-first-order-empty-state, check-fail]
--- spec: SPEC#empty-rows-on-higher-order-signatures
--- companion: accept-first-order-empty-state
+-- reject
 -- Error [E0542]: reject first order empty state
 fn example() &{} {}
 
--- [case: accept-missing-alias, check-pass]
+-- [pair: missing-alias]
 -- spec: SPEC#external-state-tracking
--- companion: reject-missing-alias
+
+-- accept
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() &{mut count} { let action = advance; action() }
 
--- [case: reject-missing-alias, check-fail]
--- spec: SPEC#external-state-tracking
--- companion: accept-missing-alias
+-- reject
 -- Error [E0510]: reject missing alias
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() { let action = advance; action() }
 
--- [case: accept-missing-callback, check-pass]
+-- [pair: missing-callback]
 -- spec: SPEC#external-state-tracking
--- companion: reject-missing-callback
+
+-- accept
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() &{mut count} { invoke(advance) }
 
--- [case: reject-missing-callback, check-fail]
--- spec: SPEC#external-state-tracking
--- companion: accept-missing-callback
+-- reject
 -- Error [E0510]: reject missing callback
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() { invoke(advance) }
 
--- [case: accept-missing-callee, check-pass]
+-- [pair: missing-callee]
 -- spec: SPEC#external-state-tracking
--- companion: reject-missing-callee
+
+-- accept
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() &{mut count} { advance() }
 
--- [case: reject-missing-callee, check-fail]
--- spec: SPEC#external-state-tracking
--- companion: accept-missing-callee
+-- reject
 -- Error [E0510]: reject missing callee
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() { advance() }
 
--- [case: accept-missing-direct, check-pass]
+-- [pair: missing-direct]
 -- spec: SPEC#external-state-tracking
--- companion: reject-missing-direct
+
+-- accept
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() &{mut count} { count += 1 }
 
--- [case: reject-missing-direct, check-fail]
--- spec: SPEC#external-state-tracking
--- companion: accept-missing-direct
+-- reject
 -- Error [E0510]: reject missing direct
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() { count += 1 }
 
--- [case: accept-value-contract-provider, check-pass]
+-- [pair: value-contract-provider]
 -- spec: SPEC#named-function-state-contract-references
--- companion: reject-value-contract-provider
+
+-- accept
 var count = 0
 fn advance() &{mut count} { count += 1 }
 fn invoke(action: fn() -> ()) { action() }
 fn example() &advance { advance() }
 
--- [case: reject-value-contract-provider, check-fail]
--- spec: SPEC#named-function-state-contract-references
--- companion: accept-value-contract-provider
+-- reject
 -- Error [E0539]: reject value contract provider
 var count = 0
 fn advance() &{mut count} { count += 1 }
@@ -186,17 +173,16 @@ fn invoke(action: fn() -> ()) { action() }
 let ACTION = advance
 fn example() &ACTION { advance() }
 
--- [case: accept-wrong-capture-group, check-pass]
+-- [pair: wrong-capture-group]
 -- spec: SPEC#state-groups-and-captured-layers
--- companion: reject-wrong-capture-group
+
+-- accept
 fn outer() { var count = 0; inner()
 where
     fn inner() &{closure, mut count} { count += 1 }
 }
 
--- [case: reject-wrong-capture-group, check-fail]
--- spec: SPEC#state-groups-and-captured-layers
--- companion: accept-wrong-capture-group
+-- reject
 -- Error [E0538]: reject wrong capture group
 fn outer() { var count = 0; inner()
 where

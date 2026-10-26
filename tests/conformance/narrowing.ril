@@ -1,15 +1,14 @@
--- [case: accept-contradictory-refinement, check-pass]
+-- [pair: contradictory-refinement]
 -- spec: SPEC#flow-sensitive-type-narrowing
--- companion: reject-contradictory-refinement
+
+-- accept
 type Shape { Circle(int), Point }
 
 fn example(shape: Shape) {
     if shape is Circle {} else if shape is Point {}
 }
 
--- [case: reject-contradictory-refinement, check-fail]
--- spec: SPEC#flow-sensitive-type-narrowing
--- companion: accept-contradictory-refinement
+-- reject
 -- Error [E0311]: reject contradictory refinement
 type Shape { Circle(int), Point }
 
@@ -17,26 +16,26 @@ fn example(shape: Shape) {
     if shape is Circle { if shape is Point {} }
 }
 
--- [case: accept-reassigned-refinement, check-pass]
+-- [pair: reassigned-refinement]
 -- spec: SPEC#flow-sensitive-type-narrowing
--- companion: reject-reassigned-refinement
+
+-- accept
 fn example() {
     var item: ?int = Some(1)
     if item != None { let value = item + 1; item = None }
 }
 
--- [case: reject-reassigned-refinement, check-fail]
--- spec: SPEC#flow-sensitive-type-narrowing
--- companion: accept-reassigned-refinement
+-- reject
 -- Error [E0310]: reject reassigned refinement
 fn example() {
     var item: ?int = Some(1)
     if item != None { item = None; let value = item + 1 }
 }
 
--- [case: accept-unknown-callback-independence, check-pass]
+-- [pair: unknown-callback-independence]
 -- spec: SPEC#flow-sensitive-type-narrowing
--- companion: reject-unknown-callback-independence
+
+-- accept
 type Cell = { mut value: ?int }
 fn example(mut cell: Cell, action: fn() -> ()) &mut {
     let snapshot = clone_immut(cell)
@@ -47,9 +46,7 @@ fn example(mut cell: Cell, action: fn() -> ()) &mut {
     cell.value = None
 }
 
--- [case: reject-unknown-callback-independence, check-fail]
--- spec: SPEC#flow-sensitive-type-narrowing
--- companion: accept-unknown-callback-independence
+-- reject
 -- Error [E0533]: Unknown callback writes cannot establish independence for a live refinement; snapshot remains stable
 type Cell = { mut value: ?int }
 fn example(mut cell: Cell, action: fn() -> ()) &mut {
@@ -68,9 +65,10 @@ pub fn test_guard_clause() {
     assert(read(Some(.{ id: 7 })) == 7 && read(None) == -1)
 }
 
--- [case: accept-known-write-refinement, check-pass]
+-- [pair: known-write-refinement]
 -- spec: SPEC#flow-sensitive-type-narrowing
--- companion: reject-known-write-refinement
+
+-- accept
 type Cell = { mut value: ?int }
 fn clear(mut cell: Cell) &mut { cell.value = None }
 
@@ -81,9 +79,7 @@ fn example(mut cell: Cell) &mut {
     }
 }
 
--- [case: reject-known-write-refinement, check-fail]
--- spec: SPEC#flow-sensitive-type-narrowing
--- companion: accept-known-write-refinement
+-- reject
 -- Error [E0310]: A known callee write invalidates the previously narrowed field
 type Cell = { mut value: ?int }
 fn clear(mut cell: Cell) &mut { cell.value = None }

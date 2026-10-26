@@ -1,15 +1,14 @@
--- [case: accept-const-sort, check-pass]
+-- [pair: const-sort]
 -- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: reject-const-sort
+
+-- accept
 type Token<size: int>(int)
 
 fn example() {
     let value: Token<1> = Token(1)
 }
 
--- [case: reject-const-sort, check-fail]
--- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: accept-const-sort
+-- reject
 -- Error [E0323]: reject const sort
 type Token<size: int>(int)
 
@@ -17,62 +16,57 @@ fn example() {
     let value: Token<"1"> = Token(1)
 }
 
--- [case: accept-forward-default, check-pass]
+-- [pair: forward-default]
 -- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: reject-forward-default
+
+-- accept
 type Pair<T = int, U = T> = (T, U)
 
--- [case: reject-forward-default, check-fail]
--- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: accept-forward-default
+-- reject
 -- Error [E0320]: reject forward default
 type Pair<T = U, U = int> = (T, U)
 
--- [case: accept-function-default, check-pass]
+-- [pair: function-default]
 -- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: reject-function-default
+
+-- accept
 fn echo<T>(value: T) -> T { value }
 
--- [case: reject-function-default, check-fail]
--- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: accept-function-default
+-- reject
 -- Error [E0317]: reject function default
 fn echo<T = int>(value: T) -> T { value }
 
--- [case: accept-generic-arity, check-pass]
+-- [pair: generic-arity]
 -- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: reject-generic-arity
+
+-- accept
 type Item = Option<int>
 
--- [case: reject-generic-arity, check-fail]
--- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: accept-generic-arity
+-- reject
 -- Error [E0340]: reject generic arity
 type Item = Option<int, str>
 
--- [case: accept-literal-type, check-pass]
+-- [pair: literal-type]
 -- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: reject-literal-type
+
+-- accept
 type Method { Get }
 
--- [case: reject-literal-type, check-fail]
--- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: accept-literal-type
+-- reject
 -- Error [E0318]: reject literal type
 type Method = "GET"
 
--- [case: accept-missing-inference, check-pass]
+-- [pair: missing-inference]
 -- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: reject-missing-inference
+
+-- accept
 fn empty<T>() -> []T { [] }
 
 fn example() {
     let values: []int = empty()
 }
 
--- [case: reject-missing-inference, check-fail]
--- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: accept-missing-inference
+-- reject
 -- Error [E0344]: reject missing inference
 fn empty<T>() -> []T { [] }
 
@@ -80,29 +74,27 @@ fn example() {
     let values = empty()
 }
 
--- [case: accept-nontrailing-default, check-pass]
+-- [pair: nontrailing-default]
 -- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: reject-nontrailing-default
+
+-- accept
 type Pair<T = int, U = int> = (T, U)
 
--- [case: reject-nontrailing-default, check-fail]
--- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: accept-nontrailing-default
+-- reject
 -- Error [E0316]: reject nontrailing default
 type Pair<T = int, U> = (T, U)
 
--- [case: accept-runtime-const, check-pass]
+-- [pair: runtime-const]
 -- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: reject-runtime-const
+
+-- accept
 type Token<size: int>(int)
 
 fn example(size: int) {
     let value: Token<1> = Token(1)
 }
 
--- [case: reject-runtime-const, check-fail]
--- spec: SPEC#generic-parameters-defaults-and-value-sorts
--- companion: accept-runtime-const
+-- reject
 -- Error [E0814]: reject runtime const
 type Token<size: int>(int)
 

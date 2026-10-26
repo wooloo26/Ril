@@ -30,31 +30,29 @@ fn example() {
     assert(len(window) == 2)
 }
 
--- [case: accept-mixed-range-type, check-pass]
+-- [pair: mixed-range-type]
 -- spec: SPEC#range-and-slicing-expressions
--- companion: reject-mixed-range-type
+
+-- accept
 fn example() {
     let values = 0u8..1u8
 }
 
--- [case: reject-mixed-range-type, check-fail]
--- spec: SPEC#range-and-slicing-expressions
--- companion: accept-mixed-range-type
+-- reject
 -- Error [E0301]: reject mixed range type
 fn example() {
     let values = 0u8..1u16
 }
 
--- [case: accept-noninteger-range, check-pass]
+-- [pair: noninteger-range]
 -- spec: SPEC#range-and-slicing-expressions
--- companion: reject-noninteger-range
+
+-- accept
 fn example() {
     let values = 0..1
 }
 
--- [case: reject-noninteger-range, check-fail]
--- spec: SPEC#range-and-slicing-expressions
--- companion: accept-noninteger-range
+-- reject
 -- Error [E0327]: reject noninteger range
 fn example() {
     let values = 0.0..1.0

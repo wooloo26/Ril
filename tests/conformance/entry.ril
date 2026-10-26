@@ -1,64 +1,54 @@
--- [case: accept-main-argument, check-pass]
+-- [pair: main-argument]
 -- spec: SPEC#program-entry-point
--- companion: reject-main-argument
 -- unit: executable
+
+-- accept
 pub fn main() {}
 
--- [case: reject-main-argument, check-fail]
--- spec: SPEC#program-entry-point
--- companion: accept-main-argument
--- unit: executable
+-- reject
 -- Error [E0904]: reject main argument
 pub fn main(value: int) {}
 
--- [case: accept-main-generic, check-pass]
+-- [pair: main-generic]
 -- spec: SPEC#program-entry-point
--- companion: reject-main-generic
 -- unit: executable
+
+-- accept
 pub fn main() {}
 
--- [case: reject-main-generic, check-fail]
--- spec: SPEC#program-entry-point
--- companion: accept-main-generic
--- unit: executable
+-- reject
 -- Error [E0904]: reject main generic
 pub fn main<T>() {}
 
--- [case: accept-main-private, check-pass]
+-- [pair: main-private]
 -- spec: SPEC#program-entry-point
--- companion: reject-main-private
 -- unit: executable
+
+-- accept
 pub fn main() {}
 
--- [case: reject-main-private, check-fail]
--- spec: SPEC#program-entry-point
--- companion: accept-main-private
--- unit: executable
+-- reject
 -- Error [E0904]: reject main private
 fn main() {}
 
--- [case: accept-main-result, check-pass]
+-- [pair: main-result]
 -- spec: SPEC#program-entry-point
--- companion: reject-main-result
 -- unit: executable
+
+-- accept
 pub fn main() {}
 
--- [case: reject-main-result, check-fail]
--- spec: SPEC#program-entry-point
--- companion: accept-main-result
--- unit: executable
+-- reject
 -- Error [E0904]: reject main result
 pub fn main() -> int { 1 }
 
--- [case: accept-missing-main, check-pass]
+-- [pair: missing-main]
 -- spec: SPEC#program-entry-point
--- companion: reject-missing-main
 -- unit: executable
+
+-- accept
 pub fn main() {}
 
--- [case: reject-missing-main, check-fail]
--- spec: SPEC#program-entry-point
--- companion: accept-missing-main
--- unit: executable
+-- reject
 -- Error [E0903]: reject missing main
 pub fn helper() {}

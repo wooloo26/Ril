@@ -1,6 +1,7 @@
--- [case: accept-duplicate-handler, check-pass]
+-- [pair: duplicate-handler]
 -- spec: SPEC#effect-handlers
--- companion: reject-duplicate-handler
+
+-- accept
 eff Read { get() -> int }
 
 fn example() {
@@ -8,9 +9,7 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: reject-duplicate-handler, check-fail]
--- spec: SPEC#effect-handlers
--- companion: accept-duplicate-handler
+-- reject
 -- Error [E0622]: reject duplicate handler
 eff Read { get() -> int }
 
@@ -19,9 +18,10 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: accept-duplicate-resume, check-pass]
+-- [pair: duplicate-resume]
 -- spec: SPEC#affine-resumption-and-delimited-early-abort
--- companion: reject-duplicate-resume
+
+-- accept
 eff Read { get() -> int }
 
 fn example() {
@@ -29,9 +29,7 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: reject-duplicate-resume, check-fail]
--- spec: SPEC#affine-resumption-and-delimited-early-abort
--- companion: accept-duplicate-resume
+-- reject
 -- Error [E0610]: reject duplicate resume
 eff Read { get() -> int }
 
@@ -40,9 +38,10 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: accept-ended-operation-loan, check-pass]
+-- [pair: ended-operation-loan]
 -- spec: SPEC#effect-handlers
--- companion: reject-ended-operation-loan
+
+-- accept
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
 
@@ -52,9 +51,7 @@ fn example() {
     Edit::apply(mut value)
 }
 
--- [case: reject-ended-operation-loan, check-fail]
--- spec: SPEC#effect-handlers
--- companion: accept-ended-operation-loan
+-- reject
 -- Error [E0540]: reject ended operation loan
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
@@ -65,9 +62,10 @@ fn example() {
     Edit::apply(mut value)
 }
 
--- [case: accept-handler-answer, check-pass]
+-- [pair: handler-answer]
 -- spec: SPEC#effect-handlers
--- companion: reject-handler-answer
+
+-- accept
 eff Read { get() -> int }
 
 fn example() {
@@ -75,9 +73,7 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: reject-handler-answer, check-fail]
--- spec: SPEC#effect-handlers
--- companion: accept-handler-answer
+-- reject
 -- Error [E0625]: reject handler answer
 eff Read { get() -> int }
 
@@ -86,9 +82,10 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: accept-handler-parameter-mode, check-pass]
+-- [pair: handler-parameter-mode]
 -- spec: SPEC#effect-handlers
--- companion: reject-handler-parameter-mode
+
+-- accept
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
 
@@ -98,9 +95,7 @@ fn example() {
     Edit::apply(mut value)
 }
 
--- [case: reject-handler-parameter-mode, check-fail]
--- spec: SPEC#effect-handlers
--- companion: accept-handler-parameter-mode
+-- reject
 -- Error [E0406]: reject handler parameter mode
 type Cell = { mut count: int }
 eff Edit { apply(mut Cell) -> () &mut }
@@ -111,18 +106,17 @@ fn example() {
     Edit::apply(mut value)
 }
 
--- [case: accept-invalid-handler-target, check-pass]
+-- [pair: invalid-handler-target]
 -- spec: SPEC#effect-handlers
--- companion: reject-invalid-handler-target
+
+-- accept
 fn value() -> int { 1 }
 
 fn example() {
     let _ = value()
 }
 
--- [case: reject-invalid-handler-target, check-fail]
--- spec: SPEC#effect-handlers
--- companion: accept-invalid-handler-target
+-- reject
 -- Error [E0621]: reject invalid handler target
 fn value() -> int { 1 }
 
@@ -131,9 +125,10 @@ fn example() {
     let _ = value()
 }
 
--- [case: accept-resume-capture, check-pass]
+-- [pair: resume-capture]
 -- spec: SPEC#affine-resumption-and-delimited-early-abort
--- companion: reject-resume-capture
+
+-- accept
 eff Read { get() -> int }
 
 fn example() {
@@ -141,9 +136,7 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: reject-resume-capture, check-fail]
--- spec: SPEC#affine-resumption-and-delimited-early-abort
--- companion: accept-resume-capture
+-- reject
 -- Error [E0611]: reject resume capture
 eff Read { get() -> int }
 
@@ -152,24 +145,24 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: accept-resume-outside, check-pass]
+-- [pair: resume-outside]
 -- spec: SPEC#affine-resumption-and-delimited-early-abort
--- companion: reject-resume-outside
+
+-- accept
 fn example() {
     ()
 }
 
--- [case: reject-resume-outside, check-fail]
--- spec: SPEC#affine-resumption-and-delimited-early-abort
--- companion: accept-resume-outside
+-- reject
 -- Error [E0623]: reject resume outside
 fn example() {
     resume ()
 }
 
--- [case: accept-resume-value-type, check-pass]
+-- [pair: resume-value-type]
 -- spec: SPEC#effect-handlers
--- companion: reject-resume-value-type
+
+-- accept
 eff Read { get() -> int }
 
 fn example() {
@@ -177,9 +170,7 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: reject-resume-value-type, check-fail]
--- spec: SPEC#effect-handlers
--- companion: accept-resume-value-type
+-- reject
 -- Error [E0624]: reject resume value type
 eff Read { get() -> int }
 
@@ -188,29 +179,27 @@ fn example() {
     let _ = Read::get()
 }
 
--- [case: accept-unhandled-effect, check-pass]
+-- [pair: unhandled-effect]
 -- spec: SPEC#callable-contracts
--- companion: reject-unhandled-effect
+
+-- accept
 eff Read { get() -> int }
 fn example() -> int @Read { Read::get() }
 
--- [case: reject-unhandled-effect, check-fail]
--- spec: SPEC#callable-contracts
--- companion: accept-unhandled-effect
+-- reject
 -- Error [E0612]: reject unhandled effect
 eff Read { get() -> int }
 fn example() -> int { Read::get() }
 
--- [case: accept-unstable-handler-answer, check-pass]
+-- [pair: unstable-handler-answer]
 -- spec: SPEC#effect-handlers
--- companion: reject-unstable-handler-answer
+
+-- accept
 eff Read { get() -> int }
 type Reader = fn() -> int &closure
 fn make_reader() -> Reader &capture { with Read::get() -> resume 7; \-> Read::get() }
 
--- [case: reject-unstable-handler-answer, check-fail]
--- spec: SPEC#effect-handlers
--- companion: accept-unstable-handler-answer
+-- reject
 -- Error [E0614]: reject unstable handler answer
 eff Read { get() -> int }
 type Reader = fn() -> int &closure

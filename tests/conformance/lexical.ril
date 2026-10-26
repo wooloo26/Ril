@@ -1,112 +1,103 @@
--- [case: accept-above-unicode-limit, check-pass]
+-- [pair: above-unicode-limit]
 -- spec: SPEC#character-set-and-encoding
--- companion: reject-above-unicode-limit
+
+-- accept
 -- file: input.ril
 
--- [case: reject-above-unicode-limit, check-fail]
--- spec: SPEC#character-set-and-encoding
--- companion: accept-above-unicode-limit
+-- reject
 -- Error [E0104]: reject above unicode limit
 -- file: input.ril hex
 f4 90 80 80
 
--- [case: accept-illegal-character, check-pass]
+-- [pair: illegal-character]
 -- spec: SPEC#character-set-and-encoding
--- companion: reject-illegal-character
+
+-- accept
 fn example() {
     let value = "$"
 }
 
--- [case: reject-illegal-character, check-fail]
--- spec: SPEC#character-set-and-encoding
--- companion: accept-illegal-character
+-- reject
 -- Error [E0105]: reject illegal character
 fn example() {
     let value = $
 }
 
--- [case: accept-invalid-leading-byte, check-pass]
+-- [pair: invalid-leading-byte]
 -- spec: SPEC#character-set-and-encoding
--- companion: reject-invalid-leading-byte
+
+-- accept
 -- file: input.ril
 
--- [case: reject-invalid-leading-byte, check-fail]
--- spec: SPEC#character-set-and-encoding
--- companion: accept-invalid-leading-byte
+-- reject
 -- Error [E0104]: reject invalid leading byte
 -- file: input.ril hex
 ff
 
--- [case: accept-keyword-field, check-pass]
+-- [pair: keyword-field]
 -- spec: SPEC#keywords
--- companion: reject-keyword-field
+
+-- accept
 type Record = { if_value: int }
 
--- [case: reject-keyword-field, check-fail]
--- spec: SPEC#keywords
--- companion: accept-keyword-field
+-- reject
 -- Error [E0113]: reject keyword field
 type Record = { if: int }
 
--- [case: accept-mismatched-delimiter, check-pass]
+-- [pair: mismatched-delimiter]
 -- spec: SPEC#syntactic-diagnostic-conditions
--- companion: reject-mismatched-delimiter
+
+-- accept
 -- file: input.ril hex
 6c 65 74 20 50 41 49 52 20 3d 20 28 31 2c 20 32 29
 
--- [case: reject-mismatched-delimiter, check-fail]
--- spec: SPEC#syntactic-diagnostic-conditions
--- companion: accept-mismatched-delimiter
+-- reject
 -- Error [E0123]: reject mismatched delimiter
 -- file: input.ril hex
 6c 65 74 20 50 41 49 52 20 3d 20 28 31 2c 20 32 5d
 
--- [case: accept-missing-comma, check-pass]
+-- [pair: missing-comma]
 -- spec: SPEC#syntactic-diagnostic-conditions
--- companion: reject-missing-comma
+
+-- accept
 -- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 53 20 3d 20 5b 31 2c 20 32 5d
 
--- [case: reject-missing-comma, check-fail]
--- spec: SPEC#syntactic-diagnostic-conditions
--- companion: accept-missing-comma
+-- reject
 -- Error [E0124]: reject missing comma
 -- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 53 20 3d 20 5b 31 20 32 5d
 
--- [case: accept-missing-initializer, check-pass]
+-- [pair: missing-initializer]
 -- spec: SPEC#syntactic-diagnostic-conditions
--- companion: reject-missing-initializer
+
+-- accept
 -- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 31
 
--- [case: reject-missing-initializer, check-fail]
--- spec: SPEC#syntactic-diagnostic-conditions
--- companion: accept-missing-initializer
+-- reject
 -- Error [E0121]: reject missing initializer
 -- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d
 
--- [case: accept-overlong-utf8, check-pass]
+-- [pair: overlong-utf8]
 -- spec: SPEC#character-set-and-encoding
--- companion: reject-overlong-utf8
+
+-- accept
 -- file: input.ril
 
--- [case: reject-overlong-utf8, check-fail]
--- spec: SPEC#character-set-and-encoding
--- companion: accept-overlong-utf8
+-- reject
 -- Error [E0104]: reject overlong utf8
 -- file: input.ril hex
 c0 af
 
--- [case: accept-reserved-as, check-pass]
+-- [pair: reserved-as]
 -- spec: SPEC#keywords
--- companion: reject-reserved-as
+
+-- accept
 type Record = { as_value: int }
 
--- [case: reject-reserved-as, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-as
+-- reject
 -- Error [E0113]: reject reserved as
 type Record = { as: int }
 
@@ -120,467 +111,426 @@ type Record = { capture_value: int }
 -- companion: accept-reserved-capture
 type Record = { capture: int }
 
--- [case: accept-reserved-eff, check-pass]
+-- [pair: reserved-eff]
 -- spec: SPEC#keywords
--- companion: reject-reserved-eff
+
+-- accept
 type Record = { eff_value: int }
 
--- [case: reject-reserved-eff, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-eff
+-- reject
 -- Error [E0113]: reject reserved eff
 type Record = { eff: int }
 
--- [case: accept-reserved-else, check-pass]
+-- [pair: reserved-else]
 -- spec: SPEC#keywords
--- companion: reject-reserved-else
+
+-- accept
 type Record = { else_value: int }
 
--- [case: reject-reserved-else, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-else
+-- reject
 -- Error [E0113]: reject reserved else
 type Record = { else: int }
 
--- [case: accept-reserved-false, check-pass]
+-- [pair: reserved-false]
 -- spec: SPEC#keywords
--- companion: reject-reserved-false
+
+-- accept
 type Record = { false_value: int }
 
--- [case: reject-reserved-false, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-false
+-- reject
 -- Error [E0113]: reject reserved false
 type Record = { false: int }
 
--- [case: accept-reserved-fn, check-pass]
+-- [pair: reserved-fn]
 -- spec: SPEC#keywords
--- companion: reject-reserved-fn
+
+-- accept
 type Record = { fn_value: int }
 
--- [case: reject-reserved-fn, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-fn
+-- reject
 -- Error [E0113]: reject reserved fn
 type Record = { fn: int }
 
--- [case: accept-reserved-for, check-pass]
+-- [pair: reserved-for]
 -- spec: SPEC#keywords
--- companion: reject-reserved-for
+
+-- accept
 type Record = { for_value: int }
 
--- [case: reject-reserved-for, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-for
+-- reject
 -- Error [E0113]: reject reserved for
 type Record = { for: int }
 
--- [case: accept-reserved-halt, check-pass]
+-- [pair: reserved-halt]
 -- spec: SPEC#keywords
--- companion: reject-reserved-halt
+
+-- accept
 type Record = { halt_value: int }
 
--- [case: reject-reserved-halt, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-halt
+-- reject
 -- Error [E0113]: reject reserved halt
 type Record = { halt: int }
 
--- [case: accept-reserved-if, check-pass]
+-- [pair: reserved-if]
 -- spec: SPEC#keywords
--- companion: reject-reserved-if
+
+-- accept
 type Record = { if_value: int }
 
--- [case: reject-reserved-if, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-if
+-- reject
 -- Error [E0113]: reject reserved if
 type Record = { if: int }
 
--- [case: accept-reserved-in, check-pass]
+-- [pair: reserved-in]
 -- spec: SPEC#keywords
--- companion: reject-reserved-in
+
+-- accept
 type Record = { in_value: int }
 
--- [case: reject-reserved-in, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-in
+-- reject
 -- Error [E0113]: reject reserved in
 type Record = { in: int }
 
--- [case: accept-reserved-is, check-pass]
+-- [pair: reserved-is]
 -- spec: SPEC#keywords
--- companion: reject-reserved-is
+
+-- accept
 type Record = { is_value: int }
 
--- [case: reject-reserved-is, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-is
+-- reject
 -- Error [E0113]: reject reserved is
 type Record = { is: int }
 
--- [case: accept-reserved-keyof, check-pass]
+-- [pair: reserved-keyof]
 -- spec: SPEC#keywords
--- companion: reject-reserved-keyof
+
+-- accept
 type Record = { keyof_value: int }
 
--- [case: reject-reserved-keyof, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-keyof
+-- reject
 -- Error [E0113]: reject reserved keyof
 type Record = { keyof: int }
 
--- [case: accept-reserved-last, check-pass]
+-- [pair: reserved-last]
 -- spec: SPEC#keywords
--- companion: reject-reserved-last
+
+-- accept
 type Record = { last_value: int }
 
--- [case: reject-reserved-last, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-last
+-- reject
 -- Error [E0113]: reject reserved last
 type Record = { last: int }
 
--- [case: accept-reserved-let, check-pass]
+-- [pair: reserved-let]
 -- spec: SPEC#keywords
--- companion: reject-reserved-let
+
+-- accept
 type Record = { let_value: int }
 
--- [case: reject-reserved-let, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-let
+-- reject
 -- Error [E0113]: reject reserved let
 type Record = { let: int }
 
--- [case: accept-reserved-loop, check-pass]
+-- [pair: reserved-loop]
 -- spec: SPEC#keywords
--- companion: reject-reserved-loop
+
+-- accept
 type Record = { loop_value: int }
 
--- [case: reject-reserved-loop, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-loop
+-- reject
 -- Error [E0113]: reject reserved loop
 type Record = { loop: int }
 
--- [case: accept-reserved-match, check-pass]
+-- [pair: reserved-match]
 -- spec: SPEC#keywords
--- companion: reject-reserved-match
+
+-- accept
 type Record = { match_value: int }
 
--- [case: reject-reserved-match, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-match
+-- reject
 -- Error [E0113]: reject reserved match
 type Record = { match: int }
 
--- [case: accept-reserved-meta, check-pass]
+-- [pair: reserved-meta]
 -- spec: SPEC#keywords
--- companion: reject-reserved-meta
+
+-- accept
 type Record = { meta_value: int }
 
--- [case: reject-reserved-meta, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-meta
+-- reject
 -- Error [E0113]: reject reserved meta
 type Record = { meta: int }
 
--- [case: accept-reserved-module, check-pass]
+-- [pair: reserved-module]
 -- spec: SPEC#keywords
--- companion: reject-reserved-module
+
+-- accept
 type Record = { module_value: int }
 
--- [case: reject-reserved-module, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-module
+-- reject
 -- Error [E0113]: reject reserved module
 type Record = { module: int }
 
--- [case: accept-reserved-mut, check-pass]
+-- [pair: reserved-mut]
 -- spec: SPEC#keywords
--- companion: reject-reserved-mut
+
+-- accept
 type Record = { mut_value: int }
 
--- [case: reject-reserved-mut, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-mut
+-- reject
 -- Error [E0113]: reject reserved mut
 type Record = { mut: int }
 
--- [case: accept-reserved-never, check-pass]
+-- [pair: reserved-never]
 -- spec: SPEC#keywords
--- companion: reject-reserved-never
+
+-- accept
 type Record = { never_value: int }
 
--- [case: reject-reserved-never, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-never
+-- reject
 -- Error [E0113]: reject reserved never
 type Record = { never: int }
 
--- [case: accept-reserved-next, check-pass]
+-- [pair: reserved-next]
 -- spec: SPEC#keywords
--- companion: reject-reserved-next
+
+-- accept
 type Record = { next_value: int }
 
--- [case: reject-reserved-next, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-next
+-- reject
 -- Error [E0113]: reject reserved next
 type Record = { next: int }
 
--- [case: accept-reserved-opaque, check-pass]
+-- [pair: reserved-opaque]
 -- spec: SPEC#keywords
--- companion: reject-reserved-opaque
+
+-- accept
 type Record = { opaque_value: int }
 
--- [case: reject-reserved-opaque, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-opaque
+-- reject
 -- Error [E0113]: reject reserved opaque
 type Record = { opaque: int }
 
--- [case: accept-reserved-pub, check-pass]
+-- [pair: reserved-pub]
 -- spec: SPEC#keywords
--- companion: reject-reserved-pub
+
+-- accept
 type Record = { pub_value: int }
 
--- [case: reject-reserved-pub, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-pub
+-- reject
 -- Error [E0113]: reject reserved pub
 type Record = { pub: int }
 
--- [case: accept-reserved-resume, check-pass]
+-- [pair: reserved-resume]
 -- spec: SPEC#keywords
--- companion: reject-reserved-resume
+
+-- accept
 type Record = { resume_value: int }
 
--- [case: reject-reserved-resume, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-resume
+-- reject
 -- Error [E0113]: reject reserved resume
 type Record = { resume: int }
 
--- [case: accept-reserved-return, check-pass]
+-- [pair: reserved-return]
 -- spec: SPEC#keywords
--- companion: reject-reserved-return
+
+-- accept
 type Record = { return_value: int }
 
--- [case: reject-reserved-return, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-return
+-- reject
 -- Error [E0113]: reject reserved return
 type Record = { return: int }
 
--- [case: accept-reserved-scoped, check-pass]
+-- [pair: reserved-scoped]
 -- spec: SPEC#keywords
--- companion: reject-reserved-scoped
+
+-- accept
 type Record = { scoped_value: int }
 
--- [case: reject-reserved-scoped, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-scoped
+-- reject
 -- Error [E0113]: reject reserved scoped
 type Record = { scoped: int }
 
--- [case: accept-reserved-true, check-pass]
+-- [pair: reserved-true]
 -- spec: SPEC#keywords
--- companion: reject-reserved-true
+
+-- accept
 type Record = { true_value: int }
 
--- [case: reject-reserved-true, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-true
+-- reject
 -- Error [E0113]: reject reserved true
 type Record = { true: int }
 
--- [case: accept-reserved-type, check-pass]
+-- [pair: reserved-type]
 -- spec: SPEC#keywords
--- companion: reject-reserved-type
+
+-- accept
 type Record = { type_value: int }
 
--- [case: reject-reserved-type, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-type
+-- reject
 -- Error [E0113]: reject reserved type
 type Record = { type: int }
 
--- [case: accept-reserved-typeof, check-pass]
+-- [pair: reserved-typeof]
 -- spec: SPEC#keywords
--- companion: reject-reserved-typeof
+
+-- accept
 type Record = { typeof_value: int }
 
--- [case: reject-reserved-typeof, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-typeof
+-- reject
 -- Error [E0113]: reject reserved typeof
 type Record = { typeof: int }
 
--- [case: accept-reserved-use, check-pass]
+-- [pair: reserved-use]
 -- spec: SPEC#keywords
--- companion: reject-reserved-use
+
+-- accept
 type Record = { use_value: int }
 
--- [case: reject-reserved-use, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-use
+-- reject
 -- Error [E0113]: reject reserved use
 type Record = { use: int }
 
--- [case: accept-reserved-var, check-pass]
+-- [pair: reserved-var]
 -- spec: SPEC#keywords
--- companion: reject-reserved-var
+
+-- accept
 type Record = { var_value: int }
 
--- [case: reject-reserved-var, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-var
+-- reject
 -- Error [E0113]: reject reserved var
 type Record = { var: int }
 
--- [case: accept-reserved-view, check-pass]
+-- [pair: reserved-view]
 -- spec: SPEC#keywords
--- companion: reject-reserved-view
+
+-- accept
 type Record = { view_value: int }
 
--- [case: reject-reserved-view, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-view
+-- reject
 -- Error [E0113]: reject reserved view
 type Record = { view: int }
 
--- [case: accept-reserved-where, check-pass]
+-- [pair: reserved-where]
 -- spec: SPEC#keywords
--- companion: reject-reserved-where
+
+-- accept
 type Record = { where_value: int }
 
--- [case: reject-reserved-where, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-where
+-- reject
 -- Error [E0113]: reject reserved where
 type Record = { where: int }
 
--- [case: accept-reserved-while, check-pass]
+-- [pair: reserved-while]
 -- spec: SPEC#keywords
--- companion: reject-reserved-while
+
+-- accept
 type Record = { while_value: int }
 
--- [case: reject-reserved-while, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-while
+-- reject
 -- Error [E0113]: reject reserved while
 type Record = { while: int }
 
--- [case: accept-reserved-with, check-pass]
+-- [pair: reserved-with]
 -- spec: SPEC#keywords
--- companion: reject-reserved-with
+
+-- accept
 type Record = { with_value: int }
 
--- [case: reject-reserved-with, check-fail]
--- spec: SPEC#keywords
--- companion: accept-reserved-with
+-- reject
 -- Error [E0113]: reject reserved with
 type Record = { with: int }
 
--- [case: accept-surrogate-utf8, check-pass]
+-- [pair: surrogate-utf8]
 -- spec: SPEC#character-set-and-encoding
--- companion: reject-surrogate-utf8
+
+-- accept
 -- file: input.ril
 
--- [case: reject-surrogate-utf8, check-fail]
--- spec: SPEC#character-set-and-encoding
--- companion: accept-surrogate-utf8
+-- reject
 -- Error [E0104]: reject surrogate utf8
 -- file: input.ril hex
 ed a0 80
 
--- [case: accept-truncated-utf8, check-pass]
+-- [pair: truncated-utf8]
 -- spec: SPEC#character-set-and-encoding
--- companion: reject-truncated-utf8
+
+-- accept
 -- file: input.ril
 
--- [case: reject-truncated-utf8, check-fail]
--- spec: SPEC#character-set-and-encoding
--- companion: accept-truncated-utf8
+-- reject
 -- Error [E0104]: reject truncated utf8
 -- file: input.ril hex
 e2 82
 
--- [case: accept-unclosed-array, check-pass]
+-- [pair: unclosed-array]
 -- spec: SPEC#syntactic-diagnostic-conditions
--- companion: reject-unclosed-array
+
+-- accept
 -- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 53 20 3d 20 5b 31 2c 20 32 5d
 
--- [case: reject-unclosed-array, check-fail]
--- spec: SPEC#syntactic-diagnostic-conditions
--- companion: accept-unclosed-array
+-- reject
 -- Error [E0122]: reject unclosed array
 -- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 53 20 3d 20 5b 31 2c 20 32
 
--- [case: accept-unclosed-byte-string, check-pass]
+-- [pair: unclosed-byte-string]
 -- spec: SPEC#text-and-byte-literals
--- companion: reject-unclosed-byte-string
+
+-- accept
 -- file: input.ril hex
 6c 65 74 20 44 41 54 41 20 3d 20 62 22 63 6c 6f 73 65 64 22
 
--- [case: reject-unclosed-byte-string, check-fail]
--- spec: SPEC#text-and-byte-literals
--- companion: accept-unclosed-byte-string
+-- reject
 -- Error [E0107]: reject unclosed byte string
 -- file: input.ril hex
 6c 65 74 20 44 41 54 41 20 3d 20 62 22 6f 70 65 6e
 
--- [case: accept-unclosed-nested-comment, check-pass]
+-- [pair: unclosed-nested-comment]
 -- spec: SPEC#comments
--- companion: reject-unclosed-nested-comment
+
+-- accept
 -- file: input.ril hex
 7b 2d 20 6f 75 74 65 72 20 7b 2d 20 69 6e 6e 65 72 20 2d 7d 20 2d 7d
 
--- [case: reject-unclosed-nested-comment, check-fail]
--- spec: SPEC#comments
--- companion: accept-unclosed-nested-comment
+-- reject
 -- Error [E0106]: reject unclosed nested comment
 -- file: input.ril hex
 7b 2d 20 6f 75 74 65 72 20 7b 2d 20 69 6e 6e 65 72 20 2d 7d
 
--- [case: accept-unclosed-raw-string, check-pass]
+-- [pair: unclosed-raw-string]
 -- spec: SPEC#text-and-byte-literals
--- companion: reject-unclosed-raw-string
+
+-- accept
 -- file: input.ril hex
 6c 65 74 20 54 45 58 54 20 3d 20 60 63 6c 6f 73 65 64 60
 
--- [case: reject-unclosed-raw-string, check-fail]
--- spec: SPEC#text-and-byte-literals
--- companion: accept-unclosed-raw-string
+-- reject
 -- Error [E0107]: reject unclosed raw string
 -- file: input.ril hex
 6c 65 74 20 54 45 58 54 20 3d 20 60 6f 70 65 6e
 
--- [case: accept-unclosed-string, check-pass]
+-- [pair: unclosed-string]
 -- spec: SPEC#text-and-byte-literals
--- companion: reject-unclosed-string
+
+-- accept
 -- file: input.ril hex
 6c 65 74 20 54 45 58 54 20 3d 20 22 63 6c 6f 73 65 64 22
 
--- [case: reject-unclosed-string, check-fail]
--- spec: SPEC#text-and-byte-literals
--- companion: accept-unclosed-string
+-- reject
 -- Error [E0107]: reject unclosed string
 -- file: input.ril hex
 6c 65 74 20 54 45 58 54 20 3d 20 22 6f 70 65 6e
 
--- [case: accept-unexpected-closing-token, check-pass]
+-- [pair: unexpected-closing-token]
 -- spec: SPEC#syntactic-diagnostic-conditions
--- companion: reject-unexpected-closing-token
+
+-- accept
 -- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 31
 
--- [case: reject-unexpected-closing-token, check-fail]
--- spec: SPEC#syntactic-diagnostic-conditions
--- companion: accept-unexpected-closing-token
+-- reject
 -- Error [E0120]: reject unexpected closing token
 -- file: input.ril hex
 6c 65 74 20 56 41 4c 55 45 20 3d 20 29

@@ -1,15 +1,14 @@
--- [case: accept-downward-type, check-pass]
+-- [pair: downward-type]
 -- spec: SPEC#dual-tier-where-invariants
--- companion: reject-downward-type
+
+-- accept
 fn example() -> Wrapper
 where
     type Internal = int
     type Wrapper = { value: Internal }
 { .{ value: 1 } }
 
--- [case: reject-downward-type, check-fail]
--- spec: SPEC#dual-tier-where-invariants
--- companion: accept-downward-type
+-- reject
 -- Error [E0705]: reject downward type
 fn example() -> Wrapper
 where
@@ -19,34 +18,32 @@ where
     type Internal = int
 }
 
--- [case: accept-signature-block-type, check-pass]
+-- [pair: signature-block-type]
 -- spec: SPEC#dual-tier-where-invariants
--- companion: reject-signature-block-type
+
+-- accept
 fn example(action: Action)
 where
     type Action = fn() -> ()
 { action() }
 
--- [case: reject-signature-block-type, check-fail]
--- spec: SPEC#dual-tier-where-invariants
--- companion: accept-signature-block-type
+-- reject
 -- Error [E0706]: reject signature block type
 fn example(action: Action) { action()
 where
     type Action = fn() -> ()
 }
 
--- [case: accept-signature-function, check-pass]
+-- [pair: signature-function]
 -- spec: SPEC#dual-tier-where-invariants
--- companion: reject-signature-function
+
+-- accept
 fn example() { helper()
 where
     fn helper() {}
 }
 
--- [case: reject-signature-function, check-fail]
--- spec: SPEC#dual-tier-where-invariants
--- companion: accept-signature-function
+-- reject
 -- Error [E0704]: reject signature function
 fn example()
 where

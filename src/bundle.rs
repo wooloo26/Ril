@@ -388,6 +388,36 @@ struct SourceBuilder {
     files: Vec<VirtualFile>,
 }
 
+struct PairBuilder {
+    name: String,
+    shared_meta: Map<String, Value>,
+}
+
+fn parse_pair_subcase(line: &str) -> Option<(String, Option<String>)> {
+    let line = line.trim();
+    if line == "-- accept" || line == "-- [accept]" {
+        return Some(("accept".into(), None));
+    }
+    if line == "-- reject" || line == "-- [reject]" {
+        return Some(("reject".into(), None));
+    }
+    if let Some(rest) = line.strip_prefix("-- accept [").and_then(|s| s.strip_suffix(']')) {
+        return Some(("accept".into(), Some(rest.trim().to_string())));
+    }
+    if let Some(rest) = line.strip_prefix("-- reject [").and_then(|s| s.strip_suffix(']')) {
+        return Some(("reject".into(), Some(rest.trim().to_string())));
+    }
+    if let Some(inner) = line.strip_prefix("-- [").and_then(|s| s.strip_suffix(']')) {
+        let items = split_bracket_items(inner);
+        if !items.is_empty() && (items[0] == "accept" || items[0] == "reject") {
+            let kind = items[0].clone();
+            let mode = items.get(1).cloned();
+            return Some((kind, mode));
+        }
+    }
+    None
+}
+
 fn decode_metadata(mut raw: Map<String, Value>) -> Result<Metadata> {
     if let Some(Value::String(args)) = raw.remove("args") {
         let args: Value = serde_json::from_str(&args)?;
@@ -651,6 +681,7 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
     let mut cases = Vec::new();
     let mut names = HashSet::new();
     let mut current: Option<CaseBuilder> = None;
+    let mut pair: Option<PairBuilder> = None;
     let mut source: Option<SourceBuilder> = None;
     let mut sources: HashMap<String, Vec<VirtualFile>> = HashMap::new();
     let mut used_sources = HashSet::new();
@@ -683,18 +714,25 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                 let is_new_case = line.starts_with("--@ case: ")
                     || line.starts_with("-- case: ")
                     || line.starts_with("-- [case: ");
+                let is_new_pair = line.starts_with("-- [pair: ");
                 let is_new_source = line.starts_with("--@ source: ")
                     || line.starts_with("-- source: ")
                     || line.starts_with("-- [source: ");
+                let is_pair_subcase = parse_pair_subcase(line).is_some();
                 let is_new_file = parse_file_directive(line).is_some();
 
-                if is_new_case || is_new_source || is_new_file {
+                if is_new_case || is_new_pair || is_new_source || is_pair_subcase || is_new_file {
                     flush_file(&mut file, &mut current, &mut source)?;
-                    if is_new_case {
+                    if is_new_case || is_new_pair {
+                        flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
+                        pair = None;
+                    } else if is_pair_subcase {
                         flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
                     }
                     if is_new_source {
+                        flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
                         flush_source(&mut file, &mut current, &mut source, &mut sources)?;
+                        pair = None;
                     }
                 } else if !open.hex && line.starts_with("--@@") {
                     open.lines.push(line.replacen("--@@", "--@", 1));
@@ -742,6 +780,29 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                     name: name.into(),
                     files: Vec::new(),
                 });
+                pair = None;
+                return Ok(());
+            }
+
+            let new_pair_data = if let Some(inner) = line.strip_prefix("-- [pair: ").and_then(|s| s.strip_suffix(']')) {
+                let mut items = split_bracket_items(inner);
+                let name = items.remove(0);
+                Some((name, items))
+            } else {
+                None
+            };
+            if let Some((name, remaining_items)) = new_pair_data {
+                flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
+                flush_source(&mut file, &mut current, &mut source, &mut sources)?;
+                require(NAME.is_match(&name), format!("invalid pair name: {name}"))?;
+                let mut shared_meta = Map::new();
+                for item in remaining_items {
+                    apply_item_to_meta(&mut shared_meta, &item)?;
+                }
+                pair = Some(PairBuilder {
+                    name,
+                    shared_meta,
+                });
                 return Ok(());
             }
 
@@ -775,7 +836,60 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                     apply_item_to_meta(&mut builder.meta, &item)?;
                 }
                 current = Some(builder);
+                pair = None;
                 return Ok(());
+            }
+
+            if let Some((kind, mode_opt)) = parse_pair_subcase(line) {
+                let Some(p) = &pair else {
+                    return Err(Error::Invalid(format!("expected [pair:] before -- {kind}")));
+                };
+                flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
+                let case_name = format!("{kind}-{}", p.name);
+                let companion = format!("{}-{}", if kind == "accept" { "reject" } else { "accept" }, p.name);
+                let default_mode = if kind == "accept" { "check-pass" } else { "check-fail" };
+                let mode = mode_opt.as_deref().unwrap_or(default_mode);
+                require(names.insert(case_name.clone()), format!("duplicate case: {case_name}"))?;
+                let mut builder = CaseBuilder {
+                    name: case_name,
+                    line: index + 1,
+                    meta: p.shared_meta.clone(),
+                    annotations: Vec::new(),
+                    files: Vec::new(),
+                };
+                apply_directive(&mut builder.meta, "companion", &companion)?;
+                apply_directive(&mut builder.meta, "mode", mode)?;
+                current = Some(builder);
+                return Ok(());
+            }
+
+            if let Some(p) = &mut pair
+                && current.is_none()
+            {
+                if let Some(inner) = line.strip_prefix("-- [").and_then(|s| s.strip_suffix(']')) {
+                    for item in split_bracket_items(inner) {
+                        apply_item_to_meta(&mut p.shared_meta, &item)?;
+                    }
+                    return Ok(());
+                }
+                let directive_opt = if let Some(rest) = line.strip_prefix("--@ ") {
+                    rest.split_once(": ")
+                } else if let Some(rest) = line.strip_prefix("-- ") {
+                    rest.split_once(": ")
+                } else {
+                    None
+                };
+                if let Some((key, value)) = directive_opt {
+                    let key = key.trim();
+                    if DIRECTIVE_KEYS.contains(&key) {
+                        apply_directive(&mut p.shared_meta, key, value.trim())?;
+                        return Ok(());
+                    }
+                }
+                if line.trim().is_empty() {
+                    return Ok(());
+                }
+                return Err(Error::Invalid(format!("expected -- accept or -- reject in pair: {line}")));
             }
 
             if source.is_some() {
@@ -992,5 +1106,83 @@ fn sample() {}
         assert_eq!(cases[0].meta.mode, Mode::CheckPass);
         assert_eq!(cases[0].meta.spec, vec!["SPEC#advisory-warnings"]);
         assert_eq!(cases[0].root, "inline-test.ril");
+    }
+
+    #[test]
+    fn parse_pair_block() {
+        let text = r#"-- [pair: assignment-target]
+-- spec: SPEC#assignments-and-compound-assignments
+
+-- accept
+fn example() {
+    var value = 1
+    value = 3
+}
+
+-- reject
+-- Error [E0503]: reject assignment target
+fn example() {
+    (1 + 2) = 3
+}
+"#;
+        let cases = parse_bundle(text, "tests/example.ril").unwrap();
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].name, "accept-assignment-target");
+        assert_eq!(cases[0].meta.mode, Mode::CheckPass);
+        assert_eq!(
+            cases[0].meta.companion.as_deref(),
+            Some("reject-assignment-target")
+        );
+        assert_eq!(cases[0].root, "accept-assignment-target.ril");
+        assert_eq!(cases[1].name, "reject-assignment-target");
+        assert_eq!(cases[1].meta.mode, Mode::CheckFail);
+        assert_eq!(
+            cases[1].meta.companion.as_deref(),
+            Some("accept-assignment-target")
+        );
+        assert_eq!(cases[1].root, "reject-assignment-target.ril");
+        assert_eq!(cases[1].errors, vec!["E0503"]);
+    }
+
+    #[test]
+    fn parse_pair_block_with_files_and_extra_spec() {
+        let text = r#"-- [pair: missing-member]
+-- spec: SPEC#module-imports-and-visibility
+
+-- accept
+-- spec: SPEC#fresh-values-in-storage-calls
+-- file: root.ril
+use helper::{answer}
+
+-- file: helper.ril
+pub fn answer() -> int { 7 }
+
+-- reject
+-- Error [E0209]: reject missing member
+-- file: root.ril
+use helper::{missing}
+
+-- file: helper.ril
+pub fn answer() -> int { 7 }
+"#;
+        let cases = parse_bundle(text, "tests/example.ril").unwrap();
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].name, "accept-missing-member");
+        assert_eq!(cases[0].files.len(), 2);
+        assert_eq!(cases[0].root, "root.ril");
+        assert_eq!(
+            cases[0].meta.spec,
+            vec![
+                "SPEC#module-imports-and-visibility",
+                "SPEC#fresh-values-in-storage-calls"
+            ]
+        );
+        assert_eq!(cases[1].name, "reject-missing-member");
+        assert_eq!(cases[1].files.len(), 2);
+        assert_eq!(cases[1].root, "root.ril");
+        assert_eq!(
+            cases[1].meta.spec,
+            vec!["SPEC#module-imports-and-visibility"]
+        );
     }
 }

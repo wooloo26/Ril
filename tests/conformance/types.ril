@@ -1,15 +1,14 @@
--- [case: accept-closed-record-width, check-pass]
+-- [pair: closed-record-width]
 -- spec: SPEC#type-identity-and-subtyping
--- companion: reject-closed-record-width
+
+-- accept
 fn make() -> { name: str, extra: int } { .{ name: "a", extra: 1 } }
 
 fn example() {
     let getter: fn() -> { name: str, extra: int } = make
 }
 
--- [case: reject-closed-record-width, check-fail]
--- spec: SPEC#type-identity-and-subtyping
--- companion: accept-closed-record-width
+-- reject
 -- Error [E0301]: reject closed record width
 fn make() -> { name: str, extra: int } { .{ name: "a", extra: 1 } }
 
@@ -17,24 +16,24 @@ fn example() {
     let getter: fn() -> { name: str } = make
 }
 
--- [case: accept-incompatible-binding, check-pass]
+-- [pair: incompatible-binding]
 -- spec: SPEC#diagnostic-classification
--- companion: reject-incompatible-binding
+
+-- accept
 fn example() {
     let value: str = "one"
 }
 
--- [case: reject-incompatible-binding, check-fail]
--- spec: SPEC#diagnostic-classification
--- companion: accept-incompatible-binding
+-- reject
 -- Error [E0301]: reject incompatible binding
 fn example() {
     let value: str = 1
 }
 
--- [case: accept-nominal-identity, check-pass]
+-- [pair: nominal-identity]
 -- spec: SPEC#nominal-type-wrappers
--- companion: reject-nominal-identity
+
+-- accept
 type UserId(int)
 type AccountId(int)
 
@@ -42,9 +41,7 @@ fn example() {
     let same = UserId(1) == UserId(1)
 }
 
--- [case: reject-nominal-identity, check-fail]
--- spec: SPEC#nominal-type-wrappers
--- companion: accept-nominal-identity
+-- reject
 -- Error [E0305]: reject nominal identity
 type UserId(int)
 type AccountId(int)
@@ -53,45 +50,42 @@ fn example() {
     let same = UserId(1) == AccountId(1)
 }
 
--- [case: accept-pinned-scalar, check-pass]
+-- [pair: pinned-scalar]
 -- spec: SPEC#value-types
--- companion: reject-pinned-scalar
+
+-- accept
 fn example() {
     var value = 1
     value += 1
 }
 
--- [case: reject-pinned-scalar, check-fail]
--- spec: SPEC#value-types
--- companion: accept-pinned-scalar
+-- reject
 -- Error [E0402]: reject pinned scalar
 fn example() {
     let mut value = 1
 }
 
--- [case: accept-sum-argument-invariance, check-pass]
+-- [pair: sum-argument-invariance]
 -- spec: SPEC#type-identity-and-subtyping
--- companion: reject-sum-argument-invariance
+
+-- accept
 fn example() {
     let value: ?int = Some(1)
 }
 
--- [case: reject-sum-argument-invariance, check-fail]
--- spec: SPEC#type-identity-and-subtyping
--- companion: accept-sum-argument-invariance
+-- reject
 -- Error [E0301]: reject sum argument invariance
 fn example() {
     let value: ?int = Some("a")
 }
 
--- [case: accept-value-borrow, check-pass]
+-- [pair: value-borrow]
 -- spec: SPEC#value-types
--- companion: reject-value-borrow
+
+-- accept
 fn example(value: int) {}
 
--- [case: reject-value-borrow, check-fail]
--- spec: SPEC#value-types
--- companion: accept-value-borrow
+-- reject
 -- Error [E0401]: reject value borrow
 fn example(mut value: int) {}
 

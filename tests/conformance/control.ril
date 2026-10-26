@@ -1,88 +1,82 @@
--- [case: accept-branch-type, check-pass]
+-- [pair: branch-type]
 -- spec: SPEC#conditional-expressions
--- companion: reject-branch-type
+
+-- accept
 fn example(choose: bool) {
     let value = if choose { 1 } else { 2 }
 }
 
--- [case: reject-branch-type, check-fail]
--- spec: SPEC#conditional-expressions
--- companion: accept-branch-type
+-- reject
 -- Error [E0351]: reject branch type
 fn example(choose: bool) {
     let value = if choose { 1 } else { "a" }
 }
 
--- [case: accept-last-outside-loop, check-pass]
+-- [pair: last-outside-loop]
 -- spec: SPEC#control-transfers
--- companion: reject-last-outside-loop
+
+-- accept
 fn example() {
     loop { last }
 }
 
--- [case: reject-last-outside-loop, check-fail]
--- spec: SPEC#control-transfers
--- companion: accept-last-outside-loop
+-- reject
 -- Error [E0707]: reject last outside loop
 fn example() {
     last
 }
 
--- [case: accept-next-outside-loop, check-pass]
+-- [pair: next-outside-loop]
 -- spec: SPEC#control-transfers
--- companion: reject-next-outside-loop
+
+-- accept
 fn example() {
     loop { last }
 }
 
--- [case: reject-next-outside-loop, check-fail]
--- spec: SPEC#control-transfers
--- companion: accept-next-outside-loop
+-- reject
 -- Error [E0707]: reject next outside loop
 fn example() {
     next
 }
 
--- [case: accept-nonboolean-condition, check-pass]
+-- [pair: nonboolean-condition]
 -- spec: SPEC#conditional-expressions
--- companion: reject-nonboolean-condition
+
+-- accept
 fn example() {
     if true {}
 }
 
--- [case: reject-nonboolean-condition, check-fail]
--- spec: SPEC#conditional-expressions
--- companion: accept-nonboolean-condition
+-- reject
 -- Error [E0350]: reject nonboolean condition
 fn example() {
     if 1 {}
 }
 
--- [case: accept-nonboolean-logical, check-pass]
+-- [pair: nonboolean-logical]
 -- spec: SPEC#logical-operators
--- companion: reject-nonboolean-logical
+
+-- accept
 fn example() {
     let value = true && false
 }
 
--- [case: reject-nonboolean-logical, check-fail]
--- spec: SPEC#logical-operators
--- companion: accept-nonboolean-logical
+-- reject
 -- Error [E0350]: reject nonboolean logical
 fn example() {
     let value = true && 1
 }
 
--- [case: accept-noniterable-string, check-pass]
+-- [pair: noniterable-string]
 -- spec: SPEC#loop-expressions
--- companion: reject-noniterable-string
+
+-- accept
 fn example() {
     for String::scalars("abc") as value {}
 }
 
--- [case: reject-noniterable-string, check-fail]
--- spec: SPEC#loop-expressions
--- companion: accept-noniterable-string
+-- reject
 -- Error [E0355]: reject noniterable string
 fn example() {
     for "abc" as value {}

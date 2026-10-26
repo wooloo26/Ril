@@ -1,145 +1,135 @@
--- [case: accept-collection-projection, check-pass]
+-- [pair: collection-projection]
 -- spec: SPEC#array-map-and-tuple-types
--- companion: reject-collection-projection
+
+-- accept
 use ril/array::{Elem}
 type Item = Elem<[]int>
 
--- [case: reject-collection-projection, check-fail]
--- spec: SPEC#array-map-and-tuple-types
--- companion: accept-collection-projection
+-- reject
 -- Error [E0337]: reject collection projection
 type Item = ([]int).elem
 
--- [case: accept-fixed-length, check-pass]
+-- [pair: fixed-length]
 -- spec: SPEC#array-map-and-tuple-types
--- companion: reject-fixed-length
+
+-- accept
 fn example() {
     let items: [2]int = [1, 2]
 }
 
--- [case: reject-fixed-length, check-fail]
--- spec: SPEC#array-map-and-tuple-types
--- companion: accept-fixed-length
+-- reject
 -- Error [E0301]: reject fixed length
 fn example() {
     let items: [2]int = [1]
 }
 
--- [case: accept-float-key, check-pass]
+-- [pair: float-key]
 -- spec: SPEC#relational-equality-and-containment-operators
--- companion: reject-float-key
+
+-- accept
 fn example() {
     let values = [1: 1]
 }
 
--- [case: reject-float-key, check-fail]
--- spec: SPEC#relational-equality-and-containment-operators
--- companion: accept-float-key
+-- reject
 -- Error [E0328]: reject float key
 fn example() {
     let values = [1.0: 1]
 }
 
--- [case: accept-float-set, check-pass]
+-- [pair: float-set]
 -- spec: SPEC#relational-equality-and-containment-operators
--- companion: reject-float-set
+
+-- accept
 fn example() {
     let values = Set::from([1])
 }
 
--- [case: reject-float-set, check-fail]
--- spec: SPEC#relational-equality-and-containment-operators
--- companion: accept-float-set
+-- reject
 -- Error [E0328]: reject float set
 fn example() {
     let values = Set::from([1.0])
 }
 
--- [case: accept-invalid-index-target, check-pass]
+-- [pair: invalid-index-target]
 -- spec: SPEC#array-map-and-tuple-types
--- companion: reject-invalid-index-target
+
+-- accept
 fn example() {
     let item = [42][0]
 }
 
--- [case: reject-invalid-index-target, check-fail]
--- spec: SPEC#array-map-and-tuple-types
--- companion: accept-invalid-index-target
+-- reject
 -- Error [E0352]: reject invalid index target
 fn example() {
     let item = 42[0]
 }
 
--- [case: accept-invalid-index-type, check-pass]
+-- [pair: invalid-index-type]
 -- spec: SPEC#array-map-and-tuple-types
--- companion: reject-invalid-index-type
+
+-- accept
 fn example() {
     let item = [42][0]
 }
 
--- [case: reject-invalid-index-type, check-fail]
--- spec: SPEC#array-map-and-tuple-types
--- companion: accept-invalid-index-type
+-- reject
 -- Error [E0301]: reject invalid index type
 fn example() {
     let item = [42]["0"]
 }
 
--- [case: accept-length-sort, check-pass]
+-- [pair: length-sort]
 -- spec: SPEC#array-map-and-tuple-types
--- companion: reject-length-sort
+
+-- accept
 fn example() {
     let items: [0]int = []
 }
 
--- [case: reject-length-sort, check-fail]
--- spec: SPEC#array-map-and-tuple-types
--- companion: accept-length-sort
+-- reject
 -- Error [E0323]: reject length sort
 fn example() {
     let items: ["0"]int = []
 }
 
--- [case: accept-negative-length, check-pass]
+-- [pair: negative-length]
 -- spec: SPEC#array-map-and-tuple-types
--- companion: reject-negative-length
+
+-- accept
 fn example() {
     let items: [0]int = []
 }
 
--- [case: reject-negative-length, check-fail]
--- spec: SPEC#array-map-and-tuple-types
--- companion: accept-negative-length
+-- reject
 -- Error [E0815]: reject negative length
 fn example() {
     let items: [-1]int = []
 }
 
--- [case: accept-record-key, check-pass]
+-- [pair: record-key]
 -- spec: SPEC#relational-equality-and-containment-operators
--- companion: reject-record-key
+
+-- accept
 fn example() {
     let values = [1: 1]
 }
 
--- [case: reject-record-key, check-fail]
--- spec: SPEC#relational-equality-and-containment-operators
--- companion: accept-record-key
+-- reject
 -- Error [E0328]: reject record key
 fn example() {
     let values = [.{ id: 1 }: 1]
 }
 
--- [case: accept-tuple-index, check-pass]
+-- [pair: tuple-index]
 -- spec: SPEC#array-map-and-tuple-types
--- companion: reject-tuple-index
+
+-- accept
 fn example() {
     let item = (1, "a").1
 }
 
--- [case: reject-tuple-index, check-fail]
--- spec: SPEC#array-map-and-tuple-types
--- companion: accept-tuple-index
+-- reject
 -- Error [E0312]: reject tuple index
 fn example() {
     let item = (1, "a").2

@@ -15,18 +15,17 @@ pub fn test_abort_commits_writes() {
     assert(result == 9 && events == [0, 2, 1])
 }
 
--- [case: accept-divergent-cleanup, check-pass]
+-- [pair: divergent-cleanup]
 -- spec: SPEC#scoped-resource-bindings
--- companion: reject-divergent-cleanup
+
+-- accept
 type Guard = { on_close: fn() -> () }
 
 fn example() {
     let scoped item = Guard.{ on_close: \-> () }
 }
 
--- [case: reject-divergent-cleanup, check-fail]
--- spec: SPEC#scoped-resource-bindings
--- companion: accept-divergent-cleanup
+-- reject
 -- Error [E0617]: reject divergent cleanup
 type Guard = { on_close: fn() -> () }
 
@@ -34,18 +33,17 @@ fn example() {
     let scoped item = Guard.{ on_close: \-> { loop {} } }
 }
 
--- [case: accept-effectful-cleanup, check-pass]
+-- [pair: effectful-cleanup]
 -- spec: SPEC#scoped-resource-bindings
--- companion: reject-effectful-cleanup
+
+-- accept
 type Guard = { on_close: fn() -> () }
 
 fn example() @Fiber {
     let scoped item = Guard.{ on_close: \-> () }
 }
 
--- [case: reject-effectful-cleanup, check-fail]
--- spec: SPEC#scoped-resource-bindings
--- companion: accept-effectful-cleanup
+-- reject
 -- Error [E0616]: reject effectful cleanup
 type Guard = { on_close: fn() -> () }
 
@@ -53,18 +51,17 @@ fn example() @Fiber {
     let scoped item = Guard.{ on_close: \-> Fiber::yield() }
 }
 
--- [case: accept-missing-contract, check-pass]
+-- [pair: missing-contract]
 -- spec: SPEC#scoped-resource-bindings
--- companion: reject-missing-contract
+
+-- accept
 type Guard = { on_close: fn() -> () }
 
 fn example() {
     let scoped item = Guard.{ on_close: \-> () }
 }
 
--- [case: reject-missing-contract, check-fail]
--- spec: SPEC#scoped-resource-bindings
--- companion: accept-missing-contract
+-- reject
 -- Error [E0541]: reject missing contract
 type Guard = { on_close: fn() -> () }
 
@@ -72,18 +69,17 @@ fn example() {
     let scoped item = 42
 }
 
--- [case: accept-reassignable-scoped, check-pass]
+-- [pair: reassignable-scoped]
 -- spec: SPEC#scoped-resource-bindings
--- companion: reject-reassignable-scoped
+
+-- accept
 type Guard = { on_close: fn() -> () }
 
 fn example() {
     let scoped item = Guard.{ on_close: \-> () }
 }
 
--- [case: reject-reassignable-scoped, check-fail]
--- spec: SPEC#scoped-resource-bindings
--- companion: accept-reassignable-scoped
+-- reject
 -- Error [E0532]: reject reassignable scoped
 type Guard = { on_close: fn() -> () }
 
@@ -91,15 +87,14 @@ fn example() {
     var scoped item = Guard.{ on_close: \-> () }
 }
 
--- [case: accept-resource-escape, check-pass]
+-- [pair: resource-escape]
 -- spec: SPEC#scoped-resource-bindings
--- companion: reject-resource-escape
+
+-- accept
 type Guard = { on_close: fn() -> () }
 fn make() -> () { let scoped item = Guard.{ on_close: \-> () } }
 
--- [case: reject-resource-escape, check-fail]
--- spec: SPEC#scoped-resource-bindings
--- companion: accept-resource-escape
+-- reject
 -- Error [E0604]: reject resource escape
 type Guard = { on_close: fn() -> () }
 fn make() -> Guard { let scoped item = Guard.{ on_close: \-> () }; item }

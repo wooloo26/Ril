@@ -1,132 +1,122 @@
--- [case: accept-bare-effect, check-pass]
+-- [pair: bare-effect]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-bare-effect
+
+-- accept
 eff Io { read() -> int }
 type Reader = fn() -> int @Io
 
--- [case: reject-bare-effect, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-bare-effect
+-- reject
 -- Error [E0330]: reject bare effect
 eff Io { read() -> int }
 type Invalid = @Io
 
--- [case: accept-bare-mut, check-pass]
+-- [pair: bare-mut]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-bare-mut
+
+-- accept
 eff Io { read() -> int }
 type Writer = fn(mut []int) -> () &mut
 
--- [case: reject-bare-mut, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-bare-mut
+-- reject
 -- Error [E0331]: reject bare mut
 eff Io { read() -> int }
 type Invalid = &mut
 
--- [case: accept-bare-sharing, check-pass]
+-- [pair: bare-sharing]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-bare-sharing
+
+-- accept
 eff Io { read() -> int }
 type Writer = fn(^mut []int) -> () &^mut
 
--- [case: reject-bare-sharing, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-bare-sharing
+-- reject
 -- Error [E0331]: reject bare sharing
 eff Io { read() -> int }
 type Invalid = &^mut
 
--- [case: accept-field-effect, check-pass]
+-- [pair: field-effect]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-field-effect
+
+-- accept
 eff Io { read() -> int }
 type Item = { value: fn() -> int @Io }
 
--- [case: reject-field-effect, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-field-effect
+-- reject
 -- Error [E0333]: reject field effect
 eff Io { read() -> int }
 type Item = { value: int @Io }
 
--- [case: accept-generic-capability, check-pass]
+-- [pair: generic-capability]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-generic-capability
+
+-- accept
 eff Io { read() -> int }
 type Item<T> = T
 
--- [case: reject-generic-capability, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-generic-capability
+-- reject
 -- Error [E0334]: reject generic capability
 eff Io { read() -> int }
 type Item<T: &mut> = T
 
--- [case: accept-generic-effect, check-pass]
+-- [pair: generic-effect]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-generic-effect
+
+-- accept
 eff Io { read() -> int }
 type Item<T> = T
 
--- [case: reject-generic-effect, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-generic-effect
+-- reject
 -- Error [E0334]: reject generic effect
 eff Io { read() -> int }
 type Item<T: @Io> = T
 
--- [case: accept-tuple-effect, check-pass]
+-- [pair: tuple-effect]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-tuple-effect
+
+-- accept
 eff Io { read() -> int }
 type Item = (fn() -> int @Io, int)
 
--- [case: reject-tuple-effect, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-tuple-effect
+-- reject
 -- Error [E0333]: reject tuple effect
 eff Io { read() -> int }
 type Item = (int @Io, int)
 
--- [case: accept-type-function-effect, check-pass]
+-- [pair: type-function-effect]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-type-function-effect
+
+-- accept
 eff Io { read() -> int }
 type Item = \T -> type<T>
 
--- [case: reject-type-function-effect, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-type-function-effect
+-- reject
 -- Error [E0335]: reject type function effect
 eff Io { read() -> int }
 type Item = \T -> type<T> @Io
 
--- [case: accept-type-function-state, check-pass]
+-- [pair: type-function-state]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-type-function-state
+
+-- accept
 eff Io { read() -> int }
 type Item = \T -> type<T>
 
--- [case: reject-type-function-state, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-type-function-state
+-- reject
 -- Error [E0335]: reject type function state
 eff Io { read() -> int }
 type Item = \T -> type<T> &mut
 
--- [case: accept-value-effect, check-pass]
+-- [pair: value-effect]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-value-effect
+
+-- accept
 eff Io { read() -> int }
 
 fn example() {
     let value: str = "text"
 }
 
--- [case: reject-value-effect, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-value-effect
+-- reject
 -- Error [E0613]: reject value effect
 eff Io { read() -> int }
 
@@ -134,28 +124,26 @@ fn example() {
     let value: str @Io = "text"
 }
 
--- [case: accept-variant-capability, check-pass]
+-- [pair: variant-capability]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-variant-capability
+
+-- accept
 eff Io { read() -> int }
 type Task { Running(fn(mut []int) -> () &mut) }
 
--- [case: reject-variant-capability, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-variant-capability
+-- reject
 -- Error [E0332]: reject variant capability
 eff Io { read() -> int }
 type Task { Running &mut }
 
--- [case: accept-variant-effect, check-pass]
+-- [pair: variant-effect]
 -- spec: SPEC#type-definition-boundaries
--- companion: reject-variant-effect
+
+-- accept
 eff Io { read() -> int }
 type Task { Running(fn() -> int @Io) }
 
--- [case: reject-variant-effect, check-fail]
--- spec: SPEC#type-definition-boundaries
--- companion: accept-variant-effect
+-- reject
 -- Error [E0332]: reject variant effect
 eff Io { read() -> int }
 type Task { Running @Io }

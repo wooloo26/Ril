@@ -1,6 +1,7 @@
--- [case: accept-outside-write, check-pass]
+-- [pair: outside-write]
 -- spec: SPEC#deterministic-data-parallelism-and-divide-and-conquer-primitives
--- companion: reject-outside-write
+
+-- accept
 use ril/parallel
 type Cell = { mut count: int }
 
@@ -9,9 +10,7 @@ fn example() {
     let _ = Parallel::map([1], \n -> n + value)
 }
 
--- [case: reject-outside-write, check-fail]
--- spec: SPEC#deterministic-data-parallelism-and-divide-and-conquer-primitives
--- companion: accept-outside-write
+-- reject
 -- Error [E0605]: reject outside write
 use ril/parallel
 type Cell = { mut count: int }
@@ -21,9 +20,10 @@ fn example() {
     let _ = Parallel::map([1], \n -> { cell.count += n; n })
 }
 
--- [case: accept-overlapping-writes, check-pass]
+-- [pair: overlapping-writes]
 -- spec: SPEC#deterministic-data-parallelism-and-divide-and-conquer-primitives
--- companion: reject-overlapping-writes
+
+-- accept
 use ril/parallel
 type Cell = { mut count: int }
 
@@ -32,9 +32,7 @@ fn example() {
     let _ = Parallel::join(\-> { copy.0.count += 1 }, \-> { copy.1.count += 1 })
 }
 
--- [case: reject-overlapping-writes, check-fail]
--- spec: SPEC#deterministic-data-parallelism-and-divide-and-conquer-primitives
--- companion: accept-overlapping-writes
+-- reject
 -- Error [E0619]: reject overlapping writes
 use ril/parallel
 type Cell = { mut count: int }
@@ -45,14 +43,13 @@ fn example() {
     let _ = Parallel::join(\-> { copy.0.count += 1 }, \-> { copy.1.count += 1 })
 }
 
--- [case: accept-pseudo-effect, check-pass]
+-- [pair: pseudo-effect]
 -- spec: SPEC#deterministic-data-parallelism-and-divide-and-conquer-primitives
--- companion: reject-pseudo-effect
+
+-- accept
 fn example() {}
 
--- [case: reject-pseudo-effect, check-fail]
--- spec: SPEC#deterministic-data-parallelism-and-divide-and-conquer-primitives
--- companion: accept-pseudo-effect
+-- reject
 -- Error [E0620]: reject pseudo effect
 fn example() @Parallel {}
 

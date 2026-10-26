@@ -1,6 +1,7 @@
--- [case: accept-callback-parameter-mode, check-pass]
+-- [pair: callback-parameter-mode]
 -- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: reject-callback-parameter-mode
+
+-- accept
 type Cell = { mut count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
 
@@ -8,9 +9,7 @@ fn example() {
     let action: fn(mut Cell) -> () &mut = bump
 }
 
--- [case: reject-callback-parameter-mode, check-fail]
--- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: accept-callback-parameter-mode
+-- reject
 -- Error [E0407]: reject callback parameter mode
 type Cell = { mut count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
@@ -19,18 +18,17 @@ fn example() {
     let action: fn(Cell) -> () &mut = bump
 }
 
--- [case: accept-duplicate-argument, check-pass]
+-- [pair: duplicate-argument]
 -- spec: SPEC#default-parameters-and-named-arguments
--- companion: reject-duplicate-argument
+
+-- accept
 fn item(a: int = 0, b: int = 0) -> int { a + b }
 
 fn example() {
     let value = item(b: 2, 1)
 }
 
--- [case: reject-duplicate-argument, check-fail]
--- spec: SPEC#default-parameters-and-named-arguments
--- companion: accept-duplicate-argument
+-- reject
 -- Error [E0325]: reject duplicate argument
 fn item(a: int = 0, b: int = 0) -> int { a + b }
 
@@ -38,33 +36,32 @@ fn example() {
     let value = item(1, a: 2)
 }
 
--- [case: accept-effectful-default, check-pass]
+-- [pair: effectful-default]
 -- spec: SPEC#default-parameters-and-named-arguments
--- companion: reject-effectful-default
+
+-- accept
 eff Read { get() -> int }
 fn value(a: int = 1) -> int { a }
 
--- [case: reject-effectful-default, check-fail]
--- spec: SPEC#default-parameters-and-named-arguments
--- companion: accept-effectful-default
+-- reject
 -- Error [E0409]: reject effectful default
 eff Read { get() -> int }
 fn value(a: int = Read::get()) -> int @Read { a }
 
--- [case: accept-forward-default, check-pass]
+-- [pair: forward-default]
 -- spec: SPEC#default-parameters-and-named-arguments
--- companion: reject-forward-default
+
+-- accept
 fn value(a: int = 1, b: int = a) -> int { a + b }
 
--- [case: reject-forward-default, check-fail]
--- spec: SPEC#default-parameters-and-named-arguments
--- companion: accept-forward-default
+-- reject
 -- Error [E0408]: reject forward default
 fn value(a: int = b, b: int = 1) -> int { a + b }
 
--- [case: accept-missing-mut-marker, check-pass]
+-- [pair: missing-mut-marker]
 -- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: reject-missing-mut-marker
+
+-- accept
 type Cell = { mut count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
 
@@ -73,9 +70,7 @@ fn example() {
     bump(mut cell)
 }
 
--- [case: reject-missing-mut-marker, check-fail]
--- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: accept-missing-mut-marker
+-- reject
 -- Error [E0405]: reject missing mut marker
 type Cell = { mut count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
@@ -85,33 +80,32 @@ fn example() {
     bump(cell)
 }
 
--- [case: accept-missing-parameter-capability, check-pass]
+-- [pair: missing-parameter-capability]
 -- spec: SPEC#parameter-mutation
--- companion: reject-missing-parameter-capability
+
+-- accept
 type Cell = { mut count: int }
 fn change(mut cell: Cell) &mut { cell.count += 1 }
 
--- [case: reject-missing-parameter-capability, check-fail]
--- spec: SPEC#parameter-mutation
--- companion: accept-missing-parameter-capability
+-- reject
 -- Error [E0510]: reject missing parameter capability
 type Cell = { mut count: int }
 fn change(mut cell: Cell) { cell.count += 1 }
 
--- [case: accept-mutable-default, check-pass]
+-- [pair: mutable-default]
 -- spec: SPEC#default-parameters-and-named-arguments
--- companion: reject-mutable-default
+
+-- accept
 fn change(mut items: []int) &mut { items !> Array::push(1) }
 
--- [case: reject-mutable-default, check-fail]
--- spec: SPEC#default-parameters-and-named-arguments
--- companion: accept-mutable-default
+-- reject
 -- Error [E0404]: reject mutable default
 fn change(mut items: []int = []) &mut { items !> Array::push(1) }
 
--- [case: accept-nonaddressable-mut, check-pass]
+-- [pair: nonaddressable-mut]
 -- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: reject-nonaddressable-mut
+
+-- accept
 type Cell = { mut count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
 
@@ -120,9 +114,7 @@ fn example() {
     bump(mut cell)
 }
 
--- [case: reject-nonaddressable-mut, check-fail]
--- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: accept-nonaddressable-mut
+-- reject
 -- Error [E0410]: reject nonaddressable mut
 type Cell = { mut count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
@@ -131,34 +123,32 @@ fn example() {
     bump(mut Cell.{ count: 0 })
 }
 
--- [case: accept-noncallable, check-pass]
+-- [pair: noncallable]
 -- spec: SPEC#default-parameters-and-named-arguments
--- companion: reject-noncallable
+
+-- accept
 fn example() {
     let action = \-> 42
     let value = action()
 }
 
--- [case: reject-noncallable, check-fail]
--- spec: SPEC#default-parameters-and-named-arguments
--- companion: accept-noncallable
+-- reject
 -- Error [E0338]: reject noncallable
 fn example() {
     let value = 42()
 }
 
--- [case: accept-unknown-argument, check-pass]
+-- [pair: unknown-argument]
 -- spec: SPEC#default-parameters-and-named-arguments
--- companion: reject-unknown-argument
+
+-- accept
 fn item(value: int) -> int { value }
 
 fn example() {
     let value = item(value: 1)
 }
 
--- [case: reject-unknown-argument, check-fail]
--- spec: SPEC#default-parameters-and-named-arguments
--- companion: accept-unknown-argument
+-- reject
 -- Error [E0339]: reject unknown argument
 fn item(value: int) -> int { value }
 
@@ -166,20 +156,20 @@ fn example() {
     let value = item(unknown: 1)
 }
 
--- [case: accept-var-parameter, check-pass]
+-- [pair: var-parameter]
 -- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: reject-var-parameter
+
+-- accept
 fn example(value: int) { var local = value; local += 1 }
 
--- [case: reject-var-parameter, check-fail]
--- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: accept-var-parameter
+-- reject
 -- Error [E0403]: reject var parameter
 fn example(var value: int) { value += 1 }
 
--- [case: accept-wrong-mut-mode, check-pass]
+-- [pair: wrong-mut-mode]
 -- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: reject-wrong-mut-mode
+
+-- accept
 type Cell = { mut count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }
 
@@ -188,9 +178,7 @@ fn example() {
     bump(mut cell)
 }
 
--- [case: reject-wrong-mut-mode, check-fail]
--- spec: SPEC#parameter-modes-caller-obligations-and-defaults
--- companion: accept-wrong-mut-mode
+-- reject
 -- Error [E0406]: reject wrong mut mode
 type Cell = { mut count: int }
 fn bump(mut cell: Cell) &mut { cell.count += 1 }

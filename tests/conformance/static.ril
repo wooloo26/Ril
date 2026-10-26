@@ -1,98 +1,90 @@
--- [case: accept-alias-cycle, check-pass]
+-- [pair: alias-cycle]
 -- spec: SPEC#type-declarations-and-opaque-types
--- companion: reject-alias-cycle
+
+-- accept
 type First = Second
 type Second = int
 
--- [case: reject-alias-cycle, check-fail]
--- spec: SPEC#type-declarations-and-opaque-types
--- companion: accept-alias-cycle
+-- reject
 -- Error [E0313]: reject alias cycle
 type First = Second
 type Second = First
 
--- [case: accept-bare-type-value, check-pass]
+-- [pair: bare-type-value]
 -- spec: SPEC#static-type-values-and-type-quotation
--- companion: reject-bare-type-value
+
+-- accept
 type Identity = \T -> { let value = type<int>; type<T> }
 
--- [case: reject-bare-type-value, check-fail]
--- spec: SPEC#static-type-values-and-type-quotation
--- companion: accept-bare-type-value
+-- reject
 -- Error [E0319]: reject bare type value
 type Identity = \T -> { let value = int; type<T> }
 
--- [case: accept-duplicate-mapped-key, check-pass]
+-- [pair: duplicate-mapped-key]
 -- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: reject-duplicate-mapped-key
+
+-- accept
 type Item = { [K in ["a", "b"]]: int }
 
--- [case: reject-duplicate-mapped-key, check-fail]
--- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: accept-duplicate-mapped-key
+-- reject
 -- Error [E0210]: reject duplicate mapped key
 type Item = { [K in ["a", "a"]]: int }
 
--- [case: accept-evaluation-budget, check-pass]
+-- [pair: evaluation-budget]
 -- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: reject-evaluation-budget
+
+-- accept
 type Identity = \T -> type<T>
 type Value = Identity<int>
 
--- [case: reject-evaluation-budget, check-fail]
--- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: accept-evaluation-budget
+-- reject
 -- Error [E0811]: reject evaluation budget
 type Spin = \T -> Spin<T>
 type Value = Spin<int>
 
--- [case: accept-failed-assertion, check-pass]
+-- [pair: failed-assertion]
 -- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: reject-failed-assertion
+
+-- accept
 meta let _ = assert(true)
 
--- [case: reject-failed-assertion, check-fail]
--- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: accept-failed-assertion
+-- reject
 -- Error [E0830]: reject failed assertion
 meta let _ = assert(false)
 
--- [case: accept-higher-kinded-sort, check-pass]
+-- [pair: higher-kinded-sort]
 -- spec: SPEC#static-parameter-sorts-and-adaptation-rules
--- companion: reject-higher-kinded-sort
+
+-- accept
 type Wrapper = \M: Type -> Type, T -> type<M<T>>
 type Valid = Wrapper<Option, int>
 
--- [case: reject-higher-kinded-sort, check-fail]
--- spec: SPEC#static-parameter-sorts-and-adaptation-rules
--- companion: accept-higher-kinded-sort
+-- reject
 -- Error [E0306]: reject higher kinded sort
 type Wrapper = \M: Type -> Type, T -> type<M<T>>
 type Invalid = Wrapper<int, int>
 
--- [case: accept-invalid-mapped-label, check-pass]
+-- [pair: invalid-mapped-label]
 -- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: reject-invalid-mapped-label
+
+-- accept
 type Item = { [K in ["good_name"]]: int }
 
--- [case: reject-invalid-mapped-label, check-fail]
--- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: accept-invalid-mapped-label
+-- reject
 -- Error [E0102]: reject invalid mapped label
 type Item = { [K in ["bad__name"]]: int }
 
--- [case: accept-key-membership, check-pass]
+-- [pair: key-membership]
 -- spec: SPEC#static-key-parameters-and-computed-value-projection
--- companion: reject-key-membership
+
+-- accept
 fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 
 fn example() {
     let _ = get_field(.{ id: 1 }, "id")
 }
 
--- [case: reject-key-membership, check-fail]
--- spec: SPEC#static-key-parameters-and-computed-value-projection
--- companion: accept-key-membership
+-- reject
 -- Error [E0323]: reject key membership
 fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 
@@ -100,18 +92,17 @@ fn example() {
     let _ = get_field(.{ id: 1 }, "missing")
 }
 
--- [case: accept-key-runtime, check-pass]
+-- [pair: key-runtime]
 -- spec: SPEC#static-key-parameters-and-computed-value-projection
--- companion: reject-key-runtime
+
+-- accept
 fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 
 fn example(key: str) {
     let _ = get_field(.{ id: 1 }, "id")
 }
 
--- [case: reject-key-runtime, check-fail]
--- spec: SPEC#static-key-parameters-and-computed-value-projection
--- companion: accept-key-runtime
+-- reject
 -- Error [E0814]: reject key runtime
 fn get_field<T: { ..R }, K: keyof T>(record: T, key: K) -> T.(K) { record.(key) }
 
@@ -119,158 +110,145 @@ fn example(key: str) {
     let _ = get_field(.{ id: 1 }, key)
 }
 
--- [case: accept-meta-effect, check-pass]
+-- [pair: meta-effect]
 -- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: reject-meta-effect
+
+-- accept
 meta fn value() -> int { 1 }
 
--- [case: reject-meta-effect, check-fail]
--- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: accept-meta-effect
+-- reject
 -- Error [E0813]: reject meta effect
 meta fn value() -> int @Fiber { 1 }
 
--- [case: accept-meta-state, check-pass]
+-- [pair: meta-state]
 -- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: reject-meta-state
+
+-- accept
 meta fn value() -> int { 1 }
 
--- [case: reject-meta-state, check-fail]
--- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: accept-meta-state
+-- reject
 -- Error [E0813]: reject meta state
 meta fn value() -> int &mut { 1 }
 
--- [case: accept-meta-type-return, check-pass]
+-- [pair: meta-type-return]
 -- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: reject-meta-type-return
+
+-- accept
 meta fn inspect() -> int { byte_size(type<int>) }
 
--- [case: reject-meta-type-return, check-fail]
--- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: accept-meta-type-return
+-- reject
 -- Error [E0812]: reject meta type return
 meta fn generate() -> type<int> { type<int> }
 
--- [case: accept-nonrigid-type-pattern, check-pass]
+-- [pair: nonrigid-type-pattern]
 -- spec: SPEC#structural-type-pattern-matching
--- companion: reject-nonrigid-type-pattern
+
+-- accept
 type Inspect = \T -> match type<T> { type<Option<let U>> -> type<U>, _ -> type<never> }
 type Value = Inspect<Option<int>>
 
--- [case: reject-nonrigid-type-pattern, check-fail]
--- spec: SPEC#structural-type-pattern-matching
--- companion: accept-nonrigid-type-pattern
+-- reject
 -- Error [E0306]: reject nonrigid type pattern
 type Inspect = \T -> match type<T> { type<(let M)<let U>> -> type<U>, _ -> type<never> }
 type Value = Inspect<Option<int>>
 
--- [case: accept-record-key-sort, check-pass]
+-- [pair: record-key-sort]
 -- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: reject-record-key-sort
+
+-- accept
 type Item = { [K in ["a", "b"]]: int }
 
--- [case: reject-record-key-sort, check-fail]
--- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: accept-record-key-sort
+-- reject
 -- Error [E0341]: reject record key sort
 type Item = { [K in [0, 1]]: int }
 
--- [case: accept-runtime-call, check-pass]
+-- [pair: runtime-call]
 -- spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
--- companion: reject-runtime-call
+
+-- accept
 meta fn identity(value: int) -> int { value }
 meta let VALUE = identity(1)
 
--- [case: reject-runtime-call, check-fail]
--- spec: SPEC#disjoint-call-families-evaluation-budgets-and-branch-pruning
--- companion: accept-runtime-call
+-- reject
 -- Error [E0810]: reject runtime call
 fn identity(value: int) -> int { value }
 meta let VALUE = identity(1)
 
--- [case: accept-runtime-only-clock, check-pass]
+-- [pair: runtime-only-clock]
 -- spec: STD#static-availability
--- companion: reject-runtime-only-clock
+
+-- accept
 use ril/clock
 fn example() @Fiber { let value = Clock::now(); let _ = value }
 
--- [case: reject-runtime-only-clock, check-fail]
--- spec: STD#static-availability
--- companion: accept-runtime-only-clock
+-- reject
 -- Error [E0810]: reject runtime only clock
 use ril/clock
 meta let VALUE = Clock::now()
 
--- [case: accept-runtime-only-numeric-parser, check-pass]
+-- [pair: runtime-only-numeric-parser]
 -- spec: STD#static-availability
--- companion: reject-runtime-only-numeric-parser
+
+-- accept
 use ril/num
 fn example() { let value = Num::parse_int("1"); assert(value is Ok(1)) }
 
--- [case: reject-runtime-only-numeric-parser, check-fail]
--- spec: STD#static-availability
--- companion: accept-runtime-only-numeric-parser
+-- reject
 -- Error [E0810]: reject runtime only numeric parser
 use ril/num
 meta let VALUE = Num::parse_int("1")
 
--- [case: accept-runtime-only-set-construction, check-pass]
+-- [pair: runtime-only-set-construction]
 -- spec: STD#static-availability
--- companion: reject-runtime-only-set-construction
+
+-- accept
 fn example() { let value = Set::from([1]); let _ = value }
 
--- [case: reject-runtime-only-set-construction, check-fail]
--- spec: STD#static-availability
--- companion: accept-runtime-only-set-construction
+-- reject
 -- Error [E0810]: reject runtime only set construction
 meta let VALUE = Set::from([1])
 
--- [case: accept-runtime-size-query, check-pass]
+-- [pair: runtime-size-query]
 -- spec: SPEC#compile-time-execution-and-layout-cooperation
--- companion: reject-runtime-size-query
+
+-- accept
 fn example() {
     meta let VALUE = byte_size(type<u8>)
 }
 
--- [case: reject-runtime-size-query, check-fail]
--- spec: SPEC#compile-time-execution-and-layout-cooperation
--- companion: accept-runtime-size-query
+-- reject
 -- Error [E0810]: reject runtime size query
 fn example() {
     let value = byte_size(type<u8>)
 }
 
--- [case: accept-single-tuple, check-pass]
+-- [pair: single-tuple]
 -- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: reject-single-tuple
+
+-- accept
 type Item = ( [K in [0, 1]]: int )
 
--- [case: reject-single-tuple, check-fail]
--- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: accept-single-tuple
+-- reject
 -- Error [E0343]: reject single tuple
 type Item = ( [K in [0]]: int )
 
--- [case: accept-static-overflow, check-pass]
+-- [pair: static-overflow]
 -- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: reject-static-overflow
+
+-- accept
 meta let VALUE = 126i8 + 1i8
 
--- [case: reject-static-overflow, check-fail]
--- spec: SPEC#pure-type-functions-and-type-return-privilege
--- companion: accept-static-overflow
+-- reject
 -- Error [E0831]: reject static overflow
 meta let VALUE = 127i8 + 1i8
 
--- [case: accept-tuple-key-sort, check-pass]
+-- [pair: tuple-key-sort]
 -- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: reject-tuple-key-sort
+
+-- accept
 type Item = ( [K in [0, 1]]: int )
 
--- [case: reject-tuple-key-sort, check-fail]
--- spec: SPEC#symmetrical-mapped-comprehensions
--- companion: accept-tuple-key-sort
+-- reject
 -- Error [E0342]: reject tuple key sort
 type Item = ( [K in ["a", "b"]]: int )
 
