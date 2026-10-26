@@ -37,6 +37,10 @@ enum Corpus {
     List {
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long)]
+        mode: Option<String>,
     },
     /// Extract a case's virtual files to a directory.
     Extract {
@@ -67,6 +71,9 @@ fn report(stats: &ril::CorpusStats) {
         "Validated {} theme files, {} cases, {} diagnostic codes and {} companion links.",
         stats.bundles, stats.cases, stats.diagnostic_codes, stats.companions
     );
+    for (category, count) in &stats.categories {
+        println!("{category}: {count} cases");
+    }
     for (mode, count) in &stats.modes {
         println!("{mode}: {count}");
     }
@@ -85,19 +92,45 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
                 let (_, stats) = validate(&repo)?;
                 report(&stats);
             }
-            Corpus::List { json: false } => {
+            Corpus::List { json: false, filter, mode } => {
                 let (cases, _) = validate(&repo)?;
                 for item in &cases {
+                    if let Some(pattern) = &filter
+                        && !item.id.contains(pattern)
+                    {
+                        continue;
+                    }
+                    if let Some(m) = &mode
+                        && item.meta.mode.to_string() != *m
+                    {
+                        continue;
+                    }
                     println!("{}\t{}", item.id, item.meta.mode);
                 }
             }
-            Corpus::List { json: true } => {
+            Corpus::List { json: true, filter, mode } => {
                 let (cases, stats) = validate(&repo)?;
+                let filtered: Vec<_> = cases
+                    .into_iter()
+                    .filter(|item| {
+                        if let Some(pattern) = &filter
+                            && !item.id.contains(pattern)
+                        {
+                            return false;
+                        }
+                        if let Some(m) = &mode
+                            && item.meta.mode.to_string() != *m
+                        {
+                            return false;
+                        }
+                        true
+                    })
+                    .collect();
                 println!(
                     "{}",
                     serde_json::to_string(&serde_json::json!({
                         "stats": stats,
-                        "cases": cases
+                        "cases": filtered
                     }))?
                 );
             }

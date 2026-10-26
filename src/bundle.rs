@@ -134,8 +134,10 @@ fn regex(pattern: &'static str) -> Regex {
 
 static NAME: LazyLock<Regex> = LazyLock::new(|| regex(r"^[a-z0-9]+(?:-[a-z0-9]+)*$"));
 static SPEC: LazyLock<Regex> = LazyLock::new(|| regex(r"^(SPEC|STD)#[a-z0-9-]+$"));
-static ERRORS: LazyLock<Regex> = LazyLock::new(|| regex(r"-- Error \[(E[0-9]{4})\]"));
-static WARNINGS: LazyLock<Regex> = LazyLock::new(|| regex(r"-- Warning \[(W[0-9]{4})\]"));
+static ERRORS: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"--~?\s*(?:[Ee]rror|ERROR)\s*\[(E[0-9]{4})\]"));
+static WARNINGS: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"--~?\s*(?:[Ww]arning|WARNING)\s*\[(W[0-9]{4})\]"));
 static PANIC: LazyLock<Regex> = LazyLock::new(|| regex(r"-- Panics\b"));
 static ENTRY: LazyLock<Regex> = LazyLock::new(|| regex(r"^test_[a-z0-9_]+$"));
 
@@ -242,8 +244,8 @@ pub fn validate_case(item: &mut Case) -> Result<()> {
         .collect();
     if meta.mode == Mode::CheckFail {
         require(
-            item.errors.len() == 1,
-            "check-fail requires one diagnostic expectation",
+            !item.errors.is_empty(),
+            "check-fail requires at least one diagnostic expectation",
         )?;
     } else {
         require(
@@ -1184,5 +1186,23 @@ pub fn answer() -> int { 7 }
             cases[1].meta.spec,
             vec!["SPEC#module-imports-and-visibility"]
         );
+    }
+
+    #[test]
+    fn parse_inline_and_multi_diagnostics() {
+        let text = r#"-- [case: multi-error, check-fail]
+-- spec: SPEC#advisory-warnings
+fn example() {
+    let mut a = 1
+    --~ ERROR [E0501]: immutable reassignment
+    --~ Error [E0503]: reject assignment target
+    --~ WARNING [W0001]: unused binding
+}
+"#;
+        let cases = parse_bundle(text, "tests/example.ril").unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].meta.mode, Mode::CheckFail);
+        assert_eq!(cases[0].errors, vec!["E0501", "E0503"]);
+        assert_eq!(cases[0].warnings, vec!["W0001"]);
     }
 }

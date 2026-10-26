@@ -11,7 +11,7 @@ use std::{
 
 pub fn discover_cases(base: &Path) -> Result<Vec<Case>> {
     static PATH: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^[a-z0-9-]+/[a-z0-9-]+\.ril$").unwrap());
+        LazyLock::new(|| Regex::new(r"^[a-z0-9-]+(/[a-z0-9-]+)+\.ril$").unwrap());
     fn visit(base: &Path, folder: &Path, result: &mut Vec<Case>) -> Result<()> {
         require(
             !is_link(&fs::symlink_metadata(folder)?),
@@ -56,6 +56,7 @@ pub fn discover_cases(base: &Path) -> Result<Vec<Case>> {
 pub struct CorpusStats {
     pub bundles: usize,
     pub cases: usize,
+    pub categories: BTreeMap<String, usize>,
     pub modes: BTreeMap<Mode, usize>,
     pub diagnostic_codes: usize,
     pub companions: usize,
@@ -99,6 +100,7 @@ pub fn validate_corpus(
         .map(|capture| capture[1].to_owned())
         .collect();
     let (mut ids, mut codes, mut bundles) = (HashSet::new(), HashSet::new(), HashSet::new());
+    let mut categories: BTreeMap<String, usize> = BTreeMap::new();
     let mut counts: BTreeMap<_, _> = Mode::ALL.into_iter().map(|mode| (mode, 0)).collect();
     for original in cases {
         let mut item = original.clone();
@@ -108,6 +110,15 @@ pub fn validate_corpus(
             format!("duplicate case: {}", item.id),
         )?;
         bundles.insert(item.bundle.clone());
+        let category = original
+            .bundle
+            .strip_prefix("tests/")
+            .unwrap_or(&original.bundle)
+            .split('/')
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
+        *categories.entry(category).or_default() += 1;
         for reference in &item.meta.spec {
             let (document, anchor) = reference.split_once('#').unwrap();
             require(
@@ -145,6 +156,7 @@ pub fn validate_corpus(
     Ok(CorpusStats {
         bundles: bundles.len(),
         cases: cases.len(),
+        categories,
         modes: counts,
         diagnostic_codes: codes.len(),
         companions,
