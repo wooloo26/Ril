@@ -5751,11 +5751,12 @@ meta fn align_to(offset: int, alignment: int) -> int {
     assert((alignment & (alignment - 1)) == 0)
     (offset + alignment - 1) & ~(alignment - 1)
 }
-halt type BufferShape = \capacity: int -> type<{
-    data: []u8,
-    capacity: int,
-    used: int,
-}>
+halt type BufferShape = \capacity: int ->
+    if capacity <= 64 {
+        type<{ inline_data: []u8, len: int }>
+    } else {
+        type<{ heap_ptr: int, capacity: int, len: int }>
+    }
 meta let CAPACITY = align_to(60, 16)
 type Buffer = BufferShape<CAPACITY>
 meta let _ = assert(CAPACITY == 64)
