@@ -1,0 +1,20 @@
+-- [case: delimiter-mismatch-and-missing-separator, check-fail]
+-- spec: SPEC#syntactic-diagnostic-conditions
+fn example() {
+    let pair = (1, 2]
+    --~ ERROR [E0123]: ']' cannot close '('
+
+    let values = [1 2]
+    --~ ERROR [E0124]: missing comma between elements
+}
+
+-- [case: sequential-reassignment-recovery, check-fail]
+-- spec: SPEC#assignments-and-compound-assignments
+fn example() {
+    let first = 10
+    first = 20
+    --~ ERROR [E0501]: reject immutable reassignment
+
+    (1 + 2) = 30
+    --~ ERROR [E0503]: reject assignment target
+}

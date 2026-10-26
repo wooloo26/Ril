@@ -256,20 +256,24 @@ pub fn test_native() {
 -- [case: reject-if-let-binder-in-else, check-fail]
 -- spec: SPEC#conditional-expressions
 -- companion: if-let-branches-pointer32
--- Error [E0204]: A then binder is unavailable in the else branch.
 -- file: source.ril
 fn example(item: ?int) -> int {
-    if let Some(value) = item { value } else { value }
+    if let Some(value) = item {
+        value
+    } else {
+        value
+        --~ ERROR [E0204]: A then binder is unavailable in the else branch.
+    }
 }
 
 -- [case: reject-if-let-binder-after-branch, check-fail]
 -- spec: SPEC#conditional-expressions
 -- companion: if-let-branches-pointer64
--- Error [E0204]: A conditional binder cannot escape the then block.
 -- file: source.ril
 fn example(item: ?int) {
     if let Some(value) = item { assert(value == value) }
     let outside = value
+    --~ ERROR [E0204]: A conditional binder cannot escape the then block.
 }
 
 -- [case: reject-if-let-subject-type, check-fail]

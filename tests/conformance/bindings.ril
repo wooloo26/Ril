@@ -8,9 +8,9 @@ fn example() {
 }
 
 -- reject
--- Error [E0503]: reject assignment target
 fn example() {
     (1 + 2) = 3
+    --~ ERROR [E0503]: reject assignment target
 }
 
 -- [pair: chained-assignment]
@@ -25,11 +25,11 @@ fn example() {
 }
 
 -- reject
--- Error [E0701]: reject chained assignment
 fn example() {
     var first = 0
     var second = 0
     first = second = 1
+    --~ ERROR [E0701]: reject chained assignment
 }
 
 -- [pair: immutable-reassignment]
@@ -42,10 +42,10 @@ fn example() {
 }
 
 -- reject
--- Error [E0501]: reject immutable reassignment
 fn example() {
     let value = 1
     value = 2
+    --~ ERROR [E0501]: reject immutable reassignment
 }
 
 -- [case: compound-assignment, run-pass]
