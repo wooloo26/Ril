@@ -1,0 +1,7 @@
+-- [case: nested-comments, run-pass]
+-- spec: SPEC#comments
+pub fn test_nested_comments() {
+    {- outer {- nested -} still outer -}
+    let value = 1 -- end of line
+    assert(value == 1)
+}
