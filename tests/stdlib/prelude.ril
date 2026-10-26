@@ -1,9 +1,6 @@
---@ case: foundational-operations
---@ mode: run-pass
---@ spec: SPEC#built-in-foundational-operations
---@ spec: STD#prelude-and-module-index
---@ entry: test_foundational_operations
---@ file: foundational-operations.ril
+-- [case: foundational-operations, run-pass]
+-- spec: SPEC#built-in-foundational-operations
+-- spec: STD#prelude-and-module-index
 type UserId(int)
 
 pub fn test_foundational_operations() {
@@ -18,5 +15,3 @@ pub fn test_foundational_operations() {
     let revised = .{ theme: "dark" } |> derive \mut draft -> { draft.theme = "light" }
     assert(revised.theme == "light")
 }
---@ end-file
---@ end-case

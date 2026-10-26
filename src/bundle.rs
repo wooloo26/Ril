@@ -178,16 +178,41 @@ fn claim_path(claims: &mut HashSet<String>, name: &str) -> Result<()> {
 }
 
 pub fn validate_case(item: &mut Case) -> Result<()> {
-    let meta = &item.meta;
-    require(
-        !meta.spec.is_empty() && meta.spec.iter().all(|value| SPEC.is_match(value)),
-        "missing or invalid spec",
-    )?;
     require(
         item.files
             .first()
             .is_some_and(|file| file.name.ends_with(".ril")),
         "first file must be a Ril compilation root",
+    )?;
+    let source = String::from_utf8_lossy(&item.files[0].bytes);
+    item.root = item.files[0].name.clone();
+
+    if matches!(item.meta.mode, Mode::RunPass | Mode::RunPanic) && item.meta.entry.is_none() {
+        let candidate = format!("test_{}", item.name.replace('-', "_"));
+        if source
+            .lines()
+            .any(|line| line.starts_with(&format!("pub fn {candidate}()")))
+        {
+            item.meta.entry = Some(candidate);
+        } else {
+            let matches: Vec<_> = source
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("pub fn ")
+                        .and_then(|rest| rest.split('(').next())
+                        .filter(|name| ENTRY.is_match(name))
+                })
+                .collect();
+            if matches.len() == 1 {
+                item.meta.entry = Some(matches[0].to_owned());
+            }
+        }
+    }
+
+    let meta = &item.meta;
+    require(
+        !meta.spec.is_empty() && meta.spec.iter().all(|value| SPEC.is_match(value)),
+        "missing or invalid spec",
     )?;
     let mut claims = HashSet::new();
     for file in &item.files {
@@ -200,8 +225,6 @@ pub fn validate_case(item: &mut Case) -> Result<()> {
             format!("missing virtual file: {name}"),
         )
     };
-    let source = String::from_utf8_lossy(&item.files[0].bytes);
-    item.root = item.files[0].name.clone();
     let comments = item
         .annotations
         .iter()
@@ -419,11 +442,212 @@ fn decode_metadata(mut raw: Map<String, Value>) -> Result<Metadata> {
     Ok(serde_json::from_value(Value::Object(raw))?)
 }
 
+const DIRECTIVE_KEYS: &[&str] = &[
+    "mode",
+    "spec",
+    "entry",
+    "unit",
+    "companion",
+    "target",
+    "requires",
+    "seed",
+    "exit",
+    "stdout",
+    "stderr",
+    "stdin",
+    "args",
+    "env",
+    "unset-env",
+    "build",
+];
+
+fn split_bracket_items(s: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut bracket_depth: usize = 0;
+    for c in s.chars() {
+        match c {
+            '"' => {
+                in_quote = !in_quote;
+                current.push(c);
+            }
+            '[' | '{' if !in_quote => {
+                bracket_depth += 1;
+                current.push(c);
+            }
+            ']' | '}' if !in_quote => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                current.push(c);
+            }
+            ',' if !in_quote && bracket_depth == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    items.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        items.push(trimmed.to_string());
+    }
+    items
+}
+
+fn apply_directive(meta: &mut Map<String, Value>, key: &str, value: &str) -> Result<()> {
+    require(
+        DIRECTIVE_KEYS.contains(&key),
+        format!("unknown or malformed directive: {key}"),
+    )?;
+    if ["spec", "build", "env", "unset-env"].contains(&key) {
+        meta.entry(key.to_owned())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .unwrap()
+            .push(value.into());
+    } else {
+        require(!meta.contains_key(key), format!("duplicate {key}"))?;
+        meta.insert(key.into(), value.into());
+    }
+    Ok(())
+}
+
+fn apply_item_to_meta(meta: &mut Map<String, Value>, item: &str) -> Result<()> {
+    let item = item.trim();
+    if item.is_empty() {
+        return Ok(());
+    }
+    if Mode::ALL.iter().any(|m| m.to_string() == item) {
+        apply_directive(meta, "mode", item)
+    } else if SPEC.is_match(item) {
+        apply_directive(meta, "spec", item)
+    } else if let Some((k, v)) = item.split_once(": ") {
+        apply_directive(meta, k.trim(), v.trim())
+    } else if let Some((k, v)) = item.split_once(':') {
+        apply_directive(meta, k.trim(), v.trim())
+    } else {
+        Err(Error::Invalid(format!("unknown directive in bracket: {item}")))
+    }
+}
+
+fn parse_file_directive(line: &str) -> Option<(String, bool, bool)> {
+    static FILE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+        regex(r"^--(?:@\s*|\s*|\s*\[)file:\s*(\S+?)(?:\s+(hex|no-final-newline))?\]?$")
+    });
+    let cap = FILE_REGEX.captures(line)?;
+    let name = cap[1].to_string();
+    let flag = cap.get(2).map(|m| m.as_str());
+    let hex = flag == Some("hex");
+    let final_newline = flag != Some("no-final-newline");
+    Some((name, hex, final_newline))
+}
+
+fn finish_file(open: FileBuilder) -> Result<VirtualFile> {
+    let bytes = if open.hex {
+        let hex: String = open
+            .lines
+            .join("")
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '\u{feff}')
+            .collect();
+        require(
+            hex.len().is_multiple_of(2) && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+            "invalid hex bytes",
+        )?;
+        hex.as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap())
+            .collect()
+    } else {
+        let mut lines = open.lines;
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        let mut bytes: Vec<_> = lines
+            .iter()
+            .flat_map(|line| line.bytes().chain(*b"\n"))
+            .collect();
+        if !open.final_newline && !bytes.is_empty() {
+            bytes.pop();
+        }
+        bytes
+    };
+    Ok(VirtualFile {
+        name: open.name,
+        bytes,
+    })
+}
+
+fn flush_file(
+    file: &mut Option<FileBuilder>,
+    current: &mut Option<CaseBuilder>,
+    source: &mut Option<SourceBuilder>,
+) -> Result<()> {
+    if let Some(open) = file.take() {
+        let vf = finish_file(open)?;
+        if let Some(source) = source {
+            source.files.push(vf);
+        } else if let Some(current) = current {
+            current.files.push(vf);
+        }
+    }
+    Ok(())
+}
+
+fn flush_case(
+    file: &mut Option<FileBuilder>,
+    current: &mut Option<CaseBuilder>,
+    source: &mut Option<SourceBuilder>,
+    cases: &mut Vec<Case>,
+    bundle: &str,
+) -> Result<()> {
+    flush_file(file, current, source)?;
+    if let Some(mut open) = current.take() {
+        if open.files.is_empty() {
+            open.files.push(VirtualFile {
+                name: format!("{}.ril", open.name),
+                bytes: Vec::new(),
+            });
+        }
+        let mut item = Case {
+            id: format!("{bundle}::{}", open.name),
+            bundle: bundle.into(),
+            name: open.name,
+            line: open.line,
+            meta: decode_metadata(open.meta)?,
+            annotations: open.annotations,
+            files: open.files,
+            root: String::new(),
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        };
+        validate_case(&mut item)?;
+        cases.push(item);
+    }
+    Ok(())
+}
+
+fn flush_source(
+    file: &mut Option<FileBuilder>,
+    current: &mut Option<CaseBuilder>,
+    source: &mut Option<SourceBuilder>,
+    sources: &mut HashMap<String, Vec<VirtualFile>>,
+) -> Result<()> {
+    flush_file(file, current, source)?;
+    if let Some(open) = source.take() {
+        require(!open.files.is_empty(), "empty shared source")?;
+        sources.insert(open.name, open.files);
+    }
+    Ok(())
+}
+
 /// Framing is independent from the embedded program's lexical validity.
 pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
-    static FILE: LazyLock<Regex> =
-        LazyLock::new(|| regex(r"^--@ file: (\S+?)(?: (hex|no-final-newline))?$"));
-    static DIRECTIVE: LazyLock<Regex> = LazyLock::new(|| regex(r"^--@ ([a-z-]+): (.+)$"));
     let mut cases = Vec::new();
     let mut names = HashSet::new();
     let mut current: Option<CaseBuilder> = None;
@@ -444,65 +668,75 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                 "bare CR in container; use hex for exact bytes",
             )?;
             if let Some(open) = &mut file {
-                if line == "--@ end-file" {
-                    let bytes = if open.hex {
-                        let hex: String = open
-                            .lines
-                            .join("")
-                            .chars()
-                            .filter(|c| !c.is_whitespace() && *c != '\u{feff}')
-                            .collect();
-                        require(
-                            hex.len().is_multiple_of(2)
-                                && hex.bytes().all(|b| b.is_ascii_hexdigit()),
-                            "invalid hex bytes",
-                        )?;
-                        hex.as_bytes()
-                            .as_chunks::<2>()
-                            .0
-                            .iter()
-                            .map(|chunk| {
-                                u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap()
-                            })
-                            .collect()
-                    } else {
-                        let mut bytes: Vec<_> = open
-                            .lines
-                            .iter()
-                            .flat_map(|line| line.bytes().chain(*b"\n"))
-                            .collect();
-                        if !open.final_newline && !bytes.is_empty() {
-                            bytes.pop();
-                        }
-                        bytes
-                    };
-                    let files = if let Some(source) = &mut source {
-                        &mut source.files
-                    } else {
-                        &mut current.as_mut().unwrap().files
-                    };
-                    files.push(VirtualFile {
-                        name: open.name.clone(),
-                        bytes,
-                    });
-                    file = None;
+                if line == "--@ end-file" || line == "-- end-file" || line == "-- [end-file]" {
+                    flush_file(&mut file, &mut current, &mut source)?;
+                    return Ok(());
+                }
+                if line == "--@ end-case" || line == "-- end-case" || line == "-- [end-case]" {
+                    flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
+                    return Ok(());
+                }
+                if line == "--@ end-source" || line == "-- end-source" || line == "-- [end-source]" {
+                    flush_source(&mut file, &mut current, &mut source, &mut sources)?;
+                    return Ok(());
+                }
+                let is_new_case = line.starts_with("--@ case: ")
+                    || line.starts_with("-- case: ")
+                    || line.starts_with("-- [case: ");
+                let is_new_source = line.starts_with("--@ source: ")
+                    || line.starts_with("-- source: ")
+                    || line.starts_with("-- [source: ");
+                let is_new_file = parse_file_directive(line).is_some();
+
+                if is_new_case || is_new_source || is_new_file {
+                    flush_file(&mut file, &mut current, &mut source)?;
+                    if is_new_case {
+                        flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
+                    }
+                    if is_new_source {
+                        flush_source(&mut file, &mut current, &mut source, &mut sources)?;
+                    }
                 } else if !open.hex && line.starts_with("--@@") {
                     open.lines.push(line.replacen("--@@", "--@", 1));
+                    return Ok(());
+                } else if !open.hex && line.starts_with("--[[") {
+                    open.lines.push(line.replacen("--[[", "--[", 1));
+                    return Ok(());
                 } else {
                     require(
                         !line.starts_with("--@"),
                         "unexpected nested delimiter; escape source lines with --@@",
                     )?;
                     open.lines.push(line.into());
+                    return Ok(());
                 }
+            }
+
+            if line == "--@ end-case" || line == "-- end-case" || line == "-- [end-case]" {
+                flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
                 return Ok(());
             }
-            if let Some(name) = line.strip_prefix("--@ source: ") {
+            if line == "--@ end-source" || line == "-- end-source" || line == "-- [end-source]" {
+                flush_source(&mut file, &mut current, &mut source, &mut sources)?;
+                return Ok(());
+            }
+            if line == "--@ end-file" || line == "-- end-file" || line == "-- [end-file]" {
+                return Ok(());
+            }
+
+            let new_source_name = if let Some(rest) = line.strip_prefix("--@ source: ") {
+                Some(rest.trim())
+            } else if let Some(rest) = line.strip_prefix("-- source: ") {
+                Some(rest.trim())
+            } else {
+                line.strip_prefix("-- [source: ")
+                    .and_then(|s| s.strip_suffix(']'))
+                    .map(str::trim)
+            };
+            if let Some(name) = new_source_name {
+                flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
+                flush_source(&mut file, &mut current, &mut source, &mut sources)?;
                 require(NAME.is_match(name), "invalid shared source name")?;
-                require(
-                    current.is_none() && source.is_none(),
-                    "nested shared source or case",
-                )?;
                 require(!sources.contains_key(name), "duplicate shared source")?;
                 source = Some(SourceBuilder {
                     name: name.into(),
@@ -510,21 +744,47 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                 });
                 return Ok(());
             }
-            if let Some(open) = &mut source {
-                if line == "--@ end-source" {
-                    require(!open.files.is_empty(), "empty shared source")?;
-                    let open = source.take().unwrap();
-                    sources.insert(open.name, open.files);
-                    return Ok(());
+
+            let new_case_data = if let Some(rest) = line.strip_prefix("--@ case: ") {
+                Some((rest.trim().to_string(), Vec::new()))
+            } else if let Some(rest) = line.strip_prefix("-- case: ") {
+                Some((rest.trim().to_string(), Vec::new()))
+            } else if let Some(inner) = line.strip_prefix("-- [case: ").and_then(|s| s.strip_suffix(']')) {
+                let mut items = split_bracket_items(inner);
+                let name = items.remove(0);
+                Some((name, items))
+            } else {
+                None
+            };
+            if let Some((name, remaining_items)) = new_case_data {
+                flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
+                flush_source(&mut file, &mut current, &mut source, &mut sources)?;
+                require(NAME.is_match(&name), format!("invalid case name: {name}"))?;
+                require(
+                    names.insert(name.clone()),
+                    format!("duplicate case: {name}"),
+                )?;
+                let mut builder = CaseBuilder {
+                    name,
+                    line: index + 1,
+                    meta: Map::new(),
+                    annotations: Vec::new(),
+                    files: Vec::new(),
+                };
+                for item in remaining_items {
+                    apply_item_to_meta(&mut builder.meta, &item)?;
                 }
-                if let Some(capture) = FILE.captures(line) {
-                    portable_path(&capture[1])?;
+                current = Some(builder);
+                return Ok(());
+            }
+
+            if source.is_some() {
+                if let Some((name, hex, final_newline)) = parse_file_directive(line) {
+                    portable_path(&name)?;
                     file = Some(FileBuilder {
-                        name: capture[1].into(),
-                        hex: capture.get(2).is_some_and(|flag| flag.as_str() == "hex"),
-                        final_newline: capture
-                            .get(2)
-                            .is_none_or(|flag| flag.as_str() != "no-final-newline"),
+                        name,
+                        hex,
+                        final_newline,
                         lines: Vec::new(),
                     });
                     return Ok(());
@@ -534,125 +794,96 @@ pub fn parse_bundle(text: &str, bundle: &str) -> Result<Vec<Case>> {
                     "shared source accepts only file blocks",
                 );
             }
-            if let Some(name) = line
-                .strip_prefix("--@ case: ")
-                .filter(|name| NAME.is_match(name))
-            {
-                require(current.is_none(), "nested case without end-case")?;
-                require(
-                    names.insert(name.to_owned()),
-                    format!("duplicate case: {name}"),
-                )?;
-                current = Some(CaseBuilder {
-                    name: name.into(),
-                    line: index + 1,
-                    meta: Map::new(),
-                    annotations: Vec::new(),
-                    files: Vec::new(),
-                });
-                return Ok(());
-            }
-            let Some(open) = &mut current else {
+
+            let Some(open_case) = &mut current else {
                 return require(
                     line.trim().is_empty() || (line.starts_with("--") && !line.starts_with("--@")),
                     "expected case delimiter",
                 );
             };
-            if line == "--@ end-case" {
-                let open = current.take().unwrap();
-                let mut item = Case {
-                    id: format!("{bundle}::{}", open.name),
-                    bundle: bundle.into(),
-                    name: open.name,
-                    line: open.line,
-                    meta: decode_metadata(open.meta)?,
-                    annotations: open.annotations,
-                    files: open.files,
-                    root: String::new(),
-                    errors: Vec::new(),
-                    warnings: Vec::new(),
-                };
-                validate_case(&mut item)?;
-                cases.push(item);
-                return Ok(());
-            }
-            if let Some(name) = line.strip_prefix("--@ use-source: ") {
+
+            let use_source_name = if let Some(rest) = line.strip_prefix("--@ use-source: ") {
+                Some(rest.trim())
+            } else if let Some(rest) = line.strip_prefix("-- use-source: ") {
+                Some(rest.trim())
+            } else {
+                line.strip_prefix("-- [use-source: ")
+                    .and_then(|s| s.strip_suffix(']'))
+                    .map(str::trim)
+            };
+            if let Some(name) = use_source_name {
                 require(
-                    open.files.is_empty(),
+                    open_case.files.is_empty(),
                     "a case has exactly one shared source or explicit file set",
                 )?;
-                open.files = sources
+                open_case.files = sources
                     .get(name)
                     .cloned()
                     .ok_or_else(|| Error::Invalid(format!("unknown shared source: {name}")))?;
                 used_sources.insert(name.to_owned());
                 return Ok(());
             }
-            if let Some(capture) = FILE.captures(line) {
-                portable_path(&capture[1])?;
+
+            if let Some((name, hex, final_newline)) = parse_file_directive(line) {
+                portable_path(&name)?;
                 file = Some(FileBuilder {
-                    name: capture[1].into(),
-                    hex: capture.get(2).is_some_and(|flag| flag.as_str() == "hex"),
-                    final_newline: capture
-                        .get(2)
-                        .is_none_or(|flag| flag.as_str() != "no-final-newline"),
+                    name,
+                    hex,
+                    final_newline,
                     lines: Vec::new(),
                 });
                 return Ok(());
             }
+
+            if let Some(inner) = line.strip_prefix("-- [").and_then(|s| s.strip_suffix(']')) {
+                require(open_case.files.is_empty(), "metadata must precede file blocks")?;
+                for item in split_bracket_items(inner) {
+                    apply_item_to_meta(&mut open_case.meta, &item)?;
+                }
+                return Ok(());
+            }
+
+            let directive_opt = if let Some(rest) = line.strip_prefix("--@ ") {
+                rest.split_once(": ")
+            } else if let Some(rest) = line.strip_prefix("-- ") {
+                rest.split_once(": ")
+            } else {
+                None
+            };
+            if let Some((key, value)) = directive_opt {
+                let key = key.trim();
+                if DIRECTIVE_KEYS.contains(&key) {
+                    require(open_case.files.is_empty(), "metadata must precede file blocks")?;
+                    apply_directive(&mut open_case.meta, key, value.trim())?;
+                    return Ok(());
+                }
+            }
+
             if line.trim().is_empty() {
                 return Ok(());
             }
-            require(
-                open.files.is_empty(),
-                "metadata/comments must precede file blocks",
-            )?;
-            if line.starts_with("--@") {
-                let directive = DIRECTIVE
-                    .captures(line)
-                    .ok_or_else(|| Error::Invalid("unknown or malformed directive".into()))?;
-                let (key, value) = (&directive[1], &directive[2]);
-                require(
-                    [
-                        "mode",
-                        "spec",
-                        "entry",
-                        "unit",
-                        "companion",
-                        "target",
-                        "requires",
-                        "seed",
-                        "exit",
-                        "stdout",
-                        "stderr",
-                        "stdin",
-                        "args",
-                        "env",
-                        "unset-env",
-                        "build",
-                    ]
-                    .contains(&key),
-                    "unknown or malformed directive",
-                )?;
-                if ["spec", "build", "env", "unset-env"].contains(&key) {
-                    open.meta
-                        .entry(key.to_owned())
-                        .or_insert_with(|| Value::Array(Vec::new()))
-                        .as_array_mut()
-                        .unwrap()
-                        .push(value.into());
-                } else {
-                    require(!open.meta.contains_key(key), format!("duplicate {key}"))?;
-                    open.meta.insert(key.into(), value.into());
-                }
-            } else {
-                require(line.starts_with("--"), "source requires a file block")?;
-                open.annotations.push(line.into());
+
+            if line.starts_with("--") {
+                open_case.annotations.push(line.into());
+                return Ok(());
             }
+
+            let implicit_name = format!("{}.ril", open_case.name);
+            portable_path(&implicit_name)?;
+            file = Some(FileBuilder {
+                name: implicit_name,
+                hex: false,
+                final_newline: true,
+                lines: vec![line.into()],
+            });
             Ok(())
         })();
         result.map_err(|error| Error::Invalid(format!("{bundle}:{}: {error}", index + 1)))?;
     }
+
+    flush_case(&mut file, &mut current, &mut source, &mut cases, bundle)?;
+    flush_source(&mut file, &mut current, &mut source, &mut sources)?;
+
     require(
         file.is_none() && current.is_none() && source.is_none(),
         format!("{bundle}: unclosed file or case"),
@@ -697,5 +928,69 @@ pub fn test_hello() {}
 --@ end-case
 "#;
         assert!(parse_bundle(text, "tests/example.ril").is_err());
+    }
+
+    #[test]
+    fn parse_compact_bracket_case() {
+        let text = r#"-- [case: simple, check-pass]
+-- spec: SPEC#advisory-warnings
+pub fn test_hello() {}
+"#;
+        let cases = parse_bundle(text, "tests/example.ril").unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].id, "tests/example.ril::simple");
+        assert_eq!(cases[0].meta.mode, Mode::CheckPass);
+        assert_eq!(cases[0].root, "simple.ril");
+        assert_eq!(
+            std::str::from_utf8(&cases[0].files[0].bytes).unwrap(),
+            "pub fn test_hello() {}\n"
+        );
+    }
+
+    #[test]
+    fn parse_compact_with_inferred_entry() {
+        let text = r#"-- [case: feature-test, run-pass]
+-- spec: SPEC#advisory-warnings
+pub fn test_feature_test() {}
+"#;
+        let cases = parse_bundle(text, "tests/example.ril").unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].meta.entry.as_deref(), Some("test_feature_test"));
+    }
+
+    #[test]
+    fn parse_compact_multiple_cases_with_diagnostics() {
+        let text = r#"-- [case: accept-test, check-pass]
+-- spec: SPEC#advisory-warnings
+-- companion: reject-test
+fn accept() {}
+
+-- [case: reject-test, check-fail]
+-- spec: SPEC#advisory-warnings
+-- companion: accept-test
+-- Error [E0501]: immutable reassignment
+fn reject() {}
+"#;
+        let cases = parse_bundle(text, "tests/example.ril").unwrap();
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].name, "accept-test");
+        assert_eq!(cases[0].meta.mode, Mode::CheckPass);
+        assert_eq!(cases[0].root, "accept-test.ril");
+        assert_eq!(cases[1].name, "reject-test");
+        assert_eq!(cases[1].meta.mode, Mode::CheckFail);
+        assert_eq!(cases[1].errors, vec!["E0501"]);
+        assert_eq!(cases[1].root, "reject-test.ril");
+    }
+
+    #[test]
+    fn parse_compact_inline_metadata() {
+        let text = r#"-- [case: inline-test, check-pass, spec: SPEC#advisory-warnings]
+fn sample() {}
+"#;
+        let cases = parse_bundle(text, "tests/example.ril").unwrap();
+        assert_eq!(cases.len(), 1);
+        assert_eq!(cases[0].meta.mode, Mode::CheckPass);
+        assert_eq!(cases[0].meta.spec, vec!["SPEC#advisory-warnings"]);
+        assert_eq!(cases[0].root, "inline-test.ril");
     }
 }
