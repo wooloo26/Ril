@@ -157,6 +157,8 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Test Conventions and Execution Protocol](#test-conventions-and-execution-protocol)
     - [Program Entry Point](#program-entry-point)
     - [Prelude Scope](#prelude-scope)
+      - [Built-in Foundational Operations](#built-in-foundational-operations)
+      - [Normative Rules for Built-in Operations](#normative-rules-for-built-in-operations)
     - [Mandatory Inspection of Fallible Results](#mandatory-inspection-of-fallible-results)
   - [Diagnostic Error Codes Summary](#diagnostic-error-codes-summary)
     - [Source Text, Identifiers, and Syntax](#source-text-identifiers-and-syntax)
@@ -5880,14 +5882,82 @@ Environment reporting occurs outside main's invocation and does not add a `Fiber
 ### Prelude Scope
 
 ```ril
-let outcome: Result<int, str> = Ok(3)
-assert(outcome is Ok(3))
+type UserId(int)
+assert(inner(UserId(1001)) == 1001)
+let original = [1, 2, 3]
+let mut detached = clone(original)
+detached !> Array::push(4)
+assert(original == [1, 2, 3] && len(detached) == 4)
+let snapshot: Immut<[]int> = clone_immut(detached)
+let revised = .{ theme: "dark" } |> derive \mut draft -> {
+    draft.theme = "light"
+}
+assert(revised.theme == "light" && len(snapshot) == 4)
 let count = len([1, 2, 3])
+println("Count: {count}")
 ```
 
-The prelude is an enclosing lexical scope. Local declarations may shadow its names; same-scope duplicates remain `E0203`. Shadowing does not change built-in syntax or the declaration identities required by language-defined operators.
+The prelude is an ambient lexical scope enclosing every Ril compilation unit. Its declarations are accessible without explicit import statements. Local declarations may shadow prelude names; within the same scope, duplicate declarations remain `E0203`. Shadowing does not alter built-in syntax, compiler intrinsics, or declaration identities required by language-defined operators.
 
-Primitive spellings, `?T`, collection syntax, and system effects are language constructs, not imported declarations.
+Primitive type spellings (`int`, `str`, `bool`, etc.), `?T`, collection type syntax (`[N]T`, `[]T`, `[..]T`, `[K: V]`), and built-in system effect identities (`Fiber`, `Concurrent`, `Async`, `Div`) are language constructs, not imported prelude declarations.
+
+#### Built-in Foundational Operations
+
+Ril defines the following built-in foundational operations directly in the language prelude:
+
+| Operation | Signature | Effects | Phase | Complexity | Contract |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `len` | `len(value) -> int` | Pure | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
+| `inner` | `inner(wrapper) -> T` | Pure | Runtime | $O(1)$ | Unwraps a nominal wrapper to its underlying payload; unit nominal yields `()` |
+| `clone` | `clone(value) -> T` | Pure | Runtime | $O(\text{graph})$ | Deep isolated ordinary graph copy; preserves internal aliases and cycles |
+| `clone_immut` | `clone_immut(value) -> Immut<T>` | Pure | Runtime | $O(\text{graph})$ | Independent deeply immutable snapshot |
+| `derive` | `derive(base, recipe) -> T` | Forwards recipe | Runtime | $O(\text{affected})$ | Functional update on immutable value via confined mutable draft |
+| `byte_size` | `meta fn byte_size<T>(value: type<T>) -> int` | Pure | Static only | $O(1)$ | Size in bytes of $T$'s value/handle on abstract target |
+| `panic` | `panic(message: str) -> never` | Defect | Runtime | Finite | Initiates panic unwinding and LIFO cleanup |
+| `assert` | `assert(condition: bool, message: str = "assertion failed") -> ()` | Defect | Dual-phase | $O(1)$ | Panics on false condition; compile-time failure is `E0830` |
+| `print` | `print(text: str) -> () @Fiber` | `@Fiber` | Runtime | $O(\text{len})$ | Writes UTF-8 text to standard output without trailing newline |
+| `println` | `println(text: str) -> () @Fiber` | `@Fiber` | Runtime | $O(\text{len})$ | Writes UTF-8 text followed by one LF byte (`\n`) to standard output |
+
+#### Normative Rules for Built-in Operations
+
+- **Length Invariant (`len`)**:
+  - `len` is a pure, dual-phase built-in operation admitted in both runtime and static contexts.
+  - For `str`, returns the total number of Unicode scalar values (code points) in $O(n)$ time or better.
+  - For `bytes`, returns the byte count in $O(1)$ time.
+  - For sequences (`[N]T`, `[]T`, `[..]T`), returns the element count in $O(1)$ time.
+  - For maps (`[K: V]`), returns the number of key-value pairs in $O(1)$ time.
+  - For sets (`Set<T>`), returns the number of unique elements in $O(1)$ time.
+- **Unwrapping Invariant (`inner`)**:
+  - Unwraps nominal type wrappers to their underlying declared representation ([Nominal Type Wrappers](#nominal-type-wrappers)).
+  - Single-payload nominal wrapper `type UserId(int)` unwraps to its payload (`int`). Unit nominal wrapper `type Marker` unwraps to `()`.
+  - Nominal abstraction boundaries remain sealed across modules; `inner` cannot bypass opaque module access restrictions.
+- **Graph Isolation Invariants (`clone`, `clone_immut`)**:
+  - `clone` creates an independent, isolated copy of an ordinary reachable graph, severing writable storage from the source while preserving internal aliases, shared references, and cyclic structures ([Deep Immutability](#deep-immutability)).
+  - `clone_immut` creates an independent, deeply immutable `Immut<T>` snapshot from an eligible value or view.
+  - Non-clonable entities (retained closure environments, live tasks, unique receivers, and scoped resources) cannot be cloned through views or wrappers (`E0530`).
+  - Cloning a channel `Sender` obeys the channel endpoint resource contract and requires `@Fiber`.
+  - Copying costs $O(\text{graph})$ for the reachable ordinary graph inspected and copied; no storage-sharing guarantee is made for mutable copies.
+- **Functional Update Invariant (`derive`)**:
+  - Confines mutation to a temporary draft within the recipe closure (`\mut draft -> ...`), returning a new immutable value of the same type and qualifier ([Functional Updates via Derive](#functional-updates-via-derive)).
+  - Rejects non-immutable input targets (`E0536`).
+  - Traps escaping draft references (`E0607`).
+  - Forwards recipe algebraic effects and external state obligations; discharges draft-local writes.
+- **Static Layout Query (`byte_size`)**:
+  - `meta fn byte_size<T>(value: type<T>) -> int` queries the non-negative size in bytes of $T$'s value or handle representation on the selected abstract target ([Compile-Time Execution and Layout Cooperation](#compile-time-execution-and-layout-cooperation)).
+  - Static-only: permitted during compile-time static evaluation (`meta let`, type functions); calling `byte_size` in runtime code is `E0810`.
+  - Grants no packed layout, field offset, or external ABI alignment guarantees.
+- **Defect Initiation and Assertions (`panic`, `assert`)**:
+  - `panic(message: str) -> never` initiates stack unwinding, executing synchronous frame LIFO cleanups. A secondary fault during cleanup results in `DoubleFaultFatal` ([Run-Time Failure Conditions](#run-time-failure-conditions)). Panic is a defect mechanism, not an algebraic effect.
+  - `assert(condition: bool, message: str = "assertion failed") -> ()` evaluates its arguments eagerly before the call; if `condition` is false, it panics with `message`.
+  - In static evaluation (`meta let`), a false assertion condition produces diagnostic `E0830` at compile time. Static assertions cannot catch panics.
+- **Standard Output Invariants (`print`, `println`)**:
+  - `print` and `println` write UTF-8 encoded text to host standard output under the `@Fiber` system effect.
+  - `println` appends exactly one LF byte (`0x0A`, `\n`) without host-specific newline conversions (e.g. no CRLF translation).
+  - Both convenience operations panic on unrecoverable host I/O failure; fallible streaming I/O is provided separately by `ril/io`.
+  - Concurrent writes across tasks may interleave at arbitrary byte boundaries without synchronization.
+- **Prelude Shadowing and Integrity**:
+  - Lexical declarations in inner scopes may shadow prelude names. A local binding named `clone`, `len`, `assert`, etc., shadows the prelude identifier.
+  - A locally defined function named `clone` does not acquire the prelude's freshness and copying guarantees (`E0522`).
 
 ### Mandatory Inspection of Fallible Results
 

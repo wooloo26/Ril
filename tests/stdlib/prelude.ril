@@ -1,6 +1,7 @@
 --@ case: foundational-operations
 --@ mode: run-pass
---@ spec: STD#foundational-operations
+--@ spec: SPEC#built-in-foundational-operations
+--@ spec: STD#prelude-and-module-index
 --@ entry: test_foundational_operations
 --@ file: foundational-operations.ril
 type UserId(int)

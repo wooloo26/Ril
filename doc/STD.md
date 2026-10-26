@@ -51,7 +51,6 @@ Unless an operation states an exception, every module uses these contracts:
   - [Interfaces, Behavior, and Examples](#interfaces-behavior-and-examples)
   - [Contents](#contents)
   - [Prelude and Module Index](#prelude-and-module-index)
-  - [Foundational Operations](#foundational-operations)
   - [Optional and Fallible Values](#optional-and-fallible-values)
   - [Arrays, Maps, and Sets](#arrays-maps-and-sets)
     - [Array](#array)
@@ -98,19 +97,19 @@ assert(found == Some(1) && len(tags) == 1)
 assert(accepted is Ok())
 ```
 
-The following names are available without imports. Local declarations may shadow them; same-scope duplicates are `E0203`. `ril/prelude` re-exports exactly these declarations.
+The following names are available without imports. Local declarations may shadow them; same-scope duplicates are `E0203`. `ril/prelude` re-exports exactly these declarations, combining standard library prelude types with the language-level built-in operations normatively defined in the Ril Language Specification ([SPEC#built-in-foundational-operations](SPEC.md#built-in-foundational-operations)).
 
 | Implicit name | Owning module / identity | Contract |
 | :--- | :--- | :--- |
 | `Option<T>` | `ril/option` | `Some(T)`, `None` |
 | `Result<T, E>` | `ril/result` | `Ok(T)`, `Err(E)`; no default E |
-| `Immut<T>` | `ril/prelude` | Language-defined immutable qualifier |
+| `Immut<T>` | Language-defined | Deep immutability type qualifier ([SPEC#deep-immutability](SPEC.md#deep-immutability)) |
 | `Options`, `Results` | `ril/option`, `ril/result` | Prelude module aliases |
 | `Array`, `Map`, `String` | `ril/array`, `ril/map`, `ril/string` | Module namespaces |
 | `Set<T>`, `Set` | `ril/set` | One predefined declaration with type and namespace roles |
-| `inner`, `clone`, `clone_immut`, `derive`, `len` | `ril/prelude` | Foundational operations below |
-| `byte_size` | `ril/prelude` | Language-defined static query; ordinary lexical shadowing |
-| `panic`, `assert`, `print`, `println` | `ril/prelude` | Defect and output operations below |
+| `inner`, `clone`, `clone_immut`, `derive`, `len` | Language built-ins | Language-level foundational operations ([SPEC#built-in-foundational-operations](SPEC.md#built-in-foundational-operations)) |
+| `byte_size` | Language built-in | Static layout query ([SPEC#compile-time-execution-and-layout-cooperation](SPEC.md#compile-time-execution-and-layout-cooperation)) |
+| `panic`, `assert`, `print`, `println` | Language built-ins | Defect and output operations ([SPEC#built-in-foundational-operations](SPEC.md#built-in-foundational-operations)) |
 
 `Some`, `None`, `Ok`, and `Err` are available through the visible sum declarations and ordinary constructor abbreviation rules. Re-exporting the same sum does not create another variant candidate. `?T`, `[K: V]`, `[]T`, `[N]T`, primitive type spellings, operators, and the built-in effect identities `Fiber`, `Concurrent`, `Async`, and `Div` belong to the language; they are not extra imports supplied by this table.
 
@@ -143,47 +142,6 @@ pub use ril/result as Results
 | `ril/test` | Assertion helpers |
 
 All listed modules are part of this version. Network protocols, package acquisition, archive formats, general serialization, regular expressions, and cryptographic primitives other than SHA-256 and system entropy are outside this version's surface.
-
-## Foundational Operations
-
-```ril
-type UserId(int)
-assert(inner(UserId(1001)) == 1001)
-let original = [1, 2, 3]
-let mut detached = clone(original)
-detached !> Array::push(4)
-assert(original == [1, 2, 3] && len(detached) == 4)
-let snapshot: Immut<[]int> = clone_immut(detached)
-let revised = .{ theme: "dark" } |> derive \mut draft -> {
-    draft.theme = "light"
-}
-assert(revised.theme == "light" && len(snapshot) == 4)
-```
-
-| Interface family | Result and governing contract |
-| :--- | :--- |
-| `inner(wrapper)` | Underlying nominal payload; unit nominal gives `()`; opaque boundary remains sealed |
-| `clone(value)` | Isolated ordinary graph; preserve internal aliases/cycles and nested immutable qualifiers |
-| `clone_immut(value)` | Independent immutable `Immut<T>` under the same eligibility rules |
-| `derive(base, recipe)` | Confined mutable draft; recipe returns `()`; preserve input shape/qualifier and forward recipe effects/outside-state obligations |
-| `len(value) -> int` | `str`: Unicode scalars; `bytes`: bytes; arrays/windows: elements; maps/sets: entries |
-| `meta fn byte_size<T>(value: type<T>) -> int` | Static-only, finite; nonnegative size of T's value/handle on the selected abstract target, not its reachable graph |
-| `panic(message: str) -> never` | Finite panic initiation, not an algebraic effect |
-| `assert(condition: bool, message: str = "assertion failed") -> ()` | False condition panics; ordinary argument evaluation, including message, occurs before the call |
-| `print(text: str) -> () @Fiber` | Write UTF-8 to standard output; no added bytes |
-| `println(text: str) -> () @Fiber` | Write text followed by one LF byte; no platform newline translation |
-
-`len` is O(n) or better on text and O(1) on the other admitted built-in collections. Copying and derivation cost O(the ordinary graph inspected/copied); no stronger storage-sharing or allocation promise is made. `clone` of a Sender follows the separate [channel resource contract](#structured-concurrency-channels), including `@Fiber`; it is not ordinary-data isolation.
-
-Output convenience functions panic on I/O failure; writes may interleave across tasks. [Fallible output](#input-and-output) returns errors as data. Panic unwinds synchronous frames and runs finite cleanup; cleanup failure during unwinding is a double fault. Assertions do not catch panics.
-
-```ril
-meta let BYTE_SIZE = byte_size(type<u8>)
-meta let _ = assert(BYTE_SIZE == 1)
--- let runtime_size = byte_size(type<u8>) -- Error [E0810]: static-only query
-```
-
-The query's name is a prelude declaration, not reserved syntax. Its result may depend on the abstract target; it supplies no packed layout, field-offset, or external binary-layout contract.
 
 ## Optional and Fallible Values
 
