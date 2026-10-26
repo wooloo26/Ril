@@ -313,8 +313,8 @@ let ieee = 1.0 / 0.0                  -- OK: positive infinity
 | Negative `Div::budget` limit | Panic before invoking the protected action |
 | Unrepresentable checked fixed-width integer result, including negation and `MIN / -1` | Integer-overflow panic; `MIN % -1` remains zero |
 | Fixed-width shift count negative or at least the bit width; negative `bigint` shift count | Invalid-shift panic |
-| Ordinary array/slice element index outside its bounds | Index-bounds panic |
-| Negative, reversed, or out-of-bounds slice window | Slice-bounds panic under the [slicing rules](#range-and-slicing-expressions) |
+| Ordinary array element index outside its bounds | Index-bounds panic |
+| Negative, reversed, or out-of-bounds sub-range | Sub-range bounds panic under the [slicing rules](#range-and-slicing-expressions) |
 | External fault whose declared boundary contract maps it to a defect | Panic under that contract; a domain failure remains a `Result` value |
 
 Panic categories describe conditions, not additional types, effect tags, or `PanicInfo` fields. Message spelling is unspecified. `PanicInfo.index` denotes a parallel source index, not a general bounds-error index.
@@ -629,7 +629,6 @@ let smallest: i8 = -128i8               -- OK: signed literal is checked as a wh
 | Negating an evaluated fixed-width minimum | Panic; the literal exception does not apply |
 | Numeric arithmetic/comparison | Same operand type (`E0301`); no conversion of already typed values |
 | Shift count | Integer; need not have the left operand's width |
-| Fixed array length | Static nonnegative `int`; wrong sort: `E0323`, negative: `E0815`, run-time value: `E0814` |
 
 ### Text and Byte Literals
 
@@ -756,16 +755,16 @@ PrimitiveType    ::= "bool" | "i8" | "i16" | "i32" | "i64" | "int"
 
 Value types have copy-by-value semantics. They cannot be borrowed as `mut` parameters.
 
-| Category | Types | Default Alignment / Size |
+| Category | Types | Description |
 | :--- | :--- | :--- |
-| Boolean | `bool` | 1 byte |
-| Signed Integers | `i8`, `i16`, `i32`, `i64`, `int` (pointer-sized) | 1, 2, 4, 8, pointer bytes |
-| Unsigned Integers | `u8`, `u16`, `u32`, `u64` | 1, 2, 4, 8 bytes |
-| Arbitrary Precision | `bigint` | Managed heap integer |
-| Floating-Point | `f32`, `f64` | 4, 8 bytes (IEEE 754) |
-| Text & Data | `str` (UTF-8 immutable), `bytes` (byte slice) | Pointer + length |
-| Integer ranges | Range values such as `0..5`; type may be named using `typeof (0..0)` | Abstract-target value layout |
-| Unit & Bottom | `()` (unit, 1 value), `never` (empty, diverges) | 0 bytes |
+| Boolean | `bool` | Truth value (`true` or `false`) |
+| Signed Integers | `i8`, `i16`, `i32`, `i64`, `int` | Fixed-width signed integers; `int` is target pointer width |
+| Unsigned Integers | `u8`, `u16`, `u32`, `u64` | Fixed-width unsigned integers |
+| Arbitrary Precision | `bigint` | Arbitrary-precision integer |
+| Floating-Point | `f32`, `f64` | IEEE 754 floating-point numbers |
+| Text & Data | `str`, `bytes` | Immutable UTF-8 text string, immutable raw byte sequence |
+| Integer ranges | `typeof (0..0)` | Immutable integer interval bounds |
+| Unit & Bottom | `()`, `never` | Singleton unit value `()`, empty uninhabited type |
 
 ```ril
 -- Value types: independent copy-by-value semantics:
@@ -774,13 +773,13 @@ var b = a                              -- Independent copy; value types use 'var
 b += 1                                 -- Modifies 'b'; 'a' remains 42
 assert(a == 42 && b == 43)
 
--- let mut bad_scalar = a              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
+-- let mut bad_scalar = a              -- Error [E0402]: scalar value type 'int' has no interior mutability; use 'var'
 -- fn bad_borrow(mut x: int) {}        -- Error [E0401]: value type 'int' cannot be borrowed as 'mut' parameter
 ```
 
 ### Reference Types
 
-Reference types are allocated on the managed garbage-collected heap: records, arrays, tuples, maps, sets, and sum type instances.
+Reference types are allocated on the managed garbage-collected heap: arrays (`[]T`), maps (`[K: V]`), records, tuples, sets, and sum type instances.
 
 ```ril
 -- Reference types: shared heap aliasing:
@@ -863,36 +862,32 @@ assert(rest.role == "root")
 
 ### Array, Map, and Tuple Types
 
-Bracket syntax (`[...]`) unifies linear sequences (dynamic slices `[]T` and compile-time fixed-length arrays `[N]T`) and associative maps (`[K: V]`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`). The unique set type `Set<T>` and collection type extractors are standard library declarations, not dedicated core syntax.
+Bracket syntax (`[...]`) defines linear arrays (`[]T`) and associative maps (`[K: V]`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`). Non-owning inspection uses the orthogonal `view` capability qualifier (`view []T`). The unique set type `Set<T>` and collection type extractors are standard library declarations, not dedicated core syntax.
 
 ```ebnf
-ArrayType   ::= "[" [ Expression ] "]" TypeExpression
+ArrayType   ::= "[]" TypeExpression
 MapType     ::= "[" TypeExpression ":" TypeExpression "]"
-TupleType        ::= "(" TypeExpression "," TypeExpression { "," TypeExpression } [ "," ] ")"
-TupleExpr       ::= "(" Expression "," Expression { "," Expression } [ "," ] ")"
-ArrayExpr       ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
-MapExpr         ::= "[" ":" "]" | "[" MapEntry { "," MapEntry } [ "," ] "]"
-MapEntry        ::= Expression ":" Expression
+TupleType   ::= "(" TypeExpression "," TypeExpression { "," TypeExpression } [ "," ] ")"
+TupleExpr   ::= "(" Expression "," Expression { "," Expression } [ "," ] ")"
+ArrayExpr   ::= "[" [ Expression { "," Expression } [ "," ] ] "]"
+MapExpr     ::= "[" ":" "]" | "[" MapEntry { "," MapEntry } [ "," ] "]"
+MapEntry    ::= Expression ":" Expression
 ```
 
 ```ril
--- let negative: [-1]int = []         -- Error [E0815]: fixed array length must be nonnegative
--- let wrong_sort: ["4"]int = []      -- Error [E0323]: length must have sort int
--- let indexed = 42[0]               -- Error [E0352]: int has no element lookup
-let empty: [0]int = []                -- OK
-```
-
-A statically known `int` used as a fixed array length must be nonnegative (`E0815`). Wrong sorts use `E0323`; an unavailable static value uses `E0814`. A receiver without the requested ordinary or safe element-lookup operation is `E0352`. Record bracket access retains its more specific prohibition `E0324`; invalid index types on an otherwise indexable receiver use `E0301`. A validly typed array index can still panic at run time when out of bounds.
-
-```ril
--- Linear Array ([]T dynamic slice, [N]T fixed-length array):
-let numbers: []int = [1, 2, 3]         -- Type: []int (dynamic slice)
-let buffer: [4]u8 = [0, 0, 0, 0]       -- Type: [4]u8 (fixed-length array)
+-- Linear Array ([]T):
+let numbers: []int = [1, 2, 3]
+let empty: []int = []
+-- let unconstrained = []             -- Error [E0344]: unconstrained empty array literal requires type annotation
+-- let indexed = 42[0]                -- Error [E0352]: target has no element lookup
 
 -- Associative Map ([K: V]):
-let config: [str: str] = ["env": "prod", "host": "127.0.0.1"]
+let mut config: [str: str] = ["env": "prod", "host": "127.0.0.1"]
 let empty_map: [str: int] = [:]        -- Empty map literal
-let host = config["host"]              -- Evaluates to ?str (Some("127.0.0.1"))
+let host: ?str = config?["host"]       -- Safe lookup evaluates to ?str (Some("127.0.0.1"))
+config["host"] = "10.0.0.1"            -- In-place slot assignment
+-- let bad_get = config["host"]        -- Error [E0352]: map lookups require 'm?[k]'
+-- config["host"] += "!"               -- Error [E0352]: map compound assignment prohibited
 
 -- Tuple ((T1, T2)):
 let coords: (int, str) = (10, "Alice") -- Type: (int, str)
@@ -906,6 +901,10 @@ type First = (int, str).0              -- Static tuple positional projection: in
 -- type BadArrElem = ([]int).elem      -- Error [E0337]: collection type '[]int' has no named fields or member projections; use 'ril/array::{Elem}'
 -- type BadMapKey = ([str: int]).key   -- Error [E0337]: collection type '[str: int]' has no named fields or member projections; use 'ril/map::{Key}'
 ```
+
+Empty array literals without contextual expected types require explicit annotation (`E0344`). Invalid index types on an otherwise indexable receiver use `E0301`. An index outside an array's bounds panics at run time.
+
+Map lookups must use safe bracket navigation (`m?[k]`), evaluating to `?V` (`Option<V>`). Plain bracket lookup expressions (`m[k]`) and compound assignments (`m[k] += v`) are prohibited (`E0352`). In-place slot assignment `m[k] = v` inserts or replaces an entry for `k` (requiring deeply immutable `k` under `E0535`).
 
 ### Sum Types and GADTs
 
@@ -1049,14 +1048,13 @@ NominalDecl      ::= [ "pub" ] "type" PascalCase [ GenericParams ] [ "(" [ TypeL
 ```
 
 When `(TypeExpression)` is omitted, `NominalDecl` defines a **Unit Nominal Type** (e.g. `type Marker`).
-- **Memory Layout**: Unit nominal types have a 0-byte memory layout (zero-sized type / ZST).
 - **Value Construction**: The bare identifier `Marker` denotes its canonical singleton value (`let m = Marker`).
 - **Pattern Matching**: `Marker` acts as a nullary constructor pattern in multi-variant `match` expressions (`match event { Marker -> ... }`). In `let` statements, patterns introducing zero variable bindings (such as `let Marker = m`) are strictly prohibited under the **Non-Vacuous Binding Invariant (`E0309: VacuousBindingError`)**.
 - **Prelude Unwrapping**: Unwrapping via `inner(Marker)` evaluates to `()`.
 - **Nominal Isolation**: A unit nominal type is an isolated nominal identity, strictly distinct from structural `()`. For example, `Result<Marker, E>` strictly requires `Ok(Marker)` and does NOT permit `Ok()`.
 
 ```ril
--- Unit Nominal Types (zero-sized domain markers):
+-- Unit Nominal Types (domain markers):
 type Marker
 type AdminToken
 
@@ -1152,7 +1150,7 @@ let get_dog: Getter<Dog> = make_dog       -- OK
 | Record field | Mutable: invariant; read-only: covariant |
 | Callable with identical parameter modes | Parameters contravariant; result covariant; actual obligations fit destination rows |
 | `&^mut` row bound | Admits `&mut`; never changes parameter modes or handle permissions |
-| Array / map | Element and key/value types invariant; fixed lengths must match |
+| Array / map | Element and key/value types invariant |
 | Tuple | Components invariant; writable access permits slot replacement |
 | Sum / nominal arguments | Invariant; transparent aliases retain the expanded type's identity |
 
@@ -1241,7 +1239,7 @@ assert(finished.count == 1)           -- OK: construction scope ended without an
 -- Error [E0535]: ending the alias's scope does not end source's authority
 ```
 
-Escaped environments and stored writable paths survive their creating scope and still prevent immutable publication. Last-use rules for temporary loans or slice windows do not implicitly consume an ordinary writable binding. Resource consumption follows only its listed contracts.
+Escaped environments and stored writable paths survive their creating scope and still prevent immutable publication. Last-use rules for temporary loans or views do not implicitly consume an ordinary writable binding. Resource consumption follows only its listed contracts.
 
 ### Functional Updates via Derive
 
@@ -1297,27 +1295,58 @@ Generics admit type, const-value, and [static-key](#static-key-parameters-and-co
 ```ebnf
 GenericParams         ::= "<" GenericParamDecl { "," GenericParamDecl } [ "," ] ">"
 GenericParamDecl      ::= TypeParamDecl | ConstParamDecl | StaticKeyParamDecl
-TypeParamDecl         ::= PascalCase [ ":" TypeSort ] [ "=" TypeExpression ]
+TypeParamDecl         ::= PascalCase [ TypeConstraint ] [ "=" TypeExpression ]
+TypeConstraint        ::= [ ":" TypeSort ] { "|>" PipelineConstraint }
+TypeSort              ::= TypeSetSort | "Type" | KindSignature | RecordConstraint
+TypeSetSort           ::= TypeReference "|" TypeReference { "|" TypeReference }
+PipelineConstraint    ::= QualifiedName [ GenericArgs ]
 ConstParamDecl        ::= SnakeCase ":" ValueType [ "=" Expression ]
-TypeSort              ::= "Type" | KindSignature | RecordConstraint
 KindSignature         ::= "Type" "->" ( "Type" | KindSignature )
-RecordConstraint ::= "{" [ RecordConstraintField { "," RecordConstraintField } "," ] ".." PascalCase "}"
+RecordConstraint      ::= "{" [ RecordConstraintField { "," RecordConstraintField } "," ] ".." PascalCase "}"
 RecordConstraintField ::= [ "mut" ] Identifier ":" TypeExpression
 KeyofConstraint       ::= "keyof" TypeExpression
 GenericArgs           ::= "<" GenericArg { "," GenericArg } [ "," ] ">"
 GenericArg            ::= TypeExpression | Expression
-StaticKeyParamDecl ::= PascalCase ":" KeyofConstraint [ "=" Expression ]
-ValueType        ::= TypeExpression
+StaticKeyParamDecl    ::= PascalCase ":" KeyofConstraint [ "=" Expression ]
+ValueType             ::= TypeExpression
 ```
 
 - **Trailing Defaults Invariant (`E0316`)**: If a generic parameter declares a default argument (`= Default`), all subsequent generic parameters in the same parameter list MUST declare default arguments.
 - **Telescopic Left-to-Right Scoping Invariant (`E0320`)**: A default argument expression $D_i$ may reference generic parameters declared to its left ($X_1, \dots, X_{i-1}$). Forward references and direct/indirect circular dependencies are statically rejected (`E0320`).
+- **Generic Closed Type Sets (`TypeSetSort`, `E0301`)**: A generic parameter may constrain its admitted domain to a finite union of types (`T: int | f64`). Unlike value-level untagged unions (`E0318`), a type set constraint does not create an untagged runtime union type; monomorphization specializes $T$ to each concrete member. The compiler performs definition-site polyvariant type checking across all member types $\tau \in \{T_1, \dots, T_n\}$, verifying that the generic body's operations are well-typed for every alternative. Supplying a type outside the set triggers `E0301: TypeMismatchError`.
+- **Pipeline Type Constraints (`T |> Guard`, `E0301`, `E0306`)**: A type parameter may pipe into one or more pure type functions (`T |> Numeric`). The guard must be a compile-time pure `type` function of kind `Type -> Type` (`E0306`). An argument type $T_{arg}$ satisfies the guard if and only if:
+  $$\text{Valid}(T_{arg}) \iff T_{arg} \not\equiv \text{never} \quad \wedge \quad \text{Guard}\langle T_{arg} \rangle \equiv T_{arg}$$
+  The bottom type `never` is statically rejected before guard evaluation, preventing vacuous satisfaction. If $\text{Guard}\langle T_{arg} \rangle$ does not produce definitional identity with $T_{arg}$, the argument is rejected under `E0301`. Multiple guards pipe from left to right: `T |> Guard1 |> Guard2` $\equiv \text{Guard2}\langle \text{Guard1}\langle T \rangle \rangle$.
+- **Orthogonal Constraint Composition**: Structural row polymorphism and pipeline guards compose naturally: `T: { id: int, ..R } |> AuditGuard` verifies that $T$ satisfies the open record structure and conforms to `AuditGuard`.
 - **Static Value Sorts**: Const parameters admit scalar values and finite immutable aggregate values whose constituents have no resource or callable authority. `ValueType` in the parameter grammar denotes such an admissible value sort, not permission to pass a run-time or live value.
 - **Const Generic Evaluation & Purity Invariant (`E0814`, `E0323`)**: Const generic arguments evaluate at compile time within the pure symbolic domain ($\mathbf{Eff} = \emptyset, \mathbf{Cap} = \emptyset$). Non-constant runtime expressions passed to const parameters trigger `E0814`. Arguments failing sort constraints trigger `E0323`.
-- **No Untagged Literal Types (`E0318`)**: Concrete values (strings, integers, booleans) cannot serve as bare types. Discrete domain states MUST be modeled via tagged sum types (`type HttpMethod { Get, Post }`). Concrete values enter the type system strictly as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`).
+- **No Untagged Literal or Storage Union Types (`E0318`)**: Concrete values (strings, integers, booleans) and untagged value unions (`int | str`) cannot serve as storage, variable, or binding types (`E0318`). Discrete domain states MUST be modeled via tagged sum types (`type HttpMethod { Get, Post }`). Concrete values enter the type system strictly as compile-time arguments to const parameters (`Buffer<u8, 1024>`, `Matrix<f64, 4>`). Finite type sets (`T: int | f64`) are permitted exclusively as static domain constraints on generic parameters (`TypeSetSort`), which are monomorphized to single rigid types.
 - **Function Generic Default Prohibition (`E0317`)**: Function generic parameters cannot declare defaults (`fn f<T = int>` is rejected); function types are inferred bidirectionally at call sites.
 
 ```ril
+-- Closed Type Set Constraint:
+fn add<T: int | f64>(a: T, b: T) -> T { a + b }
+assert(add(1, 2) == 3)
+assert(add(1.5, 2.5) == 4.0)
+-- let bad_add = add("a", "b")          -- Error [E0301]: type 'str' does not satisfy constraint 'int | f64'
+
+-- Pipeline Type Function Constraint:
+type Numeric = \T -> match type<T> {
+    type<int> | type<i64> | type<f64> -> type<T>,
+    _ -> type<never>,
+}
+fn multiply<T |> Numeric>(a: T, b: T) -> T { a * b }
+assert(multiply(3, 4) == 12)
+-- let bad_mul = multiply("x", "y")     -- Error [E0301]: type 'str' does not satisfy constraint 'Numeric'
+
+-- Composed Structural and Pipeline Constraint:
+type NonZero = \T -> match type<T> {
+    type<{ val: int, ..let _ }> -> type<T>,
+    _ -> type<never>,
+}
+fn get_val<T: { val: int, ..R } |> NonZero>(item: T) -> int { item.val }
+assert(get_val(.{ val: 42, label: "ok" }) == 42)
+
 type Token<value: f64>(int)
 meta let _ = assert(type<Token<0.0>> != type<Token<-0.0>>)
 meta let _ = assert(type<Token<0.0 / 0.0>> == type<Token<0.0 / 0.0>>)
@@ -1606,7 +1635,7 @@ capacity += 1                         -- OK: independent scalar copy
 #### Normative Rules for Pinned Handles
 - **Pinned Handle Invariant (`E0502`)**: A `let mut` handle is permanently pinned to its initial heap allocation. Reassigning the identifier (`handle = new_obj`) is statically rejected under `E0502: PinnedHandleReassignmentError`.
 - **Value Type Prohibition (`E0402`)**: Primitive value types (`int`, `bool`, `f64`, etc.) have no interior mutable fields. Declaring a value type as `let mut` is statically rejected under `E0402: ValueTypePinnedMutError`; mutable value types MUST be declared with `var`.
-- **Live View Stability**: Pinned mutable handles provide guaranteed pointer stability as mutable roots for live views (`let view`).
+- **Live View Stability**: Pinned mutable handles provide guaranteed reference stability as roots for live views (`let view`).
 
 ```ebnf
 LetMutDecl ::= "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression
@@ -1757,6 +1786,7 @@ ScopedDecl ::= "let" "scoped" [ "mut" ] Identifier [ ":" TypeExpression ] "=" Ex
 
 ```ebnf
 LetViewDecl ::= "let" "view" Identifier [ ":" TypeExpression ] "=" Expression
+VarViewDecl ::= "var" "view" Identifier [ ":" TypeExpression ] "=" Expression
 ```
 
 ```ril
@@ -1768,14 +1798,15 @@ cell.count = 2
 assert(read_count() == 2)
 -- let bad_reader = \-> observed.count -- Error [E0535]: the captured live origin is not immutable
 -- mutate(mut observed)               -- Error [E0520]: a view cannot supply mutable authority
+-- let view bad_fresh = Cell.{ count: 0 } -- Error [E0543]: fresh initializers cannot bind directly to view
 let snapshot = clone_immut(observed)   -- OK: snapshot, not a live alias
 ```
 
-- **Origins (`E0531`)**: Require a live pinned origin (`let mut`, `mut`, or `^mut`), including provenance-preserving projections, returns, aggregates, views, and observer closures. Reject `var`/`var mut` origins and immutable-only inputs; indirection cannot hide them.
-- **Single Evaluation**: Keep the initializer's resulting reference, not a reactive expression. Replacing `parent.child` leaves an existing child view observing the old object. Reachable data outlives the root identifier.
+- **Origins and Capabilities**: `view` is an orthogonal read-only capability applied to GC-managed reference types (`[]T`, `[K: V]`, records, and sum types). It grants non-owning inspection over existing storage. Fresh initializers (`new T`) cannot bind directly to `let view` or `var view` (`E0543: FreshTargetViewError`); passing `new T` to a `view` parameter materializes an anonymous temporary. Taking `view` over a primitive scalar is rejected (`E0402`).
+- **Single Evaluation**: Keep the initializer's resulting reference, not a reactive expression. Replacing `parent.child` leaves an existing child view safely observing the old heap object (preserved via GC root tracking). Reachable data outlives the root identifier.
 - **Observer Closure**: It may read pinned live origins but cannot write captures. Effects remain independent obligations; read-only observation needs no artificial mutation for `E0527`.
-- **Permissions**: A view cannot supply `mut`/`^mut` or become immutable through aliasing. Scalars copy independently; references keep their origins. Eligible view data supports `clone`/`clone_immut`, but not `derive`.
-- **Task Confinement (`E0601`)**: A live view, or any closure/container containing it, cannot cross a concurrent task boundary. Immutable snapshots can cross it.
+- **Permissions**: A view cannot supply `mut`/`^mut` (`E0520`) or become immutable through aliasing without an explicit `clone` (`E0535`). Scalars copy independently; references keep their origins. Eligible view data supports `clone`/`clone_immut`, but not `derive` (`E0536`).
+- **Task Confinement (`E0601`)**: A live view, or any closure/container containing it, cannot cross a concurrent task boundary. Deeply immutable data can cross it.
 
 ```ril
 type Parent = { mut child: Cell }
@@ -1783,6 +1814,11 @@ let mut parent = Parent.{ child: Cell.{ count: 1 } }
 let view child = parent.child
 parent.child = Cell.{ count: 9 }
 assert(child.count == 1)                -- Keeps the original child, not a reactive projection
+
+type TaskStatus { Pending(str), Finished(int) }
+let mut tasks: []TaskStatus = [TaskStatus::Pending("waiting")]
+let view v = tasks[0]                   -- 'v' holds a read-only view of the Pending object
+tasks[0] = TaskStatus::Finished(42)     -- Slot 0 is updated; 'v' safely keeps the original object
 ```
 
 ### Type Declarations and Opaque Types
@@ -1850,7 +1886,7 @@ fn authenticate_client() -> ?SessionToken {
     -- Operations via explicit exports & pipeline:
     let raw_str = token |> reveal_token()  -- OK: explicit deconstruction via exported function
 
-    -- Zero runtime boxing: storage in collections carries zero wrapper allocation:
+    -- Nominal wrappers in collections:
     let active_tokens: []SessionToken = [token]
     let token_map: [SessionToken: int] = [token: 42]
 
@@ -1884,7 +1920,7 @@ DeclLet          ::= "let" Identifier ":" TypeExpression
 - **Exchange Contract Types**: Transparent type aliases, records, and tagged sum types MAY provide full shape definitions in `.d.ril` to define exchange data contracts.
 - **Top-Level Immutability**: Top-level variables in `.d.ril` are restricted to immutable handles (`let`). Declaring `var` or `let mut` is statically rejected under `E0901`.
 - **Dual-Tier `where` Compatibility**: `DeclFunction` supports waist `where` (`SignatureWhereClause`) for aliasing signature callback types; block-level `where` is not permitted in foreign declarations.
-- **Hard Safety Membrane Invariant**: Invocations across `.d.ril` external boundaries are strictly sealed against unhandled host faults. External traps or host exceptions never corrupt caller stack frames; they resolve either to domain error variants (`Result<T, E>`) or deterministic runtime panics contained at `scope` boundaries.
+- **Hard Safety Membrane Invariant**: Invocations across `.d.ril` external boundaries are strictly sealed against unhandled host faults. External traps or host exceptions never corrupt caller execution state; they resolve either to domain error variants (`Result<T, E>`) or deterministic runtime panics contained at `scope` boundaries.
 - **Ordinary Exchange**: Ordinary inputs, outputs, and constants must be scalars or deeply immutable ordinary data with no surviving foreign writer. They cannot contain live views, callables, tasks, or resources. This excludes even immutable environment-free function values: only a separate callback parameter receives the temporary callback contract below. An immutable returned graph may share immutable storage; a plain return type does not establish freshness or write permission (`E0528`).
 - **Temporary Callbacks**: Invoke only during the current foreign call, on the current task. Preserve actual effects, origins, environment permissions, and exclusivity; mutable invocation requires `mut` on parameter and argument. No environment inspection, retention, return, or cross-task transfer is permitted. Arguments/results must satisfy ordinary exchange or explicit resource contracts; mutable data and nested callables gain no exemption.
 - **Listed Resource Contracts (`E0908`)**: Only an explicit resource contract may extend ordinary exchange. Opaque declarations and `@Fiber`/`mut`/`^mut` alone grant no resource mutation, callback retention, copying, closing, or transfer. Reject unsupported requests. Ordinary opaque data retains its actual provenance.
@@ -2256,7 +2292,7 @@ let negated   = !valid_and             -- Unary logical NOT
 
 ### Range and Slicing Expressions
 
-Only slices permit omitted range endpoints.
+Only sequence sub-range indexing permits omitted range endpoints.
 
 ```ebnf
 RangeExpr       ::= [ Expression ] ( ".." | "..=" ) [ Expression ]
@@ -2277,10 +2313,10 @@ for 254u8..=255u8 as value {
 assert(visited == 2)                  -- No increment beyond u8's maximum
 
 let arr = [10, 20, 30, 40, 50]
-let slice = arr[1..4]                  -- [20, 30, 40]
-let prefix = arr[..3]                  -- [10, 20, 30]
-let suffix = arr[2..]                  -- [30, 40, 50]
-let empty = arr[len(arr)..len(arr)]   -- OK: empty window at the end
+let sub = arr[1..4]                   -- Evaluates to new []int containing [20, 30, 40]
+let prefix = arr[..3]                 -- [10, 20, 30]
+let suffix = arr[2..]                 -- [30, 40, 50]
+let empty = arr[len(arr)..len(arr)]   -- OK: empty sub-array at the end
 -- arr[2..1]                          -- Panics: reversed half-open bounds
 -- arr[-1..2]                         -- Panics: negative lower bound
 -- arr[0..=len(arr)]                  -- Panics: a written inclusive upper bound must index an element
@@ -2299,22 +2335,41 @@ let empty = arr[len(arr)..len(arr)]   -- OK: empty window at the end
 | `value in range` | Value has the endpoint type; test the selected bounds, without iterating |
 | Other operations | Equality as specified above; no ordering, indexing, `len`, or map-key eligibility |
 
-Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Slice ranges instead use `int` endpoints (`E0301` for another type) and the window bounds below; a reversed slice still panics.
+Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Sub-range indexing instead uses `int` endpoints (`E0301` for another type) and the bounds below; reversed bounds panic.
 
 ```ril
-let mut source = [1, 2, 3]
-let view window = source[0..2]
-source[0] = 9
--- window[0] = 4                      -- Error [E0520]: slice windows grant no writes
--- source !> Array::push(4)           -- Error [E0537]: changes storage structure before window's later use
-assert(window[0] == 9 && len(window) == 2)
-source !> Array::push(4)              -- OK: no remaining use of this window or an alias
+let mut source: []int = [1, 2, 3]
+let sub: []int = source[0..2]         -- Constructs an independent new []int [1, 2]
+source !> Array::push(4)              -- Modifying source does not affect sub
+assert(len(source) == 4 && len(sub) == 2)
+
+let view observer = source            -- Read-only view over source dynamic array
+assert(observer[0] == 1)
+-- observer[0] = 9                    -- Error [E0520]: a view grants no write authority
+
+-- Mutable element sharing marker (^mut):
+type Cell = { mut count: int }
+let mut cells: []mut Cell = [mut Cell.{ count: 1 }, mut Cell.{ count: 2 }]
+let mut sub_cells = ^mut cells[0..1]  -- OK: '^mut' acknowledges duplicated writable paths
+-- let mut bad = cells[0..1]          -- Error [E0510]: new local writable alias needs '^mut'
+
+-- Primitive sub-sequences:
+let s = "hello, 世界"
+let s_sub: str = s[0..5]              -- "hello" (Unicode scalar coordinates)
+assert(s[0..len(s)] == s)             -- Coordinate alignment ensures safe full slicing
+
+let b: bytes = b"RIFF\x00\x01"
+let b_sub: bytes = b[0..4]            -- b"RIFF" (byte sub-sequence)
+let view b_view: []u8 = b             -- OK: O(1) zero-copy view coercion
 ```
 
-- **Window Identity**: Slicing an array of elements T yields shape `[]T`. It evaluates its source and bounds once and creates a read-only window over the selected element slots; it does not copy those slots. The range and window length remain fixed. Immutable sources yield immutable windows; live sources retain their pinned origins and require a live-compatible binding. Live `var`/`var mut` origins remain inadmissible (`E0531`).
-- **Bounds**: For length N, a half-open window requires `0 <= lower <= upper <= N`; equal bounds produce an empty window, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N, with either range spelling. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped.
-- **Observation**: Replacing or exchanging existing element values is visible through the window, subject to ordinary exclusivity. A separately projected child reference keeps the object obtained at projection time, as for other views. The window never supplies mutable authority; use explicit `clone` for independent writable data.
-- **Structural Stability (`E0537`)**: While the window or any of its aliases may still be used on a statically possible path, reject a structural change to the same backing collection, including append, insert, removal, and truncation. Calls, captured windows, and returned windows preserve this obligation. It ends only after all possible uses end; a source-level alias or guessed execution order is not proof. Same-length element replacement is not a structural change.
+- **Independent Sub-Array Allocation**: Indexing an array with a range expression `arr[a..b]` or `arr[a..=b]` evaluates bounds once and constructs an independent, fresh dynamic array of static type **`new []T`**. Modifications to the sub-array's structure (`push`, `pop`, `insert`, `clear`) never affect the original array, and vice versa.
+- **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty sub-array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe sub-range lookup (`arr?[a..b]`) returns `?[]T` (`None` when out of bounds).
+- **Element Reference Semantics & Sharing Marker (`E0510`)**: Deeply immutable elements are shallow-copied as shared immutable references without markers. When element type `T` contains mutable references, creating a new sub-array duplicates writable paths to existing heap objects, requiring the explicit `^mut` sharing marker (`E0510`) when binding to `let mut`.
+- **Primitive Sub-Sequences**:
+  - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar (code point) indices ($0 \le a \le b \le \text{scalar\_len}$). Slicing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
+  - `bytes[a..b]` and `bytes[a..=b]` evaluate to an independent `bytes` byte sub-sequence ($0 \le a \le b \le \text{byte\_len}$).
+- **Observation via `view`**: Non-owning inspection of an entire array without copying is achieved via the `view` capability qualifier (`view []T`). Modifying an array structurally (`push`/`pop`/`clear`) while actively iterating over it is statically rejected under `E0526`.
 
 ### Pipeline Operators
 
@@ -2397,11 +2452,11 @@ Inside a callable, a postfix `?` operand other than `Option` or `Result` is `E07
 | Safe access | Rule |
 | :--- | :--- |
 | `?.` | Field projection from an optional receiver |
-| `?[` | Array/slice/map element lookup, also through an optional receiver |
+| `?[` | Array/map element lookup, also through an optional receiver |
 | `None` receiver | Return `None`; skip access and index evaluation |
 | Missing key / out-of-bounds element | Return `None` |
 | Selected U / selected `Option<U>` | `Some(value)` / unchanged Option; no further flattening |
-| Range index | Use ordinary slicing syntax and bounds rules |
+| Range index | Use ordinary sub-range syntax and bounds rules |
 
 ### Record Construction and Functional Update
 
@@ -2703,7 +2758,7 @@ assert(total == 3)
 
 | Built-in source | Element and traversal order |
 | :--- | :--- |
-| `[]T`, `[N]T`, array window | T, increasing element index |
+| `[]T` | T, increasing element index |
 | `[K: V]` | (K, V), first-insertion order |
 | `Set<T>` | T, first-insertion order |
 | Integer range | Endpoint type, ascending bounds as specified for ranges |
@@ -2864,9 +2919,7 @@ Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing
 
 These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
 
-A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. A named array rest binds a read-only window over the remaining element slots, without copying them. It follows the [array window rules](#range-and-slicing-expressions); an unnamed rest creates no window. Read-only access alone does not make the window immutable.
-
-For a subject declared as `[N]T`, a successful array pattern with `k` non-rest elements preserves the remaining fixed extent `[N-k]T` in its named rest. The extent comes from the subject's declared fixed length, not the current backing length. A subject declared as `[]T` yields a `[]T` remainder even when its current length is known. Actual immutable sources preserve their immutable view in the remainder; other permissions, retained lifetimes and nested Result inspection duties follow the selected elements and backing window.
+A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. In an array pattern, a named rest `..rest` binds the remaining elements as an independent sub-array `new []T` (or `view []T` when matching over a view).
 
 ```ril
 type Choice { Left(int), Right(int) }
@@ -2883,9 +2936,9 @@ let (first, .., final) = tuple_val             -- OK: first = 10, final = 50
 let (head, ..) = tuple_val                     -- OK: head = 10; trailing elements discarded
 -- let (a, .., b, ..) = tuple_val             -- Error [E0347]: at most one '..' permitted in a tuple pattern
 
--- Slice / array pattern matching:
+-- Array pattern matching:
 let numbers: []int = [1, 2, 3, 4, 5]
-let [x, y, z] = [10, 20, 30]                   -- OK: exact length matching on fixed array
+let [x, y, z] = numbers[0..3]                  -- OK: matching 3-element sub-array
 let desc = match numbers {
     [] -> "empty",
     [single] -> "one element",
@@ -3240,6 +3293,8 @@ Arrows associate right; effect/state suffixes bind to the nearest callable not c
    - Declaring an identical identifier in both `SignatureWhereClause` and `BlockWhereClause` of the same function is statically rejected (`E0203`).
 - **Exported Type Meaning**:
    - For `pub fn`, structural aliases in `SignatureWhereClause` have the same meaning for importers as their expanded structural types; private helper names are not required at call sites.
+- **Generic Constraints and Pipeline Guards in `SignatureWhereClause`**:
+   - Pure `type` functions declared in `SignatureWhereClause` are in scope for the generic parameter list and may be referenced as pipeline constraints (`<T |> Guard>`) as well as computed return types, enabling locally encapsulated domain guards without polluting enclosing module namespaces.
 
 ```ril
 -- Signature-level where for complex higher-order pipeline:
@@ -3819,7 +3874,7 @@ AccessorField ::= Identifier | TupleIndex
 - **Safe Navigation Propagation**:
    - If any navigation segment uses safe navigation `?.`, evaluation short-circuits to `None` when the intermediate receiver is `None`. The resulting accessor closure return type is automatically lifted into `?T`.
 - **Collection Segregation**:
-   - Collections (slices `[]T`, maps `[K: V]`, and prelude `Set<T>`) are not product types and cannot be projected via dot/accessor syntax directly (`E0337`). Element and key extractions require explicit bracket indexing (`\arr -> arr?[i]`) or higher-order combinators (`Array::first`, `Map::get`).
+   - Collections (arrays `[]T`, maps `[K: V]`, and prelude `Set<T>`) are not product types and cannot be projected via dot/accessor syntax directly (`E0337`). Element and key extractions require explicit bracket indexing (`\arr -> arr?[i]`) or higher-order combinators (`Array::first`, `Map::get`).
 
 ```ril
 -- Standard Anonymous Functions:
@@ -5310,6 +5365,18 @@ let t_inferred = type<typeof (1 + 2)>  -- OK: 'typeof' enclosed in type<...> in 
 -- let bad_inferred = typeof (1 + 2)   -- Error [E0319]: bare 'typeof' operator used in expression context; wrap in 'type<typeof (1 + 2)>'
 ```
 
+- **Strict Phase Distinction & Runtime Quotation Prohibition (`E0816`)**: `type<...>` is strictly a compile-time static quotation permitted exclusively in static evaluation scopes (`meta let`, `meta fn`, pure `type` functions, and const generic arguments). In non-meta runtime expressions, using `type<...>` as a value operand is statically rejected under `E0816: RuntimeTypeQuotationProhibitedError`. Runtime invocations supply type arguments via angle brackets (`f<T>(x)`) or contextual bidirectional inference (`let x: T = f(x)`). Types are completely erased during AOT compilation; runtime execution passes no type tokens, witness tables, or phantom values.
+
+```ril
+fn json_decode<T>(raw: str) -> Result<T, str> { ... }
+
+fn runtime_client(raw: str) {
+    -- let bad = json_decode(type<User>, raw)   -- Error [E0816]: 'type<...>' quotation prohibited in runtime context; use 'json_decode<User>(raw)' or contextual inference
+    let explicit = json_decode<User>(raw)       -- OK: explicit generic type argument
+    let inferred: Result<User, str> = json_decode(raw) -- OK: contextual bidirectional inference
+}
+```
+
 - **Type Functions & Invocation**: Unannotated type function parameters default to sort `Type` (`\T -> ...`). Type function application uses generic angle brackets `<...>`:
 
 ```ril
@@ -5362,7 +5429,15 @@ Unmarked static loops and recursion remain admissible subject to the static-eval
 | Alias cycle | Separate `E0313` check |
 | Failed `assert` / other panic | Static `E0830` / `E0831` |
 
+- **Custom Diagnostics and Static Panic (`panic`, `E0831`)**: Type functions, pipeline guards, and meta evaluation blocks may emit developer-specified compile-time diagnostics by calling `panic(message)`. Because `panic` returns `never` ($\bot$), it conforms to any expected branch return type sort (including `type<T>`). When evaluated at compile time, `panic(message)` immediately terminates symbolic evaluation and emits diagnostic `E0831: StaticEvaluationPanicError`, presenting `message` as the primary diagnostic description without unwinding noise, attributed to the triggering instantiation site.
+
 ```ril
+-- Custom diagnostic in pure type function via static panic:
+type SizedRecord = \T -> match type<T> {
+    type<{ id: int, ..let _ }> -> type<T>,
+    _ -> panic("SizedRecord requires a record containing an 'id: int' field"),
+}
+-- type BadRecord = SizedRecord<str> -- Error [E0831]: panic during static evaluation: SizedRecord requires a record containing an 'id: int' field
 -- Meta helper function: value domain computation only (returns int, not type<T>)
 meta fn pad_align(size: int, align: int) -> int {
     assert(size >= 0 && align > 0 && (align & (align - 1)) == 0)
@@ -5402,14 +5477,9 @@ type FastBuf = PaddedBuffer<64, u8>            -- Resolves to { inline_data: []u
 ```ril
 fn runtime_identity(value: int) -> int { value }
 -- meta let INVALID_CALL = runtime_identity(1) -- Error [E0810]: run-time fn in static evaluation
-fn length_from_runtime(size: int) {
-    -- let buffer: [size]int = []    -- Error [E0814]: a static length is required
-}
-meta let LENGTH = 0
-let buffer: [LENGTH]int = []          -- OK
 ```
 
-`E0810` diagnoses a forbidden call across the specified evaluation families. `E0814` diagnoses a run-time value where a static value is required, including const arguments, static-key arguments, and fixed array lengths. Wrong sorts retain `E0323`; a known negative array length is `E0815`. Direct record access with a dynamic computed key retains `E0324`, rather than the argument-oriented static-key diagnostic.
+`E0810` diagnoses a forbidden call across the specified evaluation families. `E0814` diagnoses a run-time value where a static value is required, including const arguments and static-key arguments. Wrong sorts retain `E0323`; a known negative static value is `E0815`. Direct record access with a dynamic computed key retains `E0324`, rather than the argument-oriented static-key diagnostic.
 
 ```ril
 eff Audit { write(str) -> () }
@@ -5419,8 +5489,9 @@ fn dispatch_worker<run: bool>(f: fn(int) -> int, val: int) -> int {
     if run { f(val) } else { val }
 }
 
-fn test_specialization() {
+fn test_specialization(runtime_flag: bool) {
     assert(dispatch_worker<false>(logged_worker, 10) == 10) -- OK: callback is not invoked
+    -- dispatch_worker<runtime_flag>(logged_worker, 10)      -- Error [E0814]: a static value is required
 }
 fn run_logged() -> int @Audit { dispatch_worker<true>(logged_worker, 10) }
 -- fn hidden_log() -> int { dispatch_worker<true>(logged_worker, 10) } -- Error [E0612]
@@ -5672,7 +5743,6 @@ meta let ANSWER = 42
 fn answer() -> int &{ANSWER} { ANSWER }
 -- fn hidden_answer() -> int { ANSWER } -- Error [E0510]
 meta let _ = assert(ANSWER == 42)
-fn empty(values: [ANSWER - 42]int) -> int { len(values) }
 ```
 
 ```ril
@@ -5682,7 +5752,8 @@ meta fn align_to(offset: int, alignment: int) -> int {
     (offset + alignment - 1) & ~(alignment - 1)
 }
 halt type BufferShape = \capacity: int -> type<{
-    data: [capacity]u8,
+    data: []u8,
+    capacity: int,
     used: int,
 }>
 meta let CAPACITY = align_to(60, 16)
@@ -5691,7 +5762,7 @@ meta let _ = assert(CAPACITY == 64)
 -- meta let _ = assert(CAPACITY == 32) -- Error [E0830]: failed static assertion
 ```
 
-An array field is a reference: `[4]u8` does not mean four inline padding bytes. Shape declarations promise no packed order, offsets, pointer size, or external binary layout.
+Shape declarations promise no packed order, offsets, pointer size, or external binary layout.
 
 ```ril
 -- Language-defined static declaration exposed by the prelude:
@@ -5899,7 +5970,7 @@ println("Count: {count}")
 
 The prelude is an ambient lexical scope enclosing every Ril compilation unit. Its declarations are accessible without explicit import statements. Local declarations may shadow prelude names; within the same scope, duplicate declarations remain `E0203`. Shadowing does not alter built-in syntax, compiler intrinsics, or declaration identities required by language-defined operators.
 
-Primitive type spellings (`int`, `str`, `bool`, etc.), `?T`, collection type syntax (`[N]T`, `[]T`, `[..]T`, `[K: V]`), and built-in system effect identities (`Fiber`, `Concurrent`, `Async`, `Div`) are language constructs, not imported prelude declarations.
+Primitive type spellings (`int`, `str`, `bool`, etc.), `?T`, collection type syntax (`[]T`, `[K: V]`), and built-in system effect identities (`Fiber`, `Concurrent`, `Async`, `Div`) are language constructs, not imported prelude declarations.
 
 #### Built-in Foundational Operations
 
@@ -5913,7 +5984,8 @@ Ril defines the following built-in foundational operations directly in the langu
 | `clone_immut` | `clone_immut(value) -> Immut<T>` | Pure | Runtime | $O(\text{graph})$ | Independent deeply immutable snapshot |
 | `derive` | `derive(base, recipe) -> T` | Forwards recipe | Runtime | $O(\text{affected})$ | Functional update on immutable value via confined mutable draft |
 | `byte_size` | `meta fn byte_size<T>(value: type<T>) -> int` | Pure | Static only | $O(1)$ | Size in bytes of $T$'s value/handle on abstract target |
-| `panic` | `panic(message: str) -> never` | Defect | Runtime | Finite | Initiates panic unwinding and LIFO cleanup |
+| `type_name` | `meta fn type_name<T>(value: type<T>) -> str` | Pure | Static only | $O(\text{len})$ | Canonical string representation of $T$ for static diagnostics |
+| `panic` | `panic(message: str) -> never` | Defect | Dual-phase | Finite | Initiates panic unwinding at runtime; halts compile-time evaluation with E0831 |
 | `assert` | `assert(condition: bool, message: str = "assertion failed") -> ()` | Defect | Dual-phase | $O(1)$ | Panics on false condition; compile-time failure is `E0830` |
 | `print` | `print(text: str) -> () @Fiber` | `@Fiber` | Runtime | $O(\text{len})$ | Writes UTF-8 text to standard output without trailing newline |
 | `println` | `println(text: str) -> () @Fiber` | `@Fiber` | Runtime | $O(\text{len})$ | Writes UTF-8 text followed by one LF byte (`\n`) to standard output |
@@ -5922,9 +5994,9 @@ Ril defines the following built-in foundational operations directly in the langu
 
 - **Length Invariant (`len`)**:
   - `len` is a pure, dual-phase built-in operation admitted in both runtime and static contexts.
-  - For `str`, returns the total number of Unicode scalar values (code points) in $O(n)$ time or better.
+  - For `str`, returns the total number of Unicode scalar values (code points), matching `s[a..b]` scalar indexing.
   - For `bytes`, returns the byte count in $O(1)$ time.
-  - For sequences (`[N]T`, `[]T`, `[..]T`), returns the element count in $O(1)$ time.
+  - For arrays (`[]T`), returns the element count in $O(1)$ time.
   - For maps (`[K: V]`), returns the number of key-value pairs in $O(1)$ time.
   - For sets (`Set<T>`), returns the number of unique elements in $O(1)$ time.
 - **Unwrapping Invariant (`inner`)**:
@@ -5947,7 +6019,9 @@ Ril defines the following built-in foundational operations directly in the langu
   - Static-only: permitted during compile-time static evaluation (`meta let`, type functions); calling `byte_size` in runtime code is `E0810`.
   - Grants no packed layout, field offset, or external ABI alignment guarantees.
 - **Defect Initiation and Assertions (`panic`, `assert`)**:
-  - `panic(message: str) -> never` initiates stack unwinding, executing synchronous frame LIFO cleanups. A secondary fault during cleanup results in `DoubleFaultFatal` ([Run-Time Failure Conditions](#run-time-failure-conditions)). Panic is a defect mechanism, not an algebraic effect.
+  - `panic(message: str) -> never` is a dual-phase defect primitive:
+    - At runtime, initiates stack unwinding, executing synchronous frame LIFO cleanups. A secondary fault during cleanup results in `DoubleFaultFatal` ([Run-Time Failure Conditions](#run-time-failure-conditions)). Panic is a defect mechanism, not an algebraic effect.
+    - In static evaluation (`meta let`, `meta fn`, pure `type` functions), `panic(message)` immediately aborts static evaluation, producing diagnostic `E0831: StaticEvaluationPanicError` with `message` as the primary error text attributed to the triggering instantiation site.
   - `assert(condition: bool, message: str = "assertion failed") -> ()` evaluates its arguments eagerly before the call; if `condition` is false, it panics with `message`.
   - In static evaluation (`meta let`), a false assertion condition produces diagnostic `E0830` at compile time. Static assertions cannot catch panics.
 - **Standard Output Invariants (`print`, `println`)**:
@@ -6099,7 +6173,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0341`** | [`InvalidRecordKeySortError`](#symmetrical-mapped-comprehensions) |
 | **`E0342`** | [`InvalidTupleKeySortError`](#symmetrical-mapped-comprehensions) |
 | **`E0343`** | [`SingleElementTupleProhibitedError`](#symmetrical-mapped-comprehensions) |
-| **`E0344`** | [`InsufficientTypeInformationError`](#generic-parameters-defaults-and-value-sorts) |
+| **`E0344`** | [`InsufficientTypeInformationError`](#generic-parameters-defaults-and-value-sorts); [Array, Map, and Tuple Types](#array-map-and-tuple-types) |
 | **`E0345`** | [`RefutablePatternError`](#pattern-matching) |
 | **`E0346`** | [`OrPatternBindingMismatchError`](#pattern-matching) |
 | **`E0347`** | [`DuplicatePatternBindingError`](#pattern-matching) |
@@ -6215,7 +6289,8 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0812`** | [`MetaTypeReturnProhibitedError`](#pure-type-functions-and-type-return-privilege) |
 | **`E0813`** | [`MetaComputationAnnotationError`](#pure-type-functions-and-type-return-privilege) |
 | **`E0814`** | [`StaticValueRequiredError`](#disjoint-call-families-evaluation-budgets-and-branch-pruning) |
-| **`E0815`** | [`InvalidArrayLengthError`](#array-map-and-tuple-types) |
+| **`E0815`** | [`InvalidStaticValueError`](#disjoint-call-families-evaluation-budgets-and-branch-pruning) |
+| **`E0816`** | [`RuntimeTypeQuotationProhibitedError`](#static-type-values-and-type-quotation) |
 | **`E0820`** | [`TotalityViolationError`](#termination-and-halt-contracts); [Deterministic Data Parallelism and Divide-and-Conquer Primitives](#deterministic-data-parallelism-and-divide-and-conquer-primitives) |
 | **`E0821`** | [`HaltPurityViolationError`](#termination-and-halt-contracts) |
 | **`E0822`** | [`InvalidBudgetBoundaryError`](#finite-evaluation-with-div) |
