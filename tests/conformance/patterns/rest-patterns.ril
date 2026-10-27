@@ -451,66 +451,95 @@ pub fn test_native() {
 -- entry: test_native
 -- use-source: nested-rest-layers
 
--- [source: array-rest-window]
+-- [source: array-rest-copy]
 -- file: source.ril
 pub fn test_native() {
     let mut values: []int = [1, 2, 3, 4]
-    let view [_, ..tail] = values
+    let view observed = values
+    let [_, ..tail] = observed
     values[1] = 9
-    assert(tail[0] == 9 && len(tail) == 3)
+    assert(tail[0] == 2 && len(tail) == 3)
     Array::push(mut values, 5)
-    assert(len(values) == 5)
+    assert(len(values) == 5 && len(tail) == 3)
 }
 
--- [case: array-rest-window-pointer32, check-pass]
+-- [case: array-rest-copy-pointer32, check-pass]
 -- target: pointer32
 -- spec: SPEC#pattern-matching
--- spec: SPEC#range-and-slicing-expressions
--- companion: reject-array-rest-window-write
--- use-source: array-rest-window
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: reject-array-rest-copy-write
+-- use-source: array-rest-copy
 
--- [case: array-rest-window-pointer64, check-pass]
+-- [case: array-rest-copy-pointer64, check-pass]
 -- target: pointer64
 -- spec: SPEC#pattern-matching
--- companion: array-rest-window-native
--- use-source: array-rest-window
+-- companion: array-rest-copy-native
+-- use-source: array-rest-copy
 
--- [case: array-rest-window-native, run-pass]
+-- [case: array-rest-copy-native, run-pass]
 -- spec: SPEC#pattern-matching
 -- entry: test_native
--- use-source: array-rest-window
+-- use-source: array-rest-copy
 
--- [case: reject-array-rest-window-write, check-fail]
+-- [case: reject-array-rest-copy-write, check-fail]
 -- spec: SPEC#pattern-matching
--- spec: SPEC#range-and-slicing-expressions
--- companion: array-rest-window-pointer64
--- Error [E0520]: The remainder window grants no element writer.
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: array-rest-copy-pointer64
+-- Error [E0520]: The ordinary let binding grants no element writer to its new array.
+-- file: source.ril
+fn invalid() {
+    let mut values: []int = [1, 2, 3]
+    values[0] = 7
+    let [_, ..tail] = values
+    tail[0] = 9
+}
+
+-- [case: array-rest-copy-allows-source-resize, run-pass]
+-- spec: SPEC#pattern-matching
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: array-rest-copy-native
+-- file: source.ril
+pub fn test_native() {
+    let mut values: []int = [1, 2, 3]
+    let [_, ..tail] = values
+    Array::push(mut values, 4)
+    assert(tail[0] == 2 && len(tail) == 2 && len(values) == 4)
+}
+
+-- [case: reject-array-rest-view, check-fail]
+-- spec: SPEC#pattern-matching
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: array-rest-copy-pointer64
+-- Error [E0543]: A named array rest allocates a new array instead of a live subarray.
 -- file: source.ril
 fn invalid() {
     let mut values: []int = [1, 2, 3]
     values[0] = 7
     let view [_, ..tail] = values
-    tail[0] = 9
 }
 
--- [case: reject-array-rest-window-resize, check-fail]
+-- [case: array-rest-reference-identity, run-pass]
 -- spec: SPEC#pattern-matching
--- spec: SPEC#range-and-slicing-expressions
--- companion: array-rest-window-native
--- Error [E0537]: A later use of the remainder keeps its backing structure stable.
+-- spec: SPEC#retained-mutable-sharing
 -- file: source.ril
-fn invalid() {
-    let mut values: []int = [1, 2, 3]
-    let view [_, ..tail] = values
-    Array::push(mut values, 4)
-    assert(tail[0] == 2)
+type Cell = { mut count: int }
+
+pub fn test_native() {
+    let mut values = [Cell.{ count: 1 }, Cell.{ count: 2 }]
+    values[0].count = 5
+    let mut [_, ..tail] = ^mut values
+    tail[0].count += 1
+    assert(values[1].count == 3)
+    values[1] = Cell.{ count: 20 }
+    tail[0].count = 4
+    assert(values[1].count == 20 && tail[0].count == 4)
 }
 
 -- [case: reject-array-rest-hidden-dimension, check-fail]
 -- spec: SPEC#pattern-matching
 -- spec: SPEC#complete-provenance-and-optional-annotations
 -- companion: nested-rest-layers-pointer32
--- Error [E0301]: A dynamic array view cannot recover a fixed remainder from backing length.
+-- Error [E0301]: A dynamic array result cannot recover a fixed extent from its source values.
 -- file: source.ril
 fn fixed(values: [2]int) -> int { len(values) }
 fn invalid() {
@@ -519,7 +548,7 @@ fn invalid() {
     let count = fixed(tail)
 }
 
--- [source: nested-window-evidence]
+-- [source: nested-rest-array-evidence]
 -- file: source.ril
 pub fn test_native() {
     let values: [4]int = [10, 20, 30, 40]
@@ -532,21 +561,21 @@ pub fn test_native() {
     assert(len(empty) == 0)
 }
 
--- [case: nested-window-evidence-pointer32, check-pass]
+-- [case: nested-rest-array-evidence-pointer32, check-pass]
 -- target: pointer32
 -- spec: SPEC#pattern-matching
--- spec: SPEC#range-and-slicing-expressions
--- companion: reject-array-rest-window-write
--- use-source: nested-window-evidence
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: reject-array-rest-copy-write
+-- use-source: nested-rest-array-evidence
 
--- [case: nested-window-evidence-pointer64, check-pass]
+-- [case: nested-rest-array-evidence-pointer64, check-pass]
 -- target: pointer64
 -- spec: SPEC#pattern-matching
--- companion: nested-window-evidence-native
--- use-source: nested-window-evidence
+-- companion: nested-rest-array-evidence-native
+-- use-source: nested-rest-array-evidence
 
--- [case: nested-window-evidence-native, run-pass]
+-- [case: nested-rest-array-evidence-native, run-pass]
 -- spec: SPEC#pattern-matching
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- entry: test_native
--- use-source: nested-window-evidence
+-- use-source: nested-rest-array-evidence

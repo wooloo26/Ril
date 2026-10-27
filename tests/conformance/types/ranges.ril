@@ -1,5 +1,5 @@
 -- [case: accept-live-view-structural-change, check-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: reject-live-view-structural-change
 fn example() {
     let mut items = [1, 2]
@@ -9,7 +9,7 @@ fn example() {
 }
 
 -- [case: reject-live-view-element-write, check-fail]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: live-view-observes-replacement
 -- Error [E0520]: A live view grants no element writer even when its source has one.
 fn invalid() {
@@ -20,7 +20,7 @@ fn invalid() {
 }
 
 -- [case: reject-live-view-structural-change, check-fail]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: accept-live-view-structural-change
 -- Error [E0537]: A later use of the live array view requires structural stability.
 fn example() {
@@ -31,7 +31,7 @@ fn example() {
 }
 
 -- [pair: mixed-range-type]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 
 -- accept
 fn example() {
@@ -45,7 +45,7 @@ fn example() {
 }
 
 -- [pair: noninteger-range]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 
 -- accept
 fn example() {
@@ -59,7 +59,7 @@ fn example() {
 }
 
 -- [case: end-index-safe, run-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: end-index
 pub fn test_end_index_safe() {
     let values = [10, 20, 30]
@@ -67,7 +67,7 @@ pub fn test_end_index_safe() {
 }
 
 -- [case: end-index, run-panic]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: end-index-safe
 -- Panics: end index
 pub fn test_end_index() {
@@ -76,7 +76,7 @@ pub fn test_end_index() {
 }
 
 -- [case: inclusive-end-safe, run-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: inclusive-end
 pub fn test_inclusive_end_safe() {
     let values = [10, 20, 30]
@@ -84,7 +84,7 @@ pub fn test_inclusive_end_safe() {
 }
 
 -- [case: inclusive-end, run-panic]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: inclusive-end-safe
 -- Panics: inclusive end
 pub fn test_inclusive_end() {
@@ -93,7 +93,7 @@ pub fn test_inclusive_end() {
 }
 
 -- [case: negative-index-safe, run-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: negative-index
 pub fn test_negative_index_safe() {
     let values = [10, 20, 30]
@@ -101,7 +101,7 @@ pub fn test_negative_index_safe() {
 }
 
 -- [case: negative-index, run-panic]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: negative-index-safe
 -- Panics: negative index
 pub fn test_negative_index() {
@@ -109,25 +109,25 @@ pub fn test_negative_index() {
     let _ = values[-1]
 }
 
--- [case: negative-slice-safe, run-pass]
--- spec: SPEC#range-and-slicing-expressions
--- companion: negative-slice
-pub fn test_negative_slice_safe() {
+-- [case: negative-range-index-safe, run-pass]
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: negative-range-index
+pub fn test_negative_range_index_safe() {
     let values = [10, 20, 30]
     let _ = values[0..1]
 }
 
--- [case: negative-slice, run-panic]
--- spec: SPEC#range-and-slicing-expressions
--- companion: negative-slice-safe
--- Panics: negative slice
-pub fn test_negative_slice() {
+-- [case: negative-range-index, run-panic]
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: negative-range-index-safe
+-- Panics: negative range index
+pub fn test_negative_range_index() {
     let values = [10, 20, 30]
     let _ = values[-1..1]
 }
 
 -- [case: past-end-safe, run-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: past-end
 pub fn test_past_end_safe() {
     let values = [10, 20, 30]
@@ -135,7 +135,7 @@ pub fn test_past_end_safe() {
 }
 
 -- [case: past-end, run-panic]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- companion: past-end-safe
 -- Panics: past end
 pub fn test_past_end() {
@@ -144,7 +144,7 @@ pub fn test_past_end() {
 }
 
 -- [case: range-boundaries, run-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 pub fn test_range_boundaries() {
     var count = 0
     for 254u8..=255u8 as value { assert(value >= 254u8); count += 1 }
@@ -158,25 +158,25 @@ pub fn test_range_boundaries() {
     assert(values[3..3] == [])
 }
 
--- [case: reversed-slice-safe, run-pass]
--- spec: SPEC#range-and-slicing-expressions
--- companion: reversed-slice
-pub fn test_reversed_slice_safe() {
+-- [case: reversed-range-index-safe, run-pass]
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: reversed-range-index
+pub fn test_reversed_range_index_safe() {
     let values = [10, 20, 30]
     let _ = values[1..2]
 }
 
--- [case: reversed-slice, run-panic]
--- spec: SPEC#range-and-slicing-expressions
--- companion: reversed-slice-safe
--- Panics: reversed slice
-pub fn test_reversed_slice() {
+-- [case: reversed-range-index, run-panic]
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: reversed-range-index-safe
+-- Panics: reversed range index
+pub fn test_reversed_range_index() {
     let values = [10, 20, 30]
     let _ = values[2..1]
 }
 
 -- [case: live-view-observes-replacement, run-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 pub fn test_live_view_observes_replacement() {
     let mut items = [1, 2]
     let view observed = items
@@ -186,9 +186,9 @@ pub fn test_live_view_observes_replacement() {
     assert(len(items) == 3)
 }
 
--- [case: reject-full-slice-view, check-fail]
--- spec: SPEC#range-and-slicing-expressions
--- companion: slice-container-is-independent
+-- [case: reject-full-range-result-view, check-fail]
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: range-result-has-independent-slots
 -- Error [E0543]: A full range still allocates a new array rather than a live view.
 fn invalid() {
     let mut items = [1, 2]
@@ -196,9 +196,9 @@ fn invalid() {
     let view observed = items[..]
 }
 
--- [case: reject-partial-slice-view, check-fail]
--- spec: SPEC#range-and-slicing-expressions
--- companion: slice-container-is-independent
+-- [case: reject-partial-range-result-view, check-fail]
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- companion: range-result-has-independent-slots
 -- Error [E0543]: A partial range also allocates a new array.
 fn invalid() {
     let mut items = [1, 2, 3]
@@ -206,21 +206,21 @@ fn invalid() {
     let view observed = items[1..]
 }
 
--- [case: slice-container-is-independent, run-pass]
--- spec: SPEC#range-and-slicing-expressions
-pub fn test_slice_container_is_independent() {
+-- [case: range-result-has-independent-slots, run-pass]
+-- spec: SPEC#range-and-sequence-indexing-expressions
+pub fn test_range_result_has_independent_slots() {
     let mut items = [1, 2, 3]
-    let selected = items[1..]
+    let selected: []int = items[1..]
     items[1] = 9
     items !> Array::push(4)
     assert(selected == [2, 3] && items == [1, 9, 3, 4])
 }
 
--- [case: reject-forwarded-slice-view, check-fail]
--- spec: SPEC#range-and-slicing-expressions
+-- [case: reject-forwarded-range-result-view, check-fail]
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- spec: SPEC#normative-rules-for-live-views
--- companion: slice-container-is-independent
--- Error [E0543]: A read-only call cannot relabel a new slice array as a live view.
+-- companion: range-result-has-independent-slots
+-- Error [E0543]: A read-only call cannot relabel an ordinary array result as a live view.
 fn identity(items: []int) -> []int { items }
 
 fn invalid() {
@@ -229,25 +229,28 @@ fn invalid() {
     let view observed = identity(items[..])
 }
 
--- [case: slice-preserves-reference-sharing, run-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- [case: range-result-preserves-reference-sharing, run-pass]
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- spec: SPEC#retained-mutable-sharing
 type Cell = { mut count: int }
 
-pub fn test_slice_preserves_reference_sharing() {
+pub fn test_range_result_preserves_reference_sharing() {
     let mut items: []Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
     items[1].count += 1
     let mut selected = ^mut items[0..1]
     selected[0].count = 9
+    assert(items[0].count == 9)
+    selected[0] = Cell.{ count: 5 }
     selected !> Array::push(Cell.{ count: 4 })
     assert(items[0].count == 9 && items[1].count == 3)
+    assert(selected[0].count == 5)
     assert(len(items) == 2 && len(selected) == 2)
 }
 
--- [case: pinned-slice-array-view, run-pass]
--- spec: SPEC#range-and-slicing-expressions
+-- [case: view-of-pinned-range-result, run-pass]
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- spec: SPEC#normative-rules-for-live-views
-pub fn test_pinned_slice_array_view() {
+pub fn test_view_of_pinned_range_result() {
     let mut items = [1, 2, 3]
     items[0] = 9
     let mut selected = items[1..]

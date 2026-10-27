@@ -1,5 +1,5 @@
 -- [case: conditional-control, run-pass]
--- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#conditional-expressions
 -- spec: SPEC#loop-expressions
 -- entry: test_native
@@ -23,10 +23,10 @@ pub fn test_native() &{FOUND, ABSENT, ONCE, EMPTY} {
     assert(FOUND == 8 && ABSENT == 3 && ONCE == 9 && EMPTY == 9)
 }
 
--- [case: array-window-graph, run-pass]
--- spec: SPEC#static-computation-and-totality
+-- [case: array-rest-copy-graph, run-pass]
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#pattern-matching
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- entry: test_native
 -- file: source.ril
 meta fn tail(values: [3]int) -> [2]int {
@@ -43,23 +43,24 @@ pub fn test_native() &{SOURCE, TAIL, BOTH} {
     assert(copied[0] == 7 && SOURCE[1] == 2 && BOTH.1[0] == 2)
 }
 
--- [case: window-backing-joint-clone, run-pass]
--- spec: SPEC#range-and-slicing-expressions
--- spec: SPEC#static-computation-and-totality
--- companion: array-window-graph
+-- [case: independent-array-rest-joint-clone, run-pass]
+-- spec: SPEC#range-and-sequence-indexing-expressions
+-- spec: SPEC#compile-time-computation-and-totality
+-- companion: array-rest-copy-graph
 -- entry: test_native
 -- file: source.ril
 meta fn tail(values: [3]int) -> [2]int { let [_, ..rest] = values; rest }
 meta let SOURCE: [3]int = [1, 2, 3]
 meta let BOTH = (SOURCE, tail(SOURCE))
 pub fn test_native() &{SOURCE, BOTH} {
-    let mut copied = ^mut clone(BOTH)
+    let mut copied = clone(BOTH)
     copied.0[1] = 7
-    assert(copied.1[0] == 7 && SOURCE[1] == 2 && BOTH.1[0] == 2)
+    assert(copied.0[1] == 7 && copied.1[0] == 2)
+    assert(SOURCE[1] == 2 && BOTH.1[0] == 2)
 }
 
 -- [case: reject-repeating-condition-budget, check-fail]
--- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#loop-expressions
 -- companion: conditional-control
 -- Error [E0811]: every repeated pattern condition retains the static event budget
@@ -71,7 +72,7 @@ meta fn repeat() -> int {
 meta let VALUE = repeat()
 
 -- [case: unselected-conditional-events, run-pass]
--- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#conditional-expressions
 -- spec: SPEC#loop-expressions
 -- entry: test_native
@@ -99,7 +100,7 @@ pub fn test_native() &{ABSENT, SKIPPED, OUTER} {
 }
 
 -- [case: reject-unselected-conditional-type-error, check-fail]
--- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#conditional-expressions
 -- companion: unselected-conditional-events
 -- Error [E0301]: an unselected conditional branch is still checked
@@ -109,10 +110,10 @@ meta fn absent(item: ?int) -> int {
 }
 meta let ANSWER = absent(None)
 
--- [case: nested-rest-window-sources, run-pass]
--- spec: SPEC#static-computation-and-totality
+-- [case: nested-rest-array-sources, run-pass]
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#pattern-matching
--- spec: SPEC#range-and-slicing-expressions
+-- spec: SPEC#range-and-sequence-indexing-expressions
 -- entry: test_native
 -- file: source.ril
 meta fn exact(values: [0][2]int) -> int { len(values) }
@@ -135,7 +136,7 @@ pub fn test_native() &{MIDDLE, RECORD} {
 }
 
 -- [case: for-nested-irrefutable-rest, run-pass]
--- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#pattern-matching
 -- spec: SPEC#loop-expressions
 -- entry: test_native
@@ -152,9 +153,9 @@ meta let ANSWER = inspect([([1, 2, 3], 7), ([4, 5, 6], 8)])
 pub fn test_native() &{ANSWER} { assert(ANSWER == 29) }
 
 -- [case: reject-dynamic-rest-fixed-dimension, check-fail]
--- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#pattern-matching
--- companion: nested-rest-window-sources
+-- companion: nested-rest-array-sources
 -- Error [E0301]: a dynamic source does not gain a fixed extent from its values
 -- file: source.ril
 meta fn invalid(values: []int) -> [2]int {
@@ -164,7 +165,7 @@ meta fn invalid(values: []int) -> [2]int {
 meta let VALUES = invalid([1, 2])
 
 -- [case: default-source-schema-scope, run-pass]
--- spec: SPEC#static-computation-and-totality
+-- spec: SPEC#compile-time-computation-and-totality
 -- spec: SPEC#pattern-matching
 -- spec: SPEC#default-parameters-and-named-arguments
 -- entry: test_native

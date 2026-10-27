@@ -85,7 +85,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Relational, Equality, and Containment Operators](#relational-equality-and-containment-operators)
       - [Value Tests with is](#value-tests-with-is)
     - [Logical Operators](#logical-operators)
-    - [Range and Slicing Expressions](#range-and-slicing-expressions)
+    - [Range and Sequence Indexing Expressions](#range-and-sequence-indexing-expressions)
     - [Pipeline Operators](#pipeline-operators)
     - [Error and Fallback Operators](#error-and-fallback-operators)
     - [Record Construction and Functional Update](#record-construction-and-functional-update)
@@ -313,7 +313,7 @@ let ieee = 1.0 / 0.0                  -- OK: positive infinity
 | Unrepresentable checked fixed-width integer result, including negation and `MIN / -1` | Integer-overflow panic; `MIN % -1` remains zero |
 | Fixed-width shift count negative or at least the bit width; negative `bigint` shift count | Invalid-shift panic |
 | Ordinary array element index outside its bounds | Index-bounds panic |
-| Negative, reversed, or out-of-bounds range index | Range bounds panic under the [range indexing rules](#range-and-slicing-expressions) |
+| Negative, reversed, or out-of-bounds range index | Range bounds panic under the [range indexing rules](#range-and-sequence-indexing-expressions) |
 | External fault whose declared boundary contract maps it to a defect | Panic under that contract; a domain failure remains a `Result` value |
 
 Panic categories describe conditions, not additional types, effect tags, or `PanicInfo` fields. Message spelling is unspecified. `PanicInfo.index` denotes a parallel source index, not a general bounds-error index.
@@ -861,7 +861,7 @@ assert(rest.role == "root")
 
 ### Array, Map, and Tuple Types
 
-Bracket syntax (`[...]`) defines linear arrays (`[]T`) and associative maps (`[K: V]`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`). Non-owning inspection uses the orthogonal `view` capability qualifier (`view []T`). The unique set type `Set<T>` and collection type extractors are standard library declarations, not dedicated core syntax.
+Bracket syntax (`[...]`) defines linear arrays (`[]T`) and associative maps (`[K: V]`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`). Array values use the ordinary array type; range indexing creates another ordinary array. Non-owning inspection uses a `let view` or `var view` binding over an eligible array origin. Binding permissions and allocation provenance are tracked separately from the array type. The unique set type `Set<T>` and collection type extractors are standard library declarations, not dedicated core syntax.
 
 ```ebnf
 ArrayType   ::= "[]" TypeExpression
@@ -1810,7 +1810,7 @@ VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expres
 
 #### Normative Rules for Live Views
 - **Target Invariant (`E0531`, `E0402`)**: A reference or callable view must observe at least one live origin rooted in a stable pinned mutable binding (`let mut`). Projections, existing views, and verified calls may preserve this origin evidence. Immutable reference/callable targets and paths supplied through `var`/`var mut` slots are rejected (`E0531`); forwarding or wrapping cannot repair an ineligible source. Value-type targets are rejected (`E0402`).
-- **Observation Wrappers (`E0531`, `E0543`)**: New passive aggregates and observer closures may package eligible live origins with immutable data. Every live constituent and every captured live source must satisfy the target invariant; immutable constituents and captures need no live origin. The wrapper and its access paths grant no write authority. This permits `let view packet = .{ item: identity(source) }` and `let view read = \-> observed.count`. An independent fresh allocation, a clone result, or a new writable closure environment cannot supply a live origin merely by being received as a view (`E0543`). Receiving a range indexing result as a view is also `E0543`; forwarding it through calls or wrappers cannot supply its missing pinned origin. A separate lawful `let mut` binding may establish a pinned origin for newly constructed data, including a slice array; a later view then observes that binding's object, not the slice's source array.
+- **Observation Wrappers (`E0531`, `E0543`)**: New passive aggregates and observer closures may package eligible live origins with immutable data. Every live constituent and every captured live source must satisfy the target invariant; immutable constituents and captures need no live origin. The wrapper and its access paths grant no write authority. This permits `let view packet = .{ item: identity(source) }` and `let view read = \-> observed.count`. An independent fresh allocation, a clone result, or a new writable closure environment cannot supply a live origin merely by being received as a view (`E0543`). Receiving a range indexing result as a view is also `E0543`; forwarding it through calls or wrappers cannot supply its missing pinned origin. A separate lawful `let mut` binding may establish a pinned origin for a newly constructed ordinary array; a later view observes that entire array. Allocation by range indexing follows the same binding rules as other ordinary array construction.
 - **Authority (`E0520`, `E0601`)**: Zero interior write authority; upgrade via `mut`/`^mut` rejected (`E0520`). Live views cannot cross concurrency task boundaries (`E0601`).
 - **GC Preservation**: Evaluate the initializer once and retain its references, including an observation wrapper's stored references or captured bindings. A projected reference retains the heap object selected at binding time, not a reactive path; container slot replacements leave that view safely observing the original heap object via GC root tracking. An observer closure evaluates its body on invocation under the usual capture rules.
 - **Pinned vs. Reassignable (`let view` vs `var view`)**:
@@ -2336,7 +2336,7 @@ let valid_or  = (len(items) == 0) || (items[0] > 0) -- Right side not evaluated 
 let negated   = !valid_and             -- Unary logical NOT
 ```
 
-### Range and Slicing Expressions
+### Range and Sequence Indexing Expressions
 
 Only sequence range indexing permits omitted range endpoints.
 
@@ -2359,7 +2359,7 @@ for 254u8..=255u8 as value {
 assert(visited == 2)                  -- No increment beyond u8's maximum
 
 let arr = [10, 20, 30, 40, 50]
-let sub = arr[1..4]                   -- Evaluates to new []int containing [20, 30, 40]
+let sub: []int = arr[1..4]            -- New ordinary array containing [20, 30, 40]
 let prefix = arr[..3]                 -- [10, 20, 30]
 let suffix = arr[2..]                 -- [30, 40, 50]
 let empty = arr[len(arr)..len(arr)]   -- OK: empty array at the end
@@ -2386,7 +2386,7 @@ Ranges are finite even when their integer cardinality exceeds `int`. Their value
 ```ril
 -- 1. Value elements are cloned (copied by value):
 let mut source: []int = [1, 2, 3]
-let sub: []int = source[0..2]         -- Evaluates to new []int [1, 2]
+let sub: []int = source[0..2]         -- New ordinary array containing [1, 2]
 source !> Array::push(4)              -- Modifying source length does not affect sub
 source[0] = 99
 assert(sub[0] == 1)                   -- Scalar value was cloned; sub is unaffected!
@@ -2418,10 +2418,10 @@ let b_sub: bytes = b[0..4]            -- b"RIFF" (byte sub-sequence)
 -- let view b_view = b                -- Error [E0402]: bytes is an immutable value type
 ```
 
-- **New Array Allocation via Range Indexing**: Range indexing (`arr[a..b]`, `arr[a..=b]`, `arr[a..]`, `arr[..b]`, `arr[..]`) always allocates and evaluates to an independent, new dynamic array of static type **`new []T`** (or new `str` / `bytes`). The array container itself is newly allocated; structural mutations (resizing, adding, or removing elements) on the new array never affect the source array, and vice versa.
+- **Array Construction via Range Indexing**: Array range indexing (`arr[a..b]`, `arr[a..=b]`, `arr[a..]`, `arr[..b]`, `arr[..]`) allocates an ordinary new array of type `[]T`. The result has its own element slots: replacing an element or changing the length of either array does not change the other array's slots or length. Freshness is a provenance fact, not a type qualifier; there is no separate slice-array type or source-backed subarray value.
 - **Element Copy vs. Reference Semantics**:
-  - **Value Types (Cloned)**: Scalars and value types (`int`, `bool`, `f64`, `str`, `bytes`, value tuples) are cloned (copied by value) into the new array. Mutating an element slot in one array does not affect the other.
-  - **Reference Types (Not Cloned)**: Reference values are **not cloned**. The new array contains shallow-copied references pointing to the exact same heap objects. Modifying the interior of a referenced heap object through either array is visible through both.
+  - **Value Types (Cloned)**: Value-type elements (`int`, `bool`, `f64`, `str`, `bytes`, and other value types) are cloned by value into the new array.
+  - **Reference Types (Not Cloned)**: Reference elements retain the exact same object identities, aliases, and permissions. A permitted interior write to a referenced object is visible through every alias to that object; replacing an array element still affects only that array's own slot. Tuples and other heap products follow this reference rule.
   - **Writable Sharing Marker (`E0510`)**: When element type `T` contains mutable references, creating a new array from range indexing duplicates writable paths to existing heap objects, requiring the explicit `^mut` sharing marker (`E0510`) when binding to `let mut`.
 - **View Target Prohibition (`E0543`)**: Because range indexing expressions construct new arrays rather than referencing stable pinned mutable origins (`let mut`), range indexing **cannot** be assigned or bound to a `view` (`let view v = arr[a..b]` is rejected under `E0543`). To observe an array without copying, bind directly to the pinned mutable array handle itself (`let view observer = source`).
 - **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns `?[]T` (`None` when out of bounds).
@@ -2981,7 +2981,7 @@ Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing
 
 These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
 
-A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. In an array pattern, a named rest `..rest` binds the remaining elements as an independent new array `new []T` (or `view []T` when matching over a view).
+A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. In an array pattern, a named rest `..rest` constructs an ordinary new array of the remaining elements, cloning value elements and preserving reference elements and their permissions as in range indexing. Its element slots are independent of the subject, including when the subject is a live view. Existing array extent facts remain subject to the ordinary typing rules. Receiving this newly allocated rest array under a `let view` or `var view` binding is `E0543`; use an ordinary binding with the required publication or sharing checks.
 
 ```ril
 type Choice { Left(int), Right(int) }
@@ -3848,7 +3848,7 @@ assert(pairs[0].1.count == 2 && original.count == 1)
 | Constituents | Preserve field declarations, nested Immut and nonfresh permissions. Immutable children may be shared; fresh outer data cannot retain concealed existing writers |
 | Operation identity | Imports, aliases and type ascriptions preserve contracts; matching names/signatures do not create them |
 | Reception | Evaluate once in ordinary order. Success installs initial authority; failure installs no path. No additional standalone &^mut; other effects/state and access checks still apply |
-| Other obligations | Internal aliases obey exclusivity; traversal/window stability and Result inspection remain checked. Foreign exchange, resources and retained callable environments gain no exemption |
+| Other obligations | Internal aliases obey exclusivity; traversal/live-array-view stability and Result inspection remain checked. Foreign exchange, resources and retained callable environments gain no exemption |
 
 #### Default Parameters and Named Arguments
 
@@ -6298,7 +6298,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0534`** | [`HazardErasureProhibitedError`](#callable-contracts); [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments) |
 | **`E0535`** | [`NonImmutableBindingError`](#immutable-bindings) |
 | **`E0536`** | [`NonImmutableDeriveInputError`](#functional-updates-via-derive) |
-| **`E0537`** | [`LiveArrayInvalidationError`](#range-and-slicing-expressions) |
+| **`E0537`** | [`LiveArrayInvalidationError`](#range-and-sequence-indexing-expressions) |
 | **`E0538`** | [`InvalidStateSourceGroupError`](#state-groups-and-captured-layers) |
 | **`E0539`** | [`InvalidStateContractReferenceError`](#named-function-state-contract-references) |
 | **`E0540`** | [`EndedOperationAuthorityAccessError`](#effect-handlers) |

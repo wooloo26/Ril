@@ -219,7 +219,7 @@ cells !> Array::push(base)             -- OK: existing immutable element
 | Other ordinary argument | Read-only |
 | `^mut target` | Retained writer under `&^mut` |
 
-Read-only Array operations also accept `[N]T`; length changes require `[]T`. Range indexing creates an independent array whose elements retain their permissions; live views, including pattern remainder views, grant no writes. Callback operations also admit `mut callback` with `&mut`. Fold accumulators and returned elements preserve their original sharing and permissions.
+Read-only Array operations also accept `[N]T`; length changes require `[]T`. Range indexing and named array rests construct ordinary new arrays: value elements are cloned, and reference elements retain their identities and permissions. Each result has independent element slots and length. A live view observes an entire eligible array and grants no writes. Callback operations also admit `mut callback` with `&mut`. Fold accumulators and returned elements preserve their original sharing and permissions.
 
 | Operation | Behavior and complexity |
 | :--- | :--- |
