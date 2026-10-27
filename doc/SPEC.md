@@ -74,6 +74,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Scoped Resource Bindings](#scoped-resource-bindings)
       - [Normative Rules for Scoped Bindings](#normative-rules-for-scoped-bindings)
     - [Live View Bindings](#live-view-bindings)
+      - [Normative Rules for Live Views](#normative-rules-for-live-views)
     - [Type Declarations and Opaque Types](#type-declarations-and-opaque-types)
     - [External Interface Declarations](#external-interface-declarations)
       - [Normative Rules for External Interface Modules](#normative-rules-for-external-interface-modules)
@@ -314,7 +315,7 @@ let ieee = 1.0 / 0.0                  -- OK: positive infinity
 | Unrepresentable checked fixed-width integer result, including negation and `MIN / -1` | Integer-overflow panic; `MIN % -1` remains zero |
 | Fixed-width shift count negative or at least the bit width; negative `bigint` shift count | Invalid-shift panic |
 | Ordinary array element index outside its bounds | Index-bounds panic |
-| Negative, reversed, or out-of-bounds sub-range | Sub-range bounds panic under the [slicing rules](#range-and-slicing-expressions) |
+| Negative, reversed, or out-of-bounds range index | Range bounds panic under the [range indexing rules](#range-and-slicing-expressions) |
 | External fault whose declared boundary contract maps it to a defect | Panic under that contract; a domain failure remains a `Result` value |
 
 Panic categories describe conditions, not additional types, effect tags, or `PanicInfo` fields. Message spelling is unspecified. `PanicInfo.index` denotes a parallel source index, not a general bounds-error index.
@@ -753,7 +754,7 @@ PrimitiveType    ::= "bool" | "i8" | "i16" | "i32" | "i64" | "int"
                   | "f32" | "f64" | "str" | "bytes" | "(" ")" | "never"
 ```
 
-Value types have copy-by-value semantics. They cannot be borrowed as `mut` parameters.
+Value types have copy-by-value semantics. They cannot be declared as `mut` parameters.
 
 | Category | Types | Description |
 | :--- | :--- | :--- |
@@ -774,7 +775,7 @@ b += 1                                 -- Modifies 'b'; 'a' remains 42
 assert(a == 42 && b == 43)
 
 -- let mut bad_scalar = a              -- Error [E0402]: scalar value type 'int' has no interior mutability; use 'var'
--- fn bad_borrow(mut x: int) {}        -- Error [E0401]: value type 'int' cannot be borrowed as 'mut' parameter
+-- fn bad_param(mut x: int) {}         -- Error [E0401]: value type 'int' cannot be declared as 'mut' parameter
 ```
 
 ### Reference Types
@@ -1175,7 +1176,7 @@ assert(observed.count == 1)
 - **Complete Static Provenance**: Track possible origins, permissions, immutable/live facts, aliases, retention/escape dependencies, and scope/task ownership for all storage, references, environments, and resources. Conservative judgments may overapproximate execution; obligations cannot be erased.
 - **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Existing-reference permissions may be preserved or reduced, never upgraded by these operations. Every handle in an access path and the stored constituent limit the resulting authority; a field's lack of slot-replacement permission does not itself reduce its child reference's permission. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
 - **No Semantic Erasure**: An omitted annotation, plain `-> T`, abbreviated callable type, or ordinary call spelling does not discard these facts. Private source names need not become public identifiers; their semantic dependencies still participate in every access and boundary check. Anonymous captures and symbolic callback obligations remain inferred. Named definitions must declare their concrete invocation obligations; no return modes, symbolic callback-forwarding notation, or call-site annotation is required.
-- **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize a loan, immutable publication, or task crossing that requires it.
+- **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize mutable access, immutable publication, or task crossing that requires it.
 - **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. Apply the use's existing diagnostic when its required proof is absent.
 - **Authority and Discharge**: Prove each permission from a declaration, a traced source, a fresh-data rule, or an explicitly specified resource contract. Local discharge requires all relevant authority roots and environments to be confined; a local variable name or locally handled effect is not evidence of confinement. Minimal concrete capabilities (`E0529`) are calculated under these conservative rules, not arbitrary run-time equivalence.
 - **Source Annotations**: Binding modes, explicit mutable arguments, local writable-sharing markers, and required concrete invocation capabilities remain checked. Inference may determine their required spelling, but adding an annotation cannot supply absent authority or change sharing, object identity, or resource ownership. A completion that would require such a semantic change is not a valid annotation-only correction.
@@ -1200,7 +1201,7 @@ alias.count += 1
 -- swap(mut first, mut alias)         -- Error [E0523]: different names for the same writable object
 ```
 
-- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no external writer or active environment survives. A private fresh result may instead stay writable. Borrowed/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until their lexical scope ends; merely having no later textual use does not revoke it. Reassigning `var mut` replaces that binding's path but does not revoke other paths to the old value.
+- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no external writer or active environment survives. A private fresh result may instead stay writable. Parameter/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until their lexical scope ends; merely having no later textual use does not revoke it. Reassigning `var mut` replaces that binding's path but does not revoke other paths to the old value.
 
 - **Fresh Evaluation**: Each successful ordinary allocation creates new storage distinct from pre-existing storage. A newly constructed aggregate may still contain references to pre-existing objects; freshness of its outer slots does not establish disjointness of its reachable graph. Each ordinary deep clone creates new writable regions isolated from the source and all pre-existing writable regions, preserving aliases within that one copy. Repeated evaluations of one expression do not denote one shared allocation. Calling an arbitrary function twice does not establish freshness; the function's actual return relation must supply it.
 
@@ -1239,7 +1240,7 @@ assert(finished.count == 1)           -- OK: construction scope ended without an
 -- Error [E0535]: ending the alias's scope does not end source's authority
 ```
 
-Escaped environments and stored writable paths survive their creating scope and still prevent immutable publication. Last-use rules for temporary loans or views do not implicitly consume an ordinary writable binding. Resource consumption follows only its listed contracts.
+Escaped environments and stored writable paths survive their creating scope and still prevent immutable publication. Last-use rules for temporary mutable access or views do not implicitly consume an ordinary writable binding. Resource consumption follows only its listed contracts.
 
 ### Functional Updates via Derive
 
@@ -1563,45 +1564,82 @@ Binding and origin permissions govern access. Effects govern evaluation and hand
 
 ### Binding Permissions and Storage Matrix
 
-| Binding | Slot reassignment | Writes through this binding | Data guarantee |
-| :--- | :---: | :--- | :--- |
-| `let` | No | No | Entire ordinary reachable graph immutable; sharing permitted |
-| `let mut` | No | Granted interior/environment writes | Pinned reference; not necessarily unique |
-| `var` | Yes | No interior/environment writes | Referenced data remains read-only; immutable/live facts are preserved |
-| `var mut` | Yes | Granted interior/environment writes | Each assigned value must supply write authority; no permission upgrade |
-| `let view` | No | No | Live observation of stable permitted origins; not immutable |
+Declarations cleanly separate slot reassignability (`let` pinned vs `var` reassignable) from data capability (`default` immutable vs `mut` mutable vs `view` live observation):
 
-- **Authority Use (`E0527`)**: A mutable binding/parameter must perform a write, reassignment, mutable invocation, retention, or authorized transfer on a statically possible path. An annotation or ineffective forwarding alone does not count. This does not require a write on every execution.
+| Binding | Slot Reassignment | Interior Writes | Target / Origin Requirement | Data Guarantee |
+| :--- | :---: | :---: | :--- | :--- |
+| `let` | No (`E0501`) | No (`E0520`) | Fresh value or immutable graph without surviving writers (`E0535`) | Deeply immutable, freely shareable across tasks |
+| `let mut` | No (`E0502`) | Granted | Heap reference allocation or mutable closure; not scalar (`E0402`) | Pinned mutable handle; root for live views |
+| `let view` | No (`E0502`) | No (`E0520`) | Stable pinned mutable origin (`let mut`; `E0531`, `E0543`) | Pinned live view; non-owning observation |
+| `var` | Yes | No (`E0520`) | Primitive scalar value or read-only/immutable reference | Reassignable slot; referenced data remains read-only |
+| `var mut` | Yes | Granted | Heap reference allocation with write authority (`E0520`); not scalar (`E0402`) | Fully mutable variable; slot and interior mutable |
+| `var view` | Yes | No (`E0520`) | Stable pinned mutable origin (`let mut`; `E0531`, `E0543`) | Reassignable live view cursor; non-owning observation |
+
+- **Authority Use (`E0527`)**: A mutable binding/parameter must exercise its write or reassignment authority on a statically possible path (`var` and `var view` require slot reassignment; `var mut` requires both slot reassignment and interior writes).
 
 ```ril
 type Document = { mut title: str }
-let document = Document.{ title: "Guide" }
-let alias = document                   -- Immutable sharing
-let mut draft = clone(document)        -- Independent writable graph
-draft.title = "Draft"
-let view observer = draft              -- Live observation
-draft.title = "Published"
-assert(observer.title == "Published" && alias.title == "Guide")
-var selected = document
-selected = alias                      -- Rebinds an immutable reference; no interior write permission
+let doc1 = Document.{ title: "Doc 1" }
+let doc2 = Document.{ title: "Doc 2" }
+let mut draft = clone(doc1)
+
+-- 1. let: pinned immutable binding
+let immutable_doc = doc1
+-- immutable_doc.title = "Draft"        -- Error [E0520]: immutable binding has no write permission
+-- immutable_doc = doc2                 -- Error [E0501]: cannot reassign immutable binding
+
+-- 2. let mut: pinned mutable handle
+let mut pinned_draft = draft
+pinned_draft.title = "Revised"          -- OK: in-place interior write permitted
+-- pinned_draft = clone(doc2)           -- Error [E0502]: pinned handle cannot be rebound
+
+-- 3. let view: pinned live view
+let view pinned_view = pinned_draft
+assert(pinned_view.title == "Revised")  -- OK: tracks pinned mutable origin
+-- pinned_view.title = "Hacked"         -- Error [E0520]: view grants no write authority
+-- pinned_view = clone(doc2)            -- Error [E0502]: pinned view handle cannot be rebound
+
+-- 4. var: reassignable read-only slot
+var selected_doc = doc1
+selected_doc = doc2                     -- OK: slot rebound to doc2
+-- selected_doc.title = "New"           -- Error [E0520]: plain var grants no interior write permission
+
+-- 5. var mut: reassignable mutable variable
+var mut active_draft = clone(doc1)
+active_draft.title = "Active 1"         -- OK: in-place interior write permitted
+active_draft = clone(doc2)              -- OK: slot rebound to another mutable graph
+active_draft.title = "Active 2"         -- OK: in-place write on new target permitted
+
+-- 6. var view: reassignable live view cursor
+var view cursor = pinned_draft
+assert(cursor.title == "Revised")
+cursor = clone(doc2)                    -- Error [E0543]: new initializer cannot bind to view
+-- cursor = selected_doc                -- Error [E0531]: reassignable var slot is not a pinned origin
+let mut target_draft = clone(doc2)
+cursor = target_draft                   -- OK: cursor rebound to another pinned mutable origin
+-- cursor.title = "Hacked"              -- Error [E0520]: view cursor grants no write authority
 ```
 
 ### Immutable Bindings
 
+```ebnf
+LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+```
+
+- **Reassignment (`E0501`)**: Pinned slot; identifier cannot be rebound.
+- **Authority (`E0520`, `E0521`)**: Deeply immutable; no writes permitted through binding or destructured paths.
+- **Origin Requirement (`E0535`)**: Accepts fresh graphs without surviving writers; rejects live views and mutable environments.
+
 ```ril
 type Counter = { mut count: int }
+let x = 10
+-- x = 20                              -- Error [E0501]: cannot reassign immutable binding 'x'
+
 let mut source = Counter.{ count: 0 }
 let view observer = source
 -- let bad = source                    -- Error [E0535]: a surviving writer prevents immutable publication
--- let hidden = .{ child: observer }   -- Error [E0535]: wrapping a live reference does not make it immutable
-source.count += 1
-let copied_count = observer.count      -- OK: independent scalar value
-assert(copied_count == 1)
-```
+-- let bad_view = observer             -- Error [E0535]: wrapping or aliasing a live view is not immutable
 
-- **Binding to let (`E0535`)**: Accept immutable data or a fresh ordinary graph without surviving external writers. Reject live views, captured live cells, and mutable environments. Binding neither clones data nor revokes another writer.
-
-```ril
 fn make_items() -> []int {
     let mut items: []int = []
     items !> Array::push(1)
@@ -1610,48 +1648,32 @@ fn make_items() -> []int {
 let items = make_items()               -- OK: construction authority ended; immutable publication
 let alias = items                     -- OK: multiple references to immutable data
 -- let mut stolen = items             -- Error [E0520]: ordinary aliasing cannot recover write permission
-```
 
-```ebnf
-LetDecl ::= [ "pub" ] "let" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
-```
-
-```ril
-let x = 10                             -- Immutable integer binding
-let (a, b) = (1, 2)                    -- Destructuring tuple binding
--- x = 20                              -- Error [E0501]: cannot reassign immutable binding 'x'
-
+-- Pattern destructuring:
+let (a, b) = (1, 2)
 type Config = { capacity: int, items: []int }
 let cfg = Config.{ capacity: 64, items: [] }
 let .{ var capacity, items: _ } = cfg
 capacity += 1                         -- OK: independent scalar copy
--- let .{ capacity: _, mut items } = cfg -- Error [E0521]: immutable reference cannot acquire write permission
+-- let .{ capacity: _, mut bad } = cfg -- Error [E0521]: immutable reference cannot acquire write permission
 ```
 
 ### Pinned Mutable Handles
 
-`let mut` supplies the pinned interior/environment authority in the [binding matrix](#binding-permissions-and-storage-matrix).
-
-#### Normative Rules for Pinned Handles
-- **Pinned Handle Invariant (`E0502`)**: A `let mut` handle is permanently pinned to its initial heap allocation. Reassigning the identifier (`handle = new_obj`) is statically rejected under `E0502: PinnedHandleReassignmentError`.
-- **Value Type Prohibition (`E0402`)**: Primitive value types (`int`, `bool`, `f64`, etc.) have no interior mutable fields. Declaring a value type as `let mut` is statically rejected under `E0402: ValueTypePinnedMutError`; mutable value types MUST be declared with `var`.
-- **Live View Stability**: Pinned mutable handles provide guaranteed reference stability as roots for live views (`let view`).
-
 ```ebnf
-LetMutDecl ::= "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression
+LetMutDecl ::= [ "pub" ] "let" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
+
+- **Pinned Handle (`E0502`)**: Identifier permanently pinned to initial allocation; cannot be rebound (`use 'var mut'`).
+- **Value Types (`E0402`)**: Scalars have no interior mutability; `let mut` is statically rejected (use `var`).
+- **Roots for Views**: Pinned handles provide guaranteed reference stability as roots for `let view` and `var view`.
+- **Authority Use (`E0527`)**: Must perform an interior write, mutable call, or authorized transfer on a possible path.
 
 ```ril
 type Buffer = { mut items: []int }
 let mut buf = Buffer.{ items: [1, 2] }
-
--- In-place interior mutation is permitted:
 buf.items !> Array::push(3)            -- OK: in-place write to pinned buffer
-
--- Handle reassignment is statically rejected:
 -- buf = Buffer.{ items: [] }          -- Error [E0502]: use 'var mut' for both reassignment and interior writes
-
--- Value types under let mut are rejected:
 -- let mut count: int = 0              -- Error [E0402]: value type 'int' has no interior mutability; use 'var'
 
 -- Pattern-level pinned mutable destructuring:
@@ -1668,51 +1690,48 @@ right.items !> Array::push(20)         -- Both destructured authorities are exer
 
 ### Reassignable Mutable Variables
 
-`var` and `var mut` use the [binding matrix](#binding-permissions-and-storage-matrix); every replacement is checked against its actual origins.
-
-#### Normative Rules for Reassignable Variables
-- **Replacement (`E0520`)**: Every `var mut` assignment must supply writable authority under [provenance](#complete-provenance-and-optional-annotations); an additional local writable alias requires `^mut`.
-- **Value Types (`E0402`)**: Scalars use plain `var`; `var mut` requires reference data or a writable callable environment.
-- **Read-Only Live Values**: Plain `var` may hold a live read-only reference without making it immutable. Neither `var` nor `var mut` is a stable origin for `let view` (`E0531`), including through intermediate aliases.
-- **Authority Use (`E0527`)**: Plain `var` must exercise reassignment on a statically possible path. `var mut` must exercise both its reassignable slot and its interior/environment authority; use `let mut` when only pinned interior authority is needed. Uses follow the [binding authority rules](#binding-permissions-and-storage-matrix).
-
 ```ebnf
-VarDecl ::= [ "pub" ] "var" [ "mut" ] Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+VarDecl    ::= [ "pub" ] "var" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+VarMutDecl ::= [ "pub" ] "var" "mut" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
 
+- **Plain `var` (`E0520`)**: Reassignable slot for scalars or read-only/immutable references; no interior writes granted.
+- **`var mut` (`E0520`, `E0402`)**: Reassignable slot AND interior write authority. Scalars rejected (use plain `var`).
+- **View Origins (`E0531`)**: Neither `var` nor `var mut` can serve as an origin for `let view` or `var view`.
+- **Authority Use (`E0527`)**: Plain `var` must exercise reassignment; `var mut` must exercise both reassignment and interior writes.
+
 ```ril
--- Reassignable primitive scalar:
+-- 1. Plain var: reassignable scalar
 var counter = 0
 counter += 1                           -- OK: reassignable scalar
 counter = 10                           -- OK: direct reassignment
 assert(counter == 10)
 
--- Fully mutable reference variable:
-var mut active_buf = Buffer.{ items: [1] }
-active_buf.items !> Array::push(2)     -- OK: in-place mutation
-active_buf = Buffer.{ items: [10, 20] } -- OK: handle reassignment permitted on 'var mut'
-assert(len(active_buf.items) == 2)
-
-var readonly_buf = Buffer.{ items: [] }
-readonly_buf = Buffer.{ items: [1] }  -- OK: replaces the slot
--- readonly_buf.items !> Array::push(2) -- Error [E0520]: plain var grants no interior write authority
--- var mut scalar = 0                -- Error [E0402]: scalar mutation uses plain var
-
--- Read-only cursor over immutable structures:
+-- 2. Plain var: reassignable read-only cursor over reference data
 type Node = { val: int, following: ?Node }
 let ro_node2 = Node.{ val: 2, following: None }
 let ro_node1 = Node.{ val: 1, following: Some(ro_node2) }
-
 var cursor = ro_node1                  -- OK: 'cursor' is a reassignable ReadOnly handle
 assert(cursor.val == 1)
 cursor = ro_node2                      -- OK: reassignment permitted to matching ReadOnly type
 -- cursor.val = 99                     -- Error [E0520]: cannot mutate field 'val' through read-only handle 'cursor'
 
--- Pattern-level var destructuring:
+-- 3. Fully mutable reference variable:
+type Buffer = { mut items: []int }
+var mut active_buf = Buffer.{ items: [1] }
+active_buf.items !> Array::push(2)     -- OK: in-place mutation
+active_buf = Buffer.{ items: [10, 20] } -- OK: handle reassignment permitted on 'var mut'
+assert(len(active_buf.items) == 2)
+-- var mut scalar = 0                  -- Error [E0402]: scalar mutation uses plain var
+
+-- 4. Reassignable slot cannot serve as view origin:
+-- let view bad_view = active_buf       -- Error [E0531]: a var slot is not a pinned view origin
+
+-- 5. Pattern-level var destructuring:
 var (start_idx, end_idx) = (0, 10)
 start_idx += 1; end_idx -= 1           -- OK: both variables reassignable
 
--- Definite Mutation Invariant:
+-- 6. Definite Mutation Invariant:
 -- var unused_var = 100                -- Error [E0527]: variable 'unused_var' declared 'var' but never modified or reassigned
 ```
 
@@ -1758,7 +1777,7 @@ assert(events == ["new"])
 | Initialization/replacement | Preserve cleanup eligibility and permissions; no residual effects (`E0616`), and prove finite cleanup (`E0617`) |
 | Mutable cleanup environment | Requires `let scoped mut` and a mutable `on_close` field; cleanup invocation satisfies `E0527` |
 | Other binding modes | Plain `let scoped` requires immutable data; rebinding: `E0502`; `var`/`var mut`: `E0532` |
-| Invocation | Internal handlers and permitted writes allowed; check exclusivity then, not as a continuous registration loan |
+| Invocation | Internal handlers and permitted writes allowed; check exclusivity then, not as continuous registration access |
 | Escape | Views, closures, containers, and transfer cannot carry scoped authority out (`E0604`); detached ordinary-data copies are exempt |
 | Children | Finish before cleanup of resources they could access |
 
@@ -1779,36 +1798,53 @@ Missing, inaccessible, or shape-incompatible scoped cleanup contracts are `E0541
 Abandoned computations cannot resume. A double fault fatally fails its task or an unsupervised program. A pure parallel branch exposes the double fault only when that branch is visible in reference evaluation.
 
 ```ebnf
-ScopedDecl ::= "let" "scoped" [ "mut" ] Identifier [ ":" TypeExpression ] "=" Expression
+ScopedDecl ::= [ "pub" ] "let" "scoped" [ "mut" ] Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
 
 ### Live View Bindings
 
 ```ebnf
-LetViewDecl ::= "let" "view" Identifier [ ":" TypeExpression ] "=" Expression
-VarViewDecl ::= "var" "view" Identifier [ ":" TypeExpression ] "=" Expression
+LetViewDecl ::= [ "pub" ] "let" "view" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
+VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expression [ "else" Block ]
 ```
+
+#### Normative Rules for Live Views
+- **Target Invariant (`E0531`, `E0543`, `E0402`)**: Must bind to a stable pinned mutable origin (`let mut`). Immutable targets and `var`/`var mut` slots rejected (`E0531`). New initializers and range indexing expressions rejected (`E0543`). Value types rejected (`E0402`).
+- **Authority (`E0520`, `E0601`)**: Zero interior write authority; upgrade via `mut`/`^mut` rejected (`E0520`). Live views cannot cross concurrency task boundaries (`E0601`).
+- **GC Preservation**: Retains the heap object reference at binding time, not a reactive path; container slot replacements leave the view safely observing the original heap object via GC root tracking.
+- **Pinned vs. Reassignable (`let view` vs `var view`)**:
+  - `let view`: Pinned slot; identifier cannot be rebound (`E0502`).
+  - `var view`: Reassignable cursor; identifier can be rebound to another pinned mutable origin (`let mut`); must exercise reassignment on a statically possible path (`E0527`).
 
 ```ril
 type Cell = { mut count: int }
-let mut cell = Cell.{ count: 1 }
-let view observed = cell
+let mut cell1 = Cell.{ count: 1 }
+let mut cell2 = Cell.{ count: 2 }
+
+-- Pinned live view:
+let view observed = cell1
 let view read_count = \-> observed.count
-cell.count = 2
-assert(read_count() == 2)
--- let bad_reader = \-> observed.count -- Error [E0535]: the captured live origin is not immutable
--- mutate(mut observed)               -- Error [E0520]: a view cannot supply mutable authority
--- let view bad_fresh = Cell.{ count: 0 } -- Error [E0543]: fresh initializers cannot bind directly to view
-let snapshot = clone_immut(observed)   -- OK: snapshot, not a live alias
-```
+cell1.count = 5
+assert(read_count() == 5)
+-- observed.count = 10                  -- Error [E0520]: a view grants no write authority
+-- observed = cell2                     -- Error [E0502]: cannot reassign pinned view handle
+-- let bad_reader = \-> observed.count  -- Error [E0535]: the captured live origin is not immutable
+-- mutate(mut observed)                -- Error [E0520]: a view cannot supply mutable authority
+-- let view bad_immut = .{ val: 1 }      -- Error [E0531]: target of view must be a pinned mutable origin
+-- let view bad_new = Cell.{ count: 0 } -- Error [E0543]: new initializers cannot bind directly to view
+let snapshot = clone_immut(observed)   -- OK: independent snapshot, not a live alias
 
-- **Origins and Capabilities**: `view` is an orthogonal read-only capability applied to GC-managed reference types (`[]T`, `[K: V]`, records, and sum types). It grants non-owning inspection over existing storage. Fresh initializers (`new T`) cannot bind directly to `let view` or `var view` (`E0543: FreshTargetViewError`); passing `new T` to a `view` parameter materializes an anonymous temporary. Taking `view` over a primitive scalar is rejected (`E0402`).
-- **Single Evaluation**: Keep the initializer's resulting reference, not a reactive expression. Replacing `parent.child` leaves an existing child view safely observing the old heap object (preserved via GC root tracking). Reachable data outlives the root identifier.
-- **Observer Closure**: It may read pinned live origins but cannot write captures. Effects remain independent obligations; read-only observation needs no artificial mutation for `E0527`.
-- **Permissions**: A view cannot supply `mut`/`^mut` (`E0520`) or become immutable through aliasing without an explicit `clone` (`E0535`). Scalars copy independently; references keep their origins. Eligible view data supports `clone`/`clone_immut`, but not `derive` (`E0536`).
-- **Task Confinement (`E0601`)**: A live view, or any closure/container containing it, cannot cross a concurrent task boundary. Deeply immutable data can cross it.
+-- Reassignable live view cursor:
+var view cursor = cell1
+assert(cursor.count == 5)
+cursor = cell2                         -- OK: reassigning view cursor to another pinned origin
+assert(cursor.count == 2)
+-- cursor.count = 20                   -- Error [E0520]: view cursor grants no interior write authority
+-- var mut reassignable = Cell.{ count: 0 }
+-- cursor = reassignable               -- Error [E0531]: a var slot is not a pinned view origin
+-- cursor = Cell.{ count: 99 }         -- Error [E0543]: new initializers cannot bind directly to view
 
-```ril
+-- Single evaluation and GC root preservation:
 type Parent = { mut child: Cell }
 let mut parent = Parent.{ child: Cell.{ count: 1 } }
 let view child = parent.child
@@ -1819,6 +1855,12 @@ type TaskStatus { Pending(str), Finished(int) }
 let mut tasks: []TaskStatus = [TaskStatus::Pending("waiting")]
 let view v = tasks[0]                   -- 'v' holds a read-only view of the Pending object
 tasks[0] = TaskStatus::Finished(42)     -- Slot 0 is updated; 'v' safely keeps the original object
+
+-- Pattern-level view destructuring:
+type NodePair = { mut left: Cell, mut right: Cell }
+let mut pair = NodePair.{ left: Cell.{ count: 10 }, right: Cell.{ count: 20 } }
+let view .{ left: v_left, right: v_right } = pair
+assert(v_left.count == 10 && v_right.count == 20)
 ```
 
 ### Type Declarations and Opaque Types
@@ -2292,7 +2334,7 @@ let negated   = !valid_and             -- Unary logical NOT
 
 ### Range and Slicing Expressions
 
-Only sequence sub-range indexing permits omitted range endpoints.
+Only sequence range indexing permits omitted range endpoints.
 
 ```ebnf
 RangeExpr       ::= [ Expression ] ( ".." | "..=" ) [ Expression ]
@@ -2316,7 +2358,7 @@ let arr = [10, 20, 30, 40, 50]
 let sub = arr[1..4]                   -- Evaluates to new []int containing [20, 30, 40]
 let prefix = arr[..3]                 -- [10, 20, 30]
 let suffix = arr[2..]                 -- [30, 40, 50]
-let empty = arr[len(arr)..len(arr)]   -- OK: empty sub-array at the end
+let empty = arr[len(arr)..len(arr)]   -- OK: empty array at the end
 -- arr[2..1]                          -- Panics: reversed half-open bounds
 -- arr[-1..2]                         -- Panics: negative lower bound
 -- arr[0..=len(arr)]                  -- Panics: a written inclusive upper bound must index an element
@@ -2335,41 +2377,53 @@ let empty = arr[len(arr)..len(arr)]   -- OK: empty sub-array at the end
 | `value in range` | Value has the endpoint type; test the selected bounds, without iterating |
 | Other operations | Equality as specified above; no ordering, indexing, `len`, or map-key eligibility |
 
-Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Sub-range indexing instead uses `int` endpoints (`E0301` for another type) and the bounds below; reversed bounds panic.
+Ranges are finite even when their integer cardinality exceeds `int`. Their value representation does not allocate one element per member. Range indexing instead uses `int` endpoints (`E0301` for another type) and the bounds below; reversed bounds panic.
 
 ```ril
+-- 1. Value elements are cloned (copied by value):
 let mut source: []int = [1, 2, 3]
-let sub: []int = source[0..2]         -- Constructs an independent new []int [1, 2]
-source !> Array::push(4)              -- Modifying source does not affect sub
+let sub: []int = source[0..2]         -- Evaluates to new []int [1, 2]
+source !> Array::push(4)              -- Modifying source length does not affect sub
+source[0] = 99
+assert(sub[0] == 1)                   -- Scalar value was cloned; sub is unaffected!
 assert(len(source) == 4 && len(sub) == 2)
 
-let view observer = source            -- Read-only view over source dynamic array
-assert(observer[0] == 1)
--- observer[0] = 9                    -- Error [E0520]: a view grants no write authority
-
--- Mutable element sharing marker (^mut):
+-- 2. Reference elements are NOT cloned (references shallow-copied):
 type Cell = { mut count: int }
 let mut cells: []mut Cell = [mut Cell.{ count: 1 }, mut Cell.{ count: 2 }]
 let mut sub_cells = ^mut cells[0..1]  -- OK: '^mut' acknowledges duplicated writable paths
+sub_cells[0].count = 42
+assert(cells[0].count == 42)          -- Reference NOT cloned: points to same heap Cell!
 -- let mut bad = cells[0..1]          -- Error [E0510]: new local writable alias needs '^mut'
 
--- Primitive sub-sequences:
+-- 3. Whole-array observation vs new array:
+let view observer = source            -- Read-only view directly over pinned mutable array
+assert(observer[0] == 99)
+-- observer[0] = 9                    -- Error [E0520]: a view grants no write authority
+-- let view bad_new = source[0..2]    -- Error [E0543]: new array cannot bind to view
+-- let view bad_all = source[..]      -- Error [E0543]: new array cannot bind to view
+
+-- 4. Primitive sub-sequences:
 let s = "hello, 世界"
 let s_sub: str = s[0..5]              -- "hello" (Unicode scalar coordinates)
-assert(s[0..len(s)] == s)             -- Coordinate alignment ensures safe full slicing
+assert(s[0..len(s)] == s)             -- Coordinate alignment ensures safe full range indexing
 
 let b: bytes = b"RIFF\x00\x01"
 let b_sub: bytes = b[0..4]            -- b"RIFF" (byte sub-sequence)
 let view b_view: []u8 = b             -- OK: O(1) zero-copy view coercion
 ```
 
-- **Independent Sub-Array Allocation**: Indexing an array with a range expression `arr[a..b]` or `arr[a..=b]` evaluates bounds once and constructs an independent, fresh dynamic array of static type **`new []T`**. Modifications to the sub-array's structure (`push`, `pop`, `insert`, `clear`) never affect the original array, and vice versa.
-- **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty sub-array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe sub-range lookup (`arr?[a..b]`) returns `?[]T` (`None` when out of bounds).
-- **Element Reference Semantics & Sharing Marker (`E0510`)**: Deeply immutable elements are shallow-copied as shared immutable references without markers. When element type `T` contains mutable references, creating a new sub-array duplicates writable paths to existing heap objects, requiring the explicit `^mut` sharing marker (`E0510`) when binding to `let mut`.
+- **New Array Allocation via Range Indexing**: Range indexing (`arr[a..b]`, `arr[a..=b]`, `arr[a..]`, `arr[..b]`, `arr[..]`) always allocates and evaluates to an independent, new dynamic array of static type **`new []T`** (or new `str` / `bytes`). The array container itself is newly allocated; structural mutations (resizing, adding, or removing elements) on the new array never affect the source array, and vice versa.
+- **Element Copy vs. Reference Semantics**:
+  - **Value Types (Cloned)**: Scalars and value types (`int`, `bool`, `f64`, `str`, `bytes`, value tuples) are cloned (copied by value) into the new array. Mutating an element slot in one array does not affect the other.
+  - **Reference Types (Not Cloned)**: Reference values are **not cloned**. The new array contains shallow-copied references pointing to the exact same heap objects. Modifying the interior of a referenced heap object through either array is visible through both.
+  - **Writable Sharing Marker (`E0510`)**: When element type `T` contains mutable references, creating a new array from range indexing duplicates writable paths to existing heap objects, requiring the explicit `^mut` sharing marker (`E0510`) when binding to `let mut`.
+- **View Target Prohibition (`E0543`)**: Because range indexing expressions construct new arrays rather than referencing stable pinned mutable origins (`let mut`), range indexing **cannot** be assigned or bound to a `view` (`let view v = arr[a..b]` is rejected under `E0543`). To observe an array without copying, bind directly to the pinned mutable array handle itself (`let view observer = source`).
+- **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns `?[]T` (`None` when out of bounds).
 - **Primitive Sub-Sequences**:
-  - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar (code point) indices ($0 \le a \le b \le \text{scalar\_len}$). Slicing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
+  - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar (code point) indices ($0 \le a \le b \le \text{scalar\_len}$). Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
   - `bytes[a..b]` and `bytes[a..=b]` evaluate to an independent `bytes` byte sub-sequence ($0 \le a \le b \le \text{byte\_len}$).
-- **Observation via `view`**: Non-owning inspection of an entire array without copying is achieved via the `view` capability qualifier (`view []T`). Modifying an array structurally (`push`/`pop`/`clear`) while actively iterating over it is statically rejected under `E0526`.
+- **Observation via `view`**: Non-owning inspection of an entire array without copying is achieved by binding directly to the pinned mutable array handle via `view []T` (`let view observer = source`). Modifying an array structurally (resizing, adding, or removing elements) while actively iterating over it or while a live array view is retained is statically rejected under `E0526` and `E0537`.
 
 ### Pipeline Operators
 
@@ -2456,7 +2510,7 @@ Inside a callable, a postfix `?` operand other than `Option` or `Result` is `E07
 | `None` receiver | Return `None`; skip access and index evaluation |
 | Missing key / out-of-bounds element | Return `None` |
 | Selected U / selected `Option<U>` | `Some(value)` / unchanged Option; no further flattening |
-| Range index | Use ordinary sub-range syntax and bounds rules |
+| Range index | Use ordinary range indexing syntax and bounds rules |
 
 ### Record Construction and Functional Update
 
@@ -2919,7 +2973,7 @@ Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing
 
 These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
 
-A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. In an array pattern, a named rest `..rest` binds the remaining elements as an independent sub-array `new []T` (or `view []T` when matching over a view).
+A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. In an array pattern, a named rest `..rest` binds the remaining elements as an independent new array `new []T` (or `view []T` when matching over a view).
 
 ```ril
 type Choice { Left(int), Right(int) }
@@ -2938,7 +2992,7 @@ let (head, ..) = tuple_val                     -- OK: head = 10; trailing elemen
 
 -- Array pattern matching:
 let numbers: []int = [1, 2, 3, 4, 5]
-let [x, y, z] = numbers[0..3]                  -- OK: matching 3-element sub-array
+let [x, y, z] = numbers[0..3]                  -- OK: matching 3-element new array
 let desc = match numbers {
     [] -> "empty",
     [single] -> "one element",
@@ -4014,7 +4068,7 @@ fn test_internal_hub() -> int {
 
 ### Parameter Mutation
 
-A function mutating any borrowed parameter MUST declare at least `&mut`; anonymous `&^mut` includes this parameter-mutation obligation. Named external mutation still requires the corresponding named capability and cannot be concealed by an anonymous annotation.
+A function mutating any parameter MUST declare at least `&mut`; anonymous `&^mut` includes this parameter-mutation obligation. Named external mutation still requires the corresponding named capability and cannot be concealed by an anonymous annotation.
 
 ```ril
 fn clear_items(mut list: []int) &mut {
@@ -4050,7 +4104,7 @@ fn publish_entry(^mut entry: Entry) &^mut &{mut global_hub} {
 ```
 
 - **Retention**: `&^mut` publishes another independent writable authority, including sharing newly created local state among multiple surviving authorities. A `^mut source` item names a retained global or captured source in its corresponding group and includes that source's write access; a destination merely receiving data uses a `mut destination` item. Standalone `&capture` and `&^mut` remain separate annotations, never group entries.
-- **Arguments**: Retaining a borrowed writer requires `^mut` on both parameter and argument. Ordinary `mut` loans end at return. Indirection preserves retained permissions and source identities.
+- **Arguments**: Retaining a mutable argument writer requires `^mut` on both parameter and argument. Ordinary call-scoped `mut` authority ends at return. Indirection preserves retained permissions and source identities.
 
 ```ril
 type Cell = { mut count: int }
@@ -4079,7 +4133,7 @@ assert(copied.1.count == 1)             -- Internal aliases survive the isolated
 ```
 
 - **Local Sharing Marker (`E0510`)**: A new local writable path to existing ordinary storage or an existing callable environment requires `^mut expression` at its binding, assignment, aggregate insertion, or destructuring site. The marker may cover one constituent or a whole construction/destructuring source; every constituent retains its own permissions. A writable reception of a deep copy with possible internal writable aliases also requires this marker. Proven immutable sharing needs none.
-- **Checked Meaning**: The marker evaluates its operand once and preserves identity. It neither clones nor freezes, transfers ownership, grants missing permissions, revives invalid resources, or extends a temporary loan. Missing markers and invalid authority are distinct errors; adding a marker cannot repair `E0520`–`E0528` violations. Possible internal aliases need not be resolved to one exact graph, but remain subject to all overlap checks.
+- **Checked Meaning**: The marker evaluates its operand once and preserves identity. It neither clones nor freezes, transfers ownership, grants missing permissions, revives invalid resources, or extends temporary mutable authority. Missing markers and invalid authority are distinct errors; adding a marker cannot repair `E0520`–`E0528` violations. Possible internal aliases need not be resolved to one exact graph, but remain subject to all overlap checks.
 - **No Duplicate Boundary Spelling**: Receiving an authority already produced under a checked callable retention contract does not require another local marker. Callable return/tail expressions, inferred lexical captures, and handler environments keep their existing rules; no new return or capture syntax is required. A plain block is not a callable retention boundary. Aliasing an already created mutable closure locally still requires the marker. A `clone` source/copy isolation contract does not itself mark the copy's possible internal writable aliases, including at a [fresh-value storage input](#fresh-values-in-storage-calls).
 - **Confinement**: Local `^mut` does not by itself add external `&^mut` to the enclosing function. Conversely, local discharge does not remove required markers at local data-sharing sites. Captured and returned sharing still contributes its actual authority roots whether or not its facts are written explicitly.
 
@@ -4097,11 +4151,11 @@ original.count += 1
 | Surviving references | Sharing obligation |
 | :--- | :--- |
 | Repeated fields/cycles inside one fresh passive result graph | No additional external authority; still check internal aliasing |
-| Borrowed/external origin retained elsewhere | `&^mut` or its named form |
+| Parameter/external origin retained elsewhere | `&^mut` or its named form |
 | One cell exposed through a closure and a direct graph reference | `&^mut`, even inside one returned tuple |
 | One cell exposed through multiple mutable closures | `&^mut` |
 
-Each surviving borrowed/external root, escaped mutable environment, and separately exposed passive graph is an authority root; repeated graph traversal does not add roots.
+Each surviving parameter/external root, escaped mutable environment, and separately exposed passive graph is an authority root; repeated graph traversal does not add roots.
 - **Local Discharge**: Retention whose origins and authority roots all remain confined to the current frame is discharged locally. Mutation of already shared storage does not itself create another retention obligation. Existing sharing remains a provenance fact; it is not a repeated publication on every invocation.
 - **Bounds**: Concrete definitions cannot overstate capabilities (`E0529`); callable types may declare upper bounds. Bounds do not change parameter modes. Actual retention satisfies `E0527` for `^mut`.
 
@@ -4346,7 +4400,7 @@ fn retain_wrapped(^mut cell: Counter::Cell) -> Counter::Cell &^mut &Counter::ret
 - **Position (`E0539`)**: Allowed only on ordinary named function definitions. Reject it on callable types, anonymous functions, effect operations, and bodyless foreign declarations.
 - **Concrete Named Projection**: A reference denotes the provider's concrete global/captured source items and their verified access modes for its current invocation, including concrete named dependencies obtained through other calls. The bindings and lexical owners remain anchored to the provider's scope. It does not include effects, anonymous parameter permissions, standalone `&capture`/`&^mut`, symbolic callback dependencies, or a returned callable's future invocation obligations.
 - **Coverage**: After local discharge, match inherited concrete named obligations by origin and permission. The caller need not invoke the provider by name. Direct storage/handler access and required parameter `&mut`/`&^mut` remain separate. Unrelated references leave `E0510`; unnecessary references remain `E0529`.
-- **No Erasure**: Calling through an alias or higher-order helper preserves the concrete dependencies. A provider reference cannot turn them into unknown callback dependencies, discharge a conflicting loan, or prove a recursive dependency empty. An admitted higher-order `&{}` constrains the total state, including referenced state.
+- **No Erasure**: Calling through an alias or higher-order helper preserves the concrete dependencies. A provider reference cannot turn them into unknown callback dependencies, discharge conflicting mutable authority, or prove a recursive dependency empty. An admitted higher-order `&{}` constrains the total state, including referenced state.
 - **Declaration Identity**: A declaration import alias or re-export preserves its provider identity. `let action = callee` and a public callable-valued binding do not create provider declarations; references to such bindings are `E0539`. The built-in capability spellings keep their established meanings; a same-spelled function requires a qualified reference. Public callable values without a suitable visible provider do not acquire an implicit private-state permission.
 
 ```ril
@@ -4392,7 +4446,7 @@ fn outer(mut cell: Cell) &mut {
 where
     fn inner() &{closure, mut cell} { cell.count += 1 }
 }
--- inner's named capture is derived from outer's parameter loan.
+-- inner's named capture is derived from outer's mutable parameter authority.
 
 let mut global_cell = Cell.{ count: 0 }
 fn touch_global() &{mut global_cell} { global_cell.count += 1 }
@@ -4402,7 +4456,7 @@ fn parameter_and_ambient(mut cell: Cell) &mut &touch_global {
 }
 let mut local = Cell.{ count: 0 }
 parameter_and_ambient(mut local)     -- OK: the two actual write origins are disjoint
--- parameter_and_ambient(mut global_cell) -- Error [E0523]: the independent ambient path overlaps the parameter loan
+-- parameter_and_ambient(mut global_cell) -- Error [E0523]: the independent ambient path overlaps the mutable parameter authority
 ```
 
 ```ril
@@ -4438,11 +4492,11 @@ An immutable callable may still have effects or named external-state obligations
 
 ### Law of Exclusivity and Cross-Argument Disjointness
 
-A mutable loan's writes must not overlap another participant's reads/writes. Read/read overlap is allowed. Check actual possible storage origins, not field names or indices; unknown overlap is `E0523` or `E0524`.
+A mutable invocation's writes must not overlap another participant's reads/writes. Read/read overlap is allowed. Check actual possible storage origins, not field names or indices; unknown overlap is `E0523` or `E0524`.
 
-Use through the borrowed formal belongs to that loan. Independent arguments, captures, and ambient origins are other participants. Nested forwarding suspends the caller's access until return; inactive aliases do not prohibit sequential sharing.
+Use through the `mut` formal belongs to that call. Independent arguments, captures, and ambient origins are other participants. Nested forwarding suspends the caller's access until return; inactive aliases do not prohibit sequential sharing.
 
-A call-local closure that captures a borrowed formal retains that formal's loan provenance and cannot extend its lifetime. Access through this derived path belongs to the loan. An independently obtained ambient or captured path does not become part of the loan merely because its object identity matches the formal's.
+A call-local closure that captures a `mut` formal retains that formal's call-scoped authority and cannot extend its invocation lifetime. Access through this derived path belongs to the active call. An independently obtained ambient or captured path does not become part of that call authority merely because its object identity matches the formal's.
 
 ```ril
 type Cell = { mut count: int }
@@ -4463,7 +4517,7 @@ assert(copied.1.count == 1)             -- clone preserves internal aliases
 -- swap(mut copied.0, mut copied.1)    -- Error [E0523]: distinct projections reach the same copied object
 ```
 
-An explicit `^mut` publication permits sequential sharing, not overlapping exclusive loans or races. Mutations through any alias invalidate affected live refinements. Immutable references are exempt from such invalidation because no writable origin remains.
+An explicit `^mut` publication permits sequential sharing, not overlapping exclusive writes or races. Mutations through any alias invalidate affected live refinements. Immutable references are exempt from such invalidation because no writable origin remains.
 
 ### Monotonic Permission Degradation and Anti-Laundering Matrix
 
@@ -4677,7 +4731,7 @@ fn edit_once(mut cell: Cell) -> int &mut {
         target.count += 1
         let saved = target.count
         let answer = resume ()
-        -- target.count += 1            -- Error [E0540]: this operation loan has ended
+        -- target.count += 1            -- Error [E0540]: this operation authority has ended
         answer + saved
     }
     Edit::apply(mut cell)
@@ -4711,18 +4765,18 @@ assert(cell.count == 1)
 | Operation parameter | Handler binder | Granted authority |
 | :--- | :--- | :--- |
 | Read-only | Plain pattern | Read-only; scalars copy, references preserve immutable/live facts |
-| `mut` | `mut pattern` | Temporary operation loan, ending when resumption starts |
+| `mut` | `mut pattern` | Temporary operation authority, ending when resumption starts |
 | `^mut` | `^mut pattern` | Retained writable authority; actual retention remains tracked |
 
 Destructured reference bindings receive no more than the mode and every source path permit; scalar constituents remain independent read-only copies. A `^mut` handler parameter still must exercise its authority under `E0527`. Resumption does not revoke lawful retained authority, but neither the handler mode nor the operation declaration extends a scoped lifetime or suspends exclusivity checks on independent origins.
 
-| Operation's ordinary `mut` loan | Arm's permission |
+| Operation's ordinary `mut` authority | Arm's permission |
 | :--- | :--- |
 | Before `resume`, including evaluation of its value | Access through the matching parameter |
-| Continuation starts | Return the loan; end all arm access through the parameter and derived aliases (`E0540`) |
+| Continuation starts | Revoke the authority; end all arm access through the parameter and derived aliases (`E0540`) |
 | `resume` returns | No restoration; copied scalars, independent data, and lawful retained `^mut` authority remain usable |
 
-Outer function/callback loans stay active. Independent captures and ambient aliases remain separate exclusivity participants. Neither resumption nor `^mut` extends a borrowed or scoped lifetime.
+Outer function/callback activations stay active. Independent captures and ambient aliases remain separate exclusivity participants. Neither resumption nor `^mut` extends a call-scoped or resource-scoped lifetime.
 
 | Retained handler context | Rule |
 | :--- | :--- |
@@ -4914,7 +4968,7 @@ fn outside_handler() -> int {
 }
 ```
 
-`resume` without an enclosing effect-operation arm is `E0623`. Capturing an enclosing arm's resumption across a prohibited callable boundary remains `E0611`; a second use remains `E0610`. Access through an operation's ended temporary loan, including a derived alias after resumption begins, is `E0540`. This does not revoke an independent lawful retained authority.
+`resume` without an enclosing effect-operation arm is `E0623`. Capturing an enclosing arm's resumption across a prohibited callable boundary remains `E0611`; a second use remains `E0610`. Access through an operation's ended temporary mutable authority, including a derived alias after resumption begins, is `E0540`. This does not revoke an independent lawful retained authority.
 
 ```ril
 -- Affine Resumption Violation: invoking resume more than once
@@ -6196,7 +6250,7 @@ This index assigns each code its diagnostic name and points to its defining rule
 
 | Code | Diagnostic and defining rule |
 | :---: | :--- |
-| **`E0401`** | [`ValueTypeMutableBorrowError`](#parameter-modes-caller-obligations-and-defaults) |
+| **`E0401`** | [`ValueTypeMutableParameterError`](#parameter-modes-caller-obligations-and-defaults) |
 | **`E0402`** | [`ValueTypePinnedMutError`](#value-types) |
 | **`E0403`** | [`VarParameterProhibitedError`](#parameter-modes-caller-obligations-and-defaults); [Effect Handlers](#effect-handlers) |
 | **`E0404`** | [`MutableParameterDefaultProhibitedError`](#default-parameters-and-named-arguments) |
@@ -6232,12 +6286,13 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0534`** | [`HazardErasureProhibitedError`](#callable-contracts); [Closures, Factory Signatures, and Lexical Environments](#closures-factory-signatures-and-lexical-environments) |
 | **`E0535`** | [`NonImmutableBindingError`](#immutable-bindings) |
 | **`E0536`** | [`NonImmutableDeriveInputError`](#functional-updates-via-derive) |
-| **`E0537`** | [`LiveSliceInvalidationError`](#range-and-slicing-expressions) |
+| **`E0537`** | [`LiveArrayInvalidationError`](#range-and-slicing-expressions) |
 | **`E0538`** | [`InvalidStateSourceGroupError`](#state-groups-and-captured-layers) |
 | **`E0539`** | [`InvalidStateContractReferenceError`](#named-function-state-contract-references) |
-| **`E0540`** | [`EndedOperationLoanAccessError`](#effect-handlers) |
+| **`E0540`** | [`EndedOperationAuthorityAccessError`](#effect-handlers) |
 | **`E0541`** | [`InvalidScopedCleanupContractError`](#scoped-resource-bindings) |
 | **`E0542`** | [`NonHigherOrderEmptyRowError`](#callable-contracts) |
+| **`E0543`** | [`NewTargetViewError`](#live-view-bindings) |
 
 ### Effects, Resumption, Concurrency, and Escape
 
