@@ -752,7 +752,7 @@ PrimitiveType    ::= "bool" | "i8" | "i16" | "i32" | "i64" | "int"
                   | "f32" | "f64" | "str" | "bytes" | "(" ")" | "never"
 ```
 
-Value types have copy-by-value semantics. They cannot be declared as `mut` parameters.
+Value types have copy-by-value semantics. `view` applies only to reference data or callable environments: value types cannot be view bindings, members, or pattern targets (`E0402`), or view parameters/arguments (`E0401`). This includes `str`, `bytes`, and integer ranges regardless of their implementation representation. Reading a value-type constituent through a reference view produces an ordinary independent value; it does not create a view of that value. Value types also cannot be declared as `mut` or `^mut` parameters (`E0401`).
 
 | Category | Types | Description |
 | :--- | :--- | :--- |
@@ -774,6 +774,10 @@ assert(a == 42 && b == 43)
 
 -- let mut bad_scalar = a              -- Error [E0402]: scalar value type 'int' has no interior mutability; use 'var'
 -- fn bad_param(mut x: int) {}         -- Error [E0401]: value type 'int' cannot be declared as 'mut' parameter
+-- let view bad_view = a               -- Error [E0402]: a copied value has no reference target to observe
+-- var view bad_cursor = a             -- Error [E0402]: reassignment does not make a value a reference
+-- fn bad_view_param(view x: int) {}    -- Error [E0401]: view parameters require reference data or callable environments
+-- type BadMember = { view count: int } -- Error [E0402]: view members cannot have value types
 ```
 
 ### Reference Types
@@ -854,7 +858,7 @@ assert(state.source.count == 1 && state.cursor.count == 2)
 -- let hidden = state               -- Error [E0535]: writable/live origins survive
 ```
 
-Apply enclosing immutable suppression before checking effective member reception; retain the original declaration schema. Thus `(mut immutable, mut immutable)` is valid under outer `let`, but cannot create writers to those existing objects. Default members require deeply immutable data. Modes bound permission rather than grant it; scalar members use `var`, not `mut`/`var mut` (`E0402`). `E0527` checks executable bindings/parameters, not each declared member. Conflicting immutable/writable aliases are `E0535`; copying must not split aliases to evade this check.
+Apply enclosing immutable suppression before checking effective member reception; retain the original declaration schema. Thus `(mut immutable, mut immutable)` is valid under outer `let`, but cannot create writers to those existing objects. Default members require deeply immutable data. Modes bound permission rather than grant it; value-type members may be default immutable or `var`, never `mut`, `var mut`, `view`, or `var view` (`E0402`). Immutable suppression does not make an invalid value-type member mode valid. `E0527` checks executable bindings/parameters, not each declared member. Conflicting immutable/writable aliases are `E0535`; copying must not split aliases to evade this check.
 
 ```ril
 type User = { id: int, name: str }
@@ -1614,10 +1618,10 @@ Declarations cleanly separate slot reassignability (`let` pinned vs `var` reassi
 | :--- | :---: | :---: | :--- | :--- |
 | `let` | No (`E0501`) | No (`E0520`) | Fresh value or immutable graph without surviving writers (`E0535`) | Deeply immutable, freely shareable across tasks |
 | `let mut` | No (`E0502`) | Granted | Heap reference allocation or mutable closure; not scalar (`E0402`) | Pinned mutable handle; root for live views |
-| `let view` | No (`E0502`) | No (`E0520`) | Stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Pinned live view; non-owning observation |
+| `let view` | No (`E0502`) | No (`E0520`) | Reference data or callable environment (`E0402`); stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Pinned live view; non-owning observation |
 | `var` | Yes | No (`E0520`) | Immutable value/graph without surviving writers (`E0535`) | Reassignable slot; each received value is deeply immutable |
 | `var mut` | Yes | Granted | Heap reference allocation with write authority (`E0520`); not scalar (`E0402`) | Fully mutable variable; slot and interior mutable |
-| `var view` | Yes | No (`E0520`) | Stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Reassignable live view cursor; non-owning observation |
+| `var view` | Yes | No (`E0520`) | Reference data or callable environment (`E0402`); stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Reassignable live view cursor; non-owning observation |
 
 - **Authority Use (`E0527`)**: A mutable binding/parameter must exercise its write or reassignment authority on a statically possible path (`var` and `var view` require slot reassignment; `var mut` requires both slot reassignment and interior writes).
 
@@ -1860,7 +1864,7 @@ VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expres
 ```
 
 #### Normative Rules for Live Views
-- **Target Invariant (`E0531`, `E0402`)**: Persistent view bindings/members require live origins traced to pinned `let mut` roots through projections, views, and verified calls. Immutable targets or reassignable `var`/`var mut` root bindings fail with `E0531`; value targets with `E0402`. Projecting a replaceable member under a pinned root retains the selected object once; later member replacement does not retarget the view. Call-time view parameters have the separate borrowing contract below.
+- **Target Invariant (`E0531`, `E0402`)**: View bindings/members require reference data or callable environments; every value-type target fails with `E0402`. Persistent views additionally require live origins traced to pinned `let mut` roots through projections, views, and verified calls. Immutable reference targets or reassignable `var`/`var mut` root bindings fail with `E0531`. Projecting a replaceable reference member under a pinned root retains the selected object once; later member replacement does not retarget the view. Reading a value-type member instead copies its current value into an ordinary binding. Call-time view parameters retain the same reference-only restriction but have the separate borrowing contract below.
 - **Observation Wrappers (`E0531`, `E0543`)**: Passive aggregates and observer closures may combine eligible live origins with immutable data; check every live dependency. Wrapping or forwarding cannot repair an ineligible origin. Independent fresh data, clone results, and new writable environments supply no live origin by themselves (`E0543`).
 - **Authority (`E0520`, `E0601`)**: Zero interior write authority; upgrade via `mut`/`^mut` rejected (`E0520`). Live views cannot cross concurrency task boundaries (`E0601`).
 - **GC Preservation**: Evaluate the initializer once. Stored/projected references keep the selected object alive; observer closures read their captures when invoked.
@@ -3809,14 +3813,14 @@ let view observed = cell
 | Parameter mode | Caller form | Authority |
 | :--- | :--- | :--- |
 | `p: T` | `expression` | Deeply immutable data; fresh ordinary data is published immutable at reception |
-| `view p: T` | `view expression` | Read-only observation; preserve actual immutable/live origins; scalars copy |
+| `view p: T` | `view expression` | Read-only observation of reference data or callable environments; preserve actual immutable/live origins |
 | `mut p: T` | `mut target` | Temporary interior/environment write access; no retained writable path after the call |
 | `^mut p: T` | `^mut target` | Write access plus permission to retain a writable path beyond the call |
 
-- Mutable parameters require reference data or a mutable callable environment (`E0401`), remain pinned (`E0502`), and cannot use `var` (`E0403`).
+- `view`, `mut`, and `^mut` parameters require reference data or callable environments. Declaring or instantiating any of these modes with a value type is `E0401`; this applies to named and anonymous functions, callable types, effect operations, and their handler parameters. Mutable parameters additionally require write authority over the data or environment, remain pinned (`E0502`), and cannot use `var` (`E0403`).
 - Annotations, forwarding, and subtyping do not infer parameter modes. An existing live graph cannot enter an ordinary parameter (`E0535`); use explicit `view` observation. Retaining a writer requires `^mut` and its capability (`E0510`); `!>` supplies only `mut`. A declared [fresh-value storage input](#fresh-values-in-storage-calls) receives construction authority before ordinary immutable publication.
 
-Missing `view`/`mut`/`^mut` argument markers use `E0405`; wrong explicit modes use `E0406`. Only `mut`/`^mut` arguments require addressable targets (`E0410`). View parameters may observe expressions, immutable data, and current objects reached through reassignable paths; this call-time observation does not establish a pinned origin for a later view binding. No mode grants absent authority (`E0520`), changes lifetime, or bypasses exclusivity. Callable mode mismatch remains `E0407`.
+Missing `view`/`mut`/`^mut` argument markers use `E0405`; wrong explicit modes use `E0406`. Only `mut`/`^mut` arguments require addressable targets (`E0410`). View parameters may observe reference expressions, immutable reference data, and current objects reached through reassignable paths; this call-time observation does not establish a pinned origin for a later view binding. A value-type argument cannot select a view parameter, including a generic or built-in observation form (`E0401`); pass the value normally instead. No mode grants absent authority (`E0520`), changes lifetime, or bypasses exclusivity. Callable mode mismatch remains `E0407`.
 
 ```ril
 type Cell = { var count: int }
@@ -4873,7 +4877,7 @@ assert(cell.count == 1)
 | Operation parameter | Handler binder | Granted authority |
 | :--- | :--- | :--- |
 | Default | Plain pattern | Deeply immutable data; scalars copy |
-| `view` | `view pattern` | Read-only observation; preserve live origins and source lifetimes |
+| `view` | `view pattern` | Read-only observation of reference data or callable environments; preserve live origins and source lifetimes |
 | `mut` | `mut pattern` | Temporary operation authority, ending when resumption starts |
 | `^mut` | `^mut pattern` | Retained writable authority; actual retention remains tracked |
 
@@ -6162,7 +6166,7 @@ Primitive type spellings (`int`, `str`, `bool`, etc.), `?T`, collection type syn
 
 Ril defines the following built-in foundational operations directly in the language prelude:
 
-Ordinary data forms use immutable parameters; explicit `view` forms observe existing live data without publishing it immutable. The forms preserve identical data schemas and operation identity. Listed resource contracts remain separate; neither form creates resource permissions. Operators, projections, indexing, and traversal are primitive observations, not implicit immutable-parameter receptions.
+Ordinary data forms use immutable parameters; explicit `view` forms observe reference data without publishing live inputs immutable. Value-type inputs, including `str` and `bytes`, use the ordinary form; an explicit view form with a value-type input is `E0401`. The forms preserve identical data schemas and operation identity. Listed resource contracts remain separate; neither form creates resource permissions. Operators, projections, indexing, and traversal are primitive observations, not implicit immutable-parameter receptions.
 
 | Operation | Signature | Effects | Phase | Complexity | Contract |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -6181,7 +6185,7 @@ Ordinary data forms use immutable parameters; explicit `view` forms observe exis
 
 - **Length Invariant (`len`)**:
   - `len` is a pure, dual-phase built-in operation admitted in both runtime and static contexts.
-  - Use `len(view value)` for live inputs; `len(value)` receives immutable data.
+  - Use `len(view value)` for live reference inputs; `len(value)` receives immutable data. Text and byte values always use `len(value)`; `len(view text)` and `len(view bytes_value)` are `E0401`.
   - For `str`, returns the total number of Unicode scalar values (code points), matching `s[a..b]` scalar indexing.
   - For `bytes`, returns the byte count in $O(1)$ time.
   - For arrays (`[]T`), returns the element count in $O(1)$ time.
@@ -6194,7 +6198,7 @@ Ordinary data forms use immutable parameters; explicit `view` forms observe exis
   - Nominal abstraction boundaries remain sealed across modules; `inner` cannot bypass opaque module access restrictions.
 - **Graph Isolation Invariants (`clone`)**:
   - `clone` creates an independent, isolated copy of an ordinary reachable graph, severing writable storage from the source while preserving internal aliases, shared references, and cyclic structures ([Deep Immutability](#deep-immutability)).
-  - `clone(view value)` observes live ordinary data during the isolated copy; no input is implicitly frozen. The selected receiver and the copy's member schema determine its new permissions.
+  - `clone(view value)` observes ordinary reference data during the isolated copy; no input is implicitly frozen. Value types use `clone(value)`; `clone(view scalar)` is `E0401`. The selected receiver and the copy's member schema determine its new permissions.
   - Receiving an eligible fresh copy with ordinary `let` publishes immutable data by recursively suppressing member permissions; no separate qualifier is required.
   - Non-clonable entities (retained closure environments, live tasks, unique receivers, and scoped resources) cannot be cloned through views or wrappers (`E0530`).
   - Cloning a channel `Sender` obeys the channel endpoint resource contract and requires `@Fiber`.
@@ -6380,8 +6384,8 @@ This index assigns each code its diagnostic name and points to its defining rule
 
 | Code | Diagnostic and defining rule |
 | :---: | :--- |
-| **`E0401`** | [`ValueTypeMutableParameterError`](#parameter-modes-caller-obligations-and-defaults) |
-| **`E0402`** | [`ValueTypePinnedMutError`](#value-types) |
+| **`E0401`** | [`ValueTypeReferenceParameterError`](#parameter-modes-caller-obligations-and-defaults) |
+| **`E0402`** | [`ValueTypeReferenceModeError`](#value-types) |
 | **`E0403`** | [`VarParameterProhibitedError`](#parameter-modes-caller-obligations-and-defaults); [Effect Handlers](#effect-handlers) |
 | **`E0404`** | [`MutableParameterDefaultProhibitedError`](#default-parameters-and-named-arguments) |
 | **`E0405`** | [`MissingArgumentModeMarkerError`](#parameter-modes-caller-obligations-and-defaults) |

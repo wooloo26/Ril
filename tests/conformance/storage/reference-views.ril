@@ -1,0 +1,120 @@
+-- [case: reference-view-copies-value-members, run-pass]
+-- spec: SPEC#value-types
+-- spec: SPEC#normative-rules-for-live-views
+
+type Cell = { var count: int }
+
+pub fn test_reference_view_copies_value_members() {
+    let mut source = Cell.{ count: 1 }
+    let view observed = source
+    let snapshot = observed.count
+    source.count = 2
+    assert(snapshot == 1 && observed.count == 2)
+}
+
+-- [case: reference-only-view-parameters, run-pass]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+
+type Cell = { var count: int }
+fn read_count(view cell: Cell) -> int { cell.count }
+
+pub fn test_reference_only_view_parameters() {
+    let immutable = Cell.{ count: 1 }
+    assert(read_count(view immutable) == 1)
+    var mut current = Cell.{ count: 2 }
+    current.count += 1
+    assert(read_count(view current) == 3)
+    current = Cell.{ count: 4 }
+    assert(read_count(view current) == 4)
+    assert(len("text") == 4 && len(b"RIFF") == 4)
+}
+
+-- [case: reject-value-view-binding, check-fail]
+-- spec: SPEC#value-types
+-- companion: reference-view-copies-value-members
+-- Error [E0402]: A scalar binding has no reference target to observe.
+fn invalid() {
+    let value = 1
+    let view observed = value
+}
+
+-- [case: reject-value-view-cursor, check-fail]
+-- spec: SPEC#value-types
+-- Error [E0402]: Reassignability does not give scalar values reference identity.
+fn invalid() {
+    var view cursor = 1
+    cursor = 2
+}
+
+-- [case: reject-value-member-view-binding, check-fail]
+-- spec: SPEC#normative-rules-for-live-views
+-- companion: reference-view-copies-value-members
+-- Error [E0402]: A pinned reference origin cannot make its scalar member a view target.
+type Cell = { var count: int }
+
+fn invalid() {
+    let mut source = Cell.{ count: 1 }
+    source.count = 2
+    let view observed = source.count
+}
+
+-- [case: reject-value-view-member, check-fail]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0402]: Text is a value type even when used in a view member declaration.
+type Invalid = { view text: str }
+
+-- [case: reject-value-view-tuple-member, check-fail]
+-- spec: SPEC#record-types-and-row-polymorphism
+-- Error [E0402]: Immutable reception cannot make a value-type view member valid.
+fn invalid() {
+    let value = (view 1, 2)
+}
+
+-- [case: reject-value-view-parameter, check-fail]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- companion: reference-only-view-parameters
+-- Error [E0401]: View parameters require reference data or callable environments.
+fn invalid(view value: int) -> int { value }
+
+-- [case: reject-value-view-callable-type, check-fail]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- Error [E0401]: The reference-only restriction also applies to callable types.
+type Invalid = fn(view bytes) -> int
+
+-- [case: reject-value-view-anonymous-parameter, check-fail]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- Error [E0401]: Anonymous parameters cannot view text values.
+fn invalid() {
+    let read = \view text: str -> len(text)
+}
+
+-- [case: reject-value-view-generic-argument, check-fail]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- Error [E0401]: Generic instantiation cannot create a value-type view parameter.
+fn observe<T>(view value: T) -> int { 0 }
+
+fn invalid() {
+    let result = observe(view 1)
+}
+
+-- [case: reject-value-view-effect-parameter, check-fail]
+-- spec: SPEC#parameter-modes-caller-obligations-and-defaults
+-- spec: SPEC#effect-handlers
+-- Error [E0401]: Effect operation parameters obey the same reference-only rule.
+eff Invalid { observe(view value: int) -> int }
+
+-- [case: reject-value-view-builtin, check-fail]
+-- spec: SPEC#normative-rules-for-built-in-operations
+-- companion: reference-only-view-parameters
+-- Error [E0401]: Byte values use the ordinary len form, not a view parameter.
+fn invalid() {
+    let size = len(view b"RIFF")
+}
+
+-- [case: reject-range-view-binding, check-fail]
+-- spec: SPEC#value-types
+-- Error [E0402]: Integer ranges are values, independent of their representation.
+fn invalid() {
+    let interval = 0..10
+    let view observed = interval
+}
