@@ -752,7 +752,7 @@ PrimitiveType    ::= "bool" | "i8" | "i16" | "i32" | "i64" | "int"
                   | "f32" | "f64" | "str" | "bytes" | "(" ")" | "never"
 ```
 
-Value types have copy-by-value semantics. `view` applies only to reference data or callable environments: value types cannot be view bindings, members, or pattern targets (`E0402`), or view parameters/arguments (`E0401`). This includes `str`, `bytes`, and integer ranges regardless of their implementation representation. Reading a value-type constituent through a reference view produces an ordinary independent value; it does not create a view of that value. Value types also cannot be declared as `mut` or `^mut` parameters (`E0401`).
+Value types have copy-by-value semantics, regardless of their implementation representation.
 
 | Category | Types | Description |
 | :--- | :--- | :--- |
@@ -766,19 +766,23 @@ Value types have copy-by-value semantics. `view` applies only to reference data 
 | Unit & Bottom | `()`, `never` | Singleton unit value `()`, empty uninhabited type |
 
 ```ril
--- Value types: independent copy-by-value semantics:
 let a: int = 42
-var b = a                              -- Independent copy; value types use 'var' for mutation
-b += 1                                 -- Modifies 'b'; 'a' remains 42
+var b = a
+b += 1
 assert(a == 42 && b == 43)
 
--- let mut bad_scalar = a              -- Error [E0402]: scalar value type 'int' has no interior mutability; use 'var'
--- fn bad_param(mut x: int) {}         -- Error [E0401]: value type 'int' cannot be declared as 'mut' parameter
--- let view bad_view = a               -- Error [E0402]: a copied value has no reference target to observe
--- var view bad_cursor = a             -- Error [E0402]: reassignment does not make a value a reference
--- fn bad_view_param(view x: int) {}    -- Error [E0401]: view parameters require reference data or callable environments
--- type BadMember = { view count: int } -- Error [E0402]: view members cannot have value types
+-- let mut bad = a                    -- Error [E0402]: use var for value updates
+-- let view bad = a                   -- Error [E0402]: values have no reference target
+-- fn bad(view x: int) {}             -- Error [E0401]: pass values normally
 ```
+
+`mut` and `view` require reference data or callable environments. The following exclusions include `str`, `bytes`, and integer ranges:
+
+| Value-type use | Valid forms | Rejected forms | Diagnostic |
+| :--- | :--- | :--- | :--- |
+| Binding | `let`, `var` | `let mut`, `var mut`, `let view`, `var view` | `E0402` |
+| Member / pattern target | Default immutable, `var` | `mut`, `var mut`, `view`, `var view` | `E0402` |
+| Parameter / argument | Ordinary value | `mut`, `^mut`, `view` | `E0401` |
 
 ### Reference Types
 
@@ -789,11 +793,12 @@ Reference types are allocated on the managed garbage-collected heap: arrays (`[]
 type Node = { var val: int }
 let mut n1 = Node.{ val: 10 }
 let view n2 = n1                       -- 'n2' aliases the exact same heap record as a live view
+let copied = n2.val                    -- Independent value copied through a view
 n1.val = 99                            -- Mutate through 'n1'
-assert(n2.val == 99)                   -- OK: 'n2' observes mutation due to reference aliasing
+assert(n2.val == 99 && copied == 10)
 
--- Mutating through read-only alias is strictly prohibited:
--- n2.val = 100                        -- Error [E0520]: cannot mutate field 'val' through read-only view 'n2'
+-- n2.val = 100                       -- Error [E0520]: view grants no writes
+-- let view bad = n2.val              -- Error [E0402]: the member is a value
 ```
 
 ### Record Types and Row Polymorphism
@@ -858,7 +863,21 @@ assert(state.source.count == 1 && state.cursor.count == 2)
 -- let hidden = state               -- Error [E0535]: writable/live origins survive
 ```
 
-Apply enclosing immutable suppression before checking effective member reception; retain the original declaration schema. Thus `(mut immutable, mut immutable)` is valid under outer `let`, but cannot create writers to those existing objects. Default members require deeply immutable data. Modes bound permission rather than grant it; value-type members may be default immutable or `var`, never `mut`, `var mut`, `view`, or `var view` (`E0402`). Immutable suppression does not make an invalid value-type member mode valid. `E0527` checks executable bindings/parameters, not each declared member. Conflicting immutable/writable aliases are `E0535`; copying must not split aliases to evade this check.
+```ril
+type Counter = { var count: int }
+let immutable = Counter.{ count: 0 }
+let repeated = (mut immutable, mut immutable) -- OK: outer let suppresses member permissions
+-- let mut bad = repeated.0                  -- Error [E0520]: no writer was created
+-- type Bad = { view count: int }           -- Error [E0402]: invalid even under outer let
+```
+
+| Member rule | Requirement |
+| :--- | :--- |
+| Outer immutable reception | Suppress effective permissions before reception; preserve the declaration schema |
+| Default member | Deeply immutable data; surviving writers fail with `E0535` |
+| Value-type member | Default immutable or `var` only (`E0402`); outer immutability cannot validate another mode |
+| Authority use (`E0527`) | Check executable bindings/parameters, not each declared member |
+| Immutable/writable aliases | Reject with `E0535`; copying must preserve aliases rather than split them |
 
 ```ril
 type User = { id: int, name: str }
@@ -1612,63 +1631,64 @@ Binding and origin permissions govern access. Effects govern evaluation and hand
 
 ### Binding Permissions and Storage Matrix
 
-Declarations cleanly separate slot reassignability (`let` pinned vs `var` reassignable) from data capability (`default` immutable vs `mut` mutable vs `view` live observation):
+`let` / `var` control slot replacement; default / `mut` / `view` control data access. Interior operations also require the member's permission.
 
-| Binding | Slot Reassignment | Interior Writes | Target / Origin Requirement | Data Guarantee |
-| :--- | :---: | :---: | :--- | :--- |
-| `let` | No (`E0501`) | No (`E0520`) | Fresh value or immutable graph without surviving writers (`E0535`) | Deeply immutable, freely shareable across tasks |
-| `let mut` | No (`E0502`) | Granted | Heap reference allocation or mutable closure; not scalar (`E0402`) | Pinned mutable handle; root for live views |
-| `let view` | No (`E0502`) | No (`E0520`) | Reference data or callable environment (`E0402`); stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Pinned live view; non-owning observation |
-| `var` | Yes | No (`E0520`) | Immutable value/graph without surviving writers (`E0535`) | Reassignable slot; each received value is deeply immutable |
-| `var mut` | Yes | Granted | Heap reference allocation with write authority (`E0520`); not scalar (`E0402`) | Fully mutable variable; slot and interior mutable |
-| `var view` | Yes | No (`E0520`) | Reference data or callable environment (`E0402`); stable pinned mutable origins, directly or in an eligible observation wrapper (`E0531`, `E0543`) | Reassignable live view cursor; non-owning observation |
-
-- **Authority Use (`E0527`)**: A mutable binding/parameter must exercise its write or reassignment authority on a statically possible path (`var` and `var view` require slot reassignment; `var mut` requires both slot reassignment and interior writes).
+| Binding | `x = other` | Interior writes | Received data |
+| :--- | :---: | :---: | :--- |
+| `let` | No (`E0501`) | No (`E0520`) | Deeply immutable, freely shareable across tasks |
+| `var` | Yes | No (`E0520`) | Deeply immutable; slot may select another value |
+| `let mut` | No (`E0502`) | Yes | Fixed writable target; root for live views |
+| `var mut` | Yes | Yes | Writable target; slot may select another object |
+| `let view` | No (`E0502`) | No (`E0520`) | Fixed live observation |
+| `var view` | Yes | No (`E0520`) | Live observation cursor |
 
 ```ril
 type Document = { var title: str }
 let doc1 = Document.{ title: "Doc 1" }
 let doc2 = Document.{ title: "Doc 2" }
+
+var selected = doc1
+let saved = selected                   -- Shares doc1; does not follow the selected slot
+selected = doc2
+assert(saved.title == "Doc 1" && selected.title == "Doc 2")
+
 let mut draft = clone(doc1)
-draft.title = "Draft"
+let mut alias = ^mut draft             -- Explicit writable sharing; no copy
+let view observed = draft
+alias.title = "Revised"
+assert(draft.title == "Revised" && observed.title == "Revised")
+-- let hidden = draft                 -- Error [E0535]: surviving writer
+-- let mut stolen = observed          -- Error [E0520]: view cannot grant writes
 
--- 1. let: pinned immutable binding
-let immutable_doc = doc1
--- immutable_doc.title = "Draft"        -- Error [E0520]: immutable binding has no write permission
--- immutable_doc = doc2                 -- Error [E0501]: cannot reassign immutable binding
+var mut active = clone(doc1)
+active.title = "Active"
+active = clone(doc2)                   -- Slot replacement and interior writes are both used
 
--- 2. let mut: pinned mutable handle
-let mut pinned_draft = ^mut draft
-pinned_draft.title = "Revised"          -- OK: in-place interior write permitted
--- pinned_draft = clone(doc2)           -- Error [E0502]: pinned handle cannot be rebound
-
--- 3. let view: pinned live view
-let view pinned_view = pinned_draft
-assert(pinned_view.title == "Revised")  -- OK: tracks pinned mutable origin
--- pinned_view.title = "Hacked"         -- Error [E0520]: view grants no write authority
--- pinned_view = clone(doc2)            -- Error [E0502]: pinned view handle cannot be rebound
-
--- 4. var: reassignable read-only slot
-var selected_doc = doc1
-selected_doc = doc2                     -- OK: slot rebound to doc2
--- selected_doc.title = "New"           -- Error [E0520]: plain var grants no interior write permission
-
--- 5. var mut: reassignable mutable variable
-var mut active_draft = clone(doc1)
-active_draft.title = "Active 1"         -- OK: in-place interior write permitted
-active_draft = clone(doc2)              -- OK: slot rebound to another mutable graph
-active_draft.title = "Active 2"         -- OK: in-place write on new target permitted
-
--- 6. var view: reassignable live view cursor
-var view cursor = pinned_draft
-assert(cursor.title == "Revised")
--- cursor = clone(doc2)                 -- Error [E0543]: independent new data cannot bind to view
--- cursor = selected_doc                -- Error [E0531]: reassignable var slot is not a pinned origin
-let mut target_draft = clone(doc2)
-target_draft.title = "Selected"
-cursor = target_draft                   -- OK: cursor rebound to another pinned mutable origin
--- cursor.title = "Hacked"              -- Error [E0520]: view cursor grants no write authority
+let mut other = clone(doc2)
+other.title = "Selected"
+var view cursor = draft
+cursor = other
+assert(cursor.title == "Selected")
 ```
+
+Direct reception of an ordinary reference object follows this matrix. Every `var` replacement rechecks the same requirements; `mut` / `view` reject value types (`E0402`).
+
+| Source | `let` / `var` | `let mut` / `var mut` | `let view` / `var view` |
+| :--- | :--- | :--- | :--- |
+| Immutable `let` / `var` data | Share immutable object | `E0520` | `E0531` |
+| Pinned writable `let mut` | `E0535` | Share via `^mut source` | Observe same object |
+| Reassignable writable `var mut` | `E0535` | Share via `^mut source` | `E0531` |
+| Eligible `let view` / `var view` | `E0535` | `E0520` | Observe currently selected object |
+| Independent fresh allocation / clone | Publish immutable | Receive construction authority | `E0543` |
+
+Fresh publication requires no surviving outside writer. [Writable sharing](#retained-mutable-sharing) also checks internal aliases; wrappers preserve every origin restriction.
+
+| Authority use (`E0527`) | Required on a statically possible path |
+| :--- | :--- |
+| `var`, `var view` | Slot reassignment |
+| `let mut`, ordinary `mut` parameter | Interior write, mutable call, or authorized transfer |
+| `var mut` | Both reassignment and interior writes |
+| `^mut` parameter | Actual retention |
 
 ### Immutable Bindings
 
@@ -1864,44 +1884,49 @@ VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expres
 ```
 
 #### Normative Rules for Live Views
-- **Target Invariant (`E0531`, `E0402`)**: View bindings/members require reference data or callable environments; every value-type target fails with `E0402`. Persistent views additionally require live origins traced to pinned `let mut` roots through projections, views, and verified calls. Immutable reference targets or reassignable `var`/`var mut` root bindings fail with `E0531`. Projecting a replaceable reference member under a pinned root retains the selected object once; later member replacement does not retarget the view. Reading a value-type member instead copies its current value into an ordinary binding. Call-time view parameters retain the same reference-only restriction but have the separate borrowing contract below.
-- **Observation Wrappers (`E0531`, `E0543`)**: Passive aggregates and observer closures may combine eligible live origins with immutable data; check every live dependency. Wrapping or forwarding cannot repair an ineligible origin. Independent fresh data, clone results, and new writable environments supply no live origin by themselves (`E0543`).
-- **Authority (`E0520`, `E0601`)**: Zero interior write authority; upgrade via `mut`/`^mut` rejected (`E0520`). Live views cannot cross concurrency task boundaries (`E0601`).
-- **GC Preservation**: Evaluate the initializer once. Stored/projected references keep the selected object alive; observer closures read their captures when invoked.
-- **Pinned vs. Reassignable (`let view` vs `var view`)**:
-  - `let view`: Pinned slot; identifier cannot be rebound (`E0502`).
-  - `var view`: Each replacement obeys the same origin rules; a reachable reassignment is required (`E0527`).
+
+Persistent views trace every live dependency to pinned `let mut` roots through projections, views, and verified calls.
+
+| Target / operation | Rule |
+| :--- | :--- |
+| Value-type target | Reject with `E0402`; reading a value member copies its current value |
+| Immutable reference or `var` / `var mut` root | Reject with `E0531` |
+| Independent allocation, clone, or new writable environment | No live origin by itself (`E0543`) |
+| Passive aggregate / observer closure | May combine eligible live origins with immutable data; wrappers cannot repair origins |
+| Interior write or `mut` / `^mut` upgrade | Reject with `E0520` |
+| Task crossing | Reject with `E0601` |
+| Initializer / projection | Evaluate once; keep the selected object alive; member replacement does not retarget it |
+| Observer closure invocation | Read captures when invoked |
+| `let view` reassignment | Reject with `E0502` |
+| `var view` reassignment | Recheck origins; a reachable reassignment is required (`E0527`) |
+
+[View parameters](#parameter-modes-caller-obligations-and-defaults) also require reference targets but use call-time observation rules.
 
 ```ril
 type Cell = { var count: int }
 let mut cell1 = Cell.{ count: 1 }
 let mut cell2 = Cell.{ count: 0 }
 
--- Pinned live view:
 let view observed = cell1
 let view packet = .{ view item: observed, offset: 1 }
 let view read_count = \-> packet.item.count + packet.offset
 cell1.count = 5
-assert(read_count() == 6)               -- Live origin plus immutable data
--- observed.count = 10                  -- Error [E0520]: a view grants no write authority
--- observed = cell2                     -- Error [E0502]: cannot reassign pinned view handle
--- let bad_reader = \-> observed.count  -- Error [E0535]: the captured live origin is not immutable
--- mutate(mut observed)                -- Error [E0520]: a view cannot supply mutable authority
+assert(read_count() == 6)
+-- observed.count = 10                -- Error [E0520]: no write authority
+-- observed = cell2                   -- Error [E0502]: pinned view
+-- let reader = \-> observed.count    -- Error [E0535]: live capture
+-- let mut stolen = ^mut observed     -- Error [E0520]: no permission upgrade
 let immutable = Cell.{ count: 1 }
--- let view bad_immut = immutable      -- Error [E0531]: immutable data has no eligible live origin
--- let view bad_new = Cell.{ count: 0 } -- Error [E0543]: independent new data is not a live origin
-let snapshot = clone(view observed)   -- OK: let publishes an independent immutable copy
+-- let view bad = immutable           -- Error [E0531]: immutable origin
+-- let view bad = Cell.{ count: 0 }    -- Error [E0543]: independent new data
+let snapshot = clone(view observed)   -- Independent immutable copy
 
--- Reassignable live view cursor:
 var view cursor = cell1
-assert(cursor.count == 5)
-cell2.count = 2                        -- Updates remain visible when the cursor selects cell2
-cursor = cell2                         -- OK: reassigning view cursor to another pinned origin
+cell2.count = 2
+cursor = cell2
 assert(cursor.count == 2)
--- cursor.count = 20                   -- Error [E0520]: view cursor grants no interior write authority
--- var mut reassignable = Cell.{ count: 0 }
--- cursor = reassignable               -- Error [E0531]: a var slot is not a pinned view origin
--- cursor = Cell.{ count: 99 }         -- Error [E0543]: independent new data is not a live origin
+-- cursor.count = 20                  -- Error [E0520]: reassignability grants no writes
+-- cursor = clone(view cell2)         -- Error [E0543]: independent new data
 
 -- Single evaluation and GC root preservation:
 type Parent = { var mut child: Cell }
@@ -3801,42 +3826,67 @@ Uncertified loops or recursion give `MayDiverge`, not an effect. The special [fi
 
 ```ril
 type Cell = { var count: int }
-fn bump(mut cell: Cell) &mut { cell.count += 1 }
-let mut cell = Cell.{ count: 0 }
-bump(mut cell)
-cell !> bump()
--- bump(cell)                          -- Error [E0405]: explicit mutable argument required
-let view observed = cell
--- bump(mut observed)                  -- Error [E0520]: view has no write permission
-```
-
-| Parameter mode | Caller form | Authority |
-| :--- | :--- | :--- |
-| `p: T` | `expression` | Deeply immutable data; fresh ordinary data is published immutable at reception |
-| `view p: T` | `view expression` | Read-only observation of reference data or callable environments; preserve actual immutable/live origins |
-| `mut p: T` | `mut target` | Temporary interior/environment write access; no retained writable path after the call |
-| `^mut p: T` | `^mut target` | Write access plus permission to retain a writable path beyond the call |
-
-- `view`, `mut`, and `^mut` parameters require reference data or callable environments. Declaring or instantiating any of these modes with a value type is `E0401`; this applies to named and anonymous functions, callable types, effect operations, and their handler parameters. Mutable parameters additionally require write authority over the data or environment, remain pinned (`E0502`), and cannot use `var` (`E0403`).
-- Annotations, forwarding, and subtyping do not infer parameter modes. An existing live graph cannot enter an ordinary parameter (`E0535`); use explicit `view` observation. Retaining a writer requires `^mut` and its capability (`E0510`); `!>` supplies only `mut`. A declared [fresh-value storage input](#fresh-values-in-storage-calls) receives construction authority before ordinary immutable publication.
-
-Missing `view`/`mut`/`^mut` argument markers use `E0405`; wrong explicit modes use `E0406`. Only `mut`/`^mut` arguments require addressable targets (`E0410`). View parameters may observe reference expressions, immutable reference data, and current objects reached through reassignable paths; this call-time observation does not establish a pinned origin for a later view binding. A value-type argument cannot select a view parameter, including a generic or built-in observation form (`E0401`); pass the value normally instead. No mode grants absent authority (`E0520`), changes lifetime, or bypasses exclusivity. Callable mode mismatch remains `E0407`.
-
-```ril
-type Cell = { var count: int }
-fn bump(mut cell: Cell) &mut { cell.count += 1 }
 fn inspect(cell: Cell) -> int { cell.count }
 fn observe(view cell: Cell) -> int { cell.count }
+fn bump(mut cell: Cell) &mut { cell.count += 1 }
+fn retain(^mut cell: Cell) -> Cell &^mut { cell }
+
+let immutable = Cell.{ count: 0 }
+assert(inspect(immutable) == 0)
 let mut cell = Cell.{ count: 0 }
-assert(observe(view cell) == 0)
--- inspect(cell)                      -- Error [E0535]: cell still has a writer
--- observe(cell)                      -- Error [E0405]: explicit observation required
--- inspect(mut cell)                 -- Error [E0406]: parameter is read-only
--- let reader: fn(Cell) -> () &mut = bump -- Error [E0407]: callable parameter modes differ
-bump(mut cell)                        -- OK
+bump(mut cell)
+cell !> bump()                         -- Supplies mut, not ^mut
+assert(observe(view cell) == 2)
+let mut alias = retain(^mut cell)
+alias.count += 1
+assert(cell.count == 3)                -- Retained alias survives the call
+
+-- inspect(cell)                      -- Error [E0535]: surviving writer
+-- observe(cell)                      -- Error [E0405]: missing view marker
+-- inspect(mut cell)                  -- Error [E0406]: wrong mode
+let view observed = cell
+-- bump(mut observed)                 -- Error [E0520]: no write authority
+-- let bad: fn(Cell) -> () &mut = bump -- Error [E0407]: parameter modes differ
 ```
 
-A callback's data-parameter modes and handle mode are distinct. `f: fn(mut T) -> R` receives an immutable callable handle with a mutable data argument; `view f` may observe a live read-only environment, and `mut f` permits environment writes. Mutable inline closures must first enter writable handles before being passed with `mut`.
+| Parameter | Caller form | Accepted input | Authority |
+| :--- | :--- | :--- | :--- |
+| `p: T` | `expression` | Immutable value / publishable fresh data | Read-only immutable data |
+| `view p: T` | `view expression` | Reference data / callable environment | Observe; preserve immutable/live origins |
+| `mut p: T` | `mut target` or `!>` | Writable reference / callable environment | Pinned interior access; ends at return |
+| `^mut p: T` | `^mut target` | Writable reference / callable environment | Pinned interior access; may retain a writer |
+
+These rules cover named/anonymous functions, callable types, effect operations/handlers, and generic/built-in instantiations. [Fresh storage inputs](#fresh-values-in-storage-calls) receive construction authority before ordinary immutable publication; ordinary wrappers gain no exception.
+
+| Invalid use | Diagnostic |
+| :--- | :--- |
+| Value-type `view` / `mut` / `^mut` parameter or argument | `E0401` |
+| Rebind a mutable parameter | `E0502` |
+| `var` parameter | `E0403` |
+| Missing / wrong explicit argument mode | `E0405` / `E0406` |
+| Non-addressable `mut` / `^mut` argument | `E0410` |
+| Write through immutable data or a view | `E0520` |
+| Callable parameter modes differ | `E0407` |
+| Retain a writer without its required capability | `E0510` |
+
+Modes are explicit, including through forwarding and subtyping. They neither grant absent permissions nor extend lifetimes or bypass exclusivity.
+
+```ril
+-- Cell and observe have the preceding declarations.
+var mut selected = Cell.{ count: 0 }
+selected.count += 1
+assert(observe(view selected) == 1)    -- Call-time observation of the current object
+selected = Cell.{ count: 2 }
+-- let view bad = selected            -- Error [E0531]: no persistent pinned origin
+```
+
+Call-time views may observe immutable reference data and reference expressions, including current objects reached through reassignable paths. They do not establish a pinned origin for persistent views.
+
+| Callback declaration | Handle authority |
+| :--- | :--- |
+| `f: fn(mut T) -> R` | Immutable handle; `mut` describes its data parameter |
+| `view f: F` | Observe a live environment |
+| `mut f: F` | Write the environment; bind mutable inline closures to writable handles before passing them |
 
 ```ebnf
 ParameterMode    ::= "view" | "mut" | "^mut"
@@ -6166,7 +6216,23 @@ Primitive type spellings (`int`, `str`, `bool`, etc.), `?T`, collection type syn
 
 Ril defines the following built-in foundational operations directly in the language prelude:
 
-Ordinary data forms use immutable parameters; explicit `view` forms observe reference data without publishing live inputs immutable. Value-type inputs, including `str` and `bytes`, use the ordinary form; an explicit view form with a value-type input is `E0401`. The forms preserve identical data schemas and operation identity. Listed resource contracts remain separate; neither form creates resource permissions. Operators, projections, indexing, and traversal are primitive observations, not implicit immutable-parameter receptions.
+```ril
+assert(len("Ril") == 3 && len(b"RIFF") == 4)
+let copied = clone(42)
+assert(copied == 42)
+-- len(view "Ril")                    -- Error [E0401]: text is a value type
+-- clone(view 42)                     -- Error [E0401]: use ordinary value passage
+```
+
+For inputs supported by the selected operation:
+
+| Input | Ordinary form | Explicit `view` form |
+| :--- | :--- | :--- |
+| Value type, including `str` / `bytes` | Receive value | `E0401` |
+| Immutable reference data | Receive immutable data | Observe same data |
+| Live reference data | `E0535` | Observe without freezing |
+
+Forms preserve data schemas and operation identity. Resource contracts remain separate; neither form grants resource permissions. Operators, projections, indexing, and traversal are primitive observations, not immutable-parameter receptions.
 
 | Operation | Signature | Effects | Phase | Complexity | Contract |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -6185,7 +6251,7 @@ Ordinary data forms use immutable parameters; explicit `view` forms observe refe
 
 - **Length Invariant (`len`)**:
   - `len` is a pure, dual-phase built-in operation admitted in both runtime and static contexts.
-  - Use `len(view value)` for live reference inputs; `len(value)` receives immutable data. Text and byte values always use `len(value)`; `len(view text)` and `len(view bytes_value)` are `E0401`.
+  - `len(view value)` observes reference data; `len(value)` receives immutable data.
   - For `str`, returns the total number of Unicode scalar values (code points), matching `s[a..b]` scalar indexing.
   - For `bytes`, returns the byte count in $O(1)$ time.
   - For arrays (`[]T`), returns the element count in $O(1)$ time.
@@ -6198,7 +6264,7 @@ Ordinary data forms use immutable parameters; explicit `view` forms observe refe
   - Nominal abstraction boundaries remain sealed across modules; `inner` cannot bypass opaque module access restrictions.
 - **Graph Isolation Invariants (`clone`)**:
   - `clone` creates an independent, isolated copy of an ordinary reachable graph, severing writable storage from the source while preserving internal aliases, shared references, and cyclic structures ([Deep Immutability](#deep-immutability)).
-  - `clone(view value)` observes ordinary reference data during the isolated copy; no input is implicitly frozen. Value types use `clone(value)`; `clone(view scalar)` is `E0401`. The selected receiver and the copy's member schema determine its new permissions.
+  - `clone(view value)` copies observed reference data without freezing it. The receiver and member schema determine the copy's permissions.
   - Receiving an eligible fresh copy with ordinary `let` publishes immutable data by recursively suppressing member permissions; no separate qualifier is required.
   - Non-clonable entities (retained closure environments, live tasks, unique receivers, and scoped resources) cannot be cloned through views or wrappers (`E0530`).
   - Cloning a channel `Sender` obeys the channel endpoint resource contract and requires `@Fiber`.
