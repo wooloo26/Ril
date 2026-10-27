@@ -20,7 +20,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
 - **Diagnostic Text**: Error codes and their triggering conditions are normative. Example message text, source highlighting, notes, and suggested repairs are illustrative.
 - **Examples**: Blocks are independent fixtures unless marked as complete source files.
 - Local statements run in an enclosing callable; displayed declarations belong to its enclosing declaration scope. Free names are typed fixture inputs or supplied contracts.
-- Fixtures handle their local expressions' effects. Named functions and complete files obey their own annotations, casing, and initialization rules.
+- Fixtures handle their local expressions' effects. Except for examples testing missing annotations, abbreviated callable declarations and lambdas in independent fixtures denote their compiler-completed signatures under [mandatory contract completion](#mandatory-contract-inference-and-completion). `-- OK` checks that completed form; complete source files must spell every required annotation. Completion never repairs a permission violation or changes evaluation, allocation, or sharing.
 - Negative statements are checked individually with valid setup. Blocks containing `...` are schematic.
 - Static-evaluation fixtures use the selected abstract target and a sufficient evaluation budget unless a budget-exhaustion case is explicitly specified.
 - **Semantic Cross-References**: Internal specifications and rule cross-references link directly to their defining sections via Markdown anchors.
@@ -58,7 +58,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Nominal Type Wrappers](#nominal-type-wrappers)
     - [Deep Immutability](#deep-immutability)
     - [Type Identity and Subtyping](#type-identity-and-subtyping)
-    - [Complete Provenance and Optional Annotations](#complete-provenance-and-optional-annotations)
+    - [Complete Provenance and Required Annotations](#complete-provenance-and-required-annotations)
     - [Functional Updates via Derive](#functional-updates-via-derive)
       - [Normative Rules for Functional Updates](#normative-rules-for-functional-updates)
     - [Generic Parameters, Defaults, and Value Sorts](#generic-parameters-defaults-and-value-sorts)
@@ -105,9 +105,11 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Named Function Declarations and Contrast Matrix](#named-function-declarations-and-contrast-matrix)
       - [Dual-Tier Where Invariants](#dual-tier-where-invariants)
     - [Callable Contracts](#callable-contracts)
+      - [Mandatory Contract Inference and Completion](#mandatory-contract-inference-and-completion)
       - [Empty Rows on Higher-Order Signatures](#empty-rows-on-higher-order-signatures)
       - [Callable Type Bounds](#callable-type-bounds)
       - [Higher-Order Calls](#higher-order-calls)
+    - [Return Construction, Permissions, and Sources](#return-construction-permissions-and-sources)
     - [Termination and halt Contracts](#termination-and-halt-contracts)
     - [Parameter Modes, Caller Obligations, and Defaults](#parameter-modes-caller-obligations-and-defaults)
       - [Fresh Values in Storage Calls](#fresh-values-in-storage-calls)
@@ -201,7 +203,7 @@ A conforming Ril implementation MUST:
 - Accept all syntactically and semantically valid Ril programs defined herein.
 - Statically reject all invalid programs with the exact diagnostic conditions specified herein.
 - Emit artifacts adhering strictly to the abstract machine semantics, memory model, and determinism invariants.
-- Enforce the complete provenance obligations below regardless of which optional annotations or diagnostic explanations are displayed. Static validity is determined by the specified conservative judgments, not by an assumption that arbitrary run-time behavior can be decided exactly.
+- Infer complete provenance and callable contracts, require their prescribed source annotations, and expose their diagnostic explanations. Static validity is determined by the specified conservative judgments, not by an assumption that arbitrary run-time behavior can be decided exactly.
 
 ### Diagnostic Classification
 
@@ -488,7 +490,7 @@ let user_count = 10                    -- OK: local variable identifier
 var total_score = 0                    -- OK: local reassignable variable
 total_score += 1
 var active_workers = 0                 -- OK: top-level reassignable mutable variable
-fn start_worker() &{mut active_workers} { active_workers += 1 }
+fn start_worker() -> () &{mut active_workers} { active_workers += 1 }
 fn compute_area(width: f64) -> f64 { width * 2.0 } -- OK: function identifier
 meta fn pad_align(size: int) -> int { size }       -- OK: compile-time function
 
@@ -498,7 +500,7 @@ let DEFAULT_TIMEOUT_MS = 5000          -- OK: top-level immutable constant
 
 -- Wildcard and Leading-Underscore Identifiers
 let _ = user_count                     -- OK: wildcard discard
-fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' is a parameter identifier
+fn on_event(ev: Event, _ctx: Context) -> () { handle(ev) } -- OK: '_ctx' is a parameter identifier
 
 -- Static Lexical Violations:
 -- type user_doc = { id: int }         -- Error [E0101]: type identifier must be PascalCase, found 'user_doc'
@@ -514,20 +516,21 @@ fn on_event(ev: Event, _ctx: Context) { handle(ev) } -- OK: '_ctx' is a paramete
 
 ### Keywords
 
-The following 34 tokens are reserved; they cannot be ordinary identifiers or field labels:
+The following 35 tokens are reserved; they cannot be ordinary identifiers or field labels:
 
 ```
 as       eff      else     false    fn
 for      halt     if       in       is
 keyof    last     let      loop     match
-meta     module   mut      never    next
-opaque   pub      ref      resume   return
-scoped   true     type     typeof   use
-var      where    while    with
+meta     module   mut      never    new
+next     opaque   pub      ref      resume
+return   scoped   true     type     typeof
+use      var      where    while    with
 ```
 
 ```ril
 -- let while = 1                     -- Error [E0113]: reserved keyword in a binding position
+-- let new = 1                       -- Error [E0113]: new is reserved for return contracts
 -- type Record = { if: int }         -- Error [E0113]: reserved keyword as a field label
 let while_count = 1                   -- OK
 let capture = 1                       -- OK: capture is an ordinary identifier
@@ -773,7 +776,7 @@ assert(a == 42 && b == 43)
 
 -- let mut bad = a                    -- Error [E0402]: use var for value updates
 -- let ref bad = a                   -- Error [E0402]: values have no reference target
--- fn bad(ref x: int) {}             -- Error [E0401]: pass values normally
+-- fn bad(ref x: int) -> () {}             -- Error [E0401]: pass values normally
 ```
 
 `mut` and `ref` require reference data or callable environments. The following exclusions include `str`, `bytes`, and integer ranges:
@@ -1199,7 +1202,7 @@ let copied = snapshot(ref live)
 assert(read(copied) == 2)
 ```
 
-Ascription never grants permissions or makes a resource ordinary data. Bare `-> T` preserves the result's actual construction/alias relation; it is not a new binding. A caller's receiving mode decides whether an eligible fresh result stays writable or is published immutable.
+Ascription never grants permissions or makes a resource ordinary data. A plain data result `-> T` requires immutable publication at the return boundary; it cannot carry unpublished write authority. `-> new T` preserves eligible construction authority so the caller's receiving mode can select writable reception or immutable publication. `ref(sources) T` and `^mut(sources) T` preserve their checked reference dependencies under the [return contracts](#return-construction-permissions-and-sources).
 
 ### Type Identity and Subtyping
 
@@ -1216,7 +1219,7 @@ let get_dog: Getter<Dog> = make_dog       -- OK
 | :--- | :--- |
 | Closed record | No width subtyping; extra fields require an open row |
 | Record member | Writable/`ref` schemas retain matching modes; immutable reception compares permission-suppressed data shapes. Writable/replaceable data is invariant; immutable data covariant |
-| Callable with identical parameter modes | Parameters contravariant; result covariant; actual obligations fit destination rows |
+| Callable with identical parameter modes | Parameters contravariant; result shape covariant; return construction/mode/source guarantees must satisfy the destination contract, and actual obligations fit destination rows |
 | `&^mut` row bound | Admits `&mut`; never changes parameter modes or handle permissions |
 | Array / map | Element and key/value types invariant |
 | Tuple | Components invariant; immutable reception suppresses modes, otherwise modes match; only `var` members permit slot replacement |
@@ -1226,10 +1229,10 @@ Member modes participate in structural schemas. Outer immutable reception suppre
 
 
 
-### Complete Provenance and Optional Annotations
+### Complete Provenance and Required Annotations
 
 ```ril
-fn identity<T>(ref value: T) -> T { value }
+fn identity<T>(ref value: T) -> ref(value) T { value }
 type Cell = { var count: int }
 let mut source = Cell.{ count: 0 }
 let ref packet = .{ ref item: identity(ref source) }
@@ -1242,19 +1245,19 @@ assert(observed.count == 1)
 
 - **Complete Static Provenance**: Track possible origins, permissions, immutable/live facts, aliases, retention/escape dependencies, and scope/task ownership for all storage, references, environments, and resources. Conservative judgments may overapproximate execution; obligations cannot be erased.
 - **Propagation**: Preserve these facts through aggregates, projections, branches, recursion, returns, calls, opaque boundaries, handlers, cleanup, and modules. Every handle, member mode, and stored constituent limits the resulting authority. A default member imposes deep immutability; `mut` permits interior writes without slot replacement. Independent scalar copies carry no reference authority; capturing a scalar cell retains its origin.
-- **No Semantic Erasure**: An omitted annotation, plain `-> T`, abbreviated callable type, or ordinary call spelling does not discard these facts. Private source names need not become public identifiers; their semantic dependencies still participate in every access and boundary check. Anonymous captures and symbolic callback obligations remain inferred. Named definitions must declare their concrete invocation obligations; no return modes, symbolic callback-forwarding notation, or call-site annotation is required.
+- **No Semantic Erasure**: An omitted annotation, abbreviated callable type, or ordinary call spelling never discards these facts. The compiler infers the full contract and requires its prescribed spelling under [mandatory contract completion](#mandatory-contract-inference-and-completion), equally for public, private, local, and anonymous functions. Private implementation names need not become public identifiers; their semantic dependencies and internal alias relations remain in the verified contract metadata. A plain data return `-> T` establishes immutability; it cannot conceal a live or writable alias.
 - **Conservative Alternatives**: Retain the union of possible origins, accesses, retention, and escape obligations, and only permissions common to all alternatives. Preserve origin relations between inputs and outputs and between output components: a relation established in every retained alternative remains established after the join. Prune only branches excluded by the specified static computations and typing rules. An unproved run-time condition is not evidence of uniqueness or impossible escape. Unknown overlap remains possible overlap; an incomplete proof cannot authorize mutable access, immutable publication, or task crossing that requires it.
 - **Recursive Dependencies**: Loop and recursive call dependencies retain possible origins and unresolved relationships, including termination conditions and finite-budget coverage. A cycle is not evidence of freshness, disjointness, non-escape, termination, or an empty callable row. An obligation may be discharged only by an established fact; unresolved dependencies remain obligations at every affected use. Apply the use's existing diagnostic when its required proof is absent.
 - **Authority and Discharge**: Prove each permission from a declaration, a traced source, a fresh-data rule, or an explicitly specified resource contract. Local discharge requires all relevant authority roots and environments to be confined; a local variable name or locally handled effect is not evidence of confinement. Minimal concrete capabilities (`E0529`) are calculated under these conservative rules, not arbitrary run-time equivalence.
-- **Source Annotations**: Binding modes, explicit mutable arguments, local writable-sharing markers, and required concrete invocation capabilities remain checked. Inference may determine their required spelling, but adding an annotation cannot supply absent authority or change sharing, object identity, or resource ownership. A completion that would require such a semantic change is not a valid annotation-only correction.
+- **Source Annotations**: Infer and check binding/parameter modes, argument markers, local writable-sharing markers, return construction/modes/sources, effects, captures, and concrete invocation capabilities. Missing required function annotations must be completed; inference is never an exemption from spelling them. Adding an annotation cannot supply absent authority or change sharing, object identity, evaluation order, or resource ownership. A completion requiring a semantic change is invalid.
 - **Diagnostic Provenance**: Semantic diagnostics MUST make the derived access, sharing, escape, and effect obligations and their source explanations available, including facts omitted from source. An explanation identifies the relevant origin or contract, propagation steps, involved use or boundary, and the rule that accepts or rejects it. Multiple possible origins and an unproved disjointness condition must be reported as such, not replaced with a fabricated exact origin. Explanations also apply to accepted programs and inferred obligations; their presentation is optional and cannot change validity.
 
 For `hidden`, connect `source`'s writer through the `ref` argument, `ref` member, return, and prohibited immutable reception. For `stolen`, identify the return's `ref` permission.
 
 ```ril
 type Cell = { var count: int }
-fn copy_cell(value: Cell) -> Cell { clone(value) }
-fn swap(mut a: Cell, mut b: Cell) &mut {
+fn copy_cell(value: Cell) -> new Cell { clone(value) }
+fn swap(mut a: Cell, mut b: Cell) -> () &mut {
     let saved = a.count
     a.count = b.count
     b.count = saved
@@ -1268,7 +1271,7 @@ alias.count += 1
 -- swap(mut first, mut alias)         -- Error [E0523]: different names for the same writable object
 ```
 
-- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no external writer or active environment survives. A private fresh result may instead stay writable. Parameter/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until their lexical scope ends; merely having no later textual use does not revoke it. Reassigning `var mut` replaces that binding's path but does not revoke other paths to the old value.
+- **Local Construction**: A fresh ordinary result may enter `let` when its construction scope or call ends and no external writer or active environment survives. A `new` return preserves construction eligibility for the caller; a plain data return publishes immutable. Parameter/external aliases retain their restrictions (`E0528`). Ordinary writable bindings retain their authority until their lexical scope ends; merely having no later textual use does not revoke it. Reassigning `var mut` replaces that binding's path but does not revoke other paths to the old value.
 
 - **Fresh Evaluation**: Each successful ordinary allocation creates new storage distinct from pre-existing storage. A newly constructed aggregate may still contain references to pre-existing objects; freshness of its outer slots does not establish disjointness of its reachable graph. Each ordinary deep clone creates new writable regions isolated from the source and all pre-existing writable regions, preserving aliases within that one copy. Repeated evaluations of one expression do not denote one shared allocation. Calling an arbitrary function twice does not establish freshness; the function's actual return relation must supply it.
 
@@ -1276,7 +1279,8 @@ alias.count += 1
 
 ```ril
 -- Cell and swap have the preceding contracts; choose_order is a run-time bool input.
-fn permute(flag: bool, ^mut a: Cell, ^mut b: Cell) -> (mut Cell, mut Cell) &^mut {
+fn permute(flag: bool, ^mut a: Cell, ^mut b: Cell)
+    -> new (mut ^mut(a, b) Cell, mut ^mut(a, b) Cell) &^mut {
     if flag { (^mut a, ^mut b) } else { (^mut b, ^mut a) }
 }
 let mut left = Cell.{ count: 1 }
@@ -1441,7 +1445,7 @@ Sharing multiplicity and allocation identity do not distinguish static arguments
 
 ```ril
 -- type TooMany = Option<int, str>    -- Error [E0340]: Option has one generic parameter
-fn make_empty<T>() -> []T { [] }
+fn make_empty<T>() -> new []T { [] }
 -- let unknown = make_empty()        -- Error [E0344]: no context determines T
 let known: []int = make_empty()       -- OK: result context determines T
 ```
@@ -1503,7 +1507,7 @@ let p1: Pair<int> = .{ first: 1, second: 2 }    -- OK: Second defaults to First 
 -- Error [E0318]: literal values cannot be used as types; declare a tagged sum type instead
 
 -- Rejection: Runtime expression passed to const generic (E0814):
-fn check_buf(runtime_size: int) {
+fn check_buf(runtime_size: int) -> () {
     -- let bad_b: Buffer<u8, runtime_size> = Buffer.{ data: [], len: 0 }
     -- Error [E0814]: const generic parameter 'cap' expects compile-time constant, found runtime expression 'runtime_size'
 }
@@ -1555,7 +1559,7 @@ ch.buffer !> Array::push(42)
 ch.writer(mut ch.buffer)              -- Callable field writes its explicit data argument
 assert(ch.buffer == [42, 0])
 
-fn test_valid_binding() @Io {
+fn test_valid_binding() -> () @Io {
     let result: str = Io::read_line() -- The call has Io; the resulting str has no effect suffix
     assert(result == "ready")
 }
@@ -1569,7 +1573,7 @@ type NullableInt = MakeNullable<int>
 ```ril
 -- Io has the preceding declaration. Module storage for the named-state cases:
 var app_cache = 0
-fn update_cache() &{mut app_cache} { app_cache += 1 }
+fn update_cache() -> () &{mut app_cache} { app_cache += 1 }
 
 -- type BadEffect = @Io               -- Error [E0330]: a single effect is not a data type
 -- type BadCombined = @Io + Async     -- Error [E0330]: neither is an effect set
@@ -1712,7 +1716,7 @@ source.count += 1
 -- let bad = source                    -- Error [E0535]: a surviving writer prevents immutable publication
 -- let bad_ref = observer             -- Error [E0535]: wrapping or aliasing a live ref is not immutable
 
-fn make_items() -> []int {
+fn make_items() -> new []int {
     let mut items: []int = []
     items !> Array::push(1)
     items
@@ -2112,7 +2116,7 @@ pub fn read_attribute(elem: DomElement, key: str) -> Result<?str, DomError> @Fib
 -- pub let BAD_CONST: int = 100        -- Error [E0901]: constants in '.d.ril' cannot have an initializer expression
 
 -- Opaque penetration prohibited (E0907):
--- fn test_penetrate(elem: DomElement) {
+-- fn test_penetrate(elem: DomElement) -> () {
 --     let id = elem.id                 -- Error [E0907]: cannot access field on opaque type 'DomElement'
 -- }
 
@@ -2130,13 +2134,13 @@ pub fn transform_text(text: str, transform: Transformer) -> str @{} &{}
 where
     type Transformer = fn(str) -> str
 
--- pub fn edit(mut items: []int) @Fiber &mut
+-- pub fn edit(mut items: []int) -> () @Fiber &mut
 -- Error [E0908]: no listed contract grants ordinary mutable-data exchange
--- pub fn keep(^mut callback: fn() -> () &closure) &^mut
+-- pub fn keep(^mut callback: fn() -> () &closure) -> () &^mut
 -- Error [E0908]: default callback authority cannot be retained
 -- pub fn hidden_callback() -> { action: fn() -> () }
 -- Error [E0908]: ordinary returned data cannot conceal callable authority
--- pub fn use_writer(callback: fn(mut []int) -> () &mut)
+-- pub fn use_writer(callback: fn(mut []int) -> () &mut) -> ()
 -- Error [E0908]: a callback cannot receive a foreign ordinary writer under the default exchange rules
 ```
 
@@ -2799,7 +2803,7 @@ fn search_matrix(grid: [][]int) -> ?int {
     found                              -- Pure signature: @Search completely discharged
 where
     eff Search { hit(int) -> () }
-    fn walk_grid(g: [][]int) @Search {
+    fn walk_grid(g: [][]int) -> () @Search {
         for g as row {
             for row as item {
                 if item > 0 { Search::hit(item) }
@@ -2985,7 +2989,7 @@ for 1..=6 as n {
 assert(odd_sum == 9)
 
 -- Function early return (bare 'return' or 'return expr'):
-fn log_positive(val: int) @Fiber {
+fn log_positive(val: int) -> () @Fiber {
     if val <= 0 { return }             -- Bare 'return': early exit from unit function
     println("positive: {val}")
 }
@@ -3284,7 +3288,7 @@ type Cell = { var value: ?int }
 
 -- E0533: the callback's possible writes are not known to be independent.
 -- An omitted state row on fn() -> () preserves actual obligations; it does not promise purity.
-fn unknown_writer(mut cell: Cell, action: fn() -> ()) &mut {
+fn unknown_writer(mut cell: Cell, action: fn() -> ()) -> () &mut {
     if cell.value != None {
         let before = cell.value + 1           -- OK: narrowed to int
         action()                              -- Cannot prove that cell.value stays unchanged
@@ -3294,8 +3298,8 @@ fn unknown_writer(mut cell: Cell, action: fn() -> ()) &mut {
 }
 
 -- E0310: this callee is known to write the very field that was narrowed.
-fn clear(mut cell: Cell) &mut { cell.value = None }
-fn known_writer(mut cell: Cell) &mut {
+fn clear(mut cell: Cell) -> () &mut { cell.value = None }
+fn known_writer(mut cell: Cell) -> () &mut {
     if cell.value != None {
         clear(mut cell)                       -- Known write invalidates cell.value's refinement
         -- let after = cell.value + 1         -- Error [E0310]: the earlier narrowing no longer applies
@@ -3303,7 +3307,7 @@ fn known_writer(mut cell: Cell) &mut {
 }
 
 -- OK: the same unknown callback cannot change an independent immutable snapshot.
-fn snapshot_before_callback(mut cell: Cell, action: fn() -> ()) &mut {
+fn snapshot_before_callback(mut cell: Cell, action: fn() -> ()) -> () &mut {
     let snapshot = clone(ref cell)
     if snapshot.value != None {
         action()
@@ -3370,7 +3374,7 @@ fn drain_cursor(initial: ?int) -> int {
 }
 
 -- Reassignment invalidation (E0310):
-fn test_invalidation() {
+fn test_invalidation() -> () {
     var opt: ?int = Some(42)
     if opt != None {
         let _ = opt + 1                        -- OK: opt is int
@@ -3380,7 +3384,7 @@ fn test_invalidation() {
 }
 
 -- Contradictory narrowing rejection (E0311):
-fn test_contradiction(g: Geometry) {
+fn test_contradiction(g: Geometry) -> () {
     if g is Geometry::Circle {
         -- if g is Geometry::Rect {            -- Error [E0311]: condition 'g is Geometry::Rect' is statically unsatisfiable; target is already narrowed to 'Geometry::Circle'
         --     println("unreachable")
@@ -3389,7 +3393,7 @@ fn test_contradiction(g: Geometry) {
 }
 
 -- A ref retains the selected immutable object, not the reassignable slot:
-fn test_aliased_hazard() {
+fn test_aliased_hazard() -> () {
     var raw: ?int = Some(10)
     let ref selected = raw
     raw = None
@@ -3397,7 +3401,7 @@ fn test_aliased_hazard() {
 }
 
 -- is reads existing names and narrows the subject without binding payload names:
-fn test_non_binding_predicate(g: Geometry) {
+fn test_non_binding_predicate(g: Geometry) -> () {
     if g is Geometry::Circle && g.0 > 5.0 {
         let radius = g.0                       -- OK: payload access via .0
         -- let escaped = r                     -- Error [E0204]: is introduced no r
@@ -3405,7 +3409,7 @@ fn test_non_binding_predicate(g: Geometry) {
 }
 
 -- Transitive Latent Havoc via mutating call:
-fn test_latent_havoc() {
+fn test_latent_havoc() -> () {
     var count: ?int = Some(10)
     if count != None {
         let mut step = \-> &{closure, mut count} { count = None }
@@ -3415,14 +3419,14 @@ fn test_latent_havoc() {
 }
 
 -- Generic confinement: bare type parameter rejected:
-fn test_generic_confinement<T>(x: Geometry) {
+fn test_generic_confinement<T>(x: Geometry) -> () {
     -- if x is T {                             -- Error [E0301]: cannot test unconstrained generic type parameter 'T' in narrowing predicate
     --     println("invalid")
     -- }
 }
 
 -- Dead-path mutation phase ordering:
-fn test_dead_write_phase_ordering() {
+fn test_dead_write_phase_ordering() -> () {
     -- var unused: ?int = Some(10)            -- Error [E0527]: variable 'unused' declared 'var' is never modified along reachable paths
     -- if false {
     --     unused = Some(20)                  -- Write in statically unreachable branch does not satisfy Definite Mutation Invariant
@@ -3430,7 +3434,7 @@ fn test_dead_write_phase_ordering() {
 }
 
 -- Path depth bound (depth <= 3 tracked; depth > 3 requires local 'let' anchor):
-fn test_bounded_path_depth(root: { a: ?{ b: ?{ c: ?{ d: int } } } }) {
+fn test_bounded_path_depth(root: { a: ?{ b: ?{ c: ?{ d: int } } } }) -> () {
     if (root.a != None) && (root.a.b != None) && (root.a.b.c != None) {
         let c_node = root.a.b.c                -- OK: path depth 3 (root.a.b.c) tracked
         let d_val = c_node.d                   -- OK: access deeper fields through local anchor
@@ -3460,10 +3464,10 @@ MutableArgumentMode  ::= "mut" | "^mut"
 ArgumentList         ::= Argument { "," Argument } [ "," ]
 CallExpr             ::= Expression "(" [ ArgumentList ] ")" [ TrailingClosure ] | Expression TrailingClosure
 TrailingClosure      ::= AnonFnExpr
-CallableType     ::= "fn" "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ EffectAnnot ] [ StateAnnot ]
+CallableType     ::= "fn" "(" [ ParameterTypeList ] ")" [ ReturnType ] [ EffectAnnot ] [ StateAnnot ]
 ParameterTypeList::= ParameterTypeItem { "," ParameterTypeItem } [ "," ]
 ParameterTypeItem ::= [ ParameterMode ] [ SnakeCase ":" ] TypeExpression
-ReturnType       ::= "->" TypeExpression
+ReturnType       ::= "->" ReturnContract
 ```
 
 Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut clone(x))`); `ref` observes an expression. A parenthesized sharing expression cannot replace a parameter-mode marker (`E0405`). [Fresh storage inputs](#fresh-values-in-storage-calls) receive construction authority before immutable publication; other ordinary parameters require immutable data. Constructors follow their product member and payload contracts.
@@ -3471,10 +3475,10 @@ Leading `mut`/`^mut` arguments require assignable targets (`E0410` for `f(^mut c
 ```ril
 type DeferredFactory = fn() -> fn() -> int @Io -- Io belongs to the returned callable
 type EffectfulFactory = fn() -> (fn() -> int) @Io -- Io belongs to the factory
-type CapturingFactory = fn() -> (fn() -> int &closure) &capture
+type CapturingFactory = fn() -> new (fn() -> int &closure) &capture
 ```
 
-Arrows associate right; effect/state suffixes bind to the nearest callable not closed by parentheses. Omitted returns mean `-> ()` on named functions, callable types, and effect operations. Anonymous results are inferred.
+Arrows associate right; effect/state suffixes bind to the nearest callable not closed by parentheses. Return contracts follow [return construction, permissions, and sources](#return-construction-permissions-and-sources). The grammar admits incomplete signatures during development, but executable definitions must complete missing result annotations, including `-> ()`, under [mandatory contract completion](#mandatory-contract-inference-and-completion). A callable type or bodyless effect operation may abbreviate a unit result; an anonymous definition may obtain its explicit result contract from a complete contextual callable type.
 
 #### Dual-Tier Where Invariants
 
@@ -3575,60 +3579,84 @@ fn next_value(n: int) -> int {
     result
 }
 var global_count = 0
-fn tick() &{mut global_count} { global_count += 1 }
-fn visible() &{mut global_count} { tick() }
--- fn hidden() { tick() }             -- Error [E0510]: the ordinary wrapper has undeclared concrete state
+fn tick() -> () &{mut global_count} { global_count += 1 }
+fn visible() -> () &{mut global_count} { tick() }
+-- fn hidden() -> () { tick() }             -- Error [E0510]: the ordinary wrapper has undeclared concrete state
 
 eff Log { write(str) -> () }
-fn logged() @Log { Log::write("event") }
--- fn hidden_effect() { logged() }    -- Error [E0612]: concrete residual effects require declaration
+fn logged() -> () @Log { Log::write("event") }
+-- fn hidden_effect() -> () { logged() }    -- Error [E0612]: concrete residual effects require declaration
 ```
 
-- **Named Definitions**: Module-level and block-local `fn` definitions obey the same rule. After lawful handling and local discharge, their current invocation has no concrete state or residual effect obligations unless explicitly declared. Known obligations inherited from another callable are concrete too; missing state is `E0510`, and missing effects are `E0612`.
+- **Definitions**: Public, private, module-level, block-local, and anonymous functions obey the same inference and completion rules. Infer concrete state and residual effect obligations after lawful handling and local discharge, then require their source annotations. Known obligations inherited from another callable are concrete too; missing state is `E0510`, and missing effects are `E0612`. An omitted annotation never makes an inferred obligation empty.
 - **Local Purity**: Mutation of confined local storage, immutable publication of eligible construction results, and call-local environments do not by themselves require outward state annotations. Creating a surviving environment or an additional surviving writer still requires the applicable `&capture`, `&^mut`, or named-source declaration.
 - **Callback Dependence**: Obligations that genuinely depend on callable values supplied through formal parameters may be inferred and forwarded symbolically. This includes callable constituents reached through a parameter's fields, elements, projections, or preserved aliases; the dependency remains tied to the actual parameter value. Having such a parameter or returning a callable is not permission to infer unrelated concrete obligations. A caller that supplies a known callable, directly or inside an aggregate, must declare the resulting concrete obligations after its own handling and local discharge.
-- **Anonymous Definitions**: Anonymous functions may infer their obligations, including captures. Those obligations remain checked at every use and cannot conceal concrete state or effects from an enclosing named invocation. Latent body operations are obligations of the later invocation; creating a callable does not execute them.
+- **Anonymous Definitions**: Infer the same complete contract, including captures, as for named definitions and require completion of missing annotations. A complete explicit contextual callable type may supply the signature; concrete lexical source access still requires its checked source groups. Latent body operations are obligations of the later invocation; creating a callable does not execute them.
 
 ```ril
-fn invoke(action: fn() -> ()) { action() }
-fn declared_state() &{mut global_count} { invoke(tick) }
-fn declared_effect() @Log { invoke(logged) }
--- fn hidden_through_callback() { invoke(tick) } -- Error [E0510]: this caller's dependency is concrete
--- fn hidden_through_alias() { let action = tick; action() } -- Error [E0510]
--- fn fixed_conflict(action: fn() -> ()) &{} { tick(); action() }
+fn invoke(action: fn() -> ()) -> () { action() }
+fn declared_state() -> () &{mut global_count} { invoke(tick) }
+fn declared_effect() -> () @Log { invoke(logged) }
+-- fn hidden_through_callback() -> () { invoke(tick) } -- Error [E0510]: this caller's dependency is concrete
+-- fn hidden_through_alias() -> () { let action = tick; action() } -- Error [E0510]
+-- fn fixed_conflict(action: fn() -> ()) -> () &{} { tick(); action() }
 -- Error [E0534]: a closed definition already contains concrete state
-fn invoke_pure(action: fn() -> ()) @{} &{} { action() }
-fn nothing() {}
+fn invoke_pure(action: fn() -> ()) -> () @{} &{} { action() }
+fn nothing() -> () {}
 invoke_pure(nothing)                  -- OK
 -- invoke_pure(tick)                 -- Error [E0534]: total state is not empty
 -- invoke_pure(logged)               -- Error [E0534]: total effect row is not empty
 
 type Actions = { run: fn() -> () }
-fn invoke_field(actions: Actions) { actions.run() }
-fn declared_field() &{mut global_count} { invoke_field(.{ run: tick }) }
--- fn hidden_field() { invoke_field(.{ run: tick }) } -- Error [E0510]: wrapping the known callback does not erase state
+fn invoke_field(actions: Actions) -> () { actions.run() }
+fn declared_field() -> () &{mut global_count} { invoke_field(.{ run: tick }) }
+-- fn hidden_field() -> () { invoke_field(.{ run: tick }) } -- Error [E0510]: wrapping the known callback does not erase state
+```
+
+#### Mandatory Contract Inference and Completion
+
+The compiler MUST infer the full checked contract of every function and require its prescribed annotations in executable source. This applies equally to public, private, local, anonymous, and test functions. Inference is mandatory analysis; leaving its required source spelling absent is a development error, not a different execution mode.
+
+- **Inferred Facts**: Infer parameter and result types/modes, construction eligibility, immutable/live origins, reference projections, possible aliases, retained writers, captures, effects, named state, escape/ownership constraints, and callback dependencies. Classify immutable data, writable data, immutable sharing, read-only live sharing, and writable sharing at every affected path; report possible sharing when exact overlap is unproved. Scalar copies carry no reference relation.
+- **Required Spelling**: Require explicit parameter types and necessary modes, a result contract, nonempty concrete effect/capability rows, and concrete capture-source groups. Empty first-order rows keep their canonical omitted spelling; do not add prohibited `@{}` or `&{}`. Immutable sharing and still-symbolic callback/termination dependencies remain in verified metadata where no source notation is prescribed. No visibility or anonymous-function exception permits missing required annotations.
+- **Development Diagnostics**: As soon as enough context exists, show the inferred contract and the missing or conflicting annotation. A missing parameter type or result contract is `E0544`; existing missing state/effect/argument-mode diagnostics remain `E0510`, `E0612`, and `E0405`. An explicit but invalid return-source claim uses `E0545`; malformed syntax retains its syntax diagnostic. Unresolved type inference remains `E0344`. A build with missing required annotations is rejected. A compiler/editor may offer completion, but must not silently accept an incomplete definition.
+- **Annotation-Only Completion**: Completion may insert only annotations justified by already lawful operations and origins. It cannot clone, freeze a surviving writer, invent a pinned root, consume a resource, grant an ordinary `mut` parameter escaping write authority, or change evaluation order. An actual permission or escape violation retains its own diagnostic. An explicitly chosen immutable result may lawfully publish eligible private construction; annotations cannot publish an external live graph.
+- **Anonymous Signatures**: An explicit, complete contextual callable type may provide parameter and result annotations by position. Otherwise require a typed binding or another explicit callable-signature context for the anonymous value; its concrete effect/state/source annotations remain checked. Projection-accessor sugar uses the same contextual-signature rule. Schematic fixtures may display the abbreviated form under the document conventions.
+- **Boundaries and Proof Limits**: Preserve inferred contracts and relations in compiled module interfaces, callable values/types, generic instantiations, closures, and opaque abstractions. A bodyless foreign declaration supplies a trusted explicit contract; the compiler cannot infer an absent implementation. Loops, recursion, and run-time selections retain conservative alternatives. Failure to prove a permission-dependent fact cannot be repaired by adding an annotation.
+- **Explanations**: Make each classification and its origin/propagation chain available during development, for accepted as well as rejected uses. Show all possible origins and unproved overlap rather than inventing a unique source. This is a static guarantee within the language's checked model and explicit foreign contracts, not a claim that arbitrary run-time behavior is decidable.
+
+```ril
+-- Annotation-completion cases: these incomplete definitions are rejected as written.
+-- fn make() { Cell.{ count: 0 } }      -- Error [E0544]: complete as fn make() -> new Cell
+-- fn id(x) { x }                      -- Error [E0344]: no unique parameter/result type
+
+type Cell = { var count: int }
+fn make() -> new Cell { Cell.{ count: 0 } }
+fn inspect(cell: Cell) -> int { cell.count }
+let read: fn(cell: Cell) -> int = \cell -> cell.count -- OK: explicit context completes the lambda
+-- let missing = \cell -> cell.count   -- Error [E0344]: no record type established
 ```
 
 #### Empty Rows on Higher-Order Signatures
 
 ```ril
-fn plain() {}                              -- Ordinary named functions use default purity
+fn plain() -> () {}                              -- Ordinary named functions use default purity
 halt fn answer() -> int { 42 }             -- halt also needs no empty rows
 type Action = fn() -> ()                   -- First-order callable types preserve actual obligations
 
-fn effects_closed(action: Action) @{} { action() }
-fn state_closed(action: Action) &{} { action() }
-fn both_closed(action: Action) @{} &{} { action() }
+fn effects_closed(action: Action) -> () @{} { action() }
+fn state_closed(action: Action) -> () &{} { action() }
+fn both_closed(action: Action) -> () @{} &{} { action() }
 type PureInvoker = fn(Action) -> () @{} &{} -- The annotated arrow itself is higher-order
 let invoke_anonymously = \action: Action -> @{} &{} action()
 
--- fn noisy_effect() @{} {}                -- Error [E0542]
--- fn noisy_state() &{} {}                 -- Error [E0542]
--- fn noisy_both() @{} &{} {}               -- Error [E0542]
--- halt fn noisy_halt() @{} {}              -- Error [E0542]
+-- fn noisy_effect() -> () @{} {}                -- Error [E0542]
+-- fn noisy_state() -> () &{} {}                 -- Error [E0542]
+-- fn noisy_both() -> () @{} &{} {}               -- Error [E0542]
+-- halt fn noisy_halt() -> () @{} {}              -- Error [E0542]
 -- let noisy_lambda = \-> &{} ()            -- Error [E0542]
 -- type ClosedAction = fn() -> () @{} &{}   -- Error [E0542]: first-order arrow, including in an alias
--- fn bad_parameter(action: fn() -> () @{}) { action() }
+-- fn bad_parameter(action: fn() -> () @{}) -> () { action() }
 -- Error [E0542]: the callback arrow is first-order; annotate the enclosing function instead
 ```
 
@@ -3636,7 +3664,7 @@ A higher-order signature receives or returns callable values, directly or throug
 
 ```ril
 type Jobs = { run: Action }
-fn run_job(job: Jobs) @{} &{} { job.run() } -- Callback constituents count
+fn run_job(job: Jobs) -> () @{} &{} { job.run() } -- Callback constituents count
 type JobRunner = fn(Jobs) -> () @{} &{}
 
 type Factory = fn() -> (fn() -> ()) @{} &{} -- Rows belong to the higher-order factory
@@ -3644,10 +3672,10 @@ fn give_action() -> Action @{} &{} { plain }
 -- type BadFactory = fn() -> fn() -> () @{} &{}
 -- Error [E0542]: without parentheses, the rows belong to the returned first-order arrow
 
--- fn known_call_only() @{} { plain() }    -- Error [E0542]: calling a known function is not higher-order
--- fn unknown_shape<T>(value: T) &{} {}    -- Error [E0542]: unconstrained T does not establish a callable shape
+-- fn known_call_only() -> () @{} { plain() }    -- Error [E0542]: calling a known function is not higher-order
+-- fn unknown_shape<T>(value: T) -> () &{} {}    -- Error [E0542]: unconstrained T does not establish a callable shape
 -- In a .d.ril declaration fixture:
--- pub fn noisy_foreign() @{}             -- Error [E0542]: first-order external declaration
+-- pub fn noisy_foreign() -> () @{}             -- Error [E0542]: first-order external declaration
 ```
 
 `@{}` closes the invocation's effect row; `&{}` closes its capability row, including captures and inherited access. Returned callables retain their own inferred rows.
@@ -3655,7 +3683,7 @@ fn give_action() -> Action @{} &{} { plain }
 ```ril
 -- Log and logged have the preceding contracts.
 fn give_logged() -> Action @{} &{} { logged } -- Returning an existing callable performs no Log operation
--- fn hidden_returned_effect() { give_logged()() } -- Error [E0612]: the later invocation still requires Log
+-- fn hidden_returned_effect() -> () { give_logged()() } -- Error [E0612]: the later invocation still requires Log
 -- both_closed(logged)                       -- Error [E0534]: valid higher-order constraint, incompatible callback
 ```
 
@@ -3665,10 +3693,10 @@ fn give_logged() -> Action @{} &{} { logged } -- Returning an existing callable 
 type Action = fn() -> ()
 type PureInvoker = fn(Action) -> () @{} &{}
 eff Log { write(str) -> () }
-fn plain() {}
-fn logged() @Log { Log::write("event") }
-fn invoke(action: Action) { action() }
-fn closed(action: Action) @{} &{} { action() }
+fn plain() -> () {}
+fn logged() -> () @Log { Log::write("event") }
+fn invoke(action: Action) -> () { action() }
+fn closed(action: Action) -> () @{} &{} { action() }
 let action: Action = logged           -- OK: first-order ascription keeps the actual Log obligation
 closed(plain)                        -- OK: no residual obligation
 -- closed(action)                    -- Error [E0534]: omitted rows did not erase Log
@@ -3676,37 +3704,37 @@ let checked: PureInvoker = closed
 -- checked(logged)                    -- Error [E0534]: ascription preserves the closed constraint
 let selected: Action = if choose_log { plain } else { logged }
 -- closed(selected)                   -- Error [E0534]: a run-time alternative retains Log
-fn call_plain() { invoke(plain) }      -- Each Action value has its own dependencies
-fn call_logged() @Log { invoke(logged) }
-fn call_logged_alias() @Log {
+fn call_plain() -> () { invoke(plain) }      -- Each Action value has its own dependencies
+fn call_logged() -> () @Log { invoke(logged) }
+fn call_logged_alias() -> () @Log {
     let alias: Action = logged
     invoke(alias)
 }
--- fn missing_log() { let alias: Action = logged; invoke(alias) }
+-- fn missing_log() -> () { let alias: Action = logged; invoke(alias) }
 -- Error [E0612]: a value alias cannot hide the named caller's effect obligation
 ```
 
 | Callable contract | Rule |
 | :--- | :--- |
 | Omitted type rows | Preserve each actual value's effects, environment mode, named origins, and sharing obligations, including across modules and private abstractions |
-| Alternatives | Retain every possible obligation under [provenance](#complete-provenance-and-optional-annotations) |
+| Alternatives | Retain every possible obligation under [provenance](#complete-provenance-and-required-annotations) |
 | Nonempty type rows | Total upper bounds; parameter modes and handle permissions do not change |
 | Higher-order empty rows | Constrain total invocation obligations, including concrete and symbolic callback dependencies |
-| Definition annotations | Declare concrete obligations; still-symbolic callback dependencies continue to forward |
+| Definition annotations | Compiler-inferred concrete obligations must be written; still-symbolic callback dependencies continue to forward |
 | Closed-constraint failure | Incompatible actual argument: E0534; fixed incompatible body: reject the definition |
 | Bodyless foreign declarations | Omitted effect/state rows are closed; no termination or budget-coverage guarantee |
 | `&closure` | Abstract capture details; cannot erase actual retained publication `&^mut` (E0534) |
 
-Invoking already shared storage does not itself publish another writer. Actual environment mode still determines whether a callable needs a writable handle. Termination and budget-coverage conditions remain separate from both rows; type ascription preserves them. Returns and symbolic forwarding require no extra source annotation. Provenance diagnostics retain facts omitted from source.
+Invoking already shared storage does not itself publish another writer. Actual environment mode still determines whether a callable needs a writable handle. Termination and budget-coverage conditions remain separate from both rows; type ascription preserves them. Returns require their inferred construction/mode/source contract; still-symbolic callback forwarding remains verified metadata. Provenance diagnostics expose the full dependencies as well as their required source spelling.
 
 ```ril
 -- Action, plain, and logged have the preceding contracts.
-fn repeat(n: int, action: Action) {
+fn repeat(n: int, action: Action) -> () {
     if n > 0 { action(); repeat(n - 1, action) }
 }
-fn repeat_plain() { repeat(2, plain) }
-fn repeat_logged() @Log { repeat(2, logged) }
--- fn erase_recursive() { repeat(2, logged) } -- Error [E0612]
+fn repeat_plain() -> () { repeat(2, plain) }
+fn repeat_logged() -> () @Log { repeat(2, logged) }
+-- fn erase_recursive() -> () { repeat(2, logged) } -- Error [E0612]
 ```
 
 Recursive descent does not discharge callback obligations. `repeat_plain` is finite; `repeat_logged` retains Log and the selected handler's termination condition. A possibly non-terminating callback adds no effect label.
@@ -3743,7 +3771,7 @@ fn invoke_mut(mut f: fn() -> int &closure) -> int &mut { f() }
 let mut counter = create_counter(0)
 let first = invoke_mut(mut counter)
 
-fn apply_to_cell(mut cell: Cell, f: fn(mut Cell) -> () &mut) &mut {
+fn apply_to_cell(mut cell: Cell, f: fn(mut Cell) -> () &mut) -> () &mut {
     f(mut cell)
 }
 let mut cell = Cell.{ count: 0 }
@@ -3752,6 +3780,94 @@ apply_to_cell(mut cell, bump)
 ```
 
 Forwarding preserves the contract above. Callback-handle authority and callback data-parameter modes remain distinct: an ordinary callback argument cannot invoke a mutable environment; that handle needs explicit `mut`.
+
+### Return Construction, Permissions, and Sources
+
+A function result distinguishes unpublished construction, immutable data, read-only references, and retained writable references. `new` is a return-contract keyword, not an allocation expression or an operation that upgrades existing data. `ref` is the same read-only permission used by bindings and parameters; its parenthesized source list records the returned reference relationship.
+
+```ebnf
+ReturnContract   ::= [ ReturnMode ] ReturnShape
+ReturnMode       ::= "new" | ( "ref" | "^mut" ) "(" ReturnSources ")"
+ReturnSources    ::= ReturnSource { "," ReturnSource } [ "," ]
+ReturnSource     ::= QualifiedName { ReturnSourceStep }
+ReturnSourceStep ::= "." ( FieldLabel | TupleIndex | "(" Expression ")" )
+                   | "[" Expression "]"
+ReturnShape      ::= TypeExpression | ReturnRecord | ReturnTuple
+ReturnRecord     ::= "{" [ ReturnField { "," ReturnField } [ "," ] ] "}"
+ReturnField      ::= [ MemberMode ] FieldLabel ":" ReturnContract
+ReturnTuple      ::= "(" ReturnMember "," ReturnMember { "," ReturnMember } [ "," ] ")"
+ReturnMember     ::= [ MemberMode ] ReturnContract
+```
+
+`ReturnRecord` and `ReturnTuple` extend the ordinary record/tuple schema only inside a result contract. Erasing their result annotations leaves the declared member modes and data types. Member modes still bound access: a `ref` member cannot carry a writable authority, and a default member must be immutable. Within a `new` schema, a member without its own result modifier follows its member mode and actual provenance; it is not a separate immutable-return boundary. These annotations do not create new standalone data types or permit `new` at arbitrary expression positions.
+
+| Result contract | Checked guarantee |
+| :--- | :--- |
+| `new Cell` | Unpublished construction authority reaches the caller; lawful receiving modes select immutable publication or writable reception |
+| `Cell` | Deeply immutable ordinary data; immutable sharing is permitted and tracked, but no writer or live observation may be hidden |
+| `ref(x.cell) Cell` | Read-only reference derived from `x.cell`; preserve whether its target is immutable or live |
+| `^mut(x.cell) Cell &^mut` | A retained writable reference derived from the parameter path `x.cell`; both parameter and argument must permit `^mut` |
+
+```ril
+type Cell = { var count: int }
+type Box = { mut cell: Cell }
+
+fn make() -> new Cell { Cell.{ count: 0 } }
+fn same(cell: Cell) -> Cell { cell }
+fn observe(ref box: Box) -> ref(box.cell) Cell { box.cell }
+fn share(^mut box: Box) -> ^mut(box.cell) Cell &^mut { box.cell }
+let getter: fn(ref box: Box) -> ref(box.cell) Cell = observe
+-- let erased: fn(ref box: Box) -> Cell = observe -- Error [E0534]: the live return relation cannot be erased
+
+let immutable = make()                 -- Immutable publication at reception
+let mut writable = make()              -- Initial writable reception
+writable.count += 1
+let same_immutable = same(immutable)    -- Tracked immutable sharing
+-- let mut thawed = same(immutable)    -- Error [E0528]: an immutable return grants no writer
+
+let mut box = Box.{ cell: Cell.{ count: 0 } }
+let ref reader = observe(ref box)
+let mut writer = share(^mut box)       -- Retention already marked at the call boundary
+writer.count += 1
+assert(reader.count == 1 && box.cell.count == 1)
+-- let hidden = observe(ref box)       -- Error [E0535]: a live observer cannot become immutable
+-- let mut stolen = observe(ref box)   -- Error [E0528]: a read-only return cannot grant writes
+```
+
+- **Construction (`E0546`)**: `new` requires eligible private construction on every possible returned path to which it applies. The result is produced internally, or forwarded from a verified `new` result without an intervening read-only reception. Its construction-writable regions must be isolated from pre-existing external writable regions; they cannot have a surviving outside observer, writer, or active environment. Proven immutable constituents may remain shared and never acquire write permission. `new` does not imply unique ownership, absence of internal aliases, or universally writable members.
+- **Reception**: `let` and plain `var` publish an eligible ordinary `new` result immutable; `let mut` and `var mut` receive its eligible construction authority, subject to member permissions and alias checks. A direct persistent `ref` still needs an established observation origin (`E0543`); passive observer wrappers retain their existing [origin rules](#normative-rules-for-read-only-references). Ordinary immutable parameter passage and plain data returns end construction eligibility. Resource and callable-environment restrictions still apply: for example, a new persistent mutating closure needs a writable handle and cannot be published through `let`.
+- **Publication**: A plain top-level data result `T` establishes deep immutability at the function return, even if a caller would request a writable binding. An explicit immutable result can publish lawful private construction. Existing immutable data, including data already received through `let` or an ordinary parameter, cannot be returned as `new` to recover construction authority (`E0546`). Scalar/value results use the plain form; they have no reference authority to mark with `new`, `ref`, or `^mut`.
+- **Sources (`E0545`)**: Every source resolves in the signature's declaration scope to a parameter, visible external binding, or captured binding with a verified origin. Source projections describe reference identity/reachability, not arithmetic data dependence. They are checked symbolic paths, never extra expression evaluation; index/key expressions may name parameters or compile-time values but cannot run calls or effects. `ref(a, b) T` / `^mut(a, b) T` preserve all possible sources, permissions, and correlations. Missing, invalid, or insufficient source relations are rejected; unproved overlap remains possible overlap. Copying a scalar or taking an isolated clone creates no borrowed relation to its input.
+- **Read-Only Escape**: A `ref(sources)` return preserves every origin's existing observation and escape restrictions. Call-time observation of a reassignable mutable root does not establish a persistent pinned origin (`E0531`). It never upgrades to writable access (`E0528`), and possible live sources cannot be published immutable (`E0535`). A proven immutable source remains immutable even when observed through `ref`.
+- **Writable Escape**: Returning a writable reference to a parameter, directly or through a field, element, wrapper, or closure, requires `^mut` on the parameter and argument plus `&^mut`. Ordinary `mut` authority ends at return and cannot escape (`E0528`). External/captured sources require their corresponding named retention capabilities. A result-source annotation does not replace an invocation capability, create a pinned origin, or repair an exclusivity conflict.
+- **Composites**: A newly allocated outer record, tuple, sum payload, collection, or environment does not make its reachable references new. Record/tuple result schemas may mark individual constituents as below. Other result shapes carry the same verified constituent provenance; a whole-result `ref(sources)` / `^mut(sources)` may summarize reachable external dependencies. A bare `new T` cannot conceal such dependencies. Newly created internal aliases, cycles, and relationships between result components remain in the inferred metadata, and any surviving independent writers still require `&^mut`.
+- **Calls and Abstraction**: Verify result modes and source relations in definitions, callable types, and effect-operation contracts, then substitute actual argument origins at each call. Callable types that mention parameter sources must name those parameters; renaming parameter labels also renames their bound source paths by position. Ascription cannot interchange `new`, immutable, read-only, and retained-writable guarantees or erase source relations (`E0534`); an explicit wrapper may perform lawful publication. Private/internal identities remain anchored in verified metadata without exposing private source names as public identifiers. Foreign declarations cannot claim ordinary `new` or live returns without an explicit supported exchange/resource contract.
+- **Inference**: Infer these result contracts along with the function's effects and state. Require missing result annotations under `E0544`; check explicit annotations against every retained alternative. An unresolved relation cannot justify freshness, immutability, disjointness, or escape. Existing non-annotation safety errors remain errors even if every annotation is present.
+
+```ril
+-- Cell and Box have the preceding declarations.
+fn wrap(ref box: Box) -> new { ref item: ref(box.cell) Cell } {
+    .{ ref item: box.cell }
+}
+let mut source = Box.{ cell: Cell.{ count: 0 } }
+let ref packet = wrap(ref source)
+source.cell.count += 1
+assert(packet.item.count == 1)
+-- let hidden = wrap(ref source)       -- Error [E0535]: the new wrapper still contains a live reference
+
+-- fn false_new(cell: Cell) -> new Cell { cell }
+-- Error [E0546]: the immutable parameter has no unpublished construction authority
+-- fn false_copy(ref cell: Cell) -> new Cell { cell }
+-- Error [E0546]: the result aliases its observed input
+-- fn mixed(flag: bool, cell: Cell) -> new Cell {
+--     if flag { Cell.{ count: 0 } } else { cell }
+-- }
+-- Error [E0546]: the existing immutable alternative has no construction authority
+-- fn temporary_writer(mut cell: Cell) -> ^mut(cell) Cell &^mut { cell }
+-- Error [E0528]: call-scoped mut authority cannot survive the call
+-- fn wrong_source(ref a: Cell, ref b: Cell) -> ref(a) Cell { b }
+-- Error [E0545]: the return's b origin is absent from the declared relation
+```
 
 ### Termination and halt Contracts
 
@@ -3787,16 +3903,16 @@ halt fn local_read() -> int {
     with ReadValue::get() -> resume 7
     ReadValue::get()
 }                                               -- Internal handling remains pure and finite
--- halt fn bad_io() @Fiber { Fiber::yield() }     -- Error [E0821]: outward effect
+-- halt fn bad_io() -> () @Fiber { Fiber::yield() }     -- Error [E0821]: outward effect
 
 var outside_count = 0
--- halt fn bad_state() &{mut outside_count} { outside_count += 1 }
+-- halt fn bad_state() -> () &{mut outside_count} { outside_count += 1 }
 -- Error [E0821]: outward capability
 
-fn invoke(action: fn() -> ()) { action() }
-halt fn invoke_finite(action: fn() -> ()) { action() }
-fn done() {}
-fn forever() { loop {} }
+fn invoke(action: fn() -> ()) -> () { action() }
+halt fn invoke_finite(action: fn() -> ()) -> () { action() }
+fn done() -> () {}
+fn forever() -> () { loop {} }
 invoke(done)                                    -- Finite
 -- invoke(forever)                              -- Legal, MayDiverge; not executed in this fixture
 invoke_finite(done)                             -- OK
@@ -3830,26 +3946,26 @@ fn even(n: int) -> bool { if n <= 0 { true } else { odd(n - 1) } }
 fn odd(n: int) -> bool { if n <= 0 { false } else { even(n - 1) } }
 halt fn parity(n: int) -> bool { even(n) }        -- Certified mutual descent
 
-fn stuck(n: int) { if n > 0 { stuck(n) } }       -- MayDiverge: no descent
-fn skipped_progress(n: int) {
+fn stuck(n: int) -> () { if n > 0 { stuck(n) } }       -- MayDiverge: no descent
+fn skipped_progress(n: int) -> () {
     var i = 0
     while i < n { if i == 0 { next }; i += 1 }
 }                                               -- MayDiverge: next bypasses progress
--- halt fn bad_loop() { skipped_progress(1) }    -- Error [E0820]
+-- halt fn bad_loop() -> () { skipped_progress(1) }    -- Error [E0820]
 
 type Link = { var mut following: ?Link }
-fn follow(node: Link) {
+fn follow(node: Link) -> () {
     match node.following { Some(child) -> follow(child), None -> () }
 }                                               -- MayDiverge: Link need not be acyclic
--- halt fn bad_follow(node: Link) { follow(node) } -- Error [E0820]
+-- halt fn bad_follow(node: Link) -> () { follow(node) } -- Error [E0820]
 
-fn closed_but_infinite(action: fn() -> ()) @{} &{} { action(); loop {} }
+fn closed_but_infinite(action: fn() -> ()) -> () @{} &{} { action(); loop {} }
 -- Closed higher-order rows still permit divergence.
-fn inferred_alias() {
+fn inferred_alias() -> () {
     let action: fn() -> () = forever
     action()
 }                                               -- Ascription preserves MayDiverge
--- halt fn invalid_alias() { inferred_alias() }  -- Error [E0820]
+-- halt fn invalid_alias() -> () { inferred_alias() }  -- Error [E0820]
 ```
 
 Uncertified loops or recursion give `MayDiverge`, not an effect. The special [finite-evaluation contract](#finite-evaluation-with-div) can certify a bounded invocation without certifying its unbounded action. Merely handling `Div::exhausted`, counting selected user operations, or imposing a static-evaluation budget supplies no such proof for an arbitrary run-time call.
@@ -3860,8 +3976,8 @@ Uncertified loops or recursion give `MayDiverge`, not an effect. The special [fi
 type Cell = { var count: int }
 fn inspect(cell: Cell) -> int { cell.count }
 fn observe(ref cell: Cell) -> int { cell.count }
-fn bump(mut cell: Cell) &mut { cell.count += 1 }
-fn retain(^mut cell: Cell) -> Cell &^mut { cell }
+fn bump(mut cell: Cell) -> () &mut { cell.count += 1 }
+fn retain(^mut cell: Cell) -> ^mut(cell) Cell &^mut { cell }
 
 let immutable = Cell.{ count: 0 }
 assert(inspect(immutable) == 0)
@@ -3930,8 +4046,8 @@ Mutable modes do not apply to static key arguments.
 
 ```ril
 type Cell = { var count: int }
-fn copy_cell(cell: Cell) -> Cell { clone(cell) }
-fn build_cell() -> Cell {
+fn copy_cell(cell: Cell) -> new Cell { clone(cell) }
+fn build_cell() -> new Cell {
     let mut cell = Cell.{ count: 0 }
     cell.count += 1
     cell                               -- OK: private construction authority ends on return
@@ -3955,7 +4071,7 @@ Only `value` in `Array::push`, `Array::insert`, and `Map::set` has this initiali
 -- Cell, original, and copy_cell have the preceding declarations/contracts.
 fn identity(cell: Cell) -> Cell { cell }
 fn frozen_cell() -> Cell { let cell = Cell.{ count: 1 }; cell }
-fn append(mut target: []Cell, cell: Cell) &mut { target !> Array::push(cell) }
+fn append(mut target: []Cell, cell: Cell) -> () &mut { target !> Array::push(cell) }
 
 let frozen_copy = clone(original)
 let mut cells: []Cell = []
@@ -3968,7 +4084,7 @@ cells !> Array::push(frozen_cell())
 append(mut cells, clone(original))
 -- cells[3].count += 1                -- Error [E0522]: wrapper's parameter is read-only
 
-fn append_copy(mut target: []Cell, source: Cell) &mut {
+fn append_copy(mut target: []Cell, source: Cell) -> () &mut {
     target !> Array::push(copy_cell(source)) -- OK: constructs a new result; &mut suffices
 }
 let push: fn(mut []Cell, Cell) -> () &mut = Array::push
@@ -4175,12 +4291,12 @@ let dept_names = opt_depts |> Array::map(\?.name)                -- Evaluates to
 
 ```ril
 type Adder = fn(int) -> int &closure
-fn make_adder(base: int) -> Adder &capture { \x -> base + x }
+fn make_adder(base: int) -> new Adder &capture { \x -> base + x }
 let add5 = make_adder(5)                -- Immutable captured value
 assert(add5(10) == 15)
 
 type Step = fn() -> int &closure
-fn create_counter(start: int) -> Step &capture {
+fn create_counter(start: int) -> new Step &capture {
     var count = start
     \-> { count += 1; count }
 }
@@ -4192,7 +4308,7 @@ assert(counter() == 1)
 ```ril
 type Cell = { var count: int }
 type Step = fn() -> int &closure
-fn make_shared_step(^mut cell: Cell) -> Step &capture &^mut {
+fn make_shared_step(^mut cell: Cell) -> ^mut(cell) Step &capture &^mut {
     \-> { cell.count += 1; cell.count }
 }
 
@@ -4205,7 +4321,7 @@ assert(step() == 3)                   -- Both authorities still reach the same c
 ```
 
 - **Abstraction**: `&closure` follows [callable type bounds](#callable-type-bounds); direct named capture access still requires source groups.
-- **Definitions (`E0534`)**: Named definitions cannot replace direct source groups with standalone `&closure`. Parameter/return callable types may use it; anonymous captures remain inferred and explicit annotations remain checked.
+- **Definitions (`E0534`)**: Definitions cannot replace direct source groups with standalone `&closure`. Parameter/return callable types may use it as an abstraction; anonymous definitions infer and complete concrete capture-source annotations under the same rules as named definitions.
 - **Creation**: New environments surviving the enclosing callable's return require `&capture`, including those nested in returned aggregates. Forwarding existing environments or using call-local ones does not.
 - Anonymous functions capture free value bindings, including module bindings. Module-level named functions use declared external access; escaping block-local functions retain their required lexical environments.
 - **Binding Choice**: An immutable environment can be bound with `let`; an existing immutable environment may also be observed with `ref`. Observer environments use `let ref` under the [observation-wrapper rules](#normative-rules-for-read-only-references), preserving immutable and pinned live dependencies. A persistent mutable environment requires a writable handle. These are environment facts, not consequences of the visible `&closure` spelling.
@@ -4221,7 +4337,7 @@ A function that mutates locally allocated variables that do not escape retains a
 
 ```ril
 type Buffer = { mut items: []int }
-fn append_val(mut b: Buffer, v: int) &mut { b.items !> Array::push(v) }
+fn append_val(mut b: Buffer, v: int) -> () &mut { b.items !> Array::push(v) }
 
 -- Pure function with internal primitive mutation:
 fn compute_sum(n: int) -> int {
@@ -4247,7 +4363,7 @@ fn generate_sequence(count: int) -> []int {
 
 -- Local discharge of scalar insertion (no retained mutable reference):
 type NodeHub = { mut nodes: []int }
-fn link(mut hub: NodeHub, node: int) &mut { hub.nodes !> Array::push(node) }
+fn link(mut hub: NodeHub, node: int) -> () &mut { hub.nodes !> Array::push(node) }
 
 fn test_internal_hub() -> int {
     let mut local_hub = NodeHub.{ nodes: [] }
@@ -4262,12 +4378,12 @@ fn test_internal_hub() -> int {
 A function mutating any parameter MUST declare at least `&mut`; anonymous `&^mut` includes this parameter-mutation obligation. Named external mutation still requires the corresponding named capability and cannot be concealed by an anonymous annotation.
 
 ```ril
-fn clear_items(mut list: []int) &mut {
+fn clear_items(mut list: []int) -> () &mut {
     list !> Array::truncate(0)         -- OK: declared &mut
 }
 
 -- Missing capability annotation is statically rejected:
--- fn bad_clear(mut list: []int) {     -- Error [E0510]: mutating operation requires caller signature to declare '&mut'
+-- fn bad_clear(mut list: []int) -> () {     -- Error [E0510]: mutating operation requires caller signature to declare '&mut'
 --     list !> Array::truncate(0)
 -- }
 ```
@@ -4285,10 +4401,10 @@ type Entry = { var id: int }
 type Hub = { mut entries: []Entry }
 let mut global_hub = Hub.{ entries: [] }
 
-fn register_entry(mut hub: Hub, ^mut entry: Entry) &^mut {
+fn register_entry(mut hub: Hub, ^mut entry: Entry) -> () &^mut {
     hub.entries !> Array::push(^mut entry)
 }
-fn publish_entry(^mut entry: Entry) &^mut &{mut global_hub} {
+fn publish_entry(^mut entry: Entry) -> () &^mut &{mut global_hub} {
     global_hub.entries !> Array::push(^mut entry)
 }
 -- The retained origin is entry. Merely inserting it does not create a new authority to global_hub.
@@ -4325,11 +4441,11 @@ assert(copied.1.count == 1)             -- Internal aliases survive the isolated
 
 - **Local Sharing Marker (`E0510`)**: A new local writable path to existing ordinary storage or an existing callable environment requires `^mut expression` at its binding, assignment, aggregate insertion, or destructuring site. The marker may cover one constituent or a whole construction/destructuring source; every constituent retains its own permissions. A writable reception of a deep copy with possible internal writable aliases also requires this marker. Proven immutable sharing needs none.
 - **Checked Meaning**: The marker evaluates its operand once and preserves identity. It neither clones nor freezes, transfers ownership, grants missing permissions, revives invalid resources, or extends temporary mutable authority. Missing markers and invalid authority are distinct errors; adding a marker cannot repair `E0520`–`E0528` violations. Possible internal aliases need not be resolved to one exact graph, but remain subject to all overlap checks.
-- **No Duplicate Boundary Spelling**: Receiving an authority already produced under a checked callable retention contract does not require another local marker. Callable return/tail expressions, inferred lexical captures, and handler environments keep their existing rules; no new return or capture syntax is required. A plain block is not a callable retention boundary. Aliasing an already created mutable closure locally still requires the marker. A `clone` source/copy isolation contract does not itself mark the copy's possible internal writable aliases, including at a [fresh-value storage input](#fresh-values-in-storage-calls).
+- **No Duplicate Boundary Spelling**: Receiving an authority already produced under a checked `^mut(sources)` return contract does not require another local sharing marker. Callable signatures must contain their inferred return and capture-source annotations; their return/tail expressions and handler environments do not need an additional local marker for that same checked publication. A plain block is not a callable retention boundary. Aliasing an already created mutable closure locally still requires the marker. A `clone` source/copy isolation contract does not itself mark the copy's possible internal writable aliases, including at a [fresh-value storage input](#fresh-values-in-storage-calls).
 - **Confinement**: Local `^mut` does not by itself add external `&^mut` to the enclosing function. Conversely, local discharge does not remove required markers at local data-sharing sites. Captured and returned sharing still contributes its actual authority roots whether or not its facts are written explicitly.
 
 ```ril
-fn retain(^mut cell: Cell) -> Cell &^mut { cell }
+fn retain(^mut cell: Cell) -> ^mut(cell) Cell &^mut { cell }
 let mut original = Cell.{ count: 0 }
 let mut returned = retain(^mut original) -- Retention already marked at the call boundary
 returned.count += 1
@@ -4352,14 +4468,14 @@ Each surviving parameter/external root, escaped mutable environment, and separat
 
 ```ril
 type Step = fn() -> int &closure
-fn make_private_ticker() -> Step &capture {
+fn make_private_ticker() -> new Step &capture {
     var count = 0
     \-> { count += 1; count }
 }
-fn make_shared_ticker(^mut cell: Cell) -> Step &capture &^mut {
+fn make_shared_ticker(^mut cell: Cell) -> ^mut(cell) Step &capture &^mut {
     \-> { cell.count += 1; cell.count }
 }
-fn make_dual_ticker() -> (mut Step, mut Cell) &capture &^mut {
+fn make_dual_ticker() -> new (mut Step, mut Cell) &capture &^mut {
     let mut cell = Cell.{ count: 0 }
     let mut step = \-> { cell.count += 1; cell.count }
     (^mut step, ^mut cell)
@@ -4369,7 +4485,7 @@ fn make_dual_ticker() -> (mut Step, mut Cell) &capture &^mut {
 ```ril
 var active_connections = 0
 type Ticker = fn() -> int &closure
-fn share_connections() -> Ticker &capture &{^mut active_connections} {
+fn share_connections() -> ^mut(active_connections) Ticker &capture &{^mut active_connections} {
     \-> { active_connections += 1; active_connections }
 }
 ```
@@ -4398,31 +4514,31 @@ fn record_transaction() -> () &{mut transaction_count} {
 
 -- Static errors on missing annotations:
 -- fn bad_read() -> str { APP_CONFIG_NAME }          -- Error [E0510]: accessing external state requires caller signature to declare capability '&{APP_CONFIG_NAME}'
--- fn bad_write() { transaction_count += 1 }        -- Error [E0510]: mutating external state requires caller signature to declare capability '&{mut transaction_count}'
+-- fn bad_write() -> () { transaction_count += 1 }        -- Error [E0510]: mutating external state requires caller signature to declare capability '&{mut transaction_count}'
 
 -- Prohibition of Anonymous Concealment:
--- fn conceal_write() &mut { transaction_count += 1 } -- Error [E0510]: cannot use anonymous '&mut' to conceal external state 'transaction_count'
+-- fn conceal_write() -> () &mut { transaction_count += 1 } -- Error [E0510]: cannot use anonymous '&mut' to conceal external state 'transaction_count'
 ```
 
 ```ril
 -- Use record_transaction, read_transaction_count, and transaction_count initialized above.
-fn direct_call() &{mut transaction_count} { record_transaction() }
-fn alias_call() &{mut transaction_count} {
+fn direct_call() -> () &{mut transaction_count} { record_transaction() }
+fn alias_call() -> () &{mut transaction_count} {
     let action = record_transaction  -- Immutable callable descriptor; named state still applies
     action()
 }
-fn invoke_action(action: fn() -> ()) { action() }
-fn parameter_call() &{mut transaction_count} { invoke_action(record_transaction) }
+fn invoke_action(action: fn() -> ()) -> () { action() }
+fn parameter_call() -> () &{mut transaction_count} { invoke_action(record_transaction) }
 
 direct_call()
 alias_call()
 parameter_call()
 assert(read_transaction_count() == 3)
 
--- fn hidden_call() { record_transaction() } -- Error [E0510]
--- fn hidden_alias() { let action = record_transaction; action() } -- Error [E0510]
--- fn hidden_parameter() { invoke_action(record_transaction) } -- Error [E0510]
--- fn falsely_closed(action: fn() -> ()) &{} { alias_call(); action() }
+-- fn hidden_call() -> () { record_transaction() } -- Error [E0510]
+-- fn hidden_alias() -> () { let action = record_transaction; action() } -- Error [E0510]
+-- fn hidden_parameter() -> () { invoke_action(record_transaction) } -- Error [E0510]
+-- fn falsely_closed(action: fn() -> ()) -> () &{} { alias_call(); action() }
 -- Error [E0534]: the closed signature cannot admit the concrete callee's state
 ```
 
@@ -4516,11 +4632,11 @@ let run = \-> {
 assert(run() == 2)
 ```
 
-Anonymous functions may omit source groups and infer all their actual obligations. If they write a group, its names, modes, and layer must still be correct. Source groups in callable types bind names at the type's declaration site and form state upper bounds; an ascription cannot rebind them to similarly named captures in the assigned value. Unknown environments retain the existing `&closure` abstraction instead of inventing source names.
+Anonymous functions infer all actual obligations and must complete their concrete source groups just like named functions; the names, modes, and layers must match the inferred contract. Source groups in callable types bind names at the type's declaration site and form state upper bounds; an ascription cannot rebind them to similarly named captures in the assigned value. Unknown parameter environments retain the existing `&closure` abstraction and verified metadata instead of inventing source names.
 
 ```ril
 var count = 0
-fn bump_global() &{mut count} { count += 1 }
+fn bump_global() -> () &{mut count} { count += 1 }
 fn shadowed() -> int {
     var count = 10
     inner()
@@ -4533,7 +4649,7 @@ where
 let capture = 10
 var closure = 0
 var x = 0
-fn bump_names() &{mut closure, mut x} { closure += 1; x += 1 }
+fn bump_names() -> () &{mut closure, mut x} { closure += 1; x += 1 }
 fn read_closure() -> int &{closure} { closure }
 fn read_both() -> int &{x, closure} { x + closure }
 -- &{closure, x} is always a capture group; it cannot denote these two global reads.
@@ -4549,39 +4665,39 @@ The contextual `closure` group header takes precedence over the global-list prod
 ```ril
 -- counter.ril
 var private_count = 0
-pub fn advance() &{mut private_count} { private_count += 1 }
-fn private_advance() &{mut private_count} { private_count += 1 }
+pub fn advance() -> () &{mut private_count} { private_count += 1 }
+fn private_advance() -> () &{mut private_count} { private_count += 1 }
 pub type Step = fn() -> int &closure
-pub fn make_step() -> Step &capture &{mut private_count} {
+pub fn make_step() -> new Step &capture &{mut private_count} {
     private_count += 1
     var local_count = 0
     \-> { local_count += 1; local_count }
 }
 pub type Cell = { var count: int }
-pub fn retain(^mut cell: Cell) -> Cell &^mut &{mut private_count} {
+pub fn retain(^mut cell: Cell) -> ^mut(cell) Cell &^mut &{mut private_count} {
     private_count += 1
     cell
 }
 
 -- client.ril
 use counter
-fn wrapper() &Counter::advance { Counter::advance() }
-fn through_alias() &Counter::advance {
+fn wrapper() -> () &Counter::advance { Counter::advance() }
+fn through_alias() -> () &Counter::advance {
     let action = Counter::advance
     action()
 }
-fn invoke(action: fn() -> ()) { action() }
-fn through_callback() &Counter::advance { invoke(Counter::advance) }
-fn make_wrapped() -> Counter::Step &capture &Counter::make_step {
+fn invoke(action: fn() -> ()) -> () { action() }
+fn through_callback() -> () &Counter::advance { invoke(Counter::advance) }
+fn make_wrapped() -> new Counter::Step &capture &Counter::make_step {
     Counter::make_step()
 }
-fn retain_wrapped(^mut cell: Counter::Cell) -> Counter::Cell &^mut &Counter::retain {
+fn retain_wrapped(^mut cell: Counter::Cell) -> ^mut(cell) Counter::Cell &^mut &Counter::retain {
     Counter::retain(^mut cell)
 }
--- fn missing_state() { Counter::advance() } -- Error [E0510]
--- fn missing_creation() -> Counter::Step &Counter::make_step { Counter::make_step() }
+-- fn missing_state() -> () { Counter::advance() } -- Error [E0510]
+-- fn missing_creation() -> new Counter::Step &Counter::make_step { Counter::make_step() }
 -- Error [E0510]: the reference does not include the surviving environment's &capture obligation
--- fn missing_retention(^mut cell: Counter::Cell) -> Counter::Cell &Counter::retain { Counter::retain(^mut cell) }
+-- fn missing_retention(^mut cell: Counter::Cell) -> ^mut(cell) Counter::Cell &Counter::retain { Counter::retain(^mut cell) }
 -- Error [E0510]: the reference does not include this parameter's independent &^mut obligation
 -- fn read_private() -> int &Counter::advance { Counter::private_count }
 -- Error [E0201]: a contract reference does not export the private binding
@@ -4597,51 +4713,51 @@ fn retain_wrapped(^mut cell: Counter::Cell) -> Counter::Cell &^mut &Counter::ret
 ```ril
 -- Same-module fixture:
 var count = 0
-fn advance() &{mut count} { count += 1 }
-fn other_advance() &{mut count} { count += 1 }
-fn equivalent_contract() &advance { other_advance() } -- Same concrete inherited source and mode
-fn no_state() {}
--- fn excessive() &no_state { no_state() } -- Error [E0529]: no concrete named state to declare
--- fn hidden_direct() &advance { count += 1; advance() }
+fn advance() -> () &{mut count} { count += 1 }
+fn other_advance() -> () &{mut count} { count += 1 }
+fn equivalent_contract() -> () &advance { other_advance() } -- Same concrete inherited source and mode
+fn no_state() -> () {}
+-- fn excessive() -> () &no_state { no_state() } -- Error [E0529]: no concrete named state to declare
+-- fn hidden_direct() -> () &advance { count += 1; advance() }
 -- Error [E0510]: the direct write still requires &{mut count}
 
 eff Tick { tick() -> () }
--- fn hidden_handler() &advance {
+-- fn hidden_handler() -> () &advance {
 --     with Tick::tick() -> { count += 1; resume () }
 --     advance()
 --     Tick::tick()
 -- }                                  -- Error [E0510]: the direct handler write needs its own source group
 
 let action = advance
--- fn invalid_provider() &action {}  -- Error [E0539]: action is a value binding
+-- fn invalid_provider() -> () &action {}  -- Error [E0539]: action is a value binding
 -- type InvalidContract = fn() -> () &advance -- Error [E0539]: reference form is not a callable-type annotation
--- fn closed(step: fn() -> ()) &{} { advance(); step() }
+-- fn closed(step: fn() -> ()) -> () &{} { advance(); step() }
 -- Error [E0534]: a closed higher-order definition cannot inherit this state
 ```
 
 ```ril
 -- Counter is the ordinary module defined above.
 use counter
--- fn private_reference() &Counter::private_advance {} -- Error [E0201]: private provider
--- fn unknown_reference() &Counter::missing {}         -- Error [E0209]: no such module member
+-- fn private_reference() -> () &Counter::private_advance {} -- Error [E0201]: private provider
+-- fn unknown_reference() -> () &Counter::missing {}         -- Error [E0209]: no such module member
 -- let invalid = \-> &Counter::advance ()               -- Error [E0539]: anonymous annotation
 -- eff Invalid { tick() &Counter::advance }              -- Error [E0539]: effect-operation annotation
 -- In a declaration-unit fixture with the same visible Counter namespace:
--- pub fn invalid_foreign() &Counter::advance             -- Error [E0539]: bodyless declaration
+-- pub fn invalid_foreign() -> () &Counter::advance             -- Error [E0539]: bodyless declaration
 ```
 
 ```ril
 type Cell = { var count: int }
-fn outer(mut cell: Cell) &mut {
+fn outer(mut cell: Cell) -> () &mut {
     inner()
 where
-    fn inner() &{closure, mut cell} { cell.count += 1 }
+    fn inner() -> () &{closure, mut cell} { cell.count += 1 }
 }
 -- inner's named capture is derived from outer's mutable parameter authority.
 
 let mut global_cell = Cell.{ count: 0 }
-fn touch_global() &{mut global_cell} { global_cell.count += 1 }
-fn parameter_and_ambient(mut cell: Cell) &mut &touch_global {
+fn touch_global() -> () &{mut global_cell} { global_cell.count += 1 }
+fn parameter_and_ambient(mut cell: Cell) -> () &mut &touch_global {
     cell.count += 1
     touch_global()
 }
@@ -4653,7 +4769,7 @@ parameter_and_ambient(mut local)     -- OK: the two actual write origins are dis
 ```ril
 -- counter.ril: a separate effect-bearing operation on its private_count.
 pub eff Log { write(str) -> () }
-pub fn logged_advance() @Log &{mut private_count} {
+pub fn logged_advance() -> () @Log &{mut private_count} {
     Log::write("advance")
     private_count += 1
 }
@@ -4661,9 +4777,9 @@ pub fn logged_advance() @Log &{mut private_count} {
 -- client.ril
 use counter
 use counter::{Log, advance as bump}
-fn imported_alias() &bump { bump() }  -- Declaration alias, not a value alias
-fn logged_wrapper() @Log &Counter::logged_advance { Counter::logged_advance() }
--- fn missing_effect() &Counter::logged_advance { Counter::logged_advance() }
+fn imported_alias() -> () &bump { bump() }  -- Declaration alias, not a value alias
+fn logged_wrapper() -> () @Log &Counter::logged_advance { Counter::logged_advance() }
+-- fn missing_effect() -> () &Counter::logged_advance { Counter::logged_advance() }
 -- Error [E0612]: a state reference does not import Log
 ```
 
@@ -4691,7 +4807,7 @@ A call-local closure that captures a `mut` formal retains that formal's call-sco
 
 ```ril
 type Cell = { var count: int }
-fn swap(mut a: Cell, mut b: Cell) &mut {
+fn swap(mut a: Cell, mut b: Cell) -> () &mut {
     let saved = a.count
     a.count = b.count
     b.count = saved
@@ -4712,7 +4828,7 @@ An explicit `^mut` publication permits sequential sharing, not overlapping exclu
 
 ### Monotonic Permission Degradation and Anti-Laundering Matrix
 
-Apply [provenance propagation](#complete-provenance-and-optional-annotations) at every access path. The following cases distinguish permission failures from immutable-publication failures; clone and derive retain their explicit fresh-data contracts.
+Apply [provenance propagation](#complete-provenance-and-required-annotations) at every access path. The following cases distinguish permission failures from immutable-publication failures; clone and derive retain their explicit fresh-data contracts.
 
 ```ril
 type Cell = { var count: int }
@@ -4726,7 +4842,7 @@ let mut replacement = .{ mut child: Cell.{ count: 9 } }
 replacement.child.count += 1
 cursor = replacement
 
-fn project(ref box: { mut child: Cell }) -> Cell { box.child }
+fn project(ref box: { mut child: Cell }) -> ref(box.child) Cell { box.child }
 -- let mut stolen = project(ref box) -- Error [E0528]: the observation return has no write authority
 ```
 
@@ -4824,7 +4940,7 @@ Repeated arms for the same instantiated operation are `E0622`, including through
 ```ebnf
 EffectDecl       ::= [ "pub" ] "eff" PascalCase [ GenericParams ] "{" EffectMemberList "}"
 EffectMemberList ::= EffectOpDecl { "," EffectOpDecl } [ "," ] | EffectIdentifier { "," EffectIdentifier } [ "," ]
-EffectOpDecl     ::= SnakeCase "(" [ ParameterTypeList ] ")" [ "->" TypeExpression ] [ StateAnnot ]
+EffectOpDecl     ::= SnakeCase "(" [ ParameterTypeList ] ")" [ ReturnType ] [ StateAnnot ]
 EffectAnnot      ::= "@" ( EffectRow | "{" "}" )
 EffectRow        ::= EffectIdentifier { "+" EffectIdentifier }
 EffectIdentifier ::= QualifiedName [ GenericArgs ]
@@ -4852,12 +4968,12 @@ fn fill_header(mut target: []u8) -> int @BufferIo &mut {
 
 ```ril
 eff Console { print(str) -> (), read_line() -> str }
-fn hello() @Console {
+fn hello() -> () @Console {
     Console::print("Name?")
     let name = Console::read_line()
     Console::print("Hello, {name}")
 }
-fn run_console() {
+fn run_console() -> () {
     let mut messages: []str = []
     with {
         Console::print(msg) -> { messages !> Array::push(msg); resume () },
@@ -5077,11 +5193,11 @@ let existing = { with Read::get() -> resume 7; ask_read }
 
 ```ril
 eff Tick { tick() -> () }
-fn handled_write(mut cell: Cell) &mut {
+fn handled_write(mut cell: Cell) -> () &mut {
     with Tick::tick() -> { cell.count += 1; resume () }
     Tick::tick()
 }
--- fn hidden_write(mut cell: Cell) {
+-- fn hidden_write(mut cell: Cell) -> () {
 --     with Tick::tick() -> { cell.count += 1; resume () }
 --     Tick::tick()
 -- }                                   -- Error [E0510]: handling Tick does not discharge the parameter write
@@ -5208,7 +5324,7 @@ fn guarded_workflow(mut audit: AuditLog) -> str @Auth &mut {
     }
 }
 
-fn test_early_abort() {
+fn test_early_abort() -> () {
     let mut audit = AuditLog.{ entries: [] }
     let res = {
         with Auth::authenticate() -> "Aborted"  -- Early abort without resume
@@ -5240,7 +5356,7 @@ $$\emptyset \subset \lbrace\text{Fiber}\rbrace \subset \lbrace\text{Fiber}, \tex
 
 ```ril
 use ril/file
-fn handled_yield() {
+fn handled_yield() -> () {
     with Fiber::yield() -> resume ()
     Fiber::yield()                     -- No residual Fiber request
 }
@@ -5303,7 +5419,7 @@ eff Yield<T> {
     emit(value: T) -> ()
 }
 
-fn range_stream(start: int, max: int) @Yield<int> {
+fn range_stream(start: int, max: int) -> () @Yield<int> {
     var cur = start
     while cur < max {
         Yield::emit(cur)
@@ -5620,7 +5736,7 @@ let t_inferred = type<typeof (1 + 2)>  -- OK: 'typeof' enclosed in type<...> in 
 ```ril
 fn json_decode<T>(raw: str) -> Result<T, str> { ... }
 
-fn runtime_client(raw: str) {
+fn runtime_client(raw: str) -> () {
     -- let bad = json_decode(type<User>, raw)   -- Error [E0816]: 'type<...>' quotation prohibited in runtime context; use 'json_decode<User>(raw)' or contextual inference
     let explicit = json_decode<User>(raw)       -- OK: explicit generic type argument
     let inferred: Result<User, str> = json_decode(raw) -- OK: contextual bidirectional inference
@@ -5654,8 +5770,8 @@ type IntRecord = SafeRecord<int>
 halt type Identity = \T -> type<T>              -- OK: type-producing function
 meta fn size_of<T>(t: type<T>) -> int { byte_size(t) } -- OK: reflection produces a value
 halt fn checked_increment(n: int) -> int { n + 1 } -- May panic at int's maximum
--- halt fn yield_once() @Fiber { Fiber::yield() } -- Error [E0821]: halt requires outward purity
--- halt fn forever() { loop {} }                  -- Error [E0820]: uncertified local loop
+-- halt fn yield_once() -> () @Fiber { Fiber::yield() } -- Error [E0821]: halt requires outward purity
+-- halt fn forever() -> () { loop {} }                  -- Error [E0820]: uncertified local loop
 -- meta let BAD_SUM = 127i8 + 1i8                 -- Error [E0831]: panic during static evaluation
 ```
 
@@ -5744,7 +5860,7 @@ fn dispatch_worker<mode: DispatchMode>(f: fn(int) -> int, val: int) -> int {
     }
 }
 
-fn test_specialization(runtime_mode: DispatchMode) {
+fn test_specialization(runtime_mode: DispatchMode) -> () {
     assert(dispatch_worker<DispatchMode::Bypass>(logged_worker, 10) == 10) -- OK: callback is not invoked
     -- dispatch_worker<runtime_mode>(logged_worker, 10)      -- Error [E0814]: a static value is required
 }
@@ -5793,7 +5909,7 @@ type User = { id: int, name: str }
 let user = User.{ id: 1, name: "Ada" }
 let name: str = get_field(user, "name")
 -- get_field(user, "missing")          -- Error [E0323]: key is not in keyof User
-fn dynamic_key(user: User, key: str) {
+fn dynamic_key(user: User, key: str) -> () {
     -- get_field(user, key)             -- Error [E0814]: actual key is not statically known
 }
 ```
@@ -6138,7 +6254,7 @@ let last_item = arr !> remove_last()
 pub use ril/math::*                     -- Re-export all public math items
 
 -- Lexical Block-Scoped Import:
-fn calculate() {
+fn calculate() -> () {
     use ril/crypto::{sha256}            -- Block-scoped import: visible strictly inside calculate()
     let d = sha256("data")
 }
@@ -6155,7 +6271,7 @@ fn calculate() {
 let MAX_CONNECTIONS: int = 100
 let DEFAULT_TITLE: str = "Ril Application"
 var active_workers: int = 0            -- OK: initialized with constant expression
-fn start_worker() &{mut active_workers} { active_workers += 1 }
+fn start_worker() -> () &{mut active_workers} { active_workers += 1 }
 
 -- Prohibited top-level runtime side effects and error propagation:
 -- let current_time = Clock::now()      -- Error [E0202]: top-level declaration must be a pure constant expression
@@ -6171,7 +6287,7 @@ Tests are ordinary functions. Their handlers, scoped bindings, Result inspection
 
 ```ril
 -- Complete executable root; no root main is declared.
-pub fn helper() {}                    -- Error [E0903]: executable program lacks its root main
+pub fn helper() -> () {}              -- Error [E0903]: executable program lacks its root main
 ```
 
 An executable program without its required root `main` declaration is `E0903`. A present declaration that does not satisfy the entry contract is `E0904`. An ordinary library module is not required to declare `main`. Duplicate declarations of root `main` retain `E0203`.
@@ -6197,9 +6313,9 @@ pub fn main() -> Result<(), str> @Fiber {
 
 ```ril
 -- Separate executable-root fixtures:
--- fn main() {}                        -- Error [E0904]: entry must be public
--- pub fn main(value: int) {}          -- Error [E0904]: entry has a parameter
--- pub fn main<T>() {}                 -- Error [E0904]: entry has a generic parameter
+-- fn main() -> () {}                        -- Error [E0904]: entry must be public
+-- pub fn main(value: int) -> () {}          -- Error [E0904]: entry has a parameter
+-- pub fn main<T>() -> () {}                 -- Error [E0904]: entry has a generic parameter
 -- pub fn main() -> int { 0 }          -- Error [E0904]: unsupported entry result
 ```
 
@@ -6269,8 +6385,8 @@ Forms preserve data schemas and operation identity. Resource contracts remain se
 | Operation | Signature | Effects | Phase | Complexity | Contract |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `len` | `len(value)` / `len(ref value) -> int` | Pure | Dual-phase | $O(1)$ / $O(n)$ text | Count of elements, entries, bytes, or Unicode scalars |
-| `inner` | `inner(wrapper)` / `inner(ref wrapper) -> T` | Pure | Runtime | $O(1)$ | Preserve payload authority; unit nominal yields `()` |
-| `clone` | `clone(value)` / `clone(ref value) -> T` | Pure | Runtime | $O(\text{graph})$ | Deep isolated ordinary graph copy; preserves aliases, cycles, and member schemas |
+| `inner` | `inner(wrapper) -> T` / `inner(ref wrapper) -> ref(wrapper) T` | Pure | Runtime | $O(1)$ | Preserve immutable/observed payload authority; value payloads use a plain result; unit nominal yields `()` |
+| `clone` | `clone(value)` / `clone(ref value)` | Pure | Runtime | $O(\text{graph})$ | Reference result `new T`, value result `T`; deep isolated ordinary graph copy preserving aliases, cycles, and member schemas |
 | `derive` | `derive(base, recipe) -> T` | Forwards recipe | Runtime | $O(\text{affected})$ | Functional update on immutable value via confined mutable draft |
 | `byte_size` | `meta fn byte_size<T>(value: type<T>) -> int` | Pure | Static only | $O(1)$ | Size in bytes of $T$'s value/handle on abstract target |
 | `type_name` | `meta fn type_name<T>(value: type<T>) -> str` | Pure | Static only | $O(\text{len})$ | Canonical string representation of $T$ for static diagnostics |
@@ -6525,6 +6641,9 @@ This index assigns each code its diagnostic name and points to its defining rule
 | **`E0541`** | [`InvalidScopedCleanupContractError`](#scoped-resource-bindings) |
 | **`E0542`** | [`NonHigherOrderEmptyRowError`](#callable-contracts) |
 | **`E0543`** | [`NewTargetRefError`](#read-only-reference-bindings) |
+| **`E0544`** | [`MissingInferredFunctionAnnotationError`](#mandatory-contract-inference-and-completion) |
+| **`E0545`** | [`InvalidReturnSourceContractError`](#return-construction-permissions-and-sources) |
+| **`E0546`** | [`InvalidNewReturnContractError`](#return-construction-permissions-and-sources) |
 
 ### Effects, Resumption, Concurrency, and Escape
 
