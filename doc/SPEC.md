@@ -861,7 +861,7 @@ assert(rest.role == "root")
 
 ### Array, Map, and Tuple Types
 
-Bracket syntax (`[...]`) defines linear arrays (`[]T`) and associative maps (`[K: V]`). Fixed-arity anonymous products are represented as tuples (`(T1, T2)`). Array values use the ordinary array type; range indexing creates another ordinary array. Non-owning inspection uses a `let view` or `var view` binding over an eligible array origin. Binding permissions and allocation provenance are tracked separately from the array type. The unique set type `Set<T>` and collection type extractors are standard library declarations, not dedicated core syntax.
+Bracket syntax defines arrays (`[]T`) and maps (`[K: V]`); tuples use `(T1, T2)`. Range results remain ordinary arrays. `let view` / `var view` are binding modes, not array types. `Set<T>` and collection type extractors are standard-library declarations.
 
 ```ebnf
 ArrayType   ::= "[]" TypeExpression
@@ -1809,13 +1809,13 @@ VarViewDecl ::= [ "pub" ] "var" "view" Pattern [ ":" TypeExpression ] "=" Expres
 ```
 
 #### Normative Rules for Live Views
-- **Target Invariant (`E0531`, `E0402`)**: A reference or callable view must observe at least one live origin rooted in a stable pinned mutable binding (`let mut`). Projections, existing views, and verified calls may preserve this origin evidence. Immutable reference/callable targets and paths supplied through `var`/`var mut` slots are rejected (`E0531`); forwarding or wrapping cannot repair an ineligible source. Value-type targets are rejected (`E0402`).
-- **Observation Wrappers (`E0531`, `E0543`)**: New passive aggregates and observer closures may package eligible live origins with immutable data. Every live constituent and every captured live source must satisfy the target invariant; immutable constituents and captures need no live origin. The wrapper and its access paths grant no write authority. This permits `let view packet = .{ item: identity(source) }` and `let view read = \-> observed.count`. An independent fresh allocation, a clone result, or a new writable closure environment cannot supply a live origin merely by being received as a view (`E0543`). Receiving a range indexing result as a view is also `E0543`; forwarding it through calls or wrappers cannot supply its missing pinned origin. A separate lawful `let mut` binding may establish a pinned origin for a newly constructed ordinary array; a later view observes that entire array. Allocation by range indexing follows the same binding rules as other ordinary array construction.
+- **Target Invariant (`E0531`, `E0402`)**: Require at least one live origin traced to pinned `let mut` bindings through projections, views, and verified calls. Immutable reference/callable or `var`/`var mut` origins fail with `E0531`; value targets with `E0402`.
+- **Observation Wrappers (`E0531`, `E0543`)**: Passive aggregates and observer closures may combine eligible live origins with immutable data; check every live dependency. Wrapping or forwarding cannot repair an ineligible origin. Independent fresh data, clone results, and new writable environments supply no live origin by themselves (`E0543`).
 - **Authority (`E0520`, `E0601`)**: Zero interior write authority; upgrade via `mut`/`^mut` rejected (`E0520`). Live views cannot cross concurrency task boundaries (`E0601`).
-- **GC Preservation**: Evaluate the initializer once and retain its references, including an observation wrapper's stored references or captured bindings. A projected reference retains the heap object selected at binding time, not a reactive path; container slot replacements leave that view safely observing the original heap object via GC root tracking. An observer closure evaluates its body on invocation under the usual capture rules.
+- **GC Preservation**: Evaluate the initializer once. Stored/projected references keep the selected object alive; observer closures read their captures when invoked.
 - **Pinned vs. Reassignable (`let view` vs `var view`)**:
   - `let view`: Pinned slot; identifier cannot be rebound (`E0502`).
-  - `var view`: Reassignable cursor; each initializer or replacement must satisfy the same target and observation-wrapper rules; must exercise reassignment on a statically possible path (`E0527`).
+  - `var view`: Each replacement obeys the same origin rules; a reachable reassignment is required (`E0527`).
 
 ```ril
 type Cell = { mut count: int }
@@ -1824,9 +1824,10 @@ let mut cell2 = Cell.{ count: 0 }
 
 -- Pinned live view:
 let view observed = cell1
-let view read_count = \-> observed.count
+let view packet = .{ item: observed, offset: 1 }
+let view read_count = \-> packet.item.count + packet.offset
 cell1.count = 5
-assert(read_count() == 5)
+assert(read_count() == 6)               -- Live origin plus immutable data
 -- observed.count = 10                  -- Error [E0520]: a view grants no write authority
 -- observed = cell2                     -- Error [E0502]: cannot reassign pinned view handle
 -- let bad_reader = \-> observed.count  -- Error [E0535]: the captured live origin is not immutable
@@ -2399,14 +2400,23 @@ cells[1].count += 1
 let mut sub_cells = ^mut cells[0..1]  -- OK: '^mut' acknowledges duplicated writable paths
 sub_cells[0].count = 42
 assert(cells[0].count == 42)          -- Reference NOT cloned: points to same heap Cell!
+sub_cells[0] = Cell.{ count: 9 }
+sub_cells !> Array::push(Cell.{ count: 10 })
+assert(cells[0].count == 42 && len(cells) == 2) -- Slots and length are independent
 -- let mut bad = cells[0..1]          -- Error [E0510]: new local writable alias needs '^mut'
 
 -- 3. Whole-array observation vs new array:
 let view observer = source            -- Read-only view directly over pinned mutable array
+-- source !> Array::push(5)           -- Error [E0537]: observer is used below
 assert(observer[0] == 99)
 -- observer[0] = 9                    -- Error [E0520]: a view grants no write authority
 -- let view bad_new = source[0..2]    -- Error [E0543]: new array cannot bind to view
 -- let view bad_all = source[..]      -- Error [E0543]: new array cannot bind to view
+source !> Array::push(5)              -- OK: observer's last use has ended
+let mut copied = source[0..2]
+let view copy_view = copied
+copied[0] = 7
+assert(copy_view[0] == 7 && source[0] == 99) -- Observes the new ordinary array
 
 -- 4. Primitive sub-sequences:
 let s = "hello, 世界"
@@ -2416,20 +2426,19 @@ assert(s[0..len(s)] == s)             -- Coordinate alignment ensures safe full 
 let b: bytes = b"RIFF\x00\x01"
 let b_sub: bytes = b[0..4]            -- b"RIFF" (byte sub-sequence)
 -- let view b_view = b                -- Error [E0402]: bytes is an immutable value type
+let mut byte_array: []u8 = Bytes::to_array(b)
+byte_array[0] = 0u8
+assert(Bytes::at(b, 0) == Some(82u8)) -- The original bytes still start with 'R'
 ```
 
-- **Array Construction via Range Indexing**: Array range indexing (`arr[a..b]`, `arr[a..=b]`, `arr[a..]`, `arr[..b]`, `arr[..]`) allocates an ordinary new array of type `[]T`. The result has its own element slots: replacing an element or changing the length of either array does not change the other array's slots or length. Freshness is a provenance fact, not a type qualifier; there is no separate slice-array type or source-backed subarray value.
-- **Element Copy vs. Reference Semantics**:
-  - **Value Types (Cloned)**: Value-type elements (`int`, `bool`, `f64`, `str`, `bytes`, and other value types) are cloned by value into the new array.
-  - **Reference Types (Not Cloned)**: Reference elements retain the exact same object identities, aliases, and permissions. A permitted interior write to a referenced object is visible through every alias to that object; replacing an array element still affects only that array's own slot. Tuples and other heap products follow this reference rule.
-  - **Writable Sharing Marker (`E0510`)**: When element type `T` contains mutable references, creating a new array from range indexing duplicates writable paths to existing heap objects, requiring the explicit `^mut` sharing marker (`E0510`) when binding to `let mut`.
-- **View Target Prohibition (`E0543`)**: Because range indexing expressions construct new arrays rather than referencing stable pinned mutable origins (`let mut`), range indexing **cannot** be assigned or bound to a `view` (`let view v = arr[a..b]` is rejected under `E0543`). To observe an array without copying, bind directly to the pinned mutable array handle itself (`let view observer = source`).
+- **Array Result**: Allocate ordinary `[]T` with independent slots and length. Clone value elements; preserve reference identities, aliases, and permissions. Tuples and other heap products are references. Freshness is provenance, not a type qualifier.
+- **Writable Sharing (`E0510`)**: Mark reception of duplicated writable reference paths with `^mut`.
+- **View Target (`E0543`)**: A new range result needs a separate lawful `let mut` binding before it can be observed as a live array origin, including after forwarding.
 - **Bounds**: For length N, a half-open range requires `0 <= lower <= upper <= N`; equal bounds produce an empty array, including at N. Omitted lower bounds mean zero; an omitted upper bound denotes the exclusive end N. A written inclusive upper bound h requires `0 <= lower <= h < N` and selects through h. Negative, reversed, or out-of-range bounds panic; bounds are never clamped. Safe range lookup (`arr?[a..b]`) returns `?[]T` (`None` when out of bounds).
 - **Primitive Sub-Sequences**:
   - `str[a..b]` and `str[a..=b]` evaluate to an independent `str` based on Unicode scalar (code point) indices ($0 \le a \le b \le \text{scalar\_len}$). Range indexing and string length share the same Unicode scalar coordinate system; `s[0..len(s)]` safely selects the entire text.
   - `bytes[a..b]` and `bytes[a..=b]` evaluate to an independent `bytes` byte sub-sequence ($0 \le a \le b \le \text{byte\_len}$).
-- **Observation via `view`**: Non-owning inspection of an entire array without copying is achieved by binding directly to the pinned mutable array handle (`let view observer = source`). Structural mutation during active iteration is `E0526`; structural mutation while a live array view may still be used is `E0537`. The latter restriction ends after the last possible use of all derived views and observer environments; inactive aliases do not extend it merely to lexical scope exit. Element replacement remains allowed outside an overlapping invocation and is observed through the view.
-- **Byte Data**: `bytes` remains immutable value data, with no implicit conversion to a live `[]u8` view. Inspect it directly, or use `Bytes::to_array` for an independent array under the standard-library contract.
+- **Array Stability**: Structural mutation is `E0526` during iteration or `E0537` before the last possible use of any derived view/observer environment. Nonoverlapping element writes remain allowed.
 
 ### Pipeline Operators
 
@@ -2981,7 +2990,17 @@ Matches are evaluated top-to-bottom and must be exhaustive (`E0303`). A trailing
 
 These binding patterns govern `match`, bindings, `if let` / `while let`, iteration and handler parameters. The nonbinding [is value tests](#value-tests-with-is) have their own grammar and admit expected-value expressions.
 
-A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. In an array pattern, a named rest `..rest` constructs an ordinary new array of the remaining elements, cloning value elements and preserving reference elements and their permissions as in range indexing. Its element slots are independent of the subject, including when the subject is a live view. Existing array extent facts remain subject to the ordinary typing rules. Receiving this newly allocated rest array under a `let view` or `var view` binding is `E0543`; use an ordinary binding with the required publication or sharing checks.
+A tuple or array pattern without a rest requires exactly its written number of elements. With a rest, its subject must contain at least the number of non-rest elements; prefix and suffix patterns select from their corresponding ends, and the rest may be empty. Tuple rests are anonymous. Named array rests use the range-indexing copy rules and ordinary array extent, permission, publication, and sharing checks.
+
+```ril
+let mut values = [1, 2, 3]
+let view observed = values
+let [_, ..tail] = observed             -- New ordinary array; value elements cloned
+values[1] = 9
+values !> Array::push(4)
+assert(tail == [2, 3])                 -- Independent slots and length
+-- let view [_, ..bad] = values       -- Error [E0543]: the named rest allocates a new array
+```
 
 ```ril
 type Choice { Left(int), Right(int) }
@@ -3864,9 +3883,22 @@ assert(pair(a: 10, 20) == (10, 20))
 - Bind arguments in written order: a positional argument selects the first unbound parameter in declaration order; a named argument selects its named parameter. Selecting an already bound parameter is `E0325`. Binding selection does not reorder evaluation.
 - Function generic defaults are prohibited (`E0317`).
 
-Defaults execute as argument preparation in the caller's activation, before callee entry. Name resolution still uses the function's declaration scope and the already bound, read-only earlier arguments; this execution placement neither captures caller-local names nor grants writes. Each omitted default is evaluated anew. Environments and retained handlers constructed there belong to that preparation in the caller, with complete provenance. A callee merely returning such a prepared argument forwards an existing environment; it does not thereby require `&capture`. A caller that publishes the new environment beyond its own activation must account for `&capture` and any sharing or escape obligations under the ordinary rules. This accounting does not permit residual effects or state access in a default.
+```ril
+type Reader = fn() -> int &closure
+fn choose(value: int, reader: Reader = \-> value) -> Reader { reader }
+let first = choose(7)
+let second = choose(9)                 -- Default reevaluated for each omitted argument
+assert(first() == 7 && second() == 9)
 
-Preparation introduces no additional callable frame or entry charge. Its calls, loops, handler entries, and resumptions remain subject to all already active finite-evaluation budgets; callee entry follows preparation. This placement changes neither lexical binding ownership nor actual origins, permissions, or lifetime restrictions, and cannot extend a temporary mutable authority. The [termination and `halt` checks](#termination-and-halt-contracts) still include the adopted defaults.
+fn publish(value: int) -> Reader &capture { choose(value) }
+-- fn hidden(value: int) -> Reader { choose(value) } -- Error [E0510]: caller publishes the new environment
+
+let pair = \a: int, b: int = a -> (a, b)
+let alias = pair
+assert(alias(b: 4, 3) == (3, 4))       -- Anonymous defaults and labels survive this alias
+```
+
+Defaults run anew in the caller before callee entry, using declaration scope and earlier read-only arguments. New environments/retained handlers belong to that preparation; forwarding them adds no callee `&capture`, but publication beyond the caller does. Origin, permission, lifetime, and [termination/`halt` checks](#termination-and-halt-contracts) remain unchanged. Preparation adds no frame or entry charge; its calls, loops, handler entries, and resumptions use all active budgets.
 
 An unknown parameter label is `E0339`; a non-callable callee is `E0338`. Missing or excess ordinary arguments retain `E0314`, after accounting for supplied names and defaults. Nullary variant parentheses retain the specific `E0353`. These diagnostics introduce no new restriction on the relative order of positional and named arguments.
 

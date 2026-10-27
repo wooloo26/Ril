@@ -211,6 +211,11 @@ cells[1].count += 1
 assert(base.count == 1 && cells[0].count == 3 && cells[1].count == 2)
 cells !> Array::push(base)             -- OK: existing immutable element
 -- cells[2].count += 1                -- Error [E0522]: insertion does not upgrade base
+let mut copied = ^mut cells[0..1]
+copied[0].count += 1
+assert(cells[0].count == 4)            -- Reference identity preserved
+copied[0] = Cell.{ count: 0 }
+assert(cells[0].count == 4)            -- Array slots are independent
 ```
 
 | `push` / `insert` value | Stored access / capability |
@@ -219,7 +224,16 @@ cells !> Array::push(base)             -- OK: existing immutable element
 | Other ordinary argument | Read-only |
 | `^mut target` | Retained writer under `&^mut` |
 
-Read-only Array operations also accept `[N]T`; length changes require `[]T`. Range indexing and named array rests construct ordinary new arrays: value elements are cloned, and reference elements retain their identities and permissions. Each result has independent element slots and length. A live view observes an entire eligible array and grants no writes. Callback operations also admit `mut callback` with `&mut`. Fold accumulators and returned elements preserve their original sharing and permissions.
+Read-only Array operations also accept `[N]T`; length changes require `[]T`. Live views grant no writes. Callback operations also admit `mut callback` with `&mut`. Fold accumulators and returned elements preserve their original sharing and permissions.
+
+```ril
+let mut source = [1, 2, 3]
+let copied: []int = source[1..]
+let [_, ..rest] = source
+source[1] = 9
+source !> Array::push(4)
+assert(copied == [2, 3] && rest == [2, 3]) -- Values cloned; slots and length independent
+```
 
 | Operation | Behavior and complexity |
 | :--- | :--- |
