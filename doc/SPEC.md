@@ -65,6 +65,7 @@ This document defines Ril grammar, typing, permissions, effects, abstract-machin
     - [Type Definition Boundaries](#type-definition-boundaries)
   - [Declarations and Bindings](#declarations-and-bindings)
     - [Binding Permissions and Storage Matrix](#binding-permissions-and-storage-matrix)
+    - [Shared Writable Reception](#shared-writable-reception)
     - [Immutable Bindings](#immutable-bindings)
     - [Pinned Mutable Handles](#pinned-mutable-handles)
       - [Normative Rules for Pinned Handles](#normative-rules-for-pinned-handles)
@@ -454,7 +455,7 @@ Identifier grammatical roles obey the **Closed Casing Invariant**:
 - **`PascalCase`**: Strictly reserved for types (`type`), ADT variant constructors, nominal wrappers, algebraic effects (`eff`), generic type parameters (`T`, `ItemType`), and module namespace identifiers (`Array`, `Channel`, `Geometry`).
    - **Acronym Title-Casing Rule**: Acronyms within `PascalCase` MUST be title-cased as regular words (`HttpServer`, `UserId`, `JsonParser`, NOT `HTTPServer`, `UserID`, `JSONParser`) (`E0102`).
 - **`snake_case`**: Strictly used for runtime variables (local bindings, function parameters, reassignable variables `var`, and pinned mutable handles `let mut`), const generic parameters (`cap: int`), named functions (`fn`, `meta fn`), record fields, and module path segments (`ril/array`, `math/geometry`).
-- **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`) MUST use `snake_case`.
+- **`SCREAMING_SNAKE_CASE`**: Strictly reserved for compile-time constants (`meta let`) and top-level immutable constants (`let`). Top-level mutable variables (`var`, `let mut`, including `let ^mut` / `var ^mut` reception sugar) MUST use `snake_case`.
 - **Static Keys and Field Labels**: Static key binders (`K: keyof T`) and mapped-key binders (`[K in ...]`) use PascalCase. Ordinary field labels use snake_case, optionally with one leading underscore. A mapped record may expose valid PascalCase constructor labels; construction and projection against that mapped schema use those generated labels verbatim. This does not permit uppercase run-time variable bindings.
 - **Wildcard and Leading Underscores**: A single underscore `_` is strictly the wildcard discard pattern, not an identifier (`E0322`). An identifier with a leading underscore, such as `_snake_case`, follows the same binding and mutable-authority use requirements as other identifiers (`E0527`).
 
@@ -783,7 +784,7 @@ assert(a == 42 && b == 43)
 
 | Value-type use | Valid forms | Rejected forms | Diagnostic |
 | :--- | :--- | :--- | :--- |
-| Binding | `let`, `var` | `let mut`, `var mut`, `let ref`, `var ref` | `E0402` |
+| Binding | `let`, `var` | `let mut`, `var mut`, `let ^mut`, `var ^mut`, `let ref`, `var ref` | `E0402` |
 | Member / pattern target | Default immutable, `var` | `mut`, `var mut`, `ref`, `var ref` | `E0402` |
 | Parameter / argument | Ordinary value | `mut`, `^mut`, `ref` | `E0401` |
 | Result | `-> T` | `-> new T`; `-> ref(x) T` / `-> ^mut(x) T` | `E0546`; `E0402` |
@@ -1267,7 +1268,7 @@ let base = Cell.{ count: 0 }
 let mut first = copy_cell(base)
 let mut second = copy_cell(base)
 swap(mut first, mut second)           -- OK: separate evaluations produce separate writable copies
-let mut alias = ^mut first
+let ^mut alias = first
 alias.count += 1
 -- swap(mut first, mut alias)         -- Error [E0523]: different names for the same writable object
 ```
@@ -1286,7 +1287,7 @@ fn permute(flag: bool, ^mut a: Cell, ^mut b: Cell)
 }
 let mut left = Cell.{ count: 1 }
 let mut right = Cell.{ count: 2 }
-let mut pair = ^mut permute(choose_order, ^mut left, ^mut right)
+let ^mut pair = permute(choose_order, ^mut left, ^mut right)
 swap(mut pair.0, mut pair.1)           -- OK: either ordering preserves the inputs' proven disjointness
 
 let mut cells = [Cell.{ count: 0 }, Cell.{ count: 1 }]
@@ -1636,14 +1637,14 @@ Binding and origin permissions govern access. Effects govern evaluation and hand
 
 ### Binding Permissions and Storage Matrix
 
-`let` / `var` control slot replacement; default / `mut` / `ref` control data access. Interior operations also require the member's permission.
+`let` / `var` control slot replacement; default / `mut` / `ref` control data access. Interior operations also require the member's permission. Shared-reception declarations desugar before these permission and authority-use checks.
 
 | Binding | `x = other` | Interior writes | Received data |
 | :--- | :---: | :---: | :--- |
 | `let` | No (`E0501`) | No (`E0520`) | Deeply immutable, freely shareable across tasks |
 | `var` | Yes | No (`E0520`) | Deeply immutable; slot may select another value |
-| `let mut` | No (`E0502`) | Yes | Fixed writable target; root for live `ref` handles |
-| `var mut` | Yes | Yes | Writable target; slot may select another object |
+| `let mut` / `let ^mut` | No (`E0502`) | Yes | Fixed writable target; `^mut` explicitly acknowledges initializer sharing |
+| `var mut` / `var ^mut` | Yes | Yes | Writable target; `^mut` covers initialization only, and replacement rechecks reception |
 | `let ref` | No (`E0502`) | No (`E0520`) | Fixed read-only reference; may observe live data |
 | `var ref` | Yes | No (`E0520`) | Read-only reference cursor; immutable or live target |
 
@@ -1658,7 +1659,7 @@ selected = doc2
 assert(saved.title == "Doc 1" && selected.title == "Doc 2")
 
 let mut draft = clone(doc1)
-let mut alias = ^mut draft             -- Explicit writable sharing; no copy
+let ^mut alias = draft                 -- Explicit writable sharing; no copy
 let ref observed = draft
 alias.title = "Revised"
 assert(draft.title == "Revised" && observed.title == "Revised")
@@ -1695,6 +1696,61 @@ Fresh publication requires no surviving outside writer. [Writable sharing](#reta
 | `let mut`, ordinary `mut` parameter | Interior write, mutable call, or authorized transfer |
 | `var mut` | Both reassignment and interior writes |
 | `^mut` parameter | Actual retention |
+
+### Shared Writable Reception
+
+```ebnf
+SharedMutDecl ::= [ "pub" ] ( "let" | "var" ) "^mut" Identifier
+                  [ ":" TypeExpression ] "=" Expression
+```
+
+| Declaration | Exact desugaring | Slot behavior |
+| :--- | :--- | :--- |
+| `let ^mut x: T = expr` | `let mut x: T = ^mut (expr)` | Fixed target |
+| `var ^mut x: T = expr` | `var mut x: T = ^mut (expr)` | Reassignable target |
+
+Types are optional in either spelling. The marker covers the complete initializer, including a pipeline or conditional, evaluated once in its original order. This sugar supplies the existing reception acknowledgment, not another permission, publication, or permanent sharing property. Both spellings retain identical origin, write-authority, lifetime, resource, and `E0527` checks.
+
+```ril
+type Cell = { var count: int }
+fn child(^mut x: Cell) -> ^mut(x) Cell { x }
+fn make() -> new Cell { Cell.{ count: 0 } }
+fn tagged(_tag: int, ^mut x: Cell) -> ^mut(x) Cell { x }
+
+let mut parent = make()
+let ^mut fixed: Cell = child(^mut parent)
+fixed.count += 1
+assert(parent.count == 1)
+-- fixed = make()                     -- Error [E0502]: fixed slot
+
+var ^mut current = child(^mut parent)
+current.count += 1
+current = ^mut child(^mut parent)      -- Every later shared reception needs its own marker
+current = make()                      -- Private new result needs no sharing marker
+current.count += 1
+assert(parent.count == 2 && current.count == 1)
+-- current = child(^mut parent)        -- Error [E0510]: declaration does not mark later assignments
+
+let ^mut piped = 0 |> tagged(^mut parent) -- Marker covers the pipeline result, not the scalar input
+piped.count += 1
+assert(parent.count == 3)
+
+let immutable = Cell.{ count: 0 }
+let ref observed = parent
+-- let ^mut bad = immutable           -- Error [E0520]: sugar cannot grant write authority
+-- let ^mut bad = observed            -- Error [E0520]: a ref cannot become writable
+-- let ^mut bad = 1                   -- Error [E0402]: value types use ordinary let/var
+```
+
+Only single identifier declarations admit this sugar. Patterns, member declarations, and scoped forms keep their existing grammar. A pattern's members retain their own modes:
+
+```ril
+type Cell = { var count: int }
+let mut packet = .{ count: 7, mut item: Cell.{ count: 0 } }
+let .{ count, mut item } = ^mut packet -- Explicit expression marker for mixed destructuring
+item.count += 1
+assert(count == 7 && packet.item.count == 1)
+```
 
 ### Immutable Bindings
 
@@ -2511,7 +2567,7 @@ assert(len(ref source) == 4 && len(sub) == 2)
 type Cell = { var count: int }
 let mut cells: []Cell = [Cell.{ count: 1 }, Cell.{ count: 2 }]
 cells[1].count += 1
-let mut sub_cells = ^mut cells[0..1]  -- OK: '^mut' acknowledges duplicated writable paths
+let ^mut sub_cells = cells[0..1]      -- OK: '^mut' acknowledges duplicated writable paths
 sub_cells[0].count = 42
 assert(cells[0].count == 42)          -- Reference NOT cloned: points to same heap Cell!
 sub_cells[0] = Cell.{ count: 9 }
@@ -2741,6 +2797,7 @@ Block               ::= "{" [ StatementSequence ] [ BlockWhereClause ] "}"
 StatementSequence   ::= Statement { Separator Statement } [ Separator ]
 Statement           ::= LetDecl
                       | LetMutDecl
+                      | SharedMutDecl
                       | VarDecl
                       | VarMutDecl
                       | VarRefDecl
@@ -3623,6 +3680,7 @@ The compiler MUST infer the full checked contract of every function and require 
 | Scope | Same rules for public, private, local, anonymous, and test functions |
 | Facts | Types, permissions/history, root and contained origins, aliases, writes, retention, captures, effects, escape/ownership, and callback dependencies |
 | Required source | Parameter types/modes, result contracts, contained dependency groups, and concrete effect/state/capture annotations; empty first-order rows stay omitted |
+| Shared-reception completion | Prefer `let ^mut` / `var ^mut` for a single identifier's shared initialization; equivalent `mut ... = ^mut expr` remains valid. Assignments, fields, containers, and patterns keep expression markers |
 | Root-return normalization | `^mut(x)` covers only root-return retention; actual writes and extra escape paths keep their own annotations |
 | Anonymous/accessor context | A complete explicit contextual callable type may supply parameter/result annotations; concrete lexical source access still requires checked groups |
 | Diagnostics | Missing type/result contract: `E0544`; state/reception marker: `E0510`; effects: `E0612`; argument marker: `E0405`; unresolved type: `E0344`; invalid sources: `E0545` |
@@ -3846,7 +3904,7 @@ let same_immutable = same(immutable)    -- Tracked immutable sharing
 
 let mut box = Box.{ cell: Cell.{ count: 0 } }
 let ref reader = observe(ref box)
-let mut writer = ^mut share(^mut box)  -- Explicit shared reception
+let ^mut writer = share(^mut box)      -- Explicit shared reception
 writer.count += 1
 assert(reader.count == 1 && box.cell.count == 1)
 -- let hidden = observe(ref box)       -- Error [E0535]: a live observer cannot become immutable
@@ -3873,7 +3931,7 @@ assert(reader.count == 1 && box.cell.count == 1)
 | :--- | :--- |
 | `let` / plain `var` | Entire result permits immutable publication; reject possible live dependencies or surviving writers (`E0535`) |
 | `let mut` / `var mut` | Receiving paths possess write authority; existing immutable or observed paths never upgrade (`E0528` for returned authority laundering) |
-| Shared writable result | Explicit `^mut expression` at binding, assignment, field/container insertion, or destructuring (`E0510` if absent) |
+| Shared writable result | Identifier initialization: `let ^mut` / `var ^mut` or equivalent expression marker. Assignment, field/container insertion, or destructuring: explicit `^mut expression` (`E0510` if absent) |
 | Persistent `ref` | Established observation origins or a lawful passive observer wrapper; independent allocations remain `E0543` |
 | Fresh-storage input | Prove the full unpublished initial-reception contract; the `new` label alone is insufficient |
 
@@ -3937,12 +3995,12 @@ fn install(mut dst: Slot) -> new Cell &^mut {
 }
 
 let mut source = Cell.{ count: 0 }
-let mut packed = ^mut pack(^mut source)
+let ^mut packed = pack(^mut source)
 packed.item.count += 1
 -- let hidden = pack(^mut source)      -- Error [E0535]: live contents forbid immutable publication
 
 let mut slot = Slot.{ child: Cell.{ count: 0 } }
-let mut installed = ^mut install(mut slot)
+let ^mut installed = install(mut slot)
 installed.count += 1
 assert(slot.child.count == 1)
 -- let hidden = install(mut slot)      -- Error [E0535]: a surviving writer prevents publication
@@ -4096,7 +4154,7 @@ let mut cell = Cell.{ count: 0 }
 bump(mut cell)
 cell !> bump()                         -- Supplies mut, not ^mut
 assert(observe(ref cell) == 2)
-let mut alias = ^mut retain(^mut cell)
+let ^mut alias = retain(^mut cell)
 alias.count += 1
 assert(cell.count == 3)                -- Retained alias survives the call
 
@@ -4424,7 +4482,7 @@ fn make_shared_step(^mut cell: Cell) -> new Step &capture &^mut &{return, ^mut c
 }
 
 let mut cell = Cell.{ count: 0 }
-let mut step = ^mut make_shared_step(^mut cell)
+let ^mut step = make_shared_step(^mut cell)
 assert(step() == 1)
 cell.count += 1
 assert(step() == 3)                   -- Both authorities still reach the same cell
@@ -4528,7 +4586,7 @@ fn publish_entry(^mut entry: Entry) -> () &^mut &{mut global_hub} {
 type Cell = { var count: int }
 type Holder = { mut child: Cell }
 let mut source = Cell.{ count: 0 }
-let mut alias = ^mut source
+let ^mut alias = source
 let mut holder = Holder.{ child: ^mut source }
 alias.count += 1
 holder.child.count += 1
@@ -4544,21 +4602,21 @@ let ref observed = source
 -- let mut bad_ref = ^mut observed    -- Error [E0520]: marker cannot upgrade a live ref
 
 let repeated = (mut immutable, mut immutable)
-let mut copied = ^mut clone(repeated)
+let ^mut copied = clone(repeated)
 copied.0.count += 1
 assert(copied.1.count == 1)             -- Internal aliases survive the isolated copy
 -- let mut hidden_copy = clone(repeated) -- Error [E0510]: writable internal sharing must be marked
 ```
 
-- **Local Sharing Marker (`E0510`)**: A new local writable path to existing ordinary storage or an existing callable environment requires `^mut expression` at its binding, assignment, aggregate insertion, or destructuring site. The marker may cover one constituent or a whole construction/destructuring source; every constituent retains its own permissions. A writable reception of a deep copy with possible internal writable aliases also requires this marker. Proven immutable sharing needs none.
+- **Local Sharing Marker (`E0510`)**: A new local writable path to existing ordinary storage or an existing callable environment requires an explicit reception marker: a [shared declaration](#shared-writable-reception) for single-identifier initialization, or `^mut expression` at any receiving site. The marker may cover one constituent or a whole construction/destructuring source; every constituent retains its own permissions. Deep copies with possible internal writable aliases also require acknowledgment. Proven immutable sharing needs none.
 - **Checked Meaning**: The marker evaluates its operand once and preserves identity. It neither clones nor freezes, transfers ownership, grants missing permissions, revives invalid resources, or extends temporary mutable authority. Missing markers and invalid authority are distinct errors; adding a marker cannot repair `E0520`–`E0528` violations. Possible internal aliases need not be resolved to one exact graph, but remain subject to all overlap checks.
-- **Return and Reception**: `^mut(x) T` covers root-return retention without a duplicate independent `&^mut`; actual writes and extra escaping paths retain their own obligations. Shared writable reception still requires `^mut expression` at every receiving site. It confirms the same return publication and does not add a second capability obligation. A checked callable tail may forward authority under its declared return contract; a plain block cannot hide local alias creation. `clone` isolation alone does not mark internal writable aliases, including at [fresh storage inputs](#fresh-values-in-storage-calls).
+- **Return and Reception**: `^mut(x) T` covers root-return retention without a duplicate independent `&^mut`; actual writes and extra escaping paths retain their own obligations. Every shared writable reception still needs a marker, supplied by declaration sugar only for its initializer and by `^mut expression` elsewhere. It confirms the same return publication and does not add a second capability obligation. A checked callable tail may forward authority under its declared return contract; a plain block cannot hide local alias creation. `clone` isolation alone does not mark internal writable aliases, including at [fresh storage inputs](#fresh-values-in-storage-calls).
 - **Confinement**: Local `^mut` does not by itself add external `&^mut` to the enclosing function. Conversely, local discharge does not remove required markers at local data-sharing sites. Captured and returned sharing still contributes its actual authority roots whether or not its facts are written explicitly.
 
 ```ril
 fn retain(^mut cell: Cell) -> ^mut(cell) Cell { cell }
 let mut original = Cell.{ count: 0 }
-let mut returned = ^mut retain(^mut original) -- Explicit reception of the returned writer
+let ^mut returned = retain(^mut original) -- Explicit reception of the returned writer
 returned.count += 1
 original.count += 1
 type Packet = { mut item: Cell }
@@ -4945,7 +5003,7 @@ swap(mut cells[0], mut cells[1])        -- OK: distinct allocations, not merely 
 
 let immutable_cell = Cell.{ count: 0 }
 let repeated = (mut immutable_cell, mut immutable_cell)
-let mut copied = ^mut clone(repeated)
+let ^mut copied = clone(repeated)
 copied.0.count += 1
 assert(copied.1.count == 1)             -- clone preserves internal aliases
 -- swap(mut copied.0, mut copied.1)    -- Error [E0523]: distinct projections reach the same copied object
